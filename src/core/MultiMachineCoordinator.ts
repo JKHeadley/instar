@@ -15,6 +15,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { classifyCadenceLiveness } from './cadenceLiveness.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MachineIdentityManager } from './MachineIdentity.js';
@@ -240,6 +241,10 @@ export class MultiMachineCoordinator extends EventEmitter {
    * `watchdogReArmTimes` is a rolling window of re-arm timestamps for self-disarm.
    */
   private tickWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /** Positive evidence that the main monitor interval was installed. Before
+   * its first callback this is the cadence baseline; a missing first tick can
+   * therefore become provably stale without treating bare zero as failure. */
+  private heartbeatMonitorArmedMonoMs: number = 0;
   private lastTickRunMonoMs: number = 0;
   private leaseTickStartMonoMs: number = 0;
   private leasePullStartMonoMs: number = 0;
@@ -1626,9 +1631,15 @@ export class MultiMachineCoordinator extends EventEmitter {
       // No lease coordinator (solo / non-git mesh) ⇒ nothing to self-heal.
       if (!this.leaseCoordinator) return;
       const now = this.monoNowMs();
-      // lastTickRunMonoMs is stamped at the TOP of checkHeartbeatAndAct; if it
-      // has not advanced within the stale window, the main loop is stalled.
-      if (this.lastTickRunMonoMs > 0 && now - this.lastTickRunMonoMs <= cfg.staleMs) return;
+      // Absence of a first tick sample is UNKNOWN by itself (P20), but the
+      // successful timer-arm event is positive evidence and starts a bounded
+      // first-fire deadline. This catches a main interval lost before callback
+      // #1 without calling ordinary startup a recovered stall.
+      const cadenceBaseline = this.lastTickRunMonoMs > 0
+        ? this.lastTickRunMonoMs
+        : this.heartbeatMonitorArmedMonoMs;
+      const liveness = classifyCadenceLiveness(cadenceBaseline, now, cfg.staleMs);
+      if (liveness.state !== 'stale') return;
 
       // Ceiling-gated guard reset: only clear a guard whose in-flight tick is
       // ALSO older than the ceiling (a stuck guard, not a slow-but-live tick).
@@ -1696,6 +1707,10 @@ export class MultiMachineCoordinator extends EventEmitter {
     this.heartbeatCheckTimer = setInterval(() => {
       this.checkHeartbeatAndAct();
     }, HEARTBEAT_CHECK_INTERVAL_MS);
+    // `0` is the explicit uninitialized sentinel for cadence watermarks. A
+    // freshly-booted monotonic clock (and fake-timer E2E) may legitimately read
+    // zero, so preserve the successful arm as a positive value.
+    this.heartbeatMonitorArmedMonoMs = Math.max(1, this.monoNowMs());
 
     if (this.heartbeatCheckTimer.unref) {
       this.heartbeatCheckTimer.unref();

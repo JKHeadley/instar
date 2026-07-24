@@ -82,12 +82,13 @@ export class MessageLogger {
   /**
    * Append a log entry to the JSONL file.
    */
-  append(entry: LogEntry): void {
+  append(entry: LogEntry): boolean {
     try {
       fs.appendFileSync(this.logPath, JSON.stringify(entry) + '\n');
       this.maybeRotate();
     } catch (err) {
       console.error(`[message-logger] Failed to append to log: ${err}`);
+      return false;
     }
 
     // Notify subscribers
@@ -98,6 +99,7 @@ export class MessageLogger {
         console.error(`[message-logger] onMessageLogged callback failed: ${err}`);
       }
     }
+    return true;
   }
 
   /**

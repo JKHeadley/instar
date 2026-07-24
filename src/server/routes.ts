@@ -37,6 +37,9 @@ import { getCurrentBootId } from './boot-id.js';
 import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/nobodyPollingRecovery.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
 import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
+import { QUOTA_SNAPSHOT_STALE_AFTER_MS } from '../core/QuotaPoller.js';
+import { SubscriptionAccountEmailRegistrar } from '../core/SubscriptionPool.js';
+import { CredentialIdentityOracle } from '../core/CredentialIdentityOracle.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -64,6 +67,7 @@ import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
+import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
 import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
 import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/AuthorizationRequestStore.js';
@@ -82,6 +86,7 @@ import {
   PlaywrightRegistryCorruptError,
   DEFAULT_BLOCK_MAX_BYTES as PLAYWRIGHT_BLOCK_MAX_BYTES,
 } from '../core/PlaywrightProfileRegistry.js';
+import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
@@ -92,6 +97,7 @@ import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
 import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
 import type { StopSignals } from '../core/CompletionEvaluator.js';
+import { CodexTaskContinuationStore, parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJournalReader.js';
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
@@ -111,10 +117,12 @@ import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
+import { decorateWithRopeCondition } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
 import { annotateDecisionOutcome, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
-import { PROVENANCE_COVERAGE } from '../data/provenanceCoverage.js';
+import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
+import { DP_COMPLETION_EVALUATE, PROVENANCE_COVERAGE, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -123,6 +131,9 @@ import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
 import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
+import { validateTurnEvidence } from '../monitoring/TurnEvidence.js';
+import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
+import { routeActionClaim, type ClaimClauseArbitration } from '../monitoring/ClaimClauseArbiter.js';
 import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
 import { APPRENTICESHIP_CYCLE_CHANNELS } from '../monitoring/ApprenticeshipCycleStore.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
@@ -286,10 +297,17 @@ import {
 } from '../core/ScopeAccretionSweep.js';
 import { resolveCorroboration } from '../core/ScopeAccretionCorroboration.js';
 import { ScopeAccretionRatifier } from '../core/ScopeAccretionRatifier.js';
+import {
+  runStallGateValidation,
+  readInstallProvenance,
+  degradedAcceptanceHash,
+  canonicalRowHash,
+  canonicalRowSetHash,
+} from '../core/ApprenticeshipStallGate.js';
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
 import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import type { SystemReviewer } from '../monitoring/SystemReviewer.js';
-import { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
+import { CommitmentPersistenceError, CommitmentTracker } from '../monitoring/CommitmentTracker.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
 import type { SessionActivitySentinel } from '../monitoring/SessionActivitySentinel.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
@@ -318,6 +336,7 @@ import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { recordThreadMessage } from '../threadline/recordThreadMessage.js';
 import { THREAD_ID_RE } from '../threadline/ThreadLog.js';
 import { readThreadHistoryUnion, type CanonicalReadDeps, type AggregateMessage } from '../threadline/canonicalHistoryRead.js';
+import { isAuthenticatedThreadlineInbound } from '../threadline/ThreadlineReplyValidation.js';
 import { computeSymmetryState, localThreadSync, honorPeerThreadSync, type SymmetryState } from '../threadline/threadSymmetry.js';
 import { resolveSingleNegotiatorConfig, readNegotiatorCounts } from '../threadline/NegotiatorLease.js';
 import { evaluateOutboundCredentialShare } from '../threadline/CredentialShareGate.js';
@@ -772,6 +791,12 @@ export interface RouteContext {
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
    *  Subscription & Auth Standard). Null until an operator opts in / enrolls. */
   subscriptionPool: import('../core/SubscriptionPool.js').SubscriptionPool | null;
+  /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
+  subscriptionIdentityOracle?: {
+    resolveSlotTenant(slot: string): Promise<{ email?: string; unavailable?: boolean; reason?: string }>;
+  };
+  subscriptionEmailBinding?: import('../core/SubscriptionPool.js').SubscriptionEmailBindingAuthority;
+  subscriptionEmailBarrier?: import('../core/SubscriptionPool.js').SubscriptionEmailReconciliationBarrier;
   /** WS5.2 Account Follow-Me — cross-machine per-peer account views for depth detection. Prod-wired
    *  to the `?scope=pool` fan-out; absent ⇒ local-only (single-machine = no depth-zero peers). */
   accountFollowMePeerViews?: () => Promise<import('../core/accountFollowMeDepth.js').MachinePoolView[]>;
@@ -788,6 +813,8 @@ export interface RouteContext {
   inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
   /** EnrollmentWizard (P2.1) — mobile-first login + auto-reissue. Null until wired. */
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
+  /** Deterministic test seam after plain enrollment completion owns its id. */
+  enrollmentCompleteInFlightHook?: (id: string) => void | Promise<void>;
   /** WS5.2 R12 — Account Follow-Me revocation data-plane executor. Constructed in the server with
    *  REAL deps (cooperative local wipe + durable pending store + attention emit). Null when the
    *  server wiring did not construct it (e.g. lightweight test harnesses). The `/mandate/:id/revoke`
@@ -814,6 +841,13 @@ export interface RouteContext {
     /** B3b — the autonomous balancer (Increment B). Its `status()` is surfaced on
      *  GET /credentials/rebalancer (last pass + breaker). Optional so tests can omit it. */
     rebalancer?: import('../core/CredentialRebalancer.js').CredentialRebalancer;
+    /** Pure, credential-free dry-run plan restoring each confirmed tenant to its labelled home. */
+    repairPlan?: () => Promise<import('../core/CredentialIdentityRepairPlan.js').CredentialIdentityRepairPlan>;
+    executeRepairPlan?: () => Promise<{
+      plan: import('../core/CredentialIdentityRepairPlan.js').CredentialIdentityRepairPlan;
+      results: Array<{ move: import('../core/CredentialIdentityRepairPlan.js').CredentialRepairMove; outcome: string; reason: string }>;
+      vacateResults: Array<{ impostorSlot: string; retainedSlot: string; accountId: string; outcome: string; reason: string }>;
+    }>;
     /** Raw-blob reader for a slot (restore-enrollment coherence probe). Injectable for tests. */
     readBlob?: (slot: string) => Promise<{ raw: string; oauth: import('../core/OAuthRefresher.js').ClaudeOauth | null } | null>;
   } | null;
@@ -862,6 +896,8 @@ export interface RouteContext {
    *  read FRESH from disk). Tests inject this to control listVaultNames /
    *  hostname hermetically. When absent the route builds the default. */
   playwrightRegistry?: () => PlaywrightProfileRegistry;
+  /** Test/embedding override for the host-wide physical Playwright seat lease. */
+  playwrightSeatLease?: () => PlaywrightSeatLease;
   /** Agent-initiated session respawn. Null when no Telegram adapter is
    *  wired (v1 requires a Telegram-bound session). */
   sessionRefresh: SessionRefresh | null;
@@ -1018,6 +1054,7 @@ export interface RouteContext {
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
+  blockerLifecycleService?: import('../monitoring/BlockerLifecycleService.js').BlockerLifecycleService | null;
   /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8/FD10)
    *  — backs GET /benchmark-divergence (+pool), POST /benchmark-divergence/analyze,
    *  GET /benchmark-divergence/rollup-aggregates. Null when the ledger failed;
@@ -1112,6 +1149,22 @@ export interface RouteContext {
    *  GET /feedback-factory/stats + POST /feedback-factory/process. Null when
    *  dev-gate dark (feedbackFactory.processing) → both routes 503. */
   feedbackProcessing?: import('../feedback-factory/processing/FeedbackProcessingService.js').FeedbackProcessingService | null;
+  /** Operated feedback drain, including its operator-rooted readiness authority
+   *  registry and consumer promotion record. */
+  feedbackDrain?: {
+    service: import('../feedback-factory/drain/FeedbackDrainService.js').FeedbackDrainService;
+    store: import('../feedback-factory/drain/FeedbackDrainStore.js').FeedbackDrainStore;
+    promotion: import('../feedback-factory/drain/FeedbackConsumerPromotionStore.js').FeedbackConsumerPromotionStore;
+    tickProxy: import('../feedback-factory/drain/FeedbackDrainTickProxy.js').FeedbackDrainTickProxy;
+    checkpointBackup: (trigger: 'promotion' | 'failover') => void;
+    finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
+      oldOwnerQuiesced?: boolean; splitBrainRecoveryPacket?: { incidentId: string; oldOwnerStatus: 'unreachable-or-fenced'; operatorDecisionRef: string } }) => {
+      ownerAuthorityEpoch: number; invalidatedClaims: number; abandonedRuns: number;
+      reconciliation: import('../feedback-factory/drain/FeedbackDrainStore.js').InitiativeLinkReconciliationResult;
+    };
+    isRestorePending: () => boolean;
+  } | null;
+  feedbackDrainPosture?: { state: 'dark' | 'unavailable' | 'live'; reason: 'intentionally-fleet-dark' | 'misclassified-development-install' | 'enabled-missing-canonical-data-directory' | 'enabled-missing-operated-host-owner' | 'initialization-failure' | 'live-healthy' };
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
@@ -1136,6 +1189,9 @@ export interface RouteContext {
    *  records only). Null/absent when monitoring.correctionLearning.enabled is
    *  false (default) → /corrections 503s. */
   correctionLedger?: import('../monitoring/CorrectionLedger.js').CorrectionLedger | null;
+  classReviewStore?: import('../monitoring/ClassReviewStore.js').ClassReviewStore | null;
+  correctionClassReview?: import('../monitoring/CorrectionClassReview.js').CorrectionClassReview | null;
+  completionClaimVerifier?: import('../monitoring/CompletionClaimVerifier.js').CompletionClaimVerifier | null;
   /** BlockerLedger — the resolution-workflow + memory layer completing Principle 1.
    *  Null/absent when monitoring.blockerLedger.enabled is false (default, ships dark)
    *  → /blockers/* 503s. Powers GET /blockers, GET /blockers/:id, POST /blockers,
@@ -1167,9 +1223,14 @@ export interface RouteContext {
    *  instance-as-project registry, the retro-gate (pending→active) and the
    *  doc-as-required-artifact gate (active→complete). */
   apprenticeshipProgram?: import('../core/ApprenticeshipProgram.js').ApprenticeshipProgram | null;
+  /** Stall-coverage matrix acceptance machinery (framework-stall-coverage-matrix
+   *  §2.2). Null when the program is unavailable → matrix-acceptance routes 503. */
+  apprenticeshipMatrixAcceptance?: import('../core/ApprenticeshipMatrixAcceptance.js').MatrixAcceptanceStore | null;
   /** Apprenticeship differential-cycle store. Null when SQLite/state init fails
    *  → /apprenticeship/cycles* 503s. */
   apprenticeshipCycleStore?: import('../monitoring/ApprenticeshipCycleStore.js').ApprenticeshipCycleStore | null;
+  /** Read-only same-host peer aggregation for apprenticeship cycle evidence. */
+  apprenticeshipPeerCycleReader?: ((instanceId: string) => Promise<import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead>) | null;
   /** Observe-only overdue-cycle SLA monitor. Null when disabled/unavailable. */
   apprenticeshipCycleSlaMonitor?: import('../monitoring/ApprenticeshipCycleSlaMonitor.js').ApprenticeshipCycleSlaMonitor | null;
   /** Observe-only Gemini long-capacity-block escalation monitor. Null when disabled.
@@ -1189,6 +1250,8 @@ export interface RouteContext {
   autonomousLivenessReconciler?:
     | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
     | null;
+  /** AutonomousThroughputFloor status. Null while fleet-dark. */
+  autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
    *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
   enforcedTerminationStatus?: (() => unknown) | null;
@@ -1232,11 +1295,20 @@ export interface RouteContext {
   /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind
    *  GET /pool + the Machines dashboard tab. Null/absent when not wired (ships dark). */
   machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null;
+  /** Mutual SSH-subsystem pool health (scrubbed; no key bodies or raw addresses). */
+  mutualSshHealth?: (() => unknown) | null;
   /** Durable Inbound Message Queue engine getter — late-bound (the engine is
    *  constructed in the mesh block after the server). Null/absent or a null
    *  return = the queue is dark/gated; GET /pool/queue answers 503. */
   getInboundQueue?: (() => import('../core/QueueDrainLoop.js').QueueDrainLoop | null) | null;
   getMachineCoherence?: (() => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null) | null;
+  getSingleMachineFailoverGap?: (() => import('../monitoring/SingleMachineFailoverGapDetector.js').SingleMachineFailoverGapDetector | null) | null;
+  getMissingLoginSession?: (() => import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionDetector | null) | null;
+  /** SessionPoolFailoverRunner status getter (§Rollout, Track H) — GET
+   *  /session-pool/failover-runner. Null/absent (dev-gated dark) → the route 503s. */
+  getSessionPoolFailoverRunner?: (() => import('../core/sessionPoolFailoverRunnerConfig.js').SessionPoolFailoverRunnerStatus | null) | null;
+  /** Promotion activation; absent/off makes POST /session-pool/promote return 503. */
+  sessionPoolPromotionActivation?: import('../core/sessionPoolPromotionActivation.js').SessionPoolPromotionActivation | null;
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
@@ -1360,7 +1432,12 @@ export interface RouteContext {
    *  current owner — local or remote — to DRAIN its live session for a
    *  transfer (finish the turn bounded, close, land the target's claim).
    *  Null/absent → the transfer route uses today's pin-and-release path. */
-  sendDrain?: ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }>) | null;
+  sendDrain?: ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean; claimLanded?: boolean }>) | null;
+  /** WS1.4 cross-machine consent preflight: ask the current owner whether this
+   *  topic has a live autonomous run before the holder authorizes a move. */
+  autonomousRunOnMachine?: ((machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>) | null;
+  /** Working-set acquire kick for an explicit transfer target. */
+  kickWorkingSetOnMachine?: ((machineId: string, topic: number) => void) | null;
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
   resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
@@ -1443,6 +1520,38 @@ export interface RouteContext {
   } | null;
   startTime: Date;
 }
+
+export type SubscriptionPoolWriteCapability =
+  | 'requiresEmailReconciliation'
+  | 'readOnlyOrNonIdentity';
+
+/**
+ * Default-deny inventory for every mutating /subscription-pool route.
+ * The companion ratchet compares this registry to the real Express surface:
+ * a new write cannot silently bypass boot identity reconciliation.
+ */
+export const SUBSCRIPTION_POOL_WRITE_CAPABILITIES: Readonly<Record<string, SubscriptionPoolWriteCapability>> =
+  Object.freeze({
+    'POST /subscription-pool': 'requiresEmailReconciliation',
+    'POST /subscription-pool/:id/repair-email': 'requiresEmailReconciliation',
+    'POST /subscription-pool/enroll': 'requiresEmailReconciliation',
+    'POST /subscription-pool/enroll/:id/complete': 'requiresEmailReconciliation',
+    'POST /subscription-pool/follow-me/enroll/:id/complete': 'requiresEmailReconciliation',
+    'POST /subscription-pool/follow-me/enroll/start': 'requiresEmailReconciliation',
+    'POST /subscription-pool/matrix/start-cell': 'requiresEmailReconciliation',
+    'DELETE /subscription-pool/:id': 'readOnlyOrNonIdentity',
+    'PATCH /subscription-pool/:id': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/enroll/:id/cancel': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/enroll/reissue-expired': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/cancel': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/enroll/:id/cancel': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/enroll/:id/submit-code': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/scan': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/submit-code': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/poll': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/proactive-swap/check': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/swap': 'readOnlyOrNonIdentity',
+  });
 
 // Validation patterns for route parameters
 const SESSION_NAME_RE = /^[a-zA-Z0-9_-]{1,200}$/;
@@ -1733,21 +1842,85 @@ function pickDecisionQualityPointFields(row: Record<string, unknown>): Record<st
 }
 
 /**
- * Alive ACT ids (registered AND non-terminal) from the runtime evolution queue
- * — the agent-side half of the §5.6 pending-ref-dead check. null when the queue
- * file is absent/unreadable (⇒ the check is skipped honestly rather than
- * false-flagging every pending ref on an agent that has no queue yet).
+ * Alive ACT ids (registered AND non-terminal) from the runtime evolution queue,
+ * plus the queue's id HIGH-WATER MARK — the agent-side half of the §5.6
+ * pending-ref-dead check. null when the queue file is absent/unreadable (⇒ the
+ * check is skipped honestly rather than false-flagging every pending ref on an
+ * agent that has no queue yet).
+ *
+ * WHY the high-water mark (2026-07-23 false-alarm fix): PROVENANCE_COVERAGE
+ * declares its `pending:ACT-NNNN` tracker ids as SHIPPED SOURCE CONSTANTS —
+ * identical on every install — while the evolution action queue is MACHINE-LOCAL
+ * and unreplicated (the evolutionActions stateSync send side is wired but the
+ * journal-apply side is an unbuilt later rollout stage, so two machines' queues
+ * genuinely diverge and never converge). Measured 2026-07-23: `ACT-1193` is
+ * `pending` on one machine (max id ACT-1211) and simply ABSENT on its peer (max
+ * id ACT-1119) — which made that peer report all 49 pending coverage entries as
+ * dangling trackers. Nothing had been deleted; the peer had never minted an id
+ * that high.
+ *
+ * An id ABOVE the local high-water mark is therefore proof the action was minted
+ * on another machine, NOT proof it was deleted here — a categorically different
+ * (and unactionable-locally) state that must not be reported as a dead tracker.
  */
-function readLiveEvolutionActs(stateDir: string): Set<string> | null {
+export interface LiveEvolutionActs {
+  /** Registered AND non-terminal ids on THIS machine. */
+  readonly alive: ReadonlySet<string>;
+  /** Largest numeric ACT id this machine's queue has ever minted (0 = empty queue). */
+  readonly highWater: number;
+}
+
+/** Numeric suffix of an `ACT-NNNN` id; null when it does not parse. */
+export function parseActOrdinal(id: string): number | null {
+  const m = /^ACT-(\d+)$/.exec(id.trim());
+  if (!m) return null;
+  const n = Number.parseInt(m[1], 10);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * Adjudicate ONE pending coverage tracker against this machine's action queue
+ * (§5.6). Pure + exported so the decision boundary is unit-testable without the
+ * Express surface.
+ *
+ * - `alive`        — registered and non-terminal here; nothing to report.
+ * - `unverifiable` — above this machine's id high-water mark ⇒ minted on a peer
+ *                    whose queue does not replicate here. NOT a deletion.
+ * - `dead`         — within the range this machine has minted, yet absent or
+ *                    terminal ⇒ the tracker genuinely went away. This is the
+ *                    signal the check exists to give, and it is preserved.
+ *
+ * An id that does not parse keeps the strict `dead` reading so a malformed
+ * tracker still surfaces rather than hiding in the unverifiable bucket.
+ */
+export type PendingTrackerVerdict = 'alive' | 'dead' | 'unverifiable';
+
+export function adjudicatePendingTracker(
+  act: string,
+  liveActs: LiveEvolutionActs,
+): PendingTrackerVerdict {
+  if (liveActs.alive.has(act)) return 'alive';
+  const ord = parseActOrdinal(act);
+  if (ord !== null && ord > liveActs.highWater) return 'unverifiable';
+  return 'dead';
+}
+
+function readLiveEvolutionActs(stateDir: string): LiveEvolutionActs | null {
   try {
     const p = path.join(stateDir, 'state', 'evolution', 'action-queue.json');
     if (!fs.existsSync(p)) return null;
     const aq = JSON.parse(fs.readFileSync(p, 'utf-8')) as { actions?: Array<{ id?: string; status?: string }> };
     const alive = new Set<string>();
+    let highWater = 0;
     for (const a of aq.actions ?? []) {
-      if (a.id && (a.status === 'pending' || a.status === 'in_progress')) alive.add(a.id);
+      if (!a.id) continue;
+      // High-water spans EVERY id the queue holds, terminal ones included — a
+      // completed/cancelled action still proves this machine minted that far.
+      const ord = parseActOrdinal(a.id);
+      if (ord !== null && ord > highWater) highWater = ord;
+      if (a.status === 'pending' || a.status === 'in_progress') alive.add(a.id);
     }
-    return alive;
+    return { alive, highWater };
   } catch {
     // @silent-fallback-ok: an unreadable queue ⇒ skip pending-ref-dead (never a
     // false "dead" flag); observe-only surface, never a throw.
@@ -1956,6 +2129,14 @@ export function createRoutes(ctx: RouteContext): Router {
       // forgetting to opt in. Also gated by the global failClosedOnExhaustion
       // kill-switch (false reverts every path to fail-open without a deploy).
       failClosedOnBudgetTimeout?: boolean;
+      /**
+       * The FULL rule id the sender explicitly acknowledges (advisory-rule
+       * override, operator directive 2026-07-18). When it matches a cited
+       * ADVISORY rule, the message is delivered unchanged and the override is
+       * RECORDED (decision log + acked-advisory audit) — a signal for the
+       * decision-quality meter, never authority. Never overrides a blocking rule.
+       */
+      toneAdvisoryAck?: string;
     },
   ): Promise<OutboundEvaluation> {
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
@@ -2309,6 +2490,40 @@ export function createRoutes(ctx: RouteContext): Router {
       });
 
       if (!result.pass) {
+        // ── Advisory disposition (operator directive 2026-07-18, topic 29723) ──
+        // An advisory-rule citation is a NUDGE, never a terminal block: the
+        // message is returned to the AGENT (not sent, not dropped) with the
+        // pitfall named, and the agent holds the ultimate decision — revise, or
+        // resend unchanged with metadata.toneAdvisoryAck = "<rule>" to
+        // acknowledge; the override is RECORDED (a decision-quality signal,
+        // never authority). A blocking rule can NEVER be overridden this way.
+        if (result.advisory === true) {
+          if (options.toneAdvisoryAck === result.rule) {
+            const overridden = { ...result, advisoryOverridden: true };
+            logToneGateDecision({
+              text,
+              channel,
+              topicId: options.topicId,
+              signals,
+              result: overridden,
+            });
+            return { ok: true };
+          }
+          return {
+            ok: false,
+            status: 422,
+            reason: 'tone-gate-advisory',
+            body: {
+              error: 'tone-gate-advisory',
+              notSent: true,
+              rule: result.rule,
+              issue: result.issue,
+              suggestion: result.suggestion,
+              howToProceed: `ADVISORY — the message was NOT sent, and the decision is yours: revise and re-send, or re-send unchanged with metadata.toneAdvisoryAck set to "${result.rule}" to acknowledge and deliver (the override is recorded).`,
+              latencyMs: result.latencyMs,
+            },
+          };
+        }
         return {
           ok: false,
           status: 422,
@@ -2345,6 +2560,7 @@ export function createRoutes(ctx: RouteContext): Router {
       allowLocalhostLink?: boolean;
       messageKind?: MessageKind;
       failClosedOnBudgetTimeout?: boolean;
+      toneAdvisoryAck?: string;
     },
   ): Promise<boolean> {
     // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
@@ -2408,7 +2624,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       await ctx.telegram.sendToTopic(updatesTopicId, text);
       return { ok: true };
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — structured failure is returned to the caller
       return { ok: false, reason: err instanceof Error ? err.message : 'send-error' };
     }
   }
@@ -3250,7 +3466,18 @@ export function createRoutes(ctx: RouteContext): Router {
         });
       }
     } catch { /* Layer 2 is a belt — never let it break the hot path */ }
-    res.json(state);
+    res.json({
+      ...state,
+      breaker: ctx.unjustifiedStopGate?.breakerState() ?? null,
+    });
+  });
+
+  router.post('/internal/stop-gate/reset-breaker', (_req, res) => {
+    if (!ctx.unjustifiedStopGate) {
+      res.status(503).json({ error: 'Stop-gate authority is not initialized' });
+      return;
+    }
+    res.json({ reset: true, breaker: ctx.unjustifiedStopGate.resetBreaker() });
   });
 
   router.get('/internal/stop-gate/kill-switch', (_req, res) => {
@@ -4984,12 +5211,93 @@ export function createRoutes(ctx: RouteContext): Router {
     recordMetric: (o) => scopeAccretionMetric(o, 'ratification'),
     log: (m) => console.warn(m),
   });
+  // ── Stall-coverage matrix acceptance helpers (framework-stall-coverage-matrix §2.2) ──
+  // The CURRENT matrix state for an instance: on a fleet (no-source) install
+  // the degraded verdict hash; else the whole-matrix content hash + the parsed
+  // rows keyed by rowId. Used at mint AND re-run at bind time for every scope
+  // (accept-then-edit voids the challenge).
+  type MatrixRowLike = Parameters<typeof canonicalRowHash>[0];
+  const resolveMatrixState = (
+    instanceId: string,
+    framework: string,
+  ):
+    | { kind: 'degraded'; contentHash: string }
+    | { kind: 'source'; contentHash: string; rowsById: Map<string, MatrixRowLike> }
+    | null => {
+    try {
+      const logPath = path.join(ctx.config.stateDir, 'logs', 'apprenticeship-decisions.jsonl');
+      const prov = readInstallProvenance(logPath);
+      if (prov.ok && prov.installClass === 'fleet') {
+        return { kind: 'degraded', contentHash: degradedAcceptanceHash(instanceId, framework) };
+      }
+      const out = runStallGateValidation({
+        repoRoot: ctx.config.projectDir,
+        framework,
+        nowIso: new Date().toISOString(),
+      });
+      if (out.fileMissing || !out.result) return null;
+      const rowsById = new Map<string, MatrixRowLike>();
+      for (const r of out.rawRows ?? []) {
+        if (typeof r.class === 'string') rowsById.set(`${framework}:${r.class}`, r);
+      }
+      return { kind: 'source', contentHash: out.result.contentHash, rowsById };
+    } catch {
+      // @silent-fallback-ok — null = "nothing enumerable"; the routes answer an
+      // explicit 409 / hash-mismatch refusal on it, never a silent success.
+      return null;
+    }
+  };
+  const ROW_ID_RE = /^[a-z0-9-]+:[a-z0-9-]+$/;
+  const RULE_RE = /^[a-z0-9-]{1,64}$/;
+  /** The CURRENT content hash for a challenge's SCOPE (Decision 20 binding
+   *  granularity) — recomputed at bind time so accept-then-edit voids. */
+  const resolveChallengeCurrentHash = (challenge: {
+    instanceId: string; framework: string; scope: string; rowIds: string[];
+  }): string | null => {
+    const state = resolveMatrixState(challenge.instanceId, challenge.framework);
+    if (!state) return null;
+    if (challenge.scope === 'degraded') return state.kind === 'degraded' ? state.contentHash : null;
+    if (state.kind !== 'source') return null;
+    if (challenge.scope === 'whole-set') return state.contentHash;
+    if (challenge.scope === 'rows') {
+      const entries: Array<{ rowId: string; row: MatrixRowLike }> = [];
+      for (const id of challenge.rowIds) {
+        const row = state.rowsById.get(id);
+        if (!row) return null;
+        entries.push({ rowId: id, row });
+      }
+      return canonicalRowSetHash(entries);
+    }
+    if (challenge.scope === 'override') {
+      const row = challenge.rowIds.length === 1 ? state.rowsById.get(challenge.rowIds[0]) : undefined;
+      return row ? canonicalRowHash(row) : null;
+    }
+    return null;
+  };
+  // Conversational bind (mirrors the ratifier's reply-anchor mechanic): a
+  // verified-operator reply onto a recorded enumeration message binds the
+  // challenge. Signal-only — fire-and-forget on both ingress paths.
+  const observeMatrixAcceptanceInbound = (evt: {
+    topicId: number; text: string; senderUid: string; messageId: number; replyToMessageId?: number;
+  }): void => {
+    const store = ctx.apprenticeshipMatrixAcceptance;
+    if (!store) return;
+    void store.observeInbound(evt, {
+      getOperatorUid: (topicId: number) => ctx.topicOperatorStore?.getOperator(topicId)?.uid ?? null,
+      resolveCurrentContentHash: (challenge) => resolveChallengeCurrentHash(challenge),
+      ack: async (topicId: number, text: string) => {
+        if (ctx.telegram) await ctx.telegram.sendToTopic(topicId, text);
+      },
+    });
+  };
+
   if (ctx.telegram) {
     // Direct-poll ingress (the server long-polls Telegram itself, R45). The
-    // lifeline-forward ingress fires the same observer inside
+    // lifeline-forward ingress fires the same observers inside
     // POST /internal/telegram-forward below.
     ctx.telegram.onScopeAccretionInbound = (evt) => {
       void scopeAccretionRatifier.observeInbound(evt);
+      observeMatrixAcceptanceInbound(evt);
     };
   }
 
@@ -5073,6 +5381,96 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(409).json({ ok: false, error: 'runId mismatch', currentRunId: rec.runId });
       return;
     }
+    const rawRealcheck = body.realcheck;
+    const rawRealcheckRow = rawRealcheck && typeof rawRealcheck === 'object'
+      ? rawRealcheck as Record<string, unknown>
+      : null;
+    const realcheckPayloadValid = rawRealcheckRow?.configured === false || (
+      rawRealcheckRow?.configured === true && (rawRealcheckRow.outcome === 'pass' || rawRealcheckRow.outcome === 'fail')
+    );
+    const realcheck = rawRealcheckRow?.configured === true && realcheckPayloadValid
+      ? {
+          configured: true as const,
+          outcome: rawRealcheckRow.outcome as 'pass' | 'fail',
+          ...(typeof rawRealcheckRow.exitCode === 'number' && Number.isFinite(rawRealcheckRow.exitCode)
+            ? { exitCode: Math.max(-1, Math.min(255, Math.trunc(rawRealcheckRow.exitCode))) }
+            : {}),
+        }
+      : { configured: false as const };
+    const terminal = body.terminal !== false;
+    const correlationId = rec.lastCompletionCorrelationId;
+    const priorObservation = correlationId ? rec.realcheckOutcomeByCorrelation?.[correlationId] : undefined;
+    let realcheckAnnotation = 'skipped-unconfigured';
+    if (body.met !== true) {
+      realcheckAnnotation = 'skipped-not-met';
+    } else if (realcheck.configured && priorObservation && priorObservation.outcome !== realcheck.outcome) {
+      realcheckAnnotation = 'conflicting-observation';
+    } else if (realcheck.configured && priorObservation?.applied) {
+      realcheckAnnotation = 'duplicate-observation';
+    } else if (rec.status !== 'active' && !(realcheck.configured && priorObservation && !priorObservation.applied)) {
+      realcheckAnnotation = 'skipped-terminal-record';
+    } else {
+      const observedAtMs = Date.parse(rec.lastCompletionCorrelationAt ?? '');
+      const stableObservedAtMs = Number.isFinite(observedAtMs) ? observedAtMs : Date.parse(rec.registeredAt);
+      let reservationReady = !realcheck.configured || !correlationId || priorObservation !== undefined;
+      if (!reservationReady && realcheck.configured && correlationId) {
+        try {
+          const reserved = autonomousRunStore.update(rec.topicId, rec.runId, (current) => {
+            current.realcheckOutcomeByCorrelation ??= {};
+            current.realcheckOutcomeByCorrelation[correlationId] ??= {
+              outcome: realcheck.outcome,
+              observedAtMs: stableObservedAtMs,
+              applied: false,
+            };
+          });
+          if (!reserved) throw new Error('run-record-missing');
+          reservationReady = true;
+        } catch {
+          realcheckAnnotation = 'observation-persist-error';
+        }
+      }
+      if (reservationReady) {
+        realcheckAnnotation = annotateCompletionRealcheck(
+          rec,
+          { met: body.met === true, realcheck },
+          (annotation) => {
+            const applied = annotateDecisionOutcome({
+              correlationId: annotation.correlationId,
+              ruleId: annotation.ruleId,
+              gradedBy: { component: annotation.gradedBy.component },
+              grade: annotation.grade,
+              decisionPoint: DP_COMPLETION_EVALUATE,
+              evidence: annotation.evidence,
+            });
+            if (!applied.applied) throw new Error(applied.rejected ?? (applied.disabled ? 'disabled' : 'not-applied'));
+          },
+          stableObservedAtMs,
+        );
+        if ((realcheckAnnotation === 'annotated-right' || realcheckAnnotation === 'annotated-wrong') && correlationId && realcheck.configured) {
+          try {
+            const marked = autonomousRunStore.update(rec.topicId, rec.runId, (current) => {
+              const receipt = current.realcheckOutcomeByCorrelation?.[correlationId];
+              if (receipt?.outcome === realcheck.outcome) receipt.applied = true;
+            });
+            if (!marked) throw new Error('run-record-missing');
+          } catch {
+            // The pre-annotation reservation still blocks opposite replay. A
+            // same-outcome replay safely retries the idempotent annotation.
+            realcheckAnnotation = 'annotation-applied-receipt-pending';
+          }
+        }
+      }
+    }
+    if (!terminal) {
+      res.json({
+        ok: true,
+        runId: rec.runId,
+        terminal: false,
+        realcheckAnnotation,
+        ...(rawRealcheck !== undefined && !realcheckPayloadValid ? { realcheckPayloadInvalid: true } : {}),
+      });
+      return;
+    }
     let unbuiltEnumerated = 0;
     if (scopeAccretionEffective(rec)) {
       try {
@@ -5088,7 +5486,14 @@ export function createRoutes(ctx: RouteContext): Router {
       }
     }
     autonomousRunStore.markTerminal(rec.topicId, rec.runId, 'ended', reason);
-    res.json({ ok: true, runId: rec.runId, unbuiltEnumerated });
+    res.json({
+      ok: true,
+      runId: rec.runId,
+      terminal: true,
+      unbuiltEnumerated,
+      realcheckAnnotation,
+      ...(rawRealcheck !== undefined && !realcheckPayloadValid ? { realcheckPayloadInvalid: true } : {}),
+    });
   });
 
   // ── POST /autonomous/:topic/ratify-deferral (R23 path 1 — PIN, phone-first) ──
@@ -5159,6 +5564,103 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ sessions: listAutonomousJobs(ctx.config.stateDir) });
   });
 
+  // Ordinary Codex task-ledger continuation. This is deliberately separate
+  // from autonomous registration/completion semantics, but shares the trusted
+  // Stop-hook execution primitive.
+  const continuationStore = () => new CodexTaskContinuationStore(
+    ctx.config.stateDir,
+    ctx.liveConfig?.get(
+      'autonomousSessions.codexTaskContinuation',
+      ctx.config.autonomousSessions?.codexTaskContinuation,
+    ) ?? ctx.config.autonomousSessions?.codexTaskContinuation,
+  );
+
+  router.get('/continuation/:topic/status', (req, res) => {
+    const store = continuationStore();
+    const ledger = store.read(req.params.topic);
+    const startedAtMs = ledger ? Date.parse(ledger.startedAt) : Number.NaN;
+    const expiresAtMs = ledger && Number.isFinite(startedAtMs)
+      ? startedAtMs + ledger.durationSeconds * 1000
+      : Number.NaN;
+    res.json({
+      enabled: store.enabled,
+      active: ledger?.active === true,
+      topicId: req.params.topic,
+      continuationCount: ledger?.continuationCount ?? 0,
+      maxContinuations: ledger?.maxContinuations ?? null,
+      startedAt: ledger?.startedAt ?? null,
+      expiresAt: Number.isFinite(expiresAtMs) ? new Date(expiresAtMs).toISOString() : null,
+      taskCount: ledger ? parseContinuationTasks(ledger.body).length : 0,
+      openTaskCount: ledger ? parseContinuationTasks(ledger.body).filter((t) => t.open).length : 0,
+    });
+  });
+
+  router.post('/continuation/:topic/renew', (req, res) => {
+    if (refuseInadmissibleWrite(req, res, { topicId: req.params.topic })) return;
+    try {
+      const body = req.body as Record<string, unknown>;
+      const ledger = continuationStore().renew(req.params.topic, {
+        sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+        durationSeconds: typeof body.durationSeconds === 'number' ? body.durationSeconds : undefined,
+        maxContinuations: typeof body.maxContinuations === 'number' ? body.maxContinuations : undefined,
+      });
+      res.status(201).json({ ok: true, topicId: ledger.topicId, generation: ledger.generationId });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'invalid-request';
+      res.status(reason === 'continuation-disabled' ? 503 : 400).json({ ok: false, error: reason });
+    }
+  });
+
+  router.post('/continuation/start', (req, res) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      if (refuseInadmissibleWrite(req, res, { topicId: String(body.topicId ?? '') })) return;
+      const ledger = continuationStore().start({
+        topicId: String(body.topicId ?? ''),
+        sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+        tasks: Array.isArray(body.tasks) ? body.tasks.map(String) : [],
+        durationSeconds: typeof body.durationSeconds === 'number' ? body.durationSeconds : undefined,
+        maxContinuations: typeof body.maxContinuations === 'number' ? body.maxContinuations : undefined,
+      });
+      res.status(201).json({ ok: true, topicId: ledger.topicId, generation: ledger.generationId });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'invalid-request';
+      res.status(reason === 'continuation-disabled' ? 503 : 400).json({ ok: false, error: reason });
+    }
+  });
+
+  router.post('/continuation/:topic/complete', (req, res) => {
+    if (refuseInadmissibleWrite(req, res, { topicId: req.params.topic })) return;
+    try {
+      const ordinal = Number((req.body as Record<string, unknown>)?.ordinal);
+      const ledger = continuationStore().complete(req.params.topic, ordinal);
+      res.json({ ok: true, continuationCount: ledger.continuationCount });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'invalid-request' });
+    }
+  });
+
+  router.post('/continuation/:topic/stop', (req, res) => {
+    if (refuseInadmissibleWrite(req, res, { topicId: req.params.topic })) return;
+    const stopped = continuationStore().stop(req.params.topic);
+    try { ctx.operatorStopRecorder?.(Number(req.params.topic)); } catch { /* stop remains authoritative */ }
+    res.json({ ok: true, stopped });
+  });
+
+  router.post('/continuation/stop-all', (req, res) => {
+    if (refuseInadmissibleWrite(req, res)) return;
+    const stopped = continuationStore().stopAll();
+    try { ctx.operatorStopRecorder?.(null); } catch { /* stop remains authoritative */ }
+    res.json({ ok: true, stopped });
+  });
+
+  router.post('/continuation/decide', (req, res) => {
+    const body = req.body as Record<string, unknown>;
+    if (refuseInadmissibleWrite(req, res, { topicId: String(body.topicId ?? '') })) return;
+    const decision = continuationStore().decide(String(body.topicId ?? ''), String(body.sessionId ?? ''));
+    res.json(decision);
+  });
+
   // Level-triggered liveness reconciler status (spec: autonomous-liveness-reconciler.md).
   // 503 when dark/disabled (dev-gate resolves enablement); else the content-free
   // status (topic ids + counters + conditions — no topic content/paths/secrets).
@@ -5168,6 +5670,13 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.autonomousLivenessReconciler.status());
+  });
+  router.get('/autonomous/throughput-floor', (_req, res) => {
+    if (!ctx.autonomousThroughputFloor) {
+      res.status(503).json({ error: 'autonomous-throughput-floor not available on this agent' });
+      return;
+    }
+    res.json(ctx.autonomousThroughputFloor.status());
   });
 
   // ── Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §6) ──
@@ -7999,7 +8508,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // Default: 10 spawns per 60 seconds, which is generous for normal use.
   const spawnLimiter = rateLimiter(60_000, 10);
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug, framework } = req.body;
+    const { name, prompt, model, jobSlug, framework, ultracode } = req.body;
 
     if (!name || !prompt) {
       res.status(400).json({ error: '"name" and "prompt" are required' });
@@ -8057,9 +8566,24 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"jobSlug" must contain only letters, numbers, hyphens, underscores' });
       return;
     }
+    if (ultracode !== undefined && typeof ultracode !== 'boolean') {
+      res.status(400).json({ error: '"ultracode" must be a boolean' });
+      return;
+    }
+    // Match SessionManager's omitted-framework resolution. A Codex-default
+    // agent must not pass this guard merely because the request omitted the
+    // explicit framework and then receive a cosmetic keyword on a Codex turn.
+    const effectiveSpawnFramework = framework
+      ?? ctx.config.sessions?.framework
+      ?? ctx.config.enabledFrameworks?.[0]
+      ?? 'claude-code';
+    if (ultracode === true && effectiveSpawnFramework !== 'claude-code') {
+      res.status(400).json({ error: '"ultracode" is supported only for framework "claude-code"' });
+      return;
+    }
 
     try {
-      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug, framework });
+      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug, framework, ultracode });
       res.status(201).json(session);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -8583,7 +9107,9 @@ export function createRoutes(ctx: RouteContext): Router {
           ),
         }
       : summary.totals;
-    res.json({ ...summary, totals, features });
+    const classReview = ctx.classReviewStore?.health() ?? null;
+    const claimVerificationServerAdmittedOnly = ctx.completionClaimVerifier?.stats?.() ?? null;
+    res.json({ ...summary, totals, features, classReview, claimVerificationServerAdmittedOnly });
   });
 
   // ── GrowthMilestoneAnalyst (the proactive growth & milestone analyst) ──────
@@ -10192,6 +10718,219 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       metrics: result.metrics,
       stats,
     });
+  });
+
+  router.get('/feedback-factory/drain/status', (_req, res) => {
+    if (!ctx.feedbackDrain) {
+      res.status(503).json({ error: 'feedback-factory drain unavailable', posture: ctx.feedbackDrainPosture ?? { state: 'unavailable', reason: 'initialization-failure' } });
+      return;
+    }
+    const authority = ctx.feedbackDrain.store.getAuthority('feedback-readiness-default');
+    res.json({
+      posture: ctx.feedbackDrainPosture ?? { state: 'live', reason: 'live-healthy' },
+      restorePending: ctx.feedbackDrain.isRestorePending(),
+      ...ctx.feedbackDrain.service.stats(),
+      authority: authority ? {
+        authorityId: authority.authorityId,
+        agentId: authority.agentId,
+        ownerEpoch: authority.ownerEpoch,
+        engineClass: 'registered-frontier-model',
+        generation: authority.generation,
+        revoked: authority.revoked,
+        mode: ctx.feedbackDrain.store.authorityPosture(authority.authorityId, authority.generation).mode,
+      } : null,
+      consumerPromotion: (() => {
+        const promotion = ctx.feedbackDrain!.promotion.read();
+        return promotion ? { live: ctx.feedbackDrain!.promotion.isLive(), approvedBatchBound: promotion.approvedBatchBound, approvedAt: promotion.approvedAt, revoked: promotion.revokedAt !== null } : null;
+      })(),
+    });
+  });
+
+  const feedbackRestorePendingGate = (res: import('express').Response): boolean => {
+    if (!ctx.feedbackDrain?.isRestorePending()) return false;
+    res.status(409).json({ error: 'feedback drain restore finalization is pending' });
+    return true;
+  };
+
+  router.post('/feedback-factory/drain/tick', (req, res) => {
+    void (async () => {
+      if (!ctx.feedbackDrain) {
+        res.status(503).json({ error: 'feedback-factory drain unavailable (dark or initialization failed)' });
+        return;
+      }
+      if (feedbackRestorePendingGate(res)) return;
+      if (req.headers['x-instar-request'] !== '1') {
+        res.status(403).json({ error: 'X-Instar-Request: 1 required' });
+        return;
+      }
+      const proxyEnvelope = req.body?.proxyEnvelope as import('../feedback-factory/drain/FeedbackDrainTickProxy.js').DrainTickProxyEnvelope | undefined;
+      if (proxyEnvelope) {
+        const result = await ctx.feedbackDrain.tickProxy.receive(proxyEnvelope);
+        res.status(result.status).json(result.body);
+        return;
+      }
+      const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+      const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+      const result = await ctx.feedbackDrain.tickProxy.request({ agentId, nonce });
+      res.status(result.status).json(result.body);
+    })();
+  });
+
+  router.post('/feedback-factory/drain/runs/:runId/cancel', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    try {
+      ctx.feedbackDrain.service.requestRunCancellation(String(req.params.runId));
+      res.json({ runId: String(req.params.runId), cancellationRequested: true });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'run cancellation failed' });
+    }
+  });
+
+  router.get('/feedback-factory/backlog/analysis', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    // This authenticated analysis admits a durable replay nonce, so it is a
+    // mutation for restore-pending purposes even though its response is read-only.
+    if (feedbackRestorePendingGate(res)) return;
+    const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+    const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+    if (!ctx.feedbackDrain.service.canAgentMutateReadiness(agentId) || !/^[A-Za-z0-9._:-]{16,128}$/.test(nonce)) {
+      res.status(403).json({ error: 'current registered readiness agent and bounded nonce required' }); return;
+    }
+    if (!ctx.feedbackDrain.store.admitRequestNonce(agentId, nonce)) { res.status(409).json({ error: 'request nonce replayed' }); return; }
+    const limit = Number(req.query.limit ?? 50);
+    res.json(ctx.feedbackDrain.service.analyzeHistoricalBacklog(Number.isFinite(limit) ? limit : 50));
+  });
+
+  const feedbackMutationIntentValid = (req: import('express').Request, res: import('express').Response): boolean => {
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return false;
+    }
+    const origin = req.get('origin');
+    if (origin) {
+      try {
+        const parsed = new URL(origin);
+        if (!['http:', 'https:'].includes(parsed.protocol) || parsed.host !== req.get('host')) {
+          res.status(403).json({ error: 'same-origin mutation required' }); return false;
+        }
+      } catch { res.status(403).json({ error: 'same-origin mutation required' }); return false; }
+    }
+    return checkMandatePin(req, res);
+  };
+
+  router.post('/feedback-factory/drain/failover/finalize', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const result = ctx.feedbackDrain.finalizeFailoverRestore({
+        restoredOwnerAuthorityEpoch: Number(req.body?.restoredOwnerAuthorityEpoch),
+        operatorDecisionRef: String(req.body?.operatorDecisionRef ?? ''),
+        snapshotId: String(req.body?.snapshotId ?? ''), manifestChecksum: String(req.body?.manifestChecksum ?? ''),
+        oldOwnerQuiesced: req.body?.oldOwnerQuiesced === true,
+        splitBrainRecoveryPacket: req.body?.splitBrainRecoveryPacket,
+      });
+      res.json({ finalized: true, ...result });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'failover restore finalization failed' });
+    }
+  });
+
+  // Operator-rooted authority mutation. Runtime agents/models cannot call this
+  // with Bearer alone, so “registered” is a real security boundary.
+  router.post('/feedback-factory/readiness-authorities', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const body = req.body ?? {};
+      const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
+      if (!['create', 'replace', 'revoke', 'restore'].includes(action)) throw new Error('invalid authority action');
+      const existing = ctx.feedbackDrain.store.getAuthority(String(body.authorityId ?? 'feedback-readiness-default'));
+      const source = (action === 'revoke' || action === 'restore') && existing ? existing : body;
+      const record = ctx.feedbackDrain.store.mutateAuthority({
+        action,
+        operatorDecisionRef: String(body.operatorDecisionRef ?? ''),
+        authorityId: String(source.authorityId ?? 'feedback-readiness-default'),
+        agentId: String(source.agentId ?? ''), ownerMachineId: String(source.ownerMachineId ?? ''),
+        ownerEpoch: Number(source.ownerEpoch), provider: String(source.provider ?? ''),
+        modelFamily: String(source.modelFamily ?? ''), promptVersion: String(source.promptVersion ?? ''),
+        schemaVersion: String(source.schemaVersion ?? ''), decisionPointId: String(source.decisionPointId ?? ''),
+        maxBatch: Number(source.maxBatch), maxTokens: Number(source.maxTokens), maxDailySpendUsd: Number(source.maxDailySpendUsd),
+      });
+      res.json({ authorityId: record.authorityId, generation: record.generation, revoked: record.revoked });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'authority mutation failed' });
+    }
+  });
+
+  router.post('/feedback-factory/readiness/hold', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const clusterId = String(req.body?.clusterId ?? '');
+      const reason = String(req.body?.reason ?? 'human-break-glass');
+      if (!clusterId || clusterId.length > 200) throw new Error('bounded clusterId required');
+      const row = ctx.feedbackDrain.store.holdReadiness(clusterId, reason);
+      res.json({ clusterId: row.clusterId, state: row.state, reasonCode: row.reasonCode });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'hold failed' }); }
+  });
+
+  router.post('/feedback-factory/readiness/release', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    const humanPath = typeof req.body?.pin === 'string';
+    if (humanPath) {
+      if (!feedbackMutationIntentValid(req, res)) return;
+    } else {
+      if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+      const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+      const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+      if (!ctx.feedbackDrain.service.canAgentMutateReadiness(agentId) || !/^[A-Za-z0-9._:-]{16,128}$/.test(nonce)) {
+        res.status(403).json({ error: 'current registered readiness agent and bounded nonce required' }); return;
+      }
+      if (!ctx.feedbackDrain.store.admitRequestNonce(agentId, nonce)) { res.status(409).json({ error: 'request nonce replayed' }); return; }
+    }
+    try {
+      const clusterId = String(req.body?.clusterId ?? '');
+      if (req.body?.predicate !== 'source-projection-authority') throw new Error('named deterministic revalidation predicate required');
+      const sourcePresent = ctx.feedbackDrain.service.sourceClusterPresent(clusterId) &&
+        ctx.feedbackDrain.store.integrityCheck() && ctx.feedbackDrain.store.verifyAuthorityAudit() &&
+        Boolean(ctx.feedbackDrain.store.getAuthority('feedback-readiness-default'));
+      const row = ctx.feedbackDrain.store.releaseHeld(clusterId, { revalidated: sourcePresent, reason: 'source-projection-authority-revalidated' });
+      res.json({ clusterId: row.clusterId, state: row.state, reasonCode: row.reasonCode });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'release failed' }); }
+  });
+
+  router.post('/feedback-factory/consumer/promote', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const record = ctx.feedbackDrain.promotion.promote({
+        approvedBatchBound: Number(req.body?.approvedBatchBound),
+        evidenceHash: String(req.body?.evidenceHash ?? ''),
+        operatorDecisionId: String(req.body?.operatorDecisionId ?? ''),
+      });
+      try { ctx.feedbackDrain.checkpointBackup('promotion'); }
+      catch (backupError) {
+        ctx.feedbackDrain.promotion.revoke();
+        throw new Error(`promotion checkpoint failed; consumer returned to simulation: ${backupError instanceof Error ? backupError.message : 'backup unavailable'}`);
+      }
+      res.json({ promoted: true, approvedBatchBound: record.approvedBatchBound, approvedAt: record.approvedAt });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'promotion failed' }); }
+  });
+
+  router.post('/feedback-factory/consumer/revoke', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const record = ctx.feedbackDrain.promotion.revoke();
+      ctx.feedbackDrain.checkpointBackup('promotion');
+      res.json({ revoked: true, revokedAt: record.revokedAt });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'revoke failed' }); }
   });
 
   // The readiness signal. Read-only.
@@ -12557,6 +13296,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const senderClass = coerceSenderClass(metadata?.senderClass);
     const advisoryAck = metadata?.advisoryAck === true;
     const advisoryCodes = coerceAdvisoryCodes(metadata?.advisoryCodes);
+    // Advisory-rule override (operator directive 2026-07-18): the FULL rule id
+    // the sender explicitly acknowledges. Length-clamped; validated against the
+    // cited rule at the seam (a mismatch or a blocking rule is never overridden).
+    const toneAdvisoryAck =
+      typeof metadata?.toneAdvisoryAck === 'string'
+        ? metadata.toneAdvisoryAck.slice(0, 64)
+        : undefined;
     const metadataJobSlug = typeof metadata?.jobSlug === 'string' ? metadata.jobSlug.slice(0, 128) : '';
 
     // ── Observability breadcrumbs (§2.1 — visibility on the named dodge
@@ -12641,6 +13387,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         allowDuplicate,
         allowLocalhostLink,
         messageKind,
+        toneAdvisoryAck,
       }))
     )
       return;
@@ -13526,7 +14273,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // ── Slack ──────────────────────────────────────────────────────
 
-  router.post('/slack/reply/:channelId', async (req, res) => {
+  const handleSlackReply = async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
     if (!ctx.slack) {
       res.status(503).json({ error: 'Slack not configured' });
       return;
@@ -13563,6 +14310,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       await checkOutboundMessage(text, 'slack', res, {
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
+        toneAdvisoryAck:
+          typeof metadata?.toneAdvisoryAck === 'string'
+            ? metadata.toneAdvisoryAck.slice(0, 64)
+            : undefined,
         // Kind threading mirrors /telegram/reply — the jargon/filePath signal
         // computation is single-sourced inside evaluateOutbound, so every
         // channel gets it uniformly (spec outbound-jargon-filepath-gap §2.2).
@@ -13639,7 +14390,56 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  };
+
+  // Spawned-session relay. Destination fields are deliberately absent: the
+  // authenticated bootstrap conversation is the only source of channel/thread
+  // authority (slack-session-reply-relay §Authority and source binding).
+  router.post('/slack/session-reply', async (req, res) => {
+    const bodyKeys = Object.keys(req.body ?? {}).sort();
+    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text')) {
+      res.status(400).json({ error: 'spawned Slack session body permits only conversationId and text' });
+      return;
+    }
+    if ('channelId' in (req.body ?? {}) || 'thread_ts' in (req.body ?? {}) || 'threadTs' in (req.body ?? {})) {
+      res.status(400).json({ error: 'caller-supplied Slack destination is forbidden' });
+      return;
+    }
+    const conversationId = Number(req.body?.conversationId);
+    if (!Number.isSafeInteger(conversationId) || conversationId >= 0) {
+      res.status(400).json({ error: 'negative conversationId required' });
+      return;
+    }
+    const bindHeader = req.headers['x-instar-bind-token'];
+    const rawToken = Array.isArray(bindHeader) ? bindHeader[0] : bindHeader;
+    const verdict = verifyConversationBind({
+      bindAuth: ctx.conversationBindAuth,
+      numericTopicId: conversationId,
+      rawToken: typeof rawToken === 'string' ? rawToken : undefined,
+      attention: ctx.telegram,
+    });
+    if (!verdict.ok) {
+      res.status(403).json({ error: 'conversation-bind-refused', detail: verdict.detail });
+      return;
+    }
+    const target = ctx.conversationRegistry?.resolve(conversationId);
+    if (!target || target.platform !== 'slack' || target.origin === 'replicated') {
+      res.status(409).json({ error: 'slack-adapter-authority-unavailable' });
+      return;
+    }
+    if (!SLACK_CHANNEL_ID_RE.test(target.channelId)
+      || (target.threadTs !== null && !SLACK_THREAD_TS_RE.test(target.threadTs))) {
+      res.status(409).json({ error: 'conversation-target-invalid' });
+      return;
+    }
+    (req.params as Record<string, string>).channelId = target.channelId;
+    req.body.thread_ts = target.threadTs ?? undefined;
+    await handleSlackReply(req, res);
   });
+
+  // System/legacy sender surface. Spawned session prompts never use this raw
+  // destination route; keeping it preserves existing internal callers.
+  router.post('/slack/reply/:channelId', handleSlackReply);
 
   router.post('/internal/slack-forward', async (req, res) => {
     // ── Typed refusal (spec slack-outbound-robustness §2.7, round-1 M6) ──
@@ -15001,7 +15801,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // single-machine view on installs where the pool registry isn't wired (dark).
   router.get('/pool', (_req, res) => {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
-    const machines = ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [];
+    // Rope-condition decoration: the registry's `online` flag feeds placement and
+    // ages out on the conservative failoverThreshold (~15 min observed), while
+    // the rope-health monitor knows a peer's transports are down within one
+    // evaluation. Attach the live classification so reachability renders
+    // honestly without touching placement semantics. Monitor dark → absent.
+    const machines = decorateWithRopeCondition(
+      ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [],
+      ctx.ropeHealthMonitor?.status().peers,
+    );
+    const sshEnrollment = ctx.mutualSshHealth ? ctx.mutualSshHealth() : null;
     res.json({
       enabled: !!ctx.machinePoolRegistry,
       router: sync
@@ -15015,7 +15824,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
         : null,
       machines,
+      sshEnrollment,
     });
+  });
+
+  router.get('/machines/ssh-health', (_req, res) => {
+    if (!ctx.mutualSshHealth) {
+      res.status(503).json({ error: 'mutual SSH subsystem is dark on this agent' });
+      return;
+    }
+    res.json(ctx.mutualSshHealth());
   });
 
   // GET /pool/reconciler — Fix #3 observability (Observable Intelligence). The WS1.3
@@ -15268,6 +16086,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     let pending = 0;
     let exempt = 0;
     const pendingRefDead: string[] = [];
+    // Trackers this machine cannot adjudicate: minted above its own id high-water
+    // mark, i.e. created on a peer whose action queue does not replicate here.
+    // NOT dead — unverifiable locally (see readLiveEvolutionActs).
+    const pendingRefUnverifiable: string[] = [];
     const liveActs = readLiveEvolutionActs(ctx.config.stateDir);
     for (const entry of PROVENANCE_COVERAGE) {
       if (entry.status === 'wired') wired++;
@@ -15275,7 +16097,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         pending++;
         if (liveActs !== null) {
           const act = entry.status.slice('pending:'.length);
-          if (!liveActs.has(act)) pendingRefDead.push(`${entry.decisionPoint}:${act}`);
+          const verdict = adjudicatePendingTracker(act, liveActs);
+          if (verdict === 'dead') pendingRefDead.push(`${entry.decisionPoint}:${act}`);
+          else if (verdict === 'unverifiable') pendingRefUnverifiable.push(`${entry.decisionPoint}:${act}`);
         }
       } else if (entry.status.startsWith('exempt:')) exempt++;
     }
@@ -15287,11 +16111,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       totalCounters.droppedByBudget += c.droppedByBudget;
     }
 
+    const wiredButNoGrader = findWiredWithoutGraders();
     return {
       sinceHours,
       gate: { enabled: true, dryRun: ctx.config.provenance?.uniformSeam?.dryRun !== false },
       points,
-      censusDebt: { wired, pending, exempt, pendingRefDead },
+      censusDebt: { wired, pending, exempt, pendingRefDead, pendingRefUnverifiable, wiredButNoGrader },
       counters: totalCounters,
       // The four §5.5 annotation-rejection counters, by class.
       rejections: getDecisionAnnotationRejectionCounters(),
@@ -15746,6 +16571,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json(sentinel.status());
   });
 
+  // GET /pool/failover-gap — the single-machine failover-gap detector's status
+  // snapshot (increment 2). 503 when the guard is dark on this agent (dev-gated:
+  // `enabled` OMITTED → resolveDevAgentGate; never constructed on the fleet).
+  // Read-only observability — the guard is pure signal.
+  router.get('/pool/failover-gap', (_req, res) => {
+    const s = ctx.getSingleMachineFailoverGap?.() ?? null;
+    if (!s) {
+      res.status(503).json({ error: 'single-machine failover-gap guard not enabled on this agent (dev-gated dark; monitoring.singleMachineFailoverGap.enabled)' });
+      return;
+    }
+    res.json(s.status());
+  });
+
+  // GET /pool/missing-login — the missing-login-session detector's status snapshot
+  // (increment 2). 503 when the guard is dark on this agent (dev-gated: `enabled`
+  // OMITTED → resolveDevAgentGate; never constructed on the fleet). Read-only
+  // observability — the guard is pure signal.
+  router.get('/pool/missing-login', (_req, res) => {
+    const s = ctx.getMissingLoginSession?.() ?? null;
+    if (!s) {
+      res.status(503).json({ error: 'missing-login-session guard not enabled on this agent (dev-gated dark; monitoring.missingLoginSession.enabled)' });
+      return;
+    }
+    res.json(s.status());
+  });
+
   // ── Replicated-store conflict + rollback surfaces (multi-machine-replicated-
   //    store-foundation §7.2/§7.3/§7.4). All Bearer-gated like every route; 503
   //    while the foundation is dark (no store enabled). Signal vs Authority: the
@@ -15944,14 +16795,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   // POST /pool/transfer — deterministic topic transfer that does NOT depend on
-  // natural-language phrasing. Body: { topic, to: "<nickname|machineId>", confirm? }.
+  // natural-language phrasing. Body: { topic, to: "<nickname|machineId>", confirm?, confirmationChallenge? }.
   // Runs the SAME validated planner as "move this to <nickname>" (rate-limit, online,
   // already-there checks), sets the placement pin, and releases local ownership so the
   // next message re-places onto the target. A non-holder PROXIES to the holder (whose
   // pin store drives routing). This is the reliable lever a session can call directly
   // instead of hoping a phrase is recognized. 503 when the pool isn't wired (dark).
   router.post('/pool/transfer', async (req, res) => {
-    const body = (req.body ?? {}) as { topic?: unknown; to?: unknown; confirm?: unknown };
+    const body = (req.body ?? {}) as { topic?: unknown; to?: unknown; confirm?: unknown; confirmationChallenge?: unknown };
     const topicId = body.topic != null ? String(body.topic).trim() : '';
     const to = typeof body.to === 'string' ? body.to.trim() : '';
     if (!topicId || !to) {
@@ -15969,11 +16820,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const r = await fetch(`${holderUrl}/pool/transfer`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ topic: topicId, to, confirm: body.confirm === true }),
+          body: JSON.stringify({
+            topic: topicId,
+            to,
+            confirm: body.confirm === true,
+            ...(typeof body.confirmationChallenge === 'string'
+              ? { confirmationChallenge: body.confirmationChallenge }
+              : {}),
+          }),
         });
         // @silent-fallback-ok — if the holder's body isn't JSON we still forward its
         // status code with an empty object; the status is the signal, not the body.
         const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        // A proxied transfer returns before the holder-only implementation below,
+        // so the machine that received the operator request must also arm the
+        // acquire carrier after the holder proves the seat moved. This is
+        // deliberately redundant with the holder's remote kick: when this machine
+        // is the destination it has the shortest, most reliable path to its local
+        // coordinator, while duplicate kicks are collapsed by coordinator
+        // single-flight/rate limiting. Bind the kick to the holder-authored target
+        // rather than the caller's nickname so a forged/misresolved request cannot
+        // fetch a different topic onto this machine.
+        if (r.ok && j.seatMoved === true && typeof j.targetMachine === 'string') {
+          const topicNum = Number(topicId);
+          if (Number.isFinite(topicNum)) {
+            try { ctx.kickWorkingSetOnMachine?.(j.targetMachine, topicNum); }
+            catch { /* @silent-fallback-ok — transfer already completed; bounded carrier retries and the manual fetch reflex remain available */ }
+          }
+        }
         res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
       } catch (err) {
         // @silent-fallback-ok — NOT silent: a failed proxy surfaces an explicit 502 with the
@@ -16002,7 +16876,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     };
     // WS1.4: a LIVE autonomous run on this topic (this machine's stateDir is
     // the run registry — the run lives where its state file lives).
-    const liveAutonomousRun = (sk: string): { goal: string | null; remainingMinutes: number | null } | null => {
+    const liveAutonomousRun = (sk: string): { goal: string | null; remainingMinutes: number | null; runKey: string | null } | null => {
       try {
         const job = listAutonomousJobs(ctx.config.stateDir).find((j) => j.topic === sk && j.active && !j.paused);
         if (!job) return null;
@@ -16011,9 +16885,41 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const endMs = Date.parse(job.startedAt) + job.durationSeconds * 1000;
           if (Number.isFinite(endMs)) remainingMinutes = Math.max(0, Math.round((endMs - Date.now()) / 60_000));
         }
-        return { goal: job.goal, remainingMinutes };
+        return { goal: job.goal, remainingMinutes, runKey: job.startedAt };
       } catch { return null; /* @silent-fallback-ok — unreadable run registry → veto not applied; the transfer behaves as before WS1.4 */ }
     };
+    // The holder is authoritative for the pin, but the autonomous state file
+    // lives on the current OWNER. Probe that owner before planning, otherwise a
+    // holder/owner split silently bypasses the consent gate and the drain
+    // suspends real work without confirmation.
+    const ownershipBeforePlan = ctx.sessionOwnershipRegistry.read(topicId);
+    const ownerBeforePlan = ownershipBeforePlan?.ownerMachineId ?? null;
+    let ownerAutonomousRun: { goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null = null;
+    if (ownerBeforePlan && ownerBeforePlan !== self) {
+      if (!ctx.autonomousRunOnMachine) {
+        ownerAutonomousRun = { goal: 'owner run state could not be verified', remainingMinutes: null, runKey: 'unverified' };
+      } else {
+        try {
+          ownerAutonomousRun = await ctx.autonomousRunOnMachine(ownerBeforePlan, topicId);
+        } catch {
+          // Fail closed: an unreachable owner cannot prove that moving it will not
+          // suspend a live run. The confirmation remains explicit and retryable.
+          ownerAutonomousRun = { goal: 'owner run state could not be verified', remainingMinutes: null, runKey: 'unverified' };
+        }
+      }
+      const ownershipAfterProbe = ctx.sessionOwnershipRegistry.read(topicId);
+      if (
+        ownershipAfterProbe?.ownerMachineId !== ownershipBeforePlan?.ownerMachineId ||
+        ownershipAfterProbe?.ownershipEpoch !== ownershipBeforePlan?.ownershipEpoch
+      ) {
+        res.status(409).json({
+          retryRequired: true,
+          error: 'topic ownership changed while transfer conditions were being checked; retry the transfer',
+        });
+        return;
+      }
+    }
+    const selectedAutonomousRun = liveAutonomousRun(topicId) ?? ownerAutonomousRun;
     const plan = planTransferByNickname(
       { intent: 'transfer', nickname: to, matchedVerb: 'transfer' },
       {
@@ -16029,7 +16935,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // the confirmed call re-evaluates the full chain and a confirm can
         // never silently consent to a condition the caller was not shown
         // (second-pass finding, 2026-06-13).
-        autonomousRunActive: liveAutonomousRun,
+        autonomousRunActive: () => selectedAutonomousRun,
       },
       topicId,
     );
@@ -16043,11 +16949,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       return;
     }
-    if (plan.action === 'confirm-required' && body.confirm !== true) {
+    if (plan.action === 'confirm-required') {
+      const confirmationChallenge = createHash('sha256').update(JSON.stringify({
+        topicId,
+        targetMachine: plan.targetMachine,
+        detail: plan.detail,
+        owner: ownershipBeforePlan?.ownerMachineId ?? null,
+        ownershipEpoch: ownershipBeforePlan?.ownershipEpoch ?? null,
+        runKey: selectedAutonomousRun?.runKey ?? null,
+        runGoal: selectedAutonomousRun?.goal ?? null,
+      })).digest('hex');
       // `detail` names every condition the confirm would consent to
       // ('+'-joined) — callers relay the prompt, which already states all of them.
-      res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine, detail: plan.detail });
-      return;
+      if (body.confirm !== true || body.confirmationChallenge !== confirmationChallenge) {
+        res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine, detail: plan.detail, confirmationChallenge });
+        return;
+      }
     }
     // transfer | noop | confirmed → set the pin and release local ownership if we hold it.
     const target = plan.targetMachine!;
@@ -16065,10 +16982,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     //   · refused-*/no-handler/timeout/no-flag → DEGRADE to today's pin path
     //     (recorded in the response; the reconciler + closeout converge it).
     // The capability gate means an old peer is never sent a doomed order.
-    let drainLeg: { attempted: boolean; ok?: boolean; status?: string; reason?: string } = { attempted: false };
+    let drainLeg: { attempted: boolean; ok?: boolean; status?: string; reason?: string; claimLanded?: boolean } = { attempted: false };
     let drainRunSuspended = false;
     try {
       const currentOwner = plan.action !== 'noop' ? ctx.sessionOwnershipRegistry.ownerOf(topicId) : null;
+      const ownershipAtDrain = ctx.sessionOwnershipRegistry.read(topicId);
+      if (
+        plan.action !== 'noop' &&
+        (ownershipAtDrain?.ownerMachineId !== ownershipBeforePlan?.ownerMachineId ||
+          ownershipAtDrain?.ownershipEpoch !== ownershipBeforePlan?.ownershipEpoch)
+      ) {
+        res.status(409).json({
+          retryRequired: true,
+          error: 'topic ownership changed before drain; retry the transfer',
+        });
+        return;
+      }
       const ownerCap = currentOwner && currentOwner !== self ? ctx.machinePoolRegistry?.getCapacity(currentOwner) : null;
       const ownerCanDrain =
         currentOwner != null &&
@@ -16079,7 +17008,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (ownerCanDrain) {
         const observedEpoch = ctx.sessionOwnershipRegistry.read(topicId)?.ownershipEpoch ?? 0;
         const r = await ctx.sendDrain!(currentOwner!, topicId, target, observedEpoch);
-        drainLeg = { attempted: true, ok: r.ok, status: r.status, reason: r.reason };
+        drainLeg = { attempted: true, ok: r.ok, status: r.status, reason: r.reason, claimLanded: r.claimLanded };
         drainRunSuspended = r.runSuspended === true;
         if (r.status === 'aborted-emergency-stop') {
           res.status(409).json({
@@ -16324,14 +17253,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const post = ctx.sessionOwnershipRegistry.read(topicId);
       if (plan.action === 'noop') {
         seatMoved = true; // already-there / no move required — the seat is at the target
-      } else if (post?.status === 'active' && ownerNow === target) {
-        seatMoved = true; // the target is the confirmed active owner — a real move
+      } else if (
+        (post?.status === 'active' && ownerNow === target) ||
+        (drainLeg.ok === true &&
+          (drainLeg.status === 'drained' || drainLeg.status === 'drained-interrupted') &&
+          drainLeg.claimLanded === true)
+      ) {
+        // Either the local echo already converged, or the authenticated owner
+        // directly proved that its fenced target-claim CAS landed.
+        seatMoved = true;
       } else {
         seatMoved = false;
         seatMoveReason =
           drainLeg.attempted && drainLeg.ok === false
             ? 'drain failed — the seat did not move (topic stays whole on its current machine)'
             : 'ownership did not transfer to the target (the pin is set, but the target is not the active owner)';
+      }
+    }
+    if (seatMoved && plan.action !== 'noop') {
+      const topicNum = Number(topicId);
+      if (Number.isFinite(topicNum)) {
+        try { ctx.kickWorkingSetOnMachine?.(target, topicNum); }
+        catch { /* @silent-fallback-ok — the kick has bounded retries and the manual fetch surface remains available; transfer authority is already complete */ }
       }
     }
     res.json({
@@ -16506,6 +17449,49 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return { stage, result: row?.result ?? null, commitSha: row?.commitSha ?? null, ranAt: row?.ranAt ?? null, verified: row ? store.verify(row) : null };
     });
     res.json({ latestPerStage, total: store.all().length });
+  });
+
+  // GET /session-pool/failover-runner — the in-agent failover-runner's status
+  // (§Rollout, Track H). Read-only. 503 when the runner is dark (dev-gated:
+  // enabled OMITTED → resolveDevAgentGate; single-machine/fleet). When live it
+  // reports the resolved gate (enabled/dryRun), which store the recorded verdict
+  // lands in (real promotion store vs the dry-run SIDE store), the proven stage +
+  // commit, the cadence, in-flight state, and the last run's outcome + counters.
+  router.get('/session-pool/failover-runner', (_req, res) => {
+    const status = ctx.getSessionPoolFailoverRunner?.() ?? null;
+    if (!status) {
+      res.status(503).json({ error: 'session-pool failover-runner not enabled on this agent (dev-gated dark; multiMachine.sessionPool.failoverRunner.enabled)' });
+      return;
+    }
+    res.json(status);
+  });
+
+  // POST /session-pool/promote — operator-triggered ONE-STEP promotion.
+  // Available in both live promotion models; default-off is an honest 503.
+  // The controller delegates to SessionPoolRolloutDriver → StageAdvancer, so a
+  // missing/stale/red/tampered green or the operator ceiling still refuses.
+  router.post('/session-pool/promote', (_req, res) => {
+    const activation = ctx.sessionPoolPromotionActivation;
+    if (!activation) {
+      res.status(503).json({
+        error: 'session-pool promotion is off (multiMachine.sessionPool.promotionModel)',
+      });
+      return;
+    }
+    try {
+      const result = activation.promoteOne();
+      if (!result) {
+        res.status(503).json({
+          error: 'session-pool promotion is off (multiMachine.sessionPool.promotionModel)',
+        });
+        return;
+      }
+      res.json({ ok: true, ...activation.status(), result });
+    } catch (err) {
+      res.status(500).json({
+        error: `session-pool promotion failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   });
 
   // PATCH /pool/machines/:id — rename a machine (§L2 user-editable nickname).
@@ -19123,6 +20109,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         replyToMessageId: fwdReplyTo,
         at: Date.now(),
       });
+      observeMatrixAcceptanceInbound({
+        topicId: Number(topicId),
+        text: String(text),
+        senderUid: String(fromUserId ?? ''),
+        messageId: Number(messageId) || 0,
+        replyToMessageId: fwdReplyTo,
+      });
     }
 
     // ── Exactly-once ingress gate (spec §8 G3a) ──────────────────────
@@ -19987,7 +20980,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { title, description, priority, commitTo, dueBy, source, tags } = req.body;
+    const { title, description, priority, commitTo, dueBy, source } = req.body;
+    const tags = Array.isArray(req.body.tags) ? req.body.tags.filter((tag: unknown): tag is string => typeof tag === 'string') : [];
     if (!title || typeof title !== 'string' || title.length > 500) {
       res.status(400).json({ error: '"title" must be a string under 500 characters' });
       return;
@@ -20001,10 +20995,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // has touched no store. (Wave 1 classifies this family machine-local ⇒
     // admit everywhere; the check still runs first in every mode, §9.15.)
     if (refuseInadmissibleWrite(req, res)) return;
-    const action = ctx.evolution.addAction({
-      title, description, priority, commitTo, dueBy, source, tags,
+    const originCorrection = tags.includes('origin:correction');
+    const admission = evaluateCorrectionInstanceFix({
+      originCorrection,
+      correctionId: typeof req.body.correctionId === 'string' ? req.body.correctionId : undefined,
+      claimedClassReviewRef: typeof req.body.classReviewRef === 'string' ? req.body.classReviewRef : undefined,
+      dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false,
+      correctionLedger: ctx.correctionLedger ?? null,
+      classReviewStore: ctx.classReviewStore ?? null,
     });
-    res.status(201).json(action);
+    if (!admission.allow) {
+      res.status(409).json({ error: 'correction-derived action requires a corresponding filled class review', reason: admission.reason });
+      return;
+    }
+    const stampedTags = admission.classReviewRef
+      ? [...tags.filter((tag: string) => !tag.startsWith('class-review:')), `class-review:${admission.classReviewRef}`]
+      : tags;
+    const action = ctx.evolution.addAction({
+      title, description, priority, commitTo, dueBy, source, tags: stampedTags,
+    });
+    res.status(201).json({ ...action, classReviewAdmission: { wouldRefuse: admission.wouldRefuse, reason: admission.reason } });
   });
 
   router.patch('/evolution/actions/:id', (req, res) => {
@@ -20020,10 +21030,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
     if (refuseInadmissibleWrite(req, res)) return;
+    const currentAction = ctx.evolution.listActions({}).find((action) => action.id === req.params.id);
     const success = ctx.evolution.updateAction(req.params.id, { status, resolution });
     if (!success) {
       res.status(404).json({ error: 'Action not found' });
       return;
+    }
+    if (status === 'completed' && currentAction && ctx.classReviewStore) {
+      const refTag = currentAction.tags?.find((tag) => tag.startsWith('class-review:'));
+      if (refTag) ctx.classReviewStore.transitionOutcome(refTag.slice('class-review:'.length), 'process', 'shipped');
     }
     res.json({ ok: true, id: req.params.id, status });
   });
@@ -21065,6 +22080,62 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // POST /playwright-profiles/seat/acquire — host-wide physical browser-seat lease.
+  // The PreToolUse MCP hook calls this before EVERY Playwright tool (including reads),
+  // so two drives cannot interleave clicks against one logged-in browser profile.
+  // Same-holder calls renew idempotently; a crashed/quiet drive releases by TTL.
+  router.post('/playwright-profiles/seat/acquire', (req, res) => {
+    if (refuseInadmissibleWrite(req, res)) return;
+    // Deliberately NOT coupled to the profile-registry rollout gate: the MCP
+    // hook is fleet-wide, and host-seat safety must remain available when the
+    // optional registry/activation UI is dark.
+    const holderId = typeof req.body?.holderId === 'string' ? req.body.holderId : '';
+    const holderLabel = typeof req.body?.holderLabel === 'string' ? req.body.holderLabel : '';
+    if (!holderId) {
+      res.status(400).json({ error: 'holderId is required' });
+      return;
+    }
+    try {
+      const result = (ctx.playwrightSeatLease?.() ?? new PlaywrightSeatLease()).acquire(holderId, holderLabel);
+      if (!result.acquired) {
+        res.status(409).json({
+          error: 'playwright operator seat is in use',
+          holderLabel: result.holderLabel,
+          retryAfterMs: result.retryAfterMs,
+          expiresAt: result.expiresAt,
+        });
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      // An unavailable lease store must not make browser access disappear. The
+      // hook treats this as degraded/fail-open; only a positive conflict blocks.
+      res.status(503).json({ error: err instanceof Error ? err.message : 'playwright seat lease unavailable' });
+    }
+  });
+
+  // POST /playwright-profiles/seat/release — voluntary standalone-script path.
+  // Ownership is checked by the shared lease store, so a late cleanup cannot
+  // release a newer browser drive's lease.
+  router.post('/playwright-profiles/seat/release', (req, res) => {
+    if (refuseInadmissibleWrite(req, res)) return;
+    const holderId = typeof req.body?.holderId === 'string' ? req.body.holderId : '';
+    if (!holderId) {
+      res.status(400).json({ error: 'holderId is required' });
+      return;
+    }
+    try {
+      const result = (ctx.playwrightSeatLease?.() ?? new PlaywrightSeatLease()).release(holderId);
+      if (!result.released && result.reason === 'ownership-mismatch') {
+        res.status(409).json({ error: 'playwright operator seat is held by another drive', ...result });
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      res.status(503).json({ error: err instanceof Error ? err.message : 'playwright seat lease unavailable' });
+    }
+  });
+
   // GET /playwright-profiles/session-context — the compact boot pointer (?full=1 bypasses the cap).
   router.get('/playwright-profiles/session-context', (req, res) => {
     if (!playwrightFeatureEnabled()) {
@@ -21358,7 +22429,277 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       topicId: typeof body.topicId === 'number' ? body.topicId : null,
     });
     if (!rec) { res.status(500).json({ error: 'failed to record (logged via fail-open path)' }); return; }
+    // This bearer-authenticated one-tap is agent-self. The caller cannot
+    // elevate origin with a request field; operator-attributed capture uses the
+    // authenticated messaging ingress seam.
+    ctx.correctionClassReview?.record(rec, 'agent-self');
     res.status(201).json(CorrectionLedger.toApiView(rec));
+  });
+
+  // Drive 7 WS1 read surface. Rows contain only boundary-scrubbed text and
+  // closed-enum lifecycle fields; raw CorrectionLedger.learning never appears.
+  router.get('/class-reviews', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const lifecycle = typeof req.query.status === 'string' && ['open', 'parked', 'resolved', 'superseded', 'reopened'].includes(req.query.status)
+      ? req.query.status as import('../monitoring/ClassReviewStore.js').ReviewLifecycle : undefined;
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 1000));
+    const records = ctx.classReviewStore.list({ lifecycle, limit });
+    res.json({ records, count: records.length, open: ctx.classReviewStore.countOpen() });
+  });
+
+  router.get('/class-reviews/:dedupeKey', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const record = ctx.classReviewStore.get(req.params.dedupeKey);
+    if (!record) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(record);
+  });
+
+  router.post('/class-reviews/backfill', (req, res) => {
+    if (!ctx.classReviewStore || !ctx.correctionClassReview || !ctx.correctionLedger) {
+      res.status(503).json({ error: 'correction-class-review disabled' }); return;
+    }
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    const limit = Math.max(1, Math.min(Number(req.body?.limit) || 100, 1000));
+    const result = ctx.correctionClassReview.backfill(ctx.correctionLedger.list({ limit }), {}, limit);
+    const agingDays = Math.max(1, ctx.config.monitoring?.correctionClassReview?.agingDays ?? 7);
+    const activeActionIds = new Set((ctx.evolution?.listActions({ status: 'in_progress' }) ?? []).map((action) => action.id));
+    const aged = ctx.classReviewStore.ageExpiredUnreviewed(new Date(Date.now() - agingDays * 86_400_000), limit, activeActionIds);
+    if (aged.length > 0) void ctx.telegram?.createAttentionItem({
+      id: 'correction-class-review:expired-unreviewed', title: 'Correction class reviews need disposition',
+      summary: `${aged.length} proposed correction class-review arm(s) aged into parked-open status. They remain unresolved and will re-surface on the slow review cadence.`,
+      priority: 'NORMAL', category: 'general', sourceContext: 'correction-class-review-aging',
+    });
+    res.json({ ...result, aged: aged.length, dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false });
+  });
+
+  router.patch('/class-reviews/:dedupeKey/outcome', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expected = ctx.config.dashboardPin ?? '';
+    const pinOk = pin.length === expected.length && pin.length > 0
+      && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
+    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    const arm = req.body?.arm;
+    const outcome = req.body?.outcome;
+    if (!['standard', 'process'].includes(arm) || !['ratified', 'shipped', 'rejected', 'deferred'].includes(outcome)) {
+      res.status(400).json({ error: 'invalid arm or outcome' }); return;
+    }
+    let record;
+    if (outcome === 'deferred') {
+      if (!ctx.commitmentTracker) { res.status(503).json({ error: 'commitment tracker required for deferred disposition' }); return; }
+      const tracking = ctx.commitmentTracker.record({
+        type: 'one-time-action', source: 'manual', owner: 'agent', blockedOn: 'none',
+        userRequest: `Revisit deferred ${arm} outcome for correction class review ${req.params.dedupeKey}`,
+        agentResponse: 'I will re-surface this parked-open class review for a deliberate disposition.',
+        externalKey: `class-review-deferred:${req.params.dedupeKey}:${arm}`,
+      });
+      record = ctx.classReviewStore.defer(req.params.dedupeKey, arm, tracking.id);
+    } else {
+      record = ctx.classReviewStore.transitionOutcome(req.params.dedupeKey, arm, outcome);
+    }
+    if (!record) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(record);
+  });
+
+  router.patch('/class-reviews/:dedupeKey/lifecycle', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expected = ctx.config.dashboardPin ?? '';
+    const pinOk = pin.length === expected.length && pin.length > 0 && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
+    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    const action = req.body?.action;
+    let record = null;
+    if (action === 'reopen') record = ctx.classReviewStore.reopen(req.params.dedupeKey);
+    else if (action === 'supersede') {
+      if (typeof req.body?.supersededBy !== 'string' || typeof req.body?.reason !== 'string' || !req.body.reason.trim()) {
+        res.status(400).json({ error: 'supersededBy and non-empty reason are required' }); return;
+      }
+      record = ctx.classReviewStore.supersede(req.params.dedupeKey, req.body.supersededBy, { actor: 'operator-pin', reason: req.body.reason });
+    } else { res.status(400).json({ error: 'action must be reopen or supersede' }); return; }
+    if (!record) { res.status(404).json({ error: 'not found or invalid lifecycle transition' }); return; }
+    res.json(record);
+  });
+
+  const registerUnifiedFutureClaims = (input: {
+    message: string; topicId?: number; rawBindToken?: string; arbitration?: ClaimClauseArbitration;
+  }): { registered: number; reason?: string } => {
+    if (!ctx.commitmentTracker || typeof input.topicId !== 'number' || !Number.isSafeInteger(input.topicId)) {
+      return { registered: 0, reason: 'no-commitment-tracker-or-topic' };
+    }
+    const acGet = <T>(leaf: string, dflt: T): T =>
+      (ctx.liveConfig?.get<T | undefined>(`actionClaim.${leaf}`, undefined) ??
+        ctx.liveConfig?.get<T>(`messaging.actionClaim.${leaf}`, dflt)) as T;
+    if (!(acGet<boolean>('enabled', false) ?? false)) return { registered: 0, reason: 'action-claim-disabled' };
+    const topicId = input.topicId;
+    const isMinted = topicId < 0;
+    if (isMinted && !resolveDevAgentGate(acGet<boolean | undefined>('slack.enabled', undefined), ctx.config)) {
+      return { registered: 0, reason: 'slack-lane-dark' };
+    }
+    if (isMinted && (acGet<boolean>('slack.dryRun', true) ?? true)) return { registered: 0, reason: 'slack-dry-run' };
+    const bind = verifyConversationBind({ bindAuth: ctx.conversationBindAuth, numericTopicId: topicId,
+      rawToken: input.rawBindToken, attention: ctx.telegram });
+    if (!bind.ok) return { registered: 0, reason: 'conversation-bind-not-authorized' };
+    const clauses = input.arbitration?.authoritative
+      ? input.arbitration.clauses.filter((clause) => clause.label === 'future-commitment').map((clause) => clause.text)
+      : [input.message];
+    let registered = 0;
+    for (const clause of clauses) {
+      const action = routeActionClaim(clause, { completionEnabled: true, completionDryRun: false },
+        input.arbitration?.authoritative
+          ? { authoritative: true, clauses: input.arbitration.clauses.filter((candidate) => candidate.text === clause) }
+          : input.arbitration);
+      let lane: 'action' | 'time'; let verb: string | undefined; let externalKey: string;
+      if (action.isActionClaim && action.claim) {
+        lane = 'action'; verb = action.claim.normalizedClaimVerb;
+        externalKey = `actionclaim:${createHash('sha256').update(`${topicId}|${verb}`).digest('hex').slice(0, 16)}`;
+      } else {
+        const timed = CommitmentTracker.detectTimePromise(clause.slice(0, 500));
+        if (!timed) continue;
+        lane = 'time';
+        externalKey = `timepromise:${createHash('sha256').update(`${topicId}|${clause.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200)}`).digest('hex').slice(0, 16)}`;
+      }
+      const open = ctx.commitmentTracker.getActive().filter((commitment) => commitment.topicId === topicId
+        && typeof commitment.externalKey === 'string'
+        && (commitment.externalKey.startsWith('actionclaim:') || commitment.externalKey.startsWith('timepromise:')));
+      const cap = acGet<number>('perTopicCap', 5) ?? 5;
+      if (!open.some((commitment) => commitment.externalKey === externalKey) && open.length >= cap) continue;
+      ctx.commitmentTracker.record({ type: 'one-time-action', source: 'sentinel', topicId,
+        userRequest: lane === 'action' ? `(action-claim) follow through on: ${verb}` : '(time-promise) follow through on the promise made in this clause',
+        agentResponse: clause.slice(0, 500), externalKey,
+        expiresAt: new Date(Date.now() + (acGet<number>('expiresHours', 6) ?? 6) * 3_600_000).toISOString(),
+        ...(bind.boundBy ? { boundBy: bind.boundBy } : {}),
+      });
+      registered++;
+    }
+    return { registered };
+  };
+
+  // Observe-only v1. The Stop hook parses locally and sends structural-only
+  // evidence; a transcript path is never accepted by this server boundary.
+  router.post('/completion-claim/observe', (req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return;
+    }
+    const message = typeof req.body?.message === 'string' ? req.body.message : '';
+    if (!message) { res.status(400).json({ error: 'message is required' }); return; }
+    if (Buffer.byteLength(message, 'utf8') > 32_768) { res.status(413).json({ error: 'claim observation input bound exceeded' }); return; }
+    const forbiddenAuthorityFields = ['agentId', 'sessionId', 'projectDir', 'repository', 'machineId', 'ownershipEpoch'];
+    if (forbiddenAuthorityFields.some((field) => field in (req.body ?? {}))) {
+      res.status(400).json({ error: 'authority context is derived server-side' }); return;
+    }
+    if ('transcriptPath' in (req.body ?? {}) || 'transcript_path' in (req.body ?? {})) {
+      res.status(400).json({ error: 'transcript paths are not accepted; send structural TurnEvidence' }); return;
+    }
+    const hasV1Envelope = 'hookSchemaVersion' in (req.body ?? {}) || 'messageAttemptId' in (req.body ?? {}) || 'turnEvidence' in (req.body ?? {});
+    const messageAttemptId = typeof req.body?.messageAttemptId === 'string' ? req.body.messageAttemptId : undefined;
+    if (hasV1Envelope && (req.body?.hookSchemaVersion !== 1 || !messageAttemptId
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(messageAttemptId))) {
+      res.status(400).json({ error: 'valid hookSchemaVersion and UUIDv7 messageAttemptId are required' }); return;
+    }
+    const evidence = validateTurnEvidence(hasV1Envelope ? req.body?.turnEvidence : req.body?.evidence);
+    if (!evidence) { res.status(400).json({ error: 'valid structural evidence is required' }); return; }
+    const topicId = typeof (hasV1Envelope ? req.body?.topicHint : req.body?.topicId) === 'number'
+      && Number.isSafeInteger(hasV1Envelope ? req.body.topicHint : req.body.topicId)
+      ? Number(hasV1Envelope ? req.body.topicHint : req.body.topicId) : undefined;
+    const rawBindHeader = req.headers['x-instar-bind-token'];
+    const rawBindToken = (Array.isArray(rawBindHeader) ? rawBindHeader[0] : rawBindHeader)
+      ?? (typeof req.body?.bindToken === 'string' ? req.body.bindToken : undefined);
+    const observationBind = topicId === undefined ? null : verifyConversationBind({ bindAuth: ctx.conversationBindAuth,
+      numericTopicId: topicId, rawToken: rawBindToken, attention: ctx.telegram });
+    const boundObservationTopicId = observationBind?.ok ? topicId : undefined;
+    const boundSessionName = observationBind?.ok && observationBind.boundBy?.startsWith('session:')
+      ? observationBind.boundBy.slice('session:'.length) : undefined;
+    const boundSession = boundSessionName ? ctx.state.listSessions().find((session) => session.tmuxSession === boundSessionName) : undefined;
+    const observationNow = new Date();
+    const sessionSnapshot = boundSession ? {
+      state: String(boundSession.status),
+      elapsedMs: Math.max(0, observationNow.getTime() - Date.parse(boundSession.startedAt)),
+      revision: `${boundSession.id}:${boundSession.status}:${boundSession.startedAt}`,
+      observedAt: observationNow.toISOString(),
+    } : undefined;
+    const commitmentSnapshots = Object.fromEntries((boundObservationTopicId === undefined ? [] : (ctx.commitmentTracker?.getActive() ?? [])
+      .filter((commitment) => commitment.topicId === boundObservationTopicId))
+      .slice(0, 100)
+      .map((commitment) => [commitment.id, { state: commitment.status,
+        revision: `${commitment.id}:${commitment.status}:${commitment.lastVerifiedAt ?? commitment.createdAt}`,
+        observedAt: observationNow.toISOString() }]));
+    const guardSnapshots = Object.fromEntries((ctx.guardRegistry?.registeredKeys() ?? []).slice(0, 100).flatMap((key) => {
+      const read = ctx.guardRegistry?.read(key);
+      if (!read || read.kind !== 'ok') return [];
+      const state = !read.status.enabled ? 'off' : read.status.dryRun ? 'dry-run' : 'on';
+      return [[key, { state, revision: `${key}:${state}:${read.status.lastTickAt ?? 0}`,
+        observedAt: observationNow.toISOString() }]];
+    }));
+    const admission = ctx.completionClaimVerifier.enqueue(message, evidence, (arbitration) => {
+      if (ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+        registerUnifiedFutureClaims({ message, topicId, rawBindToken, arbitration });
+      }
+    }, { ...(messageAttemptId ? { messageAttemptId } : {}), ...(boundObservationTopicId !== undefined ? { topicId: boundObservationTopicId } : {}),
+      ...(sessionSnapshot ? { sessionSnapshot } : {}), commitmentSnapshots, guardSnapshots, originFramework: 'claude-code' });
+    if (!admission.accepted && ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+      // Queue pressure/duplicate/provider uncertainty must never suppress the
+      // already-shipped Action-Claim behavior.
+      registerUnifiedFutureClaims({ message, topicId, rawBindToken });
+    }
+    const status = admission.accepted ? 202 : admission.reason === 'queue-full' ? 429 : 200;
+    res.status(status).json({ observed: admission.accepted, queued: admission.accepted, blocked: false,
+      evidenceAvailable: !evidence.unavailable, canaryOk: evidence.canaryOk, reason: admission.reason });
+  });
+
+  router.get('/completion-claim/audit', async (req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
+    const poolProjection = req.query.projection === 'pool' || req.query.scope === 'pool';
+    const localPage = poolProjection ? ctx.completionClaimVerifier.readPoolPage(limit,
+      typeof req.query.cursor === 'string' ? req.query.cursor : undefined) : undefined;
+    const records = localPage?.records ?? ctx.completionClaimVerifier.readAudit(limit);
+    if (req.query.scope !== 'pool') { res.json({ records, count: records.length,
+      ...(localPage?.nextCursor ? { nextCursor: localPage.nextCursor } : {}), scope: 'local', denominator: 'server-admitted-only' }); return; }
+    const allPeers = ctx.resolvePeerUrls?.() ?? [];
+    const peers = allPeers.slice(0, 16);
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    const remote: Array<Record<string, unknown>> = [];
+    const failed: Array<{ machineId: string; error: string }> = [];
+    let remainingBytes = 256 * 1024;
+    await Promise.all(peers.map(async (peer) => {
+      if (!isPeerUrlAllowedForCredentials(peer.url, extraAllowlist).ok) {
+        failed.push({ machineId: peer.machineId, error: 'url-rejected' }); return;
+      }
+      try {
+        const response = await fetch(`${peer.url}/completion-claim/audit?limit=${limit}&projection=pool`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(250),
+        });
+        if (!response.ok) { failed.push({ machineId: peer.machineId, error: `HTTP ${response.status}` }); return; }
+        const raw = await response.text();
+        const size = Buffer.byteLength(raw);
+        if (size > remainingBytes) { failed.push({ machineId: peer.machineId, error: 'response-bound' }); return; }
+        remainingBytes -= size;
+        const body = JSON.parse(raw) as { records?: Array<Record<string, unknown>> };
+        for (const row of (body.records ?? []).slice(0, limit)) {
+          // Explicit allowlist: peer audit prose and unknown fields never cross.
+          remote.push({ machineId: peer.machineId, remote: true, automationEligible: false,
+            ...(typeof row.day === 'string' ? { day: row.day.slice(0, 10) } : {}),
+            ...(typeof row.claimShapeId === 'string' ? { claimShapeId: row.claimShapeId.slice(0, 128) } : {}),
+            ...(typeof row.modelDoor === 'string' ? { modelDoor: row.modelDoor.slice(0, 64) } : {}),
+            ...(typeof row.verifierVersion === 'string' ? { verifierVersion: row.verifierVersion.slice(0, 64) } : {}),
+            ...(typeof row.count === 'number' ? { count: Math.max(0, Math.floor(row.count)) } : {}),
+            ...(row.verdicts && typeof row.verdicts === 'object' ? { verdicts: Object.fromEntries(
+              ['supported', 'refuted', 'unverifiable', 'unknown'].flatMap((key) => {
+                const value = (row.verdicts as Record<string, unknown>)[key];
+                return typeof value === 'number' && Number.isFinite(value) ? [[key, Math.max(0, Math.floor(value))]] : [];
+              })) } : {}),
+          });
+        }
+      } catch (error) { failed.push({ machineId: peer.machineId, error: error instanceof Error ? error.name : 'unreachable' }); }
+    }));
+    const merged = ([...records.map((row) => ({ ...row, remote: false })), ...remote] as Array<Record<string, unknown>>)
+      .sort((a, b) => `${a.remote ? String(a.machineId) : 'local'}|${String(a.day ?? '')}|${String(a.claimShapeId ?? '')}`
+        .localeCompare(`${b.remote ? String(b.machineId) : 'local'}|${String(b.day ?? '')}|${String(b.claimShapeId ?? '')}`))
+      .slice(0, Math.min(limit, 200));
+    res.json({ records: merged, count: merged.length, ...(localPage?.nextCursor ? { nextCursor: localPage.nextCursor } : {}),
+      scope: 'pool', denominator: 'server-admitted-only', partial: failed.length > 0 || allPeers.length > peers.length,
+      pool: { peersQueried: peers.length, peersOmitted: Math.max(0, allPeers.length - peers.length), failed } });
   });
 
   // The recurrence analyzer + closed-loop tick (Correction & Preference Learning
@@ -21426,7 +22767,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // record to the next run; any other non-201 is a guard rejection (don't
           // retry). The driver serializes the batch + stops on the first 429.
           return { posted: resp.status === 201, rateLimited: resp.status === 429 };
-        } catch { return { posted: false }; }
+        } catch { /* @silent-fallback-ok — driver retains the source row for bounded retry */ return { posted: false }; }
       };
       const attentionRoute = async (item: { id: string; title: string; summary: string; priority?: string }): Promise<boolean> => {
         try {
@@ -21440,7 +22781,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             body: JSON.stringify({ source: 'correction-loop', body: item.summary, ...item }),
           });
           return resp.status === 201;
-        } catch { return false; }
+        } catch { /* @silent-fallback-ok — missing attention never changes correction work authority */ return false; }
       };
 
       const driver = new CorrectionLoopDriver(ctx.correctionLedger, analyzer, {
@@ -21525,6 +22866,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   //   POST /apprenticeship/cycles/:id/close   — mark row closed (404 missing)
   router.post('/apprenticeship/cycles', (req, res) => {
     if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled — cycle referential integrity unavailable' }); return; }
     try {
       const body = req.body ?? {};
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -21559,6 +22901,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           );
         }
       }
+      const instanceId = typeof body.instanceId === 'string' ? body.instanceId.trim() : '';
+      const instance = instanceId ? ctx.apprenticeshipProgram.get(instanceId) : null;
+      if (!instance) {
+        throw new Error(`instanceId "${instanceId}" does not exist in the apprenticeship registry`);
+      }
+      // Cycles are evidence of work performed inside a live instance. Pending
+      // has not passed its start gate; blocked is paused; complete/abandoned
+      // are terminal history. Active-only keeps the registry authoritative.
+      if (instance.status !== 'active') {
+        throw new Error(
+          `instanceId "${instanceId}" is ${instance.status}; cycles are recordable only while the instance is active`,
+        );
+      }
       const cycle = ctx.apprenticeshipCycleStore.record({
         ...body,
         kind: typeof body.kind === 'string' ? body.kind : 'mentor-mentee-differential',
@@ -21578,12 +22933,49 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ cycles: ctx.apprenticeshipCycleStore.list({ instanceId, limit }) });
   });
 
+  // Same-host cross-agent read leg for role coverage. The general API bearer
+  // cannot authenticate to another agent (tokens are deliberately per-agent),
+  // so this narrow read-only endpoint uses the existing target-agent token
+  // boundary shared by /a2a/inbox. It exposes only bounded cycle rows for one
+  // exact instance; no write or lifecycle authority crosses agents.
+  router.get('/a2a/apprenticeship/cycles', (req, res) => {
+    const authHeader = req.headers.authorization;
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (!bearerToken || !verifyAgentToken(ctx.config.projectName, bearerToken)) {
+      res.status(401).json({ error: 'Invalid or missing agent token' });
+      return;
+    }
+    if (!ctx.apprenticeshipCycleStore) {
+      res.status(503).json({ error: 'apprenticeship cycle store disabled' });
+      return;
+    }
+    const instanceId = typeof req.query.instanceId === 'string' ? req.query.instanceId.trim() : '';
+    if (!instanceId) {
+      res.status(400).json({ error: 'instanceId is required' });
+      return;
+    }
+    res.json({ cycles: ctx.apprenticeshipCycleStore.list({ instanceId, limit: 500 }) });
+  });
+
   router.get('/apprenticeship/cycles/overdue', (req, res) => {
     if (!ctx.apprenticeshipCycleSlaMonitor) { res.status(503).json({ error: 'apprenticeship cycle SLA monitor disabled' }); return; }
     const instanceId = typeof req.query.instanceId === 'string' && req.query.instanceId.trim() !== ''
       ? req.query.instanceId
       : undefined;
     res.json({ overdue: ctx.apprenticeshipCycleSlaMonitor.listOverdue(instanceId) });
+  });
+
+  // Honest read-only audit of historical cycle rows against the live registry.
+  // Never rewrites or deletes legacy rows. Bounded to the store's public 500-row
+  // read ceiling and names truncation explicitly.
+  router.get('/apprenticeship/cycles/integrity', (_req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled — cycle referential integrity unavailable' }); return; }
+    const cycles = ctx.apprenticeshipCycleStore.list({ limit: 500 });
+    const dangling = cycles
+      .filter((cycle) => !ctx.apprenticeshipProgram!.get(cycle.instanceId))
+      .map((cycle) => ({ cycleId: cycle.id, instanceId: cycle.instanceId, createdAt: cycle.createdAt }));
+    res.json({ scanned: cycles.length, danglingCount: dangling.length, dangling, truncated: cycles.length === 500 });
   });
 
   // GET /gemini/capacity — observe-only live view of the Gemini capacity gate
@@ -21613,7 +23005,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ instances: ctx.apprenticeshipProgram.list() });
   });
 
-  router.get('/apprenticeship/instances/:id/role-coverage', (req, res) => {
+  router.get('/apprenticeship/instances/:id/role-coverage', async (req, res) => {
     if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
     try {
       // Optional ?oversightStarvationThreshold=N tunes the keystone-balance
@@ -21627,7 +23019,39 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const rawDormancy = req.query.keystoneDormancyMs;
       const parsedDormancy = typeof rawDormancy === 'string' ? Number.parseInt(rawDormancy, 10) : NaN;
       if (Number.isFinite(parsedDormancy) && parsedDormancy > 0) opts.keystoneDormancyMs = parsedDormancy;
-      res.json(ctx.apprenticeshipCycleStore.roleCoverage(req.params.id, opts));
+      let peerRead: import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead = {
+        cycles: [], sources: [], complete: true, omittedPeerCount: 0,
+      };
+      if (ctx.apprenticeshipPeerCycleReader) {
+        try {
+          peerRead = await ctx.apprenticeshipPeerCycleReader(req.params.id);
+        } catch (error) {
+          // @silent-fallback-ok — the failure is returned explicitly in aggregation.peerSources
+          // The local store remains valid evidence. Preserve the read and name
+          // the missing cross-agent census instead of turning observability into
+          // a 400 or silently presenting a complete local-only answer.
+          peerRead = {
+            cycles: [],
+            sources: [{
+              agent: 'registry', port: 0, cycleCount: 0, truncated: false,
+              error: error instanceof Error ? error.message : String(error),
+            }],
+            complete: false,
+            omittedPeerCount: 0,
+          };
+        }
+      }
+      const coverage = ctx.apprenticeshipCycleStore.roleCoverage(req.params.id, opts, peerRead.cycles);
+      res.json({
+        ...coverage,
+        aggregation: {
+          scope: ctx.apprenticeshipPeerCycleReader ? 'registered-agents' : 'local',
+          complete: peerRead.complete && coverage.coverageConflictingCycleIds.length === 0,
+          peerSources: peerRead.sources,
+          omittedPeerCount: peerRead.omittedPeerCount,
+          conflictingCycleIds: coverage.coverageConflictingCycleIds,
+        },
+      });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -21661,14 +23085,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.post('/apprenticeship/instances/:id/transition', (req, res) => {
+  router.post('/apprenticeship/instances/:id/transition', async (req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     const to = (req.body ?? {}).to;
-    if (!['pending', 'active', 'complete', 'blocked'].includes(to)) {
-      res.status(400).json({ error: 'to must be one of pending | active | complete | blocked' });
+    if (!['pending', 'active', 'complete', 'blocked', 'abandoned'].includes(to)) {
+      res.status(400).json({ error: 'to must be one of pending | active | complete | blocked | abandoned' });
       return;
     }
-    const result = ctx.apprenticeshipProgram.transition(req.params.id, to);
+    const result = await ctx.apprenticeshipProgram.transition(req.params.id, to);
     if (!result.ok) {
       // 404 for a missing instance; 409 for a refused/illegal transition.
       const code = result.reason.includes('not found') ? 404 : 409;
@@ -21678,6 +23102,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ ok: true, reason: result.reason, instance: result.instance });
   });
 
+  router.post('/apprenticeship/instances/:id/rung-transition', (req, res) => {
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
+    const body = req.body ?? {};
+    const result = ctx.apprenticeshipProgram.transitionRung(
+      req.params.id,
+      body.to,
+      typeof body.evidenceRef === 'string' ? body.evidenceRef : '',
+    );
+    if (!result.ok) {
+      res.status(result.reason.includes('not found') ? 404 : 409).json(result);
+      return;
+    }
+    res.json(result);
+  });
+
   router.post('/apprenticeship/instances/:id/can-start', (req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     const inst = ctx.apprenticeshipProgram.get(req.params.id);
@@ -21685,11 +23124,145 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json(ctx.apprenticeshipProgram.evaluateStartGate(inst));
   });
 
-  router.post('/apprenticeship/instances/:id/can-complete', (req, res) => {
+  router.post('/apprenticeship/instances/:id/can-complete', async (req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     const inst = ctx.apprenticeshipProgram.get(req.params.id);
     if (!inst) { res.status(404).json({ error: 'not found' }); return; }
-    res.json(ctx.apprenticeshipProgram.evaluateCompletionGate(inst));
+    res.json(await ctx.apprenticeshipProgram.evaluateCompletionGate(inst));
+  });
+
+  // ── Stall-coverage matrix acceptance (framework-stall-coverage-matrix §2.2) ──
+  //
+  //   POST /apprenticeship/instances/:id/matrix-acceptance/enumerate — Bearer;
+  //     the SERVER renders + records the exact enumerated set (a challenge).
+  //     Optional { topicId } posts the enumeration to the topic so the
+  //     verified operator can bind it with a reply-anchored yes/approve (the
+  //     ScopeAccretionRatifier mechanic).
+  //   POST /apprenticeship/instances/:id/matrix-acceptance — dashboard-PIN
+  //     bind: { pin, challengeId }. Requester ≠ acceptor is structural — the
+  //     Bearer token alone can NEVER record an acceptance (Decision 14).
+  router.post('/apprenticeship/instances/:id/matrix-acceptance/enumerate', async (req, res) => {
+    if (!ctx.apprenticeshipProgram || !ctx.apprenticeshipMatrixAcceptance) {
+      res.status(503).json({ error: 'apprenticeship program disabled' });
+      return;
+    }
+    const inst = ctx.apprenticeshipProgram.get(req.params.id);
+    if (!inst) { res.status(404).json({ error: 'not found' }); return; }
+    const state = resolveMatrixState(inst.id, inst.framework);
+    if (!state) {
+      res.status(409).json({ error: `no stall-coverage matrix content to enumerate for framework '${inst.framework}'` });
+      return;
+    }
+    // Scope-aware mint (Decision 20): whole-set (default) / rows / override.
+    // Rows + override are the production path for `acceptanceRef:` clears and
+    // the §3.4 per-instance relief — hashed via the SAME canonical-row
+    // serialization the gate re-derives at verify time.
+    const requestedScope = typeof req.body?.scope === 'string' ? req.body.scope : 'whole-set';
+    let enumerated: { scope: 'whole-set' | 'degraded' | 'rows' | 'override'; contentHash: string; rowIds: string[]; rule?: string };
+    if (state.kind === 'degraded') {
+      if (requestedScope !== 'whole-set' && requestedScope !== 'degraded') {
+        res.status(409).json({ error: 'row/override-scoped acceptance is not available on a no-source install (degraded verdict only)' });
+        return;
+      }
+      enumerated = { scope: 'degraded', contentHash: state.contentHash, rowIds: [] };
+    } else if (requestedScope === 'whole-set') {
+      enumerated = { scope: 'whole-set', contentHash: state.contentHash, rowIds: [...state.rowsById.keys()] };
+    } else if (requestedScope === 'rows') {
+      const rowIds = Array.isArray(req.body?.rowIds)
+        ? (req.body.rowIds as unknown[]).filter((x): x is string => typeof x === 'string')
+        : [];
+      if (rowIds.length === 0 || rowIds.length > 64 || !rowIds.every((id) => ROW_ID_RE.test(id))) {
+        res.status(400).json({ error: '"rowIds" (non-empty array of "<framework>:<classId>" strings) required for scope "rows"' });
+        return;
+      }
+      const entries: Array<{ rowId: string; row: Parameters<typeof canonicalRowHash>[0] }> = [];
+      for (const id of rowIds) {
+        const row = state.rowsById.get(id);
+        if (!row) {
+          res.status(409).json({ error: `rowId '${id}' does not resolve to a current matrix row` });
+          return;
+        }
+        entries.push({ rowId: id, row });
+      }
+      enumerated = { scope: 'rows', contentHash: canonicalRowSetHash(entries), rowIds: [...rowIds].sort() };
+    } else if (requestedScope === 'override') {
+      const rule = typeof req.body?.rule === 'string' ? req.body.rule : '';
+      const classId = typeof req.body?.classId === 'string' ? req.body.classId : '';
+      if (!RULE_RE.test(rule) || !/^[a-z0-9-]+$/.test(classId)) {
+        res.status(400).json({ error: '"rule" (kebab rule name) and "classId" required for scope "override"' });
+        return;
+      }
+      const rowId = `${inst.framework}:${classId}`;
+      const row = state.rowsById.get(rowId);
+      if (!row) {
+        res.status(409).json({ error: `classId '${classId}' does not resolve to a current matrix row` });
+        return;
+      }
+      enumerated = { scope: 'override', contentHash: canonicalRowHash(row), rowIds: [rowId], rule };
+    } else {
+      res.status(400).json({ error: '"scope" must be one of whole-set | rows | override' });
+      return;
+    }
+    const challenge = ctx.apprenticeshipMatrixAcceptance.mintChallenge({
+      instanceId: inst.id,
+      framework: inst.framework,
+      scope: enumerated.scope,
+      contentHash: enumerated.contentHash,
+      rowIds: enumerated.rowIds,
+      ...(enumerated.rule ? { rule: enumerated.rule } : {}),
+    });
+    const renderedText = ctx.apprenticeshipMatrixAcceptance.renderEnumeration(challenge);
+    // Conversational arm: post the server-authored enumeration to the topic so
+    // a reply-anchored verified-operator confirmation can bind it.
+    let posted: { topicId: number; messageId: number } | null = null;
+    const topicId = typeof req.body?.topicId === 'number' ? req.body.topicId : null;
+    if (topicId !== null && ctx.telegram) {
+      try {
+        const sent = await ctx.telegram.sendToTopic(topicId, renderedText);
+        posted = { topicId, messageId: sent.messageId };
+        ctx.apprenticeshipMatrixAcceptance.attachMessage(challenge.challengeId, posted);
+      } catch {
+        // @silent-fallback-ok — a failed Telegram post only loses the
+        // conversational anchor; the challenge is recorded and the PIN path
+        // remains fully available (the response reports posted: null).
+        posted = null;
+      }
+    }
+    res.json({
+      challengeId: challenge.challengeId,
+      scope: challenge.scope,
+      contentHash: challenge.contentHash,
+      rowIds: challenge.rowIds,
+      ...(challenge.rule ? { rule: challenge.rule } : {}),
+      renderedText,
+      posted,
+    });
+  });
+
+  router.post('/apprenticeship/instances/:id/matrix-acceptance', (req, res) => {
+    if (!ctx.apprenticeshipProgram || !ctx.apprenticeshipMatrixAcceptance) {
+      res.status(503).json({ error: 'apprenticeship program disabled' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return; // PIN-gated: a Bearer token is structurally insufficient
+    const inst = ctx.apprenticeshipProgram.get(req.params.id);
+    if (!inst) { res.status(404).json({ error: 'not found' }); return; }
+    const challengeId = typeof req.body?.challengeId === 'string' ? req.body.challengeId : '';
+    if (!challengeId) { res.status(400).json({ error: '"challengeId" (string) required' }); return; }
+    const challenge = ctx.apprenticeshipMatrixAcceptance.getChallenge(challengeId);
+    if (!challenge || challenge.instanceId !== inst.id) {
+      res.status(404).json({ error: 'unknown challenge for this instance' });
+      return;
+    }
+    // Re-resolve the CURRENT content for the challenge's SCOPE at bind time —
+    // accept-then-edit voids the challenge (§2.2 / Decision 20).
+    const bound = ctx.apprenticeshipMatrixAcceptance.bind({
+      challengeId,
+      principal: { kind: 'operator-pin', id: 'dashboard-pin' },
+      currentContentHash: resolveChallengeCurrentHash(challenge),
+    });
+    if (!bound.ok) { res.status(409).json({ ok: false, reason: bound.reason }); return; }
+    res.json({ ok: true, reason: bound.reason, challengeRef: challengeId });
   });
 
   // ORG-INTENT.md tradeoff resolution (Phase 3 of the ORG-INTENT runtime
@@ -23621,6 +25194,327 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   /**
    * Get all commitments with optional status filter.
    */
+  const blockerPoolCache = new Map<string, { at: number; value: { origins: unknown[]; failures: Array<{ machineId: string; reason: string }>; poolComplete: boolean } }>();
+  const sanitizeBlockerCounters = (raw: unknown): Record<string, number | boolean> | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const source = raw as Record<string, unknown>;
+    const integerKeys = ['attempted', 'inserted', 'deduped', 'failed', 'queueOverflow', 'reconciled',
+      'requestSamplesMissing', 'requestDroppedCapacity', 'clearDroppedCapacity'];
+    if (!integerKeys.every(k => Number.isSafeInteger(source[k]) && (source[k] as number) >= 0) ||
+        typeof source.breakerOpen !== 'boolean') return null;
+    return { ...Object.fromEntries(integerKeys.map(k => [k, source[k] as number])), breakerOpen: source.breakerOpen };
+  };
+  const sanitizeBlockerFactors = (kind: 'summary' | 'trend', raw: unknown): unknown[] | null => {
+    if (!Array.isArray(raw) || raw.length !== 3) return null;
+    const finiteOrNull = (v: unknown) => v === null || (typeof v === 'number' && Number.isFinite(v));
+    const out: unknown[] = [];
+    const seen = new Set<string>();
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') return null;
+      const f = item as Record<string, unknown>;
+      if (!['request-to-persist', 'clear-latency', 'deliverable-completion'].includes(String(f.factor))) return null;
+      if (seen.has(String(f.factor))) return null;
+      seen.add(String(f.factor));
+      if (kind === 'summary') {
+        const expectedRecoverability = f.factor === 'request-to-persist' ? 'best-effort' : 'reconcilable';
+        if (f.recoverability !== expectedRecoverability ||
+            !['completed', 'missing', 'excluded'].every(k => Number.isSafeInteger(f[k]) && (f[k] as number) >= 0) ||
+            !finiteOrNull(f.coverage) || (typeof f.coverage === 'number' && (f.coverage < 0 || f.coverage > 1)) ||
+            !finiteOrNull(f.medianMs) || (typeof f.medianMs === 'number' && f.medianMs < 0) ||
+            !finiteOrNull(f.p95Ms) || (typeof f.p95Ms === 'number' && f.p95Ms < 0) ||
+            !f.outcomes || typeof f.outcomes !== 'object') return null;
+        const outcomes = f.outcomes as Record<string, unknown>;
+        const outcomeKeys = ['observed', 'legacy-missing-start', 'clock-regression-or-implausible', 'request-row-missing', 'episode-dropped-capacity'];
+        if (!outcomeKeys.every(k => Number.isSafeInteger(outcomes[k]) && (outcomes[k] as number) >= 0)) return null;
+        const countFields = f.factor === 'deliverable-completion'
+          ? (f.unit === 'count' && f.total === f.completed && typeof f.averagePerDay === 'number' &&
+              Number.isFinite(f.averagePerDay) && f.averagePerDay >= 0 && f.missing === 0 && f.excluded === 0 &&
+              f.medianMs === null && f.p95Ms === null && outcomes.observed === f.completed &&
+              f.coverage === ((f.completed as number) === 0 ? null : 1) && f.window && typeof f.window === 'object' &&
+              (f.window as Record<string, unknown>).kind === 'rolling-hours' &&
+              typeof (f.window as Record<string, unknown>).hours === 'number' &&
+              Number.isFinite((f.window as Record<string, unknown>).hours) &&
+              ((f.window as Record<string, unknown>).hours as number) >= 1 &&
+              ((f.window as Record<string, unknown>).hours as number) <= 168
+            ? { unit: 'count', window: { kind: 'rolling-hours', hours: (f.window as Record<string, unknown>).hours },
+              total: f.total, averagePerDay: f.averagePerDay } : null)
+          : {};
+        if (countFields === null) return null;
+        out.push({ factor: f.factor, ...countFields, recoverability: f.recoverability, completed: f.completed, missing: f.missing,
+          excluded: f.excluded, coverage: f.coverage, medianMs: f.medianMs, p95Ms: f.p95Ms,
+          outcomes: Object.fromEntries(outcomeKeys.map(k => [k, outcomes[k]])) });
+      } else {
+        if (f.factor === 'deliverable-completion') {
+          if (f.unit !== 'count' || !Array.isArray(f.days) || f.days.length > 89 || !finiteOrNull(f.ratio) ||
+              !f.window || typeof f.window !== 'object' ||
+              (f.window as Record<string, unknown>).kind !== 'rolling-days' ||
+              !Number.isSafeInteger((f.window as Record<string, unknown>).days) ||
+              ((f.window as Record<string, unknown>).days as number) < 7 ||
+              ((f.window as Record<string, unknown>).days as number) > 90 ||
+              (f.window as Record<string, unknown>).dailyBuckets !== 'utc' ||
+              (f.window as Record<string, unknown>).currentDay !== 'partial' ||
+              !Number.isSafeInteger(f.windowTotal) || (f.windowTotal as number) < 0 ||
+              !Number.isSafeInteger(f.currentDayCount) || (f.currentDayCount as number) < 0 ||
+              !Array.isArray(f.cumulativeDays) || f.cumulativeDays.length !== f.days.length + 1 ||
+              (typeof f.ratio === 'number' && f.ratio < 0) ||
+              !['climbing', 'flat', 'declining', 'insufficient-data'].includes(String(f.direction)) ||
+              !(f.reason === null || ['insufficient-days', 'zero-denominator'].includes(String(f.reason)))) return null;
+          const days = f.days.map(d => {
+            if (!d || typeof d !== 'object') return null;
+            const row = d as Record<string, unknown>;
+            return /^\d{4}-\d{2}-\d{2}$/.test(String(row.day)) && Number.isSafeInteger(row.count) && (row.count as number) >= 0
+              ? { day: row.day, count: row.count } : null;
+          });
+          if (days.some(d => d === null)) return null;
+          for (let i = 1; i < days.length; i++) {
+            const previous = Date.parse(`${days[i - 1]!.day as string}T00:00:00.000Z`);
+            const current = Date.parse(`${days[i]!.day as string}T00:00:00.000Z`);
+            if (current - previous !== 86_400_000) return null;
+          }
+          let runningTotal = 0;
+          const cumulativeDays = f.cumulativeDays.map((d, index) => {
+            if (!d || typeof d !== 'object') return null;
+            const row = d as Record<string, unknown>;
+            const expectedDay = index < days.length ? days[index]!.day : undefined;
+            const validDay = /^\d{4}-\d{2}-\d{2}$/.test(String(row.day));
+            const validCount = Number.isSafeInteger(row.count) && (row.count as number) >= 0;
+            if (!validDay || !validCount || !Number.isSafeInteger(row.cumulative) || typeof row.complete !== 'boolean') return null;
+            runningTotal += row.count as number;
+            if (row.cumulative !== runningTotal || row.complete !== (index < days.length) ||
+                (index < days.length && row.day !== expectedDay)) return null;
+            return { day: row.day, count: row.count, cumulative: row.cumulative, complete: row.complete };
+          });
+          if (cumulativeDays.some(d => d === null) || runningTotal !== f.windowTotal ||
+              cumulativeDays[cumulativeDays.length - 1]?.count !== f.currentDayCount) return null;
+          const liveDay = cumulativeDays[cumulativeDays.length - 1]?.day;
+          const expectedLiveDay = days.length > 0
+            ? new Date(Date.parse(`${days[days.length - 1]!.day as string}T00:00:00.000Z`) + 86_400_000).toISOString().slice(0, 10)
+            : undefined;
+          if (expectedLiveDay !== undefined && liveDay !== expectedLiveDay) return null;
+          const half = (v: unknown) => {
+            if (!v || typeof v !== 'object') return null;
+            const h = v as Record<string, unknown>;
+            return Number.isSafeInteger(h.days) && (h.days as number) >= 0 && Number.isSafeInteger(h.total) &&
+              (h.total as number) >= 0 && finiteOrNull(h.meanPerDay) && (h.meanPerDay === null || (h.meanPerDay as number) >= 0)
+              ? { days: h.days, total: h.total, meanPerDay: h.meanPerDay } : null;
+          };
+          const firstHalf = half(f.firstHalf); const secondHalf = half(f.secondHalf);
+          if (!firstHalf || !secondHalf) return null;
+          const split = days.length >> 1;
+          const derivedHalf = (part: Array<{ day: unknown; count: unknown }>) => {
+            const total = part.reduce((sum, row) => sum + Number(row.count), 0);
+            return { days: part.length, total, meanPerDay: total / part.length };
+          };
+          const expectedFirst = derivedHalf(days.slice(0, split) as Array<{ day: unknown; count: unknown }>);
+          const expectedSecond = derivedHalf(days.slice(split) as Array<{ day: unknown; count: unknown }>);
+          const sameNumber = (a: unknown, b: number) => typeof a === 'number' && Number.isFinite(a) &&
+            Math.abs(a - b) <= Number.EPSILON * Math.max(1, Math.abs(a), Math.abs(b)) * 8;
+          if (firstHalf.days !== expectedFirst.days || firstHalf.total !== expectedFirst.total ||
+              !sameNumber(firstHalf.meanPerDay, expectedFirst.meanPerDay) ||
+              secondHalf.days !== expectedSecond.days || secondHalf.total !== expectedSecond.total ||
+              !sameNumber(secondHalf.meanPerDay, expectedSecond.meanPerDay)) return null;
+          if (expectedFirst.meanPerDay === 0) {
+            const expectedDirection = expectedSecond.total > 0 ? 'climbing' : 'flat';
+            if (f.ratio !== null || f.reason !== 'zero-denominator' || f.direction !== expectedDirection) return null;
+          } else {
+            const expectedRatio = expectedSecond.meanPerDay / expectedFirst.meanPerDay;
+            const expectedDirection = expectedRatio > 1 ? 'climbing' : expectedRatio < 1 ? 'declining' : 'flat';
+            if (!sameNumber(f.ratio, expectedRatio) || f.reason !== null || f.direction !== expectedDirection) return null;
+          }
+          out.push({ factor: f.factor, unit: 'count', window: { kind: 'rolling-days',
+            days: (f.window as Record<string, unknown>).days, dailyBuckets: 'utc', currentDay: 'partial' }, windowTotal: f.windowTotal,
+            currentDayCount: f.currentDayCount, cumulativeDays, days, firstHalf, secondHalf,
+            ratio: f.ratio, direction: f.direction, reason: f.reason });
+          continue;
+        }
+        if (!Array.isArray(f.days) || f.days.length > 90 || !finiteOrNull(f.ratio) ||
+            (typeof f.ratio === 'number' && f.ratio < 0) ||
+            !(f.reason === null || ['insufficient-days', 'insufficient-samples', 'zero-denominator'].includes(String(f.reason)))) return null;
+        const days = f.days.map(d => {
+          if (!d || typeof d !== 'object') return null;
+          const row = d as Record<string, unknown>;
+          return /^\d{4}-\d{2}-\d{2}$/.test(String(row.day)) && finiteOrNull(row.medianMs) &&
+            (row.medianMs === null || (row.medianMs as number) >= 0) && Number.isSafeInteger(row.samples) && (row.samples as number) >= 0
+            ? { day: row.day, medianMs: row.medianMs, samples: row.samples } : null;
+        });
+        if (days.some(d => d === null)) return null;
+        const half = (v: unknown) => {
+          if (!v || typeof v !== 'object') return null;
+          const h = v as Record<string, unknown>;
+          return Number.isSafeInteger(h.days) && (h.days as number) >= 0 && Number.isSafeInteger(h.samples) &&
+            (h.samples as number) >= 0 && finiteOrNull(h.meanMs) && (h.meanMs === null || (h.meanMs as number) >= 0)
+            ? { days: h.days, samples: h.samples, meanMs: h.meanMs } : null;
+        };
+        const firstHalf = half(f.firstHalf); const secondHalf = half(f.secondHalf);
+        if (!firstHalf || !secondHalf) return null;
+        out.push({ factor: f.factor, days, firstHalf, secondHalf, ratio: f.ratio, reason: f.reason });
+      }
+    }
+    if (seen.size !== 3) return null;
+    return out;
+  };
+  const sanitizeMaturation = (kind: 'summary' | 'trend', raw: unknown): Record<string, unknown> | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const m = raw as Record<string, unknown>;
+    if (kind === 'summary') {
+      if (!['eligible', 'evaluated', 'missedDue'].every(k => Number.isSafeInteger(m[k]) && (m[k] as number) >= 0) ||
+          !m.byStatus || typeof m.byStatus !== 'object' || !Array.isArray(m.features) || m.features.length > 512) return null;
+      const statuses = ['ready', 'hold', 'stale-evidence', 'insufficient-evidence', 'missing-contract', 'invalid-contract', 'missed-cadence'];
+      const byStatus = m.byStatus as Record<string, unknown>;
+      if (!statuses.filter(k => k !== 'invalid-contract').every(k => Number.isSafeInteger(byStatus[k]) && (byStatus[k] as number) >= 0) ||
+          !(byStatus['invalid-contract'] === undefined || (Number.isSafeInteger(byStatus['invalid-contract']) && (byStatus['invalid-contract'] as number) >= 0))) return null;
+      const features = m.features.map(v => {
+        if (!v || typeof v !== 'object') return null;
+        const f = v as Record<string, unknown>;
+        if (typeof f.featureId !== 'string' || f.featureId.length > 63 || !(f.rung === null || typeof f.rung === 'string') ||
+            !statuses.includes(String(f.status)) || !Number.isSafeInteger(f.passingMetrics) || !Number.isSafeInteger(f.totalMetrics) ||
+            !(f.minNormalizedMargin === null || (typeof f.minNormalizedMargin === 'number' && Number.isFinite(f.minNormalizedMargin)))) return null;
+        return { featureId: f.featureId, rung: f.rung, status: f.status, evaluatedAt: f.evaluatedAt,
+          passingMetrics: f.passingMetrics, totalMetrics: f.totalMetrics,
+          minNormalizedMargin: f.minNormalizedMargin, newestEvidenceAt: f.newestEvidenceAt ?? null };
+      });
+      if (features.some(v => v === null)) return null;
+      const dispositions = ['active', 'composed', 'excluded'];
+      let accounting: unknown[] = []; let accountingCounts: Record<string, unknown> | undefined;
+      if (m.accounting !== undefined || m.accountingCounts !== undefined) {
+        if (!Array.isArray(m.accounting) || m.accounting.length > 512 || !m.accountingCounts || typeof m.accountingCounts !== 'object') return null;
+        if (!Number.isSafeInteger(m.legacyEligible) || (m.legacyEligible as number) < 0) return null;
+        accountingCounts = m.accountingCounts as Record<string, unknown>;
+        if (!dispositions.every(k => Number.isSafeInteger(accountingCounts![k]) && (accountingCounts![k] as number) >= 0)) return null;
+        accounting = m.accounting.map(v => {
+          if (!v || typeof v !== 'object') return null;
+          const a = v as Record<string, unknown>;
+          if (typeof a.featureId !== 'string' || a.featureId.length > 63 || !dispositions.includes(String(a.disposition)) ||
+              typeof a.status !== 'string' || a.status.length > 32 || !(a.flagPath === null || typeof a.flagPath === 'string') ||
+              !['self-owner', 'parent-owner-evidence-only', 'none'].includes(String(a.promotionAuthority)) ||
+              !Number.isSafeInteger(a.sourcePrNumber) || (a.sourcePrNumber as number) < 1 ||
+              !(a.rung === null || ['test-agent-live', 'dev-agent-live', 'fleet'].includes(String(a.rung))) ||
+              !(a.ownerFeatureId === null || typeof a.ownerFeatureId === 'string') ||
+              !(a.graduationCriterion === null || typeof a.graduationCriterion === 'string') ||
+              !(a.evidenceSource === null || (typeof a.evidenceSource === 'object' &&
+                ['endpoint', 'log-filter'].includes(String((a.evidenceSource as Record<string, unknown>).type)) &&
+                typeof (a.evidenceSource as Record<string, unknown>).ref === 'string')) ||
+              !(a.contractError == null || ['invalid-json', 'oversized', 'invalid-shape', 'unknown-source-ref'].includes(String(a.contractError))) ||
+              !Number.isSafeInteger(a.metricCount) || (a.metricCount as number) < 0 || !Array.isArray(a.metricDescriptors) ||
+              a.metricDescriptors.length !== a.metricCount) return null;
+          const metricDescriptors = a.metricDescriptors.map(value => {
+            if (!value || typeof value !== 'object') return null;
+            const d = value as Record<string, unknown>;
+            return typeof d.id === 'string' && ['blocker-summary', 'blocker-trend', 'feature-summary'].includes(String(d.source)) &&
+              typeof d.sourceRef === 'string' && d.descriptorVersion === 1 && ['at-least', 'at-most'].includes(String(d.direction)) &&
+              typeof d.threshold === 'number' && Number.isFinite(d.threshold) && Number.isSafeInteger(d.minSamples) && (d.minSamples as number) > 0
+              ? d : null;
+          });
+          if (metricDescriptors.some(value => value === null)) return null;
+          return { ...a, metricDescriptors };
+        });
+        if (accounting.some(v => v === null)) return null;
+        const actualCounts = { active: 0, composed: 0, excluded: 0 };
+        for (const raw of accounting) {
+          const row = raw as Record<string, unknown>;
+          actualCounts[row.disposition as keyof typeof actualCounts]++;
+          if ((row.disposition === 'active') !== (row.rung !== null)) return null;
+          const expectedAuthority = row.disposition === 'active' ? 'self-owner'
+            : row.disposition === 'composed' ? 'parent-owner-evidence-only' : 'none';
+          if (row.promotionAuthority !== expectedAuthority) return null;
+        }
+        if (dispositions.some(k => actualCounts[k as keyof typeof actualCounts] !== accountingCounts![k]) ||
+            m.eligible !== actualCounts.active + actualCounts.composed + (m.legacyEligible as number)) return null;
+      }
+      return { eligible: m.eligible, evaluated: m.evaluated, missedDue: m.missedDue,
+        byStatus: Object.fromEntries(statuses.map(k => [k, byStatus[k] ?? 0])), features,
+        ...(accountingCounts ? { accountingCounts: Object.fromEntries(dispositions.map(k => [k, accountingCounts![k]])),
+          legacyEligible: m.legacyEligible, accounting } : {}) };
+    }
+    if (!Array.isArray(m.features) || m.features.length > 512) return null;
+    return { features: m.features.slice(0, 512) };
+  };
+  const blockerPoolRead = async (kind: 'summary' | 'trend', query: string, local: Record<string, unknown>) => {
+    const cacheKey = `${kind}?${query}`;
+    const cached = blockerPoolCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < 60_000) return cached.value;
+    const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
+    const origins: unknown[] = [local];
+    const failures: Array<{ machineId: string; reason: string }> = [];
+    const started = Date.now();
+    let responseBytes = Buffer.byteLength(JSON.stringify(local));
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    for (let i = 0; i < peers.length; i += 4) {
+      await Promise.all(peers.slice(i, i + 4).map(async p => {
+        if (Date.now() - started > 2_500) { failures.push({ machineId: p.machineId, reason: 'deadline' }); return; }
+        if (!isPeerUrlAllowedForCredentials(p.url, extraAllowlist).ok) {
+          failures.push({ machineId: p.machineId, reason: 'omitted-cap' }); return;
+        }
+        try {
+          const response = await fetch(`${p.url}/blocker-lifecycle/${kind}?${query}&scope=local`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(750),
+          });
+          if (response.status === 404) { failures.push({ machineId: p.machineId, reason: 'unsupported' }); return; }
+          if (!response.ok) { failures.push({ machineId: p.machineId, reason: 'http-error' }); return; }
+          const text = await response.text();
+          if (Buffer.byteLength(text) > 512 * 1024) { failures.push({ machineId: p.machineId, reason: 'truncated' }); return; }
+          const body = JSON.parse(text) as { schemaVersion?: unknown; origins?: unknown[] };
+          if (body.schemaVersion !== 2) {
+            failures.push({ machineId: p.machineId, reason: body.schemaVersion === 1 ? 'unsupported' : 'invalid-body' }); return;
+          }
+          if (!Array.isArray(body.origins) || body.origins.length !== 1) {
+            failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return;
+          }
+          const origin = body.origins[0];
+          if (!origin || typeof origin !== 'object') { failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return; }
+          const candidate = origin as Record<string, unknown>;
+          const factors = sanitizeBlockerFactors(kind, candidate.factors);
+          const maturation = sanitizeMaturation(kind, candidate.maturation);
+          const counters = kind === 'summary' ? sanitizeBlockerCounters(candidate.counters) : null;
+          if (!maturation) {
+            failures.push({ machineId: p.machineId, reason: 'unsupported-maturation' }); return;
+          }
+          if (!factors || (kind === 'summary' && !counters)) {
+            failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return;
+          }
+          const sanitized = kind === 'summary'
+            ? { machineId: p.machineId, factors, maturation, counters }
+            : { machineId: p.machineId, factors, maturation };
+          const bytes = Buffer.byteLength(JSON.stringify(sanitized));
+          if (responseBytes + bytes > 4 * 1024 * 1024) { failures.push({ machineId: p.machineId, reason: 'truncated' }); return; }
+          responseBytes += bytes;
+          origins.push(sanitized);
+        } catch (err) {
+          failures.push({ machineId: p.machineId, reason: err instanceof Error && err.name === 'TimeoutError' ? 'deadline' : 'unreachable' });
+        }
+      }));
+    }
+    const value = { origins, failures, poolComplete: failures.length === 0 };
+    blockerPoolCache.set(cacheKey, { at: Date.now(), value });
+    return value;
+  };
+
+  router.get('/blocker-lifecycle/summary', async (req, res) => {
+    if (!ctx.blockerLifecycleService?.available()) { res.status(503).json({ error: 'blocker-lifecycle-unavailable' }); return; }
+    const sinceHours = Number(req.query.sinceHours ?? 24);
+    const scope = String(req.query.scope ?? 'local');
+    if (!Number.isFinite(sinceHours) || sinceHours < 1 || sinceHours > 168 || !['local', 'pool'].includes(scope)) {
+      res.status(400).json({ error: 'invalid-blocker-lifecycle-query' }); return;
+    }
+    const local = ctx.blockerLifecycleService.localSummary(sinceHours);
+    const pool = scope === 'pool' ? await blockerPoolRead('summary', `sinceHours=${sinceHours}`, local)
+      : { origins: [local], failures: [], poolComplete: true };
+    res.json({ schemaVersion: 2, scope, ...pool, generatedAt: new Date().toISOString() });
+  });
+
+  router.get('/blocker-lifecycle/trend', async (req, res) => {
+    if (!ctx.blockerLifecycleService?.available()) { res.status(503).json({ error: 'blocker-lifecycle-unavailable' }); return; }
+    const windowDays = Number(req.query.windowDays ?? 7);
+    const scope = String(req.query.scope ?? 'local');
+    if (!Number.isInteger(windowDays) || windowDays < 7 || windowDays > 90 || !['local', 'pool'].includes(scope)) {
+      res.status(400).json({ error: 'invalid-blocker-lifecycle-query' }); return;
+    }
+    const local = ctx.blockerLifecycleService.localTrend(windowDays);
+    const pool = scope === 'pool' ? await blockerPoolRead('trend', `windowDays=${windowDays}`, local)
+      : { origins: [local], failures: [], poolComplete: true };
+    res.json({ schemaVersion: 2, scope, ...pool, generatedAt: new Date().toISOString() });
+  });
+
   router.get('/commitments', async (req, res) => {
     if (!ctx.commitmentTracker) {
       res.json({ enabled: false, commitments: [] });
@@ -23846,7 +25740,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             softDeadlineAt, hardDeadlineAt, sessionEpoch,
             ownerMachineId, externalKey, beaconCreatedBySource,
             // C1+C2 "The Agent Carries the Loop" state model (§4.1).
-            owner, blockedOn, actionClass, supersededBy } = req.body;
+            owner, blockedOn, actionClass, supersededBy,
+            correctionId, classReviewRef, origin } = req.body;
 
     if (!type || !userRequest || !agentResponse) {
       res.status(400).json({ error: 'type, userRequest, and agentResponse are required' });
@@ -23854,6 +25749,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (!['config-change', 'behavioral', 'one-time-action'].includes(type)) {
       res.status(400).json({ error: 'type must be config-change, behavioral, or one-time-action' });
+      return;
+    }
+    const correctionDerived = origin === 'correction' || typeof correctionId === 'string' || typeof classReviewRef === 'string';
+    const classReviewAdmission = evaluateCorrectionInstanceFix({
+      originCorrection: correctionDerived,
+      correctionId: typeof correctionId === 'string' ? correctionId : undefined,
+      claimedClassReviewRef: typeof classReviewRef === 'string' ? classReviewRef : undefined,
+      dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false,
+      correctionLedger: ctx.correctionLedger ?? null,
+      classReviewStore: ctx.classReviewStore ?? null,
+    });
+    if (!classReviewAdmission.allow) {
+      res.status(409).json({ error: 'correction-derived commitment requires a corresponding filled class review', reason: classReviewAdmission.reason });
       return;
     }
     // Beacon validation: must have topicId and at least one deadline marker.
@@ -23908,6 +25816,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         softDeadlineAt, hardDeadlineAt, sessionEpoch,
         ownerMachineId, externalKey, beaconCreatedBySource,
         owner, blockedOn, actionClass, supersededBy,
+        ...(typeof correctionId === 'string' ? { correctionId } : {}),
+        ...(classReviewAdmission.classReviewRef ? { classReviewRef: classReviewAdmission.classReviewRef } : {}),
         ...(boundBy ? { boundBy } : {}),
       });
       // §6.1 dark-window honesty (adversarial-A6/NEW#4): while followThrough
@@ -23931,7 +25841,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
         } catch { /* attention is observability */ }
       }
-      res.status(201).json(commitment);
+      res.status(201).json({ ...commitment, classReviewAdmission: {
+        wouldRefuse: classReviewAdmission.wouldRefuse, reason: classReviewAdmission.reason,
+      } });
     } catch (err) {
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
@@ -24028,6 +25940,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const { message, topicId } = req.body ?? {};
     if (typeof message !== 'string' || typeof topicId !== 'number') {
       res.status(400).json({ error: 'message (string) and topicId (number) are required' });
+      return;
+    }
+    const completionLive = !!ctx.completionClaimVerifier
+      && resolveDevAgentGate(ctx.config.monitoring?.completionClaimVerification?.enabled, ctx.config)
+      && ctx.config.monitoring?.completionClaimVerification?.dryRun === false;
+    if (completionLive && ctx.completionClaimVerifier!.getRecentAuthoritativeArbitration(message)?.authoritative) {
+      res.json({ observed: true, registered: false, reason: 'shared-arbiter-authoritative' });
       return;
     }
     const numericTopicId = Number.isSafeInteger(topicId) ? topicId : undefined;
@@ -24469,6 +26388,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const updated = ctx.commitmentTracker.transitionState(req.params.id, { owner, blockedOn, actionClass, supersededBy });
       res.json({ transitioned: true, id: updated.id, owner: updated.owner, blockedOn: updated.blockedOn });
     } catch (err) {
+      if (err instanceof CommitmentPersistenceError) {
+        res.status(503).json({ error: 'commitment-persistence-unavailable' });
+        return;
+      }
       const msg = (err as Error).message;
       const code = /not found/.test(msg) ? 404 : /terminal/.test(msg) ? 409 : 400;
       res.status(code).json({ error: msg });
@@ -24543,6 +26466,47 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // GET routes return { enabled: false } when the pool is not configured so
   // they answer 200 (not 503) on every install.
 
+  const subscriptionEmailReconciliation = () => {
+    const barrier = ctx.subscriptionEmailBarrier;
+    if (barrier && typeof barrier.snapshot === 'function') return barrier.snapshot();
+    const state = barrier && typeof barrier.status === 'function'
+      ? barrier.status()
+      : barrier?.isBlocking() ? 'running' : 'complete';
+    return {
+      state,
+      unresolvedCount: ctx.subscriptionPool?.listEmailGaps?.().length ?? 0,
+      repairRunsFreshProbe: true as const,
+    };
+  };
+  const enforceSubscriptionPoolWriteCapability = (route: string) =>
+    (_req: ExpressRequest, res: ExpressResponse, next: () => void): void => {
+    const capability = SUBSCRIPTION_POOL_WRITE_CAPABILITIES[route];
+    if (!capability) {
+      res.status(500).json({ error: 'Subscription identity mutation route is not classified.' });
+      return;
+    }
+    if (capability === 'readOnlyOrNonIdentity' || !ctx.subscriptionEmailBarrier?.isBlocking()) {
+      next();
+      return;
+    }
+    res.status(503).json({
+      error: 'Account identity reconciliation is still starting. Try again shortly.',
+      code: 'subscription-account-email-reconciliation-running',
+      retryable: true,
+      emailReconciliation: { state: 'running' },
+    });
+  };
+  const subscriptionEmailGaps = () =>
+    (ctx.subscriptionPool?.listEmailGaps?.() ?? []).map((account) => ({
+      accountId: account.accountId,
+      nickname: account.nickname,
+      provider: account.provider,
+      framework: account.framework,
+      reason: ctx.subscriptionEmailBarrier?.timedOutAccount(account.accountId)
+        ? 'reconciliation-timeout'
+        : 'account-record-missing-email',
+    }));
+
   router.get('/subscription-pool', async (req, res) => {
     // WS5.1 — pool-scope read: "how much quota is left across ALL my machines /
     // accounts?" in ONE view. Mirrors GET /sessions?scope=pool exactly: fan out
@@ -24560,7 +26524,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const selfMachineNickname = selfMachineId
         ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
         : null;
-      const selfAccounts = (ctx.subscriptionPool?.list() ?? []).map((a) => ({
+      const localRows = ctx.subscriptionPool?.list() ?? [];
+      const selfAccounts = localRows.map((a) => ({
         ...a,
         machineId: selfMachineId,
         machineNickname: selfMachineNickname ?? undefined,
@@ -24570,6 +26535,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const peers = ctx.resolvePeerUrls?.() ?? [];
       const failed: Array<{ machineId: string; error: string }> = [];
       const remote: Record<string, unknown>[] = [];
+      const remoteEmailGaps: Record<string, unknown>[] = [];
+      const remoteReconciliation: Array<{
+        state: 'running' | 'degraded' | 'complete';
+        unresolvedCount: number;
+      }> = [];
       await Promise.all(peers.map(async (p) => {
         try {
           const r = await fetch(`${p.url}/subscription-pool`, {
@@ -24581,7 +26551,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             failed.push({ machineId: p.machineId, error: r.status === 401 || r.status === 403 ? 'unauthorized' : 'error' });
             return;
           }
-          const body = (await r.json()) as { accounts?: Record<string, unknown>[] };
+          const body = (await r.json()) as {
+            accounts?: Record<string, unknown>[];
+            emailGaps?: Record<string, unknown>[];
+            emailReconciliation?: {
+              state?: 'running' | 'degraded' | 'complete';
+              unresolvedCount?: number;
+            };
+          };
           const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
           for (const a of body.accounts ?? []) {
             remote.push({
@@ -24589,6 +26566,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               machineId: a.machineId ?? p.machineId,
               machineNickname: a.machineNickname ?? nickname ?? undefined,
               remote: true,
+            });
+          }
+          for (const gap of body.emailGaps ?? []) {
+            remoteEmailGaps.push({
+              ...gap,
+              machineId: gap.machineId ?? p.machineId,
+              machineNickname: gap.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+          if (body.emailReconciliation?.state) {
+            remoteReconciliation.push({
+              state: body.emailReconciliation.state,
+              unresolvedCount: Number(body.emailReconciliation.unresolvedCount ?? 0),
             });
           }
         } catch (err) {
@@ -24601,9 +26592,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
       }));
 
+      const localReconciliation = subscriptionEmailReconciliation();
+      const reconciliationRows = [localReconciliation, ...remoteReconciliation];
+      const aggregateState = reconciliationRows.some((row) => row.state === 'running')
+        ? 'running'
+        : reconciliationRows.some((row) => row.state === 'degraded') ? 'degraded' : 'complete';
       res.json({
         enabled: !!ctx.subscriptionPool,
         accounts: [...selfAccounts, ...remote],
+        emailGaps: [
+          ...subscriptionEmailGaps().map((gap) => ({
+            ...gap,
+            machineId: selfMachineId,
+            machineNickname: selfMachineNickname ?? undefined,
+            remote: false,
+          })),
+          ...remoteEmailGaps,
+        ],
+        emailReconciliation: {
+          state: aggregateState,
+          unresolvedCount: reconciliationRows.reduce((sum, row) => sum + row.unresolvedCount, 0),
+          repairRunsFreshProbe: true,
+        },
         pool: {
           selfMachineId,
           selfMachineNickname,
@@ -24621,7 +26631,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const accounts = ctx.subscriptionPool.list();
-    res.json({ enabled: true, count: accounts.length, accounts });
+    const emailGaps = subscriptionEmailGaps();
+    res.json({
+      enabled: true,
+      count: accounts.length,
+      accounts,
+      emailGaps,
+      emailReconciliation: subscriptionEmailReconciliation(),
+    });
   });
 
   // D5 (topic 29836) — record-state ⟂ pane-liveness. A pending login is only genuinely
@@ -24656,19 +26673,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const pool = ctx.subscriptionPool!;
     const existing = pool.get(login.id);
     if (existing) {
-      return pool.update(login.id, {
+      return new SubscriptionAccountEmailRegistrar(
+        pool,
+        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+      ).completeValidated(login.id, email, {
         nickname: login.label,
         status: 'active',
-        email,
         ...(login.configHome ? { configHome: login.configHome } : {}),
       });
     }
-    return pool.add({
+    return new SubscriptionAccountEmailRegistrar(
+      pool,
+      ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+      ctx.subscriptionEmailBinding,
+    ).completeNewValidated({
       id: login.id, nickname: login.label,
-      provider: login.provider as Parameters<typeof pool.add>[0]['provider'],
-      framework: login.framework as Parameters<typeof pool.add>[0]['framework'],
+      provider: login.provider as import('../core/SubscriptionPool.js').SubscriptionProvider,
+      framework: login.framework as import('../core/SubscriptionPool.js').SubscriptionFramework,
       configHome: login.configHome ?? '', status: 'active', email,
     });
+  };
+
+  // A completed sign-in has replaced the credential at this slot. Discard the
+  // pre-login identity observation and immediately re-probe only this account;
+  // otherwise identityDrifted remains latched until the next scheduled sweep.
+  // Completion remains successful if the fresh quota read is temporarily
+  // unavailable: the normal poll loop will retry, while the cache is already
+  // invalidated so it cannot reuse pre-login identity evidence.
+  const reverifyCompletedEnrollment = async (
+    login: { id: string; configHome?: string },
+  ): Promise<void> => {
+    const poller = ctx.quotaPoller;
+    const account = ctx.subscriptionPool?.get(login.id);
+    if (!poller || !account) return;
+    poller.invalidateIdentityCache([login.configHome || account.configHome]);
+    try { await poller.pollAccount(account); }
+    catch (err) {
+      console.warn(`[subscription-pool] immediate post-enrollment verification deferred for ${login.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   // P2.1 — the "Pending Logins" surface (the phone/dashboard panel). MUST be
@@ -24762,7 +26804,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Run ONE proactive-swap pass now (the deterministic "show me it works" lever):
   // refresh the poll if near the wall, then pre-emptively swap at-pressure sessions.
   // POST so it never collides with GET /subscription-pool/:id.
-  router.post('/subscription-pool/proactive-swap/check', async (_req, res) => {
+  router.post('/subscription-pool/proactive-swap/check', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/proactive-swap/check'), async (_req, res) => {
     if (!ctx.proactiveSwapMonitor) {
       res.json({ enabled: false, swapped: [], considered: 0, refreshed: false });
       return;
@@ -24772,6 +26814,40 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ enabled: true, ...result });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'proactive check failed' });
+    }
+  });
+
+  router.post('/subscription-pool/:id/repair-email', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/:id/repair-email'), async (req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.status(404).json({ error: 'SubscriptionPool not configured' });
+      return;
+    }
+    const suppliedPin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expectedPin = ctx.config.dashboardPin ?? '';
+    const pinOk = suppliedPin.length === expectedPin.length && suppliedPin.length > 0 &&
+      timingSafeEqual(Buffer.from(suppliedPin), Buffer.from(expectedPin));
+    if (!pinOk) {
+      res.status(401).json({ error: 'Dashboard PIN required.' });
+      return;
+    }
+    try {
+      const registrar = new SubscriptionAccountEmailRegistrar(
+        ctx.subscriptionPool,
+        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+        ctx.subscriptionEmailBinding,
+      );
+      res.json(await registrar.repairLegacy(req.params.id));
+    } catch (err) {
+      const code = err instanceof Error && 'code' in err ? String(err.code) : 'identity-oracle-unavailable';
+      const status = code === 'subscription-account-not-found'
+        ? 404
+        : code === 'subscription-account-identity-provider-unsupported' ? 400 : 409;
+      res.status(status).json({
+        error: err instanceof Error ? err.message : 'Account identity could not be repaired.',
+        code,
+        repairRequired: true,
+        emailReconciliation: subscriptionEmailReconciliation(),
+      });
     }
   });
 
@@ -24788,7 +26864,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json(account);
   });
 
-  router.post('/subscription-pool', (req, res) => {
+  router.post('/subscription-pool', enforceSubscriptionPoolWriteCapability('POST /subscription-pool'), async (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
@@ -24801,27 +26877,62 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     try {
+      if (!/^[a-z0-9-]+$/.test(String(id))) {
+        res.status(400).json({ error: 'id must match ^[a-z0-9-]+$' });
+        return;
+      }
+      if (ctx.subscriptionPool.get(String(id))) {
+        res.status(400).json({ error: `account ${String(id)} already exists` });
+        return;
+      }
+      for (const key of Object.keys(req.body ?? {})) {
+        if (/(?:access|refresh)?token|api_?key|credentials?|secret|password|oauth/i.test(key)) {
+          res.status(400).json({
+            error: `the registry stores login LOCATION, never credentials — field "${key}" is not allowed`,
+          });
+          return;
+        }
+      }
+      if (provider !== 'anthropic' || framework !== 'claude-code') {
+        res.status(400).json({
+          error: `provider identity verification is not supported for ${String(provider)}/${String(framework)}`,
+          code: 'subscription-account-identity-provider-unsupported',
+        });
+        return;
+      }
       // Pass the full body as rawExtra so the credential-field guard rejects any
       // attempt to smuggle a token into the registry (structural invariant).
-      const account = ctx.subscriptionPool.add(
+      const account = await new SubscriptionAccountEmailRegistrar(
+        ctx.subscriptionPool,
+        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+      ).register(
         { id, nickname, provider, framework, configHome, status, email },
         req.body,
       );
       res.status(201).json(account);
     } catch (err) {
+      const code = err instanceof Error && 'code' in err ? String(err.code) : undefined;
       const isValidation = err instanceof Error && err.name === 'ValidationError';
-      res.status(isValidation ? 400 : 500).json({
+      res.status(code ? 400 : isValidation ? 400 : 500).json({
         error: err instanceof Error ? err.message : 'failed to add account',
+        ...(code ? { code } : {}),
       });
     }
   });
 
-  router.patch('/subscription-pool/:id', (req, res) => {
+  router.patch('/subscription-pool/:id', enforceSubscriptionPoolWriteCapability('PATCH /subscription-pool/:id'), (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
     }
     const { nickname, framework, configHome, status, lastQuota, lastUsedAt, email } = req.body ?? {};
+    if (email !== undefined) {
+      res.status(409).json({
+        error: 'Account email is credential-attested identity and cannot be edited directly.',
+        code: 'identity-email-direct-mutation-refused',
+      });
+      return;
+    }
     // Census #10/#11: while live credential re-pointing is enabled the account `configHome` is
     // enrollment metadata, NOT the credential's live location (the ledger owns location). A hand
     // edit here would silently desync the ledger and re-point sessions to the wrong slot, so the
@@ -24843,7 +26954,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const updated = ctx.subscriptionPool.update(
         req.params.id,
-        { nickname, framework, configHome, status, lastQuota, lastUsedAt, email },
+        { nickname, framework, configHome, status, lastQuota, lastUsedAt },
         req.body,
       );
       if (!updated) {
@@ -24859,7 +26970,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.delete('/subscription-pool/:id', (req, res) => {
+  router.delete('/subscription-pool/:id', enforceSubscriptionPoolWriteCapability('DELETE /subscription-pool/:id'), (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
@@ -24879,7 +26990,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // normal GET /subscription-pool. { enabled:false } when the poller is unwired
   // (200, never 503).
 
-  router.post('/subscription-pool/poll', async (_req, res) => {
+  router.post('/subscription-pool/poll', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/poll'), async (_req, res) => {
     if (!ctx.quotaPoller) {
       res.json({ enabled: false, polled: 0, failed: 0 });
       return;
@@ -24903,10 +27014,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const burnRate = ctx.quotaPoller ? ctx.quotaPoller.burnRate(req.params.id) : null;
+    const snapshot = account.lastQuota ?? null;
+    const measuredAtMs = snapshot?.measuredAt ? Date.parse(snapshot.measuredAt) : NaN;
+    const snapshotAgeMs = Number.isFinite(measuredAtMs)
+      ? Math.max(0, Date.now() - measuredAtMs)
+      : null;
+    const staleSnapshot = snapshot !== null && (
+      snapshotAgeMs === null ||
+      snapshotAgeMs > QUOTA_SNAPSHOT_STALE_AFTER_MS
+    );
     res.json({
       accountId: account.id,
-      snapshot: account.lastQuota ?? null,
+      snapshot,
       burnRate,
+      staleSnapshot,
+      snapshotAgeMs,
     });
   });
 
@@ -24914,7 +27036,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // surface). Resumes `sessionName` on another eligible account, preserving the
   // conversation via --resume. Body: { sessionName, exhaustedAccountId }.
   // POST (not GET) so it never collides with GET /subscription-pool/:id.
-  router.post('/subscription-pool/swap', async (req, res) => {
+  router.post('/subscription-pool/swap', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/swap'), async (req, res) => {
     if (!ctx.quotaAwareScheduler) {
       res.json({ enabled: false, swapped: false, reason: 'scheduler not configured' });
       return;
@@ -24942,7 +27064,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // code. List/sweep routes answer 200 { enabled:false } when the wizard is
   // unwired (dark) — never 503.
 
-  router.post('/subscription-pool/enroll', async (req, res) => {
+  router.post('/subscription-pool/enroll', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll'), async (req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, started: false, reason: 'enrollment wizard not configured' });
       return;
@@ -24973,7 +27095,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // reader, prod-wired to ?scope=pool) and surfaces ONE aggregated phone-first consent. The
   // agent NEVER self-enrolls — authorization is the operator's mandate, issued on the target's
   // own dashboard (per-server, OQ6). Dark behind multiMachine.accountFollowMe (503 when off).
-  router.post('/subscription-pool/follow-me/scan', async (_req, res) => {
+  router.post('/subscription-pool/follow-me/scan', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/scan'), async (_req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; maxFollowMachines?: number } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25044,7 +27166,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // NEVER from the request body — so `completeFollowMe` can later validate the minted account against
   // what the operator actually approved. Unresolvable email ⇒ 409 fail-closed (never start blank).
   // Dark behind multiMachine.accountFollowMe (503 when off). Mirrors the scan route's dark-gate exactly.
-  router.post('/subscription-pool/follow-me/enroll/start', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/start', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/start'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; remoteScrapeTimeoutMs?: number } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25119,7 +27241,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
       const target = resolveFollowMeEnrollTarget({ accountId, localAccounts, peerViews });
       if (!target.resolved) {
-        res.status(409).json({ error: 'cannot resolve approved account email' });
+        res.status(target.code === 'subscription-account-not-found' ? 404 : 409)
+          .json({ error: target.reason, code: target.code, accountId, repairRequired: true });
         return;
       }
 
@@ -25220,7 +27343,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // paste the returned code); this is the second part, off-chat. The code is the
   // operator's own single-use auth code; the provider validates it — instar holds no
   // new authority and never stores/logs the code value. Dev-gated like the rest.
-  router.post('/subscription-pool/follow-me/enroll/:id/submit-code', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/:id/submit-code', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/:id/submit-code'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25254,9 +27377,43 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Resolve the pending login → its configHome + framework → the enroll pane session
     // name (derived through the shared helper so it can NEVER drift from enroll-start's spawn).
-    const login = ctx.enrollmentWizard.pending().find((l) => l.id === id);
+    let login = ctx.enrollmentWizard.pending().find((l) => l.id === id);
     if (!login) {
-      res.status(404).json({ error: `no pending login "${id}" is waiting for a code — start the sign-in again from the dashboard grid` });
+      // The operator submitted against a flow that disappeared across a restart
+      // or exhausted cleanup. Never collapse that honest lifecycle state into a
+      // raw 404/502. If the account still provably needs a login, mint its fresh
+      // replacement now and return the public flow so the cell can redraw.
+      const account = ctx.subscriptionPool.get(id);
+      const stillNeedsSignIn = account?.status === 'needs-reauth' || (
+        account?.identityDrifted === true &&
+        (account.identityDrift?.repairState === 'owner-relogin-required' ||
+          account.identityDrift?.actualAccountId === 'missing-local-login')
+      );
+      if (account && stillNeedsSignIn) {
+        try {
+          const freshLogin = await ctx.enrollmentWizard.start({
+            id: account.id,
+            label: account.nickname,
+            provider: account.provider,
+            framework: account.framework,
+            configHome: account.configHome,
+            expectedEmail: account.email,
+            remote: true,
+          });
+          res.status(409).json({
+            code: 'login-expired-fresh-ready',
+            error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now',
+            freshLogin,
+          });
+          return;
+        } catch (err) {
+          console.warn(`[follow-me] expired login refresh failed id=${id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      res.status(410).json({
+        code: 'login-expired',
+        error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell',
+      });
       return;
     }
     // Narrow the authority (codex finding #4): this paste-back path is ONLY for the
@@ -25302,7 +27459,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // affordance — never a "may have closed" guess. Wording floor: the message only references
     // affordances that exist on the surface it lands on (the grid's Retry — never "Approve").
     if (rawFrame == null || !frame.trim()) {
-      res.status(409).json({ code: 'pane-dead', error: `this sign-in's window is no longer running on its machine, so it can't take a code — start the sign-in again from the dashboard grid` });
+      const freshLogin = await ctx.enrollmentWizard.refresh(id);
+      if (freshLogin) {
+        res.status(409).json({
+          code: 'login-expired-fresh-ready',
+          error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now',
+          freshLogin,
+        });
+        return;
+      }
+      res.status(410).json({
+        code: 'login-expired',
+        error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell',
+      });
       return;
     }
     if (!looksReady || looksLikeShell) {
@@ -25344,6 +27513,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // Upsert (D5): a re-auth of an EXISTING pool account updates it back to active;
             // only a genuinely-new account is added.
             const acct = upsertValidatedAccount(result.login, result.email);
+            await reverifyCompletedEnrollment(result.login);
             logOutcome('validated');
             // `email` rides along so the dashboard's terminal success state can NAME the
             // verified account ("headley.justin@gmail.com is set up on this machine") —
@@ -25378,7 +27548,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Bearer-only like submit-code (the PIN gate lives on start-cell, the mint) — a
   // per-machine PIN can't cross the mesh, which is what lets the fronting relay reach a
   // peer's cancel. Dark behind multiMachine.accountFollowMe. Spec: matrix-cell-operator-cancel.
-  router.post('/subscription-pool/follow-me/enroll/:id/cancel', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/:id/cancel', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/:id/cancel'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25395,7 +27565,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // it carries the code one authed hop to the machine that owns the login pane. self →
   // local submit-code; peer → POST {code} to that peer's local submit-code. The code rides
   // the Bearer-authed API + authed mesh hop only, never chat. Dark target → honest 502.
-  router.post('/subscription-pool/follow-me/submit-code', async (req, res) => {
+  router.post('/subscription-pool/follow-me/submit-code', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/submit-code'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25439,7 +27609,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // calls this; it carries the cancel one authed hop to the machine that owns the login
   // pane. self → local cancel; peer → POST to that peer's local cancel. Mirrors
   // follow-me/submit-code exactly (Bearer-authed mesh hop; dark/offline target → 502).
-  router.post('/subscription-pool/follow-me/cancel', async (req, res) => {
+  router.post('/subscription-pool/follow-me/cancel', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/cancel'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25487,7 +27657,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // new authority — it just drives the existing chain in one call so the frontend never handles
   // fingerprints or raw mandate JSON. Idempotent: a re-tap reuses an existing valid pending login
   // for this pair (no duplicate, no stacked mandate). Dark behind multiMachine.accountFollowMe.
-  router.post('/subscription-pool/matrix/start-cell', async (req, res) => {
+  router.post('/subscription-pool/matrix/start-cell', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/matrix/start-cell'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25531,8 +27701,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
         const target = resolveFollowMeEnrollTarget({ accountId, localAccounts, peerViews });
         if (!target.resolved) {
-          console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=cannot-resolve-email`);
-          res.status(409).json({ error: 'cannot resolve approved account email' });
+          console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=${target.code}`);
+          res.status(target.code === 'subscription-account-not-found' ? 404 : 409)
+            .json({ error: target.reason, code: target.code, accountId, repairRequired: true });
           return;
         }
         const existing = ctx.enrollmentWizard.pending().find(
@@ -25548,7 +27719,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (existing) {
           console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=reused-pending`);
           // Flow-detail passthrough (topic 29836 D2/D3): expectedEmail (which account the OAuth
-          // page MUST show), ttlExpiresAt (link-expiry countdown), notice (the two-codes heads-up)
+          // page MUST show), ttlExpiresAt (link-expiry countdown), notice (optional flow heads-up)
           // and kind ride along so the matrix CELL can carry the complete flow end-to-end instead
           // of stranding those steps in the bottom Pending-logins panel. All operator-facing,
           // never secrets (same fields the pending-logins surface already serves).
@@ -25656,7 +27827,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   // Single-segment path → no collision with /enroll/:id/complete (3 segments).
-  router.post('/subscription-pool/enroll/reissue-expired', async (_req, res) => {
+  router.post('/subscription-pool/enroll/reissue-expired', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll/reissue-expired'), async (_req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, reissued: [] });
       return;
@@ -25669,7 +27840,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.post('/subscription-pool/enroll/:id/cancel', (req, res) => {
+  router.post('/subscription-pool/enroll/:id/cancel', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll/:id/cancel'), (req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, cancelled: false, reason: 'enrollment wizard not configured' });
       return;
@@ -25677,7 +27848,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     cancelEnrollment(req.params.id, plainCompleteInFlight, 'enroll', res);
   });
 
-  router.post('/subscription-pool/enroll/:id/complete', async (req, res) => {
+  router.post('/subscription-pool/enroll/:id/complete', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll/:id/complete'), async (req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, completed: false, reason: 'enrollment wizard not configured' });
       return;
@@ -25690,6 +27861,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     plainCompleteInFlight.add(id);
     try {
+      await ctx.enrollmentCompleteInFlightHook?.(id);
       // Keep a short observable critical section so a concurrent cancel stands aside.
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       const login = ctx.enrollmentWizard.complete(id);
@@ -25697,6 +27869,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(404).json({ error: `pending login ${id} not found` });
         return;
       }
+      await reverifyCompletedEnrollment(login);
       res.json({ enabled: true, login });
     } finally {
       plainCompleteInFlight.delete(id);
@@ -25709,7 +27882,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // the account becomes a selectable pool account. A surprise/mismatched/unverifiable email is
   // HELD (NOT added to the pool) and raises a HIGH attention item. Only a verified match adds
   // the account to the SubscriptionPool. Dark behind multiMachine.accountFollowMe (503 when off).
-  router.post('/subscription-pool/follow-me/enroll/:id/complete', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/:id/complete', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/:id/complete'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25738,6 +27911,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Upsert (D5): a re-auth of an EXISTING pool account updates it back to active.
       const { login, email } = result;
       const account = upsertValidatedAccount(login, email);
+      await reverifyCompletedEnrollment(login);
       res.status(201).json({ enabled: true, outcome: 'validated', account });
     } catch (err) {
       const isValidation = err instanceof Error && err.name === 'ValidationError';
@@ -25790,6 +27964,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       journalTail: led.getJournal().slice(-20),
       forcedBudgetRemaining: cr.levers.forcedBudgetRemaining(),
     });
+  });
+
+  // GET /credentials/repair-plan — mandatory dry-run/read surface before any
+  // identity-drift repair mutation. It contains account ids + slot labels only.
+  router.get('/credentials/repair-plan', async (_req, res) => {
+    const cr = ctx.credentialRepointing;
+    if (!cr || !credRepointEnabled() || !cr.repairPlan) {
+      res.status(503).json({ enabled: false, reason: 'credential identity repair is disabled or not wired' });
+      return;
+    }
+    const plan = await cr.repairPlan();
+    cr.audit.audit({ event: 'identity-repair-plan-read', moves: plan.moves.length, residuals: plan.ownerReloginAccountIds.length });
+    credSend(res, 200, { enabled: true, dryRun: true, plan });
+  });
+
+  // POST /credentials/repair-plan/execute — reuse the staged swap executor;
+  // never implements a second credential-write path. Executor config still
+  // controls dark/dry-run, and every move has its own live identity pre-flight.
+  router.post('/credentials/repair-plan/execute', async (_req, res) => {
+    const cr = credLeverGuard(res);
+    if (!cr || !cr.executeRepairPlan) return;
+    const { plan, results, vacateResults } = await cr.executeRepairPlan();
+    cr.audit.audit({ event: 'identity-repair-plan-executed', moves: results.length, outcomes: results.map((r) => r.outcome) });
+    credSend(res, 200, { enabled: true, dryRun: ctx.config.subscriptionPool?.credentialRepointing?.dryRun !== false, plan, results, vacateResults });
   });
 
   // GET /credentials/rebalancer — the autonomous balancer's last-pass surface. The CredentialRebalancer
@@ -27154,6 +29352,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const {
       targetAgent,
       message,
+      inReplyTo,
       threadId,
       waitForReply,
       timeoutSeconds,
@@ -27166,6 +29365,35 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!targetAgent || !message) {
       res.status(400).json({ success: false, error: 'Missing required fields: targetAgent, message' });
       return;
+    }
+    const replyClaimOwner = typeof originSessionName === 'string' && originSessionName
+      ? originSessionName : `relay-send:${randomUUID()}`;
+    const boundWarmInbound = typeof originSessionName === 'string' && typeof threadId === 'string'
+      && ctx.threadResumeMap?.get(threadId)?.sessionName === originSessionName
+      ? ctx.listenerManager?.readLatestCanonicalInboxForThread(threadId) : null;
+    if (boundWarmInbound && inReplyTo !== boundWarmInbound.id) {
+      res.status(400).json({ success: false, error: 'Warm Threadline replies require inReplyTo for the current inbound message.' });
+      return;
+    }
+    if (typeof inReplyTo === 'string') {
+      if (!isAuthenticatedThreadlineInbound(
+        { listenerManager: ctx.listenerManager, threadLog: ctx.threadLog },
+        threadId,
+        inReplyTo,
+      )) {
+        res.status(400).json({ success: false, error: 'inReplyTo must name an authenticated inbound on this thread.' });
+        return;
+      }
+    }
+    if (typeof inReplyTo === 'string' && ctx.listenerManager
+      && !ctx.listenerManager.tryClaimReply(inReplyTo, replyClaimOwner)) {
+      res.status(409).json({ success: false, error: 'A reply for this inbound message is already in flight.' });
+      return;
+    }
+    if (typeof inReplyTo === 'string' && ctx.listenerManager) {
+      res.once('finish', () => {
+        if (res.statusCode >= 400) ctx.listenerManager?.releaseReplyClaim(inReplyTo, replyClaimOwner);
+      });
     }
 
     // ── Outbound credential-share intent (Secure A2A Verified Pairing §3.5) ──
@@ -27733,10 +29961,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                         threadId: effectiveThreadId,
                         text: message,
                         messageId: msgId,
+                        inReplyTo: typeof inReplyTo === 'string' ? inReplyTo : undefined,
                         outcome,
                       });
+                      if (typeof inReplyTo === 'string') ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
                     } catch (err) {
                       console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+                      if (typeof inReplyTo === 'string') ctx.listenerManager.retainReplyClaimFailure(inReplyTo, replyClaimOwner);
                     }
                   }
                   // (The canonical-log append for this outbound leg already ran
@@ -27879,10 +30110,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             threadId: effectiveRelayThreadId,
             text: message,
             messageId: relayMsgId,
+            inReplyTo: typeof inReplyTo === 'string' ? inReplyTo : undefined,
             outcome: 'relay-sent',
           });
+          if (typeof inReplyTo === 'string') ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
         } catch (err) {
           console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+          if (typeof inReplyTo === 'string') ctx.listenerManager.retainReplyClaimFailure(inReplyTo, replyClaimOwner);
         }
       }
       // Robustness Phase 2 (D-B): append the relay-delivered outbound leg to the

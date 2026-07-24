@@ -32,6 +32,7 @@ function fakeProvider(responder: () => string, capture?: { calls: number }): Int
 /** Build an adapter in mention-only mode with reactions/user-info stubbed out. */
 function harness(tmp: string) {
   const messages: string[] = [];
+  const reactions: Array<{ channelId: string; timestamp: string; emoji: string }> = [];
   const adapter = new SlackAdapter(
     {
       botToken: 'xoxb-test',
@@ -43,16 +44,19 @@ function harness(tmp: string) {
   );
   adapter.onMessage(async (m) => { messages.push(m.content); });
   // Stub out all outbound Slack Web API touch-points so nothing hits the network.
-  (adapter as any).addReaction = () => {};
+  (adapter as any).addReaction = (channelId: string, timestamp: string, emoji: string) => {
+    reactions.push({ channelId, timestamp, emoji });
+  };
   (adapter as any).removeReaction = () => {};
   (adapter as any).getUserInfo = async (id: string) => ({ id, name: id });
   (adapter as any).botUserId = BOT;
   const handle = (adapter as any)._handleMessage.bind(adapter);
-  return { adapter, handle, messages };
+  return { adapter, handle, messages, reactions };
 }
 
-const speakJson = '{"speak":true,"confidence":0.95,"contribution":"the onnxruntime-node CDN flake — gh run rerun --failed"}';
-const silentJson = '{"speak":false,"confidence":0.2}';
+const speakJson = '{"action":"speak","confidence":0.95,"contribution":"the onnxruntime-node CDN flake — gh run rerun --failed"}';
+const silentJson = '{"action":"silent","confidence":0.2}';
+const reactJson = '{"action":"react","confidence":0.95}';
 
 describe('SlackAdapter ambient gate wiring', () => {
   let tmp: string;
@@ -108,6 +112,23 @@ describe('SlackAdapter ambient gate wiring', () => {
     }));
     await handle({ user: 'U_TEST', text: 'lunch plans?', channel: CH, ts: '5.1' });
     expect(messages).toHaveLength(0); // gate declined → dropped
+  });
+
+  it('ambient channel + gate says REACT → one fixed eyes reaction and no conversational turn', async () => {
+    const { adapter, handle, messages, reactions } = harness(tmp);
+    const cap = { calls: 0 };
+    adapter.setAmbientGate(new AmbientContributionGate({
+      config: { enabledChannelIds: [CH], maxProactivePerChannel: 1 },
+      intelligence: fakeProvider(() => reactJson, cap),
+    }));
+    await handle({ user: 'U_TEST', text: 'deployment completed', channel: CH, ts: '5.2' });
+    expect(cap.calls).toBe(1);
+    expect(messages).toHaveLength(0);
+    expect(reactions).toEqual([{ channelId: CH, timestamp: '5.2', emoji: 'eyes' }]);
+
+    await handle({ user: 'U_TEST', text: 'another update', channel: CH, ts: '5.3' });
+    expect(cap.calls).toBe(1); // shared proactive budget exhausted before another decision call
+    expect(reactions).toHaveLength(1);
   });
 
   it('gate attached but channel NOT opted in → dropped, no LLM call', async () => {

@@ -54,6 +54,7 @@ function writeState(opts: {
   reportChannel?: string;
   iteration?: number;
   durationSeconds?: number;
+  startedAt?: string;
   completionPromise?: string;
   extraFrontmatter?: string;
   task?: string;
@@ -65,11 +66,12 @@ function writeState(opts: {
     reportChannel,
     iteration = 1,
     durationSeconds = 0,
+    startedAt,
     completionPromise = 'ALL_DONE',
     extraFrontmatter = '',
     task = 'Keep building the thing until done.',
   } = opts;
-  const started = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  const started = startedAt ?? new Date().toISOString().replace(/\.\d+Z$/, 'Z');
   const channelLine = reportChannel ? `\nreport_channel: "${reportChannel}"` : '';
   const content = `---
 active: ${active}
@@ -284,6 +286,40 @@ describe('T5 — existing exit paths preserved', () => {
     writeRegistry({ '9984': 'echo-claude-agent-sdk' });
     const r = runHook({ sessionId: NEW_UUID, tmuxSession: 'echo-claude-agent-sdk' });
     expect(r.decision).not.toBe('block');
+  });
+
+  it('parses a millisecond timestamp to a non-zero epoch', () => {
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    expect(future).toMatch(/\.\d{3}Z$/);
+    writeState({
+      sessionId: OLD_UUID,
+      reportTopic: '9984',
+      durationSeconds: 7200,
+      startedAt: future,
+    });
+    writeRegistry({ '9984': 'echo-claude-agent-sdk' });
+
+    const r = runHook({ sessionId: OLD_UUID, tmuxSession: 'echo-claude-agent-sdk' });
+
+    expect(r.decision).toBe('block');
+    expect(r.stderr).not.toContain('started_at unparseable');
+  });
+
+  it('expires a run whose millisecond timestamp is past its duration', () => {
+    const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    expect(past).toMatch(/\.\d{3}Z$/);
+    writeState({
+      sessionId: OLD_UUID,
+      reportTopic: '9984',
+      durationSeconds: 10,
+      startedAt: past,
+    });
+    writeRegistry({ '9984': 'echo-claude-agent-sdk' });
+
+    const r = runHook({ sessionId: OLD_UUID, tmuxSession: 'echo-claude-agent-sdk' });
+
+    expect(r.decision).not.toBe('block');
+    expect(fs.existsSync(path.join(tmpDir, '.instar', 'autonomous-state.local.md'))).toBe(false);
   });
 });
 

@@ -34,21 +34,25 @@ function writeActiveJob(topic: string, tmuxSession: string): void {
   );
 }
 
-function writeConfig(codexLoopEnabled: boolean | undefined): void {
+function writeConfig(codexLoopEnabled: boolean | undefined, taskContinuationEnabled = false): void {
   const cfg: Record<string, unknown> = { port: 4040 };
-  if (codexLoopEnabled !== undefined) {
-    cfg.autonomousSessions = { codexLoopDriver: { enabled: codexLoopEnabled } };
+  if (codexLoopEnabled !== undefined || taskContinuationEnabled) {
+    cfg.autonomousSessions = {
+      ...(codexLoopEnabled !== undefined ? { codexLoopDriver: { enabled: codexLoopEnabled } } : {}),
+      codexTaskContinuation: { enabled: taskContinuationEnabled },
+    };
   }
   fs.writeFileSync(path.join(homeDir, '.instar', 'config.json'), JSON.stringify(cfg));
 }
 
-function runHook(opts: { codex: boolean; tmuxSession: string; emergencyStop?: boolean }): { exitCode: number; decision: string | null; stdout: string } {
+function runHook(opts: { codex: boolean; tmuxSession: string; emergencyStop?: boolean; pathPrefix?: string }): { exitCode: number; decision: string | null; stdout: string } {
   if (opts.emergencyStop) fs.writeFileSync(path.join(homeDir, '.instar', 'autonomous-emergency-stop'), '');
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     INSTAR_HOOK_TMUX_SESSION: opts.tmuxSession,
     INSTAR_HOOK_BACKOFF_DISABLE: '1',
     CLAUDE_PROJECT_DIR: homeDir, // anchor to the test home (prod codex uses the $0 fallback)
+    PATH: opts.pathPrefix ? `${opts.pathPrefix}:${process.env.PATH}` : process.env.PATH,
   };
   const args = opts.codex ? [HOOK_PATH, '--codex'] : [HOOK_PATH];
   let stdout = '';
@@ -110,6 +114,19 @@ describe('autonomous stop hook — codex dark-launch gate (#28)', () => {
     writeConfig(false); // flag off must NOT suppress the Claude loop
     const r = runHook({ codex: false, tmuxSession: 'echo-codey' });
     expect(r.decision).toBe('block');
+  });
+
+  it('ordinary task continuation blocks through the server decision when no autonomous job exists', () => {
+    fs.mkdirSync(path.join(homeDir, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.instar', 'topic-session-registry.json'), JSON.stringify({ topicToSession: { '458': 'echo-codey' } }));
+    writeConfig(false, true);
+    const bin = path.join(homeDir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'curl'), '#!/bin/sh\nprintf \'%s\\n\' \'{"decision":"continue","reasonText":"Continue explicit work."}\'\n', { mode: 0o755 });
+    const r = runHook({ codex: true, tmuxSession: 'echo-codey', pathPrefix: bin });
+    expect(r.exitCode).toBe(0);
+    expect(r.decision).toBe('block');
+    expect(JSON.parse(r.stdout).reason).toBe('Continue explicit work.');
   });
 
   // Regression (live 2026-05-31): with the flag ON, a codex APPROVE path (here emergency

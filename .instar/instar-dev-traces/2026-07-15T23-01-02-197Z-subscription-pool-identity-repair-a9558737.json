@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "sessionId": "c734d944-32d0-49d1-b87c-7d994cf4a8ce",
+  "timestamp": "2026-07-15T23:01:02.197Z",
+  "artifactPath": "upgrades/side-effects/subscription-pool-identity-repair.md",
+  "artifactSha256": "f30ca659cbcfb7897c4f5612fcfec4c8b24db34e515e188e39c2050bef3cec22",
+  "specPath": "docs/specs/live-credential-repointing-rebalancer.md",
+  "coveredFiles": [
+    "src/core/WriteDomainRegistry.ts",
+    "src/server/routes.ts",
+    "tests/integration/subscription-enrollment-routes.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Tier 2 follow-up: credential mutation route classification plus deterministic concurrency-contract coverage.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    }
+  }
+}

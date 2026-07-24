@@ -669,6 +669,14 @@ export class JournalSyncApplier {
       const known = ['latchKind', 'latchId', 'action', 'epoch', 'seq', 'reason'];
       return keys.every((k) => known.includes(k));
     }
+    if (kind === 'ssh-direction-proof') {
+      const stringFields = ['sourceMachineId', 'targetMachineId', 'observerBootId', 'endpointId', 'targetHostKeyFingerprint', 'verifiedAt', 'expiresAt', 'challengeDigest', 'machineSignature'];
+      if (!stringFields.every(field => typeof raw[field] === 'string' && String(raw[field]).length >= 1 && String(raw[field]).length <= 512)) return false;
+      const numberFields = ['pairingEpoch', 'sourceClientKeyGeneration', 'targetHostKeyGeneration'];
+      if (!numberFields.every(field => Number.isSafeInteger(raw[field]) && Number(raw[field]) >= 1)) return false;
+      if (Number.isNaN(Date.parse(String(raw.verifiedAt))) || Number.isNaN(Date.parse(String(raw.expiresAt)))) return false;
+      return keys.every(key => stringFields.includes(key) || numberFields.includes(key));
+    }
     return false;
   }
 

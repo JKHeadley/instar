@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-16T04:47:23.134Z",
+  "slug": "cycles-integrity-tolerant-read",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

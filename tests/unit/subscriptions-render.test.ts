@@ -112,6 +112,14 @@ describe('renderAccounts', () => {
     expect(t.querySelector('.sub-account-status')!.textContent).toBe('Active');
     expect(t.querySelectorAll('.sub-quota').length).toBe(2);
   });
+  it('shows needs sign-in when credential identity drift overrides active enrollment bookkeeping', () => {
+    const t = el();
+    renderAccounts(doc, t, [{
+      id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'active',
+      identityDrifted: true, identityDrift: { repairState: 'owner-relogin-required' },
+    }], NOW);
+    expect(t.querySelector('.sub-account-status')!.textContent).toBe('Needs sign-in');
+  });
   it('renders a Fable 5 bar when the fable window is present', () => {
     const t = el();
     renderAccounts(doc, t, [{
@@ -263,10 +271,10 @@ describe('renderPendingLogins', () => {
     renderPendingLogins(doc, t, [{
       id: 'sagemind-1', label: 'SageMind - Justin', kind: 'url-code-paste',
       verificationUrl: 'https://claude.com/oauth/authorize?code=abc',
-      notice: 'Heads up: a brand-new Claude login often asks for TWO codes in order — first an email-verification code, then the sign-in code.',
+      notice: 'Heads up: this provider may show an extra verification step.',
       ttlExpiresAt: '2026-06-07T00:12:00Z', reissueCount: 0,
     }], NOW);
-    expect(t.querySelector('.sub-pending-notice')!.textContent).toContain('TWO codes');
+    expect(t.querySelector('.sub-pending-notice')!.textContent).toContain('extra verification step');
   });
   it('omits the notice element when there is none', () => {
     const t = el();
@@ -313,6 +321,20 @@ describe('renderAccountMatrix', () => {
     expect(cell!.querySelector('.sub-matrix-setup')).toBeNull();
   });
 
+  it('renders an actionable needs-sign-in cell when an active row is identity-drifted', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'active', identityDrifted: true, machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    }, { enabled: true, logins: [] }, {});
+    const cell = t.querySelector('.sub-matrix-needs-reauth');
+    expect(cell).toBeTruthy();
+    expect(cell!.textContent).toContain('Needs sign-in');
+    expect(cell!.querySelector('.sub-matrix-setup')!.textContent).toBe('Sign in');
+    expect(t.querySelector('.sub-matrix-active')).toBeNull();
+  });
+
   it('renders a "Set up" button for a genuinely-empty (reachable) cell', () => {
     // Two reachable machines m1, m1b; account a1 is active only on m1 → a1 × m1b is empty.
     const t = el();
@@ -330,6 +352,29 @@ describe('renderAccountMatrix', () => {
     const a1OnMini = Array.from(setupBtns).find((b) => b.getAttribute('data-account-id') === 'a1' && b.getAttribute('data-machine-id') === 'm1b');
     expect(a1OnMini).toBeTruthy();
     expect(a1OnMini!.textContent).toBe('Set up');
+  });
+
+  it('renders an honest PIN-gated repair action for an email-less account record', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, {
+      enabled: true,
+      accounts: [],
+      emailGaps: [{
+        accountId: 'legacy',
+        nickname: 'Legacy',
+        machineId: 'm1',
+        machineNickname: 'Laptop',
+        reason: 'account-record-missing-email',
+      }],
+      pool: { selfMachineId: 'm1', failed: [] },
+      scope: 'pool',
+    }, { enabled: true, logins: [] }, {});
+    const cell = t.querySelector('.sub-matrix-email-missing');
+    expect(cell).toBeTruthy();
+    expect(cell!.textContent).toContain('Account record is missing its email');
+    const button = cell!.querySelector('[data-email-repair="1"]');
+    expect(button).toBeTruthy();
+    expect(button!.textContent).toBe('Repair identity');
   });
 
   it('renders an offline/disabled column for a pool.failed machine — no fabricated ✓', () => {
@@ -453,7 +498,7 @@ describe('renderAccountMatrix', () => {
         id: 'a2', machineId: 'm1', kind: 'url-code-paste', paneAlive: true,
         verificationUrl: 'https://claude.com/oauth/authorize?code=true&client_id=x',
         expectedEmail: 'headley.justin@gmail.com',
-        notice: 'Heads up: a brand-new Claude login often asks for TWO codes in order.',
+        notice: 'Heads up: this provider may show an extra verification step.',
         ttlExpiresAt: '2026-06-07T00:12:00Z',
       }],
     };
@@ -468,7 +513,7 @@ describe('renderAccountMatrix', () => {
     const submit = cell.querySelector('[data-matrix-code-submit]')!;
     expect(submit.getAttribute('data-login-id')).toBe('a2');
     expect(submit.getAttribute('data-machine-id')).toBe('m1');
-    expect(cell.querySelector('.sub-matrix-notice')!.textContent).toContain('TWO codes');
+    expect(cell.querySelector('.sub-matrix-notice')!.textContent).toContain('extra verification step');
     const ttl = cell.querySelector('.sub-matrix-ttl')!;
     expect(ttl.getAttribute('data-ttl-expires')).toBe('2026-06-07T00:12:00Z');
     expect(cell.querySelector('[data-matrix-cancel]')).toBeTruthy();
@@ -517,6 +562,7 @@ describe('renderAccountMatrix', () => {
     renderAccountMatrix(doc, t, pool, { enabled: true, logins: [] }, transient);
     const cell = t.querySelector('.sub-matrix-expired')!;
     expect(cell.textContent).toContain('Sign-in link expired');
+    expect(cell.querySelector('.sub-matrix-outcome-failed')!.textContent).toContain('Didn’t finish');
     expect(cell.querySelector('.sub-matrix-setup')!.textContent).toBe('Retry');
   });
 
@@ -536,7 +582,24 @@ describe('renderAccountMatrix', () => {
     const cell = t.querySelector('.sub-matrix-just-verified')!;
     expect(cell).toBeTruthy();
     expect(cell.textContent).toContain('Set up complete');
+    expect(cell.querySelector('.sub-matrix-outcome-done')!.textContent).toContain('Done');
     expect(cell.querySelector('.sub-matrix-setup')).toBeNull(); // never blinks back to "Set up"
+  });
+
+  it('D4: fresh completion wins over a stale needs-reauth pool row', () => {
+    const t = el();
+    const pool = {
+      enabled: true,
+      accounts: [
+        { id: 'a1', email: 'a1@x.com', status: 'needs-reauth', identityDrifted: true, machineId: 'm1', machineNickname: 'Laptop' },
+      ],
+      pool: { selfMachineId: 'm1', failed: [] },
+    };
+    const transient = { 'a1::m1': { state: 'just-verified', at: Date.now() } };
+    renderAccountMatrix(doc, t, pool, { enabled: true, logins: [] }, transient);
+    const cell = t.querySelector('.sub-matrix-just-verified')!;
+    expect(cell.textContent).toContain('Set up complete');
+    expect(t.querySelector('.sub-matrix-needs-reauth')).toBeNull();
   });
 
   it('D4: an ACTIVE cell with a fresh just-verified transient carries the highlight class + "just set up" wording', () => {
@@ -546,6 +609,7 @@ describe('renderAccountMatrix', () => {
     const cell = t.querySelector('.sub-matrix-active')!;
     expect(cell.getAttribute('class')).toContain('sub-matrix-just-verified');
     expect(cell.textContent).toContain('just set up');
+    expect(cell.querySelector('.sub-matrix-outcome-done')!.textContent).toContain('Done');
   });
 });
 

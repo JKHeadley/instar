@@ -34,6 +34,7 @@ beforeEach(() => {
   claudeHooksInstarDir = path.join(projectDir, '.claude', 'hooks', 'instar');
   fs.mkdirSync(scriptsDir, { recursive: true });
   fs.mkdirSync(claudeHooksInstarDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ messaging: [{ type: 'slack', enabled: true }] }));
 });
 
 afterEach(() => {
@@ -142,7 +143,7 @@ describe('secret-externalization survivability migration', () => {
 });
 
 describe('migrateReplyScriptTo408: extended INSTAR_AUTH_TOKEN marker check', () => {
-  it('upgrades a slack-reply.sh that has 408 handling BUT lacks INSTAR_AUTH_TOKEN env-first', () => {
+  it('preserves an unknown slack-reply.sh and stages the auth-safe current candidate', () => {
     // Old shipped marker; has 408 (old upgrade marker); LACKS INSTAR_AUTH_TOKEN
     // → was previously stuck in "already up to date" branch and would silently
     // 403 forever after the agent's authToken got externalized.
@@ -162,8 +163,9 @@ describe('migrateReplyScriptTo408: extended INSTAR_AUTH_TOKEN marker check', () 
     const m = makeMigrator();
     runMigrate(m);
 
-    const final = fs.readFileSync(scriptPath, 'utf-8');
-    expect(final).toContain('INSTAR_AUTH_TOKEN');
-    expect(final).toContain('isinstance(v, str)');
+    expect(fs.readFileSync(scriptPath, 'utf-8')).toBe(broken);
+    const candidate = fs.readFileSync(`${scriptPath}.new`, 'utf-8');
+    expect(candidate).toContain('INSTAR_AUTH_TOKEN');
+    expect(candidate).toContain('isinstance(v, str)');
   });
 });

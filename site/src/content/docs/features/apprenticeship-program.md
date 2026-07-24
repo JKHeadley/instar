@@ -17,7 +17,8 @@ spec (`docs/specs/APPRENTICESHIP-PROGRAM-PROJECT-DESIGN.md`).
 
 Each apprenticeship/mentorship is its own tracked **instance** with a role triple — **overseer**
 (watches everything), **mentor** (the apprentice-and-mentor — graduated, now teaching), and
-**mentee** (the new framework) — plus its framework, status, and a required-artifact checklist.
+**mentee** (the new framework) — plus its framework, status, independence `ladderRung` (R0–R5),
+append-only `rungHistory`, and a required-artifact checklist.
 State lives in `.instar/apprenticeship/instances.json` (atomic writes + an optimistic-version CAS,
 fail-closed on corruption). A typed `ApprenticeshipOverseer` surface is reserved for the
 differential-oversight computation built in a later step.
@@ -52,6 +53,9 @@ All routes require a Bearer token.
 - `POST /apprenticeship/instances/:id/transition` — the **only** way status changes. `pending→active`
   runs the retro-gate and refuses if it fails; `active→complete` runs the doc-gate; `active↔blocked`
   is allowed; `complete` is terminal.
+- `POST /apprenticeship/instances/:id/rung-transition` — move one adjacent independence rung up or
+  down with `{ "to": 1, "evidenceRef": "cycles:...; prs:..." }`. Evidence is required, history is
+  append-only, and both accepted and refused attempts are audited.
 - `POST /apprenticeship/instances/:id/can-start` — a read-only preview of the retro-gate verdict.
 - `POST /apprenticeship/instances/:id/can-complete` — a read-only preview of the doc-gate verdict
   (returns the list of missing artifacts).
@@ -86,7 +90,11 @@ program never fabricates coverage it cannot prove.
   record.
 - `GET /apprenticeship/instances/:id/role-coverage` — read the observe-only role coverage surface
   for one instance. It returns per-axis `{ fired, cycleCount, lastAt }`, an `unknown` bucket,
-  `dormantAxes`, and `driftWarning`. The warning is true when the mentor-mentee differential axis is
+  `dormantAxes`, and `driftWarning`. `ApprenticeshipPeerCycleReader` performs bounded,
+  target-agent-authenticated reads from other registered agents on the same host, and the store
+  merges those cycles with local evidence before calculating coverage. The response names every
+  source and marks itself incomplete when a peer fails, the registry exceeds the peer cap, or
+  duplicate cycle ids conflict. The warning is true when the mentor-mentee differential axis is
   dormant while the overseer-apprentice dev-review axis has fired at least twice.
 
 If the SQLite store is unavailable, the cycle routes return 503 instead of pretending the feature

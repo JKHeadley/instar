@@ -25,6 +25,7 @@ import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import DatabaseCtor from 'better-sqlite3';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -91,9 +92,40 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
       messaging: [], monitoring: { apprenticeshipCycleSla: { enabled: true, overdueAfterMinutes: 120 } }, updates: {},
     } as InstarConfig;
 
-    server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: new StateManager(stateDir) });
+    server = new AgentServer({
+      config,
+      sessionManager: createMockSessionManager() as any,
+      state: new StateManager(stateDir),
+      apprenticeshipPeerCycleReader: async (instanceId) => ({
+        cycles: instanceId === 'cross-agent-layer' ? [{
+          id: 'echo-owned-keystone', instanceId, cycleNumber: 1,
+          createdAt: '2026-07-16T18:00:00.000Z', task: 'Echo drove Codey remotely', menteeOutput: 'output',
+          mentorFlagged: [], overseerDifferential: [], coaching: '', infraItems: [],
+          kind: 'mentor-mentee-differential', status: 'open', channel: 'threadline-backup',
+          operatorSeatUx: null, transcriptAudit: null,
+        }] : [],
+        sources: [{ agent: 'echo', port: 4042, cycleCount: instanceId === 'cross-agent-layer' ? 1 : 0, truncated: false }],
+        complete: true,
+        omittedPeerCount: 0,
+      }),
+    });
     await server.start();
     app = server.getApp();
+
+    // Cycle recording is referentially tied to LIVE registry state. Seed the
+    // active instances used by the drive/coverage tests through the real API.
+    for (const id of ['echo-to-codey', 'role-drift', 'dormant-layer', 'cross-agent-layer']) {
+      await request(app)
+        .post('/apprenticeship/instances')
+        .set({ Authorization: `Bearer ${AUTH}` })
+        .send({ id, instanceType: 'mentorship', overseer: 'echo', mentor: 'echo', mentee: 'codey', framework: 'codex-cli', priorInstanceId: null })
+        .expect(201);
+      await request(app)
+        .post(`/apprenticeship/instances/${id}/transition`)
+        .set({ Authorization: `Bearer ${AUTH}` })
+        .send({ to: 'active' })
+        .expect(200);
+    }
   });
 
   afterAll(async () => {
@@ -259,23 +291,95 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
     expect(res.body.keystoneBalance.reason).toMatch(/dormant/i);
   });
 
+  it('cross-agent keystone evidence is ALIVE through AgentServer and prevents a false starved result', async () => {
+    const res = await request(app).get('/apprenticeship/instances/cross-agent-layer/role-coverage').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.axes['mentor-mentee-differential']).toMatchObject({ fired: true, cycleCount: 1 });
+    expect(res.body.keystoneBalance.starved).toBe(false);
+    expect(res.body.aggregation).toMatchObject({ scope: 'registered-agents', complete: true });
+    expect(res.body.aggregation.peerSources).toContainEqual(expect.objectContaining({ agent: 'echo', cycleCount: 1 }));
+  });
+
   it('requires Bearer auth', async () => {
     const res = await request(app).get('/apprenticeship/instances');
     expect(res.status).toBe(401);
+  });
+
+  it('refuses phantom/non-active cycles and retains a disposed pending instance', async () => {
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({ id: 'phantom-cycle', instanceId: 'missing-instance', cycleNumber: 1, task: 'must refuse', menteeOutput: 'none' })
+      .expect(400);
+
+    await request(app)
+      .post('/apprenticeship/instances')
+      .set(auth())
+      .send({ id: 'miscreated-pending', instanceType: 'mentorship', overseer: 'echo', mentor: 'echo', mentee: 'codey', framework: 'codex-cli', priorInstanceId: null })
+      .expect(201);
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({ id: 'pending-cycle', instanceId: 'miscreated-pending', cycleNumber: 1, task: 'must refuse', menteeOutput: 'none' })
+      .expect(400);
+
+    const disposed = await request(app)
+      .post('/apprenticeship/instances/miscreated-pending/transition')
+      .set(auth())
+      .send({ to: 'abandoned' });
+    expect(disposed.status).toBe(200);
+    expect(disposed.body.instance.status).toBe('abandoned');
+
+    const retained = await request(app).get('/apprenticeship/instances/miscreated-pending').set(auth());
+    expect(retained.status).toBe(200);
+    expect(retained.body.status).toBe('abandoned');
+  });
+
+  it('keeps the production integrity route alive with a legacy bad-kind row', async () => {
+    await request(app)
+      .post('/apprenticeship/instances')
+      .set(auth())
+      .send({ id: 'legacy-kind-instance', instanceType: 'mentorship', overseer: 'echo', mentor: 'echo', mentee: 'codey', framework: 'codex-cli', priorInstanceId: null })
+      .expect(201);
+    await request(app)
+      .post('/apprenticeship/instances/legacy-kind-instance/transition')
+      .set(auth())
+      .send({ to: 'active' })
+      .expect(200);
+    await request(app)
+      .post('/apprenticeship/cycles')
+      .set(auth())
+      .send({
+        id: 'legacy-bad-kind-e2e',
+        instanceId: 'legacy-kind-instance',
+        cycleNumber: 1,
+        task: 'legacy',
+        menteeOutput: 'kept',
+        operatorSeatUx: { dupNotices: 0, infraNoiseMsgs: 0, asksOfUser: 0, contentFreeUpdates: 0, modalitiesExercised: ['text'], duringRestartChurn: false },
+      })
+      .expect(201);
+
+    const db = new DatabaseCtor(path.join(stateDir, 'server-data', 'apprenticeship-cycles.db'));
+    db.prepare(`UPDATE apprenticeship_cycles SET kind = 'mentorship' WHERE id = ?`).run('legacy-bad-kind-e2e');
+    db.close();
+
+    const report = await request(app).get('/apprenticeship/cycles/integrity').set(auth());
+    expect(report.status).toBe(200);
+    expect(report.body.scanned).toBeGreaterThanOrEqual(1);
   });
 
   it('full lifecycle: create → transition pending→active gated on the real on-disk harvest', async () => {
     const created = await request(app)
       .post('/apprenticeship/instances')
       .set(auth())
-      .send({ id: 'echo-to-codey', instanceType: 'mentorship', overseer: 'echo', mentor: 'echo', mentee: 'codey', framework: 'codex-cli', priorInstanceId: null });
+      .send({ id: 'lifecycle-instance', instanceType: 'mentorship', overseer: 'echo', mentor: 'echo', mentee: 'codey', framework: 'codex-cli', priorInstanceId: null });
     expect(created.status).toBe(201);
     expect(created.body.status).toBe('pending');
 
     // The start gate reads the real harvest at the canonical path via the
     // production-wired default deps → allowed.
     const transitioned = await request(app)
-      .post('/apprenticeship/instances/echo-to-codey/transition')
+      .post('/apprenticeship/instances/lifecycle-instance/transition')
       .set(auth())
       .send({ to: 'active' });
     expect(transitioned.status).toBe(200);
@@ -284,6 +388,6 @@ describe('Apprenticeship Program E2E lifecycle (feature is alive)', () => {
 
     // The instance persisted and is visible in the list.
     const list = await request(app).get('/apprenticeship/instances').set(auth());
-    expect(list.body.instances.some((i: { id: string; status: string }) => i.id === 'echo-to-codey' && i.status === 'active')).toBe(true);
+    expect(list.body.instances.some((i: { id: string; status: string }) => i.id === 'lifecycle-instance' && i.status === 'active')).toBe(true);
   });
 });

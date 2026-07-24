@@ -158,6 +158,45 @@ export function resolvePendingRelayLockPath(stateDir: string, agentId: string): 
 }
 
 /**
+ * Quarantine historical zero-byte stores created before the canonical resolver
+ * was shared by the shell, server, and queue route. Rename is atomic within the
+ * directory: even if a legacy writer opens the file between classification and
+ * rename, any later bytes remain preserved under the quarantine name. Nothing
+ * is deleted automatically.
+ */
+export function cleanupLegacyEmptyPendingRelayStores(
+  stateDir: string,
+  agentId: string,
+  beforeQuarantine?: (candidate: string) => void,
+): string[] {
+  const safe = sanitizeAgentId(agentId);
+  const candidates = [
+    path.join(stateDir, 'pending-relay.db'),
+    path.join(stateDir, `pending-relay.${safe}.sqlite`),
+    path.join(stateDir, 'server-data', 'pending-relay.db'),
+    path.join(stateDir, 'server-data', `pending-relay.${safe}.sqlite`),
+    path.join(stateDir, 'state', 'pending-relay.db'),
+    path.join(stateDir, 'state', 'pending-relay.sqlite'),
+    path.join(stateDir, 'state', 'pending-relay.sqlite3'),
+  ];
+  const canonical = resolvePendingRelayPath(stateDir, agentId);
+  const quarantined: string[] = [];
+  for (const candidate of candidates) {
+      if (candidate === canonical) continue;
+    try {
+      if (fs.statSync(candidate).size !== 0) continue;
+      beforeQuarantine?.(candidate);
+      const quarantine = `${candidate}.legacy-empty-quarantine-${process.pid}-${Date.now()}`;
+      fs.renameSync(candidate, quarantine);
+      quarantined.push(quarantine);
+    } catch {
+      // @silent-fallback-ok: missing/non-file/raced candidate; canonical open continues.
+    }
+  }
+  return quarantined;
+}
+
+/**
  * Defensive — the agentId comes from config.json which is operator-controlled
  * but should not contain path separators; if it ever does, we'd land in a
  * directory traversal. Replace anything outside [A-Za-z0-9._-] with '_'.
@@ -180,6 +219,7 @@ export class PendingRelayStore {
   }
 
   static open(agentId: string, stateDir: string): PendingRelayStore {
+    cleanupLegacyEmptyPendingRelayStores(stateDir, agentId);
     const dbPath = resolvePendingRelayPath(stateDir, agentId);
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
@@ -460,6 +500,66 @@ export class PendingRelayStore {
           .run({ h: JSON.stringify(history), id: deliveryId });
       }
       return true;
+    });
+    return tx() as boolean;
+  }
+
+  /** Renew an owned claim without permitting a stale owner to steal it back. */
+  renewClaim(deliveryId: string, expectedClaimedBy: string, newClaimedBy: string): boolean {
+    const result = this.db.prepare(
+      `UPDATE entries SET claimed_by = @newClaimedBy
+       WHERE delivery_id = @deliveryId AND state = 'claimed' AND claimed_by = @expectedClaimedBy`,
+    ).run({ deliveryId, expectedClaimedBy, newClaimedBy });
+    return result.changes === 1;
+  }
+
+  /**
+   * Fenced post-claim transition. Only the worker holding the exact current
+   * ownership token may finalize or release the row.
+   */
+  transitionClaimed(
+    deliveryId: string,
+    expectedClaimedBy: string,
+    newState: DeliveryState,
+    additionalFields: Partial<{
+      claimed_by: string | null;
+      next_attempt_at: string | null;
+      attempts: number;
+      http_code: number | null;
+      error_body: string | null;
+    }> = {},
+  ): boolean {
+    const tx = this.db.transaction(() => {
+      const current = this.db.prepare(
+        `SELECT status_history FROM entries
+         WHERE delivery_id = ? AND state = 'claimed' AND claimed_by = ?`,
+      ).get(deliveryId, expectedClaimedBy) as { status_history: string } | undefined;
+      if (!current) return false;
+      let history: unknown[];
+      try {
+        const parsed = JSON.parse(current.status_history);
+        history = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        history = [];
+      }
+      history.push({ state: newState, at: new Date().toISOString() });
+      const fields = ['state = @state', 'status_history = @history'];
+      const params: Record<string, unknown> = {
+        deliveryId,
+        expectedClaimedBy,
+        state: newState,
+        history: JSON.stringify(history),
+      };
+      for (const [key, value] of Object.entries(additionalFields)) {
+        if (value === undefined) continue;
+        fields.push(`${key} = @${key}`);
+        params[key] = value;
+      }
+      const result = this.db.prepare(
+        `UPDATE entries SET ${fields.join(', ')}
+         WHERE delivery_id = @deliveryId AND state = 'claimed' AND claimed_by = @expectedClaimedBy`,
+      ).run(params);
+      return result.changes === 1;
     });
     return tx() as boolean;
   }

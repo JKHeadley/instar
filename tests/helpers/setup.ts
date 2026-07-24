@@ -52,6 +52,7 @@ export interface MockSessionManager {
     jobSlug?: string;
     triggeredBy?: string;
     framework?: IntelligenceFramework;
+    ultracode?: boolean;
   }) => Promise<Session>;
   isSessionAlive: (tmuxSession: string) => boolean;
   listRunningSessions: () => Session[];
@@ -64,7 +65,7 @@ export interface MockSessionManager {
   _sessions: Session[];
   _aliveSet: Set<string>;
   _spawnCount: number;
-  _lastSpawnArgs: { name: string; prompt: string; model?: string; jobSlug?: string; triggeredBy?: string; framework?: IntelligenceFramework; maxDurationMinutes?: number } | null;
+  _lastSpawnArgs: { name: string; prompt: string; model?: string; jobSlug?: string; triggeredBy?: string; framework?: IntelligenceFramework; ultracode?: boolean; maxDurationMinutes?: number } | null;
 }
 
 export function createMockSessionManager(): MockSessionManager {
@@ -127,7 +128,9 @@ export function createMockSessionManager(): MockSessionManager {
  */
 export function createMockClaude(dir: string): string {
   const scriptPath = path.join(dir, 'mock-claude.sh');
+  const argvLogPath = path.join(dir, 'mock-claude-argv.log');
   fs.writeFileSync(scriptPath, `#!/bin/bash
+printf '%s\\n' "$@" >> ${JSON.stringify(argvLogPath)}
 echo "Mock Claude session started"
 echo "Prompt: $@"
 # Sleep briefly to simulate work, then exit

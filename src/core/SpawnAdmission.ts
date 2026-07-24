@@ -120,6 +120,12 @@ export interface AdmitInput {
 export interface SpawnAdmissionFlag {
   enabled: boolean;
   dryRun: boolean;
+  /**
+   * Narrow graduation arm: a provably-live OTHER owner may bind even while
+   * the broader owner-dark ladder remains in dry-run. Still requires durable
+   * custody, so a refusal can never turn into silent loss.
+   */
+  enforceLiveOwner?: boolean;
 }
 
 export interface SpawnAdmissionDeps {
@@ -135,6 +141,8 @@ export interface SpawnAdmissionDeps {
   readOwnership: (sessionKey: string) => { owner: string | null; epoch: number; status: string | null } | null;
   /** The pool's existing liveness input (heartbeat-fresh view). */
   isMachineAlive: (machineId: string) => boolean;
+  /** Effective hard-pin owner for this topic, or null when genuinely unpinned. */
+  readHardPinOwner?: (sessionKey: string) => string | null;
   /** Durable inbound-queue custody live on this machine (enforcement precondition). */
   durableCustodyLive: () => boolean;
   /** Appender for logs/owner-dark-ladder.jsonl (scrubbed, metadata-only rows). */
@@ -212,6 +220,11 @@ interface ErrorEpisodeState {
 export interface SpawnAdmissionStatus {
   mode: AdmissionMode;
   enforceBlockedBy: 'flag-disabled' | 'dry-run' | 'durable-custody-dark' | null;
+  liveOwnerEnforcement: {
+    configured: boolean;
+    armed: boolean;
+    blockedBy: 'flag-disabled' | 'pool-dark-or-single-machine' | 'durable-custody-dark' | null;
+  };
   errorEpisode: {
     open: boolean;
     openedAt: string | null;
@@ -310,10 +323,14 @@ export class SpawnAdmission {
       this.counters.routerVerdictsConsumed++;
       const action = input.routerVerdict.action;
       if (action === 'queued' || action === 'placement-blocked') {
-        return this.decide(input, mode, {
+        const pinnedOwner = this.livePinnedRespawnOwner(input, mode);
+        return this.decide(input, pinnedOwner ? 'enforce' : mode, {
           row: 'router-queued-suppress',
-          refusalAction: 'rung3-notice',
-          reason: `router-verdict=${action} (acked=${input.routerVerdict.acked}) suppresses local spawn independently of acked`,
+          refusalAction: pinnedOwner ? 'forward' : 'rung3-notice',
+          reason: pinnedOwner
+            ? `router-verdict=${action} at respawn-dead with live hard-pin owner ${pinnedOwner} — forward, never a local spawn`
+            : `router-verdict=${action} (acked=${input.routerVerdict.acked}) suppresses local spawn independently of acked`,
+          ownership: pinnedOwner ? { kind: 'other-alive', owner: pinnedOwner, epoch: 0 } : undefined,
           consumedRouterVerdict: action,
         });
       }
@@ -345,7 +362,7 @@ export class SpawnAdmission {
         return { allow: true, mode, row: 'unowned', wouldBlock: false, reason: 'no ownership record — claim rides the router placeAndClaim path', ownership };
       case 'other-alive':
         this.recordCleanResolution();
-        return this.decide(input, mode, {
+        return this.decide(input, this.liveOwnerMode(mode), {
           row: 'other-alive',
           refusalAction: 'forward',
           reason: `owner ${ownership.owner} is alive — forward, never a local spawn`,
@@ -361,6 +378,52 @@ export class SpawnAdmission {
         });
       case 'error':
         return this.admitErrorArm(input, mode, ownership);
+    }
+  }
+
+  /**
+   * Increment 1.4 graduation: the live-owner row has stronger evidence and
+   * fewer dependencies than owner-dark. Bind it once custody is live without
+   * prematurely graduating the stale-owner ladder.
+   */
+  private liveOwnerMode(mode: AdmissionMode): AdmissionMode {
+    if (
+      mode === 'dry-run' &&
+      this.flag.enabled &&
+      this.flag.enforceLiveOwner === true &&
+      this.deps.poolStage() !== 'dark' &&
+      !!this.deps.selfMachineId() &&
+      this.deps.durableCustodyLive()
+    ) {
+      return 'enforce';
+    }
+    return mode;
+  }
+
+  /**
+   * Incident 2026-07-16: graduate only the respawn-dead + queued verdict row
+   * when a hard pin names a different, currently-live machine. Owner-dark,
+   * missing/error pin, other callsites, and fleet-dark posture remain on their
+   * existing ladder/dry-run paths.
+   */
+  private livePinnedRespawnOwner(input: AdmitInput, mode: AdmissionMode): string | null {
+    if (
+      mode !== 'dry-run' ||
+      input.callsite !== 'telegram-respawn-dead' ||
+      this.flag.enforceLiveOwner !== true ||
+      this.deps.poolStage() === 'dark' ||
+      !this.deps.selfMachineId() ||
+      !this.deps.durableCustodyLive() ||
+      !this.deps.readHardPinOwner
+    ) return null;
+    try {
+      const owner = this.deps.readHardPinOwner(input.sessionKey);
+      if (!owner || owner === this.deps.selfMachineId()) return null;
+      return this.deps.isMachineAlive(owner) ? owner : null;
+    } catch {
+      // @silent-fallback-ok — an erroring pin read falls toward the existing dry-run path,
+      // the deliberate fail-safe direction; enforcement is never fabricated from uncertainty.
+      return null;
     }
   }
 
@@ -575,6 +638,13 @@ export class SpawnAdmission {
     const now = this.nowFn();
     const winFloor = now - ERROR_ARM_CONSTANTS.EPISODES_WINDOW_MS;
     const mode = this.effectiveMode();
+    // Keep the narrow arm's prerequisites independently visible even while the
+    // broader status.mode honestly remains `dry-run` for owner-dark/error rows.
+    const liveOwnerConfigured = this.flag.enforceLiveOwner === true;
+    let liveOwnerBlockedBy: SpawnAdmissionStatus['liveOwnerEnforcement']['blockedBy'] = null;
+    if (!this.flag.enabled || !liveOwnerConfigured) liveOwnerBlockedBy = 'flag-disabled';
+    else if (this.deps.poolStage() === 'dark' || !this.deps.selfMachineId()) liveOwnerBlockedBy = 'pool-dark-or-single-machine';
+    else if (!this.deps.durableCustodyLive()) liveOwnerBlockedBy = 'durable-custody-dark';
     return {
       mode,
       enforceBlockedBy: !this.flag.enabled
@@ -584,6 +654,11 @@ export class SpawnAdmission {
           : this.deps.durableCustodyLive()
             ? null
             : 'durable-custody-dark',
+      liveOwnerEnforcement: {
+        configured: liveOwnerConfigured,
+        armed: liveOwnerBlockedBy === null,
+        blockedBy: liveOwnerBlockedBy,
+      },
       errorEpisode: {
         open: this.episode.open,
         openedAt: this.episode.openedAt ? new Date(this.episode.openedAt).toISOString() : null,

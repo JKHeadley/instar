@@ -60,6 +60,23 @@ function stubReporter() {
 }
 
 describe('BurnDetector — absolute-share trigger', () => {
+  it('never lets cache reads inflate a key burn share', () => {
+    const ledger = stubLedger([
+      { attributionKey: 'warm-cache', totalTokens: 1_010, freshTokens: 10, eventCount: 1, firstTs: 0, lastTs: 0 },
+      { attributionKey: 'fresh-work', totalTokens: 100, freshTokens: 100, eventCount: 1, firstTs: 0, lastTs: 0 },
+    ]);
+    const detector = new BurnDetector({
+      ledger,
+      reporter: stubReporter(),
+      config: { absoluteShareThreshold: 0.5, coldStartMs: Number.MAX_SAFE_INTEGER },
+      now: () => 1_000_000_000_000,
+    });
+
+    const signals = detector.tick();
+    expect(signals.map((signal) => signal.attributionKey)).toEqual(['fresh-work']);
+    expect(signals[0].observed.share24h).toBeCloseTo(100 / 110);
+  });
+
   it('fires when a single key crosses 25% threshold (the 2026-05-15 case)', () => {
     const ledger = stubLedger([
       { attributionKey: 'InputDetector::abcd1234', totalTokens: 3_000_000_000, eventCount: 100_000, firstTs: 0, lastTs: 0 },
@@ -426,9 +443,24 @@ describe('TokenLedger.byAttributionKey query (Phase 3 wiring)', () => {
     expect(rows).toHaveLength(2);
     const top = rows.find((r) => r.attributionKey === 'InputDetector::aaa')!;
     expect(top.totalTokens).toBe(225);
+    expect(top.freshTokens).toBe(225);
     expect(top.eventCount).toBe(2);
     expect(top.firstTs).toBe(1000);
     expect(top.lastTs).toBe(2000);
+    SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/burn-detection-phase-3.test.ts' });
+  });
+
+  it('reports gross usage but excludes cache reads from fresh burn tokens', () => {
+    const ledger = new TokenLedger({ dbPath, claudeProjectsDir: tmp });
+    ledger.recordEvent({
+      requestId: 'cached', sessionId: 's', ts: 1000,
+      inputTokens: 10, outputTokens: 5, cacheCreationTokens: 20, cacheReadTokens: 10_000,
+      attributionKey: 'warm-cache',
+    });
+
+    const row = ledger.byAttributionKey({ sinceMs: 0 })[0];
+    expect(row.totalTokens).toBe(10_035);
+    expect(row.freshTokens).toBe(35);
     SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/burn-detection-phase-3.test.ts' });
   });
 

@@ -70,6 +70,9 @@ export interface MentorConfig {
    *  name=instar-codey) — that mismatch silently broke same-machine a2a routing
    *  + reply-allowlisting until this field existed. */
   menteeAgentName?: string;
+  /** Machine that currently hosts the mentee agent. Required only when the
+   * mentor and mentee are on different machines; delivery uses signed MeshRpc. */
+  menteeMachineId?: string;
   minIntervalMs: number;
   maxRoundsPerDay: number;
   /** @deprecated dead config — we run on a Claude subscription; replacement is the

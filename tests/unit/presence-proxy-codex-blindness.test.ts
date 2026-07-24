@@ -45,6 +45,10 @@ const CODEX_WORKING = `• Ran sed -n '1,40p' src/commands/server.ts
 
   gpt-5.3-codex medium · ~/Documents/Projects/instar-codey`;
 
+const CODEX_WORKING_MINUTES = `• Working (3m 08s • esc to interrupt)
+
+  gpt-5.3-codex medium · ~/Documents/Projects/instar-codey`;
+
 // Codex session frozen mid-task: alive, no child processes, no work signal,
 // not at a clean idle prompt either — the shape that hung this morning.
 const CODEX_STUCK = `⏺ Let me check the scheduler configuration before I make changes.
@@ -90,6 +94,10 @@ describe('detectSessionFinished — framework-aware idle detection', () => {
 describe('deterministicStallAssessment — LLM-unavailable fallback', () => {
   it('codex working pane → working', () => {
     expect(deterministicStallAssessment(CODEX_WORKING, 'codex-cli')).toBe('working');
+  });
+
+  it('codex minute-form working pane → working', () => {
+    expect(deterministicStallAssessment(CODEX_WORKING_MINUTES, 'codex-cli')).toBe('working');
   });
 
   it('codex stuck pane → stalled (was "working" forever before the fix)', () => {

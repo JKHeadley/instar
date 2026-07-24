@@ -23,6 +23,7 @@ import {
   liveTemplateHash,
   loadBenchmarkMirror,
   resolveMirrorPath,
+  resolveExistingMirrorPath,
   DEFAULT_MIRROR_PATH,
 } from '../../src/data/benchmarkDivergenceRegistry.js';
 import { DP_EXTERNAL_HOG_KILL_LEAVE, DP_MESSAGING_TONE_GATE } from '../../src/data/provenanceCoverage.js';
@@ -172,8 +173,83 @@ describe('loadBenchmarkMirror (FD1/FD9 — untrusted mirror clamps)', () => {
     expect(resolveMirrorPath('/repo', '/abs/m.json')).toBe('/abs/m.json');
   });
 
-  it('the shipped default mirror is ABSENT — the honest pre-pull state (mirror.present:false ⇒ stale-mirror suppression)', () => {
+  it('resolveExistingMirrorPath prefers the agent tree, falls back to the INSTALLED PACKAGE, honors an absolute path', () => {
+    // 2026-07-23: the first baseline ships inside the package, but resolution was
+    // projectDir-only — so on a non-source install (the serving machine: no .git,
+    // src/data/ holding three unrelated files) the shipped mirror was permanently
+    // unreadable while the route reported the same benign present:false it showed
+    // before any baseline existed. Indistinguishable from "never captured".
+    const exists = (set: string[]) => (p: string) => set.includes(p);
+
+    // Agent tree WINS when it has the file — a dev's locally-regenerated mirror
+    // must never be shadowed by the shipped one.
+    expect(resolveExistingMirrorPath('/agent', undefined, {
+      installedPackageRoot: '/pkg',
+      exists: exists(['/agent/' + DEFAULT_MIRROR_PATH, '/pkg/' + DEFAULT_MIRROR_PATH]),
+    })).toBe('/agent/' + DEFAULT_MIRROR_PATH);
+
+    // Falls back to the package when the agent tree lacks it (the shipped case).
+    expect(resolveExistingMirrorPath('/agent', undefined, {
+      installedPackageRoot: '/pkg',
+      exists: exists(['/pkg/' + DEFAULT_MIRROR_PATH]),
+    })).toBe('/pkg/' + DEFAULT_MIRROR_PATH);
+
+    // Neither has it ⇒ report the primary path, so the loader's present:false
+    // names the place a reader would look first.
+    expect(resolveExistingMirrorPath('/agent', undefined, {
+      installedPackageRoot: '/pkg',
+      exists: exists([]),
+    })).toBe('/agent/' + DEFAULT_MIRROR_PATH);
+
+    // An ABSOLUTE mirrorPath is an explicit instruction — honored verbatim, never
+    // falls back, and `exists` is not consulted.
+    expect(resolveExistingMirrorPath('/agent', '/abs/m.json', {
+      installedPackageRoot: '/pkg',
+      exists: () => { throw new Error('must not probe for an absolute path'); },
+    })).toBe('/abs/m.json');
+
+    // No derivable package root ⇒ previous projectDir-only behaviour, unchanged.
+    expect(resolveExistingMirrorPath('/agent', undefined, {
+      installedPackageRoot: null,
+      exists: exists(['/pkg/' + DEFAULT_MIRROR_PATH]),
+    })).toBe('/agent/' + DEFAULT_MIRROR_PATH);
+  });
+
+  it('the shipped mirror is PRESENT and parses through the real loader (first baseline captured 2026-07-23)', () => {
+    // Was pinned ABSENT while no baseline existed — the honest pre-pull state.
+    // The first battery has now been run against the CURRENT prompt templates, so
+    // the pin flips: what matters from here is that the shipped mirror is
+    // well-formed and survives the FD9 clamps, not that it is missing.
     const repoRoot = path.resolve(__dirname, '../../');
-    expect(fs.existsSync(path.join(repoRoot, DEFAULT_MIRROR_PATH))).toBe(false);
+    const p = path.join(repoRoot, DEFAULT_MIRROR_PATH);
+    expect(fs.existsSync(p)).toBe(true);
+
+    const m = loadBenchmarkMirror(p);
+    expect(m.present).toBe(true);
+    expect(m.capturedAt).toBeTruthy();
+
+    // Every enrolled pair's task must survive the clamps with real counts —
+    // a mirror that parses to an empty perModel is worse than none, because it
+    // reads as "captured" while measuring nothing.
+    const tone = m.tasks['tone-gate'];
+    expect(tone).toBeTruthy();
+    expect(Object.keys(tone.perModel).length).toBeGreaterThan(0);
+    for (const [modelId, stats] of Object.entries(tone.perModel)) {
+      expect(stats.deterministic).toBeGreaterThan(0);
+      expect(stats.passes).toBeLessThanOrEqual(stats.deterministic);
+      expect(Math.abs(stats.passRate - stats.passes / stats.deterministic)).toBeLessThan(0.005);
+      // Every benched model must be normalizable, or the pair silently measures
+      // nothing (`no-benched-baseline (unmapped)`).
+      expect(normalizeModelId(modelId)).not.toBeNull();
+    }
+
+    // The production model serving the tone gate MUST be benched + mapped — its
+    // absence is what made the one pair with real traffic unmeasurable.
+    expect(tone.perModel['gpt-5.4-mini']).toBeTruthy();
+    expect(normalizeModelId('gpt-5.4-mini')).toBe('gpt-5.4-mini');
+
+    // The Q0 precondition: the benched prompt hash must match the LIVE template,
+    // or the detector correctly refuses to draw conclusions from it.
+    expect(tone.benchedPromptHash).toMatch(/^[0-9a-f]{64}$/);
   });
 });

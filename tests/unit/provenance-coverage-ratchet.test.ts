@@ -44,6 +44,8 @@ import {
   isEnrolled,
   getVolumeClass,
   getRule,
+  findWiredWithoutGraders,
+  findGradingContradictions,
 } from '../../src/data/provenanceCoverage.js';
 // eslint-disable-next-line import/no-relative-packages
 import { stripComments, isOutOfScope } from '../../scripts/lint-llm-attribution.js';
@@ -157,12 +159,12 @@ const WIRED_AWAITING_ENROLLMENT: string[] = [].sort();
 // without minting a new version is exactly the mutation the pin refuses.
 const RULE_BASELINE = [
   // ruleId::rung::strength::owner::windowMs
-  'completion-enacted-disposition-v1::self-report::self-report::CompletionChokepoint::-',
-  'completion-realcheck-v1::deterministic-ground-truth::deterministic-proof::AutonomousRealCheck::-',
-  'hog-enacted-disposition-v1::self-report::self-report::ExternalHogSentinel::-',
-  'hog-leave-recurrence-v1::recurrence::recurrence-proxy::ExternalHogSentinel::21600000',
-  'hog-respawn-wrong-v1::deterministic-ground-truth::deterministic-proof::ExternalHogSentinel::21600000',
-  'hog-sustained-right-v1::deterministic-ground-truth::negative-evidence::DecisionGrading::21600000',
+  'completion-enacted-disposition-v1::completion-stop-rationale::self-report::self-report::CompletionChokepoint::-',
+  'completion-realcheck-v1::completion-evaluate::deterministic-ground-truth::deterministic-proof::AutonomousRealCheck::-',
+  'hog-enacted-disposition-v1::external-hog-kill-leave::self-report::self-report::ExternalHogSentinel::-',
+  'hog-leave-recurrence-v1::external-hog-kill-leave::recurrence::recurrence-proxy::ExternalHogSentinel::21600000',
+  'hog-respawn-wrong-v1::external-hog-kill-leave::deterministic-ground-truth::deterministic-proof::ExternalHogSentinel::21600000',
+  'hog-sustained-right-v1::external-hog-kill-leave::deterministic-ground-truth::negative-evidence::DecisionGrading::21600000',
 ].sort();
 
 const wiredEntries = PROVENANCE_COVERAGE.filter((e) => e.status === 'wired');
@@ -360,9 +362,80 @@ describe('messaging-tone-gate — the third enrolled customer (§5.6 high-volume
 });
 
 describe('rule registry (§5.4.2) — enums pinned, identities immutable, dormant rung refused', () => {
+  it('CLASS: every wired point has a registered grader or an explicit measurement-only/exempt posture', () => {
+    expect(
+      findWiredWithoutGraders(),
+      'wired-but-no-grader contradiction: a point declared wired must have a RULE_REGISTRY entry ' +
+        'or an explicit measurement-only/exempt posture with a real reason',
+    ).toEqual([]);
+  });
+
+  it('CLASS: the census and registry contain no mutually contradictory grading declarations', () => {
+    expect(findGradingContradictions()).toEqual([]);
+  });
+
+  it('CLASS NEGATIVE: a synthetic wired point without either declaration is detected loudly', () => {
+    expect(
+      findWiredWithoutGraders(
+        [{
+          decisionPoint: 'synthetic-ungraded',
+          component: 'SyntheticUngraded',
+          status: 'wired',
+          volumeClass: 'full',
+          contentClass: 'metadata',
+        }],
+        {},
+      ),
+    ).toEqual(['synthetic-ungraded']);
+  });
+
+  it('CLASS NEGATIVE: duplicate points, grader+measurement-only, and rules targeting non-wired points are refused', () => {
+    const base = {
+      component: 'Synthetic',
+      status: 'wired' as const,
+      volumeClass: 'full' as const,
+      contentClass: 'metadata' as const,
+    };
+    const coverage = [
+      { ...base, decisionPoint: 'duplicate-point' },
+      { ...base, decisionPoint: 'duplicate-point', component: 'Synthetic/duplicate' },
+      {
+        ...base,
+        decisionPoint: 'both-postures',
+        component: 'Synthetic/both',
+        gradingPosture: 'measurement-only' as const,
+        gradingReason: 'This deliberately exceeds forty characters for the negative fixture.',
+      },
+      {
+        decisionPoint: 'pending-target',
+        component: 'Synthetic/pending',
+        status: 'pending:ACT-1' as const,
+        contentClass: 'metadata' as const,
+        reason: 'This deliberately exceeds forty characters for the negative fixture.',
+      },
+    ];
+    const registry = {
+      'both-v1': {
+        ruleId: 'both-v1', decisionPoint: 'both-postures', rung: 'self-report' as const,
+        evidenceStrength: 'self-report' as const, owningComponent: 'Synthetic',
+      },
+      'pending-v1': {
+        ruleId: 'pending-v1', decisionPoint: 'pending-target', rung: 'self-report' as const,
+        evidenceStrength: 'self-report' as const, owningComponent: 'Synthetic',
+      },
+    };
+    expect(findGradingContradictions(coverage, registry)).toEqual([
+      'duplicate-census:duplicate-point',
+      'grader-and-measurement-only:both-postures',
+      'rule-target-not-wired:pending-v1:pending-target',
+      'wired-but-no-grader:duplicate-point',
+    ]);
+  });
+
   it('every rule row is well-formed (key = ruleId; closed enums; non-empty owner; versioned id)', () => {
     for (const [key, rule] of Object.entries(RULE_REGISTRY)) {
       expect(rule.ruleId, `registry key '${key}' must equal its ruleId`).toBe(key);
+      expect(PROVENANCE_COVERAGE.some((e) => e.decisionPoint === rule.decisionPoint), `${key}: decisionPoint must exist in census`).toBe(true);
       expect(EVIDENCE_RUNGS, `${key}: rung`).toContain(rule.rung);
       expect(EVIDENCE_STRENGTHS, `${key}: evidenceStrength`).toContain(rule.evidenceStrength);
       expect(rule.owningComponent.trim().length, `${key}: owningComponent must name the annotator actor`).toBeGreaterThan(0);
@@ -386,7 +459,7 @@ describe('rule registry (§5.4.2) — enums pinned, identities immutable, dorman
 
   it('registered rule identities are IMMUTABLE (baseline pin — mutate = mint a new -v<n+1> instead)', () => {
     const current = Object.values(RULE_REGISTRY)
-      .map((r) => `${r.ruleId}::${r.rung}::${r.evidenceStrength}::${r.owningComponent}::${r.windowMs ?? '-'}`)
+      .map((r) => `${r.ruleId}::${r.decisionPoint}::${r.rung}::${r.evidenceStrength}::${r.owningComponent}::${r.windowMs ?? '-'}`)
       .sort();
     // Every baseline rule must still exist, byte-identical (immutability); new
     // rule VERSIONS may be added (they extend `current` without touching these).

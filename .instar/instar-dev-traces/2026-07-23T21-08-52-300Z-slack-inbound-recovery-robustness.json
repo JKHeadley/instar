@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "slug": "slack-inbound-recovery-robustness",
+  "sessionId": "slack-C0BA4F4E0FP-20260723",
+  "timestamp": "2026-07-23T21:08:52.300Z",
+  "artifactPath": "upgrades/side-effects/slack-inbound-recovery-robustness.md",
+  "artifactSha256": "d050fc6057ba49cceddddfe35b5885088041ec59a7b73cf446770f339f0da4fc",
+  "specPath": "docs/specs/slack-inbound-recovery-robustness.md",
+  "coveredFiles": [
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/messaging/slack/SocketModeClient.ts",
+    "tests/unit/slack-safesend.test.ts",
+    "tests/unit/slack-socket-heartbeat.test.ts",
+    "tests/unit/slack-thread-session-routing.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A localized reliability correction to existing Slack recovery and Socket Mode lifecycle paths. It adds no API route, config, scope, state schema, autonomous authority, or migration. Both broken boundaries are directly unit-tested and the existing reconnect/leak suites remain in the focused regression set.",
+  "eli16Path": "docs/specs/slack-inbound-recovery-robustness.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-inbound-recovery-robustness.md",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Thread-scoped Slack sessions introduced composite routing keys, but both recovery loops continued to assume resume-map keys were raw channel IDs. Separately, the existing dead-silence probe relied on successful local send() of undocumented JSON, which cannot establish inbound event delivery. The live incident exposed both latent assumptions together: startup logged channel_not_found for a composite key while the socket stayed OPEN and emitted no events."
+  },
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

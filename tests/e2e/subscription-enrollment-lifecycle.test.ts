@@ -75,14 +75,21 @@ describe('/subscription-pool enrollment — E2E feature-alive', () => {
     // Second boot: a FRESH store + wizard over the SAME state dir — the pending
     // login must still be there (it persisted to disk).
     const store2 = new PendingLoginStore({ stateDir: dir });
-    const wizard2 = new EnrollmentWizard({ store: store2, driveLogin: async () => ART });
+    const wizard2 = new EnrollmentWizard({
+      store: store2,
+      driveLogin: async () => ({ ...ART, userCode: 'FRESH-CODE' }),
+    });
+    // Mirrors production boot: persisted metadata alone is insufficient because
+    // the prior process's login pane died with the server.
+    await wizard2.recoverAfterRestart();
     server = await bootApp({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), enrollmentWizard: wizard2 });
     const res = await fetch(server.url + '/subscription-pool/pending-logins');
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.enabled).toBe(true);
     expect(body.logins.map((l: any) => l.id)).toEqual(['codex-1']);
-    expect(body.logins[0].userCode).toBe('AAAA-BBBB');
+    expect(body.logins[0].userCode).toBe('FRESH-CODE');
+    expect(body.logins[0].reissueCount).toBe(1);
   });
 
   it('FEATURE ALIVE: completing a claude-code enrollment leaves its config home interactive-ready (2026-06-09 incident)', async () => {
@@ -118,5 +125,38 @@ describe('/subscription-pool enrollment — E2E feature-alive', () => {
     expect(cfg.bypassPermissionsModeAccepted).toBe(true);
     expect(cfg.hasTrustDialogAccepted).toBe(true);
     expect(cfg.oauthAccount).toEqual(oauthAccount); // credentials byte-identical
+  });
+
+  it('FEATURE ALIVE: completion invalidates and immediately reverifies the repaired slot without a scheduled sweep', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'enroll-e2e-reverify-'));
+    const configHome = path.join(dir, 'codex-1');
+    const account = { id: 'codex-1', configHome, identityDrifted: true };
+    const events: string[] = [];
+    const store = new PendingLoginStore({ stateDir: dir });
+    const wizard = new EnrollmentWizard({ store, driveLogin: async () => ART });
+    server = await bootApp({
+      config: { authToken: 't', stateDir: dir, port: 0 },
+      startTime: new Date(),
+      enrollmentWizard: wizard,
+      subscriptionPool: { get: (id: string) => id === account.id ? account : null },
+      quotaPoller: {
+        invalidateIdentityCache: (slots: string[]) => events.push(`invalidate:${slots.join(',')}`),
+        pollAccount: async (polled: typeof account) => {
+          events.push(`poll:${polled.id}`);
+          polled.identityDrifted = false;
+          return null;
+        },
+      },
+    });
+    const started = await fetch(server.url + '/subscription-pool/enroll', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: account.id, label: 'codex', provider: 'openai', framework: 'codex-cli', configHome }),
+    });
+    expect(started.status).toBe(201);
+
+    const completed = await fetch(server.url + `/subscription-pool/enroll/${account.id}/complete`, { method: 'POST' });
+    expect(completed.status).toBe(200);
+    expect(events).toEqual([`invalidate:${configHome}`, `poll:${account.id}`]);
+    expect(account.identityDrifted).toBe(false);
   });
 });

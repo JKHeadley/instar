@@ -387,7 +387,16 @@ export class JobScheduler {
         const task = new Cron(job.schedule, async () => {
           // New cron window — reset retry state so we get fresh attempts
           this.clearRetryState(job.slug);
-          await this.triggerJob(job.slug, 'scheduled');
+          try {
+            await this.triggerJob(job.slug, 'scheduled');
+          } catch (err) {
+            // Cron callbacks are a process-lifetime boundary. A lease demotion
+            // can race the pre-trigger read-only check and make a later shared
+            // bookkeeping write throw; contain that refusal (and every other
+            // trigger failure) here rather than creating an unhandled rejection
+            // that terminates the server.
+            console.error(`[scheduler] Scheduled trigger failed for "${job.slug}": ${err}`);
+          }
         });
         this.cronTasks.set(job.slug, task);
       } catch (err) {
@@ -402,9 +411,15 @@ export class JobScheduler {
     const graceMs = this.config.startupGraceMs ?? 5000;
     if (graceMs > 0) {
       console.log(`[scheduler] Startup grace period: ${graceMs}ms before missed-job evaluation`);
-      setTimeout(() => this.checkMissedJobs(scopedJobs), graceMs);
+      setTimeout(() => {
+        this.checkMissedJobs(scopedJobs).catch((err) => {
+          console.error(`[scheduler] Missed-job startup evaluation failed: ${err}`);
+        });
+      }, graceMs);
     } else {
-      this.checkMissedJobs(scopedJobs);
+      this.checkMissedJobs(scopedJobs).catch((err) => {
+        console.error(`[scheduler] Missed-job startup evaluation failed: ${err}`);
+      });
     }
 
     // Ensure every job has a Telegram topic (job-topic coupling)
@@ -457,6 +472,23 @@ export class JobScheduler {
 
     if (this.paused) {
       this.skipLedger.recordSkip(slug, 'paused');
+      return 'skipped';
+    }
+
+    // In the legacy one-awake-machine posture the scheduler is constructed on
+    // the machine that is awake at boot, but it is not torn down if that machine
+    // subsequently loses the fenced lease.  Once StateManager has demoted this
+    // process to a read-only standby, every legacy job path eventually performs
+    // a shared-state write (run state, an event, or both).  Letting a missed-job
+    // pass reach those writes turns the expected refusal into an unhandled
+    // startup rejection and crash-loops the standby.
+    //
+    // Pool-owned sessions have a separate session-scoped write exception, but
+    // scheduler bookkeeping (job state + events) remains shared state.  The
+    // scheduler therefore stays fenced whenever the StateManager is read-only.
+    if (this.state.readOnly) {
+      this.skipLedger.recordSkip(slug, 'role-guard');
+      console.log(`[scheduler] Job "${slug}" skipped — this machine is a read-only standby.`);
       return 'skipped';
     }
 
@@ -1907,7 +1939,15 @@ export class JobScheduler {
     });
 
     for (const { job } of missedJobs) {
-      await this.triggerJob(job.slug, 'missed');
+      try {
+        await this.triggerJob(job.slug, 'missed');
+      } catch (err) {
+        // A demotion can occur after triggerJob's entry check but before a gate
+        // or spawn path records shared bookkeeping. The StateManager refusal is
+        // authoritative; contain it per job so one raced trigger cannot abort
+        // evaluation of the rest or escape the startup callback.
+        console.error(`[scheduler] Missed trigger failed for "${job.slug}": ${err}`);
+      }
     }
   }
 

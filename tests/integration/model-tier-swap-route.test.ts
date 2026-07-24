@@ -324,4 +324,40 @@ describe('POST /sessions/spawn — fable allowlist (integration)', () => {
     expect(res.body.error).toContain('"model" must be one of');
     expect(mockSM._spawnCount).toBe(0);
   });
+
+  it('threads an explicit ultracode opt-in only to Claude spawns', async () => {
+    const accepted = await request(app)
+      .post('/sessions/spawn')
+      .send({ name: 'ultracode-spawn', prompt: 'hello', ultracode: true });
+    expect(accepted.status).toBe(201);
+    expect(mockSM._lastSpawnArgs?.ultracode).toBe(true);
+
+    const refused = await request(app)
+      .post('/sessions/spawn')
+      .send({ name: 'codex-ultracode', prompt: 'hello', framework: 'codex-cli', ultracode: true });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toContain('supported only for framework');
+  });
+
+  it('rejects non-boolean ultracode values', async () => {
+    const res = await request(app)
+      .post('/sessions/spawn')
+      .send({ name: 'bad-ultracode', prompt: 'hello', ultracode: 'yes' });
+    expect(res.status).toBe(400);
+  });
+
+  it('refuses omitted-framework ultracode on a Codex-default agent', async () => {
+    const codexDefaultApp = express();
+    codexDefaultApp.use(express.json());
+    codexDefaultApp.use(createRoutes({
+      config: { authToken: 'test', stateDir: tmpDir, port: 0, sessions: { framework: 'codex-cli' } },
+      sessionManager: mockSM,
+      startTime: new Date(),
+    } as any));
+    const res = await request(codexDefaultApp)
+      .post('/sessions/spawn')
+      .send({ name: 'implicit-codex-ultracode', prompt: 'hello', ultracode: true });
+    expect(res.status).toBe(400);
+    expect(mockSM._spawnCount).toBe(0);
+  });
 });

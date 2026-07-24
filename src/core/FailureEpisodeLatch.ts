@@ -36,6 +36,13 @@ export interface FailureRecord {
   failures: number;
 }
 
+export interface FailureEpisodeSnapshot {
+  schemaVersion: 1;
+  failingSince: number | null;
+  failures: number;
+  signaledFor: number | null;
+}
+
 export class FailureEpisodeLatch {
   private readonly signalAfterMs: number;
   private readonly now: () => number;
@@ -74,5 +81,21 @@ export class FailureEpisodeLatch {
     this.failures = 0;
     this.signaledFor = null;
     return { recovered, failures };
+  }
+
+  snapshot(): FailureEpisodeSnapshot {
+    return { schemaVersion: 1, failingSince: this.failingSince, failures: this.failures, signaledFor: this.signaledFor };
+  }
+
+  restore(snapshot: FailureEpisodeSnapshot): void {
+    const finiteNullable = (value: unknown): value is number | null => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
+    if (snapshot?.schemaVersion !== 1 || !finiteNullable(snapshot.failingSince) || !Number.isInteger(snapshot.failures) || snapshot.failures < 0 ||
+      !finiteNullable(snapshot.signaledFor) || (snapshot.signaledFor !== null && snapshot.signaledFor !== snapshot.failingSince) ||
+      (snapshot.failingSince === null && snapshot.failures !== 0) || (snapshot.failingSince !== null && snapshot.failures === 0)) {
+      throw new Error('invalid FailureEpisodeLatch snapshot');
+    }
+    this.failingSince = snapshot.failingSince;
+    this.failures = snapshot.failures;
+    this.signaledFor = snapshot.signaledFor;
   }
 }

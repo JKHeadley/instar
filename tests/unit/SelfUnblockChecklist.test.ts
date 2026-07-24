@@ -134,8 +134,8 @@ describe('SelfUnblockChecklist — probe ordering + short-circuit', () => {
     const checklist = new SelfUnblockChecklist({ providers, store: makeStore() });
     const run = await checklist.run({ target: 'vercel:dawn-tunnel.dev', requiredAttemptType: 'self-fetch' });
 
-    // Ordered: own-vault, org-bitwarden, cloud-vercel — then STOP.
-    expect(probed).toEqual(['own-vault', 'org-bitwarden', 'cloud-vercel']);
+    // Ordered: own-vault, owned-identities, org-bitwarden, cloud-vercel — then STOP.
+    expect(probed).toEqual(['own-vault', 'owned-identities', 'org-bitwarden', 'cloud-vercel']);
     expect(run.exhausted).toBe(false); // a relevant cred was found
     expect(run.probes[run.probes.length - 1].holdsRelevantCred).toBe(true);
     expect(run.probes[run.probes.length - 1].source).toBe('cloud-vercel');

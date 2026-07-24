@@ -190,6 +190,7 @@ Beyond sending and receiving, Threadline keeps each conversation **auditable, si
 
 - **One canonical log per conversation.** `ThreadLog` is an append-only, hash-chained record — one file per thread — that every send and receive is funneled into, and that history reads back from. This is the fix for the failure where an agent could not read back messages it had itself sent. The durable per-conversation record (`ConversationStore`) caches that log's head, the owner stamp, and the canonical-thread resolver binding.
 - **Exactly one voice per conversation.** `NegotiatorGate` and `NegotiatorLease` implement the single-negotiator lock — only the owning session can speak for the agent; warm/keep-alive sessions (`WarmSessionPool`) can post only a fixed holding notice, never a binding commitment. `WarrantsReplyGate` filters inbound that needs no reply so acks don't read as live negotiation.
+- **Interrupted warm replies recover safely.** `ThreadlineReapRecovery` gives a quota-reaped warm reply worker an exact, authenticated resume path through the shared recovery queue. Inbound/reply correlation and a single-owner claim prevent an original send and a recovery worker from both answering the same message.
 - **Calm, coherent surfaces.** `CollaborationSurfacer` makes agent-to-agent activity visible to the operator without spawning a topic per event, and `ConversationMeshView` answers, across machines, which machine holds each conversation and whether it's bound to a topic.
 
 ## Threadline HTTP routes (robustness + history)

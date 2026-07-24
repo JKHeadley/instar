@@ -44,6 +44,7 @@ import { AGE_LIMIT_ACTIVE_RUN_REASON, COMMITMENT_ACTIVE_RUN_REASON, isAutoResuma
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const JOB_SLUG_RE = /^[a-z0-9-]+$/;
+const THREAD_ID_RE = /^[A-Za-z0-9._:-]{1,256}$/;
 const PRIORITY_CLASSES = new Set(['interactive', 'job', 'other']);
 
 export interface ResumeQueueDrainerDeps {
@@ -95,6 +96,10 @@ export interface ResumeQueueDrainerDeps {
   /** Respawn the topic's session (continuation prompt + entry cwd via the new
    *  spawn-path parameter). Returns the spawned tmux session name. */
   respawnTopic: (entry: ResumeQueueEntry, continuationPrompt: string) => Promise<string>;
+  /** Re-route the exact canonical inbound through Threadline after a warm worker reap. */
+  respawnThread?: (entry: ResumeQueueEntry) => Promise<string>;
+  /** The exact canonical inbound is still present and has not already produced a reply. */
+  threadlineMessagePending?: (entry: ResumeQueueEntry) => boolean;
   triggerJob: (slug: string) => Promise<'triggered' | 'queued' | 'skipped'>;
   /** Spawn verification after a grace period (R2.9). */
   spawnAliveAfterGrace: (tmuxSession: string) => Promise<boolean>;
@@ -378,6 +383,8 @@ export class ResumeQueueDrainer {
       try {
         if (candidate.topicId != null) {
           spawnedTmux = await this.deps.respawnTopic(candidate, this.continuationPrompt(candidate));
+        } else if (candidate.threadId && candidate.threadlineMessageId && this.deps.respawnThread) {
+          spawnedTmux = await this.deps.respawnThread(candidate);
         } else if (candidate.jobSlug) {
           const result = await this.deps.triggerJob(candidate.jobSlug);
           if (result === 'skipped') {
@@ -584,6 +591,8 @@ export class ResumeQueueDrainer {
     if (entry.resumeUuid && !UUID_RE.test(entry.resumeUuid)) return 'resumeUuid-format';
     if (!PRIORITY_CLASSES.has(entry.priorityClass)) return 'priorityClass-enum';
     if (entry.jobSlug && !JOB_SLUG_RE.test(entry.jobSlug)) return 'jobSlug-charset';
+    if (entry.threadId && !THREAD_ID_RE.test(entry.threadId)) return 'threadId-charset';
+    if ((entry.threadId && !entry.threadlineMessageId) || (!entry.threadId && entry.threadlineMessageId)) return 'threadline-pair';
     if (entry.reason.length > 1000) return 'reason-length';
     if (entry.workEvidence.length > 32 || entry.workEvidence.some((e) => e.length > 64)) {
       return 'workEvidence-length';
@@ -631,6 +640,9 @@ export class ResumeQueueDrainer {
       ) {
         return 'commitment-no-longer-active';
       }
+    } else if (entry.threadId && entry.threadlineMessageId) {
+      if (!this.deps.respawnThread || !this.deps.threadlineMessagePending) return 'threadline-recovery-unwired';
+      if (!this.safeBool(() => this.deps.threadlineMessagePending!(entry), false)) return 'threadline-message-settled';
     } else if (entry.jobSlug) {
       const check = this.safeVal(() => this.deps.jobCheck(entry.jobSlug!, sinceIso), { ok: false, why: 'job-check-failed' });
       if (!check.ok) return check.why ?? 'job-invalid';

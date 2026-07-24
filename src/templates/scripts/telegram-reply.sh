@@ -373,6 +373,8 @@ ATTEMPTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
 # from config — the server uses it to reject wrong-port requests before
 # evaluating the token.
 CURL_ARGS=(-s -w "\n%{http_code}" -X POST "http://localhost:${PORT}/telegram/reply/${TOPIC_ID}"
+  --connect-timeout 3
+  --max-time 125
   -H 'Content-Type: application/json'
   -d "$JSON_BODY")
 if [ -n "$AUTH_TOKEN" ]; then
@@ -386,6 +388,19 @@ if [ -n "$DELIVERY_ID" ]; then
 fi
 
 RESPONSE=$(curl "${CURL_ARGS[@]}")
+CURL_STATUS=$?
+
+# A transport failure after request start is inherently ambiguous: the server
+# may still finish its tone review or Telegram send after our bounded client
+# window closes. Always render a terminal outcome so a yielded/reattached tool
+# call cannot complete silently, and never auto-enqueue/retry an unknown send.
+if [ "$CURL_STATUS" -ne 0 ]; then
+  echo "AMBIGUOUS: Telegram relay transport ended without an HTTP outcome (curl ${CURL_STATUS})." >&2
+  echo "  The message MAY still be delivered. Do NOT retry blindly; verify the conversation first." >&2
+  [ -n "$DELIVERY_ID" ] && echo "  Delivery id: ${DELIVERY_ID}" >&2
+  echo "AMBIGUOUS: no HTTP outcome — verify delivery before retrying"
+  exit 0
+fi
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
@@ -698,6 +713,31 @@ INSERT OR IGNORE INTO entries (
 SQL
       rm -f "${QUEUE_DB}.tmp.text" "${QUEUE_DB}.tmp.meta" 2>/dev/null
       chmod 600 "$QUEUE_DB" 2>/dev/null
+    fi
+
+    # A zero exit from a writer is not durable evidence. Re-open the canonical
+    # DB and prove this exact pre-minted delivery_id exists before claiming the
+    # message is queued. This closes the historical false-success path where a
+    # failed/partial writer left a zero-byte file and the script still printed
+    # "Queued for recovery".
+    QUEUE_PERSISTED=$(Q_DB_PATH="$QUEUE_DB" Q_DELIVERY_ID="$DELIVERY_ID" \
+      Q_TOPIC_ID="$TOPIC_ID" Q_TEXT_HASH="$TEXT_HASH" python3 -c '
+import os, sqlite3
+try:
+    conn = sqlite3.connect("file:" + os.environ["Q_DB_PATH"] + "?mode=ro", uri=True, timeout=2.0)
+    row = conn.execute(
+        "SELECT 1 FROM entries WHERE delivery_id=? AND topic_id=? AND text_hash=? AND state=? LIMIT 1",
+        (os.environ["Q_DELIVERY_ID"], int(os.environ["Q_TOPIC_ID"]), os.environ["Q_TEXT_HASH"], "queued"),
+    ).fetchone()
+    conn.close()
+    print("1" if row else "0")
+except Exception:
+    print("0")
+' 2>/dev/null)
+    if [ "$QUEUE_PERSISTED" != "1" ]; then
+      echo "Failed (HTTP $HTTP_CODE): $BODY" >&2
+      echo "  (also: recovery queue persistence could not be verified; message was NOT reported as queued)" >&2
+      exit 1
     fi
 
     # Best-effort POST /events/delivery-failed to the SAME port the

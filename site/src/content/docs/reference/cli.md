@@ -213,6 +213,11 @@ instar discovery                # Scan filesystem + registry + GitHub for existi
 instar gate                     # UnjustifiedStopGate operator tooling (enforcement mode, kill-switch, logs)
 ```
 
+`instar gate status` shows the durable authority breaker and its next automatic
+probe. After repairing the provider, `instar gate reset-breaker` invokes the
+authenticated `POST /internal/stop-gate/reset-breaker` operation so the next
+Stop event may probe immediately.
+
 ## Multi-machine
 
 ```bash

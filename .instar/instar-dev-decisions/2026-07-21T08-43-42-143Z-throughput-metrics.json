@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-21T08:43:42.143Z",
+  "slug": "throughput-metrics",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 16,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

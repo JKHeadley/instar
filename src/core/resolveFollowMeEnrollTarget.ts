@@ -44,7 +44,11 @@ export type ResolveFollowMeEnrollTargetResult =
       /** Operator-facing label for the new pending login. */
       label: string;
     }
-  | { resolved: false; reason: string };
+  | {
+      resolved: false;
+      code: 'account-record-missing-email' | 'account-record-email-conflict' | 'subscription-account-not-found';
+      reason: string;
+    };
 
 /**
  * Resolve the approved email + provider/framework + label for `accountId`.
@@ -61,35 +65,54 @@ export function resolveFollowMeEnrollTarget(
   const defaultProvider = input.defaultProvider ?? 'anthropic';
   const defaultFramework = input.defaultFramework ?? 'claude-code';
 
-  // 1) Local pool — most authoritative when present.
+  const candidates: Array<{ email: string; source: 'local' | 'peer'; row: LocalAccountRow }> = [];
+
+  // Local and peer metadata are holder evidence. Resolution requires agreement:
+  // first-holder-wins can silently target the wrong provider account.
   const local = input.localAccounts.find((a) => a.id === accountId);
   if (local && typeof local.email === 'string' && local.email.trim().length > 0) {
-    return {
-      resolved: true,
-      expectedEmail: local.email.trim(),
-      provider: (local.provider && local.provider.length > 0) ? local.provider : defaultProvider,
-      framework: (local.framework && local.framework.length > 0) ? local.framework : defaultFramework,
-      label: (local.nickname && local.nickname.trim().length > 0) ? local.nickname.trim() : accountId,
-    };
+    candidates.push({ email: local.email.trim(), source: 'local', row: local });
   }
 
-  // 2) Peer views — the replicated meta projection (carries id + email).
+  let found = !!local;
   for (const view of input.peerViews) {
     for (const row of view.accounts) {
       if (row.accountId !== accountId) continue;
+      found = true;
       if (typeof row.email === 'string' && row.email.trim().length > 0) {
-        return {
-          resolved: true,
-          expectedEmail: row.email.trim(),
-          // Peer view rows carry only id/email/status; provider/framework default for a re-mint
-          // (the target machine logs in with its own framework — claude-code/anthropic by default).
-          provider: defaultProvider,
-          framework: defaultFramework,
-          label: accountId,
-        };
+        candidates.push({ email: row.email.trim(), source: 'peer', row: { id: accountId } });
       }
     }
   }
 
-  return { resolved: false, reason: 'cannot resolve approved account email' };
+  if (!found) {
+    return {
+      resolved: false,
+      code: 'subscription-account-not-found',
+      reason: 'This subscription account is no longer registered.',
+    };
+  }
+  if (candidates.length === 0) {
+    return {
+      resolved: false,
+      code: 'account-record-missing-email',
+      reason: 'This subscription account record is missing its email. Repair or re-enroll the account, then try again.',
+    };
+  }
+  const keys = new Set(candidates.map((candidate) => candidate.email.toLowerCase()));
+  if (keys.size !== 1) {
+    return {
+      resolved: false,
+      code: 'account-record-email-conflict',
+      reason: 'This account has conflicting emails on your machines. Repair or re-enroll the account records, then try again.',
+    };
+  }
+  const selected = candidates.find((candidate) => candidate.source === 'local') ?? candidates[0]!;
+  return {
+    resolved: true,
+    expectedEmail: selected.email,
+    provider: (local?.provider && local.provider.length > 0) ? local.provider : defaultProvider,
+    framework: (local?.framework && local.framework.length > 0) ? local.framework : defaultFramework,
+    label: (local?.nickname && local.nickname.trim().length > 0) ? local.nickname.trim() : accountId,
+  };
 }

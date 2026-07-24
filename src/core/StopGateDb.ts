@@ -28,6 +28,8 @@ import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from './SqliteRegistry.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { StopGateBreakerState, StopGateBreakerStateStore } from './StopGateBreakerState.js';
+import { emptyStopGateBreakerState, mintStopGateProbeToken, normalizeStopGateBreakerState } from './StopGateBreakerState.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -159,6 +161,16 @@ const SCHEMA = [
      updated_at      INTEGER NOT NULL,
      PRIMARY KEY (agent_id, day_key)
    )`,
+  `CREATE TABLE IF NOT EXISTS authority_breaker_state (
+     breaker_key          TEXT PRIMARY KEY,
+     consecutive_failures INTEGER NOT NULL DEFAULT 0,
+     open_until           INTEGER NOT NULL DEFAULT 0,
+     probe_lease_until    INTEGER NOT NULL DEFAULT 0,
+     probe_token          TEXT,
+     first_opened_at      INTEGER NOT NULL DEFAULT 0,
+     suppressed_count     INTEGER NOT NULL DEFAULT 0,
+     updated_at           INTEGER NOT NULL DEFAULT 0
+   )`,
 ];
 
 // ── Turn-End Self-Deferral Guard (Phase A) — additive schema migration ─────
@@ -188,7 +200,7 @@ const RETENTION_DAYS = 30;
 
 // ── StopGateDb class ──────────────────────────────────────────────────
 
-export class StopGateDb {
+export class StopGateDb implements StopGateBreakerStateStore {
   private db: BetterSqliteDatabase;
   private stmts!: {
     insertEvent: Database.Statement;
@@ -221,10 +233,12 @@ export class StopGateDb {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('foreign_keys = ON');
+    this.db.pragma('busy_timeout = 10');
 
     for (const ddl of SCHEMA) this.db.exec(ddl);
     this.migrateSchema();
     this.pruneOldEvents();
+    this.pruneOldBreakerStates();
     this.prepareStatements();
     // Close-on-exit registry — see SqliteRegistry.ts. Registered AFTER the db is
     // fully open so closeAllSqlite() never targets a half-constructed handle.
@@ -270,6 +284,19 @@ export class StopGateDb {
     } catch {
       // @silent-fallback-ok: retention is best-effort (spec §3.4) — a prune failure (locked db,
       // transient IO) must NEVER block the stop-gate; the rows are simply pruned on a later call.
+      return 0;
+    }
+  }
+
+  /** Best-effort retention for route identities no longer used by this agent. */
+  pruneOldBreakerStates(maxAgeDays = RETENTION_DAYS, now = Date.now()): number {
+    try {
+      const cutoff = now - maxAgeDays * 24 * 60 * 60 * 1000;
+      const pruneSql = 'DELETE' + ' FROM authority_breaker_state WHERE updated_at > 0 AND updated_at < ?';
+      const info = this.db.prepare(pruneSql).run(cutoff);
+      return Number(info.changes) || 0;
+    } catch {
+      // @silent-fallback-ok: retention is hygiene, never admission authority.
       return 0;
     }
   }
@@ -491,6 +518,107 @@ export class StopGateDb {
     };
   }
 
+  loadBreakerState(breakerKey: string): StopGateBreakerState | null {
+    const row = this.db.prepare('SELECT * FROM authority_breaker_state WHERE breaker_key = ?').get(breakerKey) as Record<string, unknown> | undefined;
+    return row ? toBreakerState(row) : null;
+  }
+
+  private writeBreakerState(state: StopGateBreakerState): void {
+    this.db.prepare(`
+      INSERT INTO authority_breaker_state
+        (breaker_key, consecutive_failures, open_until, probe_lease_until,
+         probe_token, first_opened_at, suppressed_count, updated_at)
+      VALUES (@breakerKey, @consecutiveFailures, @openUntil, @probeLeaseUntil,
+              @probeToken, @firstOpenedAt, @suppressedCount, @updatedAt)
+      ON CONFLICT(breaker_key) DO UPDATE SET
+        consecutive_failures = excluded.consecutive_failures,
+        open_until = excluded.open_until,
+        probe_lease_until = excluded.probe_lease_until,
+        probe_token = excluded.probe_token,
+        first_opened_at = excluded.first_opened_at,
+        suppressed_count = excluded.suppressed_count,
+        updated_at = excluded.updated_at
+    `).run(state);
+  }
+
+  recordBreakerFailure(input: {
+    breakerKey: string;
+    now: number;
+    threshold: number;
+    cooldownMs: number;
+    probeToken?: string | null;
+  }): StopGateBreakerState {
+    const transition = this.db.transaction(() => {
+      const raw = this.loadBreakerState(input.breakerKey) ?? emptyStopGateBreakerState(input.breakerKey);
+      const state = normalizeStopGateBreakerState(raw, input.now, input.cooldownMs, input.cooldownMs);
+      if (input.probeToken !== undefined && input.probeToken !== state.probeToken) return state;
+      const consecutiveFailures = state.consecutiveFailures + 1;
+      const opens = input.threshold > 0 && consecutiveFailures >= input.threshold;
+      const next: StopGateBreakerState = {
+        ...state,
+        consecutiveFailures,
+        openUntil: opens ? input.now + input.cooldownMs : 0,
+        probeLeaseUntil: 0,
+        probeToken: null,
+        firstOpenedAt: opens ? (state.firstOpenedAt || input.now) : state.firstOpenedAt,
+        updatedAt: input.now,
+      };
+      this.writeBreakerState(next);
+      return next;
+    });
+    return transition.immediate();
+  }
+
+  tryAcquireBreakerProbe(input: {
+    breakerKey: string;
+    now: number;
+    cooldownMs: number;
+    leaseMs: number;
+  }): { acquired: boolean; token: string | null; state: StopGateBreakerState } {
+    const transition = this.db.transaction(() => {
+      const raw = this.loadBreakerState(input.breakerKey) ?? emptyStopGateBreakerState(input.breakerKey);
+      const state = normalizeStopGateBreakerState(raw, input.now, input.cooldownMs, input.leaseMs);
+      if (input.now < state.openUntil || input.now < state.probeLeaseUntil) {
+        return { acquired: false, token: null, state };
+      }
+      const token = mintStopGateProbeToken();
+      const next: StopGateBreakerState = {
+        ...state,
+        probeLeaseUntil: input.now + input.leaseMs,
+        probeToken: token,
+        updatedAt: input.now,
+      };
+      this.writeBreakerState(next);
+      return { acquired: true, token, state: next };
+    });
+    return transition.immediate();
+  }
+
+  resetBreakerState(breakerKey: string, probeToken?: string | null): StopGateBreakerState {
+    const transition = this.db.transaction(() => {
+      const current = this.loadBreakerState(breakerKey) ?? emptyStopGateBreakerState(breakerKey);
+      if (probeToken !== undefined && probeToken !== current.probeToken) return current;
+      const next = emptyStopGateBreakerState(breakerKey);
+      next.updatedAt = Date.now();
+      this.writeBreakerState(next);
+      return next;
+    });
+    return transition.immediate();
+  }
+
+  addBreakerSuppressions(breakerKey: string, count: number, now: number): void {
+    if (!Number.isFinite(count) || count <= 0) return;
+    this.db.prepare(`
+      INSERT INTO authority_breaker_state
+        (breaker_key, consecutive_failures, open_until, probe_lease_until,
+         probe_token, first_opened_at, suppressed_count, updated_at)
+      VALUES (?, 0, 0, 0, NULL, 0, ?, ?)
+      ON CONFLICT(breaker_key) DO UPDATE SET
+        suppressed_count = suppressed_count + excluded.suppressed_count,
+        updated_at = MAX(updated_at, excluded.updated_at)
+    `).run(breakerKey, Math.floor(count), now);
+  }
+
   close(): void {
     // Unregister BEFORE closing our own handle so closeAllSqlite() never
     // double-closes it. Idempotent via the _closed guard (the spec flagged
@@ -524,6 +652,19 @@ function toEvalEvent(row: Record<string, unknown>): EvalEvent {
     promptHash: (row.prompt_hash ?? null) as string | null,
     surface: (row.surface ?? null) as string | null,
     contextTurns: (row.context_turns ?? null) as number | null,
+  };
+}
+
+function toBreakerState(row: Record<string, unknown>): StopGateBreakerState {
+  return {
+    breakerKey: String(row.breaker_key),
+    consecutiveFailures: Number(row.consecutive_failures),
+    openUntil: Number(row.open_until),
+    probeLeaseUntil: Number(row.probe_lease_until),
+    probeToken: typeof row.probe_token === 'string' ? row.probe_token : null,
+    firstOpenedAt: Number(row.first_opened_at),
+    suppressedCount: Number(row.suppressed_count),
+    updatedAt: Number(row.updated_at),
   };
 }
 

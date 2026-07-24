@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-17T03:25:50.058Z",
+  "slug": "playwright-standalone-seat-lease",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 89,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

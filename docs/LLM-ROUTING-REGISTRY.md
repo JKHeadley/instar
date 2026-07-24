@@ -170,6 +170,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | ExternalOperationGate | src/core/ExternalOperationGate.ts:510 | external-op mutability class | **B** safety | OC(default)·gating | ✅ |
 | LLMSanitizer | src/security/LLMSanitizer.ts:110 | prompt-injection sanitize | **B** safety | OC(fast) | ✅ |
 | UnjustifiedStopGate | src/core/UnjustifiedStopGate.ts:416 | is a self-stop justified? | B | OC(fast) | ✅ |
+| FeedbackReadinessArbiter | src/feedback-factory/drain/FeedbackReadinessArbiter.ts | does bounded, coherent cluster evidence warrant one owned Initiative task? | B·gating | OC(capable) | ✅ registered frontier-model authority; adversarial input, provenance, prompt/schema/model canaries, and deterministic confidence/evidence floors |
 | WarrantsReplyGate | src/threadline/WarrantsReplyGate.ts:295 | does A2A msg need a reply? | A | OC(fast) | ⚠ small fits |
 | MoveIntentClassifier | src/core/MoveIntentClassifier.ts:303 | is inbound a "move/pin this on <nickname>" command vs discussion? | A·gating (fail-open) | OC(fast) | ✅ nature-A strict-JSON enum verdict; fail-open never hijacks, so a small fast model fits (replaces a keyword verb-list — the 2026-07-03 hijack) |
 | HubIntentClassifier | src/threadline/HubIntentClassifier.ts:classifyHubIntent | is a hub message an "open this"/"tie this to <topic>" bind command vs discussion? | A·gating (fail-open) | OC(fast) | ✅ nature-A strict-JSON enum verdict; fail-open never swallows, so a small fast model fits (replaces the anchored regexes that ate the message before the agent saw it) |
@@ -198,6 +199,8 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | **LLMConflictResolver** ⚠ | src/core/LLMConflictResolver.ts:204 | resolve divergent multi-machine state | B | **AD → Claude** | ❌ not in map |
 | **MentorStageBForensics** ⚠ | src/scheduler/MentorStageBForensics.ts:141 | classify mentor signals → findings | B | **AD(capable) → Claude** | ❌ not in map |
 | **server:correction-learning** ⚠ | src/commands/server.ts:11380 | distill corrections → preference | D | **AD(fast) → Claude** | ❌ strips to unmapped name |
+| correction-class-review | src/monitoring/CorrectionClassReview.ts | propose whether one correction exposes a standards/process class gap | B | OC(capable) | ✅ nuanced standards judgment; registered reflector, proposal-only and bounded-retry |
+| completion-claim-verify | src/monitoring/ClaimClauseArbiter.ts | classify future commitments vs completion assertions and assess structural evidence | B·gating | OC(capable) | ✅ false suppression could lose a commitment, so use capable reasoning; authority publishes only after downstream routing succeeds |
 | **SelfKnowledgeTree** ⚠ | src/knowledge/SelfKnowledgeTree.ts | synthesize self-knowledge tree nodes | D | **AD → Claude** | ❌ not in map (bench pending wave-3) |
 | DashboardInsightEngine | src/monitoring/DashboardInsightEngine.ts:315 | summarize a dashboard page's data → Insight Strip | A (declared; FAST) | OC(fast) | ✅ intentional — awareness-only, non-gating; declares `nature:'A'` + `model:'fast'` so it rides the router's FAST tier (bench `{exempt}` — no `LLM_ROUTING_NATURE` row until an insight-summary bench task is authored, per cite-the-bench). Degrades to a deterministic floor. |
 

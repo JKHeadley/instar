@@ -172,6 +172,15 @@ export interface ProvenanceRow {
 /** The HTTP-served view: everything EXCEPT the machine-local full context. */
 export type RedactedProvenanceRow = Omit<ProvenanceRow, 'contextFull'>;
 
+/** Internal, content-free projection consumed by DeferralPatternSentinel.
+ * Never HTTP-served: it exposes only timestamp, the canonical recognizer boolean,
+ * and the candidate identity hash already present in tone provenance. */
+export interface DeferralPatternProvenanceObservation {
+  observedAt: number;
+  deferralShapeDetected: boolean;
+  candidateSha256: string;
+}
+
 export interface JudgmentProvenanceLogOptions {
   /** Absolute directory, canonically `<agent>/state/judgment-provenance`. */
   dir: string;
@@ -494,6 +503,71 @@ export class JudgmentProvenanceLog {
           out.push(redacted);
         } catch {
           /* @silent-fallback-ok: a torn/corrupt row is skipped — the read surface is observability. */
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Internal typed projection over the EXISTING provenance store for ACT-896.
+   * This is intentionally not a second ledger and not an HTTP surface. Corrupt,
+   * truncated, non-tone, or shape-invalid rows are skipped toward silence.
+   */
+  async readDeferralPatternObservations(opts?: {
+    limit?: number;
+    sinceMs?: number;
+  }): Promise<DeferralPatternProvenanceObservation[]> {
+    const limit = Math.min(Math.max(opts?.limit ?? 1_000, 1), 10_000);
+    const sinceMs = opts?.sinceMs;
+    await this.flush();
+    const out: DeferralPatternProvenanceObservation[] = [];
+    let files: string[];
+    try {
+      files = (await fsp.readdir(this.dir))
+        .filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f))
+        .sort()
+        .reverse();
+    } catch {
+      /* @silent-fallback-ok — absent provenance storage means no observations. */
+      return [];
+    }
+    for (const f of files) {
+      if (out.length >= limit) break;
+      let content: string;
+      try {
+        content = await fsp.readFile(path.join(this.dir, f), 'utf-8');
+      } catch {
+        /* @silent-fallback-ok — internal observability projection skips unreadable days. */
+        continue;
+      }
+      for (const line of content.split('\n').filter(Boolean).reverse()) {
+        if (out.length >= limit) break;
+        try {
+          const row = JSON.parse(line) as ProvenanceRow;
+          if (row.kind !== 'decision' || row.decisionPoint !== 'messaging-tone-gate') continue;
+          const observedAt = Date.parse(row.ts);
+          if (!Number.isFinite(observedAt) || (sinceMs !== undefined && observedAt < sinceMs)) continue;
+          const context = row.contextFull;
+          if (!context || typeof context !== 'object' || Array.isArray(context)) continue;
+          const c = context as Record<string, unknown>;
+          const candidate = c.candidate;
+          if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+          const candidateSha256 = (candidate as Record<string, unknown>).sha256;
+          if (
+            typeof c.deferralShapeDetected !== 'boolean' ||
+            typeof candidateSha256 !== 'string' ||
+            !/^[0-9a-f]{64}$/i.test(candidateSha256)
+          ) {
+            continue;
+          }
+          out.push({
+            observedAt,
+            deferralShapeDetected: c.deferralShapeDetected,
+            candidateSha256: candidateSha256.toLowerCase(),
+          });
+        } catch {
+          /* @silent-fallback-ok — internal observability projection skips torn rows */
         }
       }
     }

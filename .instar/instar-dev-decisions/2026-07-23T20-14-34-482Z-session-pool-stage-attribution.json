@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-23T20:14:34.482Z",
+  "slug": "session-pool-stage-attribution",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 103,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

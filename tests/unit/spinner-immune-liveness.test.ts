@@ -38,6 +38,12 @@ describe('stripVolatileStatus — only real content survives', () => {
     expect(stripVolatileStatus(a, 'codex-cli')).toBe(stripVolatileStatus(b, 'codex-cli'));
   });
 
+  it('codex hour-scale clock ticks are normalized away', () => {
+    const a = '• Ran tests\n• Working (10h 19m 44s · esc to interrupt)';
+    const b = '• Ran tests\n• Working (10h 20m 03s · esc to interrupt)';
+    expect(stripVolatileStatus(a, 'codex-cli')).toBe(stripVolatileStatus(b, 'codex-cli'));
+  });
+
   it('does NOT over-strip benign content that merely contains a number+s', () => {
     const out = 'Build completed in 5s\nAll 12 tests passed';
     expect(stripVolatileStatus(out, 'claude-code')).toContain('completed in 5s');

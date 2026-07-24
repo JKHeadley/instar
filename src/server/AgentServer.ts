@@ -12,11 +12,12 @@ import express, { type Express, type Request, type Response } from 'express';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, createHmac, timingSafeEqual, createPrivateKey } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual, createPrivateKey, randomBytes, randomUUID } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { DynamicMcpService } from '../core/DynamicMcpService.js';
+import { MachineSshIdentity } from '../core/MachineSshIdentity.js';
 import { activeAutonomousJobs } from '../core/AutonomousSessions.js';
 import { captureHeavyMcpPidsForSession, MCP_SERVER_NAME_TO_SIGNATURE } from '../core/mcpPidCapture.js';
 import { makeMcpProcessReaperDeps } from '../monitoring/mcpProcessReaperDeps.js';
@@ -37,11 +38,26 @@ import { ReviewExchangeEngine } from '../coordination/ReviewExchange.js';
 import { DeliveredMandateStore } from '../coordination/DeliveredMandateStore.js';
 import { packageMandateForDelivery, acceptDeliveredMandate } from '../coordination/AccountFollowMeMandateBridge.js';
 import { readFollowMeBounds, acceptMandateDelivery } from '../coordination/AccountFollowMeMandateDelivery.js';
+import {
+  FollowMeConsumerBackoffStore,
+  classifyFollowMeFailure,
+  followMeBackoffKey,
+} from '../coordination/FollowMeConsumerBackoffStore.js';
 import { CutoverReadiness } from '../feedback-factory/cutoverReadiness.js';
 import { InboxDrainer } from '../feedback-factory/inbox/InboxDrainer.js';
 import { BlobInboxClient } from '../feedback-factory/inbox/BlobInboxClient.js';
 import { JsonlFeedbackStore } from '../feedback-factory/store/JsonlFeedbackStore.js';
 import { FeedbackProcessingService, resolveCanonicalStoreDir } from '../feedback-factory/processing/FeedbackProcessingService.js';
+import { FeedbackDrainStore } from '../feedback-factory/drain/FeedbackDrainStore.js';
+import { FeedbackInitiativeConsumer } from '../feedback-factory/drain/FeedbackInitiativeConsumer.js';
+import { FeedbackReadinessArbiter } from '../feedback-factory/drain/FeedbackReadinessArbiter.js';
+import { FeedbackDrainService } from '../feedback-factory/drain/FeedbackDrainService.js';
+import { FeedbackDrainTickProxy, resolveFeedbackDrainOwnerMachineId, type DrainTickGatewayResult } from '../feedback-factory/drain/FeedbackDrainTickProxy.js';
+import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.js';
+import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
+import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
+import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
+import { BackupManager } from '../core/BackupManager.js';
 import { DurableParityMonitor, JsonlPassPersistence } from '../feedback-factory/monitor/parityMonitorStore.js';
 import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js';
 import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
@@ -85,6 +101,13 @@ import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
 import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { ClassReviewStore } from '../monitoring/ClassReviewStore.js';
+import { CorrectionClassReview } from '../monitoring/CorrectionClassReview.js';
+import { CompletionClaimVerifier } from '../monitoring/CompletionClaimVerifier.js';
+import { ClaimObservationHousekeeper, ClaimObservationRecorder } from '../monitoring/ClaimObservation.js';
+import { ClaimObservationAdmissionQueue } from '../monitoring/ClaimObservationAdmissionQueue.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { runTurnEvidenceBootCanary } from '../monitoring/TurnEvidence.js';
 import { BlockerLedger } from '../monitoring/BlockerLedger.js';
 import { buildB17SettleAuthority } from '../monitoring/blockerSettleAuthority.js';
 import { SelfUnblockRunStore, SelfUnblockChecklist } from '../monitoring/SelfUnblockChecklist.js';
@@ -96,13 +119,19 @@ import { DashboardInsightEngine } from '../monitoring/DashboardInsightEngine.js'
 import { buildBuiltinInsightPages } from '../monitoring/dashboardInsightCollectors.js';
 import { GrowthDigestPublisher, createGrowthDigestAuditSink } from '../monitoring/GrowthDigestPublisher.js';
 import { ApprenticeshipProgram } from '../core/ApprenticeshipProgram.js';
+import { ApprenticeshipStallGate } from '../core/ApprenticeshipStallGate.js';
+import { MatrixAcceptanceStore } from '../core/ApprenticeshipMatrixAcceptance.js';
 import { ApprenticeshipCycleStore } from '../monitoring/ApprenticeshipCycleStore.js';
+import { readApprenticeshipPeerCycles } from '../monitoring/ApprenticeshipPeerCycleReader.js';
 import { ApprenticeshipCycleSlaMonitor } from '../monitoring/ApprenticeshipCycleSlaMonitor.js';
+import { listAgents } from '../core/AgentRegistry.js';
+import { getAgentToken } from '../messaging/AgentTokenManager.js';
 import { GeminiCapacityEscalationMonitor } from '../monitoring/GeminiCapacityEscalationMonitor.js';
 import { SafeGitExecutor, auditBootCredentialCoherence } from '../core/SafeGitExecutor.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
+import { createThroughputRoutes } from './throughputRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
@@ -112,7 +141,11 @@ import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
+import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
+import { BlockerLifecycleLedger } from '../monitoring/BlockerLifecycleLedger.js';
+import { BlockerLifecycleService } from '../monitoring/BlockerLifecycleService.js';
+import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
 import { BenchmarkDivergenceAnalyzer } from '../monitoring/BenchmarkDivergenceAnalyzer.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { RoutingPriceAuthority } from '../core/routingPriceAuthority.js';
@@ -125,7 +158,7 @@ import { SpendAlertResolver, buildStalePriceAlert } from '../core/SpendAlertReso
 import { SpendAlertDispatcher } from '../core/SpendAlertDispatcher.js';
 import { TelegramSpendTopicChannel, spendAlertDeliveryId } from '../core/TelegramSpendTopicChannel.js';
 import { SpendAlertEmitters } from '../core/SpendAlertEmitters.js';
-import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { MachineIdentityManager, sign as signMachinePayload, verify as verifyMachinePayload } from '../core/MachineIdentity.js';
 import { PendingRelayStore as SpendAlertRelayStore } from '../messaging/pending-relay-store.js';
 import { ProviderCostReportStore } from '../monitoring/ProviderCostReportStore.js';
 import { ProviderReconciliationSweep } from '../monitoring/ProviderReconciliationSweep.js';
@@ -158,7 +191,7 @@ import {
 } from '../monitoring/MentorStageA.js';
 import { analyzeForensics } from '../scheduler/MentorStageBForensics.js';
 import { TelegramAdapter as MentorTelegramAdapter } from '../messaging/TelegramAdapter.js';
-import { sendAgentMessage, A2A_VERSION, type RecipientConfig } from '../messaging/AgentTelegramComms.js';
+import { A2A_VERSION, type RecipientConfig } from '../messaging/AgentTelegramComms.js';
 import { AgentTelegramLedger, defaultLedgerPaths as defaultA2aLedgerPaths } from '../messaging/AgentTelegramLedger.js';
 import { DEFAULT_MENTEE_CONFIG, type MenteeConfig } from '../messaging/MenteeReceiverConfig.js';
 import { ProcessedIdStore } from '../messaging/ProcessedIdStore.js';
@@ -181,6 +214,7 @@ import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/Me
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
+import { CLASS_REVIEW_STORE_KEY, buildClassReviewRecordData } from '../core/ClassReviewReplicatedStore.js';
 
 export function readMentorConfigFromDisk(
   stateDir: string | undefined,
@@ -258,18 +292,28 @@ export class AgentServer {
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
+  private deliverA2aToMachine?: (input: {
+    machineId: string;
+    targetAgent: string;
+    text: string;
+    topicId: number;
+    senderAgent: string;
+    senderBotId: string;
+  }) => Promise<{ ok: boolean; agentMessage?: boolean; reason?: string }>;
   private routeContext: {
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
     pendingRelayLookup?: (deliveryId: string) => boolean;
     autonomousLivenessReconciler?:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
+    autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   } | null = null;
   private deliverySentinel: DeliveryFailureSentinel | null = null;
   private deliveryStore: PendingRelayStore | null = null;
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
+  private blockerLifecycleService: BlockerLifecycleService | null = null;
   /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8) — null when the ledger failed. */
   private benchmarkDivergenceAnalyzer: BenchmarkDivergenceAnalyzer | null = null;
   private routingPriceAuthority: RoutingPriceAuthority | null = null;
@@ -291,6 +335,7 @@ export class AgentServer {
   private providerCostReportStore: ProviderCostReportStore | null = null;
   private reconSweepTimer: ReturnType<typeof setInterval> | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
+  private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
@@ -331,6 +376,22 @@ export class AgentServer {
    *  constructed only when resolveDevAgentGate(feedbackFactory.processing.enabled)
    *  is live; null on the fleet → both routes 503. */
   private feedbackProcessing: FeedbackProcessingService | null = null;
+  private feedbackDrain: {
+    service: FeedbackDrainService;
+    store: FeedbackDrainStore;
+    promotion: FeedbackConsumerPromotionStore;
+    tickProxy: FeedbackDrainTickProxy;
+    checkpointBackup: (trigger: 'promotion' | 'failover') => void;
+    finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
+      oldOwnerQuiesced?: boolean; splitBrainRecoveryPacket?: { incidentId: string; oldOwnerStatus: 'unreachable-or-fenced'; operatorDecisionRef: string } }) => {
+      ownerAuthorityEpoch: number; invalidatedClaims: number; abandonedRuns: number;
+      reconciliation: ReturnType<FeedbackDrainStore['reconcileInitiativeLinks']>;
+    };
+    isRestorePending: () => boolean;
+  } | null = null;
+  private feedbackDrainBackupTimer: ReturnType<typeof setInterval> | null = null;
+  private feedbackDrainPosture: FeedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
+  private feedbackDefaultsSelfHealEvidence = { successful: 0, samples: 0 };
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
@@ -340,6 +401,8 @@ export class AgentServer {
   /** Dynamic MCP idle-offload sweep timer (dark + dryRun-first; cleared on stop). */
   private mcpIdleOffloadSweepTimer: ReturnType<typeof setInterval> | null = null;
   private followMeConsumerRunning = false;
+  private followMeConsumerBackoff: FollowMeConsumerBackoffStore | null = null;
+  private subscriptionEmailBarrier: import('../core/SubscriptionPool.js').SubscriptionEmailReconciliationBarrier | null = null;
   private resourceSampler: ResourceSampler | null = null;
   private frameworkIssueLedger: FrameworkIssueLedger | null = null;
   private mentorRunner: MentorOnboardingRunner | null = null;
@@ -368,6 +431,9 @@ export class AgentServer {
   private ciFailurePoller: CiFailurePoller | null = null;
   private revertDetector: RevertDetector | null = null;
   private correctionLedger: CorrectionLedger | null = null;
+  private classReviewStore: ClassReviewStore | null = null;
+  private correctionClassReview: CorrectionClassReview | null = null;
+  private completionClaimVerifier: CompletionClaimVerifier | null = null;
   private blockerLedger: BlockerLedger | null = null;
   /** Self-Unblock checklist run store (the read surface + the store BlockerLedger verifies). */
   private selfUnblockRunStore: SelfUnblockRunStore | null = null;
@@ -385,6 +451,7 @@ export class AgentServer {
    *  via the developmentAgent gate) → /insights* 503s. */
   private dashboardInsightEngine: DashboardInsightEngine | null = null;
   private apprenticeshipProgram: ApprenticeshipProgram | null = null;
+  private apprenticeshipMatrixAcceptance: MatrixAcceptanceStore | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
   private geminiCapacityEscalationMonitor: GeminiCapacityEscalationMonitor | null = null;
@@ -415,9 +482,17 @@ export class AgentServer {
   // AgentServer code reads it (the route handlers go through routeCtx).
   private telegramAdapter: TelegramAdapter | null = null;
 
+  /** Late-bound after the peer-stream reader exists. The ClassReviewStore folds
+   * local + peer lifecycle rows at its lowest read primitive. */
+  setClassReviewRemoteReader(reader: import('../monitoring/ClassReviewStore.js').ClassReviewRemoteReader | null): void {
+    this.classReviewStore?.setRemoteReader(reader);
+  }
+
   constructor(options: {
     config: InstarConfig;
     sessionManager: SessionManager;
+    /** Override the same-host apprenticeship peer read (tests/custom embeddings). */
+    apprenticeshipPeerCycleReader?: (instanceId: string) => Promise<import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead>;
     state: StateManager;
     scheduler?: JobScheduler;
     telegram?: TelegramAdapter;
@@ -450,6 +525,9 @@ export class AgentServer {
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
     prHandLease?: import('../core/PrHandLease.js').PrHandLease;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
+    subscriptionIdentityOracle?: import('../core/CredentialLocationLedger.js').IdentityOracle;
+    subscriptionEmailBinding?: import('../core/SubscriptionPool.js').SubscriptionEmailBindingAuthority;
+    subscriptionEmailBarrier?: import('../core/SubscriptionPool.js').SubscriptionEmailReconciliationBarrier;
     accountFollowMePeerViews?: import('./routes.js').RouteContext['accountFollowMePeerViews'];
     quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     quotaAwareScheduler?: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler;
@@ -505,11 +583,21 @@ export class AgentServer {
     meshBindActive?: boolean;
     /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind GET /pool. */
     machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry;
+    mutualSshHealth?: (() => unknown) | null;
     /** Durable Inbound Message Queue engine getter (late-bound; null = dark). */
     getInboundQueue?: () => import('../core/QueueDrainLoop.js').QueueDrainLoop | null;
     getMachineCoherence?: () => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null;
+    getSingleMachineFailoverGap?: () => import('../monitoring/SingleMachineFailoverGapDetector.js').SingleMachineFailoverGapDetector | null;
+    getMissingLoginSession?: () => import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionDetector | null;
+    /** SessionPoolFailoverRunner status getter (§Rollout, Track H) — read behind
+     *  GET /session-pool/failover-runner; null = dark (dev-gated, route 503s). */
+    getSessionPoolFailoverRunner?: () => import('../core/sessionPoolFailoverRunnerConfig.js').SessionPoolFailoverRunnerStatus | null;
+    /** Session-pool promotion activation. Null while promotionModel is off. */
+    sessionPoolPromotionActivation?: import('../core/sessionPoolPromotionActivation.js').SessionPoolPromotionActivation | null;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
+    /** Signed cross-machine carrier into the recipient's existing A2A inbox. */
+    deliverA2aToMachine?: AgentServer['deliverA2aToMachine'];
     /** Working-set pull coordinator (WORKING-SET-HANDOFF §3.3) — behind
      *  POST /coherence/fetch-working-set. Absent while the layer is dark. */
     workingSetPullCoordinator?: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator;
@@ -594,7 +682,11 @@ export class AgentServer {
     /** Resolve the lease-holder's base URL when this machine is not the holder (else null). */
     resolveRouterUrl?: () => string | null;
     /** WS1.2 sender leg: order the topic's owner (local or remote) to drain for a transfer. */
-    sendDrain?: (ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }>;
+    sendDrain?: (ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean; claimLanded?: boolean }>;
+    /** WS1.4 consent preflight against the machine that owns the run registry. */
+    autonomousRunOnMachine?: (machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>;
+    /** Kick the working-set carrier on the machine that just acquired a topic. */
+    kickWorkingSetOnMachine?: (machineId: string, topic: number) => void;
     /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
     resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
     /** Guard runtime registry (GUARD-POSTURE-ENDPOINT-SPEC §2.1) — behind GET /guards. */
@@ -751,6 +843,7 @@ export class AgentServer {
     topicIntentArcCheck?: import('../core/TopicIntentArcCheck.js').ArcCheck | null;
     /** Shared intelligence provider (subscription/REPL-pool) for the standards-conformance gate. */
     intelligence?: import('../core/types.js').IntelligenceProvider | null;
+    llmQueue?: import('../monitoring/LlmQueue.js').LlmQueue;
     /** Usher signal store (rung 4) — the read-only pull surface for re-surface signals. */
     usherSignalStore?: import('../core/UsherSignalStore.js').UsherSignalStore | null;
     /** OIDC verification function for the GH-check endpoint (injected for testability). */
@@ -806,6 +899,7 @@ export class AgentServer {
     autonomousLivenessReconciler?:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
+    autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     /** F2 enforced-termination watchdog status getter (spec: enforced-termination-watchdog.md).
      *  Powers GET /autonomous/enforced-termination. Function-typed to avoid a class import. */
     enforcedTerminationStatus?: (() => unknown) | null;
@@ -828,6 +922,7 @@ export class AgentServer {
     threadlineFlowBridge?: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge;
   }) {
     this.config = options.config;
+    this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
     this.startTime = new Date();
@@ -838,12 +933,16 @@ export class AgentServer {
     this.poolLink = options.poolLink ?? undefined;
     this.poolPollCache = options.poolPollCache ?? undefined;
     this.meshSelfId = options.meshSelfId ?? undefined;
+    this.deliverA2aToMachine = options.deliverA2aToMachine;
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
     this.toneGate = options.messagingToneGate ?? null;
     this.app = express();
 
     // Middleware
+    // Claim observation has a much smaller privacy/cost boundary than the
+    // general API. Parse it under 96 KiB before the broad server parser.
+    this.app.use('/completion-claim/observe', express.json({ limit: '96kb' }));
     this.app.use(express.json({ limit: '12mb' }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -1083,7 +1182,7 @@ export class AgentServer {
           dbPath: path.join(serverDataDir, 'framework-issue-ledger.db'),
         });
         this.mentorRunner = this.buildMentorRunner(this.frameworkIssueLedger, options, serverDataDir);
-      } catch (err) {
+      } catch (err) { // @silent-fallback-ok — warning plus explicit unavailable subsystem state
         console.warn('[instar] framework-issue-ledger init failed (non-fatal):', err);
         this.frameworkIssueLedger = null;
         this.mentorRunner = null;
@@ -1577,6 +1676,31 @@ export class AgentServer {
       }
     }
 
+    // Dark, measure-only blocker lifecycle telemetry. The tracker owns state;
+    // this service only observes acknowledged post-commit events.
+    const blockerCfg = (options.config.monitoring as {
+      blockerLifecycleLedger?: { enabled?: boolean };
+    } | undefined)?.blockerLifecycleLedger;
+    if (options.commitmentTracker && options.config.stateDir && resolveDevAgentGate(blockerCfg?.enabled, options.config)) {
+      try {
+        const ledger = new BlockerLifecycleLedger({
+          dbPath: path.join(options.config.stateDir, 'server-data', 'blocker-lifecycle.db'),
+        });
+        this.blockerLifecycleService = new BlockerLifecycleService(
+          options.commitmentTracker,
+          ledger,
+          options.meshSelfId ?? options.config.projectName,
+          undefined,
+          options.initiativeTracker,
+        );
+        options.guardRegistry?.register('monitoring.blockerLifecycleLedger.enabled', () =>
+          this.blockerLifecycleService?.guardStatus() as { enabled: boolean });
+      } catch (err) {
+        console.warn('[instar] blocker-lifecycle-ledger init failed (non-fatal):', err);
+        this.blockerLifecycleService = null;
+      }
+    }
+
     // A2A delivery tracker (A2A-DURABLE-DELIVERY-SPEC.md) — durable per-peer
     // delivery lifecycle + peer-health. Production (commands/server.ts) injects
     // its instance via options; when not injected (e.g. an AgentServer booted
@@ -2008,6 +2132,174 @@ export class AgentServer {
       this.feedbackProcessing = null;
     }
 
+    // Feedback Factory operated drain. The clustering service is the ingress
+    // projection; this layer adds registered agent readiness, durable outbox,
+    // and exact-key Initiative handoff. Dev-live/fleet-dark, consumer dry-run
+    // until a durable PIN-approved promotion record exists.
+    try {
+      const drainEnabled = resolveDevAgentGate(options.config.feedbackFactory?.drain?.enabled, options.config);
+      const consumerEnabled = resolveDevAgentGate(options.config.feedbackFactory?.consumer?.enabled, options.config);
+      const dataDir = resolveCanonicalStoreDir(options.config);
+      let sourceCheckout = false;
+      try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(options.config.projectDir, 'package.json'), 'utf8')) as { name?: string };
+        sourceCheckout = pkg.name === 'instar' && fs.existsSync(path.join(options.config.projectDir, '.git'));
+      } catch { /* @silent-fallback-ok: package discovery is posture-only; an unreadable/non-source install must remain fleet-dark */ }
+      this.feedbackDrainPosture = resolveFeedbackDrainPosture({ drainEnabled, developmentAgent: options.config.developmentAgent === true,
+        sourceCheckout, hasCanonicalDataDir: Boolean(dataDir), dependenciesReady: Boolean(this.feedbackProcessing && options.initiativeTracker), initialized: false });
+      if (drainEnabled && dataDir && this.feedbackProcessing && options.initiativeTracker) {
+        const dbPath = options.config.feedbackFactory?.drain?.dbPath ?? path.join(dataDir, 'feedback-drain.db');
+        const tokenKey = createHash('sha256').update(options.config.authToken ?? `feedback-drain:${options.config.projectName}`).digest();
+        const store = new FeedbackDrainStore({ dbPath, tokenHmacKey: tokenKey });
+        if (!store.integrityCheck()) throw new Error('feedback drain critical integrity_check corruption');
+        const promotion = new FeedbackConsumerPromotionStore(path.join(path.dirname(dbPath), 'consumer-live.json'));
+        const agentId = options.config.projectName;
+        const selfMachineId = options.meshSelfId ?? agentId;
+        const multiMachineMode = options.coordinator?.enabled === true;
+        // In a real mesh, absence is not permission to self-elect. Single-machine
+        // installs retain the local fallback because there is no competing owner.
+        const ownerHost = resolveFeedbackDrainOwnerMachineId(options.config.feedbackFactory?.operatedHostMachineId, selfMachineId, multiMachineMode);
+        const serviceOwnerHost = ownerHost ?? `unconfigured:${selfMachineId}`;
+        let localOwnerEpoch = 1;
+        let restorePending = store.restorePending();
+        const holdsCanonicalLease = () => ownerHost !== null && selfMachineId === ownerHost && (options.coordinator?.enabled ? options.coordinator.holdsLease() : true);
+        const isCanonicalOwner = () => !restorePending && holdsCanonicalLease();
+        const arbiter = options.intelligence ? new FeedbackReadinessArbiter(options.intelligence) : null;
+        let service!: FeedbackDrainService;
+        service = new FeedbackDrainService({
+          store,
+          processing: this.feedbackProcessing,
+          consumer: new FeedbackInitiativeConsumer(options.initiativeTracker),
+          arbiter,
+          authorityId: 'feedback-readiness-default',
+          ownerHost: serviceOwnerHost,
+          ownerEpoch: () => options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch,
+          isCanonicalOwner,
+          isConsumerLive: () => consumerEnabled && options.config.feedbackFactory?.consumer?.dryRun === false && promotion.isLive(),
+          consumerBatchBound: () => promotion.read()?.approvedBatchBound ?? 0,
+          maxReadyScansPerTick: options.config.feedbackFactory?.drain?.maxReadyScansPerTick,
+          maxClaimsPerTick: options.config.feedbackFactory?.consumer?.maxClaimsPerTick,
+        });
+        const tickProxy = new FeedbackDrainTickProxy({
+          selfMachineId,
+          ownerMachineId: () => ownerHost,
+          isCanonicalOwner,
+          service,
+          store,
+          signingKey: tokenKey,
+          signEnvelope: multiMachineMode ? (data) => signMachinePayload(data, options.localSigningKeyPem || options.coordinator!.managers.identityManager.loadSigningKey()) : undefined,
+          verifyEnvelope: multiMachineMode ? (sender, data, signature) => {
+            const publicKey = options.coordinator!.managers.identityManager.getSigningPublicKeyPem(sender);
+            return Boolean(publicKey && verifyMachinePayload(data, signature, publicKey));
+          } : undefined,
+          transport: options.resolvePeerUrls ? async (targetMachineId, envelope) => {
+            const peer = options.resolvePeerUrls!().find((candidate) => candidate.machineId === targetMachineId);
+            if (!peer) throw new Error('feedback-drain-owner-url-unavailable');
+            const response = await fetch(`${peer.url}/feedback-factory/drain/tick`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${options.config.authToken ?? ''}`,
+                'Content-Type': 'application/json',
+                'X-Instar-Request': '1',
+                'X-Instar-AgentId': selfMachineId,
+              },
+              body: JSON.stringify({ proxyEnvelope: envelope }),
+              signal: AbortSignal.timeout(5_000),
+            });
+            const body = await response.json() as DrainTickGatewayResult['body'];
+            return { status: response.status as DrainTickGatewayResult['status'], body };
+          } : undefined,
+        });
+        const backupCadence = new FeedbackDrainBackupCadence(new BackupManager(options.config.stateDir, options.config.backup));
+        const checkpointBackup = (trigger: 'promotion' | 'failover') => {
+          if (!isCanonicalOwner()) throw new Error('feedback drain backup requires the canonical owner');
+          store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch);
+          if (trigger === 'promotion') backupCadence.afterPromotion(); else backupCadence.afterFailover();
+        };
+        const finalizeFailoverRestore = (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
+          oldOwnerQuiesced?: boolean; splitBrainRecoveryPacket?: { incidentId: string; oldOwnerStatus: 'unreachable-or-fenced'; operatorDecisionRef: string } }) => {
+          if (!restorePending) throw new Error('feedback drain has no pending restored checkpoint');
+          if (!holdsCanonicalLease()) throw new Error('feedback drain failover finalization requires the canonical owner');
+          if (!/^[-A-Za-z0-9._:]{8,200}$/.test(input.operatorDecisionRef)) throw new Error('bounded operator decision reference required');
+          const nextEpoch = input.restoredOwnerAuthorityEpoch + 1;
+          if (options.coordinator?.enabled && options.coordinator.getLeaseEpoch() !== nextEpoch) {
+            throw new Error('live coordinator epoch must equal the restored epoch successor');
+          }
+          const finalized = store.finalizeRestore(input);
+          if (!options.coordinator?.enabled) localOwnerEpoch = finalized.ownerAuthorityEpoch;
+          const reconciliation = store.reconcileInitiativeLinks({
+            lookupByFeedbackWorkKey: (feedbackWorkKey) => (options.initiativeTracker?.list({ kind: 'task' }) ?? [])
+              .filter((initiative) => initiative.feedbackWorkKey === feedbackWorkKey)
+              .map((initiative) => ({ feedbackWorkKey, artifactId: initiative.id, artifactKind: 'initiative', readable: Boolean(options.initiativeTracker?.get(initiative.id)) })),
+          });
+          store.checkpointForBackup(finalized.ownerAuthorityEpoch);
+          backupCadence.afterFailover();
+          restorePending = false;
+          return { ...finalized, reconciliation };
+        };
+        this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending };
+        if (options.config.stateDir && sourceCheckout) {
+          const selfHealBootId = randomUUID();
+          void runFeedbackFactoryDefaultsSelfHeal({
+            stateDir: options.config.stateDir,
+            developmentAgent: options.config.developmentAgent === true,
+            bootId: selfHealBootId,
+            currentFence: () => isCanonicalOwner() ? `${selfMachineId}:${options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch}` : null,
+            notify: async (notice) => {
+              const enqueue = this.telegramAdapter?.createAttentionItem;
+              if (!enqueue) throw new Error('durable attention enqueue unavailable');
+              await enqueue.call(this.telegramAdapter, {
+                id: notice.id,
+                title: 'Feedback defaults self-heal needs attention',
+                description: `The bounded feedback-defaults repair reported ${notice.reason}.`,
+                summary: `Feedback-defaults self-heal: ${notice.reason}`,
+                priority: notice.priority,
+                category: 'monitoring',
+                sourceContext: 'self-heal-gate:feedback-defaults',
+              });
+            },
+            audit: (event) => console.log(`[self-heal-gate] feedback-defaults ${event.event}${event.reason ? ` (${event.reason})` : ''}`),
+          }).then(result => {
+            this.feedbackDefaultsSelfHealEvidence.samples++;
+            if (result.outcome === 'healed' || result.outcome === 'healthy') this.feedbackDefaultsSelfHealEvidence.successful++;
+          }).catch((error) => {
+            this.feedbackDefaultsSelfHealEvidence.samples++;
+            console.warn('[self-heal-gate] feedback-defaults attempt failed safely:', error instanceof Error ? error.message : 'unknown');
+          });
+        }
+        if (options.config.developmentAgent === true && sourceCheckout) {
+          const backupTick = () => {
+            if (!isCanonicalOwner()) return;
+            backupCadence.maybeHourly(() => store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch));
+          };
+          setImmediate(() => { try { backupTick(); } catch (error) { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); } });
+          this.feedbackDrainBackupTimer = setInterval(() => {
+            try { backupTick(); } catch (error) { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); }
+          }, 15 * 60 * 1000);
+          this.feedbackDrainBackupTimer.unref?.();
+        }
+        this.feedbackDrainPosture = resolveFeedbackDrainPosture({ drainEnabled: true, developmentAgent: options.config.developmentAgent === true,
+          sourceCheckout, hasCanonicalDataDir: true, dependenciesReady: true, initialized: true, ownerConfigured: ownerHost !== null });
+        console.log(`[feedback-factory] operated drain live (consumer: ${service.stats().consumerLive ? 'live' : 'simulation'})`);
+      }
+    } catch (err) { /* @silent-fallback-ok: failure is logged and exposed as unavailable posture; integrity failures also raise an urgent operator item */
+      console.warn('[feedback-factory] operated drain init failed (non-fatal):', err);
+      this.feedbackDrain = null;
+      this.feedbackDrainPosture = { state: 'unavailable', reason: 'initialization-failure' };
+      const errorText = err instanceof Error ? err.message : String(err);
+      if (options.config.stateDir && /(corrupt|malformed|integrity|database disk image|wal)/i.test(errorText)) {
+        void this.telegramAdapter?.createAttentionItem?.({
+          id: `feedback-drain-critical:${createHash('sha256').update(errorText).digest('hex').slice(0, 16)}`,
+          title: 'Feedback drain integrity failure',
+          description: 'The operated feedback drain stopped before making further changes because its durable state failed an integrity check. Operator repair or restore is required.',
+          summary: 'Feedback drain stopped on a critical integrity failure; no automatic repair was attempted.',
+          priority: 'URGENT',
+          category: 'monitoring',
+          sourceContext: 'feedback-drain:integrity',
+        });
+      }
+    }
+
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar
     // self-hosting dev-process forensics. DEV-GATED (CMT-1438): `enabled` is OMITTED
     // from the ConfigDefaults block so the developmentAgent gate decides — LIVE on a
@@ -2049,7 +2341,7 @@ export class AgentServer {
                 sourceTreeReadOk: true,
               });
               return out.split('\n').map((s) => s.trim()).filter(Boolean);
-            } catch { return []; }
+            } catch { /* @silent-fallback-ok — missing registry yields no proposed standards, never invented authority */ return []; }
           },
         });
 
@@ -2142,6 +2434,166 @@ export class AgentServer {
     } catch (err) {
       console.warn('[instar] correction-learning ledger init failed (non-fatal):', err);
       this.correctionLedger = null;
+    }
+
+    // Drive 7 WS1 — every captured correction receives a record-time class
+    // review shell and an async standards/process judgment. The feature is live
+    // only on development agents and remains dry-run/observe-only in v1.
+    try {
+      const classReviewEnabled = resolveDevAgentGate(
+        options.config.monitoring?.correctionClassReview?.enabled,
+        options.config,
+      );
+      if (classReviewEnabled && options.config.stateDir) {
+        const cfg = options.config.monitoring?.correctionClassReview ?? {};
+        this.classReviewStore = new ClassReviewStore({
+          dbPath: path.join(options.config.stateDir, 'class-reviews.db'),
+          machineId: options.meshSelfId ?? options.config.projectName,
+        });
+        if (options.replicatedRecordEmitter) {
+          const emitter = options.replicatedRecordEmitter;
+          this.classReviewStore.setReplicationEmitter({
+            emitPut: (record) => emitter.emit(
+              CLASS_REVIEW_STORE_KEY,
+              record.dedupeKey,
+              (hlc, origin, observed) => buildClassReviewRecordData({ record, hlc, op: 'put', origin, observed }),
+            ),
+          });
+        }
+        this.correctionClassReview = new CorrectionClassReview({
+          store: this.classReviewStore,
+          intelligence: options.intelligence,
+          dryRun: cfg.dryRun !== false,
+          maxAttempts: cfg.maxAttempts,
+          maxReviewsPerTick: cfg.maxReviewsPerTick,
+          maxOpenArtifacts: cfg.maxOpenArtifacts,
+          admitCorrectionAction: ({ correctionId, classReviewRef }) => evaluateCorrectionInstanceFix({
+            originCorrection: true, correctionId, claimedClassReviewRef: classReviewRef,
+            dryRun: cfg.dryRun !== false,
+            correctionLedger: this.correctionLedger,
+            classReviewStore: this.classReviewStore,
+          }),
+          standardTitles: () => {
+            try {
+              const registry = fs.readFileSync(path.join(options.config.projectDir, 'docs', 'STANDARDS-REGISTRY.md'), 'utf8');
+              return [...registry.matchAll(/^###\s+(.+)$/gm)].map((match) => match[1].trim()).slice(0, 100);
+            } catch { return []; }
+          },
+          createInitiative: options.initiativeTracker ? async (input) => {
+            const created = await options.initiativeTracker!.create({
+              id: String(input.id), title: String(input.title), description: String(input.description),
+              phases: [{ id: 'operator-ratification', name: 'Operator ratification' }],
+              needsUser: true,
+              needsUserReason: 'Standards amendments require explicit operator ratification.',
+            });
+            return { id: created.id };
+          } : undefined,
+          addAction: options.evolution ? (input) => {
+            const recovery = input.origin === 'correction-class-review-recovery';
+            const action = options.evolution!.addAction({
+              title: String(input.title),
+              description: `Correction-derived process improvement. classReviewRef=${String(input.classReviewRef)}; autonomous execution is forbidden.`,
+              priority: 'medium', source: { platform: 'correction-class-review', context: 'process-gap' },
+              tags: [recovery ? 'origin:class-review-recovery' : 'origin:correction', `class-review:${String(input.classReviewRef)}`],
+            });
+            return { id: action.id };
+          } : undefined,
+          audit: (event) => {
+            try {
+              const audit = path.join(options.config.stateDir!, 'logs', 'correction-class-review.jsonl');
+              fs.mkdirSync(path.dirname(audit), { recursive: true });
+              fs.appendFileSync(audit, `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`, { mode: 0o600 });
+            } catch { /* @silent-fallback-ok — authoritative class-review state remains in SQLite; mirror audit is best-effort */ }
+          },
+        });
+      }
+      const completionEnabled = resolveDevAgentGate(
+        options.config.monitoring?.completionClaimVerification?.enabled,
+        options.config,
+      );
+      if (completionEnabled && options.config.stateDir) {
+        const cfg = options.config.monitoring?.completionClaimVerification ?? {};
+        const sharedClaimQueue = options.llmQueue;
+        const claimIntelligence = options.intelligence && sharedClaimQueue ? {
+          evaluate: (prompt: string, intelligenceOptions: import('../core/types.js').IntelligenceOptions = {}) => sharedClaimQueue.enqueueMetered({
+            component: 'claim-verification', estimatedInputTokens: Math.ceil(Buffer.byteLength(prompt, 'utf8') / 4),
+            maxOutputTokens: intelligenceOptions.maxTokens ?? 1_800, estimatedCostCents: 0.25,
+            hourly: { requests: 300 }, daily: { requests: 2_000, inputTokens: 10_000_000, outputTokens: 4_000_000, costCents: 500 },
+            run: async (signal, reportUsage) => options.intelligence!.evaluate(prompt, { ...intelligenceOptions, signal,
+              attribution: intelligenceOptions.attribution ?? { component: 'completion-claim-verify' },
+              onUsage: (usage) => { reportUsage({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens });
+                intelligenceOptions.onUsage?.(usage); } }),
+          }),
+        } : null;
+        const secretStore = new SecretStore({ stateDir: options.config.stateDir, forceFileKey: options.config.secrets?.forceFileKey });
+        const keyName = 'claimVerification.pseudonymKeyV1';
+        let encodedKey = secretStore.get(keyName);
+        if (typeof encodedKey !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(encodedKey)) {
+          const lockPath = path.join(options.config.stateDir, 'machine', 'claim-pseudonym-key.lock');
+          fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+          let lockFd: number | undefined;
+          try {
+            lockFd = fs.openSync(lockPath, 'wx', 0o600);
+            encodedKey = secretStore.get(keyName);
+            if (typeof encodedKey !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(encodedKey)) {
+              encodedKey = randomBytes(32).toString('base64');
+              secretStore.set(keyName, encodedKey);
+              encodedKey = secretStore.get(keyName);
+            }
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+            encodedKey = secretStore.get(keyName);
+          } finally {
+            if (lockFd !== undefined) {
+              fs.closeSync(lockFd);
+              try { SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'claim-identity-lock-release' }); }
+              catch { /* @silent-fallback-ok — stale lock disables only a future initialization attempt */ }
+            }
+          }
+        }
+        if (typeof encodedKey !== 'string' || Buffer.from(encodedKey, 'base64').length !== 32) throw new Error('claim observation identity key unavailable');
+        const recorder = new ClaimObservationRecorder({ stateDir: options.config.stateDir,
+          pseudonymKey: Buffer.from(encodedKey, 'base64'), maxAuditBytes: cfg.maxAuditBytes,
+          maxCorpusBytes: cfg.maxCorpusBytes });
+        const housekeeper = new ClaimObservationHousekeeper({ stateDir: options.config.stateDir });
+        const admissionQueue = new ClaimObservationAdmissionQueue({ maxQueued: cfg.maxQueued,
+          maxQueuedPerTopic: cfg.maxQueuedPerTopic, maxConcurrent: cfg.maxConcurrent, queueTtlMs: cfg.queueTtlMs });
+        this.completionClaimVerifier = new CompletionClaimVerifier({
+          intelligence: claimIntelligence,
+          stateDir: options.config.stateDir,
+          enabled: true,
+          dryRun: cfg.dryRun !== false,
+          maxAuditBytes: cfg.maxAuditBytes,
+          maxQueued: cfg.maxQueued,
+          maxQueuedPerTopic: cfg.maxQueuedPerTopic,
+          maxConcurrent: cfg.maxConcurrent,
+          queueTtlMs: cfg.queueTtlMs,
+          generalObservation: cfg.generalObservation !== false,
+          recorder,
+          admissionQueue,
+          bootId: randomUUID(),
+        });
+        this.completionClaimVerifier.recordRetentionFailures(housekeeper.sweep().failures);
+        this.claimObservationHousekeeperTimer = setInterval(() => {
+          this.completionClaimVerifier?.recordRetentionFailures(housekeeper.sweep().failures);
+        }, 6 * 60 * 60 * 1000);
+        this.claimObservationHousekeeperTimer.unref?.();
+        const completionVerifier = this.completionClaimVerifier;
+        runTurnEvidenceBootCanary((reason) => {
+          completionVerifier.recordCanaryDrift();
+          try {
+            const audit = path.join(options.config.stateDir!, 'logs', 'completion-claim-audit.jsonl');
+            fs.mkdirSync(path.dirname(audit), { recursive: true });
+            fs.appendFileSync(audit, `${JSON.stringify({ ts: new Date().toISOString(), evaluated: false,
+              flagged: false, event: 'turn-evidence-canary-drift', reason })}\n`, { mode: 0o600 });
+          } catch { /* @silent-fallback-ok — in-memory canary metric still records drift; mirror append cannot break boot */ }
+        });
+      }
+    } catch (err) {
+      console.warn('[instar] correction-class-review init failed (non-fatal):', err);
+      this.classReviewStore = null;
+      this.correctionClassReview = null;
+      this.completionClaimVerifier = null;
     }
 
     // BlockerLedger (docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md, Piece 1)
@@ -2253,6 +2705,10 @@ export class AgentServer {
                 return null;
               }
             },
+            // Owned-identities registry (correction-derived-hardening spec):
+            // identities the agent itself provisioned. stateDir IS the .instar dir,
+            // so the registry lives at .instar/owned-identities.json.
+            ownedIdentitiesPath: path.join(stateDir, 'owned-identities.json'),
           });
           this.selfUnblockChecklist = new SelfUnblockChecklist({
             providers,
@@ -2407,9 +2863,23 @@ export class AgentServer {
     try {
       if (options.config.stateDir) {
         const frameworkLedger = this.frameworkIssueLedger;
+        // PR-B (framework-stall-coverage-matrix §2.3/§2.2): the stall-coverage
+        // matrix gate + the acceptance machinery. Loopback carries the resolved
+        // auth token so the gate's non-hermetic checks (commitments liveness,
+        // /guards posture) reach the local server (Frontloaded Decision 17).
+        this.apprenticeshipMatrixAcceptance = new MatrixAcceptanceStore({
+          stateDir: options.config.stateDir,
+        });
+        const stallGate = new ApprenticeshipStallGate({
+          projectDir: options.config.projectDir,
+          stateDir: options.config.stateDir,
+          loopback: { port: options.config.port, authToken: options.config.authToken },
+          acceptance: this.apprenticeshipMatrixAcceptance,
+        });
         this.apprenticeshipProgram = new ApprenticeshipProgram({
           stateDir: options.config.stateDir,
           projectDir: options.config.projectDir,
+          stallGate,
           deps: {
             countInstanceLedgerEntries: (instance) => {
               if (!frameworkLedger) return 0;
@@ -2775,6 +3245,66 @@ export class AgentServer {
     } catch { /* sweep is best-effort; a wiring fault never breaks boot */ }
 
     // Routes
+    const autonomousRunOnMachine = options.autonomousRunOnMachine ?? (options.resolvePeerUrls
+      ? async (machineId: string, topic: string) => {
+          const peer = options.resolvePeerUrls!().find((p) => p.machineId === machineId);
+          if (!peer) throw new Error('no-peer-url');
+          const authToken = process.env.INSTAR_AUTH_TOKEN || options.config.authToken || '';
+          const response = await fetch(`${peer.url}/autonomous/sessions`, {
+            headers: { Authorization: `Bearer ${authToken}` },
+            signal: AbortSignal.timeout(5_000),
+          });
+          if (!response.ok) throw new Error(`owner-run-probe-${response.status}`);
+          const body = await response.json() as { sessions?: Array<{ topic?: string; active?: boolean; paused?: boolean; goal?: string | null; startedAt?: string | null; durationSeconds?: number | null }> };
+          const job = body.sessions?.find((j) => String(j.topic) === topic && j.active === true && j.paused !== true);
+          if (!job) return null;
+          const remainingMinutes = job.startedAt && job.durationSeconds != null
+            ? Math.max(0, Math.round((Date.parse(job.startedAt) + job.durationSeconds * 1000 - Date.now()) / 60_000))
+            : null;
+          return { goal: job.goal ?? null, remainingMinutes, runKey: job.startedAt ?? null };
+        }
+      : null);
+    const kickWorkingSetOnMachine = options.kickWorkingSetOnMachine ?? ((machineId: string, topic: number) => {
+      if (machineId === options.meshSelfId) {
+        const coordinator = options.workingSetPullCoordinator;
+        if (!coordinator) return;
+        void (async () => {
+          // Ownership arrives through the replicated journal and can legitimately
+          // trail the fenced drain response by more than one heartbeat/cadence.
+          // Keep this fire-and-forget retry window long enough to cross that
+          // convergence boundary; `not-owner` does not consume the coordinator's
+          // reflex rate limit, and every attempt still rechecks ownership before
+          // applying bytes.
+          for (const delayMs of [250, 750, 1_500, 3_000, 5_000, 10_000, 15_000, 30_000]) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            try {
+              const result = await coordinator.fetchWorkingSet(topic);
+              if (result.scheduled === true || result.skipReason !== 'not-owner') return;
+            } catch { /* @silent-fallback-ok — bounded retry continues; the explicit fetch reflex remains available */ }
+          }
+        })();
+        return;
+      }
+      const peer = options.resolvePeerUrls?.().find((p) => p.machineId === machineId);
+      if (!peer) return;
+      const authToken = process.env.INSTAR_AUTH_TOKEN || options.config.authToken || '';
+      void (async () => {
+        for (const delayMs of [250, 750, 1_500, 3_000, 5_000, 10_000, 15_000, 30_000]) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          try {
+            const response = await fetch(`${peer.url}/coherence/fetch-working-set`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ topic }),
+              signal: AbortSignal.timeout(5_000),
+            });
+            if (!response.ok) continue;
+            const result = await response.json() as { scheduled?: boolean; skipReason?: string };
+            if (result.scheduled === true || result.skipReason !== 'not-owner') return;
+          } catch { /* @silent-fallback-ok — bounded retry continues; final failure leaves the explicit fetch reflex available */ }
+        }
+      })();
+    });
     const routeCtx = {
       config: options.config,
       sessionManager: options.sessionManager,
@@ -2816,6 +3346,9 @@ export class AgentServer {
       commitmentTracker: options.commitmentTracker ?? null,
       prHandLease: options.prHandLease ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
+      subscriptionIdentityOracle: options.subscriptionIdentityOracle,
+      subscriptionEmailBinding: options.subscriptionEmailBinding,
+      subscriptionEmailBarrier: options.subscriptionEmailBarrier,
       accountFollowMePeerViews: options.accountFollowMePeerViews,
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
@@ -2905,6 +3438,7 @@ export class AgentServer {
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
       featureMetricsLedger: this.featureMetricsLedger,
+      blockerLifecycleService: this.blockerLifecycleService,
       benchmarkDivergenceAnalyzer: this.benchmarkDivergenceAnalyzer,
       routingPriceAuthority: this.routingPriceAuthority,
       meteredSpendLedger: this.meteredSpendLedger,
@@ -2952,6 +3486,8 @@ export class AgentServer {
       cutoverReadiness: this.cutoverReadiness,
       inboxDrainer: this.inboxDrainer,
       feedbackProcessing: this.feedbackProcessing,
+      feedbackDrain: this.feedbackDrain,
+      feedbackDrainPosture: this.feedbackDrainPosture,
       parallelActivityIndex: this.parallelActivityIndex,
       frameworkIssueLedger: this.frameworkIssueLedger,
       mentorRunner: this.mentorRunner,
@@ -2959,13 +3495,23 @@ export class AgentServer {
       failureLedger: this.failureLedger,
       failureAttributionEngine: this.failureAttributionEngine,
       correctionLedger: this.correctionLedger,
+      classReviewStore: this.classReviewStore,
+      correctionClassReview: this.correctionClassReview,
+      completionClaimVerifier: this.completionClaimVerifier,
       blockerLedger: this.blockerLedger,
       selfUnblockRunStore: this.selfUnblockRunStore,
       selfUnblockChecklist: this.selfUnblockChecklist,
       growthMilestoneAnalyst: this.growthMilestoneAnalyst,
       growthDigestPublisher: this.growthDigestPublisher,
       apprenticeshipProgram: this.apprenticeshipProgram,
+      apprenticeshipMatrixAcceptance: this.apprenticeshipMatrixAcceptance,
       apprenticeshipCycleStore: this.apprenticeshipCycleStore,
+      apprenticeshipPeerCycleReader: options.apprenticeshipPeerCycleReader ?? ((instanceId: string) =>
+        readApprenticeshipPeerCycles(instanceId, {
+          selfAgent: options.config.projectName,
+          listAgents,
+          getAgentToken,
+        })),
       apprenticeshipCycleSlaMonitor: this.apprenticeshipCycleSlaMonitor,
       geminiCapacityEscalationMonitor: this.geminiCapacityEscalationMonitor,
       sessionReaper: options.sessionReaper ?? null,
@@ -2980,6 +3526,7 @@ export class AgentServer {
       resumeQueue: options.resumeQueue ?? null,
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
+      autonomousThroughputFloor: options.autonomousThroughputFloor ?? (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor ?? null,
       enforcedTerminationStatus: options.enforcedTerminationStatus ?? null,
       operatorStopRecorder: options.operatorStopRecorder ?? null,
       sleepWakeDetector: options.sleepWakeDetector ?? null,
@@ -2991,8 +3538,31 @@ export class AgentServer {
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
+      mutualSshHealth: options.mutualSshHealth ?? (() => {
+        if (!resolveDevAgentGate(options.config.multiMachine?.mutualSsh?.enabled, options.config)) return null;
+        const live = (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime;
+        if (live) return () => live.status();
+        const machineId = options.coordinator?.managers?.identityManager?.hasIdentity()
+          ? options.coordinator.managers.identityManager.loadIdentity().machineId
+          : `${options.config.projectName}-local`;
+        const identity = new MachineSshIdentity(options.config.stateDir, options.config.projectName, machineId).ensure();
+        return () => ({
+          enabled: true,
+          dryRun: options.config.multiMachine?.mutualSsh?.dryRun !== false,
+          readinessRequired: options.config.multiMachine?.mutualSsh?.requiredForEmployeeRole === true,
+          ready: true,
+          enrollmentState: 'ready',
+          blockedReasons: [],
+          local: { machineId, state: 'identity-ready', clientGeneration: identity.clientGeneration, hostGeneration: identity.hostGeneration },
+          pairs: [],
+        });
+      })(),
       getInboundQueue: options.getInboundQueue ?? null,
       getMachineCoherence: options.getMachineCoherence ?? null,
+      getSingleMachineFailoverGap: options.getSingleMachineFailoverGap ?? null,
+      getMissingLoginSession: options.getMissingLoginSession ?? null,
+      getSessionPoolFailoverRunner: options.getSessionPoolFailoverRunner ?? null,
+      sessionPoolPromotionActivation: options.sessionPoolPromotionActivation ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       workingSetArtifactManager: options.workingSetArtifactManager ?? null,
@@ -3042,6 +3612,8 @@ export class AgentServer {
       meshSelfId: options.meshSelfId ?? null,
       resolveRouterUrl: options.resolveRouterUrl ?? null,
       sendDrain: options.sendDrain ?? null,
+      autonomousRunOnMachine,
+      kickWorkingSetOnMachine,
       resolvePeerUrls: options.resolvePeerUrls ?? null,
       guardRegistry: options.guardRegistry ?? null,
       listPoolMachines: options.listPoolMachines ?? null,
@@ -3057,8 +3629,72 @@ export class AgentServer {
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;
+    if (this.blockerLifecycleService) {
+      this.blockerLifecycleService.registerMaturationProjection('feedback-factory.completed-runs', () => {
+        const run = this.feedbackDrain?.service.stats().lastRun;
+        if (!run) return null;
+        return { value: run.state === 'succeeded' || run.state === 'no-op' ? 1 : 0, samples: 1 };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('autonomous-throughput.observed-runs', () => {
+        const runs = routeCtx.autonomousThroughputFloor?.status().runs.length ?? 0;
+        return { value: runs, samples: runs };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('claim-verification.classified-claims', () => {
+        const stats = this.completionClaimVerifier?.stats();
+        if (!stats) return null;
+        return { value: stats.classifiedTurns, samples: stats.candidateTurns };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('mutual-ssh.ready-peers', () => {
+        const status = routeCtx.mutualSshHealth?.() as { pairs?: Array<{ mutual?: boolean }> } | null;
+        if (!status?.pairs) return null;
+        return { value: status.pairs.filter(pair => pair.mutual === true).length, samples: status.pairs.length };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('slack-decision-gate.considered-acknowledgments', () => {
+        const stats = options.slack?.getAmbientStats();
+        if (!stats) return null;
+        const channels = stats.channels;
+        const reacted = channels.reduce((sum, channel) => sum + (channel.silentByReason.react ?? 0), 0);
+        const evaluated = channels.reduce((sum, channel) => sum + channel.evaluated, 0);
+        return { value: reacted, samples: evaluated };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('context-recovery.successful-recoveries', () => {
+        const eventPath = path.join(options.config.projectDir, '.instar', 'recovery-events.jsonl');
+        let fd: number | null = null;
+        try {
+          const size = fs.statSync(eventPath).size;
+          const length = Math.min(size, 64 * 1024);
+          const buffer = Buffer.alloc(length);
+          fd = fs.openSync(eventPath, 'r');
+          fs.readSync(fd, buffer, 0, length, size - length);
+          const rows = buffer.toString('utf8').split('\n').slice(length === size ? 0 : 1).filter(Boolean);
+          let samples = 0; let successful = 0;
+          for (const line of rows) {
+            const row = JSON.parse(line) as { failureType?: string; recovered?: boolean };
+            if (row.failureType !== 'context_exhaustion') continue;
+            samples++;
+            if (row.recovered === true) successful++;
+          }
+          return { value: successful, samples };
+        } catch (error) {
+          DegradationReporter.getInstance().report({
+            feature: 'blocker-lifecycle.context-recovery-projection',
+            primary: 'read the bounded local recovery event tail',
+            fallback: 'return no observation so maturation remains HOLD',
+            reason: error instanceof Error ? error.message : 'recovery event-log read failed',
+            impact: 'context-recovery evidence remains unavailable until a later successful read',
+          });
+          return null;
+        } finally {
+          if (fd !== null) try { fs.closeSync(fd); } catch { /* @silent-fallback-ok — read-only descriptor cleanup */ }
+        }
+      });
+      this.blockerLifecycleService.registerMaturationProjection('self-heal-gate.successful-repairs', () => ({
+        value: this.feedbackDefaultsSelfHealEvidence.successful, samples: this.feedbackDefaultsSelfHealEvidence.samples,
+      }));
+    }
     const routes = createRoutes(routeCtx);
     this.app.use(routes);
+    this.app.use(createThroughputRoutes());
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });
@@ -3415,7 +4051,7 @@ export class AgentServer {
    *      the session is killed and an empty reply is logged — no partial
    *      transcript is sent.
    *   3. Captures the tmux pane transcript as the reply.
-   *   4. Sends the reply back via `sendAgentMessage` with
+   *   4. Sends the reply back through the canonical A2A delivery seam with
    *      `role='mentor-reply'` and `corr=msg.corr || msg.id` so the
    *      mentor's `OutstandingPromptTracker` can clear by correlation.
    *
@@ -3532,6 +4168,7 @@ export class AgentServer {
           // (knownAgents[instar-codey].botId === senderBotId) passes.
           fromBotId: self.ownPrimaryBotId(),
           toBotId: menteeCfg.knownMentors[msg.from]?.botId,
+          targetMachineId: menteeCfg.knownMentors[msg.from]?.machineId,
         });
       };
       roleHandlers.set('mentor', mentorMessageHandler);
@@ -3620,6 +4257,7 @@ export class AgentServer {
     body: string;
     allowedRoles: ReadonlySet<string>;
     telegramTopicId?: number;
+    targetMachineId?: string;
     /** The recipient's bot id — used ONLY by the Telegram fallback's toBotId. */
     toBotId?: string;
     /** The SENDER's own bot id — sent as the inbox `senderBotId` so the
@@ -3691,36 +4329,42 @@ export class AgentServer {
       console.warn(`[a2a] local-inbox delivery attempt failed (to=${opts.toAgent}): ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // ── Cross-machine Telegram fallback (mentor→mentee only; currently
-    //    unreachable due to bot-to-bot block — tracked follow-up). ──
-    if (opts.telegramBot && opts.telegramTopicId !== undefined && opts.toBotId && opts.botToken) {
-      try {
-        const result = await sendAgentMessage(
-          {
-            fromAgent: opts.fromAgent, toAgent: opts.toAgent, role: opts.role,
-            toTopicId: opts.telegramTopicId, message: opts.body, id, correlationId: opts.corr,
-          },
-          {
-            send: async (topicId, text) => {
-              try {
-                const res = await opts.telegramBot!.sendToTopic(topicId, text);
-                return { ok: true, messageId: String(res.messageId) };
-              } catch (e) { return { ok: false, error: e }; }
-            },
-            appendAudit: (row) => ledger.appendSent(row),
-            now: () => Date.now(),
-            mintId: () => id,
-            allowedRoles: opts.allowedRoles,
-            botToken: opts.botToken,
-            fromBotId: opts.botToken.split(':')[0],
-            toBotId: opts.toBotId,
-          },
-        );
-        return result.ok;
-      } catch (err) {
-        console.warn(`[a2a] telegram fallback failed (to=${opts.toAgent}): ${err instanceof Error ? err.message : String(err)}`);
+    // ── Cross-machine: signed MeshRpc → recipient's EXISTING inbox hook ──
+    // Telegram remains a visible mirror only. It can never make this branch
+    // successful because Telegram bots do not receive other bots' messages.
+    if (opts.targetMachineId && this.deliverA2aToMachine && opts.telegramTopicId !== undefined) {
+      const tsNow = Date.now();
+      const marker = `[a2a:from=${opts.fromAgent} to=${opts.toAgent} role=${opts.role} id=${id} corr=${opts.corr} ts=${tsNow} v=${A2A_VERSION}]`;
+      const result: { ok: boolean; agentMessage?: boolean; reason?: string } = await this.deliverA2aToMachine({
+        machineId: opts.targetMachineId,
+        targetAgent: opts.toAgent,
+        text: `${marker}\n\n${opts.body}`,
+        topicId: opts.telegramTopicId,
+        senderAgent: opts.fromAgent,
+        senderBotId: opts.fromBotId ?? `${opts.fromAgent}-mesh`,
+      }).catch((err) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
+      if (result.ok && result.agentMessage === true) {
+        try {
+          ledger.appendSent({
+            ts: tsNow, from: opts.fromAgent, to: opts.toAgent, role: opts.role,
+            id, corr: opts.corr, result: 'sent', transport: 'a2a-inbox-mesh',
+          } as never);
+        } catch { /* best-effort */ }
+        console.log(`[a2a] delivered → ${opts.toAgent} via signed mesh inbox (machine=${opts.targetMachineId}, role=${opts.role}, corr=${opts.corr})`);
+        if (opts.visibleEcho) {
+          void sendMentorVisibleEcho(opts.body, opts.visibleEcho).catch((err) => {
+            console.warn(`[mentor-echo] unexpected failure after mesh delivery: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
+        return true;
       }
+      console.warn(`[a2a] signed mesh inbox refused (machine=${opts.targetMachineId}, to=${opts.toAgent}, role=${opts.role}, reason=${result.reason ?? 'not-routed'})`);
+      return false;
     }
+
+    // Telegram bot-to-bot sends are never a delivery authority: bots do not
+    // receive other bots' messages. A visible mirror is emitted only above,
+    // after the local or signed-mesh inbox explicitly accepts the envelope.
     return false;
   }
 
@@ -4092,6 +4736,7 @@ export class AgentServer {
             // session) and the Telegram fallback, so the whole exchange moves
             // together. Falls back to menteeTopicId (backward-compatible).
             telegramTopicId: resolveMentorDeliveryTopic(cfg),
+            targetMachineId: cfg.menteeMachineId,
             // fromBotId = echo's mentor-bot id, so the mentee's allowlist
             // (knownMentors[echo].botId === senderBotId) passes.
             fromBotId: cfg.botToken ? cfg.botToken.split(':')[0] : undefined,
@@ -4351,15 +4996,24 @@ export class AgentServer {
               const reporter = DegradationReporter.getInstance();
               const gate = LlmRateGate.instance();
               const telegram = this.telegramAdapter;
-              const sendTelegram = telegram && typeof (telegram as { sendToTopic?: unknown }).sendToTopic === 'function'
-                ? (topicId: number, text: string) => {
-                    // Fire-and-forget — the runbook and verifier do not block on
-                    // alert delivery; failed sends are logged elsewhere.
-                    const send = (telegram as { sendToTopic: (t: number, s: string) => Promise<unknown> }).sendToTopic;
-                    void send.call(telegram, topicId, text).catch((err: unknown) => {
-                      console.warn(`[burn-detection] telegram send failed (non-fatal): ${(err as Error)?.message ?? err}`);
-                    });
-                  }
+              const burnAlertDelivery = telegram && typeof (telegram as { sendToTopic?: unknown }).sendToTopic === 'function'
+                && typeof (telegram as { createAttentionItem?: unknown }).createAttentionItem === 'function'
+                ? new BurnAlertDelivery({
+                    sendToTopic: (topicId, text) => telegram.sendToTopic(topicId, text),
+                    raiseAttention: (item) => telegram.createAttentionItem(item),
+                    hasAttentionItem: (id) => telegram.getAttentionItem(id) !== undefined,
+                    stateFile: this.config.stateDir
+                      ? path.join(this.config.stateDir, 'state', 'burn-alert-delivery.json')
+                      : undefined,
+                  })
+                : undefined;
+              if (burnAlertDelivery) {
+                void burnAlertDelivery.recoverPending().catch((err: unknown) => {
+                  console.error(`[burn-detection] pending terminal notice recovery failed: ${(err as Error)?.message ?? err}`);
+                });
+              }
+              const sendTelegram = burnAlertDelivery
+                ? (topicId: number, text: string) => burnAlertDelivery.deliver(topicId, text)
                 : undefined;
 
               // Build partial configs WITHOUT undefined keys — a `{ x: undefined }`
@@ -4378,7 +5032,7 @@ export class AgentServer {
                 alertTopicId: burnCfg?.alertTopicId,
                 config: runbookConfig,
               });
-              this.burnVerifier = new BurnVerifier({ ledger, sendTelegram });
+              this.burnVerifier = new BurnVerifier({ ledger, sendTelegram, alertTopicId: burnCfg?.alertTopicId });
               registerBurnDetectionSubscriber(reporter, this.burnThrottleRunbook, (outcome, event) => {
                 this.burnVerifier!.scheduleVerification(outcome, event);
               });
@@ -4486,9 +5140,11 @@ export class AgentServer {
    * enforces the dev-gate (503 when off) + deny-by-default, so this consumer carries NO authority of
    * its own; it only nudges the route for mandates the operator already approved + delivered.
    */
+  /* @self-action-controller: follow-me-enrollment-consumer */
   private async driveDeliveredFollowMeEnrollments(): Promise<void> {
     if (this.followMeConsumerRunning) return; // re-entrancy guard (a slow tick must not overlap)
     if (!this.deliveredMandateStore) return;
+    if (this.subscriptionEmailBarrier?.isBlocking()) return;
     this.followMeConsumerRunning = true;
     try {
       const now = Date.now();
@@ -4503,23 +5159,54 @@ export class AgentServer {
       const host = this.config.host || '127.0.0.1';
       const base = `http://${host}:${this.config.port}`;
       const authHeader = { Authorization: `Bearer ${this.config.authToken ?? ''}` };
+      this.followMeConsumerBackoff ??= new FollowMeConsumerBackoffStore(this.config.stateDir);
+      const targetMachineId =
+        (this.config as InstarConfig & { machineId?: string }).machineId ?? 'local';
 
       // Build the set of accounts already handled (pending login in flight, or already enrolled) so a
       // tick never re-drives — the durable idempotency (pending logins + pool both persist on disk).
       const handled = new Set<string>();
       try {
-        const [pl, sp] = await Promise.all([
+        const [pl, sp, poolScope] = await Promise.all([
           fetch(`${base}/subscription-pool/pending-logins`, { headers: authHeader, signal: AbortSignal.timeout(5000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
           fetch(`${base}/subscription-pool`, { headers: authHeader, signal: AbortSignal.timeout(5000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
-        ]) as [{ logins?: Array<{ id?: string }> } | null, { accounts?: Array<{ id?: string }> } | null];
+          fetch(`${base}/subscription-pool?scope=pool`, { headers: authHeader, signal: AbortSignal.timeout(5000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        ]) as [
+          { logins?: Array<{ id?: string }> } | null,
+          { accounts?: Array<{ id?: string }> } | null,
+          { accounts?: Array<{ id?: string; email?: string }>; emailGaps?: Array<{ accountId?: string }> } | null,
+        ];
         for (const l of pl?.logins ?? []) if (l?.id) handled.add(l.id);
         for (const a of sp?.accounts ?? []) if (a?.id) handled.add(a.id);
-      } catch { /* best-effort — a read failure just means we may attempt; the route is idempotent-enough */ }
+        const evidenceFor = (accountId: string, mandateIds: string[]) => {
+          const holderEmails = (poolScope?.accounts ?? [])
+            .filter((account) => account.id === accountId && typeof account.email === 'string')
+            .map((account) => account.email!.trim().toLowerCase())
+            .sort();
+          const gaps = (poolScope?.emailGaps ?? []).filter((gap) => gap.accountId === accountId).length;
+          return {
+            identityEvidenceKey: JSON.stringify({ holderEmails, gaps }),
+            identityResolved: gaps === 0 && new Set(holderEmails).size === 1,
+            authoritySetKey: JSON.stringify([...mandateIds].sort()),
+          };
+        };
 
+      const seenPairs = new Set<string>();
       for (const rec of delivered) {
         const m = rec.portable.mandate;
         const accountId = ((m.authorities ?? []).find((a) => a.action === 'account-follow-me')?.bounds ?? {}).accountId as string | undefined;
         if (!accountId || handled.has(accountId)) continue; // already pending or enrolled — never re-drive
+        const backoffKey = followMeBackoffKey(accountId, targetMachineId);
+        if (seenPairs.has(backoffKey)) continue;
+        seenPairs.add(backoffKey);
+        const mandateIds = delivered
+          .filter((candidate) => (candidate.portable.mandate.authorities ?? []).some(
+            (authority) => authority.action === 'account-follow-me' &&
+              (authority.bounds ?? {}).accountId === accountId,
+          ))
+          .map((candidate) => candidate.id);
+        const evidence = evidenceFor(accountId, mandateIds);
+        if (!this.followMeConsumerBackoff.shouldAttempt(backoffKey, now, evidence)) continue;
         try {
           const resp = await fetch(`${base}/subscription-pool/follow-me/enroll/start`, {
             method: 'POST',
@@ -4530,12 +5217,33 @@ export class AgentServer {
             signal: AbortSignal.timeout(200_000),
           });
           const ok = resp.ok;
-          console.log(`[follow-me-consumer] drove enroll-start for ${accountId} (mandate ${rec.id}) → ${resp.status}${ok ? '' : ' (will retry next tick)'}`);
-          if (ok) handled.add(accountId); // don't double-drive within this same tick
+          let code: string | undefined;
+          if (!ok) {
+            const body = await resp.json().catch(() => null) as { code?: unknown } | null;
+            if (typeof body?.code === 'string') code = body.code;
+          }
+          if (ok) {
+            handled.add(accountId);
+            this.followMeConsumerBackoff.clear(backoffKey);
+          } else {
+            const state = this.followMeConsumerBackoff.recordFailure(
+              backoffKey,
+              classifyFollowMeFailure(resp.status, code),
+              now,
+              evidence,
+              code,
+            );
+            console.log(
+              `[follow-me-consumer] enroll-start ${accountId} → ${resp.status}/${code ?? 'unclassified'}; ` +
+              `${state.parkedAt ? 'parked' : `attempt ${state.attempts}/4`}`,
+            );
+          }
         } catch (err) {
+          this.followMeConsumerBackoff.recordFailure(backoffKey, 'other', now, evidence);
           console.warn(`[follow-me-consumer] enroll-start self-call failed for ${accountId} (mandate ${rec.id}):`, err);
         }
       }
+      } catch { /* best-effort — a read failure just means the next tick retries the read */ }
     } catch (err) {
       console.warn('[follow-me-consumer] sweep failed (non-fatal):', err);
     } finally {
@@ -4611,6 +5319,12 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    if (this.claimObservationHousekeeperTimer) {
+      clearInterval(this.claimObservationHousekeeperTimer);
+      this.claimObservationHousekeeperTimer = null;
+    }
+    this.blockerLifecycleService?.close();
+    this.blockerLifecycleService = null;
     // Stop the feedback-inbox drainer's poll loop (pure timer; store appends are
     // synchronous so there is no in-flight write to wait on).
     if (this.inboxDrainer) {
@@ -4705,6 +5419,7 @@ export class AgentServer {
     }
     // Stop the AutonomousLivenessReconciler tick loop (clears its unref'd timer).
     try { this.routeContext?.autonomousLivenessReconciler?.stop(); } catch { /* best-effort */ }
+    try { this.routeContext?.autonomousThroughputFloor?.stop(); } catch { /* best-effort */ }
     if (this.parallelWorkSentinelTimer) {
       try { clearInterval(this.parallelWorkSentinelTimer); } catch { /* best-effort */ }
       this.parallelWorkSentinelTimer = null;
@@ -4714,6 +5429,8 @@ export class AgentServer {
       try { if (this.mcpIdleOffloadSweepTimer) clearInterval(this.mcpIdleOffloadSweepTimer); } catch { /* best-effort */ }
       this.followMeConsumerTimer = null;
     }
+    try { if (this.feedbackDrainBackupTimer) clearInterval(this.feedbackDrainBackupTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
+    this.feedbackDrainBackupTimer = null;
     // Stop the growth-digest publisher's cron + pending catch-up timer.
     if (this.growthDigestPublisher) {
       try { this.growthDigestPublisher.stop(); } catch { /* @silent-fallback-ok — best-effort teardown at shutdown */ }

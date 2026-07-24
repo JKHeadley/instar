@@ -66,9 +66,13 @@ describe('§5.2(d) — Session.model seeded at interactive spawn (Int-C3 pin)', 
     const recordIdx = spawnBody.indexOf('const session: Session = {');
     expect(recordIdx, 'interactive Session record creation not found').toBeGreaterThan(-1);
     const record = spawnBody.slice(recordIdx, recordIdx + 2500);
-    // The seeding expression: resolved via resolveModelForFramework from the
-    // post-rate-limit-swap launch model — the honest-oracle contract.
-    expect(record).toMatch(/model:\s*resolveModelForFramework\(framework,\s*launchDefaultModel\)/);
+    // The seeding expression uses the shared interactive launch resolver so
+    // Codex local-provider model pins and post-rate-limit swaps are reported
+    // exactly as they were launched. Keep this assertion semantic rather than
+    // pinning the helper's internal implementation shape.
+    expect(record).toMatch(
+      /resolveInteractiveLaunchModel\(framework,\s*launchDefaultModel,\s*options\?\.codexLocalProvider\)/,
+    );
   });
 
   it('headless spawnSession seeds model from the resolved launch value', () => {

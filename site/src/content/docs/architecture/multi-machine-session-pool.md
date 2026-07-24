@@ -11,7 +11,7 @@ This page maps the layers that make that work. The whole subsystem ships **dark*
 
 ### L0 — Machine-to-machine backbone (`MeshRpc`)
 
-Machines talk over a thin, signed request/response layer. `MeshRpc` carries a small command set (`place`, `claim`, `release`, `transfer`, `deliverMessage`, `capacity-report`, `secret-share`) inside an envelope that is Ed25519-signed, bound to a specific recipient, and protected against replay by a nonce + timestamp. The receive side (`MeshRpcDispatcher`) runs a five-step verification — recipient, signature, registered-peer, unseen-nonce, fresh-timestamp — and a per-command authorization gate *before* any handler runs; a rejected command never even burns its nonce. The send side, `MeshRpcClient`, builds and signs the envelope, POSTs it to a peer's `/mesh/rpc`, and surfaces the typed result. Together `MeshRpcClient` and the dispatcher are the secure transport every other layer rides on.
+Machines talk over a thin, signed request/response layer. `MeshRpc` carries a small command set (`place`, `claim`, `release`, `transfer`, `deliverMessage`, `a2a-inbox-deliver`, `capacity-report`, `secret-share`) inside an envelope that is Ed25519-signed, bound to a specific recipient, and protected against replay by a nonce + timestamp. The receive side (`MeshRpcDispatcher`) runs a five-step verification — recipient, signature, registered-peer, unseen-nonce, fresh-timestamp — and a per-command authorization gate *before* any handler runs; a rejected command never even burns its nonce. For agent-to-agent delivery, `A2aMeshInbox` additionally binds the authenticated sender machine to the configured agent principal and requires the strict marker principals to match before dispatching into the recipient's existing inbox allowlist. The send side, `MeshRpcClient`, builds and signs the envelope, POSTs it to a peer's `/mesh/rpc`, and surfaces the typed result. Together `MeshRpcClient` and the dispatcher are the secure transport every other layer rides on.
 
 ### L1 — Router lease
 
@@ -31,6 +31,8 @@ Ownership of a conversation is movable and fenced by a `(status, epoch)` pair. `
 
 For each inbound message the `SessionRouter` resolves ownership and dispatches: handle locally if it owns the session, forward over `MeshRpc` to the owner otherwise, re-place on owner death, or — for a brand-new conversation — call `PlacementExecutor`, claim ownership synchronously, and spawn. The owner side runs `DeliverMessageHandler`, which records each forwarded message in the processing ledger *before* acting on it; a redelivered message is ACKed as a duplicate and never re-processed, so a handoff can't double-reply. The `SessionRouter` dispatches strictly in order per session and advances the platform offset only after `DeliverMessageHandler` confirms durable receipt.
 
+Self-placement confirmation stays outside the router: `SessionPoolLocalClaim` advances a self-owned `placing` row only after the established local inject or spawn tail succeeds. Active, remote-owned, and missing rows are no-ops; a failed local delivery never confirms ownership, while a later observer failure does not reverse a compare-and-set that already committed.
+
 When you say "move this to the mini" or "run this on the workstation", the `NicknameCommand` recognizer parses that — conservatively, only on an explicit relocation verb plus a known nickname, so a passing mention of a machine never triggers a move. `NicknameCommand` resolves the nickname against the registry; an unknown name is rejected with the valid options rather than mis-routed.
 
 ### L5 — Transfer / handoff (`TransferByNickname`, `TransferOrchestrator`)
@@ -45,6 +47,8 @@ When several agents share one machine, each agent's router must see the *true* m
 
 The pool activates through a graduated ladder: **dark** (code shipped, always-local) → **shadow** (real placement + ownership, no moves) → **live-transfer** (failover + explicit pins) → **rebalance** (load-driven moves). The ladder is enforced in code, not by willpower. `SessionPoolE2EResultStore` is a signed, append-only record of each stage's end-to-end test outcome; `StageAdvancer` is the *sole* writer of the rollout stage and refuses to advance a stage unless the prior stage's result is green for the current commit — and `StageAdvancer` mechanically reverts if a live stage later regresses. A direct config write to the stage is rejected; only `StageAdvancer` holds the capability to change it.
 
+Promotion activation is separately fail-closed. `multiMachine.sessionPool.promotionModel` defaults to `off`; `operator` enables authenticated one-step requests through `POST /session-pool/promote`, while `auto-climb` periodically requests the same one checked step. Both live models reuse `StageAdvancer` and its signed green evidence, and neither can cross `multiMachine.sessionPool.promotionCeiling`. Invalid model or ceiling values fall back to the dark posture.
+
 Once at the rebalance stage, `RebalancePlanner` proposes bounded moves off an over-saturated machine — only non-pinned, low-priority sessions that are off their transfer cool-down, at most one move per source per cycle so it can never cascade. `RebalancePlanner` is evaluated only on the heartbeat interval, never per message, so a single message can't trigger a storm of transfers.
 
 ## What it reuses
@@ -55,7 +59,7 @@ The pool doesn't reinvent the cross-machine primitives Instar already had. The r
 
 - **Exactly-once on channel messages and replies** — never dropped, never doubled — across placement, transfer, and failover. (External tool side effects are best-effort-once; carry your own idempotency key for those.)
 - **Backward compatible** — a one-machine agent is byte-identical to today, and the whole pool stays dark until you advance the rollout stage.
-- **Observable** — `GET /pool` shows the router, every machine's nickname/hardware/load/clock state; `GET /session-pool/e2e-results` shows the rollout gate's state.
+- **Observable** — `GET /pool` shows the router, every machine's nickname/hardware/load/clock state; `GET /session-pool/e2e-results` shows the rollout gate's state; `GET /session-pool/failover-runner` shows the in-agent failover-drill runner's status — the dark/dev-gated, dry-run-first background helper that runs the real two-node failover E2E on a live agent and records an honest green/red into the rollout gate's result store (503 when the runner is dark).
 
 ## Placement observability and reliable transfer
 

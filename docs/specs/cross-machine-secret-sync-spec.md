@@ -6,6 +6,7 @@ eli16-overview: "cross-machine-secret-sync-spec.eli16.md"
 approved: true  # Signed off by Justin (topic 13481, 2026-06-04): "build secret sync, use your best judgment" + answered the 3 open questions. The 3 judgment calls: push-on-provision primary + pull-on-miss fallback; sync ALL {secret:true} fields; rotate=overwrite (dedicated revoke verb deferred to a follow-up).
 principal-signoff: "Justin, 2026-06-04 (topic 13481)"
 layer: "core-instar-primitive"
+parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 status: "approved"
 review-convergence: "2026-06-05T00:26:04.156Z"
 review-iterations: 2

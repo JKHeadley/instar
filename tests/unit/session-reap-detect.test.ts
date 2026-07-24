@@ -175,11 +175,12 @@ describe('Session reaping and detection', () => {
       expect(source).toContain('waitForClaudeReady');
     });
 
-    it('waitForClaudeReady checks for Claude-specific prompt character only', () => {
+    it('waitForClaudeReady recognizes Claude and Codex interactive prompt characters', () => {
       source = fs.readFileSync(SOURCE_PATH, 'utf-8');
       // Should ONLY check for Claude Code's specific prompt character (❯)
       // NOT generic shell prompts (> or $) which cause false positives
       expect(source).toContain("'❯'");
+      expect(source).toContain("'›'");
       // Verify it does NOT match generic shell prompts
       const readySection = source.match(/waitForClaudeReady[\s\S]*?return false;\s*\}/);
       expect(readySection).toBeTruthy();

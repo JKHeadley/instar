@@ -48,8 +48,8 @@ describe('/subscription-pool/in-use — E2E feature-alive', () => {
   it('LIVE: reports which enrolled account the agent is currently running on', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inuse-e2e-'));
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'gmail', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'g'), email: 'headley.justin@gmail.com' });
-    pool.add({ id: 'dawn', nickname: 'SageMind - Dawn', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'd'), email: 'dawn@sagemindai.io' });
+    pool.addFixture({ id: 'gmail', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'g'), email: 'headley.justin@gmail.com' });
+    pool.addFixture({ id: 'dawn', nickname: 'SageMind - Dawn', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'd'), email: 'dawn@sagemindai.io' });
     const inUseAccountResolver = new InUseAccountResolver({ probe: async () => 'dawn@sagemindai.io' });
     server = await boot({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), subscriptionPool: pool, inUseAccountResolver });
 

@@ -69,6 +69,7 @@ import { RestartOrchestrator } from './RestartOrchestrator.js';
 import { writeWakeRequestIfSlept } from './agentSleepWake.js';
 import { detectLaunchdSupervised } from './detectLaunchdSupervised.js';
 import { LifelineDriftPromoter, DRIFT_RESTART_PENDING_NOTICE_FILE } from './LifelineDriftPromoter.js';
+import { buildQueuedNotice } from './queuedNotice.js';
 import {
   LifelineHealthWatchdog,
   DEFAULT_WATCHDOG_THRESHOLDS,
@@ -1211,7 +1212,8 @@ export class TelegramLifeline {
         await this.sendToTopic(topicId, '✓ Delivered');
         return;
       }
-      // Server appears healthy but forward failed — queue with accurate message
+      // Server appears healthy but forward failed — queue and tell the user we
+      // are reconnecting (NOT that the server is restarting: it is confirmed up).
       this.queue.enqueue({
         id: `tg-${msg.message_id}`,
         topicId,
@@ -1223,7 +1225,7 @@ export class TelegramLifeline {
       });
       if (this.shouldSendQueueAck(topicId)) {
         await this.sendToTopic(topicId,
-          `Server is restarting. Your message has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
+          buildQueuedNotice('message', this.queue.length, /* serverHealthy */ true)
         );
       }
       return;
@@ -1243,7 +1245,7 @@ export class TelegramLifeline {
     // Notify user that message is queued (rate-limited to prevent spam during restart loops)
     if (this.shouldSendQueueAck(topicId)) {
       await this.sendToTopic(topicId,
-        `Server is temporarily down. Your message has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
+        buildQueuedNotice('message', this.queue.length, /* serverHealthy */ false)
       );
     }
   }
@@ -1291,15 +1293,9 @@ export class TelegramLifeline {
     });
 
     if (this.shouldSendQueueAck(topicId)) {
-      if (this.supervisor.healthy) {
-        await this.sendToTopic(topicId,
-          `Server is restarting. Your photo has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      } else {
-        await this.sendToTopic(topicId,
-          `Server is temporarily down. Your photo has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      }
+      await this.sendToTopic(topicId,
+        buildQueuedNotice('photo', this.queue.length, this.supervisor.healthy)
+      );
     }
   }
 
@@ -1403,15 +1399,9 @@ export class TelegramLifeline {
     });
 
     if (this.shouldSendQueueAck(topicId)) {
-      if (this.supervisor.healthy) {
-        await this.sendToTopic(topicId,
-          `Server is restarting. Your file has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      } else {
-        await this.sendToTopic(topicId,
-          `Server is temporarily down. Your file has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      }
+      await this.sendToTopic(topicId,
+        buildQueuedNotice('file', this.queue.length, this.supervisor.healthy)
+      );
     }
   }
 

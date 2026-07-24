@@ -120,6 +120,8 @@ export interface SendMessageParams {
   targetAgent: string;
   threadId?: string;
   message: string;
+  /** Exact inbound message id this outbound answers, when replying. */
+  inReplyTo?: string;
   waitForReply: boolean;
   timeoutSeconds: number;
   /** Optional originating Telegram topic ID. Per THREAD-TOPIC-LINKAGE-SPEC.md. */
@@ -563,6 +565,9 @@ export class ThreadlineMCPServer {
           'Thread ID to resume (omit for new conversation)'
         ),
         message: z.string().describe('Message content'),
+        inReplyTo: z.string().optional().describe(
+          'Exact inbound message id being answered. Required for replies so recovery can distinguish interleaved messages.'
+        ),
         waitForReply: z.boolean().default(false).describe(
           'Wait for the agent\'s response. Defaults to false so delivery acknowledgement returns promptly; set true only when the caller needs a synchronous reply.'
         ),
@@ -631,6 +636,7 @@ export class ThreadlineMCPServer {
             targetAgent: args.agentId,
             threadId: args.threadId,
             message: args.message,
+            inReplyTo: args.inReplyTo,
             waitForReply: args.waitForReply,
             timeoutSeconds: args.timeoutSeconds,
             originTopicId: args.originTopicId,

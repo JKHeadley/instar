@@ -32,3 +32,12 @@ happened at least twice.
 
 This warning is not a gate. It does not block transitions, stop messages, or close cycles. It only
 makes the missing role loop visible so a mentor or overseer can correct course.
+
+Cycle evidence can live on more than one agent. For example, Echo may record an overseer cycle in
+Echo's store while Codey records a mentee drive in Codey's store. The role-coverage read therefore
+asks a bounded set of running agents registered on the same host for that instance's cycles, combines the rows,
+and removes duplicate cycle IDs before calculating the result. The answer also says whether the
+cross-agent census was complete and names every queried peer source. If an agent could not be reached,
+was omitted by the peer cap, hit the bounded row limit, or returned a UUID that conflicts with another
+store's coverage evidence, callers see that explicitly instead of mistaking a partial local view for
+a real starvation signal.

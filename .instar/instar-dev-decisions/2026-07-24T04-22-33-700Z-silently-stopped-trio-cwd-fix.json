@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-24T04:22:33.700Z",
+  "slug": "silently-stopped-trio-cwd-fix",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

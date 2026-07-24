@@ -236,7 +236,6 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'machine id embedded in the kv key — single writer per file; peers’ copies ride git-sync inertly',
     },
   });
-
   // ── Route seam, wave 1: the P2-6 family (§3.5) ─────────────────────────
   // Both families are machine-local ⇒ admit everywhere — the user-visible
   // P2-6 fix. Stories per §3.1 + frontloaded decision §9.3.
@@ -256,6 +255,103 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
+  const classReviewStory: ConvergenceStory = {
+    logical: 'ws2x-replicated',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'class-review rows live in a machine-local SQLite/WAL store under the .instar sync exclusion; own-origin shells/outcomes converge through the class-review-record replicated store and remote terminal state remains advisory',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
+  reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/completion-claim/observe',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'completion evidence belongs to the executing machine/session; the route writes bounded audit/counter state under the .instar sync exclusion and pool reads proxy scrubbed observations without merging write authority',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/internal/stop-gate/reset-breaker',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the breaker describes this host physical provider route and lives in the machine-local StopGateDb under the git-sync-excluded .instar state jail',
+    },
+  });
+  // Promotion writes the coherence-critical, git-synced session-pool stage.
+  // Keep it behind the cluster lease holder; a standby must never create a
+  // competing rollout history even when its local signed evidence is green.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/session-pool/promote',
+    domain: 'cluster-shared',
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/slack/session-reply',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the route accepts only a ConversationRegistry row whose origin is this machine, then emits through this machine\'s physical Slack adapter credentials; replicated or foreign-origin rows are refused and no git-synced store is mutated',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/continuation/',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'continuation ledgers bind to one local Codex session and Stop hook under the project stateDir; .instar/continuation is explicitly excluded from git sync so another machine never adopts or actuates them',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/playwright-profiles/seat/acquire',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the lease protects browser cookies/user-data physically resident on this host; ~/.instar/state is outside every agent project and git sync',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/playwright-profiles/seat/release',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'ownership-checked release mutates the same host-wide browser-seat lease outside project git sync',
+    },
+  });
+
+  // Apprenticeship instance transitions mutate durable program state. Keep
+  // those writes on the cluster-shared/single-writer side so two machines can
+  // never fork rung or lifecycle history. Read-only POST previews currently
+  // share this path family; admission remains dry-run until the wave-2 latch.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/apprenticeship/instances/',
+    domain: 'cluster-shared',
+  });
 
   // Pending enrollment records + raw login panes belong to the machine driving
   // the login. Pool-scope pending-logins merges the logical view across peers;
@@ -269,6 +365,25 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({
     kind: 'route', method: 'POST', pathPrefix: '/subscription-pool/enroll/',
     domain: 'machine-local', story: enrollmentStory,
+  });
+  reg.add({
+    kind: 'route', method: 'POST', pathPrefix: '/subscription-pool/:id/repair-email',
+    domain: 'machine-local', story: enrollmentStory,
+  });
+
+  // Credential identity repair executes staged swaps only among login homes on
+  // this machine. Claude credentials cannot be relocated across machines; the
+  // ledger/audit state is likewise agent-home-local and outside git sync.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/credentials/repair-plan/execute',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: false,
+      note: 'executes identity-verified staged swaps between this machine’s credential homes; credential files and the location ledger/audit live under agent-home-local state and never converge across machines',
+    },
   });
 
   // ── Routing Control Room MONEY surfaces (Increment B, §Surface 2) ────────
@@ -384,6 +499,19 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   };
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/external-hog/arm', domain: 'machine-local', story: externalHogArmStory });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/external-hog/disarm', domain: 'machine-local', story: externalHogArmStory });
+
+  // Feedback Factory operating drain: all mutations target the canonical
+  // holder's durable queue/authority/promotion state. Non-holders must proxy
+  // or be refused by write admission; they never run a competing local drain.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/process', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/tick', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/runs/', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/failover/finalize', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/readiness-authorities', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/readiness/hold', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/readiness/release', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/consumer/promote', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/consumer/revoke', domain: 'cluster-shared' });
 
   // ── Decision-Quality deterministic grading pass (llm-decision-quality-meter §5.5, §Multi-machine) ──
   // Machine-local by construction: POST /decision-quality/grade-pass upserts grade

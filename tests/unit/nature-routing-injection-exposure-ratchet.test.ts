@@ -115,6 +115,14 @@ describe('FD5b injection-exposure static-map ratchet', () => {
     expect(violations, violations.join('\n')).toEqual([]);
   });
 
+  it('class-review history remains conservatively exposed on every content channel', () => {
+    expect(LLM_ROUTING_INJECTION_EXPOSURE['correction-class-review']?.inputShape).toEqual({
+      userContent: true,
+      modelContent: true,
+      toolContent: true,
+    });
+  });
+
   it('CROSS-CHECK — injection exposure equals the reviewed untrustedInput classification (never diverges)', () => {
     const mismatches: string[] = [];
     for (const k of Object.keys(COMPONENT_CATEGORY)) {

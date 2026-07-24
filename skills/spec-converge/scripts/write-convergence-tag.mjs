@@ -48,6 +48,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkEli16Overview } from '../../../scripts/eli16-overview-check.mjs';
+import { findMaturationPlanGaps } from '../../../scripts/feature-maturation-plan-gate.mjs';
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -280,6 +281,18 @@ if (!dpGate.ok) {
     );
   }
   process.exit(1);
+}
+
+// Feature Maturation Discipline v1: SIGNAL only. Missing/partial structure is
+// visible during convergence but MUST NOT change the stamp's exit status.
+const maturationGate = findMaturationPlanGaps(content);
+if (!maturationGate.ok) {
+  const details = [
+    maturationGate.reason,
+    maturationGate.missing?.length ? `missing=${maturationGate.missing.join(',')}` : '',
+    maturationGate.duplicates?.length ? `duplicates=${maturationGate.duplicates.join(',')}` : '',
+  ].filter(Boolean).join(' ');
+  console.error(`MATURATION_PLAN_WARN ${specArg}: ${details}`);
 }
 
 // Parse YAML frontmatter manually (no dependency).

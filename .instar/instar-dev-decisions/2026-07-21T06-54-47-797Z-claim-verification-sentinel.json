@@ -1,0 +1,19 @@
+{
+  "ts": "2026-07-21T06:54:47.797Z",
+  "slug": "claim-verification-sentinel",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 17,
+  "loc": 1119,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

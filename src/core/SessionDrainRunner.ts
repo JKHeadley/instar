@@ -60,6 +60,8 @@ export type DrainStatus =
 
 export interface DrainOutcome {
   status: DrainStatus;
+  /** True only when this drain landed the target ownership claim. */
+  claimLanded?: boolean;
   /** True when the topic's autonomous run was suspended for the move. */
   autonomousRunSuspended: boolean;
   /** Milliseconds spent waiting for the turn boundary. */
@@ -131,6 +133,18 @@ export class SessionDrainRunner {
     const d = this.deps;
     const audit = (event: string, detail: Record<string, unknown> = {}) =>
       d.audit?.({ event, sessionKey: req.sessionKey, target: req.target, ...detail });
+    const abortForEmergencyStop = (autonomousRunSuspended: boolean): DrainOutcome => {
+      const ab = d.cas(
+        { type: 'abort-transfer', machineId: d.selfMachineId },
+        { sessionKey: req.sessionKey, sender: d.selfMachineId, nonce: d.nonce() },
+      );
+      audit('drain-aborted-emergency-stop', { abortLanded: ab.ok, casReason: ab.reason });
+      return {
+        status: 'aborted-emergency-stop',
+        autonomousRunSuspended,
+        detail: ab.ok ? 'transfer-aborted-topic-stays' : `abort-cas-${ab.reason ?? 'lost'}`,
+      };
+    };
 
     // ── 1. Re-validate + fence ────────────────────────────────────────────
     const rec = d.readOwnership(req.sessionKey);
@@ -176,19 +190,7 @@ export class SessionDrainRunner {
     let interrupted = false;
     for (;;) {
       if (d.emergencyStopActive()) {
-        const ab = d.cas(
-          { type: 'abort-transfer', machineId: d.selfMachineId },
-          { sessionKey: req.sessionKey, sender: d.selfMachineId, nonce: d.nonce() },
-        );
-        audit('drain-aborted-emergency-stop', { abortLanded: ab.ok, casReason: ab.reason });
-        // If the abort CAS lost (e.g. the grace expired and the target already
-        // claimed), the transfer has completed under us — report honestly; the
-        // emergency stop still stops local work via its own machinery.
-        return {
-          status: 'aborted-emergency-stop',
-          autonomousRunSuspended,
-          detail: ab.ok ? 'transfer-aborted-topic-stays' : `abort-cas-${ab.reason ?? 'lost'}`,
-        };
+        return abortForEmergencyStop(autonomousRunSuspended);
       }
       if (d.sessionQuiet(req.sessionKey)) break;
       if (d.now() - startedAt >= this.cfg.drainBoundMs) {
@@ -209,6 +211,12 @@ export class SessionDrainRunner {
       if (!res.terminated) closeSkipped = res.skipped ?? 'unknown';
     } catch (err) {
       closeSkipped = err instanceof Error ? err.message : String(err);
+    }
+    // Termination is awaited and may take long enough for the operator's
+    // emergency stop to arrive. Recheck at the final authority boundary,
+    // immediately before the target claim CAS.
+    if (d.emergencyStopActive()) {
+      return abortForEmergencyStop(autonomousRunSuspended);
     }
     if (interrupted) {
       try { d.markInterrupted(req.sessionKey); } catch { /* @silent-fallback-ok — marker is best-effort; the notice below is the user-facing record */ }
@@ -232,6 +240,7 @@ export class SessionDrainRunner {
     });
     return {
       status: interrupted ? 'drained-interrupted' : 'drained',
+      claimLanded: claim.ok,
       autonomousRunSuspended,
       drainedInMs,
       ...(closeSkipped ? { detail: `close-skipped:${closeSkipped}` } : {}),

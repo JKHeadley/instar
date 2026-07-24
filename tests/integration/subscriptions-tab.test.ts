@@ -136,6 +136,51 @@ describe('Subscriptions tab controller (integration)', () => {
 
   // ── topic 29836 D1–D5: the matrix "Set up" flow through the SHIPPED controller ──
 
+  it('restart rehydrates a drifted cell and its durable pending flow; stale Active cannot overwrite drift', async () => {
+    const pool = {
+      enabled: true,
+      accounts: [
+        { id: 'a1', email: 'a1@x.com', status: 'active', identityDrifted: true, machineId: 'm1', machineNickname: 'Laptop' },
+        // A duplicate stale observation reproduces the live overwrite regression.
+        { id: 'a1', email: 'a1@x.com', status: 'active', identityDrifted: false, machineId: 'm1', machineNickname: 'Laptop' },
+      ],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    };
+    const pending = { enabled: true, logins: [{
+      id: 'a1', machineId: 'm1', paneAlive: true, kind: 'url-code-paste',
+      verificationUrl: 'https://claude.com/oauth/renewed', expectedEmail: 'a1@x.com',
+      ttlExpiresAt: '2999-01-01T00:00:00Z',
+    }] };
+    fx.script['/subscription-pool'] = { body: ACCOUNTS_OK };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: pending };
+    fx.script['/subscription-pool?scope=pool'] = { body: pool };
+
+    const first = ctl(); first._state.active = true; await first.tick();
+    expect(els.matrix.querySelector('[data-cell-key="a1::m1"] .sub-matrix-signin')).toBeTruthy();
+
+    // A brand-new controller models a server/browser restart: no client transient
+    // or repairState survives. Durable pool drift + pending login reconstruct the cell.
+    const restarted = ctl(); restarted._state.active = true; await restarted.tick();
+    const cell = els.matrix.querySelector('[data-cell-key="a1::m1"]');
+    expect(cell.className).toContain('sub-matrix-in-progress');
+    expect(cell.textContent).toContain('Signing in');
+    expect(cell.querySelector('.sub-matrix-signin')).toBeTruthy();
+  });
+
+  it('a drifted cell without a pending flow is honest and PIN-actionable', async () => {
+    fx.script['/subscription-pool'] = { body: ACCOUNTS_OK };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: NO_PENDING };
+    fx.script['/subscription-pool?scope=pool'] = { body: {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'active', identityDrifted: true, machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    } };
+    const c = ctl(); c._state.active = true; await c.tick();
+    const cell = els.matrix.querySelector('[data-cell-key="a1::m1"]');
+    expect(cell.textContent).toContain('Needs sign-in');
+    expect(cell.querySelector('[data-matrix-setup]').textContent).toBe('Sign in');
+  });
+
   const POOL_SCOPE = {
     enabled: true,
     accounts: [
@@ -153,7 +198,7 @@ describe('Subscriptions tab controller (integration)', () => {
       loginId: 'a1', machineId: 'm2', kind: 'url-code-paste',
       expectedEmail: 'headley.justin@gmail.com',
       ttlExpiresAt: new Date(Date.parse('2026-06-07T00:00:00Z') + 12 * 60_000).toISOString(),
-      notice: 'Heads up: a brand-new Claude login often asks for TWO codes in order.',
+      notice: 'Heads up: this provider may show an extra verification step.',
     },
   };
 
@@ -235,7 +280,7 @@ describe('Subscriptions tab controller (integration)', () => {
     const cell = await openCellToSignIn(c);
     expect(cell.querySelector('.sub-matrix-expected').textContent).toContain('must show headley.justin@gmail.com');
     expect(cell.querySelector('a.sub-matrix-signin').getAttribute('href')).toContain('code=true');
-    expect(cell.querySelector('.sub-matrix-notice').textContent).toContain('TWO codes');
+    expect(cell.querySelector('.sub-matrix-notice').textContent).toContain('extra verification step');
     expect(cell.querySelector('[data-matrix-cancel]')).toBeTruthy();
     const code = cell.querySelector('.sub-matrix-code-input');
     code.value = 'ABC'; // mid-paste…
@@ -329,6 +374,30 @@ describe('Subscriptions tab controller (integration)', () => {
     expect(rebuilt.getAttribute('class')).toContain('sub-matrix-broken');
     expect(rebuilt.textContent).toContain('Sign-in needs a restart');
     expect(rebuilt.querySelector('.sub-matrix-setup').textContent).toBe('Retry');
+  });
+
+  it('a dead-flow submit says expired with a fresh sign-in ready, never a raw failed status', async () => {
+    scriptMatrixHappyPath();
+    fx.script['/subscription-pool/follow-me/submit-code'] = {
+      status: 409,
+      body: {
+        code: 'login-expired-fresh-ready',
+        error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now',
+        freshLogin: { id: 'a1', status: 'pending', verificationUrl: 'https://claude.com/oauth/fresh' },
+      },
+    };
+    const c = ctl();
+    c._state.active = true;
+    const cell = await openCellToSignIn(c);
+    cell.querySelector('.sub-matrix-code-input').value = 'STALE-CODE';
+    cell.querySelector('[data-matrix-code-submit]').click();
+    await flush();
+    await flush();
+
+    const rebuilt = els.matrix.querySelector('[data-cell-key="a1::m2"]');
+    expect(rebuilt.textContent).not.toContain('Couldn’t submit the code');
+    expect(rebuilt.textContent).not.toContain('failed (409)');
+    expect(rebuilt.textContent).toMatch(/sign in|sign-in/i);
   });
 
   it('D4 (expiry): an episode whose pending login vanishes without an outcome resolves to the explicit expired state — never a silent revert to "Set up"', async () => {

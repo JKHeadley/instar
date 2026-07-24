@@ -1,0 +1,19 @@
+{
+  "ts": "2026-07-16T20:37:00.000Z",
+  "slug": "topic-profile-resolved-door-model",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "session lifecycle surface: post-swap applied-state reporting reads the newly spawned session",
+    "shared launch resolution: interactive default-model selection is consumed by builders and session state"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 119,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Post-swap disclosure rendered the requested topic profile instead of the applied spawn result, while Codex and Gemini concrete defaults lived only inside their argv builders. This hid the exact default model from operators and left model/tier respawns without a terminal applied-state confirmation."
+  },
+  "verdict": "pass"
+}

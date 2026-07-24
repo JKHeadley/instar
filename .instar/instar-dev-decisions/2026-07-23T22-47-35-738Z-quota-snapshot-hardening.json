@@ -1,0 +1,21 @@
+{
+  "ts": "2026-07-23T22:47:35.738Z",
+  "slug": "quota-snapshot-hardening",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 74,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The shared OAuth reader intentionally collapsed all read failures to null for compatibility, but the quota poller needed to distinguish malformed stored JSON from an absent login. Separately, the quota route returned measuredAt without interpreting its age, leaving persisted telemetry visually current forever."
+  },
+  "classClosure": {
+    "defectClass": "bounded-read-path-classification",
+    "closure": "n/a",
+    "reason": "The change runs only inside an existing poll invocation or user-driven read request. It adds no retry, timer, self-rescheduling path, or autonomous emitter."
+  },
+  "verdict": "pass"
+}

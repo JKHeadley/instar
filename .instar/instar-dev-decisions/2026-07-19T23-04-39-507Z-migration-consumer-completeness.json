@@ -1,0 +1,25 @@
+{
+  "ts": "2026-07-19T23:04:39.507Z",
+  "slug": "migration-consumer-completeness",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: scripts/lint-migration-consumer-completeness.js touches migration"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 391,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "lint",
+      "citation": "scripts/lint-migration-consumer-completeness.js#auditMigrationConsumerCompleteness",
+      "howCaught": "A canonical migration cannot claim completeness when a registered producer or consumer changes without a revision acknowledged across every enrolled producer, consumer, and validator; malformed registries, silent contract or role removal, stale markers, and incomplete lockstep diffs fail."
+    },
+    "component": "MigrationConsumerCompleteness"
+  },
+  "verdict": "pass"
+}

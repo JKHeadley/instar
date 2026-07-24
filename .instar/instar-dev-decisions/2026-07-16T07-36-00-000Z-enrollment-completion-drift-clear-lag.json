@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-16T07:36:00.000Z",
+  "slug": "enrollment-completion-drift-clear-lag",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 150,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -109,6 +109,26 @@ describe('ApprenticeshipCycleStore', () => {
     store.close();
   });
 
+  it('keeps a legacy bad-kind row readable while retaining strict write validation', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'apprenticeship-cycles-legacy-kind-'));
+    tmpDirs.push(tmp);
+    const dbPath = path.join(tmp, 'cycles.db');
+    let store = new ApprenticeshipCycleStore({ dbPath });
+    store.record({ id: 'legacy-bad-kind', instanceId: 'phantom', cycleNumber: 1, task: 'legacy', menteeOutput: 'kept', operatorSeatUx: ux() });
+    store.close();
+
+    const db = new DatabaseCtor(dbPath);
+    db.prepare(`UPDATE apprenticeship_cycles SET kind = 'mentorship' WHERE id = ?`).run('legacy-bad-kind');
+    db.close();
+
+    store = new ApprenticeshipCycleStore({ dbPath });
+    expect(store.list()).toMatchObject([{ id: 'legacy-bad-kind', kind: 'unknown' }]);
+    expect(store.get('legacy-bad-kind')).toMatchObject({ kind: 'unknown' });
+    expect(store.roleCoverage('phantom').unknown).toMatchObject({ fired: true, cycleCount: 1 });
+    expect(() => store.record({ id: 'new-bad-kind', instanceId: 'i', cycleNumber: 2, task: 't', menteeOutput: 'm', kind: 'mentorship', operatorSeatUx: ux() })).toThrow(/kind must be one of/);
+    store.close();
+  });
+
   it('roleCoverage warns when mentor-mentee is dormant while overseer-apprentice has multiple cycles', () => {
     const store = makeStore();
     store.record({ id: 'review-1', instanceId: 'i', cycleNumber: 1, createdAt: '2026-06-03T08:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'overseer-apprentice-devreview', operatorSeatUx: ux() });
@@ -146,6 +166,38 @@ describe('ApprenticeshipCycleStore', () => {
   });
 
   describe('keystoneBalance — observe-only deepest-layer health (2026-06-06 mentor/mentee balance)', () => {
+    it('folds peer-agent cycle evidence into the instance coverage without double-counting mirrored ids', () => {
+      const store = makeStore();
+      const remote = {
+        id: 'remote-keystone', instanceId: 'i', cycleNumber: 1,
+        createdAt: '2026-06-03T07:00:00.000Z', task: 'peer drive', menteeOutput: 'output',
+        mentorFlagged: [], overseerDifferential: [], coaching: '', infraItems: [],
+        kind: 'mentor-mentee-differential' as const, status: 'open', channel: 'threadline-backup' as const,
+        operatorSeatUx: null, transcriptAudit: null,
+      };
+      const coverage = store.roleCoverage('i', {}, [remote, remote]);
+      expect(coverage.axes['mentor-mentee-differential']).toMatchObject({ fired: true, cycleCount: 1 });
+      expect(coverage.keystoneBalance.starved).toBe(false);
+      expect(coverage.coverageConflictingCycleIds).toEqual([]);
+      store.close();
+    });
+
+    it('flags a duplicate UUID whose peer copy changes coverage-relevant evidence', () => {
+      const store = makeStore();
+      const base = {
+        id: 'conflicted', instanceId: 'i', cycleNumber: 1,
+        createdAt: '2026-06-03T07:00:00.000Z', task: 'peer drive', menteeOutput: 'output',
+        mentorFlagged: [], overseerDifferential: [], coaching: '', infraItems: [], status: 'open',
+        operatorSeatUx: null, transcriptAudit: null,
+      };
+      const coverage = store.roleCoverage('i', {}, [
+        { ...base, kind: 'mentor-mentee-differential', channel: 'threadline-backup' },
+        { ...base, kind: 'overseer-apprentice-devreview', channel: 'threadline-backup' },
+      ] as never);
+      expect(coverage.coverageConflictingCycleIds).toEqual(['conflicted']);
+      store.close();
+    });
+
     const rec = (store: ApprenticeshipCycleStore, id: string, n: number, kind: string, at: string, inst = 'i') =>
       store.record({ id, instanceId: inst, cycleNumber: n, createdAt: at, task: 't', menteeOutput: 'm', kind, operatorSeatUx: ux() });
 

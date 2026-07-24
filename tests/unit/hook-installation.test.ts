@@ -45,8 +45,62 @@ describe('Hook installation for external operation safety', () => {
     const content = fs.readFileSync(hookPath, 'utf-8');
     expect(content).toContain('mcp__');
     expect(content).toContain('/operations/evaluate');
+    expect(content).toContain('/playwright-profiles/seat/acquire');
+    expect(content).toContain("service === 'playwright'");
+    expect(content).toContain("const holderId = process.env.INSTAR_SESSION_ID || ''");
     expect(content).toContain('mutability');
     expect(content).toContain('BLOCKED');
+  });
+
+  it('blocks every Playwright tool when another drive holds the physical seat', async () => {
+    let server: Server | null = null;
+    const port = await new Promise<number>((resolve) => {
+      server = createServer((req, res) => {
+        if (req.method === 'POST' && req.url === '/playwright-profiles/seat/acquire') {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ holderLabel: 'mentor-drive', retryAfterMs: 12_000 }));
+          return;
+        }
+        res.writeHead(500);
+        res.end();
+      });
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server!.address();
+        if (!addr || typeof addr === 'string') throw new Error('expected tcp address');
+        resolve(addr.port);
+      });
+    });
+
+    try {
+      const configPath = path.join(projectDir, '.instar', 'config.json');
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      fs.writeFileSync(configPath, JSON.stringify({ ...config, port, authToken: 'test-token' }));
+      const hookPath = path.join(projectDir, '.instar', 'hooks', 'instar', 'external-operation-gate.js');
+      const result = await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
+        const child = spawn(process.execPath, [hookPath], {
+          cwd: projectDir,
+          env: {
+            ...process.env,
+            CLAUDE_PROJECT_DIR: projectDir,
+            INSTAR_SESSION_ID: 'spawn-unique-session-id',
+            INSTAR_SESSION_NAME: 'competing-drive',
+          },
+          stdio: ['pipe', 'ignore', 'pipe'],
+        });
+        let stderr = '';
+        const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('hook timed out')); }, 5_000);
+        child.stderr.setEncoding('utf8');
+        child.stderr.on('data', chunk => { stderr += chunk; });
+        child.on('exit', status => { clearTimeout(timer); resolve({ status, stderr }); });
+        child.on('error', reject);
+        child.stdin.end(JSON.stringify({ tool_name: 'mcp__playwright__browser_snapshot', tool_input: {} }));
+      });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('Playwright operator seat is already in use');
+      expect(result.stderr).toContain('mentor-drive');
+    } finally {
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
+    }
   });
 
   it('explicitly permits canonical proceed and legacy allow actions, but blocks unknown actions', async () => {

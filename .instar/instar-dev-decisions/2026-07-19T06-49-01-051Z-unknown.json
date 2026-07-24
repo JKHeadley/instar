@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-19T06:49:01.051Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 7,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

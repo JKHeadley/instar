@@ -33,7 +33,8 @@ const PENDING_BASELINE = [
   'SelfKnowledgeTree',
   'StandardsConformanceReviewer', 'StandardsCoverageEnrichment',
   'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',
-  'crossModelReviewer', 'mentor-stage-b', 'openConversationBrief',
+  'completion-claim-verify', 'correction-class-review', 'crossModelReviewer',
+  'mentor-stage-b', 'openConversationBrief',
 ].sort();
 
 const EXEMPT_BASELINE = [

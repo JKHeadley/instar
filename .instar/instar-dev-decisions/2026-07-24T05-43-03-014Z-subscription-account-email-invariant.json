@@ -1,0 +1,26 @@
+{
+  "ts": "2026-07-24T05:43:03.014Z",
+  "slug": "subscription-account-email-invariant",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 1062,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/follow-me-consumer-backoff-store.test.ts",
+      "howCaught": "A permanently failing account-machine pair advances through three bounded delays and reaches a durable parked steady state after its fourth attempt, so an every-minute failure edge cannot remain eligible."
+    }
+  },
+  "verdict": "blocked"
+}

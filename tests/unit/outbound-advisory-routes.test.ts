@@ -380,6 +380,19 @@ describe('POST /messaging/preflight — TIME_CLAIM (live session clock verificat
     expect((await res.json()).advisories).toEqual([]);
   });
 
+  it('PASSES non-session durations while an active clock exists (subject-binding boundary)', async () => {
+    await boot({ developmentAgent: true });
+    writeActiveRun(12476);
+    for (const text of [
+      'The offline-test window was ~30 min in (iteration 1).',
+      'Detection latency: about 1 min elapsed.',
+      'ETA: roughly 2h remaining for the migration.',
+    ]) {
+      const res = await preflight({ text, messageKind: 'reply', topicId: 12476 });
+      expect((await res.json()).advisories, text).toEqual([]);
+    }
+  });
+
   it('no active run for the topic → no TIME_CLAIM (nothing to contradict)', async () => {
     await boot({ developmentAgent: true });
     const res = await preflight({ text: WRONG_CLAIM, messageKind: 'reply', topicId: 12476 });

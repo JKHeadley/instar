@@ -11,11 +11,12 @@ that topic passes `--effort max` to Claude Code — so the choice sticks across
 respawns instead of resetting to the account default each time.
 
 It was prompted by the operator asking to set "ultracode" for a topic. ultracode
-is a Claude Code *session mode* (max effort + dynamic workflows) that the CLI
-does **not** expose as a flag — `--effort` only accepts low/medium/high/xhigh/max
-(verified by probe). So this pin reaches the real ceiling the CLI allows (`max`);
-the workflow-orchestration half of ultracode has no command-line surface and is
-filed as a separate harness gap.
+is a Claude Code *session mode* (xhigh effort + dynamic workflows) that the CLI
+does **not** expose as a flag — `--effort` only accepts low/medium/high/xhigh/max.
+Claude Code does, however, support an `ultracode` prompt keyword and
+`/effort ultracode` inside a session. The durable topic pin remains deliberately
+limited to real CLI effort values; the separate one-shot spawn surface can opt a
+single Claude turn into ultracode through that supported keyword.
 
 ## What already existed vs what's new
 
@@ -32,7 +33,8 @@ headless), plus a `/topic effort <level>` command and the conversational grammar
 - **Closed enum, fail-open everywhere.** Only the five real CLI values are
   accepted. An invalid stored value resolves to "no effort flag" rather than
   passing garbage to the CLI — checked at the resolver, again at the launch
-  builder, and rejected at the write API. `ultracode` is refused at every layer.
+  builder, and rejected at the write API. `ultracode` remains refused as an
+  effort value because it is a workflow mode, not a CLI effort enum member.
 - **No behavior change unless set.** The field is unset by default; nothing about
   existing spawns changes until a topic is pinned.
 - **Right respawn reason.** An effort-only change triggers a clean kill +
@@ -44,6 +46,6 @@ headless), plus a `/topic effort <level>` command and the conversational grammar
 
 Nothing to configure — it's additive and off until used. Once merged, you (or I,
 conversationally) can pin a topic's effort, e.g. "set max effort on this topic,"
-and it survives restarts. The only standing caveat: full UI-"ultracode"
-(workflow-default-on) still isn't pinnable from instar because the harness has no
-CLI/spawn surface for it (tracked as a separate gap).
+and it survives restarts. For a single deep one-shot, Instar's spawn API accepts
+`ultracode: true` on Claude Code and activates the mode through Claude's prompt
+keyword. That one-shot switch is intentionally not a persistent topic pin.

@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-23T00:21:50.000Z",
+  "slug": "missing-login-session-detector",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 400,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "MissingLoginSessionDetector increment 1 — pure core + unit tests. Closes the 2026-07-22 justin-gmail silent auth-death: a live session ran on an account whose LOCAL login went missing (subscription-pool identityDrift repairState owner-relogin-required / actualAccountId missing-local-login) while the account still had ~92% quota free; it coasted on a cached credential, then walled on auth and went SILENT ~2.5h with NO alert to the operator (they had to notice manually). The pool detected the drift but raised no alert, and the reactive standby StuckSignatureClassifier only fires on a user message (none came for hours) — so a proactive detector is genuinely missing. This detector correlates two facts the others do not join: an account whose login is gone AND a live session bound to that account's config home right now; on a match it raises ONE deduped HIGH attention item naming the account + that a re-login is needed. SIGNAL-ONLY — never swaps, re-logins, or touches a session. Pure + injected deps (zero I/O in unit tests), fails toward silence. Increment 1 is NOT boot-wired (registers no runtime getter) -> classified NOT_A_GUARD (moves to GUARD_MANIFEST when a later increment wires it, mirroring the SingleMachineFailoverGapDetector core->wiring path). Additive, dark by construction (config resolver defaults dryRun:true + dev-agent gate). tsc clean; 13/13 unit green; npm run lint clean."
+}

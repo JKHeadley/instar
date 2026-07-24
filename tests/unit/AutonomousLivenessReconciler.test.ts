@@ -335,6 +335,61 @@ describe('AutonomousLivenessReconciler', () => {
       expect(h.audit.some((e) => e.event === 'would-respawn' && e.dryRun === true)).toBe(true);
     });
 
+    it('links a would-respawn to the next-tick recovered-live outcome', async () => {
+      const h = build({ dryRun: true, debounceTicks: 1, debounceWindowSec: 0 });
+      await h.reconciler.tick();
+      const decision = h.audit.find((e) => e.event === 'would-respawn');
+      h.flags.liveTopics.add(100);
+      h.nowMs.v += 1_000;
+      await h.reconciler.tick();
+      expect(h.audit).toContainEqual(expect.objectContaining({
+        event: 'would-respawn-followup',
+        topicId: 100,
+        decisionId: decision?.decisionId,
+        outcome: 'recovered-live',
+        dryRun: true,
+      }));
+    });
+
+    it('classifies a continuing dry-run opportunity as still-orphaned', async () => {
+      const h = build({ dryRun: true, debounceTicks: 1, debounceWindowSec: 0 });
+      await h.reconciler.tick();
+      const decision = h.audit.find((e) => e.event === 'would-respawn');
+      h.nowMs.v += 1_000;
+      await h.reconciler.tick();
+      expect(h.audit).toContainEqual(expect.objectContaining({
+        event: 'would-respawn-followup',
+        decisionId: decision?.decisionId,
+        outcome: 'still-orphaned',
+      }));
+    });
+
+    it('classifies an operator stop without respawning', async () => {
+      const h = build({ dryRun: true, debounceTicks: 1, debounceWindowSec: 0 });
+      await h.reconciler.tick();
+      h.flags.operatorStopped.add(100);
+      h.nowMs.v += 1_000;
+      await h.reconciler.tick();
+      expect(h.audit).toContainEqual(expect.objectContaining({
+        event: 'would-respawn-followup',
+        outcome: 'operator-stopped',
+      }));
+      expect(h.respawned).toHaveLength(0);
+    });
+
+    it('classifies unreadable follow-up evidence as unknown', async () => {
+      const h = build({ dryRun: true, debounceTicks: 1, debounceWindowSec: 0 });
+      await h.reconciler.tick();
+      const original = h.flags.liveTopics;
+      Object.defineProperty(h.flags, 'liveTopics', { get: () => { throw new Error('snapshot unreadable'); }, configurable: true });
+      h.nowMs.v += 1_000;
+      await h.reconciler.tick();
+      expect(h.audit).toContainEqual(expect.objectContaining({
+        event: 'would-respawn-followup', outcome: 'evidence-unknown',
+      }));
+      Object.defineProperty(h.flags, 'liveTopics', { value: original, writable: true, configurable: true });
+    });
+
     it('logs a shadow would-have-capped event in dryRun (adversarial F6)', async () => {
       const h = build({ dryRun: true, respawnCapPerWindow: 2, debounceTicks: 1, debounceWindowSec: 0 });
       // dryRun records a SHADOW redie per would-respawn, so the cap trips and the

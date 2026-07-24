@@ -54,7 +54,7 @@ const SELF_ID = 'this-machine';
 function buildCtx(dir: string, opts: { dev: boolean; pin: string; knowAccountEmail: boolean }) {
   const pool = new SubscriptionPool({ stateDir: dir });
   if (opts.knowAccountEmail) {
-    pool.add({ id: 'a1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/x/a1', email: 'approved@x.com' });
+    pool.addFixture({ id: 'a1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/x/a1', email: 'approved@x.com' });
   }
   const store = new PendingLoginStore({ stateDir: dir });
   const enrollmentWizard = new EnrollmentWizard({
@@ -143,11 +143,15 @@ describe('/subscription-pool/matrix/start-cell (integration)', () => {
     expect(pending[0].configHome).toContain('.claude-followme-a1');
   });
 
-  it('(d) valid PIN but email unresolvable → 409 cannot resolve approved account email', async () => {
+  it('(d) valid PIN but email unresolvable → actionable 409', async () => {
     const ctx = await bootstrap({ dev: true, pin: '123456', knowAccountEmail: false });
     const r = await post('/subscription-pool/matrix/start-cell', { accountId: 'a1', machineId: SELF_ID, pin: '123456' });
-    expect(r.status).toBe(409);
-    expect(r.body.error).toBe('cannot resolve approved account email');
+    expect(r.status).toBe(404);
+    expect(r.body).toMatchObject({
+      code: 'subscription-account-not-found',
+      error: 'This subscription account is no longer registered.',
+      accountId: 'a1',
+    });
     const wizard = (ctx as unknown as { enrollmentWizard: EnrollmentWizard }).enrollmentWizard;
     expect(wizard.pending()).toHaveLength(0);
   });

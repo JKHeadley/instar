@@ -20,9 +20,8 @@
  * residual, ACT-1198 evidence-source family).
  *
  * The annotate chokepoint (§5.4 write-integrity: rung derived from the rule
- * registry, owner-checked, upserted on correlationId × gradedBy) is INJECTED —
- * see the TODO(P6-handoff) block at the bottom for the exact production
- * binding once the hardened chokepoint lands.
+ * registry, owner-checked, upserted on correlationId × gradedBy) is injected
+ * by the production `/autonomous/:topic/run-end` composition root.
  */
 
 import type { AutonomousRunRecord } from './AutonomousRunStore.js';
@@ -157,26 +156,3 @@ export function realcheckRuleRegistryAgrees(): boolean {
   const rule = getRule(COMPLETION_REALCHECK_RULE_ID);
   return rule !== undefined && rule.owningComponent === AUTONOMOUS_REALCHECK_COMPONENT;
 }
-
-// ── TODO(P6-handoff): production chokepoint binding — SINGLE handoff point ──
-// The hardened §5.4 annotate chokepoint (correlationId keying + registry-
-// derived rung + owner rejection; DecisionQualityRecorderImpl / the upgraded
-// JudgmentProvenanceLog.annotateOutcome) was built CONCURRENTLY with this
-// module and was not importable at P8 build time. When it lands, bind it at
-// the realcheck-outcome surface — the /autonomous/:topic/run-end handler arm
-// (realcheck PASS reaches the server as the hook's `run_end_call "met"`;
-// carrying the FAIL arm + the configured/not-configured bit requires the hook
-// to include its realcheck outcome on the run-end body — integration note in
-// the P8 build report) — passing EXACTLY:
-//
-//   annotateCompletionRealcheck(rec, obs, (a) =>
-//     decisionQualityRecorder.annotateOutcome({
-//       correlationId: a.correlationId,   // §5.4.1 keying
-//       gradedBy: a.gradedBy,             // { component: 'AutonomousRealCheck', ruleId: 'completion-realcheck-v1' }
-//       grade: a.grade,                   // 'right' (met+pass) | 'wrong' (met+fail)
-//       evidence: a.evidence,             // structured, content-free (§5.2 clamp discipline)
-//     }),
-//   );
-//
-// Until then callers pass `annotate: null` and get the honest
-// 'annotate-unbound' disposition (never a fabricated grade).

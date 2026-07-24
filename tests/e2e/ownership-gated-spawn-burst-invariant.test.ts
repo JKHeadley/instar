@@ -36,7 +36,7 @@ function fakeJournal(rows: Row[]): BoundedJsonlAudit {
 }
 
 /** The harness mirroring server.ts's admitLocalSpawn composition. */
-function makeHarness(opts: { flag: SpawnAdmissionFlag; ownerAlive?: () => boolean }) {
+function makeHarness(opts: { flag: SpawnAdmissionFlag; ownerAlive?: () => boolean; hardPinOwner?: string | null }) {
   const journalRows: Row[] = [];
   const ladderRows: Row[] = [];
   const sentNotices: Array<{ topicId: number; text: string }> = [];
@@ -48,6 +48,7 @@ function makeHarness(opts: { flag: SpawnAdmissionFlag; ownerAlive?: () => boolea
     poolStage: () => 'live',
     readOwnership: () => ({ owner: 'mini', epoch: 3, status: 'owned' }),
     isMachineAlive: (m: string) => (m === 'mini' ? ownerAlive() : true),
+    readHardPinOwner: () => opts.hardPinOwner ?? null,
     durableCustodyLive: () => true,
     journal: (r: Row) => journalRows.push(r),
     raiseAttention: () => {},
@@ -103,8 +104,22 @@ function makeHarness(opts: { flag: SpawnAdmissionFlag; ownerAlive?: () => boolea
     }
   }
 
+  async function respawnDead(topicId: number): Promise<'spawned' | 'forwarded'> {
+    const d = admission.admit({
+      sessionKey: String(topicId),
+      callsite: 'telegram-respawn-dead',
+      routerVerdict: { messageId: 'live-message', action: 'queued', acked: true },
+    });
+    if (d.allow) {
+      spawns++;
+      return 'spawned';
+    }
+    return d.refusalAction === 'forward' ? 'forwarded' : 'spawned';
+  }
+
   return {
     inbound,
+    respawnDead,
     ladder,
     spawnCount: () => spawns,
     notices: sentNotices,
@@ -118,6 +133,26 @@ beforeEach(() => {
 });
 
 describe('ownership-gated spawn — burst invariant (E2E composition)', () => {
+  it('respawn-dead + queued + live remote hard-pin owner forwards and creates no local session', async () => {
+    const h = makeHarness({ flag: { enabled: true, dryRun: true, enforceLiveOwner: true }, ownerAlive: () => true, hardPinOwner: 'mini' });
+    await expect(h.respawnDead(29723)).resolves.toBe('forwarded');
+    expect(h.spawnCount()).toBe(0);
+  });
+
+  it('INCREMENT 1.4: 1,000 inbounds on a non-owner while the real owner is alive create ZERO local sessions', async () => {
+    const h = makeHarness({
+      flag: { enabled: true, dryRun: true, enforceLiveOwner: true },
+      ownerAlive: () => true,
+    });
+    for (let i = 0; i < 1_000; i++) {
+      fakeNow = T0 + i * 250;
+      await h.inbound(777);
+    }
+    expect(h.spawnCount()).toBe(0);
+    expect(h.notices).toHaveLength(0); // live owner forwards; no owner-dark notice
+    expect(h.journalRows.filter((r) => r.row === 'other-alive' && r.allow === false)).toHaveLength(1_000);
+  });
+
   it('ENFORCE: 1,000 inbound messages for a dark-owner topic → ZERO local sessions + exactly ONE notice', async () => {
     const h = makeHarness({ flag: { enabled: true, dryRun: false } });
     for (let i = 0; i < 1_000; i++) {

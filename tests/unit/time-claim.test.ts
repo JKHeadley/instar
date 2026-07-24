@@ -67,6 +67,34 @@ describe('extractTimeClaims — anchored claim extraction', () => {
     expect(extractTimeClaims('a 24h run with 5h account windows')).toHaveLength(0);
   });
 
+  it('binds durations to their subject, not merely an elapsed/remaining keyword', () => {
+    for (const text of [
+      'The offline-test window was ~30 min in (iteration 1).',
+      'Detection latency: about 1 min elapsed.',
+      'The probe completed with under a minute of detection latency.',
+      'ETA: roughly 2h remaining for the migration.',
+      'The CI queue has about 3h remaining.',
+      'The timeout had 20 min left.',
+      'The outage was 40 min in when connectivity returned.',
+    ]) {
+      expect(extractTimeClaims(text), text).toHaveLength(0);
+      expect(detectTimeClaimContradiction(text, [RUN]).detected, text).toBe(false);
+    }
+  });
+
+  it('still extracts explicit and implicit claims about the live session clock', () => {
+    for (const text of [
+      'AUTONOMOUS PROGRESS — ~7h elapsed.',
+      'The session has about 3h remaining.',
+      'The run has roughly 2h left on the clock.',
+      '~7h elapsed.',
+      '40 min in (iteration 1).',
+      '60% through the run.',
+    ]) {
+      expect(extractTimeClaims(text).length, text).toBeGreaterThan(0);
+    }
+  });
+
   it('does NOT match a QUOTED claim (a correction citing the wrong number)', () => {
     expect(extractTimeClaims('my "~7h elapsed" line was flat wrong')).toHaveLength(0);
     expect(extractTimeClaims("the '~7.5 hours in' claim was a guess")).toHaveLength(0);
@@ -135,5 +163,51 @@ describe('detectTimeClaimContradiction — both decision sides', () => {
   it('a claim consistent with ANY of several clocks passes (lenient multi-clock)', () => {
     const other: TimeClaimClock = { elapsedSeconds: 7 * 3600, remainingSeconds: 3600, percentElapsed: 88 };
     expect(detectTimeClaimContradiction('~7h elapsed', [RUN, other]).detected).toBe(false);
+  });
+});
+
+/**
+ * Regression: the parenthetical-annotation form (2026-07-23).
+ *
+ * The `in` elapsed anchor accepted a CLOSING paren as a boundary but not an
+ * OPENING one, so `40 min in.` was recognised and `40 min in (iteration 1)` was
+ * not — it extracted NOTHING, so the comparison against the live clock never ran.
+ * That gap let two genuinely fabricated elapsed-time claims through on a live
+ * autonomous run: the exact failure this detector exists to prevent, in the most
+ * natural phrasing for a progress report.
+ */
+describe('the `in` anchor accepts a following parenthetical (regression)', () => {
+  const CLOCK: TimeClaimClock = { elapsedSeconds: 14 * 60, remainingSeconds: 7 * 3600, percentElapsed: 3 };
+
+  it('catches the real fabrications that slipped through', () => {
+    // Verbatim shapes of two messages actually sent at ~14 minutes elapsed.
+    for (const text of [
+      'AUTONOMOUS PROGRESS — 40 min in (iteration 1)',
+      'AUTONOMOUS PROGRESS — 1h10m in (iteration 1)',
+    ]) {
+      const claims = extractTimeClaims(text);
+      expect(claims.length, `should extract from: ${text}`).toBe(1);
+      expect(claims[0].kind).toBe('elapsed');
+      expect(detectTimeClaimContradiction(text, [CLOCK]).detected).toBe(true);
+    }
+  });
+
+  it('accepts a square bracket too, and the previously-working boundaries are unchanged', () => {
+    expect(extractTimeClaims('40 min in [run 2]').length).toBe(1);
+    expect(extractTimeClaims('40 min in.').length).toBe(1);
+    expect(extractTimeClaims('2h in)').length).toBe(1);
+    expect(extractTimeClaims('7.5 hours in:').length).toBe(1);
+    expect(extractTimeClaims('1h50m in, still going').length).toBe(1);
+  });
+
+  it('NEGATIVE: places and competing duration subjects are never session-clock anchors', () => {
+    // The whole point of the boundary rule — widening it must not reopen these.
+    expect(extractTimeClaims('3h in CI').length).toBe(0);
+    expect(extractTimeClaims('in 2 hours').length).toBe(0);
+    expect(extractTimeClaims('spent 2h in review').length).toBe(0);
+    expect(extractTimeClaims('2h in (CI queue)').length).toBe(0);
+    expect(extractTimeClaims('30 min in (offline-test window)').length).toBe(0);
+    // Task progress is not wall-clock progress.
+    expect(extractTimeClaims('the migration is 80% done').length).toBe(0);
   });
 });

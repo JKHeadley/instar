@@ -185,6 +185,15 @@ export class DuplicateSessionReconciler {
   private lastTick: ReconcilerTickReport | null = null;
   private substrateNotReadySince: number | null = null;
   private substratePauseItemRaised = false;
+  /** Observe-only decisions awaiting one subsequent discovery classification. */
+  private readonly dryRunFollowups = new Map<string, {
+    decisionId: string;
+    decidedAt: number;
+    owner: string;
+    rule: 'hard-pin' | 'highest-epoch' | 'live-run';
+    discoveryUnknownLogged: boolean;
+  }>();
+  private dryRunDecisionSeq = 0;
   private counters: Record<string, number> = {
     ticks: 0,
     candidatesSeen: 0,
@@ -247,6 +256,30 @@ export class DuplicateSessionReconciler {
       }
       report.candidates = candidates.length;
       this.counters.candidatesSeen += candidates.length;
+
+      if (this.cfg.dryRun) {
+        const discovered = new Set(candidates.map((candidate) => candidate.key));
+        for (const [key, pending] of this.dryRunFollowups) {
+          if (discovered.has(key)) continue;
+          if (degraded) {
+            if (!pending.discoveryUnknownLogged) {
+              this.journalRow({
+                kind: 'would-converge-followup', key, decisionId: pending.decisionId,
+                decidedAt: new Date(pending.decidedAt).toISOString(),
+                outcome: 'discovery-unknown', degraded, dryRun: true,
+              });
+              pending.discoveryUnknownLogged = true;
+            }
+            continue;
+          }
+          this.journalRow({
+            kind: 'would-converge-followup', key, decisionId: pending.decisionId,
+            decidedAt: new Date(pending.decidedAt).toISOString(),
+            outcome: 'duplicate-not-rediscovered', dryRun: true,
+          });
+          this.dryRunFollowups.delete(key);
+        }
+      }
 
       let reconcilesThisTick = 0;
       let writesThisTick = 0;
@@ -331,12 +364,24 @@ export class DuplicateSessionReconciler {
       // Duplicate no longer exists — close the episode quietly.
       this.episodes.delete(cand.key);
       this.journalRow({ kind: 'duplicate-resolved-before-action', key: cand.key });
+      this.closeDryRunFollowup(cand.key, 'duplicate-resolved-on-fresh-probe');
       return { consumed: true, wrote: false };
     }
 
     // Intended-owner determination (§3.2.2, evidence-ordered).
     const verdict = await this.intendedOwner(sessionKey, cand, ep);
     this.provenanceRow(cand, verdict);
+    const pending = this.dryRunFollowups.get(cand.key);
+    if (pending && this.cfg.dryRun) {
+      const outcome = verdict.kind === 'escalate'
+        ? 'survivor-became-ambiguous'
+        : verdict.owner === pending.owner && verdict.rule === pending.rule
+          ? 'duplicate-persists-survivor-stable'
+          : 'duplicate-persists-survivor-changed';
+      this.closeDryRunFollowup(cand.key, outcome, verdict.kind === 'owner'
+        ? { observedOwner: verdict.owner, observedRule: verdict.rule }
+        : { observedReason: verdict.reason });
+    }
     if (verdict.kind === 'escalate') {
       this.escalateOnce(ep, cand, verdict.reason, report);
       return { consumed: true, wrote: false };
@@ -351,6 +396,7 @@ export class DuplicateSessionReconciler {
 
     ep.convergenceAttempts++;
     if (this.cfg.dryRun) {
+      const decisionId = `duplicate:${cand.key}:${now}:${++this.dryRunDecisionSeq}`;
       report.wouldConverge++;
       this.counters.wouldConverge++;
       this.journalRow({
@@ -362,6 +408,11 @@ export class DuplicateSessionReconciler {
         machines: liveMachines.map((m) => m.machineId),
         attempts: ep.convergenceAttempts,
         dryRun: true,
+        decisionId,
+      });
+      this.dryRunFollowups.set(cand.key, {
+        decisionId, decidedAt: now, owner: verdict.owner, rule: verdict.rule,
+        discoveryUnknownLogged: false,
       });
       // Dry-run counts an episode "handled" — reset so the soak journals each
       // tick's fresh verdict without escalating attempt exhaustion.
@@ -631,6 +682,17 @@ export class DuplicateSessionReconciler {
 
   private journalRow(row: Record<string, unknown>): void {
     this.deps.journal.append({ ts: new Date(this.nowFn()).toISOString(), ...row });
+  }
+
+  private closeDryRunFollowup(key: string, outcome: string, extra: Record<string, unknown> = {}): void {
+    const pending = this.dryRunFollowups.get(key);
+    if (!pending) return;
+    this.journalRow({
+      kind: 'would-converge-followup', key, decisionId: pending.decisionId,
+      decidedAt: new Date(pending.decidedAt).toISOString(),
+      priorOwner: pending.owner, priorRule: pending.rule, outcome, dryRun: true, ...extra,
+    });
+    this.dryRunFollowups.delete(key);
   }
 
   private provenanceRow(cand: DuplicateCandidate, verdict: IntendedOwnerVerdict): void {

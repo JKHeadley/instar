@@ -15,6 +15,8 @@ import { createRoutes } from '../../src/server/routes.js';
 import { SubscriptionPool } from '../../src/core/SubscriptionPool.js';
 import { ProactiveSwapMonitor } from '../../src/core/ProactiveSwapMonitor.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SwapAntiThrashEngine, resolveAntiThrashKnobs, retentionBoundMs } from '../../src/core/SwapAntiThrash.js';
+import { SwapLedger } from '../../src/core/SwapLedger.js';
 
 interface TestServer { url: string; close: () => Promise<void>; }
 async function listen(app: express.Express): Promise<TestServer> {
@@ -31,28 +33,67 @@ describe('proactive-swap routes (integration)', () => {
   let dir: string;
   let swapCalls: Array<{ sessionName: string; exhaustedAccountId: string }>;
 
-  function boot(opts: { withMonitor: boolean; defaultAccountId?: string | null }): Promise<void> {
+  function boot(opts: {
+    withMonitor: boolean;
+    defaultAccountId?: string | null;
+    loginLoss?: { enabled: boolean; dryRun: boolean };
+  }): Promise<void> {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proactive-int-'));
     swapCalls = [];
     const pool = new SubscriptionPool({ stateDir: dir });
     // "hot" is at pressure; "cool" is the sub-threshold alternate.
-    pool.add({ id: 'hot', nickname: 'Hot', provider: 'anthropic', framework: 'claude-code', configHome: '/h/hot', email: 'a@x.io' });
-    pool.add({ id: 'cool', nickname: 'Cool', provider: 'anthropic', framework: 'claude-code', configHome: '/h/cool', email: 'b@x.io' });
-    pool.update('hot', { lastQuota: { sevenDay: { utilizationPct: 85, resetsAt: '2026-06-10T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback' } });
-    pool.update('cool', { lastQuota: { sevenDay: { utilizationPct: 10, resetsAt: '2026-06-10T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback' } });
+    pool.addFixture({ id: 'hot', nickname: 'Hot', provider: 'anthropic', framework: 'claude-code', configHome: '/h/hot', email: 'a@x.io' });
+    pool.addFixture({ id: 'cool', nickname: 'Cool', provider: 'anthropic', framework: 'claude-code', configHome: '/h/cool', email: 'b@x.io' });
+    const now = Date.parse('2026-06-09T12:00:00Z');
+    pool.update('hot', { lastQuota: { sevenDay: { utilizationPct: 85, resetsAt: '2026-06-10T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback', measuredAt: new Date(now - 60_000).toISOString() } });
+    pool.update('cool', { lastQuota: { sevenDay: { utilizationPct: 10, resetsAt: '2026-06-10T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback', measuredAt: new Date(now - 60_000).toISOString() } });
+
+    if (opts.loginLoss) {
+      pool.update('hot', {
+        identityDrifted: true,
+        identityDrift: {
+          expectedAccountId: 'hot',
+          actualAccountId: 'missing-local-login',
+          slot: '/h/hot',
+          detectedAt: new Date(now - 60_000).toISOString(),
+          lastConfirmedAt: new Date(now - 60_000).toISOString(),
+          repairState: 'owner-relogin-required',
+        },
+        // Login loss, not quota, must be the reason this account is selected.
+        lastQuota: { sevenDay: { utilizationPct: 8, resetsAt: '2026-06-10T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback', measuredAt: new Date(now - 60_000).toISOString() },
+      });
+    }
 
     const ctx: any = { config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), subscriptionPool: pool };
     if (opts.withMonitor) {
+      const knobs = resolveAntiThrashKnobs(
+        { enabled: true, dryRun: false },
+        { thresholdPct: 80, tickMs: 180_000 },
+      );
+      const ledger = new SwapLedger({
+        filePath: path.join(dir, 'swap-ledger.jsonl'),
+        windowMs: () => retentionBoundMs(knobs),
+        now: () => now,
+      });
+      const engine = new SwapAntiThrashEngine({ ledger, getKnobs: () => knobs, now: () => now });
+      engine.hydrate();
       ctx.proactiveSwapMonitor = new ProactiveSwapMonitor({
         listAccounts: () => pool.list(),
         // one untagged interactive session running on the default login
-        listRunningSessions: () => [{ sessionName: 'interactive', accountId: null, startedAt: '2026-06-09T11:00:00Z' }],
+        listRunningSessions: () => [{
+          sessionName: 'interactive',
+          accountId: null,
+          ...(opts.loginLoss ? { loginLossAccountId: 'hot', refreshable: true } : {}),
+          startedAt: '2026-06-09T11:00:00Z',
+        }],
         resolveDefaultAccountId: async () => opts.defaultAccountId ?? null,
         swap: async (a) => {
           swapCalls.push({ sessionName: a.sessionName, exhaustedAccountId: a.exhaustedAccountId });
           return { swapped: true, toAccountId: 'cool' };
         },
-        now: () => Date.parse('2026-06-09T12:00:00Z'),
+        now: () => now,
+        antiThrash: { engine, getKnobs: () => knobs },
+        ...(opts.loginLoss ? { loginLoss: opts.loginLoss } : {}),
       });
     }
     const app = express();
@@ -94,6 +135,33 @@ describe('proactive-swap routes (integration)', () => {
     expect(r.status).toBe(200);
     expect(r.body.swapped).toEqual([]);
     expect(swapCalls).toEqual([]);
+  });
+
+  it('login-loss route exposes dry-run posture and records intent without executing a swap', async () => {
+    await boot({
+      withMonitor: true,
+      defaultAccountId: null,
+      loginLoss: { enabled: true, dryRun: true },
+    });
+    const status = await get('/subscription-pool/proactive-swap');
+    expect(status.body.loginLoss).toEqual({ enabled: true, dryRun: true });
+
+    const check = await post('/subscription-pool/proactive-swap/check');
+    expect(check.status).toBe(200);
+    expect(check.body).toMatchObject({ enabled: true, swapped: [], considered: 1 });
+    expect(swapCalls).toEqual([]);
+  });
+
+  it('login-loss route executes through the existing swap callback only after dry-run promotion', async () => {
+    await boot({
+      withMonitor: true,
+      defaultAccountId: null,
+      loginLoss: { enabled: true, dryRun: false },
+    });
+    const check = await post('/subscription-pool/proactive-swap/check');
+    expect(check.status).toBe(200);
+    expect(check.body.swapped).toEqual(['interactive']);
+    expect(swapCalls).toEqual([{ sessionName: 'interactive', exhaustedAccountId: 'hot' }]);
   });
 
   it('DARK: GET returns 200 { enabled:false } when the monitor is unwired (never 503)', async () => {

@@ -164,12 +164,13 @@ Messages in thread: {message_count}
 {history_section}
 
 The latest message from {remote_agent}:
+Message ID: {latest_message_id}
 Subject: {latest_subject}
 ---
 {latest_body}
 ---
 
-Respond to this message. Use the threadline_send MCP tool with the agentId set to "{remote_agent}" and include the threadId "{thread_id}" to send your reply.`;
+Respond to this message. Use the threadline_send MCP tool with the agentId set to "{remote_agent}", threadId "{thread_id}", and inReplyTo "{latest_message_id}" to send your reply.`;
 
 /**
  * Warm-session keep-alive variant of THREAD_SPAWN_PROMPT_TEMPLATE (spec §3.5).
@@ -190,12 +191,13 @@ Messages in thread: {message_count}
 {history_section}
 
 The latest message from {remote_agent}:
+Message ID: {latest_message_id}
 Subject: {latest_subject}
 ---
 {latest_body}
 ---
 
-Respond to this message. Use the threadline_send MCP tool with the agentId set to "{remote_agent}" and include the threadId "{thread_id}" to send your reply.
+Respond to this message. Use the threadline_send MCP tool with the agentId set to "{remote_agent}", threadId "{thread_id}", and inReplyTo "{latest_message_id}" to send your reply.
 
 After sending your reply with threadline_send, remain in this conversation and wait. When another message from {remote_agent} arrives, respond to it the same way. Do not exit or ask what to do next.`;
 
@@ -1251,6 +1253,7 @@ export class ThreadlineRouter {
       .replaceAll('{subject}', subject)
       .replaceAll('{message_count}', String(messageCount))
       .replaceAll('{history_section}', historySection)
+      .replaceAll('{latest_message_id}', latestMessage.id)
       .replaceAll('{latest_subject}', latestMessage.subject)
       .replaceAll('{latest_body}', latestBody);
 

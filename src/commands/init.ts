@@ -38,6 +38,7 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync, execSync } from 'node:child_process';
 import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
 import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
+import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS } from '../core/instarSettingsHooks.js';
@@ -65,6 +66,7 @@ import { dashboardRefreshGateScript, dashboardRefreshScript } from '../server/Da
 import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
 import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
+import { ensureSlackReplyRelay, isSlackConfigured } from '../core/SlackReplyRelayInstaller.js';
 
 /**
  * Find a free port in the default range (4040-4099) by checking if anything
@@ -3828,6 +3830,24 @@ function isWhatsAppConfigured(stateDir: string): boolean {
   return !!messaging?.some(m => m.type === 'whatsapp' && m.enabled);
 }
 
+function refreshSlackRelay(projectDir: string, stateDir: string, port: number, claudeCompatibility: boolean): void {
+  const config = readConfig(stateDir);
+  if (!config || !isSlackConfigured(config)) return;
+  const outcome = ensureSlackReplyRelay({
+    projectDir,
+    stateDir,
+    config,
+    template: loadRelayTemplate('slack-reply.sh', port),
+    claudeCompatibility,
+  });
+  if (outcome.errors.length > 0) {
+    throw new Error(`Slack reply relay install failed: ${outcome.errors.join('; ')}`);
+  }
+  const canonical = path.join(stateDir, 'scripts', 'slack-reply.sh');
+  const canonicalDegradation = outcome.degraded.find(line => line.startsWith(`${canonical}:`));
+  if (canonicalDegradation) throw new Error(`Slack reply relay not ready: ${canonicalDegradation}`);
+}
+
 /**
  * Install scripts for configured integrations (e.g., Telegram relay, WhatsApp relay).
  * Called during refresh to ensure scripts exist for all configured integrations.
@@ -3861,6 +3881,8 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   if (isWhatsAppConfigured(stateDir)) {
     installWhatsAppRelay(projectDir, port);
   }
+
+  refreshSlackRelay(projectDir, stateDir, port, claudeEnabled);
 
   // smart-fetch.py + git-sync-gate.sh both target `.claude/scripts/` and
   // are Claude-Code-specific (the agentic-web fetch script and the
@@ -4076,6 +4098,14 @@ Use \`threadline_relay explain\` for full details.
 }
 
 function installHooks(stateDir: string): void {
+  // Install provenance (framework-stall-coverage-matrix §3.2 degraded rung):
+  // classify this install source-carrying vs fleet ONCE, from the same signals
+  // the dev-agent gate uses + presence of the analyzable tree, and append the
+  // tamper-evident record the stall-coverage gate reads. Presence-scan
+  // idempotent; installHooks is the one seam every init path funnels through
+  // (fresh, existing, standalone, refreshHooksAndSettings).
+  recordInstallProvenanceIfAbsent(path.dirname(stateDir), stateDir);
+
   const hooksBaseDir = path.join(stateDir, 'hooks');
   const hooksDir = path.join(hooksBaseDir, 'instar');
   const customHooksDir = path.join(hooksBaseDir, 'custom');
@@ -4281,6 +4311,10 @@ fi
   // Unjustified Stop Gate router — Stop hook that calls the server-side gate.
   // Shadow-mode by default; enforcement is controlled server-side.
   fs.writeFileSync(path.join(hooksDir, 'stop-gate-router.js'), migrator.getHookContent('stop-gate-router'), { mode: 0o755 });
+
+  // Verify-Before-Done observer — structural client-side TurnEvidence, always
+  // installed; fleet-dark/dev-dry-run gating occurs inside the hook + route.
+  fs.writeFileSync(path.join(hooksDir, 'completion-claim-observe.js'), migrator.getHookContent('completion-claim-observe'), { mode: 0o755 });
 
   // Hook event reporter — posts hook events to the Instar server for observability
   // and session resumption (claudeSessionId). Uses command hooks because Claude Code

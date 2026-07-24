@@ -270,6 +270,26 @@ async function addQuota(opts: { stateFile?: string }): Promise<void> {
 
 const program = new Command();
 
+async function callLocalContinuation(pathname: string, method = 'GET', body?: unknown): Promise<unknown> {
+  const cfgPath = path.join(process.cwd(), '.instar', 'config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { port?: number; authToken?: string | { env?: string } };
+  const configuredToken = typeof cfg.authToken === 'string'
+    ? cfg.authToken
+    : (cfg.authToken?.env ? process.env[cfg.authToken.env] : undefined);
+  const authToken = process.env.INSTAR_AUTH_TOKEN ?? configuredToken ?? '';
+  const response = await fetch(`http://127.0.0.1:${cfg.port ?? 4040}${pathname}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${authToken}`,
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const parsed = await response.json() as Record<string, unknown>;
+  if (!response.ok) throw new Error(String(parsed.error ?? `HTTP ${response.status}`));
+  return parsed;
+}
+
 function rejectUnknownTopLevelCommand(program: Command, argv: string[]): void {
   const firstArg = argv[2];
   if (!firstArg || firstArg.startsWith('-')) {
@@ -384,6 +404,56 @@ program
   .action((projectName, opts) => {
     return initProject({ ...opts, name: projectName });
   });
+
+// ── Codex ordinary-work continuation ─────────────────────────────
+
+const continuationCmd = program
+  .command('continuation')
+  .description('Manage the bounded Codex task-continuation ledger');
+
+continuationCmd
+  .command('start')
+  .requiredOption('--topic <id>', 'Topic id')
+  .requiredOption('--task <text...>', 'One or more explicit tasks')
+  .option('--duration <seconds>', 'Duration ceiling', (v: string) => Number(v))
+  .option('--max-continuations <count>', 'Turn ceiling', (v: string) => Number(v))
+  .action(async (opts) => {
+    const result = await callLocalContinuation('/continuation/start', 'POST', {
+      topicId: opts.topic,
+      tasks: opts.task,
+      durationSeconds: opts.duration,
+      maxContinuations: opts.maxContinuations,
+    });
+    console.log(JSON.stringify(result));
+  });
+
+continuationCmd.command('status <topic>').action(async (topic) => {
+  console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/status`)));
+});
+
+continuationCmd
+  .command('renew <topic>')
+  .description('Mint a fresh bounded generation while preserving the existing task checklist')
+  .option('--duration <seconds>', 'Duration ceiling', (v: string) => Number(v))
+  .option('--max-continuations <count>', 'Turn ceiling', (v: string) => Number(v))
+  .action(async (topic, opts) => {
+    console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/renew`, 'POST', {
+      durationSeconds: opts.duration,
+      maxContinuations: opts.maxContinuations,
+    })));
+  });
+
+continuationCmd.command('complete <topic> <ordinal>').action(async (topic, ordinal) => {
+  console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/complete`, 'POST', { ordinal: Number(ordinal) })));
+});
+
+continuationCmd.command('stop <topic>').action(async (topic) => {
+  console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/stop`, 'POST')));
+});
+
+continuationCmd.command('stop-all').action(async () => {
+  console.log(JSON.stringify(await callLocalContinuation('/continuation/stop-all', 'POST')));
+});
 
 // ── Add ───────────────────────────────────────────────────────────
 
@@ -2106,6 +2176,33 @@ program
   .option('-d, --dir <path>', 'Project directory')
   .action(doctor);
 
+// ── Playwright physical-seat lease ──────────────────────────────
+
+const playwrightSeatCmd = program
+  .command('playwright-seat')
+  .description('Voluntarily coordinate standalone Playwright scripts with the host-wide operator-seat lease');
+
+playwrightSeatCmd
+  .command('acquire')
+  .requiredOption('--holder <id>', 'Unique drive-invocation id reused only for its release')
+  .option('--label <label>', 'Human-readable drive label', 'standalone Playwright script')
+  .action(async (opts) => {
+    const { PlaywrightSeatLease } = await import('./core/PlaywrightSeatLease.js');
+    const result = new PlaywrightSeatLease().acquire(opts.holder, opts.label);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    if (!result.acquired) process.exitCode = 2;
+  });
+
+playwrightSeatCmd
+  .command('release')
+  .requiredOption('--holder <id>', 'Same unique drive-invocation id used to acquire')
+  .action(async (opts) => {
+    const { PlaywrightSeatLease } = await import('./core/PlaywrightSeatLease.js');
+    const result = new PlaywrightSeatLease().release(opts.holder);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    if (!result.released && result.reason === 'ownership-mismatch') process.exitCode = 2;
+  });
+
 // ── Channels ─────────────────────────────────────────────────────
 
 const channelsCmd = program
@@ -2435,6 +2532,15 @@ gateCmd
   .action(async (opts) => {
     const { gateLog } = await import('./commands/gate.js');
     return gateLog(opts);
+  });
+
+gateCmd
+  .command('reset-breaker')
+  .description('Clear the durable authority breaker after repairing a provider')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { gateResetBreaker } = await import('./commands/gate.js');
+    return gateResetBreaker(opts);
   });
 
 // ── `instar dev:preflight` — contributor ship-gate verifier ────────

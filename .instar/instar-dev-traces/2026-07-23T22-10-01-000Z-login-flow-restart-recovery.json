@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "slug": "login-flow-restart-recovery",
+  "sessionId": "slack-C0BA4F4E0FP-20260723",
+  "timestamp": "2026-07-23T22:10:01.000Z",
+  "artifactPath": "upgrades/side-effects/login-flow-restart-recovery.md",
+  "artifactSha256": "e2cab96b24465931d5c9f24731d34bbd36a495b269fa395a6af65453aa47c411",
+  "specPath": "docs/specs/login-flow-restart-recovery.md",
+  "coveredFiles": [
+    "dashboard/subscriptions.js",
+    "src/commands/server.ts",
+    "src/core/EnrollmentWizard.ts",
+    "src/server/routes.ts",
+    "tests/e2e/subscription-enrollment-lifecycle.test.ts",
+    "tests/integration/account-follow-me-submit-code-route.test.ts",
+    "tests/integration/subscriptions-tab.test.ts",
+    "tests/unit/enrollment-wizard.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A bounded correction to an existing login lifecycle: no new route, config, scope, credential surface, state schema, or autonomous authority. It restores the already-durable flow after process restart and classifies stale submissions through existing enrollment machinery.",
+  "eli16Path": "docs/specs/login-flow-restart-recovery.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/login-flow-restart-recovery.md",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "PendingLoginStore deliberately persisted public flow metadata, but no boot consumer restored the framework process that metadata referred to. The submit route therefore conflated a durable record with a live pane and surfaced transport-style errors after restart."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Boot recovery is a one-shot pass over the finite durable pending-login set. It runs once per process start, performs at most one re-drive per incomplete record, and has no self-rescheduling path. Dead-flow submit refresh is user-triggered and single-flow bounded."
+  },
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-22T20:57:26.452Z",
+  "slug": "proactive-default-account-swap",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 114,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Proactive swaps are bounded by steady-state convergence, cooldown, daily caps, and a settling brake; the self-action convergence ratchet catches any unregistered loop."
+    }
+  },
+  "verdict": "blocked"
+}
