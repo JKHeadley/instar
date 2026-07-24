@@ -285,6 +285,12 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'workQueue',
+    prefixes: ['/work-queue'],
+    description: 'Unified work-intake registry — deterministic ranked read of active work; dev-agent gated while fleet rollout is dark.',
+    build: ({ ctx }) => ({ configured: !!ctx.workQueue, endpoints: ['GET /work-queue', 'POST /work-queue/rescore'] }),
+  },
+  {
     key: 'autonomousHeartbeat',
     prefixes: ['/autonomous-heartbeat'],
     description: 'AutonomousProgressHeartbeat — a hedged, change-gated, sparse liveness BACKSTOP that posts ONE purely-observational line when an autonomous run has gone silent on the user for a long stretch while its terminal output is STILL changing. NOT the suppressed PromiseBeacon "still on it" filler that HONEST-PROGRESS-MESSAGING removed — it fires only on a long user-silence gate (≥25m) AND a corroborated recent output change (read from ActiveWorkSilenceSentinel\'s already-computed snapshot — a liveness signal, NOT a progress claim), with a per-topic cooldown, a widening per-run backoff + hard cap, and the shared one-voice lease. Signal-only; never gates. Dev-gated dark + dryRun-first → 503 on the fleet.',

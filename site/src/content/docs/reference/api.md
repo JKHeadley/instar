@@ -1060,3 +1060,11 @@ The Slack org permission gate (dark/observe-only by default — these routes are
 
 ## /whoami
 - `GET /whoami`
+
+## /work-queue
+
+The unified work-intake and prioritization registry (`WorkQueue` — see the Work Intake &
+Prioritization Queue feature page). Development-agent gated; 503 when dark.
+
+- `GET /work-queue` — the current deterministic ranked list of normalized work items.
+- `POST /work-queue/rescore` — recompute the ranking from live sources (pure compute, no durable writes).
