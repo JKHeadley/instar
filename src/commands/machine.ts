@@ -19,6 +19,7 @@ import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
 import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
+import { resolveJoinDir } from './joinDir.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { HeartbeatManager } from '../core/HeartbeatManager.js';
 import { SecretStore } from '../core/SecretStore.js';
@@ -276,16 +277,15 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
 
   console.log(pc.bold('\n  Joining mesh...\n'));
 
-  // Step 1: Clone the repo if it looks like a git URL
-  let projectDir = options.dir || process.cwd();
+  // Step 1: Clone the repo if it looks like a git URL.
+  // resolveJoinDir honors --dir (incl. for git URLs — the §1.3 fix); without
+  // --dir it falls back to the historical <cwd>/<repoName> for git URLs.
+  const projectDir = resolveJoinDir(repoUrl, options);
   const isGitUrl = repoUrl.includes('github.com') || repoUrl.includes('.git') || repoUrl.startsWith('git@');
 
   if (isGitUrl) {
-    const repoName = path.basename(repoUrl, '.git');
-    projectDir = path.resolve(repoName);
-
     if (fs.existsSync(projectDir)) {
-      console.log(pc.yellow(`  Directory ${repoName}/ already exists. Using existing repo.`));
+      console.log(pc.yellow(`  Directory ${projectDir} already exists. Using existing repo.`));
     } else {
       console.log(`  Cloning repository...`);
       try {

@@ -2122,6 +2122,7 @@ program
 program
   .command('join <url>')
   .description('Join an existing agent mesh (run on the new machine)')
+  .option('-d, --dir <path>', 'Directory to clone/join into (default for a git URL: ./<repo-name>)')
   .option('--code <code>', 'Pairing code from `instar pair`')
   .option('--name <name>', 'Display name for this machine')
   .action(joinMesh);
