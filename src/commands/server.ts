@@ -3536,8 +3536,9 @@ async function ensureSqliteBindings(): Promise<boolean> {
           'The agent is running but its knowledge graph, conversation summaries, and ' +
           'related sqlite-backed subsystems are offline. The most common cause is a ' +
           'Node upgrade landed after the server started. Restart the agent to pick up ' +
-          'the rebuilt binding; if rebuild itself keeps failing, run `npx instar update` ' +
-          'or reinstall the agent.',
+          'the rebuilt binding; if rebuild itself keeps failing, run ' +
+          '`npm rebuild better-sqlite3` in the instar install directory with the ' +
+          "server's Node first on PATH, or reinstall the agent.",
       });
       return false;
     }
