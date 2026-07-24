@@ -5067,13 +5067,16 @@ export class AgentServer {
           console.warn('[mentee] receiver wiring raised (non-fatal):', err);
         }
 
-        // ── Layer 3 DeliveryFailureSentinel — default-OFF feature flag ──
+        // ── Layer 3 DeliveryFailureSentinel — recovery is the safe default ──
         // Spec § 3j: `monitoring.deliveryFailureSentinel.enabled` defaults
         // false. The sentinel only spins up when an operator explicitly
         // opts in. Layer 1 + Layer 2 ship unconditionally; Layer 3 is the
         // opt-in upgrade for general delivery resilience.
         const monitoringCfg = (this.config as { monitoring?: { deliveryFailureSentinel?: { enabled?: boolean } } }).monitoring;
-        const sentinelEnabled = monitoringCfg?.deliveryFailureSentinel?.enabled === true;
+        // A durable accepted outbound row must always have a running owner.
+        // Preserve an explicit legacy `enabled:false` opt-out, but omitted
+        // configuration resolves to recovery mode for existing agents.
+        const sentinelEnabled = monitoringCfg?.deliveryFailureSentinel?.enabled !== false;
         if (sentinelEnabled && this.config.stateDir) {
           try {
             this.startDeliverySentinel().catch((err) => {

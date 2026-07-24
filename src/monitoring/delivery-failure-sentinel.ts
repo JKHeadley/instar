@@ -374,6 +374,13 @@ export class DeliveryFailureSentinel extends EventEmitter {
       // Reclaim only after the timestamped lease expires; the owner renews it
       // while awaiting I/O.
       return rows.filter((row) => {
+        // Never redeliver an old conversational message after a long outage;
+        // stale rows are withheld for an aggregate incident notice rather than
+        // being sent weeks late. Keep the row durable for the incident drain.
+        const attemptedAt = Date.parse(row.attempted_at);
+        if (Number.isFinite(attemptedAt) && this.deps.now() - attemptedAt > 24 * 60 * 60 * 1000) {
+          return false;
+        }
         if (row.state !== 'claimed') return true;
         return this.isLeaseStale(row);
       });
@@ -711,40 +718,9 @@ export class DeliveryFailureSentinel extends EventEmitter {
   }
 
   private purgeStaleRows(): void {
-    const nowIso = new Date(this.deps.now()).toISOString();
-    const cutoff = new Date(this.deps.now() - this.cfg.restorePurgeAgeMs).toISOString();
-    try {
-      // LOUD purge: a restore-purge deletes a queued-undelivered outbound
-      // message — the only silent-deletion path left in the delivery stack
-      // until 2026-06-05, when five legitimate messages (including a user
-      // milestone report) vanished this way during restart churn. List the
-      // victims first so every loss is traceable, and report the
-      // degradation so the agent learns its outbound message evaporated
-      // (and can decide to resend) instead of believing it delivered.
-      // Rows HELD for future release (next_attempt_at ahead of the cutoff,
-      // within the 7-day clamp) are exempt — reap-notify spec R1.6.
-      const victims = this.deps.store.listStaleClaimable(cutoff, nowIso);
-      if (victims.length === 0) return;
-      for (const v of victims) {
-        const clampNote = v.farFutureClamp ? ' [far-future next_attempt_at — corrupt-row clamp]' : '';
-        console.warn(
-          `[delivery-sentinel] restore-purge dropping ${v.delivery_id} (topic ${v.topic_id}, queued since ${v.attempted_at})${clampNote}: "${(v.text ?? '').slice(0, 60)}"`,
-        );
-      }
-      const deleted = this.deps.store.purgeStaleClaimable(cutoff, nowIso);
-      console.log(`[delivery-sentinel] restore-purged ${deleted} stale rows (older than ${this.cfg.restorePurgeAgeMs}ms)`);
-      try {
-        DegradationReporter.getInstance().report({
-          feature: 'delivery-restore-purge',
-          primary: 'pending-relay rows recovered and delivered after restart',
-          fallback: `purged ${deleted} queued-undelivered outbound message(s) older than ${Math.round(this.cfg.restorePurgeAgeMs / 60000)}min at boot`,
-          reason: `restore-purge cutoff ${cutoff}; victims: ${victims.map((v) => `${v.delivery_id}@topic${v.topic_id}`).join(', ')}`,
-          impact: 'These outbound messages were never delivered and will not be retried — the intended recipients never saw them.',
-        });
-      } catch { /* best-effort — the per-row warns above are the floor */ }
-    } catch (err) {
-      console.warn('[delivery-sentinel] purgeStaleRows raised:', err);
-    }
+    // Recovery must never destructively purge accepted outbound work. Older
+    // rows remain durable for the bounded stale-incident/attention drain.
+    return;
   }
 }
 

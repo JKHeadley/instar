@@ -14643,7 +14643,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     try {
-      const item = await ctx.telegram.createAttentionItem({
+      const create = ctx.telegram.createAttentionItem({
         id,
         title,
         summary,
@@ -14654,6 +14654,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         lane,
         healthKey,
       });
+      // Acceptance of an attention item must not inherit Telegram latency.
+      // The adapter persists/idempotently owns the item before its network
+      // routing; return the accepted envelope if the external send is slow.
+      const item = await Promise.race([
+        create,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+      ]);
+      if (item === null) {
+        res.status(201).json({ id, title, summary, category: category || 'general', priority, description: description || undefined, sourceContext: sourceContext || undefined, lane, healthKey, status: 'OPEN' });
+        return;
+      }
       res.status(201).json(item);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
