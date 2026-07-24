@@ -26,7 +26,7 @@ import type { StateManager } from './StateManager.js';
 import type { LiveConfig } from '../config/LiveConfig.js';
 import { UpdateGate } from './UpdateGate.js';
 import { cleanupGlobalInstalls } from './GlobalInstallCleanup.js';
-import type { SessionManagerLike, SessionMonitorLike } from './UpdateGate.js';
+import type { SessionManagerLike, SessionMonitorLike, SessionInfo } from './UpdateGate.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { RestartCascadeDampener, formatLocalTimeHHMM } from './RestartCascadeDampener.js';
@@ -112,6 +112,16 @@ export interface AutoUpdaterStatus {
   restartDeferral: RestartDeferralState | null;
   /** Primary-developer mode: restarts roll onto latest immediately, never deferred for sessions/window */
   restartImmediately: boolean;
+  /**
+   * Observability-only split of the current restart blockers: the restart-safe
+   * subset (topics that resume cleanly across a restart — resumable autonomous
+   * topics with a per-topic state file). Empty when not deferring or when no
+   * blocker is resumable. Does NOT yet change the restart decision.
+   */
+  restartSafeSessions: string[];
+  /** Observability-only split of the current restart blockers: those with no
+   * known clean-resume path (the complement of {@link restartSafeSessions}). */
+  hardBlockingSessions: string[];
 }
 
 export interface RestartDeferralState {
@@ -209,7 +219,10 @@ export class AutoUpdater {
 
     // Primary-developer mode: the gate inherits restartImmediately so it never
     // defers behind active sessions (default false → fleet behavior unchanged).
-    this.gate = new UpdateGate({ alwaysRestartImmediately: this.config.restartImmediately });
+    this.gate = new UpdateGate({
+      alwaysRestartImmediately: this.config.restartImmediately,
+      restartSafetyResolver: (session) => this.isSessionRestartSafe(session),
+    });
     this.dampener = new RestartCascadeDampener(this.config.restartCascadeDampenerWindowMs);
 
     // npx cache detection is no longer needed — updates install to a local
@@ -290,7 +303,40 @@ export class AutoUpdater {
       maxDeferralHours: gateStatus.maxDeferralHours,
       restartDeferral: this.restartDeferral ? { ...this.restartDeferral } : null,
       restartImmediately: gateStatus.alwaysRestartImmediately,
+      restartSafeSessions: gateStatus.restartSafeSessions,
+      hardBlockingSessions: gateStatus.hardBlockingSessions,
     };
+  }
+
+  /**
+   * Restart-safety resolver for the UpdateGate (observability-only — Step 1 of
+   * the restart-safe session work). A blocking session is "restart-safe" when
+   * its topic resumes cleanly across a server restart. The concrete signal we
+   * trust today: the topic has a per-topic autonomous state file
+   * (`.instar/autonomous/<topicId>.local.md`) — those sessions are driven by
+   * the autonomous loop, which re-injects context via CONTINUATION on the next
+   * turn, so a restart costs only a brief re-read rather than lost work.
+   *
+   * This does NOT change the restart decision — a restart-safe session still
+   * blocks exactly as before. It only classifies the blockers so a later step
+   * can choose to restart through the safe ones. Fails safe to `false` (treat
+   * as a hard blocker) on any error or missing topic id, so a bad check can
+   * never make the gate restart through a session it shouldn't.
+   * Spec: docs/specs/restart-safe-blocker-classification-spec.md.
+   */
+  private isSessionRestartSafe(session: SessionInfo): boolean {
+    if (session.topicId == null) return false;
+    try {
+      const stateFile = path.join(
+        process.cwd(),
+        '.instar',
+        'autonomous',
+        `${session.topicId}.local.md`,
+      );
+      return fs.existsSync(stateFile);
+    } catch {
+      return false;
+    }
   }
 
   /**

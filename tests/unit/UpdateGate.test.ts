@@ -265,4 +265,96 @@ describe('UpdateGate', () => {
       expect(gate.canRestart(healthyManager, healthyMonitor).allowed).toBe(false);
     });
   });
+
+  // Restart-safe blocker classification (Step 1 — observability only). A
+  // resolver splits the blockers into restart-safe vs hard; the restart
+  // DECISION is unchanged (a restart-safe blocker still defers exactly as
+  // today). See docs/specs/restart-safe-blocker-classification-spec.md.
+  describe('restart-safe blocker classification', () => {
+    // One interactive session (not restart-safe) + one resumable autonomous
+    // session (restart-safe via the resolver). Both healthy → both block.
+    const mixedManager = {
+      listRunningSessions: () => [
+        { name: 'topic-458', tmuxSession: 'instar-topic-458', topicId: 458 },
+        { name: 'topic-13435', tmuxSession: 'instar-topic-13435', topicId: 13435 },
+      ],
+      hasActiveProcesses: () => false,
+    };
+    const mixedMonitor = {
+      getStatus: () => ({
+        sessionHealth: [
+          { sessionName: 'instar-topic-458', topicId: 458, status: 'healthy' as const, idleMinutes: 0 },
+          { sessionName: 'instar-topic-13435', topicId: 13435, status: 'healthy' as const, idleMinutes: 0 },
+        ],
+      }),
+    };
+    // The autonomous topic (13435) resumes cleanly → restart-safe.
+    const onlyAutonomousSafe = (s: { topicId?: number }) => s.topicId === 13435;
+
+    it('mixed blockers still DEFER, but split into restart-safe vs hard in status', () => {
+      const gate = new UpdateGate({ restartSafetyResolver: onlyAutonomousSafe });
+      const result = gate.canRestart(mixedManager, mixedMonitor);
+
+      // Decision unchanged: a restart-safe blocker still blocks exactly as today.
+      expect(result.allowed).toBe(false);
+      expect(result.blockingSessions).toEqual(['topic-458', 'topic-13435']);
+      // Observability split surfaced on the result...
+      expect(result.restartSafeSessions).toEqual(['topic-13435']);
+      expect(result.hardBlockingSessions).toEqual(['topic-458']);
+      // ...and persisted into getStatus().
+      const status = gate.getStatus();
+      expect(status.restartSafeSessions).toEqual(['topic-13435']);
+      expect(status.hardBlockingSessions).toEqual(['topic-458']);
+      expect(status.blockingSessions).toEqual(['topic-458', 'topic-13435']);
+    });
+
+    it('with only restart-safe blockers, zero hard blockers — but STILL defers (no behavior change)', () => {
+      const gate = new UpdateGate({ restartSafetyResolver: () => true });
+      const result = gate.canRestart(mixedManager, mixedMonitor);
+
+      // The crucial invariant for Step 1: even when every blocker is
+      // restart-safe, the gate does NOT yet restart through them.
+      expect(result.allowed).toBe(false);
+      expect(result.blockingSessions).toEqual(['topic-458', 'topic-13435']);
+      expect(result.restartSafeSessions).toEqual(['topic-458', 'topic-13435']);
+      expect(result.hardBlockingSessions).toBeUndefined(); // none → omitted
+      expect(gate.getStatus().hardBlockingSessions).toEqual([]);
+      expect(gate.getStatus().restartSafeSessions).toEqual(['topic-458', 'topic-13435']);
+    });
+
+    it('without a resolver, every blocker is hard and the restart-safe list is empty (back-compat)', () => {
+      const gate = new UpdateGate();
+      const result = gate.canRestart(mixedManager, mixedMonitor);
+
+      expect(result.allowed).toBe(false);
+      expect(result.blockingSessions).toEqual(['topic-458', 'topic-13435']);
+      expect(result.restartSafeSessions).toBeUndefined();
+      expect(result.hardBlockingSessions).toEqual(['topic-458', 'topic-13435']);
+      expect(gate.getStatus().restartSafeSessions).toEqual([]);
+    });
+
+    it('a throwing resolver fails safe to hard (never changes gating)', () => {
+      const gate = new UpdateGate({
+        restartSafetyResolver: () => { throw new Error('resolver boom'); },
+      });
+      const result = gate.canRestart(mixedManager, mixedMonitor);
+
+      expect(result.allowed).toBe(false);
+      expect(result.restartSafeSessions).toBeUndefined();
+      expect(result.hardBlockingSessions).toEqual(['topic-458', 'topic-13435']);
+    });
+
+    it('clears the classification on reset (restart proceeds / no sessions)', () => {
+      const gate = new UpdateGate({ restartSafetyResolver: onlyAutonomousSafe });
+      gate.canRestart(mixedManager, mixedMonitor);
+      expect(gate.getStatus().restartSafeSessions).toEqual(['topic-13435']);
+
+      // No running sessions → reset() → split cleared.
+      gate.canRestart({ listRunningSessions: () => [] });
+      const status = gate.getStatus();
+      expect(status.restartSafeSessions).toEqual([]);
+      expect(status.hardBlockingSessions).toEqual([]);
+      expect(status.blockingSessions).toEqual([]);
+    });
+  });
 });
