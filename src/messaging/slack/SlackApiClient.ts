@@ -10,6 +10,7 @@
 
 import { getTier, type RateLimitTier } from './types.js';
 import { redactToken } from './sanitize.js';
+import { Agent, setGlobalDispatcher } from 'undici';
 
 export interface SlackApiOptions {
   /** Use app-level token instead of bot token */
@@ -40,9 +41,13 @@ const PERMANENT_ERRORS = new Set([
   'not_authed',
 ]);
 
+const FETCH_FAILURES_BEFORE_TRANSPORT_RESET = 3;
+
 export class SlackApiClient {
   private botToken: string;
   private appToken: string | null;
+  private consecutiveFetchFailures = 0;
+  private dispatcher: Agent | null = null;
 
   constructor(botToken: string, appToken?: string) {
     this.botToken = botToken;
@@ -84,14 +89,24 @@ export class SlackApiClient {
     attempt: number,
     maxRetries: number,
   ): Promise<SlackApiResponse> {
-    const response = await fetch(`https://slack.com/api/${method}`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json; charset=utf-8',
-      },
-      body: JSON.stringify(params),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`https://slack.com/api/${method}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        body: JSON.stringify(params),
+      });
+      this.consecutiveFetchFailures = 0;
+    } catch (error) {
+      this.consecutiveFetchFailures++;
+      if (this.consecutiveFetchFailures >= FETCH_FAILURES_BEFORE_TRANSPORT_RESET) {
+        this.resetHttpTransport();
+      }
+      throw error;
+    }
 
     const data = (await response.json()) as SlackApiResponse;
 
@@ -122,6 +137,23 @@ export class SlackApiClient {
     }
 
     return data;
+  }
+
+  /**
+   * Rebuild undici's connection pool after repeated network failures. A Wi‑Fi
+   * interface/DNS change can leave keep-alive sockets pinned to the old route;
+   * retrying through that pool otherwise fails for the whole outage window.
+   */
+  private resetHttpTransport(): void {
+    this.consecutiveFetchFailures = 0;
+    this.dispatcher?.close().catch(() => {});
+    this.dispatcher = new Agent({
+      connections: 10,
+      keepAliveTimeout: 10_000,
+      keepAliveMaxTimeout: 30_000,
+    });
+    setGlobalDispatcher(this.dispatcher);
+    console.warn('[slack-api] Rebuilt HTTP transport after repeated fetch failures');
   }
 }
 
