@@ -1,0 +1,31 @@
+## What Changed
+
+The tone gate's decision-quality provenance row can now record the candidate message BODY, alongside the sha256 identity it has always recorded. Off unless explicitly enabled (`recordCandidateBody` on the tone-gate config), and byte-identical to previous behaviour when absent.
+
+## Summary of New Capabilities
+
+- A later bulk judging pass can read what a held message actually said, instead of a hash it cannot re-read.
+- Recorded bodies are credential-scrubbed (kinds recorded, never offsets or matched text) and clamped to a hard 4000-char ceiling that config cannot raise.
+
+## What to Tell Your User
+
+Nothing changes unless you turn it on. When you do, held and allowed message text is stored in the local decision-quality record so its correctness can be reviewed later. The same text is already in the session transcript on disk; this is a second copy in a store only you and your agent read.
+
+## Evidence
+
+The quality meter exists to answer "was blocking this correct?" retrospectively. That question is not decidable from an identity-only row: a sha256 cannot be turned back into words, so a judge handed one has nothing to judge. The meter could measure latency and volume but never correctness — the thing it was built for.
+
+The prior no-plaintext discipline was deliberate and documented. It was also self-defeating: the gate inspects outbound text for leaks, so declining to store that text protects the store at the cost of making the review impossible.
+
+**Safety properties, and why each sits where it does:**
+
+- **Clamp BEFORE scrub.** Load-bearing ordering. Scrubbing first and truncating second can bisect a `[REDACTED:...]` marker and leave the tail of a real secret past the cut — the exact failure being prevented, reintroduced by sequencing two safe steps wrongly. A dedicated test places a credential beyond the clamp point and asserts its absence in every form.
+- **Ceiling, not default.** `maxBodyChars` clamps DOWN to `TONE_CANDIDATE_BODY_MAX_CHARS` and never up, so no config value can make the store an unbounded archive of outbound prose.
+- **Withheld is not the same as clean.** The scrubber replaces the whole field on its error/oversize paths; those set `bodyWithheld` to `scrub-error` or `oversize` rather than being conflated with "nothing sensitive found". A judge must be able to tell those apart, or every clean-looking row becomes untrustworthy.
+- **Identity preserved.** sha256/bytes/chars still describe the whole message even when the stored body is a fragment, so rows written either side of a flag flip stay correlatable.
+
+**Explicitly NOT authorized by this flag:** ingesting scenarios from other installs' agents. That needs an anonymisation layer that does not exist — identifier-stripping is not anonymisation (a conversation with names removed is still identifiable from its subject, and removing the subject destroys its value as a scenario), and external contributions are untrusted input a model will later read. Stated in the code comment so the flag cannot be mistaken for a green light on external ingest.
+
+**No config migration, deliberately.** The key is OMIT-REQUIRED: seeding it would write a content-retention decision into every deployed agent's config on update. Absence is the correct state.
+
+**Not changed:** the gate's verdict path, rule set, or fail-direction. This feeds an observe-only side write and cannot alter a block/allow decision.

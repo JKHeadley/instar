@@ -30,6 +30,21 @@ import { detectInternalIdLeak } from './internal-id-leak.js';
 import { detectSelfStopShape } from './self-stop-floor.js';
 import { detectDeferralShape } from './deferral-floor.js';
 import { DP_MESSAGING_TONE_GATE } from '../data/provenanceCoverage.js';
+import { scrubForStore } from './durableSecretScrub.js';
+import { CONTENT_FULL_KEY } from './JudgmentProvenanceLog.js';
+
+/**
+ * Hard ceiling on a recorded candidate body, in characters. A CEILING, not a default
+ * the caller can raise: `maxBodyChars` is clamped DOWN to it, never up, so no config
+ * value can turn the provenance store into an unbounded archive of outbound prose.
+ *
+ * 4000 covers the overwhelming majority of real outbound messages whole — the point
+ * of recording the body is that a later judge can read what was actually said, and a
+ * body cut off mid-argument answers "was blocking this correct?" no better than a
+ * hash does. Rows that do hit the ceiling are marked `bodyTruncated: true` so the
+ * judge knows it is reading a fragment rather than assuming it has the whole message.
+ */
+export const TONE_CANDIDATE_BODY_MAX_CHARS = 4000;
 
 /**
  * The prompt-version tag for the tone-gate judge, declared as the provenance
@@ -122,24 +137,125 @@ export function detectDeterministicLeak(
  * recent-message COUNT, the deterministic gate-signal KINDS). It NEVER stores the
  * message body or any plaintext slice of it.
  *
- * WHY NO plaintext head (mirrors the CompletionEvaluator content-bearing sibling,
- * §5.3): the candidate IS the very outbound text this gate exists to inspect for
- * leaks — a bounded head, even credential-scrubbed, would still archive
+ * WHY NO plaintext head BY DEFAULT (mirrors the CompletionEvaluator content-bearing
+ * sibling, §5.3): the candidate IS the very outbound text this gate exists to inspect
+ * for leaks — a bounded head, even credential-scrubbed, would still archive
  * non-credential PII / user-facing prose the store must not become a copy of. The
- * hash gives full identity (correlate/dedupe/replay-verify) with zero body
- * exposure.
+ * hash gives full identity (correlate/dedupe/replay-verify) with zero body exposure.
+ *
+ * WHY AN OPT-IN CANDIDATE BODY EXISTS ANYWAY (operator decision, 2026-07-23, topic
+ * 33368). The identity-only row cannot answer the question the meter exists to ask.
+ * "Was blocking this message correct?" is not decidable from a sha256: a hash cannot
+ * be re-read, and a later judge handed one has strictly nothing to judge. The
+ * operator's model is record richly now, judge later in bulk with a strong model —
+ * which requires the body to still be there at judging time.
+ *
+ * The operator weighed the retention question directly and settled it: the same text
+ * is ALREADY written to the session transcript on disk, so storing it a second time
+ * in a store only the operator and the agent read crosses no line the transcript has
+ * not already crossed. That reasoning is explicitly scoped to INTERNAL benchmarking
+ * of this install's own decisions.
+ *
+ * IT DOES NOT EXTEND to third-party data. The operator's stated next step —
+ * crowdsourcing scenarios from other installs' agents — needs an anonymisation layer
+ * that does not exist yet, and "scrub the identifiers" is not that layer: a support
+ * conversation with every name removed is still identifiable from what it is about,
+ * and stripping what makes it a scenario destroys its value as one. Incoming
+ * scenarios are also untrusted input — text a model will later read, contributed by
+ * someone who may wish to shape how it scores. Neither problem exists for
+ * locally-generated rows, and neither is solved here. A future ingest path for
+ * external scenarios MUST NOT reuse this flag as its authorization.
+ *
+ * The body is therefore: OFF unless explicitly enabled, credential-scrubbed through
+ * the same durable scrubber every other content-bearing store uses, hard length-
+ * clamped, and recorded ALONGSIDE the sha256 rather than replacing it — identity
+ * stays intact whether or not the body is present, so rows written before and after
+ * an operator flips this flag remain correlatable.
  */
 export function buildToneDecisionContext(
   text: string,
   context: ToneReviewContext,
+  /**
+   * Opt-in candidate-body capture. Absent/false ⇒ byte-identical behaviour to the
+   * identity-only row. Passed explicitly rather than read from config here so this
+   * stays a pure function (its callers own config resolution) and so a test can
+   * exercise both sides without touching global state.
+   */
+  opts?: { recordCandidateBody?: boolean; maxBodyChars?: number },
 ): Record<string, unknown> {
   const sha256 = (s: string): string => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+  const candidate: Record<string, unknown> = {
+    sha256: sha256(text),
+    bytes: Buffer.byteLength(text, 'utf8'),
+    chars: text.length,
+  };
+  // Machine-local by construction — see CONTENT_FULL_KEY. Attached to the envelope
+  // only when it actually holds something, so an identity-only row stays byte-identical
+  // to what it was before this feature existed.
+  const contentFull: Record<string, unknown> = {};
+  if (opts?.recordCandidateBody === true) {
+    // Clamp BEFORE scrubbing, never after: scrubbing first and truncating second can
+    // slice a `[REDACTED:...]` marker in half and leave the tail of a real secret
+    // sitting past the cut. Clamping first means the scrubber always sees the exact
+    // bytes that will be stored.
+    // Number.isFinite FIRST: Math.min(NaN, X) is NaN, and `text.length > NaN` is false,
+    // so a NaN bound would skip the clamp entirely AND report bodyTruncated:false — the
+    // ceiling bypassed by a row that claims to be complete. A non-finite bound falls back
+    // to the ceiling rather than being trusted.
+    const requested = opts.maxBodyChars;
+    const bound = typeof requested === 'number' && Number.isFinite(requested)
+      ? requested
+      : TONE_CANDIDATE_BODY_MAX_CHARS;
+    const limit = Math.max(0, Math.min(bound, TONE_CANDIDATE_BODY_MAX_CHARS));
+    const clamped = text.length > limit ? text.slice(0, limit) : text;
+    const scrubbed = scrubForStore(clamped);
+    // The body goes ONLY under the reserved machine-local key. `candidate` itself is
+    // part of the envelope that feeds `contextRedacted` — a SERVED field, on the
+    // cross-machine allowlist, scrubbed only for credential shapes. Putting the body
+    // there would publish outbound message text to the local read surface and to peer
+    // machines on a pool merge. This is not a hypothetical: the first implementation
+    // did exactly that, and it looked correct.
+    contentFull.candidateBody = scrubbed.text;
+    // Metadata ABOUT the body stays visible — a reader needs these to trust the row,
+    // and none of them carry content.
+    candidate.bodyTruncated = text.length > limit;
+    // Kinds are computed over the FULL text, not the stored fragment.
+    //
+    // Clamping first is required for storage safety (see above), but it makes the
+    // stored fragment's redaction list mean "kinds found in the first N chars" —
+    // which is NOT the question a reader asks. "Did this message contain a
+    // credential?" must be answerable for the WHOLE message, or a secret sitting
+    // past the cut makes the row read as clean. Two bounded scrubs: one over the
+    // full text for accurate metadata (its scrubbed output is discarded), one over
+    // the clamped text for the bytes actually stored.
+    // An oversize/errored full scan returns a MARKER span, not real findings. Using it
+    // would REPLACE the genuine kinds found in the stored fragment with ["oversize"] —
+    // a row whose body visibly redacted a token would report only that the scan failed.
+    // Fall back to the fragment's own findings and say plainly that whole-message
+    // accounting was unavailable.
+    const rawFullScan = text.length > limit ? scrubForStore(text) : scrubbed;
+    const fullScanUsable = rawFullScan.error !== true && rawFullScan.truncated !== true;
+    const fullScan = fullScanUsable ? rawFullScan : scrubbed;
+    if (!fullScanUsable) candidate.bodyRedactionScope = 'stored-fragment-only';
+    if (fullScan.redactions.length > 0) {
+      candidate.bodyRedactionKinds = [...new Set(fullScan.redactions.map((r) => r.kind))];
+      // True when the full message carried a credential that the clamp cut away, so
+      // the stored fragment shows no redaction marker despite the message having had
+      // one. Without this a truncated row looks cleaner than the message actually was.
+      if (fullScan.redactions.length > scrubbed.redactions.length) {
+        candidate.bodyRedactionsBeyondClamp = true;
+      }
+    }
+    // The scrubber replaces the whole field on its own error/oversize paths. Record
+    // that plainly so a judge reading this row can tell "nothing sensitive was found"
+    // from "the scrub failed and the body was withheld" — those are not the same
+    // fact, and silently conflating them would make the row quietly untrustworthy.
+    if (scrubbed.error === true) candidate.bodyWithheld = 'scrub-error';
+    else if (scrubbed.truncated === true) candidate.bodyWithheld = 'oversize';
+  }
   const ctx: Record<string, unknown> = {
-    candidate: {
-      sha256: sha256(text),
-      bytes: Buffer.byteLength(text, 'utf8'),
-      chars: text.length,
-    },
+    ...(Object.keys(contentFull).length > 0 ? { [CONTENT_FULL_KEY]: contentFull } : {}),
+    candidate,
     channel: String(context.channel ?? '').slice(0, 32),
     messageKind: context.messageKind ?? 'reply',
     recentMessageCount: Array.isArray(context.recentMessages) ? context.recentMessages.length : 0,
@@ -757,6 +873,21 @@ export interface ToneGateConfig {
    * classification before any real delivery). No effect outside 'tiered'.
    */
   toneTierDryRun?: boolean;
+  /**
+   * Record the candidate message BODY on the decision-quality provenance row, in
+   * addition to the sha256 identity that is always recorded (operator decision
+   * 2026-07-23, topic 33368 — see buildToneDecisionContext for the full reasoning
+   * and its limits).
+   *
+   * OFF unless explicitly set. Absent/false is byte-identical to the identity-only
+   * behaviour that shipped before this flag existed, so an agent that never sets it
+   * stores exactly what it stored yesterday.
+   *
+   * Scoped to INTERNAL benchmarking of this install's own decisions. It is NOT
+   * authorization for ingesting third-party scenarios, which need an anonymisation
+   * layer that does not exist yet.
+   */
+  recordCandidateBody?: boolean;
 }
 
 export class MessagingToneGate {
@@ -817,7 +948,11 @@ export class MessagingToneGate {
       // recorder's own total/fail-open contract).
       provenance: {
         decisionPoint: DP_MESSAGING_TONE_GATE,
-        context: buildToneDecisionContext(text, context),
+        context: buildToneDecisionContext(text, context, {
+          // Read live through getConfig() like every other tone-gate knob, so the
+          // operator can turn body capture on or off without a restart.
+          recordCandidateBody: this.getConfig().recordCandidateBody === true,
+        }),
         optionsPresented: [...TONE_OPTIONS_PRESENTED],
         promptId: TONE_GATE_PROMPT_ID,
       },
