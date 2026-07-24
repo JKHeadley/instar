@@ -1,3 +1,19 @@
 # Dashboard Throughput
 
-Adds a read-only dashboard Throughput tab and `/throughput/series` route. It observes GitHub pull-request delivery signals only; it does not mutate GitHub or runtime state.
+## What Changed
+
+The dashboard now has a read-only Throughput tab backed by a canonical `/throughput/series` route.
+
+## What to Tell Your User
+
+Use Throughput to compare Codey, Echo, or team delivery across 7, 14, or 30 days, including a single composite index.
+
+## Summary of New Capabilities
+
+- Charts merges, merge latency, rework, reverts, commit iterations, changed lines, and the composite index.
+- Uses the documented V40/S20/Q25/O15 weights and returns those weights in the API contract.
+- Reads GitHub pull-request data without mutating repository or runtime state.
+
+## Evidence
+
+The metric contract, dashboard registry, panel placement, URL state, navigation, and viewport floors pass locally. TypeScript and repository invariants pass, with browser verification at 2560px and 390px.
