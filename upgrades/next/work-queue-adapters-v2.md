@@ -2,7 +2,7 @@
 type: feature
 ---
 
-# Live work-queue adapters
+## What Changed
 
 The development agent's work queue now reads real active commitments, evolution
 actions, feedback clusters, and topic-intent activities through their existing
