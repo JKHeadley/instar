@@ -5602,6 +5602,39 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Outbound advisory for automated messages section');
     }
 
+    // Built-in job enablement surface (2026-07-23) — Migration Parity item 3.
+    // The `enabled:` line in .instar/jobs/instar/<slug>.md LOOKS authoritative and
+    // is not: installBuiltinJobs regenerates that markdown from the shipped
+    // template on every update, so an edit there reverts silently at the next one.
+    // The durable setting lives in jobs/schedule/<slug>.json (preserved across
+    // regeneration, and what AgentMdJobLoader reads). Undocumented until now; an
+    // agent editing the visible-but-wrong file loses the change with no signal.
+    // Content-sniff on the anchor phrase keeps it idempotent.
+    if (
+      content.includes('**Job Scheduler**') &&
+      !content.includes('Enabling/disabling a BUILT-IN job')
+    ) {
+      const jobEnableBullet =
+        '- **Enabling/disabling a BUILT-IN job — edit `.instar/jobs/schedule/<slug>.json`, NOT the `.md`.**' +
+        ' The `enabled:` line in `.instar/jobs/instar/<slug>.md` looks authoritative and is NOT: built-in job' +
+        ' markdown is regenerated from the shipped template on EVERY update (the same always-overwrite rule as' +
+        ' built-in hooks), so an edit there is silently reverted at the next update — the file shows your new' +
+        ' value until then, which is the worst kind of wrong. The DURABLE setting is `enabled` in' +
+        ' `.instar/jobs/schedule/<slug>.json`, which the installer explicitly PRESERVES across regeneration and' +
+        ' which the loader actually reads. Job definitions load at SERVER START (no hot reload), so a change' +
+        ' applies at the next restart — on a machine with a configured restart window, that means the window,' +
+        ' not immediately. Custom jobs under `jobs/user/` are never touched by any of this.\n';
+      // Anchor after the Trigger line inside the Job Scheduler block; fall back to
+      // appending the bullet if that line is absent on an older CLAUDE.md.
+      const triggerMarker = '/jobs/SLUG/trigger`\n';
+      const idx = content.indexOf(triggerMarker);
+      content = idx !== -1
+        ? content.slice(0, idx + triggerMarker.length) + jobEnableBullet + content.slice(idx + triggerMarker.length)
+        : content + '\n' + jobEnableBullet;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: documented the durable built-in job enablement surface');
+    }
+
     // TIME_CLAIM advisory (operator mandate 2026-06-12, topic 13481) —
     // Migration Parity item 3: an agent whose CLAUDE.md already carries the
     // Outbound advisory section (installed by the block above or by init)
