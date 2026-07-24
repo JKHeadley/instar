@@ -1,0 +1,5 @@
+# Unified work queue, in plain English
+
+Instar currently has several places where unfinished work lives. This change gives those places one read-only registry and a predictable ordering. It reads commitments, evolution actions, feedback clusters, and topic-derived activities through adapters, converts them into the same WorkItem shape, removes obvious duplicates, and ranks the remaining items using transparent rules. User-directed work and urgent or old work rise first. Nothing here automatically sends messages, changes status, or starts work: it is an advisory queue for the operator and future supervised goal-alignment review. The endpoints are dark on fleet agents and live only on the development agent while the design is proven. A later stage can add a supervised language-model alignment pass without changing the deterministic baseline.
+
+Rescore remains a read-only computation.

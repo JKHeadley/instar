@@ -65,6 +65,7 @@ import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
@@ -734,6 +735,8 @@ export function createDeliveryFailedHandler(opts: {
 }
 
 export interface RouteContext {
+  /** Unified work-intake registry; absent while fleet rollout is dark. */
+  workQueue?: WorkQueueRegistry | null;
   config: InstarConfig;
   /** Live-config READ handle (mtime-staleness re-reader). Routes that must
    *  honor config flips WITHOUT a restart (outbound-advisory rollback
@@ -13570,6 +13573,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         try { db.close(); } catch { /* best-effort */ }
       }
     }
+  });
+
+  // ── Unified work-intake registry (dev-agent live, fleet dark) ──
+  router.get('/work-queue', (_req, res) => {
+    if (!resolveDevAgentGate(ctx.config.workQueue?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'work queue is not enabled' });
+      return;
+    }
+    if (!ctx.workQueue) { res.status(503).json({ error: 'work queue unavailable' }); return; }
+    res.json({ items: ctx.workQueue.list() });
+  });
+  // @write-domain:none
+  router.post('/work-queue/rescore', (_req, res) => {
+    if (!resolveDevAgentGate(ctx.config.workQueue?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'work queue is not enabled' });
+      return;
+    }
+    if (!ctx.workQueue) { res.status(503).json({ error: 'work queue unavailable' }); return; }
+    res.json({ items: ctx.workQueue.rescore() });
   });
 
   // POST /build/heartbeat — /build pipeline status relay.
