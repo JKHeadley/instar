@@ -930,6 +930,7 @@ export class WorktreeManager extends EventEmitter {
             { stdio: 'pipe', timeout: 3000, operation: 'src/core/WorktreeManager.ts:seedGitHooks-read' },
           ).trim();
         } catch {
+          // @silent-fallback-ok: expected path — `git config --get` exits non-zero when the key is unset
           return ''; // unset (git exits non-zero) or unreadable — treat as no hooks configured
         }
       };
@@ -965,6 +966,7 @@ export class WorktreeManager extends EventEmitter {
           const r = fs.realpathSync(probe);
           return r === rootReal || r.startsWith(rootReal + path.sep);
         } catch {
+          // @silent-fallback-ok: fail-closed — an unresolvable real path REFUSES the copy, never permits it
           return false;
         }
       };
@@ -974,6 +976,7 @@ export class WorktreeManager extends EventEmitter {
         wtReal = fs.realpathSync(worktreePath);
         projReal = fs.realpathSync(this.opts.projectDir);
       } catch {
+        // @silent-fallback-ok: fail-closed — unresolvable roots refuse the seed rather than risk an escape
         return; // roots unresolvable — refuse rather than risk an escape
       }
       if (!realContained(destDir, wtReal)) return; // symlinked dest escape — refuse
