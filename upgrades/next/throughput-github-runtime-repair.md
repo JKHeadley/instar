@@ -9,8 +9,8 @@ including the guarded Green-PR merge child.
 
 ## What to Tell Your User
 
-The Throughput tab can load real chart data when the agent has `GITHUB_TOKEN` or a
-vault `github_token`, even when the server runs in the background with launchd's
+The Throughput tab can load real chart data when the agent has a GitHub token in
+its environment or vault, even when the server runs in the background with launchd's
 restricted PATH. It will report authentication unavailable instead of silently
 using another person's GitHub login.
 
@@ -24,7 +24,7 @@ using another person's GitHub login.
 
 ## Evidence
 
-The focused runtime, route, pagination, timezone, CI, and Green-PR suites pass 68
+The focused runtime, route, pagination, timezone, CI, and Green-PR suites pass 73
 tests. TypeScript and repository lint pass. Independent security, integration, and
 throughput reviews were folded into the converged design. Final release evidence
 also requires post-deployment desktop and phone verification with real chart data.
