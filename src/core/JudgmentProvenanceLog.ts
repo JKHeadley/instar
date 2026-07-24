@@ -44,6 +44,21 @@ export const PROVENANCE_ROW_BYTE_CLAMP = 64 * 1024;
 /** How large the precomputed redacted context view may grow (chars). */
 const REDACTED_CONTEXT_CLAMP = 2_000;
 
+/**
+ * Reserved top-level context key whose value is MACHINE-LOCAL BY CONSTRUCTION.
+ *
+ * Anything under this key is stripped before `contextRedacted` is built, so it lives
+ * only in `contextFull` — the field readRedacted() omits and the cross-machine
+ * allowlist excludes. This is the ONLY sanctioned way for a content-class envelope to
+ * retain a genuine body (e.g. an outbound message being judged for correctness later)
+ * without that body reaching a served surface.
+ *
+ * Deliberately a reserved KEY rather than a per-callsite path list: the provenance log
+ * must not need to know which decision points carry content, and a new enrolling
+ * callsite must not be able to leak by forgetting to register itself somewhere.
+ */
+export const CONTENT_FULL_KEY = '_contentFull';
+
 /** Flush the append buffer at this many rows or this many ms, whichever first. */
 const FLUSH_MAX_ROWS = 50;
 const FLUSH_INTERVAL_MS = 1_000;
@@ -295,7 +310,26 @@ export class JudgmentProvenanceLog {
     }
     let contextRedacted: string;
     try {
-      contextRedacted = JSON.stringify(scrub(input.context)).slice(0, REDACTED_CONTEXT_CLAMP);
+      // CONTENT-BEARING CONTAINMENT. `contextRedacted` is a SERVED field: it is
+      // returned by readRedacted() and is on the cross-machine allowlist
+      // (REDACTED_PROVENANCE_FIELDS), so whatever lands here is readable locally AND
+      // travels to peer machines on a pool merge. The scrubbers applied to it are
+      // CREDENTIAL-shape scrubbers, not PII scrubbing — they will not remove ordinary
+      // prose.
+      //
+      // That was safe while every envelope held identity + bounded code-derived
+      // features only. A decision point that must retain genuine content for later
+      // retrospective judging (decision-input-capture) breaks that assumption, and the
+      // failure is silent: the body simply appears in a served field nobody re-audited.
+      //
+      // So the reserved top-level key `_contentFull` is machine-local BY CONSTRUCTION —
+      // stripped here before the redacted projection is built, and therefore present
+      // only in `contextFull`, which readRedacted omits. A builder that needs to retain
+      // content puts it there and nowhere else. Non-content metadata ABOUT that content
+      // (redaction kinds, truncation flags) stays in the visible envelope, because those
+      // are exactly the fields a reader needs in order to trust the row.
+      const { [CONTENT_FULL_KEY]: _contentFull, ...redactable } = input.context;
+      contextRedacted = JSON.stringify(scrub(redactable)).slice(0, REDACTED_CONTEXT_CLAMP);
     } catch {
       contextRedacted = '[unserializable-context]';
     }
