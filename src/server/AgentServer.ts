@@ -2351,6 +2351,7 @@ export class AgentServer {
         if (sources?.ci === true && this.failureLedger) {
           this.ciFailurePoller = new CiFailurePoller({
             ledger: this.failureLedger,
+            stateDir: options.config.stateDir,
             resolveByMergeCommit: (oid) => {
               const i = tracker?.findByMergeCommit(oid);
               // `origin` (loop self-exclusion, §4.3) lands with slice 2's origin
@@ -3694,7 +3695,7 @@ export class AgentServer {
     }
     const routes = createRoutes(routeCtx);
     this.app.use(routes);
-    this.app.use(createThroughputRoutes());
+    this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });

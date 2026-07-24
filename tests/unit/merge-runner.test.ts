@@ -36,6 +36,12 @@ const baseCfg = () => ({
   mergeTimeoutMs: 1000,
   mergeKillGraceMs: 100,
   expectedContractVersion: 2,
+  resolveGitHubEnv: () => ({
+    ...process.env,
+    PATH: '/opt/homebrew/bin:/usr/bin:/bin',
+    GH_TOKEN: 'agent-token',
+    GITHUB_TOKEN: 'agent-token',
+  }),
 });
 
 function fakeSpawn(map: { capabilities?: SpawnOutcome; merge?: SpawnOutcome }) {
@@ -58,6 +64,23 @@ describe('parseResultLine', () => {
 });
 
 describe('DefaultMergeRunner — contract probe + hash pin', () => {
+  it('fails closed before spawning when explicit GitHub identity is unavailable', async () => {
+    let spawned = false;
+    const r = new DefaultMergeRunner(
+      { ...baseCfg(), resolveGitHubEnv: () => null },
+      {
+        spawn: async (args) => {
+          spawned = true;
+          return fakeSpawn({})(args);
+        },
+        confirmMerged: async () => true,
+        prState: async () => 'OPEN',
+      },
+    );
+    expect(await r.probeContract()).toEqual({ ok: false });
+    expect(spawned).toBe(false);
+  });
+
   it('probes the contract and pins the script hash', async () => {
     const r = new DefaultMergeRunner(baseCfg(), { spawn: fakeSpawn({}), confirmMerged: async () => true, prState: async () => 'OPEN' });
     const p = await r.probeContract();
@@ -83,6 +106,28 @@ describe('DefaultMergeRunner — contract probe + hash pin', () => {
 });
 
 describe('DefaultMergeRunner — run', () => {
+  it('threads the same explicit identity into capabilities and safe-merge', async () => {
+    const environments: NodeJS.ProcessEnv[] = [];
+    const spawn = async (a: SpawnArgs): Promise<SpawnOutcome> => {
+      environments.push(a.env);
+      return fakeSpawn({})(a);
+    };
+    const r = new DefaultMergeRunner(baseCfg(), {
+      spawn,
+      confirmMerged: async () => true,
+      prState: async () => 'OPEN',
+    });
+    await r.probeContract();
+    await r.run({ pr: 5, headRefOid: 'sha', repo: 'JKHeadley/instar' });
+    expect(environments).toHaveLength(2);
+    for (const env of environments) {
+      expect(env.GH_TOKEN).toBe('agent-token');
+      expect(env.GITHUB_TOKEN).toBe('agent-token');
+      expect(env.PATH?.split(path.delimiter)[0]).toBe('/opt/homebrew/bin');
+    }
+    expect(environments[1].GREEN_PR_ATTEMPT_TOKEN).toBeTruthy();
+  });
+
   it('writes a two-phase in-flight record and clears it after', async () => {
     let pidAtPhase2: number | null = null;
     const spawn = async (a: SpawnArgs): Promise<SpawnOutcome> => {

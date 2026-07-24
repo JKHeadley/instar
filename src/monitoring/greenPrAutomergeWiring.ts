@@ -28,8 +28,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 
+import {
+  createAuthenticatedGhExec,
+  createAuthenticatedGitHubCliRuntimeResolver,
+  type AuthenticatedGitHubCliRuntime,
+} from '../core/githubRuntime.js';
 import { GuardLatchStore, type GuardLatchEntry } from './GuardLatchStore.js';
 import { DefaultMergeRunner } from './MergeRunner.js';
 import {
@@ -110,14 +114,8 @@ export interface GreenPrWiringOpts {
   logger?: (msg: string) => void;
   /** Test seam: override the gh exec. */
   ghExec?: (args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
-}
-
-function gh(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((resolve) => {
-    execFile('gh', args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ stdout: stdout ?? '', stderr: stderr ?? '', code: err ? (err as NodeJS.ErrnoException & { code?: number }).code ?? 1 : 0 });
-    });
-  });
+  /** Test seam: explicit GitHub runtime shared by reads and safe-merge. */
+  githubRuntime?: () => AuthenticatedGitHubCliRuntime;
 }
 
 /** Build the GuardLatchStore for this install. */
@@ -135,7 +133,12 @@ export function buildGuardLatchStore(opts: GreenPrWiringOpts): GuardLatchStore {
 
 /** Build the full GreenPrAutoMerger deps (real gh adapters). */
 export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchStore): GreenPrAutoMergerDeps {
-  const exec = opts.ghExec ?? gh;
+  const githubRuntime = opts.githubRuntime
+    ?? createAuthenticatedGitHubCliRuntimeResolver({ stateDir: opts.stateDir });
+  const exec = opts.ghExec ?? createAuthenticatedGhExec({
+    stateDir: opts.stateDir,
+    resolveRuntime: githubRuntime,
+  });
   const now = opts.now ?? (() => Date.now());
 
   const runner = new DefaultMergeRunner(
@@ -146,6 +149,13 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       mergeTimeoutMs: opts.mergeTimeoutMs,
       mergeKillGraceMs: opts.mergeKillGraceMs,
       expectedContractVersion: 2,
+      resolveGitHubEnv: () => {
+        try {
+          return githubRuntime().env;
+        } catch { /* @silent-fallback-ok: missing explicit GitHub identity makes the autonomous act path refuse */
+          return null;
+        }
+      },
       // mergerunner-auto-arm-handoff M2: the runner selects --auto vs --admin and
       // the auto-path deadline from these (config → GreenPrAutoMergerConfig →
       // buildGreenPrDeps → MergeRunnerConfig). Defaults keep the arm path.
