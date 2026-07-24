@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-24T00:47:05.364Z",
+  "slug": "time-claim-parenthetical-anchor",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 19,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "ELAPSED_RE's 'in' anchor listed a CLOSING paren in its boundary set but not an OPENING one. Latent since the anchor shipped; surfaced 2026-07-23 when two fabricated elapsed-time claims went out unflagged during a live time-boxed autonomous run. Diagnosed against the real /messaging/preflight endpoint: identical text with a trailing period returns a correct TIME_CLAIM advisory, with ' (' returns advisories:[]. The parenthetical form extracted ZERO claims, so the clock comparison never executed — a miss at the extraction stage, not the comparison stage."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

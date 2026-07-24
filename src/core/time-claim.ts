@@ -53,14 +53,29 @@ interface ExtractedClaim {
 // Anchored claim patterns. Each requires the anchor WORD so plain durations
 // never match. Hours may be fractional ("7.5 hours"); "Xh Ym" composes.
 // "in" as an elapsed anchor is only accepted at a boundary ("7.5 hours in:",
-// "1h50m in.", "2h in)") — never "3h in CI" / "in 2 hours".
+// "1h50m in.", "2h in)", "40 min in (iteration 1)") — never "3h in CI" /
+// "in 2 hours".
+//
+// The OPENING paren is in the boundary set deliberately (2026-07-23). It was
+// missing while the CLOSING paren was present, so "40 min in." was recognised
+// and "40 min in (iteration 1)" was not — and a parenthetical annotation after
+// a progress figure is an extremely natural way to write one. That gap let two
+// real fabricated elapsed-time claims through on a live autonomous run: the
+// claims extracted to NOTHING, so the comparison never ran at all.
+//
+// A residual ambiguity is accepted knowingly: "2h in (CI queue)" reads as a
+// PLACE rather than a duration and will now be treated as an elapsed claim. The
+// trade is deliberate — this signal is ADVISORY (it returns the message to the
+// author with a note, it never blocks), so a false positive costs one re-read
+// while a false negative costs the operator a fabricated time report. Tonight
+// supplied the evidence for which way that asymmetry points.
 const HOURS = String.raw`(\d{1,3}(?:\.\d+)?)\s*h(?:ours?|rs?)?`;
 const MINUTES = String.raw`(\d{1,2})\s*m(?:in(?:ute)?s?)?`;
 const HM = `${HOURS}(?:\\s*${MINUTES})?|${MINUTES}`;
 const PRE = String.raw`(?:~|≈|about\s+|around\s+|roughly\s+)?`;
 
 const ELAPSED_RE = new RegExp(
-  `${PRE}(?:${HM})\\s*(?:elapsed|into\\s+the\\s+(?:run|session)|in(?=\\s*(?:[,.;:)\\]!\\n—–-]|$|now\\b)))`,
+  `${PRE}(?:${HM})\\s*(?:elapsed|into\\s+the\\s+(?:run|session)|in(?=\\s*(?:[,.;:()\\[\\]!\\n—–-]|$|now\\b)))`,
   'gi',
 );
 const REMAINING_RE = new RegExp(

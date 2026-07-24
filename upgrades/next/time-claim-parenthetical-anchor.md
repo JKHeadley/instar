@@ -1,0 +1,35 @@
+## What Changed
+
+The TIME_CLAIM outbound advisory now recognises an elapsed-time claim followed by a parenthetical — `40 min in (iteration 1)` — which it previously did not.
+
+The `in` anchor accepted a closing paren as a boundary but not an opening one, so `40 min in.` was checked against the live session clock and `40 min in (iteration 1)` extracted nothing at all, meaning no comparison ran.
+
+## Summary of New Capabilities
+
+- Elapsed claims written with a trailing parenthetical or bracket annotation are now verified against the live session clock instead of silently skipped.
+
+## What to Tell Your User
+
+Nothing to do. The check that verifies my elapsed-time claims against the real clock had a blind spot for one very common way of writing a progress line, and it's closed.
+
+## Evidence
+
+Found by testing the live preflight endpoint against messages actually sent during an active autonomous run.
+
+**Before:**
+
+```
+POST /messaging/preflight  "AUTONOMOUS PROGRESS — 57 minutes elapsed, 7h02m left"
+  -> {"advisories":[{"code":"TIME_CLAIM","match":"claimed \"57 minutes elapsed\"; live clock: 3h 58m elapsed", ...}]}
+
+POST /messaging/preflight  "AUTONOMOUS PROGRESS — 40 min in (iteration 1)"
+  -> {"advisories":[]}
+```
+
+Same endpoint, same active clock, same kind of claim — one caught, one invisible.
+
+**Root cause:** the `in` anchor's boundary set contained `)` but not `(`. The parenthetical form extracted zero claims, so the clock comparison never executed.
+
+**After:** both forms extract and flag. Against a 14-minute clock, `40 min in (iteration 1)` now returns `claimed "40 min in"; live clock: 14m elapsed`.
+
+**Not changed:** the 15-minute absolute tolerance floor, which let a separate 57-vs-45-minute claim pass. That is working as designed; narrowing it carries real false-positive cost and is recorded rather than changed.
