@@ -131,6 +131,7 @@ import { SafeGitExecutor, auditBootCredentialCoherence } from '../core/SafeGitEx
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
+import { createThroughputRoutes } from './throughputRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
@@ -3693,6 +3694,7 @@ export class AgentServer {
     }
     const routes = createRoutes(routeCtx);
     this.app.use(routes);
+    this.app.use(createThroughputRoutes());
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });

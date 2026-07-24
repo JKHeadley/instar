@@ -42,6 +42,7 @@ export const GLANCE_MAX_TOKEN_LEN = 40; // a longer token is a glued-word budget
 // asserts adopted ∪ grandfathered == every TAB_REGISTRY id, so a NEW tab in NEITHER
 // set fails the build; the monotonicity test asserts the grandfather size ≤ ceiling.
 export const GLANCE_ADOPTED_TABS = [
+  'throughput',
   'commitments', 'blockers', // Phases 1–2
   'machines', 'systems', 'spend', 'routing-map', // Phase 3 (the jargon belt); 'systems' is the Health tab
   // Phase 4 — the sweep: every remaining data-summary view on the floor.
