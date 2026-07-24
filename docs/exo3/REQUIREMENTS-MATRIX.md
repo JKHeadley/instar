@@ -95,6 +95,38 @@
 
 ---
 
+## Canonical written-framework reconciliation (from *The Organizational Singularity* book + OpenExO resource hub — beyond the 11 videos) [added 2026-06-06, #2 due diligence]
+
+The video-derived sections above (A, G) under-specified vs Salim's own WRITTEN structure. Canonical: **EXO 3.0 = MTP + DRIVE + SHAPE**, running on the **Intelligence Stack**, reached via the **REWRITE** 6-step playbook. Corrected mappings:
+
+### A′. Intelligence Stack = SIX cognitive layers + a GOVERN/ASSURE control plane (section A listed 5)
+| Canonical layer | Instar |
+|---|---|
+| **Purpose** (mission, constraints, priorities) | ORG-INTENT / MTP protocol (also section B) — it IS the Stack's first layer |
+| Sense | sentinel family + monitoring |
+| Interpret | CoherenceMonitor + classifiers |
+| Decide | gates (external-operation, mandate, trust) + tradeoff-resolve |
+| **Orchestrate & Act** (combined) | scheduler/jobs + SessionManager + multi-session/multi-machine |
+| Learn | Playbook + learnings + correction/preference + learning-velocity |
+| **GOVERN/ASSURE** (cross-cutting: real-time oversight, accountability, auditability, human stewardship) | **WE WERE UNDER-CLAIMING THIS.** guard-posture tripwire + decision audits (reaper-audit, operations log) + reap-log + coherence gate + attention-queue (human stewardship) + standards/constitution enforcement. A named requirement and one of our STRONGEST areas — foreground it. |
+
+### G′. SHAPE = FIVE named dimensions (section G was generic)
+| Canonical dimension | Instar |
+|---|---|
+| **Safe Autonomy** | external-operation-gate (classify/gate every external action) + secret-store-never-on-disk + source-tree-guard. (Exactly the OpenClaw "lethal-trifecta" failure we prevent.) |
+| **Human Architecture** | human ON the loop (show-plan for high-risk) + operator-binding (Know Your Principal) + attention escalation |
+| **Adaptive Architecture** | self-heal (compaction/restart-cascade/version-skew recovery) + graduated feature rollout |
+| **Purpose Control** | coherence gate (every outbound message vs intent) + periodic drift audit |
+| **Ecosystem Trust** | Threadline (trust-gated A2A) — the honest frontier, off by default — + mandate/passport |
+
+### ★ The framework's biggest UNSTATED requirement = our strongest differentiation
+A detailed analysis of the framework notes it describes *what to eliminate* (org charts, middle-management coordination, fixed planning cycles) but leaves its biggest requirement **unspecified**: *"continuous enforcement that agents remain aligned to MTP, with no mechanism described"* — also no drift audit, no named agent-misalignment-over-time failure mode, no stated human-oversight trigger. **We IMPLEMENT exactly this**: the coherence gate (every outbound vs intent), the periodic drift audit (gradual "Klarna-style" wandering), per-component auditability, and show-plan/attention oversight triggers. We don't just match his framework — we fill its biggest hole. **This is the headline for Salim.**
+
+### Peer artifact (competitive awareness)
+OpenExO ships an official **"ExO 3.0 Claude Skill"** — a conversational tool that *explains* the framework (login-gated). We built the running system the framework describes. Guide vs implementation.
+
+---
+
 ## Gap analysis (what's actually missing)
 
 | Gap | Maps to | Effort | Pitch impact |
