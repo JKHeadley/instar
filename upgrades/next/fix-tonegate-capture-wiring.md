@@ -1,0 +1,38 @@
+---
+title: "Tone-gate operator settings actually reach the gate"
+---
+
+## What Changed
+
+The MessagingToneGate construction site read its operator knobs from `config.messaging?.toneGate` — a
+structurally unreachable location (`messaging` is an array of adapter configs) — and passed through only 3
+of the 4 knobs, dropping `recordCandidateBody`. All four operator knobs (`failClosedOnExhaustion`,
+`failClosedMode`, `toneTierDryRun`, `recordCandidateBody`) were therefore inert in every real config; in
+particular, PR #1599's candidate-body capture never fired (zero bodies ever captured). A single exported
+resolver (`resolveToneGateOperatorConfig`) now reads the typed TOP-LEVEL `toneGate` block and passes all
+four knobs through; guidance strings (CLAUDE.md template, migrator section, detector comment) move to the
+working path; an idempotent PostUpdateMigrator step rewrites the dead path in already-installed CLAUDE.mds.
+
+## What to Tell Your User
+
+The tone gate — the always-on checker that keeps raw commands, file paths, and config syntax out of my
+messages to you — now actually honors its documented settings. If you ever need its emergency lever (for
+example, letting messages through instead of holding them when the checker itself is having trouble), that
+lever works now, and my docs point at the right place to set it. Nothing changes unless a setting is
+explicitly set.
+
+## Summary of New Capabilities
+
+- The four tone-gate operator knobs are live from top-level `toneGate` in `.instar/config.json` (read
+  live, no restart).
+- `toneGate.recordCandidateBody: true` now genuinely captures judged message bodies (machine-local,
+  redaction-excluded store) for decision-quality benchmarking.
+- Installed CLAUDE.mds get the corrected kill-switch path via migration.
+
+## Evidence
+
+New unit suite `tone-gate-operator-config.test.ts` (5 tests: all four knobs pass through on the realistic
+array-shaped config; absent block resolves undefined-everything; the dropped knob specifically survives;
+the dead legacy location stays dead; null-safety). Existing tone-gate suites green (90 tests). Root-cause
+evidence: the echo dev agent's drive12-retrospective-judge audit (772 tone-gate rows in 48h, zero with
+bodies, flag set + inert).

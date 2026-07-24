@@ -4011,6 +4011,23 @@ export interface InstarConfig {
   users: UserProfile[];
   /** Messaging adapters to enable */
   messaging: MessagingAdapterConfig[];
+  /**
+   * Operator config for the outbound Messaging Tone Gate, read LIVE via the
+   * gate's config getter (no restart needed). TOP-LEVEL by necessity:
+   * `messaging` is an array of adapter configs, so the historically-documented
+   * `messaging.toneGate.*` location was structurally unreachable — no config
+   * could ever set it (the 2026-07-24 candidate-body wiring gap).
+   */
+  toneGate?: {
+    /** Kill-switch for fail-closed-on-provider-exhaustion (default true). */
+    failClosedOnExhaustion?: boolean;
+    /** Fail-direction policy: 'always' (default) | 'tiered' (opt-in) | 'never'. */
+    failClosedMode?: 'always' | 'tiered' | 'never';
+    /** Soak flag for 'tiered' — log would-deliver without delivering. */
+    toneTierDryRun?: boolean;
+    /** Opt-in candidate-body capture for decision-quality benchmarking. */
+    recordCandidateBody?: boolean;
+  };
   /** Monitoring config */
   monitoring: MonitoringConfig;
   /** Feature-rollout reconciler config (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.3
@@ -5119,7 +5136,7 @@ export interface ResponseReviewConfig {
    * (held). Set false to revert THAT behavior to the prior fail-open without a
    * deploy (read live via the gate's optional liveConfig getter; a promise
    * REJECTION keeps its pre-existing unconditional fail-closed). Mirrors
-   * messaging.toneGate.failClosedOnExhaustion.
+   * toneGate.failClosedOnExhaustion (top-level).
    */
   failClosedOnCriticalAbstain?: boolean;
   /** Threshold for escalating warn-mode violations */
