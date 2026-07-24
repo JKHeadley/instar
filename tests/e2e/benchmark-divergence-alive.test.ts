@@ -85,8 +85,12 @@ describe('Benchmark-Divergence E2E lifecycle (feature is alive)', () => {
     expect(res.body.enabled).toBe(true); // the dev-gate resolved the detector LIVE
     expect(res.body.dryRun).toBe(true); // FD13 — dryRun default even on dev
     expect(res.body.analyzer).toMatchObject({ isHolder: true, stale: false }); // single-machine counts as holder
-    // The mirror honestly reports its pre-pull absent state (never a throw).
-    expect(res.body.mirror).toMatchObject({ present: false, stale: true });
+    // The SHIPPED baseline resolves on the production init path (2026-07-23 — the
+    // pin was `present:false` while no baseline existed; the first capture ships
+    // inside the package and is found via the installed-package fallback, so a
+    // real install now reports a live mirror rather than an honest absence).
+    expect(res.body.mirror).toMatchObject({ present: true, stale: false });
+    expect(res.body.mirror.capturedAt).toBeTruthy();
     expect(Array.isArray(res.body.findings)).toBe(true);
     expect(res.body.summary.unanalyzedLoss).toEqual({ byMachine: {} });
   });

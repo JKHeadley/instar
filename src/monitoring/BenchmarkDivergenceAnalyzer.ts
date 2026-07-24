@@ -43,6 +43,7 @@ import {
   liveTemplateHash,
   loadBenchmarkMirror,
   resolveMirrorPath,
+  resolveExistingMirrorPath,
   type BenchmarkMirror,
 } from '../data/benchmarkDivergenceRegistry.js';
 
@@ -239,7 +240,7 @@ export class BenchmarkDivergenceAnalyzer {
   }
 
   private loadMirror(s: BenchmarkDivergenceSettings): BenchmarkMirror {
-    return loadBenchmarkMirror(resolveMirrorPath(this.config.projectDir, s.mirrorPath));
+    return loadBenchmarkMirror(resolveExistingMirrorPath(this.config.projectDir, s.mirrorPath));
   }
 
   private mirrorStaleDays(mirror: BenchmarkMirror): number | null {
@@ -835,5 +836,5 @@ export class BenchmarkDivergenceAnalyzer {
 /** Exported for the mirror-path unit tests. */
 export function benchmarkMirrorAbsolutePath(config: InstarConfig): string {
   const s = resolveBenchmarkDivergenceSettings(config);
-  return resolveMirrorPath(config.projectDir, s.mirrorPath);
+  return resolveExistingMirrorPath(config.projectDir, s.mirrorPath);
 }

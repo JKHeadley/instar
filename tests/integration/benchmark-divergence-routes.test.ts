@@ -151,8 +151,8 @@ describe('GET /benchmark-divergence', () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ enabled: true, dryRun: false, scope: 'local' });
     expect(res.body.analyzer).toMatchObject({ isHolder: true, stale: false });
-    expect(res.body.mirror).toMatchObject({ present: false, stale: true });
-    expect(res.body.summary.byVerdict['precondition-failed']).toBe(1);
+    // Shipped baseline now resolves (installed-package fallback, 2026-07-23).
+    expect(res.body.mirror).toMatchObject({ present: true, stale: false });
     expect(res.body.summary.unanalyzedLoss).toBeDefined();
     expect(Array.isArray(res.body.findings)).toBe(true);
     expect(res.body.findings.length).toBeGreaterThan(0);
