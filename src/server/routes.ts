@@ -117,6 +117,7 @@ import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
+import { decorateWithRopeCondition } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
 import { annotateDecisionOutcome, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
@@ -15800,7 +15801,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // single-machine view on installs where the pool registry isn't wired (dark).
   router.get('/pool', (_req, res) => {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
-    const machines = ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [];
+    // Rope-condition decoration: the registry's `online` flag feeds placement and
+    // ages out on the conservative failoverThreshold (~15 min observed), while
+    // the rope-health monitor knows a peer's transports are down within one
+    // evaluation. Attach the live classification so reachability renders
+    // honestly without touching placement semantics. Monitor dark → absent.
+    const machines = decorateWithRopeCondition(
+      ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [],
+      ctx.ropeHealthMonitor?.status().peers,
+    );
     const sshEnrollment = ctx.mutualSshHealth ? ctx.mutualSshHealth() : null;
     res.json({
       enabled: !!ctx.machinePoolRegistry,
