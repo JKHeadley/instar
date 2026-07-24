@@ -6,7 +6,7 @@ The missing standard was transport recovery after interface changes: retrying th
 
 ## Decision
 
-The client keeps normal API retry behavior. On three consecutive network fetch failures it destroys and replaces the global undici dispatcher; successful calls clear the streak.
+The client keeps normal API retry behavior. On three consecutive network fetch failures it destroys and replaces a Slack-client-owned undici dispatcher supplied per request; unrelated HTTP clients are not affected. Successful calls clear the streak.
 
 ## Evidence
 
