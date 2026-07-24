@@ -57,7 +57,7 @@ describe('/subscription-pool quota — E2E feature-alive', () => {
   it('LIVE: poll reads usage end-to-end and the snapshot is readable over HTTP', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-e2e-'));
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'claude-primary', nickname: 'primary', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, '.claude-primary') });
+    pool.addFixture({ id: 'claude-primary', nickname: 'primary', email: 'primary@example.test', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, '.claude-primary') });
     const quotaPoller = new QuotaPoller({ pool, fetchImpl: okFetch, tokenResolver: () => 'sk-ant-oat01-x' });
     server = await boot({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), subscriptionPool: pool, quotaPoller });
 
@@ -77,8 +77,8 @@ describe('/subscription-pool quota — E2E feature-alive', () => {
   it('LIVE: /subscription-pool exposes drift while quota follows live identity', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-drift-e2e-'));
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'label-a', nickname: 'A', email: 'a@test', provider: 'anthropic', framework: 'claude-code', configHome: '/slot/a' });
-    pool.add({ id: 'real-b', nickname: 'B', email: 'b@test', provider: 'anthropic', framework: 'claude-code', configHome: '/slot/b' });
+    pool.addFixture({ id: 'label-a', nickname: 'A', email: 'a@test', provider: 'anthropic', framework: 'claude-code', configHome: '/slot/a' });
+    pool.addFixture({ id: 'real-b', nickname: 'B', email: 'b@test', provider: 'anthropic', framework: 'claude-code', configHome: '/slot/b' });
     const quotaPoller = new QuotaPoller({
       pool, fetchImpl: okFetch, tokenResolver: () => 'sk-ant-oat01-x',
       resolveSlotIdentity: async (slot) => slot === '/slot/a'
@@ -112,7 +112,7 @@ describe('/subscription-pool quota — E2E feature-alive', () => {
       }) + '\n',
     );
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'codex-primary', nickname: 'Codex', provider: 'openai', framework: 'codex-cli', configHome: codexHome });
+    pool.addFixture({ id: 'codex-primary', nickname: 'Codex', email: 'codex@example.test', provider: 'openai', framework: 'codex-cli', configHome: codexHome });
     // Keep the fixture's reset windows live independent of wall-clock time.
     const quotaPoller = new QuotaPoller({ pool, now: () => Date.parse('2026-07-10T19:00:00.000Z') });
     server = await boot({ config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date(), subscriptionPool: pool, quotaPoller });
@@ -130,7 +130,7 @@ describe('/subscription-pool quota — E2E feature-alive', () => {
   it('LIVE: an expired access token auto-refreshes end-to-end (account stays active, stamped on disk)', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-e2e-ref-'));
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'claude-primary', nickname: 'primary', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, '.claude-primary'), status: 'active' });
+    pool.addFixture({ id: 'claude-primary', nickname: 'primary', email: 'primary@example.test', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, '.claude-primary'), status: 'active' });
     // First usage read 401 (access token expired); after the refresh, 200.
     let calls = 0;
     const expiredThenOk: FetchImpl = async () => {

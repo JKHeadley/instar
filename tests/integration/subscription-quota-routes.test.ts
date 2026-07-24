@@ -42,7 +42,7 @@ describe('/subscription-pool quota routes (integration)', () => {
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-int-'));
     pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'claude-1', nickname: 'primary', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-1' });
+    pool.addFixture({ id: 'claude-1', nickname: 'primary', email: 'primary@example.test', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-1' });
     const quotaPoller = new QuotaPoller({ pool, fetchImpl: okFetch, tokenResolver: () => 'sk-ant-oat01-x' });
     const app = express();
     app.use(express.json());
@@ -130,9 +130,10 @@ describe('/subscription-pool/poll auto-refresh recovery (integration)', () => {
   }): Promise<void> {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qpoll-rec-'));
     pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({
+    pool.addFixture({
       id: 'claude-1',
       nickname: 'primary',
+      email: 'primary@example.test',
       provider: 'anthropic',
       framework: 'claude-code',
       configHome: '/h/.claude-1',

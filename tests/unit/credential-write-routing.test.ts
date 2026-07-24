@@ -136,6 +136,7 @@ describe('Step 4b — QuotaPoller maps a write-skipped refresh to no-snapshot, N
   const ACCT = {
     id: 'claude-1',
     nickname: 'primary',
+    email: 'primary@example.test',
     provider: 'anthropic' as const,
     framework: 'claude-code' as const,
     configHome: HOME,
@@ -161,7 +162,7 @@ describe('Step 4b — QuotaPoller maps a write-skipped refresh to no-snapshot, N
       tokenResolver: () => 'sk-ant-oat01-x',
       refresher: async () => ({ ok: false, reason: 'write-skipped' }),
     });
-    pool.add({ ...ACCT });
+    pool.addFixture({ ...ACCT });
     const snap = await p.pollAccount(pool.get('claude-1')!);
     expect(snap).toBeNull();
     expect(pool.get('claude-1')!.status).not.toBe('needs-reauth');
@@ -174,7 +175,7 @@ describe('Step 4b — QuotaPoller maps a write-skipped refresh to no-snapshot, N
       tokenResolver: () => 'sk-ant-oat01-x',
       refresher: async () => ({ ok: false, reason: 'exchange-failed' }),
     });
-    pool.add({ ...ACCT });
+    pool.addFixture({ ...ACCT });
     const snap = await p.pollAccount(pool.get('claude-1')!);
     expect(snap).toBeNull();
     expect(pool.get('claude-1')!.status).toBe('needs-reauth');

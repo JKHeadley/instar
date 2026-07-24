@@ -28,16 +28,24 @@ async function listen(app: express.Express): Promise<TestServer> {
 describe('/subscription-pool routes (integration over HTTP)', () => {
   let server: TestServer;
   let dir: string;
+  let oracleResult: { email?: string; unavailable?: boolean };
+  let reconciliationBlocking: boolean;
 
   beforeEach(async () => {
+    oracleResult = { email: 'owner@example.com' };
+    reconciliationBlocking = false;
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subpool-int-'));
     const pool = new SubscriptionPool({ stateDir: dir });
     const app = express();
     app.use(express.json());
     const ctx: any = {
-      config: { authToken: 'test', stateDir: dir, port: 0 },
+      config: { authToken: 'test', stateDir: dir, port: 0, dashboardPin: '123456' },
       startTime: new Date(),
       subscriptionPool: pool,
+      subscriptionIdentityOracle: {
+        resolveSlotTenant: async () => oracleResult,
+      },
+      subscriptionEmailBarrier: { isBlocking: () => reconciliationBlocking },
     };
     app.use(createRoutes(ctx));
     server = await listen(app);
@@ -58,6 +66,7 @@ describe('/subscription-pool routes (integration over HTTP)', () => {
     provider: 'anthropic',
     framework: 'claude-code',
     configHome: '/home/x/.claude-work',
+    email: 'owner@example.com',
   };
 
   it('GET empty pool returns 200 with an empty list', async () => {
@@ -113,6 +122,22 @@ describe('/subscription-pool routes (integration over HTTP)', () => {
     const dup = await api('/subscription-pool', { method: 'POST', body: JSON.stringify(ACCT) });
     expect(dup.status).toBe(400);
     expect(dup.body.error).toMatch(/already exists/);
+  });
+
+  it('uses stable 400 identity contracts and blocks mutation during reconciliation', async () => {
+    oracleResult = { unavailable: true };
+    const unresolved = await api('/subscription-pool', { method: 'POST', body: JSON.stringify(ACCT) });
+    expect(unresolved).toMatchObject({
+      status: 400,
+      body: { code: 'subscription-account-email-unresolved' },
+    });
+
+    reconciliationBlocking = true;
+    const blocked = await api('/subscription-pool', { method: 'POST', body: JSON.stringify(ACCT) });
+    expect(blocked).toMatchObject({
+      status: 503,
+      body: { code: 'subscription-account-email-reconciliation-running' },
+    });
   });
 
   it('POST rejects a credential-bearing body with 400 (never stores tokens)', async () => {

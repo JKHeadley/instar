@@ -76,7 +76,7 @@ describe('/subscription-pool — Subscriptions tab E2E feature-alive', () => {
   it('feature ON: accounts + pending logins render through the live server', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sub-tab-e2e-'));
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c1' });
+    pool.addFixture({ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c1', email: 'a1@example.test' });
     pool.update('a1', { lastQuota: { fiveHour: { utilizationPct: 12, resetsAt: '2026-06-07T01:00:00Z' }, sevenDay: { utilizationPct: 71, resetsAt: '2026-06-12T00:00:00Z' } } });
     const store = new PendingLoginStore({ stateDir: dir, now: () => Date.parse('2026-06-07T00:00:00Z') });
     const wizard = new EnrollmentWizard({ store, now: () => Date.parse('2026-06-07T00:00:00Z'),
@@ -103,7 +103,7 @@ describe('/subscription-pool — Subscriptions tab E2E feature-alive', () => {
   it('topic 29836 D1/D2/D3(a)/D5: the matrix cell carries the COMPLETE sign-in flow from the LIVE server, and a real poll tick never clobbers a half-typed code', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sub-tab-e2e-'));
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c1', email: 'a1@x.com' });
+    pool.addFixture({ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c1', email: 'a1@x.com' });
     const store = new PendingLoginStore({ stateDir: dir, now: () => Date.parse('2026-06-07T00:00:00Z') });
     const wizard = new EnrollmentWizard({ store, now: () => Date.parse('2026-06-07T00:00:00Z'),
       driveLogin: async () => ({ verificationUrl: 'https://claude.com/oauth/authorize?code=true&client_id=x', ttlMs: 15 * 60_000 }) });
@@ -150,7 +150,7 @@ describe('/subscription-pool — Subscriptions tab E2E feature-alive', () => {
   it('restart-safe truth: live identity drift renders in-cell sign-in, then durable pending state rehydrates the full flow', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sub-tab-e2e-'));
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c1', email: 'a1@x.com' });
+    pool.addFixture({ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c1', email: 'a1@x.com' });
     pool.update('a1', { status: 'active', identityDrifted: true, identityDrift: { expectedAccountId: 'a1', actualAccountId: 'other', detectedAt: '2026-06-07T00:00:00Z', slot: '/h/.c1', repairState: 'planned' } });
     const store = new PendingLoginStore({ stateDir: dir, now: () => Date.parse('2026-06-07T00:00:00Z') });
     const wizard = new EnrollmentWizard({ store, now: () => Date.parse('2026-06-07T00:00:00Z'), driveLogin: async () => ({ verificationUrl: 'https://claude.com/oauth/renewed', ttlMs: 15 * 60_000 }) });

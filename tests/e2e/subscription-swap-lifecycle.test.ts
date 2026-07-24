@@ -43,10 +43,10 @@ describe('POST /subscription-pool/swap — E2E continuity guarantee', () => {
   function boot(opts: { withAlternate: boolean }) {
     pool = new SubscriptionPool({ stateDir: dir });
     // The exhausted account (96% — over the 90 soft threshold) ...
-    pool.add({ id: 'acct-hot', nickname: 'hot', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, '.claude-hot') });
+    pool.addFixture({ id: 'acct-hot', nickname: 'hot', email: 'hot@example.test', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, '.claude-hot') });
     pool.update('acct-hot', { lastQuota: { sevenDay: { utilizationPct: 96, resetsAt: '2026-06-12T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback' } });
     if (opts.withAlternate) {
-      pool.add({ id: 'acct-cool', nickname: 'cool', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, '.claude-cool') });
+      pool.addFixture({ id: 'acct-cool', nickname: 'cool', email: 'cool@example.test', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, '.claude-cool') });
       pool.update('acct-cool', { lastQuota: { sevenDay: { utilizationPct: 20, resetsAt: '2026-06-09T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback' } });
     }
     refreshCalls = [];

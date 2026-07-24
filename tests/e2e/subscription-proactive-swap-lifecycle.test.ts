@@ -53,8 +53,8 @@ describe('/subscription-pool/proactive-swap — E2E feature-alive', () => {
   it('LIVE: pre-emptively swaps the untagged interactive session off an at-pressure account, end-to-end', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proactive-e2e-'));
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'adriana', nickname: 'SageMind - Adriana', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'a'), email: 'adriana@sagemindai.io' });
-    pool.add({ id: 'justin', nickname: 'SageMind - Justin', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'j'), email: 'justin@sagemindai.io' });
+    pool.addFixture({ id: 'adriana', nickname: 'SageMind - Adriana', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'a'), email: 'adriana@sagemindai.io' });
+    pool.addFixture({ id: 'justin', nickname: 'SageMind - Justin', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'j'), email: 'justin@sagemindai.io' });
     // The default login (adriana) is racing toward its limit; justin has headroom.
     pool.update('adriana', { lastQuota: { sevenDay: { utilizationPct: 84, resetsAt: '2026-06-10T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback' } });
     pool.update('justin', { lastQuota: { sevenDay: { utilizationPct: 12, resetsAt: '2026-06-13T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback' } });
@@ -88,8 +88,8 @@ describe('/subscription-pool/proactive-swap — E2E feature-alive', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'login-loss-e2e-'));
     const pool = new SubscriptionPool({ stateDir: dir });
     let now = Date.parse('2026-07-23T06:00:00Z');
-    pool.add({ id: 'lost', nickname: 'Lost login', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'lost'), email: 'lost@example.com' });
-    pool.add({ id: 'fresh', nickname: 'Fresh login', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'fresh'), email: 'fresh@example.com' });
+    pool.addFixture({ id: 'lost', nickname: 'Lost login', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'lost'), email: 'lost@example.com' });
+    pool.addFixture({ id: 'fresh', nickname: 'Fresh login', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, 'fresh'), email: 'fresh@example.com' });
     pool.update('lost', {
       identityDrifted: true,
       identityDrift: {

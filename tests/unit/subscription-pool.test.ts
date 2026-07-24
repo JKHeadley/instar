@@ -21,6 +21,7 @@ const VALID = {
   provider: 'anthropic' as const,
   framework: 'claude-code' as const,
   configHome: '/Users/x/.claude-personal',
+  email: 'person@example.com',
 };
 
 describe('SubscriptionPool', () => {
@@ -44,7 +45,7 @@ describe('SubscriptionPool', () => {
 
   // ── add: happy path ─────────────────────────────────────────────
   it('adds a valid account and persists it', () => {
-    const a = pool.add({ ...VALID });
+    const a = pool.addFixture({ ...VALID });
     expect(a.id).toBe('claude-acct-2');
     expect(a.status).toBe('active');     // default
     expect(a.version).toBe(1);
@@ -58,7 +59,7 @@ describe('SubscriptionPool', () => {
   });
 
   it('stores configHome (the login location), never tokens', () => {
-    const a = pool.add({ ...VALID });
+    const a = pool.addFixture({ ...VALID });
     const raw = fs.readFileSync(path.join(dir, 'subscription-pool.json'), 'utf-8');
     expect(a.configHome).toBe('/Users/x/.claude-personal');
     // No credential-ish keys ever land in the persisted file.
@@ -67,49 +68,53 @@ describe('SubscriptionPool', () => {
   });
 
   // ── add: validation — both sides of each boundary ───────────────
+  it('refuses to create an account without a provider identity email', () => {
+    expect(() => pool.addFixture({ ...VALID, email: undefined as unknown as string })).toThrow(/email is required/);
+    expect(() => pool.addFixture({ ...VALID, email: 'not-an-email' })).toThrow(/valid non-blank/);
+  });
   it('rejects a missing id', () => {
-    expect(() => pool.add({ ...VALID, id: '' })).toThrow(ValidationError);
+    expect(() => pool.addFixture({ ...VALID, id: '' })).toThrow(ValidationError);
   });
 
   it('rejects an id with illegal charset, accepts a clean one', () => {
-    expect(() => pool.add({ ...VALID, id: 'Has Space' })).toThrow(/\^\[a-z0-9-\]/);
-    expect(() => pool.add({ ...VALID, id: 'UPPER' })).toThrow(ValidationError);
-    expect(pool.add({ ...VALID, id: 'ok-123' }).id).toBe('ok-123');
+    expect(() => pool.addFixture({ ...VALID, id: 'Has Space' })).toThrow(/\^\[a-z0-9-\]/);
+    expect(() => pool.addFixture({ ...VALID, id: 'UPPER' })).toThrow(ValidationError);
+    expect(pool.addFixture({ ...VALID, id: 'ok-123' }).id).toBe('ok-123');
   });
 
   it('rejects a duplicate id', () => {
-    pool.add({ ...VALID });
-    expect(() => pool.add({ ...VALID })).toThrow(/already exists/);
+    pool.addFixture({ ...VALID });
+    expect(() => pool.addFixture({ ...VALID })).toThrow(/already exists/);
   });
 
   it('rejects a missing nickname', () => {
-    expect(() => pool.add({ ...VALID, nickname: '   ' })).toThrow(/nickname is required/);
+    expect(() => pool.addFixture({ ...VALID, nickname: '   ' })).toThrow(/nickname is required/);
   });
 
   it('rejects an unknown provider, accepts a known one', () => {
-    expect(() => pool.add({ ...VALID, provider: 'bogus' as any })).toThrow(/provider must be/);
-    expect(pool.add({ ...VALID, id: 'p1', provider: 'openai' }).provider).toBe('openai');
+    expect(() => pool.addFixture({ ...VALID, provider: 'bogus' as any })).toThrow(/provider must be/);
+    expect(pool.addFixture({ ...VALID, id: 'p1', provider: 'openai' }).provider).toBe('openai');
   });
 
   it('rejects an unknown framework, accepts a known one', () => {
-    expect(() => pool.add({ ...VALID, framework: 'bogus' as any })).toThrow(/framework must be/);
-    expect(pool.add({ ...VALID, id: 'f1', framework: 'pi-cli' }).framework).toBe('pi-cli');
+    expect(() => pool.addFixture({ ...VALID, framework: 'bogus' as any })).toThrow(/framework must be/);
+    expect(pool.addFixture({ ...VALID, id: 'f1', framework: 'pi-cli' }).framework).toBe('pi-cli');
   });
 
   it('rejects a missing configHome', () => {
-    expect(() => pool.add({ ...VALID, configHome: '' })).toThrow(/configHome is required/);
+    expect(() => pool.addFixture({ ...VALID, configHome: '' })).toThrow(/configHome is required/);
   });
 
   it('rejects an unknown status, accepts a known one', () => {
-    expect(() => pool.add({ ...VALID, status: 'bogus' as any })).toThrow(/status must be/);
-    expect(pool.add({ ...VALID, id: 's1', status: 'disabled' }).status).toBe('disabled');
+    expect(() => pool.addFixture({ ...VALID, status: 'bogus' as any })).toThrow(/status must be/);
+    expect(pool.addFixture({ ...VALID, id: 's1', status: 'disabled' }).status).toBe('disabled');
   });
 
   // ── the never-store-credentials structural guard ────────────────
   it('rejects any credential-bearing field (accessToken/refreshToken/token/secret/...)', () => {
     for (const bad of ['accessToken', 'refreshToken', 'token', 'apiKey', 'secret', 'password', 'oauth', 'credentials']) {
       expect(() =>
-        pool.add({ ...VALID, id: 'cred' }, { ...VALID, [bad]: 'sk-leak' }),
+        pool.addFixture({ ...VALID, id: 'cred' }, { ...VALID, [bad]: 'sk-leak' }),
       ).toThrow(/never credentials/);
     }
     // None of the rejected attempts persisted anything.
@@ -118,7 +123,7 @@ describe('SubscriptionPool', () => {
 
   // ── update: happy + CAS + immutability + validation ─────────────
   it('updates mutable fields and bumps version (CAS)', () => {
-    pool.add({ ...VALID });
+    pool.addFixture({ ...VALID });
     const u = pool.update('claude-acct-2', { nickname: 'renamed', status: 'rate-limited' });
     expect(u?.nickname).toBe('renamed');
     expect(u?.status).toBe('rate-limited');
@@ -126,7 +131,7 @@ describe('SubscriptionPool', () => {
   });
 
   it('excludes identity-drifted accounts from local execution until self-closed', () => {
-    pool.add({ ...VALID });
+    pool.addFixture({ ...VALID });
     pool.update(VALID.id, {
       identityDrifted: true,
       identityDrift: {
@@ -145,21 +150,21 @@ describe('SubscriptionPool', () => {
   });
 
   it('update rejects an empty nickname and bad enum values', () => {
-    pool.add({ ...VALID });
+    pool.addFixture({ ...VALID });
     expect(() => pool.update('claude-acct-2', { nickname: '  ' })).toThrow(/cannot be empty/);
     expect(() => pool.update('claude-acct-2', { status: 'bogus' as any })).toThrow(/status must be/);
     expect(() => pool.update('claude-acct-2', { configHome: '' })).toThrow(/cannot be empty/);
   });
 
   it('update rejects credential-bearing input', () => {
-    pool.add({ ...VALID });
+    pool.addFixture({ ...VALID });
     expect(() =>
       pool.update('claude-acct-2', { nickname: 'x' }, { nickname: 'x', token: 'sk-leak' }),
     ).toThrow(/never credentials/);
   });
 
   it('update can carry a lastQuota snapshot (P1.2 forward-compat)', () => {
-    pool.add({ ...VALID });
+    pool.addFixture({ ...VALID });
     const u = pool.update('claude-acct-2', {
       lastQuota: {
         fiveHour: { utilizationPct: 10, resetsAt: '2026-06-07T00:20:00Z' },
@@ -172,7 +177,7 @@ describe('SubscriptionPool', () => {
 
   // ── remove ──────────────────────────────────────────────────────
   it('removes an account; returns false for an unknown id', () => {
-    pool.add({ ...VALID });
+    pool.addFixture({ ...VALID });
     expect(pool.remove('claude-acct-2')).toBe(true);
     expect(pool.size()).toBe(0);
     expect(pool.remove('claude-acct-2')).toBe(false);
@@ -180,8 +185,8 @@ describe('SubscriptionPool', () => {
 
   // ── health ──────────────────────────────────────────────────────
   it('reports health with usable counts', () => {
-    pool.add({ ...VALID, id: 'a', status: 'active' });
-    pool.add({ ...VALID, id: 'b', status: 'disabled' });
+    pool.addFixture({ ...VALID, id: 'a', status: 'active' });
+    pool.addFixture({ ...VALID, id: 'b', status: 'disabled' });
     const h = pool.getHealth();
     expect(h.status).toBe('healthy');
     expect(h.message).toContain('2 account(s)');
@@ -194,6 +199,6 @@ describe('SubscriptionPool', () => {
     const fresh = new SubscriptionPool({ stateDir: dir });
     expect(fresh.size()).toBe(0);
     // And is writable again afterwards.
-    expect(fresh.add({ ...VALID }).id).toBe('claude-acct-2');
+    expect(fresh.addFixture({ ...VALID }).id).toBe('claude-acct-2');
   });
 });

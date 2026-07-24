@@ -13015,6 +13015,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // compat); only UNKNOWN mode (corrupt on-disk) raises a HIGH attention item, never throws.
     const { CredentialLocationLedger, shouldBootSeedCredentialLedger, shouldRunIdentityAudit } = await import('../core/CredentialLocationLedger.js');
     const { CredentialIdentityOracle } = await import('../core/CredentialIdentityOracle.js');
+    const credentialIdentityOracle = new CredentialIdentityOracle();
     const { CredentialLocationGate } = await import('../core/CredentialLocationGate.js');
     const credentialGateEmitAttention = telegram
       ? (item: import('../core/CredentialLocationGate.js').CredentialGateAttentionInput) =>
@@ -13031,9 +13032,37 @@ export async function startServer(options: StartOptions): Promise<void> {
     const credentialLocationLedger = new CredentialLocationLedger({
       stateDir: config.stateDir,
       pool: subscriptionPool,
-      oracle: new CredentialIdentityOracle(),
+      oracle: credentialIdentityOracle,
       emitAttention: credentialGateEmitAttention,
     });
+    // One-shot legacy identity reconciliation. It reads only each record's own
+    // credential slot through the real provider oracle; unresolved gaps remain
+    // quarantined and visible instead of being guessed from metadata.
+    const { repairMissingSubscriptionEmails } = await import('../core/SubscriptionAccountEmailRepair.js');
+    const {
+      SubscriptionAccountEmailRegistrar,
+      SubscriptionEmailReconciliationBarrier,
+    } = await import('../core/SubscriptionPool.js');
+    const subscriptionEmailBarrier = new SubscriptionEmailReconciliationBarrier();
+    const subscriptionEmailRegistrar = new SubscriptionAccountEmailRegistrar(
+      subscriptionPool,
+      credentialIdentityOracle,
+      credentialLocationLedger,
+    );
+    const runSubscriptionEmailRepair = async (): Promise<void> => {
+      const emailRepair = await repairMissingSubscriptionEmails(
+        subscriptionPool,
+        credentialIdentityOracle,
+        credentialLocationLedger,
+      );
+      subscriptionEmailBarrier.finish(emailRepair.unresolved);
+      if (emailRepair.repaired.length > 0 || emailRepair.unresolved.length > 0) {
+        console.log(pc.yellow(
+          `  Subscription email reconciliation: ${emailRepair.repaired.length} repaired, ` +
+          `${emailRepair.unresolved.length} unresolved`,
+        ));
+      }
+    };
     // The §2.10 env-token gate (Step 8): the §0.b applicability precondition, enforced. Evaluates
     // BOTH `config.anthropicApiKey` (read LIVE per call — restartless) AND the live running fleet's
     // durable per-session `credentialSource` flag, so a mid-run flip to an env token cannot silently
@@ -13271,14 +13300,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     // their respective awaits. isSeeded() does NOT protect this (seedFromOracle bumps version at
     // 'begin', so isSeeded() flips true mid-seed), so the audit gate also checks this flag.
     let credSeedInFlight = false;
-    if (
-      shouldBootSeedCredentialLedger(
-        resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config),
-        credentialLocationLedger.isSeeded(),
-      )
-    ) {
+    const shouldSeedCredentialLedger = shouldBootSeedCredentialLedger(
+      resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config),
+      credentialLocationLedger.isSeeded(),
+    );
+    const seedCredentialLedger = (): Promise<unknown> => {
       credSeedInFlight = true;
-      void credentialLocationLedger
+      return credentialLocationLedger
         .seedFromOracle()
         .then((outcomes) => {
           const assigned = outcomes.filter((o) => o.result === 'assigned').length;
@@ -13286,7 +13314,22 @@ export async function startServer(options: StartOptions): Promise<void> {
         })
         .catch((e) => console.warn(`[CredentialLedger] boot seed failed: ${e instanceof Error ? e.message : String(e)}`))
         .finally(() => { credSeedInFlight = false; });
-    }
+    };
+    // A legacy email gap must be repaired against an already-existing,
+    // independent slot→tenant binding. seedFromOracle derives its candidates
+    // from complete pool rows and clears assignments first, so running it before
+    // repair could erase the only proof for an email-less row. Preserve that
+    // evidence: seed only when there are no quarantined gaps.
+    let credentialSeedReady: Promise<unknown> =
+      shouldSeedCredentialLedger && subscriptionPool.listEmailGaps().length === 0
+        ? seedCredentialLedger()
+        : Promise.resolve();
+    void credentialSeedReady
+      .then(() => runSubscriptionEmailRepair())
+      .catch((error) => {
+        subscriptionEmailBarrier.finish(subscriptionPool.listEmailGaps().length);
+        console.warn(`[subscription-email] reconciliation degraded: ${error instanceof Error ? error.message : String(error)}`);
+      });
 
     // B3b — the periodic balancer pass. tick() is a strict no-op while the feature resolves dark
     // (so the timer can always run; the gate lives INSIDE tick()), and on a dev agent it runs the
@@ -13464,8 +13507,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // WS5.2 §5.3/S7 — the follow-me completion gate reads the minted login's account email
       // from its config-home slot (the Anthropic OAuth profile endpoint) and validates it against
       // operator expectation before the account is selectable. Same oracle the credential-location
-      // ledger uses; constructed fresh here (the ledger's instance is not in scope at this point).
-      oracle: new CredentialIdentityOracle(),
+      // ledger uses; one process-wide oracle keeps identity evidence coherent.
+      oracle: credentialIdentityOracle,
       // A HELD follow-me completion (surprise/mismatched/unverifiable email) raises a HIGH
       // attention item for the operator. Map the email-gate's {id,title,body,priority,source}
       // shape onto the telegram attention-queue createAttentionItem shape.
@@ -13545,12 +13588,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Upsert (D5): a re-auth of an EXISTING pool account updates it back to
             // active; only a genuinely-new account is added (add() refuses dup ids).
             if (subscriptionPool.get(login.id)) {
-              subscriptionPool.update(login.id, {
-                nickname: login.label, status: 'active', email,
+              subscriptionEmailRegistrar.completeValidated(login.id, email, {
+                nickname: login.label, status: 'active',
                 ...(login.configHome ? { configHome: login.configHome } : {}),
               });
             } else {
-              subscriptionPool.add({
+              subscriptionEmailRegistrar.completeNewValidated({
                 id: login.id, nickname: login.label, provider: login.provider,
                 framework: login.framework, configHome: login.configHome ?? '', status: 'active', email,
               });
@@ -24088,7 +24131,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     } catch (err) { /* @silent-fallback-ok: fleet-dark optional observer; failure is logged and adds no authority */ console.warn('[AutonomousThroughputFloor] init failed:', (err as Error).message); }
 
-    const server = new AgentServer({ config, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle: credentialIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
       const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
       const reader = replicatedPeerStreamReader;

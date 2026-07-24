@@ -42,8 +42,8 @@ describe('proactive-swap routes (integration)', () => {
     swapCalls = [];
     const pool = new SubscriptionPool({ stateDir: dir });
     // "hot" is at pressure; "cool" is the sub-threshold alternate.
-    pool.add({ id: 'hot', nickname: 'Hot', provider: 'anthropic', framework: 'claude-code', configHome: '/h/hot', email: 'a@x.io' });
-    pool.add({ id: 'cool', nickname: 'Cool', provider: 'anthropic', framework: 'claude-code', configHome: '/h/cool', email: 'b@x.io' });
+    pool.addFixture({ id: 'hot', nickname: 'Hot', provider: 'anthropic', framework: 'claude-code', configHome: '/h/hot', email: 'a@x.io' });
+    pool.addFixture({ id: 'cool', nickname: 'Cool', provider: 'anthropic', framework: 'claude-code', configHome: '/h/cool', email: 'b@x.io' });
     const now = Date.parse('2026-06-09T12:00:00Z');
     pool.update('hot', { lastQuota: { sevenDay: { utilizationPct: 85, resetsAt: '2026-06-10T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback', measuredAt: new Date(now - 60_000).toISOString() } });
     pool.update('cool', { lastQuota: { sevenDay: { utilizationPct: 10, resetsAt: '2026-06-10T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback', measuredAt: new Date(now - 60_000).toISOString() } });
