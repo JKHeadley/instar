@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-24T12:55:04.944Z",
+  "slug": "files-link-allowed-paths",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 68,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The link route shipped with its own inline allowed-path check instead of flowing through validatePath; the duplicate never implemented the '.'/'./' project-root convention, so the default config 403'd every request from day one. Surfaced live 2026-07-23 (Drive 11 cycle 24) when generating a dashboard deep link during the subscriptions-fix verification loop."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
