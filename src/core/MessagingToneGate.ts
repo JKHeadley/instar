@@ -845,7 +845,7 @@ export interface ToneReviewContext {
   synchronousReply?: boolean;
 }
 
-/** Tune knobs read live from InstarConfig.messaging.toneGate (spec §Design 6). */
+/** Tune knobs read live from top-level InstarConfig.toneGate (spec §Design 6). */
 export interface ToneGateConfig {
   /**
    * When true (DEFAULT), the provider-exhaustion and route-budget-timeout paths
@@ -888,6 +888,28 @@ export interface ToneGateConfig {
    * layer that does not exist yet.
    */
   recordCandidateBody?: boolean;
+}
+
+/**
+ * Resolve the operator's tone-gate knobs from a full InstarConfig-shaped object.
+ *
+ * The ONLY correct source is the TOP-LEVEL `toneGate` block: `messaging` is an
+ * array of adapter configs, so the historically-documented `messaging.toneGate.*`
+ * location is structurally unreachable and is deliberately NOT read here (a
+ * value there is a dead key, never honored — reading it would resurrect a
+ * location no working config ever used). This helper is the single wiring
+ * point between config.json and the gate's live getter; the 2026-07-24
+ * candidate-body gap existed because the construction site inlined this logic
+ * against the dead location and whitelisted only three of the four knobs.
+ */
+export function resolveToneGateOperatorConfig(config: unknown): ToneGateConfig {
+  const tg = (config as { toneGate?: ToneGateConfig } | null | undefined)?.toneGate;
+  return {
+    failClosedOnExhaustion: tg?.failClosedOnExhaustion,
+    failClosedMode: tg?.failClosedMode,
+    toneTierDryRun: tg?.toneTierDryRun,
+    recordCandidateBody: tg?.recordCandidateBody,
+  };
 }
 
 export class MessagingToneGate {

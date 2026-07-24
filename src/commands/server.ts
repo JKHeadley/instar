@@ -16790,19 +16790,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     // config syntax, and other technical leakage in agent-to-user messages.
     let messagingToneGate: import('../core/MessagingToneGate.js').MessagingToneGate | undefined;
     if (sharedIntelligence) {
-      const { MessagingToneGate } = await import('../core/MessagingToneGate.js');
-      // Pass a live config getter so the failClosedOnExhaustion kill-switch
-      // (spec §Design 6) is honored without a restart.
-      messagingToneGate = new MessagingToneGate(sharedIntelligence, () => {
-        const tg = (config as { messaging?: { toneGate?: { failClosedOnExhaustion?: boolean; failClosedMode?: 'always' | 'tiered' | 'never'; toneTierDryRun?: boolean } } }).messaging?.toneGate;
-        return {
-          failClosedOnExhaustion: tg?.failClosedOnExhaustion,
-          // operator-channel-sacred (outbound): default 'always' (today's behavior).
-          // 'tiered' is an explicit opt-in; ship it with toneTierDryRun:true first to soak.
-          failClosedMode: tg?.failClosedMode,
-          toneTierDryRun: tg?.toneTierDryRun,
-        };
-      });
+      const { MessagingToneGate, resolveToneGateOperatorConfig } = await import('../core/MessagingToneGate.js');
+      // Pass a live config getter so the operator knobs (kill-switch, fail-mode,
+      // candidate-body capture — spec §Design 6) are honored without a restart.
+      // Single wiring point: resolveToneGateOperatorConfig reads the TOP-LEVEL
+      // toneGate block (messaging is an array — a messaging.toneGate read is
+      // structurally dead, the cause of the 2026-07-24 capture wiring gap).
+      messagingToneGate = new MessagingToneGate(sharedIntelligence, () => resolveToneGateOperatorConfig(config));
       console.log(pc.green('  Messaging tone gate: active (Haiku via shared IntelligenceProvider)'));
     } else {
       console.log(pc.yellow('  Messaging tone gate: inactive (no IntelligenceProvider available)'));

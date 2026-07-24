@@ -5562,9 +5562,24 @@ setTimeout(() => process.exit(0), 2000);
     // Framework-agnostic (server-side); the marker is mirrored to the shadows.
     // Content-sniffed; idempotent.
     if (!content.includes('### Outbound Message Gate')) {
-      content += `\n### Outbound Message Gate\n\nYour messages to the user pass an always-on LLM gate (the tone gate) before they send. It blocks high-stakes leaks (CLI commands, file paths, config keys, endpoints) AND the self-stop anti-patterns (B15–B18: quitting on yourself for a context/fatigue reason, calling a doable thing impossible, parking your own work on the user). It judges the behavioral rules **by MEANING, not by literal phrases — a paraphrase of the anti-pattern is caught exactly the same as the canonical wording**, so do not assume rewording evades it. The gate FAILS CLOSED (holds the message, queued for retry — never silently delivers) if it can't produce a verdict (provider down, unparseable output, or a slow-review timeout); the operator kill-switch is \`messaging.toneGate.failClosedOnExhaustion\`. Constitution: "Intelligent Prompts — An LLM Gate Must Not String-Match".\n`;
+      content += `\n### Outbound Message Gate\n\nYour messages to the user pass an always-on LLM gate (the tone gate) before they send. It blocks high-stakes leaks (CLI commands, file paths, config keys, endpoints) AND the self-stop anti-patterns (B15–B18: quitting on yourself for a context/fatigue reason, calling a doable thing impossible, parking your own work on the user). It judges the behavioral rules **by MEANING, not by literal phrases — a paraphrase of the anti-pattern is caught exactly the same as the canonical wording**, so do not assume rewording evades it. The gate FAILS CLOSED (holds the message, queued for retry — never silently delivers) if it can't produce a verdict (provider down, unparseable output, or a slow-review timeout); the operator kill-switch is \`toneGate.failClosedOnExhaustion\`. Constitution: "Intelligent Prompts — An LLM Gate Must Not String-Match".\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Outbound Message Gate section');
+    }
+
+    // Tone-gate kill-switch path fix (tone-gate capture wiring, 2026-07-24) —
+    // Migration Parity item 3: agents whose CLAUDE.md was installed before the
+    // wiring fix cite the structurally-dead `messaging.toneGate.*` location
+    // (messaging is an array — a value there was never honored). Rewrite the
+    // dead path in place so operators following the doc set a key that works.
+    // Idempotent: the old literal is absent after the first run.
+    if (content.includes('`messaging.toneGate.failClosedOnExhaustion`')) {
+      content = content.replace(
+        /`messaging\.toneGate\.failClosedOnExhaustion`/g,
+        '`toneGate.failClosedOnExhaustion`'
+      );
+      patched = true;
+      result.upgraded.push('CLAUDE.md: fixed tone-gate kill-switch config path (messaging.toneGate → top-level toneGate)');
     }
 
     // Autonomous-run silence backstop (autonomous-progress-heartbeat.md) — Agent

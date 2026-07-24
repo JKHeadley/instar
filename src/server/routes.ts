@@ -91,7 +91,7 @@ import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowl
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
-import { buildDegradedToneResult } from '../core/MessagingToneGate.js';
+import { buildDegradedToneResult, resolveToneGateOperatorConfig } from '../core/MessagingToneGate.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -2425,9 +2425,11 @@ export function createRoutes(ctx: RouteContext): Router {
       // single-human-operator), and decide whether an availability failure should
       // DELIVER (operator's own channel, 'tiered' mode, not dryRun) vs HOLD.
       const recipientClass = resolveToneRecipientClass(ctx.topicOperatorStore, options.topicId);
-      const _toneCfg = (ctx.config as {
-        messaging?: { toneGate?: { failClosedOnExhaustion?: boolean; failClosedMode?: 'always' | 'tiered' | 'never'; toneTierDryRun?: boolean } };
-      }).messaging?.toneGate;
+      // Single wiring point (tone-gate capture wiring fix): the top-level
+      // toneGate block via the shared resolver — the old inlined
+      // messaging?.toneGate read here was the second copy of the knob list
+      // against the structurally-dead location (messaging is an array).
+      const _toneCfg = resolveToneGateOperatorConfig(ctx.config);
       const _toneMode: 'always' | 'tiered' | 'never' =
         _toneCfg?.failClosedMode ?? (_toneCfg?.failClosedOnExhaustion === false ? 'never' : 'always');
       const operatorTierDeliver =
