@@ -3907,6 +3907,12 @@ export class TelegramAdapter implements MessagingAdapter {
       updatedAt: now,
     };
 
+    // Durable acceptance precedes all Telegram/network work. If the provider
+    // is stalled or the process restarts mid-send, the local attention item
+    // still exists and remains idempotently addressable.
+    this.attentionItems.set(item.id, attention);
+    this.saveAttentionItems();
+
     // ── Agent-Health lane (calm self-health notices) ─────────────────────
     // A routine self-health/housekeeping notice routes into ONE named "🩺 Agent
     // Health" topic from the very first item — it never spawns its own topic
@@ -3918,8 +3924,6 @@ export class TelegramAdapter implements MessagingAdapter {
       const laneTopicId = await this.routeToAgentHealthLane(attention);
       attention.coalesced = true;
       if (laneTopicId !== null) attention.topicId = laneTopicId;
-      this.attentionItems.set(item.id, attention);
-      this.saveAttentionItems();
       return attention;
     }
 
@@ -3934,8 +3938,6 @@ export class TelegramAdapter implements MessagingAdapter {
       const hubTopicId = await this.routeToAttentionHub(attention);
       attention.coalesced = true;
       if (hubTopicId !== null) attention.topicId = hubTopicId;
-      this.attentionItems.set(item.id, attention);
-      this.saveAttentionItems();
       return attention;
     }
 
@@ -3958,8 +3960,6 @@ export class TelegramAdapter implements MessagingAdapter {
       // Coalesced items are managed via /attention (PATCH / dashboard), not /ack.
       attention.coalesced = true;
       if (noticeTopicId !== null) attention.topicId = noticeTopicId;
-      this.attentionItems.set(item.id, attention);
-      this.saveAttentionItems();
       return attention;
     }
 
@@ -4040,8 +4040,6 @@ export class TelegramAdapter implements MessagingAdapter {
       }
     }
 
-    this.attentionItems.set(item.id, attention);
-    this.saveAttentionItems();
     return attention;
   }
 

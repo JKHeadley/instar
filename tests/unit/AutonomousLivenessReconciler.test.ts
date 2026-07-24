@@ -163,6 +163,16 @@ async function tickPastDebounce(h: Harness): Promise<void> {
 const topicsRespawned = (h: Harness): number[] => h.respawned.map((r) => r.topicId);
 
 describe('AutonomousLivenessReconciler', () => {
+  it('detects dead-active runs while paused but leaves live sessions alone', async () => {
+    const h = build({ dryRun: true, debounceTicks: 1, debounceWindowSec: 0 });
+    h.flags.queuePaused = true;
+    await h.reconciler.tick();
+    expect(h.audit.some((e) => e.event === 'would-respawn-paused' && e.topicId === 100)).toBe(true);
+    h.flags.liveTopics.add(100);
+    await h.reconciler.tick();
+    expect(h.audit.some((e) => e.event === 'would-respawn-paused' && e.topicId === 100)).toBe(true);
+    expect(h.reconciler.status().respawnTotal).toBe(0);
+  });
   describe('happy path — respawns an orphaned active run', () => {
     it('respawns a run that is active+remaining with no live session, after debounce', async () => {
       const h = build();
