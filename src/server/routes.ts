@@ -13574,6 +13574,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   // ── Unified work-intake registry (dev-agent live, fleet dark) ──
+  /** GET /work-queue — ranked active work from the unified intake registry. */
   router.get('/work-queue', (_req, res) => {
     if (!resolveDevAgentGate(ctx.config.workQueue?.enabled, ctx.config)) {
       res.status(503).json({ error: 'work queue is not enabled' });
@@ -13583,6 +13584,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ items: ctx.workQueue.list() });
   });
   // @write-domain:none
+  /** POST /work-queue/rescore — recompute rankings without durable writes. */
   router.post('/work-queue/rescore', (_req, res) => {
     if (!resolveDevAgentGate(ctx.config.workQueue?.enabled, ctx.config)) {
       res.status(503).json({ error: 'work queue is not enabled' });

@@ -46,6 +46,7 @@ export function normalizeAndRank(items: WorkItem[]): WorkItem[] {
   return [...deduped.values()].sort((a, b) => scoreWorkItem(b) - scoreWorkItem(a) || a.id.localeCompare(b.id));
 }
 
+/** Unified work-intake registry: normalizes and ranks active cross-source work. */
 export class WorkQueueRegistry {
   private ranked: WorkItem[] = [];
   constructor(private readonly reader: WorkQueueReader) {}

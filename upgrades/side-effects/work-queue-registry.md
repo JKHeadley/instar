@@ -16,3 +16,6 @@
 - reason: read-only ranking and rescoring are not self-triggered actions.
 
 The rescore route is explicitly non-mutating and the capability index exposes the agent-facing prefix.
+
+### Docs-coverage follow-up (2026-07-24)
+Docs page + doc comments for the work-queue routes and registry class (docs-coverage ratchet compliance; no behavior change). Ceremony completed by Echo over Codey's prepared work after turn-boundary stalls.
