@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-24T23:27:05.622Z",
+  "slug": "work-queue-registry",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 46,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

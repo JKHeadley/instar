@@ -133,6 +133,7 @@ import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
+import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
@@ -302,6 +303,7 @@ export class AgentServer {
   }) => Promise<{ ok: boolean; agentMessage?: boolean; reason?: string }>;
   private routeContext: {
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
+    workQueue?: WorkQueueRegistry | null;
     pendingRelayLookup?: (deliveryId: string) => boolean;
     autonomousLivenessReconciler?:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
@@ -386,7 +388,8 @@ export class AgentServer {
       oldOwnerQuiesced?: boolean; splitBrainRecoveryPacket?: { incidentId: string; oldOwnerStatus: 'unreachable-or-fenced'; operatorDecisionRef: string } }) => {
       ownerAuthorityEpoch: number; invalidatedClaims: number; abandonedRuns: number;
       reconciliation: ReturnType<FeedbackDrainStore['reconcileInitiativeLinks']>;
-    };
+  };
+
     isRestorePending: () => boolean;
   } | null = null;
   private feedbackDrainBackupTimer: ReturnType<typeof setInterval> | null = null;
@@ -395,6 +398,11 @@ export class AgentServer {
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Attach late-bound advisory work intake after the large server bootstrap. */
+  setWorkQueue(workQueue: WorkQueueRegistry): void {
+    if (this.routeContext) this.routeContext.workQueue = workQueue;
+  }
   // WS5.2 Account Follow-Me — delivered-mandate consumer (seam #1): drives enroll-start for
   // operator-approved+delivered mandates so a tapped Approve actually produces a login.
   private followMeConsumerTimer: ReturnType<typeof setInterval> | null = null;
@@ -523,6 +531,7 @@ export class AgentServer {
     orphanReaper?: import('../monitoring/OrphanProcessReaper.js').OrphanProcessReaper;
     coherenceMonitor?: import('../monitoring/CoherenceMonitor.js').CoherenceMonitor;
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
+    workQueue?: WorkQueueRegistry;
     prHandLease?: import('../core/PrHandLease.js').PrHandLease;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     subscriptionIdentityOracle?: import('../core/CredentialLocationLedger.js').IdentityOracle;
@@ -3345,6 +3354,7 @@ export class AgentServer {
       orphanReaper: options.orphanReaper ?? null,
       coherenceMonitor: options.coherenceMonitor ?? null,
       commitmentTracker: options.commitmentTracker ?? null,
+      workQueue: options.workQueue ?? null,
       prHandLease: options.prHandLease ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
