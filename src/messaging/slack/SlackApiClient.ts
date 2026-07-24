@@ -10,7 +10,7 @@
 
 import { getTier, type RateLimitTier } from './types.js';
 import { redactToken } from './sanitize.js';
-import { Agent, setGlobalDispatcher } from 'undici';
+import { Agent } from 'undici';
 
 export interface SlackApiOptions {
   /** Use app-level token instead of bot token */
@@ -47,11 +47,16 @@ export class SlackApiClient {
   private botToken: string;
   private appToken: string | null;
   private consecutiveFetchFailures = 0;
-  private dispatcher: Agent | null = null;
+  private dispatcher: Agent;
 
   constructor(botToken: string, appToken?: string) {
     this.botToken = botToken;
     this.appToken = appToken ?? null;
+    this.dispatcher = new Agent({
+      connections: 10,
+      keepAliveTimeout: 10_000,
+      keepAliveMaxTimeout: 30_000,
+    });
   }
 
   /**
@@ -98,7 +103,10 @@ export class SlackApiClient {
           'Content-Type': 'application/json; charset=utf-8',
         },
         body: JSON.stringify(params),
-      });
+        // Keep the recovery pool scoped to Slack requests. Rebuilding a
+        // process-global dispatcher could disrupt unrelated HTTP clients.
+        dispatcher: this.dispatcher,
+      } as RequestInit & { dispatcher: Agent });
       this.consecutiveFetchFailures = 0;
     } catch (error) {
       this.consecutiveFetchFailures++;
@@ -146,13 +154,12 @@ export class SlackApiClient {
    */
   private resetHttpTransport(): void {
     this.consecutiveFetchFailures = 0;
-    this.dispatcher?.close().catch(() => {});
+    this.dispatcher.close().catch(() => {});
     this.dispatcher = new Agent({
       connections: 10,
       keepAliveTimeout: 10_000,
       keepAliveMaxTimeout: 30_000,
     });
-    setGlobalDispatcher(this.dispatcher);
     console.warn('[slack-api] Rebuilt HTTP transport after repeated fetch failures');
   }
 }
