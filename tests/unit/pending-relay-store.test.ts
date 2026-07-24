@@ -455,6 +455,19 @@ describe('PendingRelayStore — origin-scoped claims (R1.3 single-owner contract
     store.close();
   });
 
+  it('drain selector claims ordinary rows with NULL next_attempt_at', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    store.enqueue({
+      delivery_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      topic_id: 29723,
+      text_hash: 'c'.repeat(64),
+      text: 'restart-recovery row',
+      next_attempt_at: null,
+    });
+    expect(store.selectClaimable(new Date().toISOString()).map((r) => r.delivery_id)).toContain('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    store.close();
+  });
+
   it('a future hold keeps a reap-notify row unclaimable until release', () => {
     const store = PendingRelayStore.open('echo', tmpDir);
     const release = new Date(Date.now() + 3600_000).toISOString();
