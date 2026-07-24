@@ -51,7 +51,7 @@ function buildCtx(dir: string, opts: {
   const pool = new SubscriptionPool({ stateDir: dir });
   if (opts.knowAccountEmail) {
     // The operator-approved account is known locally with its email (authoritative S7 source).
-    pool.add({ id: 'a1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/x/a1', email: 'approved@x.com' });
+    pool.addFixture({ id: 'a1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/x/a1', email: 'approved@x.com' });
   }
   const store = new PendingLoginStore({ stateDir: dir });
   const enrollmentWizard = new EnrollmentWizard({
@@ -146,8 +146,8 @@ describe('/subscription-pool/follow-me/enroll/start (integration)', () => {
     app.use(createRoutes(ctx));
     server = await listen(app);
     const r = await post('/subscription-pool/follow-me/enroll/start', { mandateId: 'm1', accountId: 'a1' });
-    expect(r.status).toBe(409);
-    expect(r.body.error).toBe('cannot resolve approved account email');
+    expect(r.status).toBe(404);
+    expect(r.body.code).toBe('subscription-account-not-found');
     // Fail-closed: NO pending login was started with a blank/wrong email.
     const wizard = (ctx as unknown as { enrollmentWizard: EnrollmentWizard }).enrollmentWizard;
     expect(wizard.pending()).toHaveLength(0);
@@ -187,7 +187,7 @@ describe('/subscription-pool/follow-me/enroll/start (integration)', () => {
     const ctx = buildCtx(dir, { dev: true, decision: 'allow', knowAccountEmail: false, driveCapture, remoteScrapeTimeoutMs: 180000 });
     // Inject an openai account locally so the email + provider resolve to the remote-aware kind.
     const pool = (ctx as unknown as { subscriptionPool: SubscriptionPool }).subscriptionPool;
-    pool.add({ id: 'a1', nickname: 'main', provider: 'openai', framework: 'codex-cli', configHome: '/x/a1', email: 'approved@x.com' });
+    pool.addFixture({ id: 'a1', nickname: 'main', provider: 'openai', framework: 'codex-cli', configHome: '/x/a1', email: 'approved@x.com' });
     const app = express(); app.use(express.json());
     app.use(createRoutes(ctx));
     server = await listen(app);

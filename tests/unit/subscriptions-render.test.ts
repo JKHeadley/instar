@@ -354,6 +354,29 @@ describe('renderAccountMatrix', () => {
     expect(a1OnMini!.textContent).toBe('Set up');
   });
 
+  it('renders an honest PIN-gated repair action for an email-less account record', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, {
+      enabled: true,
+      accounts: [],
+      emailGaps: [{
+        accountId: 'legacy',
+        nickname: 'Legacy',
+        machineId: 'm1',
+        machineNickname: 'Laptop',
+        reason: 'account-record-missing-email',
+      }],
+      pool: { selfMachineId: 'm1', failed: [] },
+      scope: 'pool',
+    }, { enabled: true, logins: [] }, {});
+    const cell = t.querySelector('.sub-matrix-email-missing');
+    expect(cell).toBeTruthy();
+    expect(cell!.textContent).toContain('Account record is missing its email');
+    const button = cell!.querySelector('[data-email-repair="1"]');
+    expect(button).toBeTruthy();
+    expect(button!.textContent).toBe('Repair identity');
+  });
+
   it('renders an offline/disabled column for a pool.failed machine — no fabricated ✓', () => {
     const t = el();
     renderAccountMatrix(doc, t, poolScope, pendingScope, {});

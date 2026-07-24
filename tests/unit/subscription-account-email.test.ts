@@ -24,27 +24,29 @@ afterEach(() => {
 describe('SubscriptionPool email field', () => {
   it('add() stores the email; list() reflects it', () => {
     const pool = new SubscriptionPool({ stateDir: dir });
-    const a = pool.add({ id: 'sm-justin', nickname: 'SageMind - Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c', email: 'justin@sagemindai.io' });
+    const a = pool.addFixture({ id: 'sm-justin', nickname: 'SageMind - Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c', email: 'justin@sagemindai.io' });
     expect(a.email).toBe('justin@sagemindai.io');
     expect(pool.get('sm-justin')?.email).toBe('justin@sagemindai.io');
   });
 
-  it('add() without email leaves it undefined (back-compat)', () => {
+  it('add() refuses a missing email', () => {
     const pool = new SubscriptionPool({ stateDir: dir });
-    const a = pool.add({ id: 'x', nickname: 'x', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c' });
-    expect(a.email).toBeUndefined();
+    expect(() => pool.addFixture({
+      id: 'x', nickname: 'x', provider: 'anthropic', framework: 'claude-code',
+      configHome: '/h/.c', email: undefined as unknown as string,
+    })).toThrow(/email is required/);
   });
 
-  it('update() patches the email; empty string clears it', () => {
+  it('generic update cannot patch or clear identity email', () => {
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'x', nickname: 'x', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c' });
-    expect(pool.update('x', { email: 'a@b.com' })?.email).toBe('a@b.com');
-    expect(pool.update('x', { email: '' })?.email).toBeUndefined();
+    pool.addFixture({ id: 'x', nickname: 'x', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c', email: 'original@example.com' });
+    pool.update('x', { nickname: 'renamed' });
+    expect(pool.get('x')?.email).toBe('original@example.com');
   });
 
   it('email is not a credential field — add does not throw on it', () => {
     const pool = new SubscriptionPool({ stateDir: dir });
-    expect(() => pool.add({ id: 'y', nickname: 'y', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c', email: 'z@z.com' }, { email: 'z@z.com' })).not.toThrow();
+    expect(() => pool.addFixture({ id: 'y', nickname: 'y', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.c', email: 'z@z.com' }, { email: 'z@z.com' })).not.toThrow();
   });
 });
 
@@ -60,20 +62,19 @@ describe('readAccountEmail', () => {
   });
 });
 
-describe('QuotaPoller auto-populates account.email from the real login', () => {
+describe('QuotaPoller preserves registrar-owned account.email', () => {
   const USAGE = { five_hour: { utilization: 10, resets_at: '2026-06-07T01:00:00Z' }, seven_day: { utilization: 40, resets_at: '2026-06-12T00:00:00Z' } };
   const okFetch: FetchImpl = async () => ({ ok: true, status: 200, json: async () => USAGE });
 
-  it('writes the email read from the config home onto the account', async () => {
+  it('does not overwrite identity from quota-side config metadata', async () => {
     // config home whose login record says a specific account
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-home-'));
     fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'real@account.com' } }));
     const pool = new SubscriptionPool({ stateDir: dir });
-    // registered with NO email (or a stale one) — poll should fill it from reality
-    pool.add({ id: 'acc', nickname: 'Acc', provider: 'anthropic', framework: 'claude-code', configHome: home });
+    pool.addFixture({ id: 'acc', nickname: 'Acc', provider: 'anthropic', framework: 'claude-code', configHome: home, email: 'attested@account.com' });
     const poller = new QuotaPoller({ pool, fetchImpl: okFetch, tokenResolver: () => 'sk-ant-oat01-x' });
     await poller.pollAll();
-    expect(pool.get('acc')?.email).toBe('real@account.com');
+    expect(pool.get('acc')?.email).toBe('attested@account.com');
     try { SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'test:cleanup-home' }); } catch { /* @silent-fallback-ok */ }
   });
 });

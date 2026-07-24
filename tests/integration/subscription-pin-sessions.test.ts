@@ -80,8 +80,8 @@ describe('subscription-pool session pinning (integration)', () => {
 
   it('pins a spawn to the scheduler-picked optimal account, end to end', async () => {
     // Two accounts; the one with MORE unused headroom + a sooner reset scores higher.
-    pool.add({ id: 'gmail-justin', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-echo-justin-gmail', email: 'headley.justin@gmail.com' });
-    pool.add({ id: 'sagemind-adriana', nickname: 'SageMind - Adriana', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-echo-6', email: 'adriana@sagemindai.io' });
+    pool.addFixture({ id: 'gmail-justin', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-echo-justin-gmail', email: 'headley.justin@gmail.com' });
+    pool.addFixture({ id: 'sagemind-adriana', nickname: 'SageMind - Adriana', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-echo-6', email: 'adriana@sagemindai.io' });
     // gmail nearly exhausted + far reset; adriana fresh + soon reset → adriana wins.
     pool.update('gmail-justin', { lastQuota: { sevenDay: { utilizationPct: 95, resetsAt: '2026-06-20T00:00:00Z' } } });
     pool.update('sagemind-adriana', { lastQuota: { sevenDay: { utilizationPct: 0, resetsAt: '2026-06-11T00:00:00Z' } } });
@@ -115,7 +115,7 @@ describe('subscription-pool session pinning (integration)', () => {
     const home = path.join(dir, '.claude-headless');
     fs.mkdirSync(home);
     fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'u-1' } }));
-    pool.add({ id: 'headless-acct', nickname: 'headless', provider: 'anthropic', framework: 'claude-code', configHome: home });
+    pool.addFixture({ id: 'headless-acct', nickname: 'headless', email: 'headless@example.test', provider: 'anthropic', framework: 'claude-code', configHome: home });
 
     wireResolver();
     const session = await manager.spawnSession({ name: 'pin-ready', prompt: 'p' });
@@ -157,8 +157,8 @@ describe('subscription-pool session pinning (integration)', () => {
     state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === tmux);
 
   it('pins the interactive session to the scheduler-picked account, end to end', async () => {
-    pool.add({ id: 'gmail-justin', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-echo-justin-gmail', email: 'headley.justin@gmail.com' });
-    pool.add({ id: 'sagemind-adriana', nickname: 'SageMind - Adriana', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-echo-6', email: 'adriana@sagemindai.io' });
+    pool.addFixture({ id: 'gmail-justin', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-echo-justin-gmail', email: 'headley.justin@gmail.com' });
+    pool.addFixture({ id: 'sagemind-adriana', nickname: 'SageMind - Adriana', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-echo-6', email: 'adriana@sagemindai.io' });
     pool.update('gmail-justin', { lastQuota: { sevenDay: { utilizationPct: 95, resetsAt: '2026-06-20T00:00:00Z' } } });
     pool.update('sagemind-adriana', { lastQuota: { sevenDay: { utilizationPct: 0, resetsAt: '2026-06-11T00:00:00Z' } } });
 

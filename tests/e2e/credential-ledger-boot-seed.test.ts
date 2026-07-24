@@ -53,8 +53,8 @@ describe('credential ledger boot-seed — E2E (seed flows to /credentials/locati
     const pool = new SubscriptionPool({ stateDir: dir });
     const homeA = path.join(dir, '.claude-a');
     const homeB = path.join(dir, '.claude-b');
-    pool.add({ id: 'acct-a', nickname: 'A', provider: 'anthropic', framework: 'claude-code', configHome: homeA, email: 'a@x.com' });
-    pool.add({ id: 'acct-b', nickname: 'B', provider: 'anthropic', framework: 'claude-code', configHome: homeB, email: 'b@x.com' });
+    pool.addFixture({ id: 'acct-a', nickname: 'A', provider: 'anthropic', framework: 'claude-code', configHome: homeA, email: 'a@x.com' });
+    pool.addFixture({ id: 'acct-b', nickname: 'B', provider: 'anthropic', framework: 'claude-code', configHome: homeB, email: 'b@x.com' });
 
     const poolView: LedgerPoolView = { list: () => pool.list().map((a) => ({ id: a.id, email: a.email, configHome: a.configHome, framework: a.framework })) };
     // Oracle maps each slot (configHome) to its real tenant email — the happy path of seeding.

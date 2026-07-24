@@ -110,8 +110,8 @@ describe('WS5.2 §6.2 SubscriptionPool.locallyExecutable()', () => {
   });
 
   it('returns only accounts with a valid login (a real pool account always has a configHome)', () => {
-    pool.add({ id: 'a', nickname: 'a', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-a', status: 'active' });
-    pool.add({ id: 'b', nickname: 'b', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-b', status: 'needs-reauth' });
+    pool.addFixture({ id: 'a', nickname: 'a', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-a', status: 'active', email: 'a@example.test' });
+    pool.addFixture({ id: 'b', nickname: 'b', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-b', status: 'needs-reauth', email: 'b@example.test' });
     const ex = pool.locallyExecutable();
     expect(ex.map((a) => a.id)).toEqual(['a']);
   });

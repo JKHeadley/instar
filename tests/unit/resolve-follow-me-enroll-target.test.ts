@@ -26,7 +26,7 @@ describe('resolveFollowMeEnrollTarget', () => {
     expect(r).toMatchObject({ resolved: true, expectedEmail: 'approved@x.com', provider: 'anthropic', framework: 'claude-code', label: 'a1' });
   });
 
-  it('prefers the local pool over a peer view (no override from a peer)', () => {
+  it('fails closed when local and peer holder identity conflicts', () => {
     const peerViews: MachinePoolView[] = [
       { machineId: 'mini', nickname: 'the Mini', accounts: [{ accountId: 'a1', email: 'peer@x.com', status: 'active', locallyHeld: false }] },
     ];
@@ -35,7 +35,7 @@ describe('resolveFollowMeEnrollTarget', () => {
       localAccounts: [{ id: 'a1', email: 'local@x.com', nickname: 'main', provider: 'anthropic', framework: 'claude-code' }],
       peerViews,
     });
-    expect(r).toMatchObject({ resolved: true, expectedEmail: 'local@x.com' });
+    expect(r).toMatchObject({ resolved: false, code: 'account-record-email-conflict' });
   });
 
   it('FAILS CLOSED when no holder reports an email', () => {
@@ -43,7 +43,11 @@ describe('resolveFollowMeEnrollTarget', () => {
       { machineId: 'mini', nickname: 'the Mini', accounts: [{ accountId: 'a1', status: 'active', locallyHeld: false }] },
     ];
     const r = resolveFollowMeEnrollTarget({ accountId: 'a1', localAccounts: [{ id: 'a1' }], peerViews });
-    expect(r).toEqual({ resolved: false, reason: 'cannot resolve approved account email' });
+    expect(r).toEqual({
+      resolved: false,
+      code: 'account-record-missing-email',
+      reason: 'This subscription account record is missing its email. Repair or re-enroll the account, then try again.',
+    });
   });
 
   it('FAILS CLOSED for an unknown account', () => {

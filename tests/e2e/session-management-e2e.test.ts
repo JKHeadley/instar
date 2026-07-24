@@ -394,7 +394,10 @@ describeMaybe('Session Management E2E', () => {
   describe('Feature: Subscription-pool pinning (B1, interactive lane)', () => {
     it('tags a real interactive session with the resolver-picked account + seeds its home onboarding-ready', async () => {
       const claudePath = createMockClaudeInteractive(project.dir);
-      const sm = createManager(project, claudePath);
+      // This scenario is specifically the Claude subscription-pool lane. Pin
+      // the framework so a Codex-hosted test runner cannot silently turn the
+      // pool resolver into the expected non-Claude no-op.
+      const sm = createManager(project, claudePath, { framework: 'claude-code' });
       managers.push(sm);
 
       // A headless-enrolled pool home: tokens present, interactive flags absent.

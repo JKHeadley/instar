@@ -34,8 +34,8 @@ describe('GET /subscription-pool/in-use (integration)', () => {
     const ctx: any = { config: { authToken: 't', stateDir: dir, port: 0 }, startTime: new Date() };
     if (opts.withPool) {
       const pool = new SubscriptionPool({ stateDir: dir });
-      pool.add({ id: 'gmail', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/h/g', email: 'headley.justin@gmail.com' });
-      pool.add({ id: 'sagemind', nickname: 'SageMind - Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/h/s', email: 'justin@sagemindai.io' });
+      pool.addFixture({ id: 'gmail', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/h/g', email: 'headley.justin@gmail.com' });
+      pool.addFixture({ id: 'sagemind', nickname: 'SageMind - Justin', provider: 'anthropic', framework: 'claude-code', configHome: '/h/s', email: 'justin@sagemindai.io' });
       ctx.subscriptionPool = pool;
       ctx.inUseAccountResolver = new InUseAccountResolver({ probe: async () => opts.activeEmail ?? null });
     }

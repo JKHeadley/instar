@@ -366,6 +366,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     kind: 'route', method: 'POST', pathPrefix: '/subscription-pool/enroll/',
     domain: 'machine-local', story: enrollmentStory,
   });
+  reg.add({
+    kind: 'route', method: 'POST', pathPrefix: '/subscription-pool/:id/repair-email',
+    domain: 'machine-local', story: enrollmentStory,
+  });
 
   // Credential identity repair executes staged swaps only among login homes on
   // this machine. Claude credentials cannot be relocated across machines; the

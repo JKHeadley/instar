@@ -208,7 +208,7 @@ describe('QuotaPoller census #2 (401-refresh) — slot re-routing', () => {
 describe('QuotaPoller census #3 (email auto-patch) — SUPPRESSED while enabled', () => {
   it('flag ON → no email auto-patch (suppressed)', async () => {
     const pool = new SubscriptionPool({ stateDir: tmp });
-    pool.add({ id: 'acct-a', nickname: 'A', provider: 'anthropic', framework: 'claude-code', configHome: tmp, email: 'old@x.com' } as never);
+    pool.addFixture({ id: 'acct-a', nickname: 'A', provider: 'anthropic', framework: 'claude-code', configHome: tmp, email: 'old@x.com' } as never);
     const gate = new CredentialLocationGate({ isEnabled: () => true, ledger: ledgerWith(tmp, 'acct-a') });
     // .claude.json in tmp records a DIFFERENT email — today this would be auto-patched.
     fs.writeFileSync(path.join(tmp, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'observed@y.com' } }));
@@ -219,16 +219,16 @@ describe('QuotaPoller census #3 (email auto-patch) — SUPPRESSED while enabled'
     expect(patchedEmail).toBe(false); // suppressed — no cross-contamination
   });
 
-  it('flag OFF → email auto-patch happens (today\'s behavior preserved)', async () => {
+  it('flag OFF → email remains registrar-owned (no quota-poller identity mutation)', async () => {
     const pool = new SubscriptionPool({ stateDir: tmp });
-    pool.add({ id: 'acct-a', nickname: 'A', provider: 'anthropic', framework: 'claude-code', configHome: tmp, email: 'old@x.com' } as never);
+    pool.addFixture({ id: 'acct-a', nickname: 'A', provider: 'anthropic', framework: 'claude-code', configHome: tmp, email: 'old@x.com' } as never);
     const gate = new CredentialLocationGate({ isEnabled: () => false, ledger: ledgerWith(tmp, 'acct-a') });
     fs.writeFileSync(path.join(tmp, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'observed@y.com' } }));
     const updateSpy = vi.spyOn(pool, 'update');
     const poller = new QuotaPoller({ pool, fetchImpl: okFetch, tokenResolver: () => 'sk-ant-oat-x', locationGate: gate });
     await poller.pollAll();
     const patchedEmail = updateSpy.mock.calls.some((c) => (c[1] as Record<string, unknown>).email === 'observed@y.com');
-    expect(patchedEmail).toBe(true);
+    expect(patchedEmail).toBe(false);
   });
 });
 

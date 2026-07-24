@@ -38,6 +38,8 @@ import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/n
 import { canonicalPushKey } from '../core/PrHandLease.js';
 import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
 import { QUOTA_SNAPSHOT_STALE_AFTER_MS } from '../core/QuotaPoller.js';
+import { SubscriptionAccountEmailRegistrar } from '../core/SubscriptionPool.js';
+import { CredentialIdentityOracle } from '../core/CredentialIdentityOracle.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -788,6 +790,12 @@ export interface RouteContext {
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
    *  Subscription & Auth Standard). Null until an operator opts in / enrolls. */
   subscriptionPool: import('../core/SubscriptionPool.js').SubscriptionPool | null;
+  /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
+  subscriptionIdentityOracle?: {
+    resolveSlotTenant(slot: string): Promise<{ email?: string; unavailable?: boolean; reason?: string }>;
+  };
+  subscriptionEmailBinding?: import('../core/SubscriptionPool.js').SubscriptionEmailBindingAuthority;
+  subscriptionEmailBarrier?: import('../core/SubscriptionPool.js').SubscriptionEmailReconciliationBarrier;
   /** WS5.2 Account Follow-Me — cross-machine per-peer account views for depth detection. Prod-wired
    *  to the `?scope=pool` fan-out; absent ⇒ local-only (single-machine = no depth-zero peers). */
   accountFollowMePeerViews?: () => Promise<import('../core/accountFollowMeDepth.js').MachinePoolView[]>;
@@ -1511,6 +1519,38 @@ export interface RouteContext {
   } | null;
   startTime: Date;
 }
+
+export type SubscriptionPoolWriteCapability =
+  | 'requiresEmailReconciliation'
+  | 'readOnlyOrNonIdentity';
+
+/**
+ * Default-deny inventory for every mutating /subscription-pool route.
+ * The companion ratchet compares this registry to the real Express surface:
+ * a new write cannot silently bypass boot identity reconciliation.
+ */
+export const SUBSCRIPTION_POOL_WRITE_CAPABILITIES: Readonly<Record<string, SubscriptionPoolWriteCapability>> =
+  Object.freeze({
+    'POST /subscription-pool': 'requiresEmailReconciliation',
+    'POST /subscription-pool/:id/repair-email': 'requiresEmailReconciliation',
+    'POST /subscription-pool/enroll': 'requiresEmailReconciliation',
+    'POST /subscription-pool/enroll/:id/complete': 'requiresEmailReconciliation',
+    'POST /subscription-pool/follow-me/enroll/:id/complete': 'requiresEmailReconciliation',
+    'POST /subscription-pool/follow-me/enroll/start': 'requiresEmailReconciliation',
+    'POST /subscription-pool/matrix/start-cell': 'requiresEmailReconciliation',
+    'DELETE /subscription-pool/:id': 'readOnlyOrNonIdentity',
+    'PATCH /subscription-pool/:id': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/enroll/:id/cancel': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/enroll/reissue-expired': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/cancel': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/enroll/:id/cancel': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/enroll/:id/submit-code': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/scan': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/submit-code': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/poll': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/proactive-swap/check': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/swap': 'readOnlyOrNonIdentity',
+  });
 
 // Validation patterns for route parameters
 const SESSION_NAME_RE = /^[a-zA-Z0-9_-]{1,200}$/;
@@ -26417,6 +26457,47 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // GET routes return { enabled: false } when the pool is not configured so
   // they answer 200 (not 503) on every install.
 
+  const subscriptionEmailReconciliation = () => {
+    const barrier = ctx.subscriptionEmailBarrier;
+    if (barrier && typeof barrier.snapshot === 'function') return barrier.snapshot();
+    const state = barrier && typeof barrier.status === 'function'
+      ? barrier.status()
+      : barrier?.isBlocking() ? 'running' : 'complete';
+    return {
+      state,
+      unresolvedCount: ctx.subscriptionPool?.listEmailGaps?.().length ?? 0,
+      repairRunsFreshProbe: true as const,
+    };
+  };
+  const enforceSubscriptionPoolWriteCapability = (route: string) =>
+    (_req: ExpressRequest, res: ExpressResponse, next: () => void): void => {
+    const capability = SUBSCRIPTION_POOL_WRITE_CAPABILITIES[route];
+    if (!capability) {
+      res.status(500).json({ error: 'Subscription identity mutation route is not classified.' });
+      return;
+    }
+    if (capability === 'readOnlyOrNonIdentity' || !ctx.subscriptionEmailBarrier?.isBlocking()) {
+      next();
+      return;
+    }
+    res.status(503).json({
+      error: 'Account identity reconciliation is still starting. Try again shortly.',
+      code: 'subscription-account-email-reconciliation-running',
+      retryable: true,
+      emailReconciliation: { state: 'running' },
+    });
+  };
+  const subscriptionEmailGaps = () =>
+    (ctx.subscriptionPool?.listEmailGaps?.() ?? []).map((account) => ({
+      accountId: account.accountId,
+      nickname: account.nickname,
+      provider: account.provider,
+      framework: account.framework,
+      reason: ctx.subscriptionEmailBarrier?.timedOutAccount(account.accountId)
+        ? 'reconciliation-timeout'
+        : 'account-record-missing-email',
+    }));
+
   router.get('/subscription-pool', async (req, res) => {
     // WS5.1 — pool-scope read: "how much quota is left across ALL my machines /
     // accounts?" in ONE view. Mirrors GET /sessions?scope=pool exactly: fan out
@@ -26434,7 +26515,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const selfMachineNickname = selfMachineId
         ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
         : null;
-      const selfAccounts = (ctx.subscriptionPool?.list() ?? []).map((a) => ({
+      const localRows = ctx.subscriptionPool?.list() ?? [];
+      const selfAccounts = localRows.map((a) => ({
         ...a,
         machineId: selfMachineId,
         machineNickname: selfMachineNickname ?? undefined,
@@ -26444,6 +26526,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const peers = ctx.resolvePeerUrls?.() ?? [];
       const failed: Array<{ machineId: string; error: string }> = [];
       const remote: Record<string, unknown>[] = [];
+      const remoteEmailGaps: Record<string, unknown>[] = [];
+      const remoteReconciliation: Array<{
+        state: 'running' | 'degraded' | 'complete';
+        unresolvedCount: number;
+      }> = [];
       await Promise.all(peers.map(async (p) => {
         try {
           const r = await fetch(`${p.url}/subscription-pool`, {
@@ -26455,7 +26542,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             failed.push({ machineId: p.machineId, error: r.status === 401 || r.status === 403 ? 'unauthorized' : 'error' });
             return;
           }
-          const body = (await r.json()) as { accounts?: Record<string, unknown>[] };
+          const body = (await r.json()) as {
+            accounts?: Record<string, unknown>[];
+            emailGaps?: Record<string, unknown>[];
+            emailReconciliation?: {
+              state?: 'running' | 'degraded' | 'complete';
+              unresolvedCount?: number;
+            };
+          };
           const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
           for (const a of body.accounts ?? []) {
             remote.push({
@@ -26463,6 +26557,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               machineId: a.machineId ?? p.machineId,
               machineNickname: a.machineNickname ?? nickname ?? undefined,
               remote: true,
+            });
+          }
+          for (const gap of body.emailGaps ?? []) {
+            remoteEmailGaps.push({
+              ...gap,
+              machineId: gap.machineId ?? p.machineId,
+              machineNickname: gap.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+          if (body.emailReconciliation?.state) {
+            remoteReconciliation.push({
+              state: body.emailReconciliation.state,
+              unresolvedCount: Number(body.emailReconciliation.unresolvedCount ?? 0),
             });
           }
         } catch (err) {
@@ -26475,9 +26583,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
       }));
 
+      const localReconciliation = subscriptionEmailReconciliation();
+      const reconciliationRows = [localReconciliation, ...remoteReconciliation];
+      const aggregateState = reconciliationRows.some((row) => row.state === 'running')
+        ? 'running'
+        : reconciliationRows.some((row) => row.state === 'degraded') ? 'degraded' : 'complete';
       res.json({
         enabled: !!ctx.subscriptionPool,
         accounts: [...selfAccounts, ...remote],
+        emailGaps: [
+          ...subscriptionEmailGaps().map((gap) => ({
+            ...gap,
+            machineId: selfMachineId,
+            machineNickname: selfMachineNickname ?? undefined,
+            remote: false,
+          })),
+          ...remoteEmailGaps,
+        ],
+        emailReconciliation: {
+          state: aggregateState,
+          unresolvedCount: reconciliationRows.reduce((sum, row) => sum + row.unresolvedCount, 0),
+          repairRunsFreshProbe: true,
+        },
         pool: {
           selfMachineId,
           selfMachineNickname,
@@ -26495,7 +26622,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const accounts = ctx.subscriptionPool.list();
-    res.json({ enabled: true, count: accounts.length, accounts });
+    const emailGaps = subscriptionEmailGaps();
+    res.json({
+      enabled: true,
+      count: accounts.length,
+      accounts,
+      emailGaps,
+      emailReconciliation: subscriptionEmailReconciliation(),
+    });
   });
 
   // D5 (topic 29836) — record-state ⟂ pane-liveness. A pending login is only genuinely
@@ -26530,17 +26664,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const pool = ctx.subscriptionPool!;
     const existing = pool.get(login.id);
     if (existing) {
-      return pool.update(login.id, {
+      return new SubscriptionAccountEmailRegistrar(
+        pool,
+        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+      ).completeValidated(login.id, email, {
         nickname: login.label,
         status: 'active',
-        email,
         ...(login.configHome ? { configHome: login.configHome } : {}),
       });
     }
-    return pool.add({
+    return new SubscriptionAccountEmailRegistrar(
+      pool,
+      ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+      ctx.subscriptionEmailBinding,
+    ).completeNewValidated({
       id: login.id, nickname: login.label,
-      provider: login.provider as Parameters<typeof pool.add>[0]['provider'],
-      framework: login.framework as Parameters<typeof pool.add>[0]['framework'],
+      provider: login.provider as import('../core/SubscriptionPool.js').SubscriptionProvider,
+      framework: login.framework as import('../core/SubscriptionPool.js').SubscriptionFramework,
       configHome: login.configHome ?? '', status: 'active', email,
     });
   };
@@ -26655,7 +26795,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Run ONE proactive-swap pass now (the deterministic "show me it works" lever):
   // refresh the poll if near the wall, then pre-emptively swap at-pressure sessions.
   // POST so it never collides with GET /subscription-pool/:id.
-  router.post('/subscription-pool/proactive-swap/check', async (_req, res) => {
+  router.post('/subscription-pool/proactive-swap/check', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/proactive-swap/check'), async (_req, res) => {
     if (!ctx.proactiveSwapMonitor) {
       res.json({ enabled: false, swapped: [], considered: 0, refreshed: false });
       return;
@@ -26665,6 +26805,40 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ enabled: true, ...result });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'proactive check failed' });
+    }
+  });
+
+  router.post('/subscription-pool/:id/repair-email', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/:id/repair-email'), async (req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.status(404).json({ error: 'SubscriptionPool not configured' });
+      return;
+    }
+    const suppliedPin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expectedPin = ctx.config.dashboardPin ?? '';
+    const pinOk = suppliedPin.length === expectedPin.length && suppliedPin.length > 0 &&
+      timingSafeEqual(Buffer.from(suppliedPin), Buffer.from(expectedPin));
+    if (!pinOk) {
+      res.status(401).json({ error: 'Dashboard PIN required.' });
+      return;
+    }
+    try {
+      const registrar = new SubscriptionAccountEmailRegistrar(
+        ctx.subscriptionPool,
+        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+        ctx.subscriptionEmailBinding,
+      );
+      res.json(await registrar.repairLegacy(req.params.id));
+    } catch (err) {
+      const code = err instanceof Error && 'code' in err ? String(err.code) : 'identity-oracle-unavailable';
+      const status = code === 'subscription-account-not-found'
+        ? 404
+        : code === 'subscription-account-identity-provider-unsupported' ? 400 : 409;
+      res.status(status).json({
+        error: err instanceof Error ? err.message : 'Account identity could not be repaired.',
+        code,
+        repairRequired: true,
+        emailReconciliation: subscriptionEmailReconciliation(),
+      });
     }
   });
 
@@ -26681,7 +26855,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json(account);
   });
 
-  router.post('/subscription-pool', (req, res) => {
+  router.post('/subscription-pool', enforceSubscriptionPoolWriteCapability('POST /subscription-pool'), async (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
@@ -26694,27 +26868,62 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     try {
+      if (!/^[a-z0-9-]+$/.test(String(id))) {
+        res.status(400).json({ error: 'id must match ^[a-z0-9-]+$' });
+        return;
+      }
+      if (ctx.subscriptionPool.get(String(id))) {
+        res.status(400).json({ error: `account ${String(id)} already exists` });
+        return;
+      }
+      for (const key of Object.keys(req.body ?? {})) {
+        if (/(?:access|refresh)?token|api_?key|credentials?|secret|password|oauth/i.test(key)) {
+          res.status(400).json({
+            error: `the registry stores login LOCATION, never credentials — field "${key}" is not allowed`,
+          });
+          return;
+        }
+      }
+      if (provider !== 'anthropic' || framework !== 'claude-code') {
+        res.status(400).json({
+          error: `provider identity verification is not supported for ${String(provider)}/${String(framework)}`,
+          code: 'subscription-account-identity-provider-unsupported',
+        });
+        return;
+      }
       // Pass the full body as rawExtra so the credential-field guard rejects any
       // attempt to smuggle a token into the registry (structural invariant).
-      const account = ctx.subscriptionPool.add(
+      const account = await new SubscriptionAccountEmailRegistrar(
+        ctx.subscriptionPool,
+        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+      ).register(
         { id, nickname, provider, framework, configHome, status, email },
         req.body,
       );
       res.status(201).json(account);
     } catch (err) {
+      const code = err instanceof Error && 'code' in err ? String(err.code) : undefined;
       const isValidation = err instanceof Error && err.name === 'ValidationError';
-      res.status(isValidation ? 400 : 500).json({
+      res.status(code ? 400 : isValidation ? 400 : 500).json({
         error: err instanceof Error ? err.message : 'failed to add account',
+        ...(code ? { code } : {}),
       });
     }
   });
 
-  router.patch('/subscription-pool/:id', (req, res) => {
+  router.patch('/subscription-pool/:id', enforceSubscriptionPoolWriteCapability('PATCH /subscription-pool/:id'), (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
     }
     const { nickname, framework, configHome, status, lastQuota, lastUsedAt, email } = req.body ?? {};
+    if (email !== undefined) {
+      res.status(409).json({
+        error: 'Account email is credential-attested identity and cannot be edited directly.',
+        code: 'identity-email-direct-mutation-refused',
+      });
+      return;
+    }
     // Census #10/#11: while live credential re-pointing is enabled the account `configHome` is
     // enrollment metadata, NOT the credential's live location (the ledger owns location). A hand
     // edit here would silently desync the ledger and re-point sessions to the wrong slot, so the
@@ -26736,7 +26945,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const updated = ctx.subscriptionPool.update(
         req.params.id,
-        { nickname, framework, configHome, status, lastQuota, lastUsedAt, email },
+        { nickname, framework, configHome, status, lastQuota, lastUsedAt },
         req.body,
       );
       if (!updated) {
@@ -26752,7 +26961,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.delete('/subscription-pool/:id', (req, res) => {
+  router.delete('/subscription-pool/:id', enforceSubscriptionPoolWriteCapability('DELETE /subscription-pool/:id'), (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
@@ -26772,7 +26981,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // normal GET /subscription-pool. { enabled:false } when the poller is unwired
   // (200, never 503).
 
-  router.post('/subscription-pool/poll', async (_req, res) => {
+  router.post('/subscription-pool/poll', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/poll'), async (_req, res) => {
     if (!ctx.quotaPoller) {
       res.json({ enabled: false, polled: 0, failed: 0 });
       return;
@@ -26818,7 +27027,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // surface). Resumes `sessionName` on another eligible account, preserving the
   // conversation via --resume. Body: { sessionName, exhaustedAccountId }.
   // POST (not GET) so it never collides with GET /subscription-pool/:id.
-  router.post('/subscription-pool/swap', async (req, res) => {
+  router.post('/subscription-pool/swap', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/swap'), async (req, res) => {
     if (!ctx.quotaAwareScheduler) {
       res.json({ enabled: false, swapped: false, reason: 'scheduler not configured' });
       return;
@@ -26846,7 +27055,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // code. List/sweep routes answer 200 { enabled:false } when the wizard is
   // unwired (dark) — never 503.
 
-  router.post('/subscription-pool/enroll', async (req, res) => {
+  router.post('/subscription-pool/enroll', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll'), async (req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, started: false, reason: 'enrollment wizard not configured' });
       return;
@@ -26877,7 +27086,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // reader, prod-wired to ?scope=pool) and surfaces ONE aggregated phone-first consent. The
   // agent NEVER self-enrolls — authorization is the operator's mandate, issued on the target's
   // own dashboard (per-server, OQ6). Dark behind multiMachine.accountFollowMe (503 when off).
-  router.post('/subscription-pool/follow-me/scan', async (_req, res) => {
+  router.post('/subscription-pool/follow-me/scan', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/scan'), async (_req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; maxFollowMachines?: number } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -26948,7 +27157,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // NEVER from the request body — so `completeFollowMe` can later validate the minted account against
   // what the operator actually approved. Unresolvable email ⇒ 409 fail-closed (never start blank).
   // Dark behind multiMachine.accountFollowMe (503 when off). Mirrors the scan route's dark-gate exactly.
-  router.post('/subscription-pool/follow-me/enroll/start', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/start', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/start'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; remoteScrapeTimeoutMs?: number } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -27023,7 +27232,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
       const target = resolveFollowMeEnrollTarget({ accountId, localAccounts, peerViews });
       if (!target.resolved) {
-        res.status(409).json({ error: 'cannot resolve approved account email' });
+        res.status(target.code === 'subscription-account-not-found' ? 404 : 409)
+          .json({ error: target.reason, code: target.code, accountId, repairRequired: true });
         return;
       }
 
@@ -27124,7 +27334,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // paste the returned code); this is the second part, off-chat. The code is the
   // operator's own single-use auth code; the provider validates it — instar holds no
   // new authority and never stores/logs the code value. Dev-gated like the rest.
-  router.post('/subscription-pool/follow-me/enroll/:id/submit-code', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/:id/submit-code', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/:id/submit-code'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -27329,7 +27539,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Bearer-only like submit-code (the PIN gate lives on start-cell, the mint) — a
   // per-machine PIN can't cross the mesh, which is what lets the fronting relay reach a
   // peer's cancel. Dark behind multiMachine.accountFollowMe. Spec: matrix-cell-operator-cancel.
-  router.post('/subscription-pool/follow-me/enroll/:id/cancel', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/:id/cancel', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/:id/cancel'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -27346,7 +27556,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // it carries the code one authed hop to the machine that owns the login pane. self →
   // local submit-code; peer → POST {code} to that peer's local submit-code. The code rides
   // the Bearer-authed API + authed mesh hop only, never chat. Dark target → honest 502.
-  router.post('/subscription-pool/follow-me/submit-code', async (req, res) => {
+  router.post('/subscription-pool/follow-me/submit-code', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/submit-code'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -27390,7 +27600,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // calls this; it carries the cancel one authed hop to the machine that owns the login
   // pane. self → local cancel; peer → POST to that peer's local cancel. Mirrors
   // follow-me/submit-code exactly (Bearer-authed mesh hop; dark/offline target → 502).
-  router.post('/subscription-pool/follow-me/cancel', async (req, res) => {
+  router.post('/subscription-pool/follow-me/cancel', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/cancel'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -27438,7 +27648,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // new authority — it just drives the existing chain in one call so the frontend never handles
   // fingerprints or raw mandate JSON. Idempotent: a re-tap reuses an existing valid pending login
   // for this pair (no duplicate, no stacked mandate). Dark behind multiMachine.accountFollowMe.
-  router.post('/subscription-pool/matrix/start-cell', async (req, res) => {
+  router.post('/subscription-pool/matrix/start-cell', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/matrix/start-cell'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -27482,8 +27692,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
         const target = resolveFollowMeEnrollTarget({ accountId, localAccounts, peerViews });
         if (!target.resolved) {
-          console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=cannot-resolve-email`);
-          res.status(409).json({ error: 'cannot resolve approved account email' });
+          console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=${target.code}`);
+          res.status(target.code === 'subscription-account-not-found' ? 404 : 409)
+            .json({ error: target.reason, code: target.code, accountId, repairRequired: true });
           return;
         }
         const existing = ctx.enrollmentWizard.pending().find(
@@ -27607,7 +27818,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   // Single-segment path → no collision with /enroll/:id/complete (3 segments).
-  router.post('/subscription-pool/enroll/reissue-expired', async (_req, res) => {
+  router.post('/subscription-pool/enroll/reissue-expired', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll/reissue-expired'), async (_req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, reissued: [] });
       return;
@@ -27620,7 +27831,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.post('/subscription-pool/enroll/:id/cancel', (req, res) => {
+  router.post('/subscription-pool/enroll/:id/cancel', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll/:id/cancel'), (req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, cancelled: false, reason: 'enrollment wizard not configured' });
       return;
@@ -27628,7 +27839,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     cancelEnrollment(req.params.id, plainCompleteInFlight, 'enroll', res);
   });
 
-  router.post('/subscription-pool/enroll/:id/complete', async (req, res) => {
+  router.post('/subscription-pool/enroll/:id/complete', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll/:id/complete'), async (req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, completed: false, reason: 'enrollment wizard not configured' });
       return;
@@ -27662,7 +27873,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // the account becomes a selectable pool account. A surprise/mismatched/unverifiable email is
   // HELD (NOT added to the pool) and raises a HIGH attention item. Only a verified match adds
   // the account to the SubscriptionPool. Dark behind multiMachine.accountFollowMe (503 when off).
-  router.post('/subscription-pool/follow-me/enroll/:id/complete', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/:id/complete', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/:id/complete'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });

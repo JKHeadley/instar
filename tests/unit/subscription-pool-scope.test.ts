@@ -97,7 +97,13 @@ describe('GET /subscription-pool?scope=pool — merge/tag/classify (unit, mocked
 
   it('merges a healthy peer, tagging self remote:false and remote accounts remote:true + machine identity', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      fakeResp(true, 200, { enabled: true, count: 1, accounts: [acct('peer-a')] }),
+      fakeResp(true, 200, {
+        enabled: true,
+        count: 1,
+        accounts: [acct('peer-a')],
+        emailGaps: [{ accountId: 'peer-gap', nickname: 'Peer gap', reason: 'account-record-missing-email' }],
+        emailReconciliation: { state: 'degraded', unresolvedCount: 1, repairRunsFreshProbe: true },
+      }),
     );
     const app = mount(tmpDir, {
       selfAccounts: [acct('self-a')], meshSelfId: 'm_a',
@@ -118,6 +124,17 @@ describe('GET /subscription-pool?scope=pool — merge/tag/classify (unit, mocked
     expect(peer.remote).toBe(true);
     expect(peer.machineId).toBe('m_b');
     expect(peer.machineNickname).toBe('Mac Mini');
+    expect(res.body.emailGaps).toContainEqual(expect.objectContaining({
+      accountId: 'peer-gap',
+      machineId: 'm_b',
+      machineNickname: 'Mac Mini',
+      remote: true,
+    }));
+    expect(res.body.emailReconciliation).toEqual({
+      state: 'degraded',
+      unresolvedCount: 1,
+      repairRunsFreshProbe: true,
+    });
   });
 
   it('a 401 peer → a classified `unauthorized` pool.failed row (never a throw)', async () => {

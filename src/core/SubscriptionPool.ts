@@ -39,6 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ComponentHealth } from './types.js';
 import type { SubscriptionAccountMetaReplicationEmitter } from './SubscriptionAccountMetaReplicatedStore.js';
+import type { IdentityOracle } from './CredentialLocationLedger.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -104,7 +105,7 @@ export interface SubscriptionAccount {
    *  "SageMind - Justin" vs "SageMind - Adriana"). Auto-populated from the
    *  account's own login (oauthAccount.emailAddress) on poll, so the stored email
    *  always reflects which account actually authenticated. NEVER a secret. */
-  email?: string;
+  email: string;
   /** Billing provider. */
   provider: SubscriptionProvider;
   /** Framework client that drives this account. */
@@ -185,13 +186,59 @@ export function isLocallyExecutable(a: SubscriptionAccount): boolean {
 
 interface SubscriptionPoolStore {
   version: 1;
-  accounts: SubscriptionAccount[];
+  accounts: StoredSubscriptionAccount[];
   lastModified: string;
+}
+
+type StoredSubscriptionAccount = Omit<SubscriptionAccount, 'email'> & { email?: string };
+
+export interface SubscriptionAccountEmailGap {
+  accountId: string;
+  nickname: string;
+  provider: SubscriptionProvider;
+  framework: SubscriptionFramework;
+  configHome: string;
+  status: SubscriptionAccountStatus;
+  identityDrifted: boolean;
 }
 
 export interface SubscriptionPoolConfig {
   /** Agent stateDir (e.g. `.instar`). The store lives at <stateDir>/subscription-pool.json. */
   stateDir: string;
+}
+
+export interface SubscriptionEmailBindingAuthority {
+  tenantOf(slot: string): string | null;
+  readonly version: number;
+}
+
+export class SubscriptionEmailReconciliationBarrier {
+  private phase: 'running' | 'complete' | 'degraded' = 'running';
+  private unresolved = 0;
+  private readonly timedOut = new Set<string>();
+  status(): 'running' | 'complete' | 'degraded' { return this.phase; }
+  finish(unresolved: number | Array<{ accountId: string; reason: string }>): void {
+    const rows = typeof unresolved === 'number' ? null : unresolved;
+    this.unresolved = rows?.length ?? unresolved as number;
+    this.timedOut.clear();
+    for (const row of rows ?? []) {
+      if (row.reason === 'reconciliation-timeout') this.timedOut.add(row.accountId);
+    }
+    this.phase = this.unresolved > 0 ? 'degraded' : 'complete';
+  }
+  isBlocking(): boolean { return this.phase === 'running'; }
+  timedOutAccount(accountId: string): boolean { return this.timedOut.has(accountId); }
+  snapshot(): {
+    state: 'running' | 'complete' | 'degraded';
+    unresolvedCount: number;
+    repairRunsFreshProbe: true;
+  } {
+    return {
+      state: this.phase,
+      unresolvedCount: this.unresolved,
+      repairRunsFreshProbe: true,
+    };
+  }
 }
 
 export interface AddAccountInput {
@@ -201,8 +248,8 @@ export interface AddAccountInput {
   framework: SubscriptionFramework;
   configHome: string;
   status?: SubscriptionAccountStatus;
-  /** Optional at add time; auto-populated from the account's login on poll. */
-  email?: string;
+  /** Provider-attested identity. Registration callers cannot omit it. */
+  email: string;
 }
 
 /** Fields an operator may patch. id/provider/enrolledAt/version are immutable here. */
@@ -214,7 +261,6 @@ export interface UpdateAccountInput {
   lastQuota?: AccountQuotaSnapshot | null;
   lastUsedAt?: string;
   lastRefreshAt?: string;
-  email?: string;
   identityDrifted?: boolean;
   identityDrift?: SubscriptionAccount['identityDrift'] | null;
 }
@@ -239,6 +285,25 @@ const STATUSES: readonly SubscriptionAccountStatus[] = [
   'needs-reauth',
   'disabled',
 ];
+const VERIFIED_EMAIL_COMMIT = Symbol('verified-email-commit');
+const VERIFIED_ACCOUNT_ADD = Symbol('verified-account-add');
+
+/** Provider-scoped identity comparison; intentionally does not rewrite aliases. */
+export function normalizeSubscriptionEmail(value: unknown): { display: string; key: string } {
+  if (typeof value !== 'string') throw new ValidationError('email is required');
+  const display = value.trim();
+  if (
+    !display ||
+    display.length > 254 ||
+    /[\x00-\x1f\x7f]/.test(display) ||
+    display.startsWith('@') ||
+    display.endsWith('@') ||
+    display.split('@').length !== 2
+  ) {
+    throw new ValidationError('email must be a valid non-blank provider account email');
+  }
+  return { display, key: display.toLowerCase() };
+}
 
 /**
  * Field names that would smuggle a credential into the registry. Rejected at
@@ -291,13 +356,30 @@ export class SubscriptionPool {
 
   /** All accounts (a shallow copy — callers can't mutate the store). */
   list(): SubscriptionAccount[] {
-    return this.store.accounts.map((a) => ({ ...a }));
+    return this.store.accounts
+      .filter((a): a is SubscriptionAccount => typeof a.email === 'string' && a.email.trim().length > 0)
+      .map((a) => ({ ...a }));
+  }
+
+  /** Legacy rows are visible for repair, but never enter normal selectors. */
+  listEmailGaps(): SubscriptionAccountEmailGap[] {
+    return this.store.accounts
+      .filter((a) => !a.email?.trim())
+      .map((a) => ({
+        accountId: a.id,
+        nickname: a.nickname,
+        provider: a.provider,
+        framework: a.framework,
+        configHome: a.configHome,
+        status: a.status,
+        identityDrifted: a.identityDrifted === true,
+      }));
   }
 
   /** One account by id, or null. */
   get(id: string): SubscriptionAccount | null {
     const found = this.store.accounts.find((a) => a.id === id);
-    return found ? { ...found } : null;
+    return found?.email?.trim() ? { ...found, email: found.email } : null;
   }
 
   /**
@@ -306,12 +388,12 @@ export class SubscriptionPool {
    * every swap/placement path; a credential-less meta projection is excluded.
    */
   locallyExecutable(): SubscriptionAccount[] {
-    return this.store.accounts.filter(isLocallyExecutable).map((a) => ({ ...a }));
+    return this.list().filter(isLocallyExecutable);
   }
 
   /** Count of accounts. A pool of 0 is the dark/no-op default. */
   size(): number {
-    return this.store.accounts.length;
+    return this.list().length;
   }
 
   // ── Writes ───────────────────────────────────────────────────────
@@ -321,7 +403,7 @@ export class SubscriptionPool {
    * `rawExtra` (if provided) is scanned for credential-bearing field names and
    * rejected — the registry never stores tokens.
    */
-  add(input: AddAccountInput, rawExtra?: Record<string, unknown>): SubscriptionAccount {
+  [VERIFIED_ACCOUNT_ADD](input: AddAccountInput, rawExtra?: Record<string, unknown>): SubscriptionAccount {
     this.assertNoCredentialFields(input as unknown as Record<string, unknown>);
     if (rawExtra) this.assertNoCredentialFields(rawExtra);
 
@@ -348,10 +430,11 @@ export class SubscriptionPool {
       throw new ValidationError(`status must be one of: ${STATUSES.join(', ')}`);
     }
 
+    const email = normalizeSubscriptionEmail(input.email).display;
     const account: SubscriptionAccount = {
       id,
       nickname,
-      ...(input.email?.trim() ? { email: input.email.trim() } : {}),
+      email,
       provider: input.provider,
       framework: input.framework,
       configHome,
@@ -360,10 +443,56 @@ export class SubscriptionPool {
       enrolledAt: new Date().toISOString(),
       version: 1,
     };
-    this.store.accounts.push(account);
-    this.save();
+    const next = this.cloneStore();
+    next.accounts.push(account);
+    this.persist(next);
+    this.store = next;
     this.metaReplication?.emitPut(account);
     return { ...account };
+  }
+
+  /** Test-only fixture seam. Production identity admission is symbol-gated. */
+  addFixture(input: AddAccountInput, rawExtra?: Record<string, unknown>): SubscriptionAccount {
+    if (process.env.NODE_ENV !== 'test') {
+      throw new ValidationError('addFixture is available only in the test environment');
+    }
+    return this[VERIFIED_ACCOUNT_ADD](input, rawExtra);
+  }
+
+  /**
+   * Identity-authority commit seam. Only SubscriptionAccountEmailRegistrar,
+   * defined in this module, possesses the symbol needed to call it.
+   */
+  [VERIFIED_EMAIL_COMMIT](
+    id: string,
+    email: string,
+    patch?: Pick<UpdateAccountInput, 'nickname' | 'configHome' | 'status'>,
+  ): SubscriptionAccount | null {
+    const next = this.cloneStore();
+    const acct = next.accounts.find((candidate) => candidate.id === id);
+    if (!acct) return null;
+    acct.email = normalizeSubscriptionEmail(email).display;
+    if (patch?.nickname !== undefined) {
+      const nickname = patch.nickname.trim();
+      if (!nickname) throw new ValidationError('nickname cannot be empty');
+      acct.nickname = nickname;
+    }
+    if (patch?.configHome !== undefined) {
+      const configHome = patch.configHome.trim();
+      if (!configHome) throw new ValidationError('configHome cannot be empty');
+      acct.configHome = configHome;
+    }
+    if (patch?.status !== undefined) {
+      if (!STATUSES.includes(patch.status)) {
+        throw new ValidationError(`status must be one of: ${STATUSES.join(', ')}`);
+      }
+      acct.status = patch.status;
+    }
+    acct.version += 1;
+    this.persist(next);
+    this.store = next;
+    this.metaReplication?.emitPut(acct as SubscriptionAccount);
+    return { ...acct } as SubscriptionAccount;
   }
 
   /**
@@ -375,7 +504,10 @@ export class SubscriptionPool {
     this.assertNoCredentialFields(patch as unknown as Record<string, unknown>);
     if (rawExtra) this.assertNoCredentialFields(rawExtra);
 
-    const acct = this.store.accounts.find((a) => a.id === id);
+    const existing = this.store.accounts.find((a) => a.id === id);
+    if (!existing?.email?.trim()) return null;
+    const next = this.cloneStore();
+    const acct = next.accounts.find((a) => a.id === id)!;
     if (!acct) return null;
 
     if (patch.nickname !== undefined) {
@@ -409,10 +541,6 @@ export class SubscriptionPool {
     if (patch.lastRefreshAt !== undefined) {
       acct.lastRefreshAt = patch.lastRefreshAt;
     }
-    if (patch.email !== undefined) {
-      const em = patch.email.trim();
-      acct.email = em || undefined;
-    }
     if (patch.identityDrifted !== undefined) {
       acct.identityDrifted = patch.identityDrifted;
     }
@@ -422,19 +550,22 @@ export class SubscriptionPool {
     }
 
     acct.version += 1;
-    this.save();
+    this.persist(next);
+    this.store = next;
     // Re-emit on any mutation — a peer must SEE a status/quota change (§6.1a holder stream).
-    this.metaReplication?.emitPut(acct);
-    return { ...acct };
+    this.metaReplication?.emitPut(acct as SubscriptionAccount);
+    return { ...acct } as SubscriptionAccount;
   }
 
   /** Remove an account. Returns true if one was removed. */
   remove(id: string): boolean {
-    const before = this.store.accounts.length;
-    this.store.accounts = this.store.accounts.filter((a) => a.id !== id);
-    const removed = this.store.accounts.length < before;
+    const next = this.cloneStore();
+    const before = next.accounts.length;
+    next.accounts = next.accounts.filter((a) => a.id !== id);
+    const removed = next.accounts.length < before;
     if (removed) {
-      this.save();
+      this.persist(next);
+      this.store = next;
       this.metaReplication?.emitDelete(id, new Date().toISOString());
     }
     return removed;
@@ -487,17 +618,130 @@ export class SubscriptionPool {
     return { version: 1, accounts: [], lastModified: new Date().toISOString() };
   }
 
-  private save(): void {
-    this.store.lastModified = new Date().toISOString();
-    try {
-      const dir = path.dirname(this.storePath);
-      fs.mkdirSync(dir, { recursive: true });
-      const tmpPath = `${this.storePath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(this.store, null, 2) + '\n');
-      fs.renameSync(tmpPath, this.storePath);
-    } catch {
-      // @silent-fallback-ok — state persistence failure; the in-memory store
-      // remains authoritative for this process and the next write retries.
+  private cloneStore(): SubscriptionPoolStore {
+    return structuredClone(this.store);
+  }
+
+  private persist(next: SubscriptionPoolStore): void {
+    next.lastModified = new Date().toISOString();
+    const dir = path.dirname(this.storePath);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpPath = `${this.storePath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(next, null, 2) + '\n');
+    fs.renameSync(tmpPath, this.storePath);
+  }
+}
+
+/**
+ * The sole authority that turns credential identity evidence into a pool email.
+ * Generic pool mutation deliberately cannot create, replace, or repair identity.
+ */
+export class SubscriptionAccountEmailRegistrar {
+  constructor(
+    private readonly pool: SubscriptionPool,
+    private readonly oracle: IdentityOracle,
+    private readonly binding?: SubscriptionEmailBindingAuthority,
+  ) {}
+
+  async register(
+    input: Omit<AddAccountInput, 'email'> & { email?: string },
+    rawExtra?: Record<string, unknown>,
+  ): Promise<SubscriptionAccount> {
+    const identity = await this.oracle.resolveSlotTenant(input.configHome);
+    if (identity.unavailable || !identity.email) {
+      throw new SubscriptionIdentityError(
+        'subscription-account-email-unresolved',
+        'The credential slot identity could not be verified. Sign in to that slot, then try again.',
+      );
     }
+    const attested = normalizeSubscriptionEmail(identity.email);
+    if (input.email !== undefined && normalizeSubscriptionEmail(input.email).key !== attested.key) {
+      throw new SubscriptionIdentityError(
+        'subscription-account-email-mismatch',
+        'The supplied email does not match the account signed in at this credential slot.',
+      );
+    }
+    return this.pool[VERIFIED_ACCOUNT_ADD]({ ...input, email: attested.display }, rawExtra);
+  }
+
+  completeNewValidated(input: AddAccountInput): SubscriptionAccount {
+    return this.pool[VERIFIED_ACCOUNT_ADD](input);
+  }
+
+  async repairLegacy(
+    accountId: string,
+    options: { canCommit?: () => boolean } = {},
+  ): Promise<SubscriptionAccount> {
+    const gap = this.pool.listEmailGaps().find((candidate) => candidate.accountId === accountId);
+    if (!gap) {
+      throw new SubscriptionIdentityError(
+        'subscription-account-not-found',
+        `Subscription account "${accountId}" has no repairable email gap.`,
+      );
+    }
+    if (gap.identityDrifted) {
+      throw new SubscriptionIdentityError(
+        'identity-drifted',
+        `Subscription account "${accountId}" is identity-drifted and cannot be repaired automatically.`,
+      );
+    }
+    if (gap.provider !== 'anthropic' || gap.framework !== 'claude-code') {
+      throw new SubscriptionIdentityError(
+        'subscription-account-identity-provider-unsupported',
+        `Provider identity verification is not supported for ${gap.provider}/${gap.framework}.`,
+      );
+    }
+    const epoch = this.binding?.version;
+    if (!this.binding || this.binding.tenantOf(gap.configHome) !== accountId) {
+      throw new SubscriptionIdentityError(
+        'account-binding-unproven',
+        `Subscription account "${accountId}" is not bound to its credential slot.`,
+      );
+    }
+    const identity = await this.oracle.resolveSlotTenant(gap.configHome);
+    if (identity.unavailable || !identity.email) {
+      throw new SubscriptionIdentityError(
+        'identity-oracle-unavailable',
+        'The credential slot identity could not be verified.',
+      );
+    }
+    if (this.binding.version !== epoch || this.binding.tenantOf(gap.configHome) !== accountId) {
+      throw new SubscriptionIdentityError(
+        'account-binding-changed',
+        `Subscription account "${accountId}" changed credential binding during repair.`,
+      );
+    }
+    if (options.canCommit && !options.canCommit()) {
+      throw new SubscriptionIdentityError(
+        'reconciliation-timeout',
+        `Subscription account "${accountId}" was not repaired before the reconciliation deadline.`,
+      );
+    }
+    return this.pool[VERIFIED_EMAIL_COMMIT](accountId, identity.email)!;
+  }
+
+  /**
+   * A completed enrollment has already passed EnrollmentWizard's expected-email
+   * validation, so its provider-returned email is credential-attested evidence.
+   */
+  completeValidated(
+    accountId: string,
+    email: string,
+    patch: Pick<UpdateAccountInput, 'nickname' | 'configHome' | 'status'>,
+  ): SubscriptionAccount | null {
+    return this.pool[VERIFIED_EMAIL_COMMIT](accountId, email, patch);
+  }
+}
+
+export class SubscriptionIdentityError extends Error {
+  constructor(
+    readonly code: 'subscription-account-email-unresolved' | 'subscription-account-email-mismatch' |
+      'identity-oracle-unavailable' | 'subscription-account-not-found' | 'identity-drifted' |
+      'account-binding-unproven' | 'account-binding-changed' |
+      'subscription-account-identity-provider-unsupported' | 'reconciliation-timeout',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SubscriptionIdentityError';
   }
 }
