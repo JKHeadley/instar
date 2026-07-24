@@ -160,6 +160,15 @@ export class LeaseCoordinator {
   private lastObservedEpoch = 0;
   private suspended = false;
   /**
+   * Epoch acquired from a PEER through the normal fenced takeover authority.
+   * When this machine is the preferred captain, this is positive evidence that
+   * it may keep that exact epoch alive while the peer remains unreachable:
+   * acquisition already proved expired/dead/non-renewing and won the CAS.
+   * Process-local and epoch-bound by design; restart forgets it (fail-closed)
+   * and any higher observed epoch makes it inapplicable.
+   */
+  private peerTakeoverAuthorizedEpoch: number | null = null;
+  /**
    * The freshest lease THIS machine has signed (acquisition or renewal). It is
    * the authoritative low-latency copy of our own holding — we broadcast it
    * over the tunnel, but git is only updated coarsely (on epoch change), so a
@@ -260,6 +269,14 @@ export class LeaseCoordinator {
         }
       }
     }
+    // A higher accepted epoch permanently consumes any process-local solo-hold
+    // authorization for our older takeover. Do this BEFORE selfIssued folding:
+    // if the transport later forgets/removes that peer observation, the old
+    // epoch must never resurrect authority merely because it becomes the max
+    // visible record again.
+    if (this.peerTakeoverAuthorizedEpoch !== null && epoch > this.peerTakeoverAuthorizedEpoch) {
+      this.peerTakeoverAuthorizedEpoch = null;
+    }
     // Fold in our own freshest self-issued lease (a renewal's new expiry lives
     // here, not in coarse git). Only while not superseded by a higher epoch.
     if (this.selfIssued && this.selfIssued.holder === this.selfMachineId && this.selfIssued.epoch >= epoch) {
@@ -327,8 +344,8 @@ export class LeaseCoordinator {
    * ALL must hold (each is an EXISTING signal, never authority invented here):
    *  (1) the feature is enabled (DARK by default);
    *  (2) this machine is the F4-AGREED preferred-awake machine;
-   *  (3) EVERY peer is presumed-gone by liveness-silence (aged out, not merely
-   *      unreachable this tick) — the load-bearing "absent vs unreachable" gate;
+   *  (3) EVERY peer is presumed-gone by liveness-silence, OR this exact epoch
+   *      was acquired from a peer through the fenced takeover authority;
    *  (4) no higher epoch than ours is observed (a real takeover always wins).
    * Fail-closed: a missing dep ⇒ not eligible (today's self-suspend).
    */
@@ -336,7 +353,8 @@ export class LeaseCoordinator {
     const cfg = this.d.soloCaptainHold?.();
     if (!cfg?.enabled) return false;
     if (!this.d.isPreferredAwakeAgreed?.()) return false;
-    if (!this.d.allPeersPresumedGone?.()) return false;
+    const authorizedByPeerTakeover = this.peerTakeoverAuthorizedEpoch === ourEpoch;
+    if (!authorizedByPeerTakeover && !this.d.allPeersPresumedGone?.()) return false;
     // No higher epoch observed than the one we hold (a real takeover dominates).
     const view = this.effectiveView();
     if (view.epoch > ourEpoch) return false;
@@ -571,6 +589,25 @@ export class LeaseCoordinator {
   }
 
   /**
+   * Whether the current peer-held effective lease is takeable by the normal
+   * fenced acquisition rules right now. This is a scheduling hint only: callers
+   * still invoke acquireIfEligible(), which re-evaluates the same decision and
+   * owns the CAS. Exposing the hint lets the fast anti-blinding pull loop wake
+   * acquisition exactly when an expired/dead/non-renewing holder becomes
+   * eligible without turning every pull into a noisy acquisition attempt.
+   */
+  peerTakeoverEligible(): boolean {
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder === this.selfMachineId) return false;
+    return this.fl.canAcquire(
+      view.lease,
+      this.d.presumedDeadHolders(),
+      this.now(),
+      this.staleHolderOpts(view.lease),
+    ).can;
+  }
+
+  /**
    * Attempt to acquire (or self-renew) the lease if eligible. Returns true if
    * THIS machine holds the lease afterward. Implements the bounded-retry CAS
    * with livelock backoff.
@@ -598,6 +635,17 @@ export class LeaseCoordinator {
       const res = this.d.store.casWrite(candidate);
       if (res.ok) {
         this.selfIssued = candidate;
+        if (
+          view.lease &&
+          view.lease.holder !== this.selfMachineId &&
+          (
+            decision.reason === 'current-lease-expired' ||
+            decision.reason.startsWith('holder-presumed-dead') ||
+            decision.reason.startsWith('holder-not-renewing')
+          )
+        ) {
+          this.peerTakeoverAuthorizedEpoch = candidate.epoch;
+        }
         await this.broadcast(candidate);
         this.markRenewOk();
         this.emitEpoch(candidate.epoch);

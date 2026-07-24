@@ -95,8 +95,10 @@ describe('LeaseCoordinator self-heal wiring (F2 + F3)', () => {
     store.lease = bLease; store.epoch = 1; tunnel.peer = bLease;
     // First observation stamps B's freshness at mono=1000.
     expect(lc.currentHolder()).toBe('B');
+    expect(lc.peerTakeoverEligible()).toBe(false);
     // Time advances 7×TTL with NO new B nonce ⇒ B is non-renewing.
     mono = 1_000 + 7 * TTL;
+    expect(lc.peerTakeoverEligible()).toBe(true);
     expect(await lc.acquireIfEligible()).toBe(true); // A takes over
     expect(lc.currentEpoch()).toBe(2);
   });
@@ -189,6 +191,39 @@ describe('LeaseCoordinator Layer 3 — solo-captain hold', () => {
     const ok = await lc.renew();
     expect(ok).toBe(false);
     expect(getSuspend()).toMatch(/could not confirm/);
+  });
+
+  it('preferred fenced peer-takeover may hold that exact epoch solo before the 15m death threshold', async () => {
+    let mono = 1_000;
+    const { lc, store, tunnel, getSuspend } = mkHeldCoordinator({
+      soloEnabled: true,
+      preferred: true,
+      allGone: false,
+      mono: () => mono,
+    });
+    // B's expired signed lease is an existing fenced-acquisition grant. A wins
+    // epoch 2 even though B has not yet aged through the 15-minute registry
+    // death threshold.
+    store.lease = flB().signLease(1, new Date(0).toISOString(), new Date(500).toISOString(), 9);
+    store.epoch = 1;
+    expect(await lc.acquireIfEligible()).toBe(true);
+    expect(lc.currentEpoch()).toBe(2);
+
+    // No peer can confirm the next renewal. The takeover provenance authorizes
+    // preferred A to keep epoch 2 alive; it must not drop serving after one TTL.
+    mono += TTL + 1;
+    expect(await lc.renew()).toBe(true);
+    expect(lc.holdsLease()).toBe(true);
+    expect(getSuspend()).toBeNull();
+
+    // A higher peer epoch permanently burns the authorization. Even if that
+    // observation later disappears, epoch 2 must not resurrect solo authority.
+    tunnel.peer = flB().signLease(3, new Date(1_000).toISOString(), new Date(10_000_000).toISOString(), 10);
+    expect(lc.currentEpoch()).toBe(3);
+    tunnel.peer = null;
+    mono += TTL + 1;
+    expect(await lc.renew()).toBe(false);
+    expect(lc.holdsLease()).toBe(false);
   });
 
   it('NOT preferred ⇒ never holds solo (a traveler self-suspends as today)', async () => {
