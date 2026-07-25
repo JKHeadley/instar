@@ -1,0 +1,34 @@
+## What Changed
+
+The `completion-claim-observe` Stop hook — the observe-only arm of Verify-Before-Done — has never recorded a single hook-originated observation since it shipped. Two independent defects, each fatal alone, and both silent because the hook's `catch` exits 0: a total failure is indistinguishable from "nothing to report".
+
+1. **`uuidv7()` threw on every invocation.** It sits at MODULE scope while `const crypto = await import('node:crypto')` lives inside the stdin `'end'` callback, so a bare `crypto` resolved to global WebCrypto — which has `getRandomValues` but not `randomBytes`. Because `uuidv7()` is called *inside the fetch body construction*, the throw happened while composing the request: the POST was never issued.
+2. **The transcript guard hardcoded `~/.claude/projects`.** An agent running with a custom `CLAUDE_CONFIG_DIR` keeps transcripts under that directory instead, so every transcript failed containment and the hook exited before doing anything.
+
+Fault 2 matters beyond itself: fixing only the reported cause (fault 1) would have shipped a **fix that changed nothing** on any agent with a custom config dir, while the ticket closed as done.
+
+Fixes: `uuidv7()` now uses `globalThis.crypto.getRandomValues` with manual hex formatting — no import, identical under ESM and CJS, so the scope trap cannot return via a re-import (the 2026 `hook-event-reporter` ESM/CJS lesson). The transcript guard accepts the `CLAUDE_CONFIG_DIR`-derived projects root **and** the default one, so agents with and without the variable both work.
+
+Built-in hooks are always overwritten on every migration run, so deployed agents receive this on their next update with no additional migration.
+
+This unblocks EVO-005, whose parent spec requires measured soak data that could not exist while the observer was inert.
+
+## What to Tell Your User
+
+A background watcher that was supposed to notice completion claims has been dead since it shipped — silently, because it was designed to say nothing when there's nothing to report. It now works. No user action is needed; nothing was lost that can be recovered, since nothing was ever recorded.
+
+## Summary of New Capabilities
+
+No new capability. An existing observe-only watcher goes from 100% inert to functional, and two regression guards prevent both causes from returning.
+
+## Evidence
+
+- **Isolated A/B (noise-free):** pointing the hook at a controlled listener via a temp project dir, the pre-fix hook produced `[]` and the post-fix hook produced `[{"url":"/completion-claim/observe","bytes":623}]`.
+- A first attempt counted records in the live audit store before/after, but the count moved on its own from concurrent background writes (6 → 8 between polls) and records are scrubbed of attribution — so that comparison could not prove anything and was replaced with the isolated listener rather than reported as proof.
+- **Why the old hook could not post:** `uuidv7()` is invoked inside the `fetch` body argument, so the `TypeError` fired while constructing the request. Confirmed by character-offset ordering in the generated hook.
+- **Scope bug reproduced:** the extracted `uuidv7`, executed at module scope in a real node process, throws `TypeError: crypto.randomBytes is not a function` pre-fix; post-fix it returns a valid UUIDv7 (version nibble `7`, variant `8|9|a|b`, unique, time-ordered) under both `.js` and `.mjs`.
+- **Path bug confirmed:** `CLAUDE_CONFIG_DIR` on the dev agent is `~/.claude-followme-adriana`; its transcripts live under that tree and never under `~/.claude/projects`.
+- **Regression test bites:** against the pre-fix migrator, 4 of 6 tests fail with the production error; all 6 pass post-fix.
+- `tsc --noEmit` clean.
+
+Known and unchanged: the hook posts fire-and-forget (`void fetch(...)`) then exits, so an observation can occasionally be lost if the process exits before the request flushes. Pre-existing, unrelated to these two causes, and documented in the side-effects artifact rather than bundled in.

@@ -13604,8 +13604,21 @@ process.stdin.on('end', async () => {
     // server-side claim pass. No hook regex is allowed to define coverage.
     if (!message) process.exit(0);
     const transcript = typeof input.transcript_path === 'string' ? path.resolve(input.transcript_path) : '';
-    const claudeRoot = path.resolve(os.homedir(), '.claude', 'projects');
-    if (!transcript || (transcript !== claudeRoot && !transcript.startsWith(claudeRoot + path.sep))) process.exit(0);
+    // Confine reads to a Claude projects tree. CLAUDE_CONFIG_DIR must be
+    // honoured: an agent running with a custom config dir (e.g.
+    // ~/.claude-followme-<name>) keeps its transcripts under THAT dir, so a
+    // hardcoded ~/.claude/projects rejects every transcript and the observer
+    // records nothing — silently, since the guard just exits 0 (ACT-966,
+    // second cause). Both roots are allowed so the guard works whether or not
+    // the variable is set; each is still a Claude projects tree, so the
+    // containment intent is unchanged.
+    const claudeRoots = [];
+    if (process.env.CLAUDE_CONFIG_DIR) claudeRoots.push(path.resolve(process.env.CLAUDE_CONFIG_DIR, 'projects'));
+    claudeRoots.push(path.resolve(os.homedir(), '.claude', 'projects'));
+    const withinClaudeRoot = claudeRoots.some(function (root) {
+      return transcript === root || transcript.startsWith(root + path.sep);
+    });
+    if (!transcript || !withinClaudeRoot) process.exit(0);
     const stat = fs.statSync(transcript);
     if (!stat.isFile()) process.exit(0);
     const max = 512 * 1024;
@@ -13702,12 +13715,22 @@ process.stdin.on('end', async () => {
 });
 
 function uuidv7() {
-  const bytes = crypto.randomBytes(16);
+  // Uses globalThis.crypto.getRandomValues, NOT node:crypto's randomBytes.
+  // This function is at MODULE scope while the \`const crypto = await
+  // import('node:crypto')\` above lives inside the stdin 'end' callback, so a
+  // bare \`crypto\` here resolves to the global WebCrypto object — which has
+  // getRandomValues but NOT randomBytes. That made every invocation throw
+  // "crypto.randomBytes is not a function" and exit(0) silently, so the
+  // observer recorded nothing (ACT-966). getRandomValues needs no import and
+  // works identically under an ESM or CJS host, so the scope trap cannot
+  // return. Hex is formatted manually because Uint8Array has no toString('hex').
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
   const now = BigInt(Date.now());
   for (let i = 5; i >= 0; i--) bytes[5 - i] = Number((now >> BigInt(i * 8)) & 255n);
   bytes[6] = (bytes[6] & 15) | 112;
   bytes[8] = (bytes[8] & 63) | 128;
-  const h = bytes.toString('hex');
+  const h = Array.from(bytes, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
   return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
 }
 `;
