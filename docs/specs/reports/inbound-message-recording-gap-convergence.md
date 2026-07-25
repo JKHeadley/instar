@@ -66,6 +66,38 @@ actually running — for 24 days.
 first.** Everything found by reading was found by reading carefully; the two
 things found by looking were not reachable from the text at all.
 
+## The last thing found, and the reason it is the summary
+
+After the loop stopped and the measurements were done, the **generated contract
+was read end to end for the first time** — the artifact the whole review was
+nominally producing. Nine defects, four of them in the normative checklist that
+says *build from this*:
+
+- two bullets where separate edits had spliced together, one ending mid-sentence
+- an Arming block that merged two rules into a run-on and stated its branches
+  twice in different words
+- a Latency row containing **both a rule and the superseded version of that same
+  rule**, in the same cell
+- a Health field listing a counter replaced hours earlier
+- a retention line presenting a bound the section below calls a no-op
+- **21 contract rows carrying review narration** ("round-73 found the wording
+  said one thing while the code did another") — the inline stripper never reached
+  inside table cells
+
+**Eighty rounds of review happened without anyone opening it.** Reviewers read the
+source spec. My edits went into the source spec. The generated instructions —
+what a builder would actually use — went unexamined for nine hours.
+
+**That is the defect under investigation, one more time.** The recording code was
+correct; the design was coherent; everyone attended to the familiar artifact and
+nobody checked the one actually in use. It held for 24 days in the code and nine
+hours in the review of the code.
+
+**The honest summary of this session:** nearly every mistake was verifying
+something *adjacent* to the thing that mattered. The source instead of the
+artifact. The document instead of the machine. The edit instead of the output.
+The window instead of the whole range.
+
 ## Why this stopped at round 80 (a decision, not an ending)
 
 The loop was stopped, not exhausted. Every round to the last was still finding
