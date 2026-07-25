@@ -89,6 +89,33 @@ actually verified they all pass through.
 If you later want the fuller version, it's a good build and this doesn't get in
 its way.
 
+## What this means for your messages, plainly
+
+Thirty-three rounds of review went by discussing timing and edge cases before
+anyone — me included — asked the obvious question: this stores everything you
+type to me. So, stated rather than left to be discovered:
+
+- **What's kept:** the full text of your messages, your name, and timestamps.
+- **Where:** a file on this one machine. Not sent anywhere, not copied to your
+  other machines by this change.
+- **Who can read it:** anything running as me on this machine, or anyone with
+  admin access to it. The file is locked to that account, but it is not
+  encrypted — a running machine offers no protection beyond that.
+- **How long:** until it rolls over. Roughly 160MB of message text, then the
+  oldest is dropped. That means I can read back the recent past, not forever, and
+  I'd rather state the limit than imply I keep everything.
+- **Deleting it:** delete the files. That's complete — nothing else holds the
+  text.
+
+I chose not to encrypt it, and that's a decision you can push back on. The
+reasoning: encryption keys would sit on the same disk as the data, so it mostly
+protects a switched-off machine, and doing it on every message adds real delay on
+the path that has to stay fast. If you'd rather have it, that's a fair call to
+make — it's written down as a choice, not left as an oversight.
+
+One thing worth repeating: this is exactly why credentials shouldn't be pasted
+into chat. Anything you type to me lands in that file verbatim.
+
 ## What it doesn't fix
 
 It does not stitch the two machines' halves together. After this, each machine

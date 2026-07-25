@@ -20,6 +20,25 @@ eli16-overview: "docs/specs/inbound-message-recording-gap.eli16.md"
 
 # Record inbound messages at the injection seam
 
+> ## The normative artifact is the generated contract, not this file
+>
+> **Build from `docs/specs/generated/inbound-message-recording-gap.contract.md`.**
+> This file is the **rationale and review record**: why the contract is shaped as
+> it is, what was tried and reversed, and which residuals were accepted
+> deliberately.
+>
+> Six consecutive rounds (29-35) asked for this, from **both** reviewer families
+> independently, and three of those rounds found a real instance of the hazard —
+> a retired design still described in normative-looking prose, which is how the
+> wrong thing gets built. Restating a design in a second place creates a second
+> place to be wrong, and this document proved that repeatedly at a tenth the size
+> of the spec that first taught the lesson (ACT-1215).
+>
+> §3.0 remains in this file as the in-place summary and stays authoritative *over
+> the surrounding prose*; where §3.0 and the generated contract could ever differ,
+> the generated one wins, because it is derived rather than maintained. The build
+> check (`--check`) is what keeps that true over time.
+
 > **It is no longer small, and `single-run-completable` is now `false`
 >.** This opened as one mechanism, one seam, one flag. Review
 > has since added — each for a good reason — a schema migration, a split logger
@@ -118,19 +137,19 @@ that is cheaper than pretending duplication is free.*
 | | |
 |---|---|
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
-| **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws**; returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path must be an app-controlled local data directory. |
+| **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws *once the syscall returns*** — a synchronous filesystem stall can still block the event loop indefinitely (§3.2); the guarantee covers the error path, not the time path. Returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path must be an app-controlled local data directory. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only on `status: 'appended'`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
 | **Fields** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, `messageId` \| absent, `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'received'`, `fromUser: true`. |
 | **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** Scope: **best-effort duplicate suppression within one process** — atomic in-process, not a storage-level uniqueness guarantee. |
 | **Ordering** | `(timestamp, rowid)`. Never `message_id`. |
 | **Authority** | JSONL is authoritative for received history. TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
 | **Failure behavior** | A failed append is caught, counted, and **injection proceeds**. A failed TopicMemory write is caught and counted. Sustained failures raise one deduped Attention item. |
-| **Counters** | `inbound-log-failed`, `inbound-log-dropped`, pending-callback depth (Attention above **8**), append-latency **max** per window (Attention on any single append > **1 s**), and a one-sided-conversation check (recent outbound with zero inbound). |
+| **Counters** | `inbound-log-failed` (authoritative append failed), `inbound-search-index-dropped` (TopicMemory write shed by the backlog cap — **not** a lost inbound record), pending-callback depth (Attention above **8**), append-latency **max** per window (Attention on any single append > **1 s**), and a one-sided-conversation check (recent outbound with zero inbound). |
 | **Storage** | Append-only JSONL in an **app-controlled local data directory**, file mode **0600**, owned by the agent process user. Plaintext — no encryption at rest (§4). |
-| **Rotation** | Rotate at **32 MB**; keep **4** rotated files. Oldest is deleted on rotation — that deletion IS the retention mechanism. |
+| **Rotation** | Rotate at **32 MB**; keep **4** rotated files. Oldest is deleted on rotation — that deletion IS the retention mechanism. **Protocol (ordered, crash-recoverable):** re-resolve the path → rename current to the next free rotation number → append to a fresh current file. Missing or skipped rotation numbers are tolerated, never repaired. |
 | **Retention** | Whatever fits in current + 4 rotations (~160 MB of message text). Resume history is bounded by this window, not by time. No time-based expiry. |
 | **Seeding** | `seedMessageLogDedupe()` reads the **current file only**, and at most its **last 64 MB** — never the rotations. A redelivered message older than the current file is written twice; that is the accepted cost of a bounded startup read. |
-| **Deletion** | Deleting the log files is supported and complete — nothing else holds inbound text except the lossy TopicMemory index, which has its own delete path. |
+| **Deletion** | Deleting the current **and rotated** files removes everything this design's JSONL store holds. TopicMemory, filesystem snapshots, and any backup system are **separate stores with separate deletion** — this is not a whole-system erasure guarantee. |
 | **Flag** | `messaging.inboundSeamLogging.enabled`, default-off, with emergency disable. |
 | **Acceptance** | **Not** "code landed" — the flag ON for the affected machine, live Telegram proof (normal + long message), **a restart, then another message with the inbound count still increasing**, an id-less seam regression test, and the single-instance lock verified active. |
 | **Known residuals** | A wedged local disk can stall message delivery. Messages dropped before injection are invisible. Message text is stored in local plaintext. All three accepted and named, none mitigated. |
@@ -210,6 +229,16 @@ thing first is the right sequencing, not a judgment that JSONL is better.
 importance — more consumers, longer retention, real query needs — the SQLite
 migration is the expected next step, and the hand-built machinery listed above is
 the debt it would retire. <!-- tracked: ACT-1218 -->
+
+**Both reviewer families reached this independently, which is worth more than either saying it alone.** They came at it from
+different directions — codex counted the review findings that exist only because
+the store is a text file; gemini weighed the hand-built machinery against
+migration effort and judged the trade already favourable. Two families
+converging on the same architectural call, without either seeing the other's
+review, is the strongest signal this process produces. It does not change the
+sequencing decision above — closing the data-loss bug still comes first — but it
+does mean ACT-1218 should be treated as an expected next step rather than an
+option someone might get around to.
 
 **Choosing the seam does not close the routing question, and that is tracked, not
 waved.** "The intake edge is unknown" is a reason to log
@@ -620,6 +649,18 @@ Two things follow, and neither is a mechanism:
  this path", which is the difference between an hour of confusion and a
  one-line diagnosis. Detection where prevention is unavailable is not a
  consolation prize; it is the honest control for this class.
+
+ **An out-of-process writer was proposed and is not adopted.** A separate daemon or logging proxy would genuinely solve this: the
+ stall would land in a process whose blocking harms nothing, and the delivery
+ path would hand off asynchronously. It is the correct answer to the problem as
+ stated. It is not adopted because it inverts the entire argument of §3.2 — the
+ thing that makes a synchronous append *worth* its risk is that the record
+ exists before the message is handed on, and any handoff to another process
+ reintroduces the queue, the worker, the retry ladder and the crash window that
+ rounds 5 and 6 spent real effort deleting. Trading a rare stall for a
+ permanent new subsystem, in a change whose purpose is closing a data-loss bug,
+ is the wrong trade at this size. Recorded as considered-and-declined with its
+ reasoning, so the option is visible if the balance ever changes.
 2. **The residual is accepted and named: a wedged local disk can stall message
  delivery.** That is a real dependency this change introduces and it is not
  argued away. The reasoning for accepting it is that a machine whose local disk
@@ -780,7 +821,7 @@ the JSONL append.
  revisited — rather than pre-building a queue against a burst that may never
  happen.
 - **The backlog IS bounded — three lines, not a subsystem.** A counter tracks pending **TopicMemory** writes. Above **16**, the
- **TopicMemory write** is dropped and counted (`inbound-log-dropped`) instead of
+ **TopicMemory write** is dropped and counted (`inbound-search-index-dropped`) instead of
  scheduled. **The bound and the rollout gate are consistent by construction:** v24 paired a 64-write cap with a gate requiring under 2 s
  of contended loop delay, but 64 × 100 ms is 6.4 s — the gate could only have
  passed on luck, contended writes usually failing faster than their timeout,
@@ -803,7 +844,7 @@ the JSONL append.
  *Observation Needs Structure*, and it is the right question to ask a spec whose
  entire purpose is reliable recording).** The standard asks for structure around
  observation, not for perfection: a dropped entry here is **bounded, counted
- (`inbound-log-dropped`) and surfaced**, so the corpus knows exactly how much it
+ (`inbound-search-index-dropped`) and surfaced**, so the corpus knows exactly how much it
  is missing and when. Compare the alternative this replaced — an unbounded
  backlog that keeps every entry and risks stalling the agent's responsiveness
  for everything behind it. **An observation system that takes down the thing it
@@ -818,7 +859,7 @@ the JSONL append.
 - **General event-loop congestion is a silent third cause, acknowledged.** The backlog counter sees *this feature's* pending writes.
  It does not see the loop being busy with unrelated work, which delays the
  deferred TopicMemory write just as effectively and increments nothing. So a
- quiet `inbound-log-dropped` is **not** evidence that searchable copies are
+ quiet `inbound-search-index-dropped` is **not** evidence that searchable copies are
  landing promptly — only that this feature did not shed them. That is an
  inherent property of `setImmediate` scheduling and is accepted rather than
  worked around; the JSONL record, which is what history reads, is unaffected
@@ -925,6 +966,18 @@ on the real configured path, at the moment the process starts, without waiting
 for a real message to prove it. Synthetic records are marked and excluded from
 history reads.
 
+**A startup self-check proves the path once, not continuously.** It cannot see a permission change, a path change, a filled disk, or a
+rotation misconfiguration that happens at 3am on a process that started
+yesterday — and a machine can run for weeks between restarts. Rather than add a
+periodic synthetic writer (a background job writing fake records into a message
+log, forever, to guard a rare failure), the honest position is: **the self-check
+is a startup gate, and ongoing correctness is reported by the failure counters,
+not proven by a probe.** The first real append after a breakage is what surfaces
+it — which is acceptable *because* the append failure path is now counted, max
+latency is alarmed, and the one-sided-conversation check runs on a cadence. The
+distinction matters so nobody reads a green self-check from last Tuesday as
+evidence about today.
+
 **Default-on is EARNED by explicit thresholds, not by a release count.** The flag ships **default-off**, and
 flips to default-on when **all three** of these hold, measured on real hardware
 and recorded here:
@@ -933,7 +986,7 @@ and recorded here:
 |---|---|
 | Loop delay added by a 200-message burst, healthy store | **< 250 ms** total |
 | Loop delay, contended/wedged store | **< 2 s** total |
-| `inbound-log-dropped` during the burst | **0** on a healthy store |
+| `inbound-search-index-dropped` during the burst | **0** on a healthy store |
 
 If any gate fails, the flip does not happen and the design is revisited — the
 gate is the decision, not the calendar.
@@ -1032,6 +1085,26 @@ authoritative. Three things follow that the spec had simply not addressed:
  record of everything a person has said to the agent is a privacy posture, and
  one that should be *chosen* rather than arrived at by leaving retention
  unspecified.
+
+**Rotation is now load-bearing, so it needs a protocol, not a size number.** Retention, bounded seeding and deletion completeness all now depend on
+rotation behaving predictably, including when a process dies in the middle of it.
+The protocol in §3.0 is chosen so that every interruption point leaves a
+recoverable state:
+
+- **Crash after rename, before the new current file exists** → the next append
+ creates it. No data is lost; the rename already succeeded.
+- **Crash between the size check and the append** → the append lands in whichever
+ file the re-resolved path points at. Both are valid log files, so a message can
+ land in the tail of the old file rather than the head of the new one. Harmless:
+ nothing depends on which file a given message is in.
+- **Missing or skipped rotation numbers** → tolerated and never repaired.
+ Renumbering to close a gap would rewrite history to look tidier than it was,
+ which is the opposite of what a message log is for.
+
+The one real consequence is stated rather than hidden: **a message in a rotation
+older than the current file is not seeded into the dedupe set** (§3.0), so a
+redelivery of a very old message would be written twice. That is the accepted
+cost of a bounded startup read, and a duplicate is the recoverable direction.
 
 The policy is deliberately the smallest one that answers all three: **rotate at a
 size bound, keep a fixed number of rotated files, and let resume history read
