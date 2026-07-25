@@ -80,10 +80,20 @@ this does.
 
 That is the whole mechanism. **What it is, named honestly (round-21, codex — v20
 still said "not a write-ahead log" while implementing exactly that shape):** it is
-a **miniature write-ahead split** — a durable minimal record written
-synchronously, secondary indexes updated asynchronously. That is an industry
-pattern, not an invention, and pretending otherwise made the design harder to
-evaluate rather than smaller.
+a **miniature write-ahead split** — a minimal record written synchronously,
+secondary indexes updated asynchronously. That is an industry pattern, not an
+invention, and pretending otherwise made the design harder to evaluate rather
+than smaller.
+
+**"Durable" is one word too far, though (round-22, codex).** `appendFileSync`
+returns when the bytes reach the OS, not the platter: without `fsync` a power
+loss or kernel panic can still lose the tail. Calling this a *durable* WAL
+overclaims. It is a **synchronous best-effort append** — which survives the
+failure this bug is actually about (a process crash or restart, where the OS
+buffer is flushed normally) and does not survive a machine losing power
+mid-write. `fsync` per message is deliberately **not** added: it would cost
+milliseconds of real disk latency on every inbound message, on the delivery path,
+to protect against a failure mode that loses the running session anyway.
 
 **What it is still deliberately NOT:** a queue subsystem, an event bus, a worker,
 a retry ladder, or any new persistent store. The persistence already exists and is
@@ -200,57 +210,29 @@ It works because:
   - **JSONL** rows are free-form objects, so `dedupeId`, `idSource` and a null
     `messageId` cost nothing there. This is the record the session-start history
     reader uses, and it carries the full shape.
-  - **TopicMemory** keeps its existing columns and needs **no migration**. When
-    the platform supplies no id, the insert uses a **synthetic negative integer**
-    `message_id`. Negative is safe by construction — Telegram ids are positive, so
-    a synthetic id can never collide with a real one, and a reader seeing a
-    negative id knows it was minted locally.
-  - **How the synthetic id is generated, and the ordering caveat (round-13,
-    refined round-14).** codex flagged that a counter seeded from `-(Date.now())`
-    can collide after a restart or a clock rollback, and asked whether that is an
-    insert-loss mode. **Checked the schema rather than assuming: it is not.**
-    `idx_messages_topic_id` on `(topic_id, message_id)` is a plain index, **not
-    unique**, so a collision produces a duplicate row rather than a lost message —
-    the safe direction. The seed is nonetheless fixed properly: at startup the
-    counter is seeded from **`min(-1, min(message_id) in the table)`** and
-    decreases from there. **The `min(-1, …)` is load-bearing (round-20, gemini
-    caught a real bug in the round-14 fix):** seeding from the table minimum alone
-    is wrong whenever no synthetic id exists yet, because the minimum is then the
-    *lowest real Telegram id* — a positive number — and decrementing from it
-    produces positive "synthetic" ids, silently breaking the negative-sentinel
-    invariant and `isSyntheticMessageId()` along with it. Clamping at `-1` makes
-    the first synthetic id negative regardless of what the table holds. **But chronology must come from `timestamp`, not from
-    `message_id`** — a negative id sorts before every real Telegram id, so any
-    reader ordering by `message_id` would place id-less messages at the start of
-    history. A test asserts the readers this spec cares about (the session-start
-    history read) order by `timestamp`. **And `timestamp` alone is not a total
-    order (round-16, codex): burst messages can share one, and a negative
-    synthetic id is exactly the wrong tiebreaker.** So history reads order by
-    **`(timestamp, rowid)`** in TopicMemory and by **file order** in JSONL — both
-    of which are insertion order, which is the arrival order this log is *about*. Flagged rather than assumed, because the
-    failure would look like scrambled history rather than an error.
-  - **No existing reader is affected:** no column changed type, nothing became
-    nullable, and no reader sees a field it did not see before.
-  - **TopicMemory carries a REDUCED contract, and consumers must know it
-    (round-15, codex).** JSONL holds `dedupeId` and `idSource`; TopicMemory does
-    not, because it keeps its existing columns. So a reader using TopicMemory
-    alone can tell a locally-derived id from a platform one **only by its sign**
-    (negative ⇒ derived), and has no retry identity available at all. **That sign
-    convention gets a helper, not a comment (round-17, codex): consumers call
-    `isSyntheticMessageId(id)` rather than rediscovering `< 0` for themselves.**
-    An implicit convention in a generic integer column is exactly the kind of
-    thing a future reader sorts, compares or displays as if it were a Telegram
-    id. **A helper reduces that risk; it does not eliminate it, least of all for
-    a SQL reader (round-18, codex).** Adding metadata columns would eliminate it
-    properly, at the cost of a migration this change is scoped to avoid. Since
-    avoiding the migration is the deliberate choice, the price is paid in tests:
-    **every current TopicMemory consumer that exposes, orders or compares
-    `message_id` gets a test asserting it behaves correctly with a negative id.**
-    That enumerates today's risk; it does not protect tomorrow's new consumer,
-    and the honest mitigation for that is the helper plus this paragraph. That is
-    intentional — TopicMemory backs search and summaries, JSONL backs history —
-    and it is written here so the difference is a documented contract rather than
-    a discovery. A consumer needing `dedupeId` or `idSource` reads JSONL.
+  - **TopicMemory gets a two-column migration, and the negative-id sentinel is
+    withdrawn (round-22, codex — its fourth time on this, and it is right).** The
+    sentinel avoided a migration by encoding meaning in the *sign* of a shared
+    integer column, which every current and future SQL reader has to remember when
+    sorting, joining, displaying or exporting. Successive rounds answered with a
+    helper, then an ordering caveat, then a consumer audit — three mitigations for
+    a convention that should not exist. `ALTER TABLE messages ADD COLUMN
+    id_source TEXT` and `ADD COLUMN dedupe_id TEXT` are cheap in SQLite
+    (metadata-only, no table rewrite), both nullable so every existing row and
+    every existing reader is untouched, and `message_id` keeps a real value: **the
+    platform's when present, and `-1` as an inert placeholder when absent**, with
+    `id_source` carrying the meaning instead of the sign.
+
+    That deletes the helper, the ordering caveat, the consumer audit and the
+    "future reader might misread it" residual — a net reduction, which is why it
+    is worth the migration this spec spent four rounds avoiding.
+  - **Ordering still comes from `(timestamp, rowid)`, not `message_id`.** With the
+    sentinel withdrawn this is no longer a sign-related trap, but it remains true
+    for a plainer reason: burst messages can share a timestamp, and `message_id`
+    was never an arrival order. Insertion order is.
+  - **JSONL and TopicMemory now carry the same identity fields** (`dedupe_id`,
+    `id_source`), which retires the round-15 "reduced contract" caveat — that
+    caveat existed only because the migration was being avoided.
   - **This is best-effort received history, not a durable intake acknowledgment
     (round-13, codex).** A crash before the next tick loses the row, so a reader
     may not treat the absence of an entry as proof a message never arrived, nor
@@ -282,17 +264,17 @@ It works because:
 
 ### 3.1 Ordering: accept first, then inject — and it is a RECEIVED log
 
-The entry is **scheduled for best-effort logging before the injection is
-attempted** — *(round-14, codex: "accepted" overstates it; nothing has been
-accepted into durable storage or even a buffer, only scheduled)* — so an
+The **essential JSONL append happens before the injection is attempted**, and the
+secondary TopicMemory write is scheduled for after it — so an
 injection failure cannot *by itself* produce an unrecorded message.
 
 **The invariant, stated exactly (round-18, codex — the sentence above was still
 too strong):** *recording is attempted before injection, unless the backlog guard
 drops it; the essential JSONL write is synchronous and may briefly delay delivery;
 the deferred TopicMemory write never can.* Three things can still leave a
-message unrecorded — the backlog guard dropping it, a crash before the next tick,
-or the write failing — and all three are counted. What the ordering buys is
+message unrecorded — the JSONL append **failing** (counted), or, for the
+*searchable copy only*, the backlog guard dropping it or a crash before the next
+tick. All are counted. What the ordering buys is
 narrower than it sounded: an injection that fails does not *cause* the gap.
 *(Round-6, codex: earlier
 drafts said "the log write happens before injection", which stopped being true
@@ -346,7 +328,8 @@ measurement rather than by hope: **append latency is sampled, and a p99 above
 filesystem is the problem and this feature is merely the messenger. Delivery may
 wait for this append; it may never wait for the TopicMemory write.
 
-**The write is fire-and-forget on the next tick. That is the whole mechanism
+**The SECONDARY write is fire-and-forget on the next tick; the essential one is
+not. That is the whole mechanism
 (round-6, codex — and this is the third and final iteration of this paragraph).**
 
 The history is worth keeping because it is the same mistake three times. v4
@@ -399,7 +382,10 @@ the current API.
   - **JSONL is the essential record** — it is what the session-start history
     reader consults, so it is the write that fixes this bug. It is a single
     `fs.appendFileSync` to an append-only file: no lock negotiation, no
-    transaction, microseconds. It is **never dropped** by the backlog guard.
+    transaction, microseconds. It is **never dropped by the backlog guard** — the
+    precise claim (round-22, codex: "never dropped" read as "never lost", and the
+    write can still *fail*, which is caught and counted as
+    `inbound-log-failed`). No guard sheds it; a filesystem can still refuse it.
   - **TopicMemory is secondary** — it backs search and summaries. It is the write
     that can contend, wait and stall. It is the one the guard drops, and the one
     that may lag.
@@ -502,7 +488,7 @@ the current API.
   degrading the agent's memory is precisely the failure this spec exists to end.
 
 **Residual, stated plainly:** a crash between the injection and the next tick
-loses that entry, and a wedged store loses entries for as long as it is wedged.
+loses that message's *searchable copy* (the JSONL row is already written), and a wedged store loses entries for as long as it is wedged.
 Both are real, both are counted, and both are vastly smaller than the defect being
 fixed — which is *every* inbound message, always, silently. Making the write
 durable across a crash would mean a write-ahead store on the inbound path, and
@@ -568,7 +554,9 @@ in a 200-line document, which is the point); two identical messages in the same
 second produce two distinct rows (§3); the dedupe key coerces
 string/number ids; a throwing logger is caught, counted, and the injection still
 happens; **the scheduling call precedes the inject call**, and — as a separate
-assertion — the scheduled callback invokes `logInboundMessage`. *(Round-13,
+assertion — the scheduled callback performs the TopicMemory write. **And the
+JSONL append is asserted to have COMPLETED before injection**, not scheduled
+(round-22, codex: the test plan still described the pre-split model). *(Round-13,
 codex: asserting "the log call precedes the inject call" would force a
 synchronous mock shape that does not match production.)* Asserted by call order, not by
 timing).
@@ -590,7 +578,8 @@ the first place.
 
 **E2E** — production initialization path: a message injected into a live session
 is readable back from the topic history **within a bounded interval** (the write
-lands on the next tick, so the test awaits it rather than asserting
+JSONL row is readable immediately while the searchable copy lands on the next
+tick, so the test awaits the latter rather than asserting
 instantaneity — round-6, codex: an immediate-read assertion against an
 off-tick write is a race, and a flaky test here would be worse than no test). This is the
 "feature is alive" test, and it is the one that would have caught the original
