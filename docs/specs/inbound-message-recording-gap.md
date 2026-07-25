@@ -296,6 +296,37 @@ last 5 minutes.
 `rowCountTotal`, `rowCountUserVisible`, `dbFileBytes`, `walFileBytes`, insert
 failures, max latency, self-check result, last retention run, loop-tick counter.
 
+#### MEASURED: the actual insert cost, on a copy of the real database
+
+Ran the healthy-case benchmark this spec has been calling for, on a copy of the
+live 28 MB store, with the real schema and the measured average message size
+(507 bytes). Non-destructive — a copy in scratch, never the live database.
+
+| Scenario | p50 | p99 | max | failures |
+|---|---|---|---|---|
+| **Uncontended** (200 inserts) | **0.078 ms** | 1.85 ms | 2.43 ms | 0 |
+| **Contended** (a second writer hammering the same DB) | 0.055 ms | **291.5 ms** | 309 ms | **2/200 at `busy_timeout=100ms`** |
+
+**Uncontended, the write is free** — 78 microseconds, ~640× under the 50 ms alert
+threshold. The per-message cost was never the problem, and this is the first
+number in the document that says so rather than assuming it.
+
+**Contended, the rollout gate FAILS.** The gate is "contended p99 > 250 ms blocks
+enablement"; measured p99 is **291.5 ms**. Per §7 Decision 0's own normative rule
+— any failed gate forces the worker-owned writer before enablement — **that is a
+second independent measurement pointing at the same implementation**, after the
+event-loop baseline. And 1% of inserts failed outright at a 100 ms busy timeout,
+which is what the 3-attempt retry ladder exists for.
+
+**The caveat matters and is not buried.** My contention generator hammers the
+database continuously. **The real store takes ~74 writes per DAY**, so sustained
+contention like this does not occur on this machine in normal operation. What
+does occur in bursts: the retention delete and WAL checkpoints. So the honest
+reading is **"this design is sensitive to contention when contention happens, and
+100 ms is too tight a timeout under it"** — not "this machine will see 291 ms
+p99". Quoting the pessimistic number as the expected one would be exactly the
+overclaim this document has been corrected for repeatedly.
+
 #### MEASURED: both retention numbers I chose are no-ops
 
 Measured against the live store, 2026-07-25T14:1xZ — 25,711 rows, 28.5 MB:
@@ -1290,9 +1321,9 @@ and recorded here:
 
 | Gate | Threshold |
 |---|---|
-| Loop delay added by a 200-message burst, healthy store | **< 250 ms** total |
+| Loop delay added by a 200-message burst, healthy store | **< 250 ms** total — **MEASURED: passes with enormous margin (p50 0.078 ms/insert)** |
 | **`/health` still answers while inserts contend** (round-65) | **< 1 s** response, sustained |
-| Loop delay, contended/wedged store | **< 2 s** total |
+| Loop delay, contended/wedged store | **< 2 s** total — **MEASURED under synthetic contention: p99 291 ms per insert, 1% hard failures at `busy_timeout=100ms`. The 250 ms contended-p99 gate FAILS.** |
 | `inbound-search-index-dropped` during the burst | **0** on a healthy store |
 | **Slow `fsync`** (injected delay) | `/health` < 1 s, injection still proceeds |
 | **Nearly-full / full disk** | insert returns `failed`, counted, **injection still proceeds** |
