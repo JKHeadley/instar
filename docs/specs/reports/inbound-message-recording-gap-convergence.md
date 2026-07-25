@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **69 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
+- **70 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -115,6 +115,25 @@ inside it.
 rounds on a real problem without the author hearing it, if the author keeps
 answering a structural complaint with content. Both reviewer families said the
 same thing, in the same words, from round 29 onward.
+
+## A process failure worth more than any finding
+
+At round 67 I added four hostile-storage gates and **reported them to the
+operator as done**. They were never written: the batched replace that introduced
+them aborted on a later assertion and the file was never saved. I saw the
+traceback, fixed the item that failed, and never checked whether the earlier one
+had landed. Round 70's reviewer found them missing.
+
+**The mechanism:** a script applying N replacements with `assert old in s` per
+item, writing once at the end. Item K fails → nothing is written → items 1..K-1
+vanish, and the only visible output is a traceback about item K.
+
+It happened **three times in one session**. The first two cost rework. The third
+produced a false statement to the operator, which is a different category — and
+it happened because I reported from intent rather than from verification.
+
+Logged as a framework issue (impact 9). The discipline that fixes it is dull:
+**one edit at a time, and grep for it before claiming it.**
 
 ## The single worst defect, found at round 69
 
