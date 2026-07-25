@@ -97,12 +97,12 @@ rather than quoting the first measurement:
 
 | Observation | Value |
 |---|---|
-| Messages stored for topic 33368 | 111 |
+| Messages stored for topic 33368 | 138 (was 111 at 11:19Z — **+27 outbound, still 0 inbound, while this spec was being reviewed**) |
 | …of which inbound (`fromUser: true`) | **0** |
 | **Last inbound row machine-wide (any topic)** | **2026-07-01T21:40:22Z — 24 days ago** |
-| Last outbound row machine-wide | 2026-07-25T11:19:46Z (current) |
+| Last outbound row machine-wide | 2026-07-25T13:29:29Z (current) |
 | Inbound / outbound since 2026-07-20 | **0** / 392 |
-| Inbound / outbound on 2026-07-25 alone | **0** / 67 |
+| Inbound / outbound on 2026-07-25 alone | **0** / 94 (re-measured 13:29Z) |
 | Hits on the route that logs inbound (`/internal/telegram-forward`) in `logs/server.log` | **0** |
 
 **The earlier figure was "zero inbound since 2026-07-20", which was true and
