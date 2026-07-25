@@ -82,13 +82,23 @@ document-wide, but a reader opening the source spec should not have to leave it
 to find out what is being built. Everything below this table is reasoning; this
 table is the build.*
 
+*And it immediately proved the point in the worst way: the first version of this
+table contradicted the body on two counts, because restating a design
+in a second place creates a second place to be wrong. That is the same mechanism
+that stopped the 2,700-line companion spec from ever converging (ACT-1215),
+appearing here at a tenth the size. **The table is normative; where the body
+disagrees with it, the table wins and the body is the bug.** The only durable fix
+is generation rather than restatement, which is why the generated contract exists
+— this table is a readability convenience with a known failure mode, and naming
+that is cheaper than pretending duplication is free.*
+
 | | |
 |---|---|
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
-| **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. Returns `true`/`false`; never throws to the caller. Log path must be local, non-network storage. |
+| **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws**; returns `true` on success, `false` if already logged or if the append failed (counted). Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path is required to be local, non-network storage. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only when the essential write returned `true`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
 | **Fields** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, `messageId` \| absent, `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'received'`, `fromUser: true`. |
-| **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** |
+| **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** Scope: **best-effort duplicate suppression within one process** — atomic in-process, not a storage-level uniqueness guarantee. |
 | **Ordering** | `(timestamp, rowid)`. Never `message_id`. |
 | **Authority** | JSONL is authoritative for received history. TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
 | **Failure behavior** | A failed append is caught, counted, and **injection proceeds**. A failed TopicMemory write is caught and counted. Sustained failures raise one deduped Attention item. |
@@ -250,7 +260,12 @@ It works because:
  shape and an aborted seed would drop every key in the file.
 
  The existing key is `in:<topicId>:<messageId>`, so a message that reaches both
- the forward route and the seam is written once **to JSONL**. **TopicMemory is a
+ the forward route and the seam is written once **to JSONL — best-effort, within
+ one process**. A second
+ process appending to the same file would not be suppressed; nothing in the file
+ format or the filesystem prevents it. The single-instance lock is what makes
+ that hypothetical rather than routine, and the lock — not the dedupe — is the
+ load-bearing part of that argument. **TopicMemory is a
  different story and the guarantee does not extend to it:**
  its `(topic_id, message_id)` index is plain, so nothing there prevents a
  duplicate row. In practice the in-memory dedupe short-circuits before *either*
@@ -485,10 +500,16 @@ way to cancel an in-flight synchronous write, which is the same wall v4 hit.
 
 Two things follow, and neither is a mechanism:
 
-1. **The log path is required to be local, non-network storage**, and is asserted
- as such at startup rather than assumed. A message log on a network mount is
- outside what this design is safe for, and saying so is cheaper and more honest
- than pretending a guard exists.
+1. **The log path is required to be local, non-network storage.** This is an
+ **operational requirement, not an enforced assertion**. Reliably
+ classifying a path as local across macOS and Linux means reasoning about
+ symlinks, external drives, FUSE, cloud-synced folders, containers and
+ platform-specific mount types; a check that gets that wrong either blocks a
+ fine deployment or — far worse — passes a network mount and *manufactures*
+ confidence. What ships instead is a **startup log line naming the resolved
+ absolute log path**, so anyone diagnosing a stall can see immediately where
+ the writes are going. The requirement is documented and the path is visible;
+ neither is dressed up as a guarantee.
 2. **The residual is accepted and named: a wedged local disk can stall message
  delivery.** That is a real dependency this change introduces and it is not
  argued away. The reasoning for accepting it is that a machine whose local disk
@@ -540,12 +561,24 @@ replace the composite call on this path:
 
 | Method | Contract |
 |---|---|
-| `appendInboundJsonlSync(entry)` | Synchronous. Runs the dedupe check; returns `false` if already logged. Appends and returns `true`. Throws only on filesystem failure, which the seam catches. |
+| `appendInboundJsonlSync(entry)` | Synchronous. **Never throws.** Runs the dedupe check and returns `false` if already logged. Appends and returns `true` on success. On a filesystem failure it catches internally, counts `inbound-log-failed`, and returns `false`. |
 | `scheduleInboundTopicMemory(entry)` | Returns immediately. Honours the backlog cap. Performs no dedupe of its own — it is called **only** when the JSONL append returned `true`, so the upstream check has already gated it. |
 
 The seam calls the first, and calls the second **only on a `true` return**.
 `logInboundMessage()` remains for the forward route and becomes a thin composite
 of the two, so that caller is unchanged.
+
+**One contract, not two.** The round-29 contract table said
+"never throws" while this table said "throws only on filesystem failure, which
+the seam catches" — two different contracts for the same function, introduced by
+the very fix that was supposed to make the design easier to read. The settled
+answer is **never throws**: the helper owns its own failure, counts it, and
+returns `false`. The seam then has exactly one rule — *call the second write only
+on `true`* — instead of a rule plus a try/catch, and the impossible-to-forget
+version of "a logging failure never stops delivery" is the one where the caller
+has nothing to remember. (The seam still wraps the call defensively, because a
+helper promising never to throw and a caller assuming it are two different
+things; but that wrapper is a backstop, not the contract.)
 
 **This requires the logger to split its phases.**
 `TelegramAdapter.logInboundMessage()` currently does both writes in one call, so
