@@ -501,3 +501,52 @@ unchanged (33 rounds, never converged, no tag) and that remains a real caveat.
 But the four specific reasons I gave the operator to withhold approval do not
 survive contact with the document, and the decision should be made on the spec's
 merits rather than on my summary of a review of a broken excerpt of it.
+
+---
+
+## Round 34 (2026-07-25 16:0xZ) — the first review of a COMPLETE artifact
+
+**This is the round that matters, and it supersedes the read of every round
+before it.** Rounds 1-33 were run against a strict contract whose design body
+had been silently removed by the generator (14 bytes of 86,314; see commit
+`7a4044647`). Round 34 is the first run against a contract that contains §3.
+
+- Reviewer: `codex-cli:gpt-5.5`, cross-family. `promptTruncated: false` on a
+  126,546-byte artifact — the whole design was read.
+- **Verdict: MINOR ISSUES** (rounds against the truncated artifact returned
+  SERIOUS).
+- **None of the four round-33 objections recurred.** "Hand-rolls credential
+  detection" and "the live secret index is a new exposure class" are absent.
+  §3.2.1 is still criticised — but for swap, ptrace/debug entitlements,
+  child-process inheritance and platform crash collection, i.e. gaps a reader
+  who has actually seen the hardening checklist would raise. That is the
+  strongest available evidence the artifact defect, not the design, produced
+  the earlier findings.
+
+**The five open findings** (all MINOR, none folded yet):
+
+1. §3.2/§4 — partial held-credential disclosure is unclassified: most of a
+   token, a fixed prefix/suffix, or a one-character mutation may evade B22 and
+   match nothing in B23 if the value is pattern-light.
+2. §3.8/§3.9 — row 18 refuses an override when the `authorized` event cannot be
+   appended, so disk-full or permission faults turn advisory holds into
+   practical blocks. Wants an explicit availability posture, not just
+   `overrideUnrecordable`.
+3. §3.2.1 — the in-memory hardening checklist omits swap, ptrace, `/proc`-style
+   access, child-process inheritance, platform crash collection. Either add or
+   record as accepted residuals.
+4. §3.8.1 — the normative table is now complex enough to misread on precedence
+   (rows 8/8a/8b, 13/13a, 15/22, 18/18a/18c/18d). Wants pseudocode ordering
+   beside it, with tests derived from the same source.
+5. §3.4/§3.8 — agent-authored reasons risk becoming boilerplate ritual; suggests
+   non-authoritative structured categories counted separately.
+
+**Deliberately NOT folded in this run.** Five folds into a 2,600-line spec late
+in a time-boxed session is exactly the pattern the inbound spec's report
+documents as defect-generating — most of its rounds 60-64 findings were
+introduced by the previous round's fold. The findings are recorded intact for a
+session with room to fold and re-verify each one.
+
+**Status: still NOT converged, no tag written, none earned.** But the caveat has
+changed shape: the spec is no longer "33 rounds of unresolved SERIOUS findings",
+it is "one clean-artifact round at MINOR with five specific, actionable items."
