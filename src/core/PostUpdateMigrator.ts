@@ -5251,6 +5251,12 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    if (!content.includes('Registry First — capability registry:')) {
+      content += '\n- **Registry First — capability registry:** when asking which machine can serve a capability, consult `GET /capability-registry`; it distinguishes unavailable, unobserved, stale, and available evidence.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added capability registry Registry First awareness');
+    }
+
     if (!content.includes('Codex quota is first-class in the pool:')) {
       content += '\n- **Codex quota is first-class in the pool:** Codex accounts read the real 5-hour + weekly windows from their latest rollout instead of appearing permanently empty. Placement and every reactive/proactive swap are framework-safe: a Codex session can use only Codex accounts, and a Claude session only Claude accounts.\n';
       patched = true;
@@ -9023,6 +9029,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // the reviewer erred" trigger + the honest 501-when-off phrasing.
       '### Context-Aware Outbound Review',
       '### Self-Discovery',
+      '**Registry First — capability registry:',
       '**Publishing**',
       '**Private Viewing**',
       '**Secret Drop**',

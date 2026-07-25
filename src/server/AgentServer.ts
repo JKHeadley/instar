@@ -211,6 +211,7 @@ import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/Burn
 import { BurnVerifier } from '../monitoring/BurnVerifier.js';
 import { LlmRateGate } from '../monitoring/LlmRateGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { CapabilityRegistryReceiver } from '../core/CapabilityRegistry.js';
 import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/MentorVisibleEcho.js';
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
@@ -3316,6 +3317,7 @@ export class AgentServer {
       })();
     });
     const routeCtx = {
+      capabilityRegistry: new CapabilityRegistryReceiver(),
       config: options.config,
       sessionManager: options.sessionManager,
       state: options.state,

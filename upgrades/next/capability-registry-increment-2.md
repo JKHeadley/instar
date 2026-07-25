@@ -1,0 +1,13 @@
+# Capability registry development-agent observe-only surface
+
+## What Changed
+
+The capability registry now has a dark HTTP read surface. When disabled it returns a named 503; when explicitly enabled but unobserved it returns 200 with `scanState: never-observed` and an empty capability list. Existing agents receive the Registry First guidance through `migrateClaudeMd`, and the capability index classifies both routes.
+
+## What to Tell Your User
+
+This is an observe-only development-agent surface. It does not route work or make machines authoritative; it only reports what the registry can honestly prove.
+
+## Summary of New Capabilities
+
+The route pair, migration-parity awareness entry, and discoverability ratchet are shipped together. Increment 2 rollback removes the unreferenced route and migration block.

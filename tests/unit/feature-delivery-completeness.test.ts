@@ -127,6 +127,7 @@ describe('Feature Delivery Completeness', () => {
       // Codex/Gemini agent also learns its messages are judged by MEANING).
       '### Outbound Message Gate',
       'Self-Discovery',
+      'Registry First — capability registry:',
       'Publishing',
       'Private Viewing',
       'Secret Drop',

@@ -168,6 +168,12 @@ export type CapabilityRegistryPoolRow =
   | { kind: 'failure'; machineId: string; reason: CapabilityRegistryFailureReason }
   | { kind: 'capability'; machineId: string; entry: CapabilityEntry; status: CapabilityStatus };
 
+export function classifyProjection(projection: CapabilityProjection, now = Date.now(), opts: Parameters<typeof deriveStatus>[2] = {}): CapabilityRegistryPoolRow[] {
+  if (projection.scanState === 'source-unavailable') return [{ kind: 'failure', machineId: projection.machineId, reason: 'source-unavailable' }];
+  if (projection.scanState === 'never-observed') return [{ kind: 'failure', machineId: projection.machineId, reason: 'no-data-yet' }];
+  return projection.entries.map(entry => ({ kind: 'capability' as const, machineId: projection.machineId, entry, status: deriveStatus([entry], now, opts) }));
+}
+
 interface CapabilityReceiverOriginState {
   projection?: CapabilityProjection;
   digest?: string;
@@ -321,6 +327,11 @@ export class CapabilityRegistryReceiver {
 
   getLastConfirmedAt(origin: string): number | undefined { return this.states.get(origin)?.lastConfirmedAt; }
   getFailureReason(origin: string): CapabilityRegistryFailureReason | undefined { return this.states.get(origin)?.failureReason; }
+  snapshot(now = Date.now()): CapabilityRegistryPoolRow[] { return [...this.states.keys()].flatMap(origin => this.classifyMachine(origin, now)); }
+  health(now = Date.now()): Record<string, unknown> {
+    const rows = this.snapshot(now);
+    return { scanState: rows.length ? 'observed' : 'never-observed', origins: this.states.size, rows: rows.length, byStatus: rows.filter(r => r.kind === 'capability').reduce<Record<string, number>>((acc, r) => { acc[r.status] = (acc[r.status] ?? 0) + 1; return acc; }, {}), failures: rows.filter(r => r.kind === 'failure').length };
+  }
 
   private state(origin: string): CapabilityReceiverOriginState {
     const current = this.states.get(origin);

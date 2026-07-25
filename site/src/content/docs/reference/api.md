@@ -127,6 +127,8 @@ The endpoints behind the [EXO 3.0 Alignment](/features/exo3/) capabilities. See 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/capabilities` | Feature guide and metadata |
+| GET | `/capability-registry` | Read the advisory local capability projection; distinguishes dark, unavailable, unobserved, stale, and classified evidence |
+| GET | `/capability-registry/health` | Read advisory capability-registry observation counts and status measurements |
 | GET | `/events` | Query events (`?limit=50&since=24&type=`) |
 | GET | `/quota` | Quota usage + recommendation |
 | GET | `/agents` | List all agents on this machine |

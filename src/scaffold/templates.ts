@@ -1121,6 +1121,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | Question | Check First |
 |----------|-------------|
 | What can I do? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities\` |
+| Which machine can serve a capability? | **Registry First — capability registry:** \`GET /capability-registry\` distinguishes unavailable, unobserved, stale, and available evidence |
 | What are we working on? / status of a project or initiative? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/initiatives\` + \`/projects\` (and \`/initiatives/digest\` for what needs a decision) — NEVER answer this from memory |
 | Why do features keep breaking? / our failure rate by build skill? / are our process fixes working? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/failures/analysis\` + \`/failures\` (Failure-Learning Loop — instar dev-process forensics) — NEVER answer this from memory |
 | What preferences have I learned about this user? / what gets injected at session start? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/preferences/session-context\` (Correction & Preference Learning Sentinel — signal-only; 503 when disabled) |

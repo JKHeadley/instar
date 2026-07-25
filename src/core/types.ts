@@ -3333,6 +3333,8 @@ export interface InstarConfig {
   developmentAgent?: boolean;
   /** Unified work-intake registry rollout; omitted resolves live only on dev agents. */
   workQueue?: { enabled?: boolean };
+  /** Capability registry read surface; omitted resolves via the dev-agent gate. */
+  capabilityRegistry?: { enabled?: boolean };
   /**
    * Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
    * deterministic "what I already have" block injected at session start: vault

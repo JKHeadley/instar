@@ -66,6 +66,7 @@ import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
+import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjection, readDoorwaySources, type CapabilityProjection } from '../core/CapabilityRegistry.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
@@ -739,6 +740,7 @@ export function createDeliveryFailedHandler(opts: {
 }
 
 export interface RouteContext {
+  capabilityRegistry?: CapabilityRegistryReceiver | null;
   /** Unified work-intake registry; absent while fleet rollout is dark. */
   workQueue?: WorkQueueRegistry | null;
   config: InstarConfig;
@@ -2002,6 +2004,38 @@ function readLiveEvolutionActs(stateDir: string): LiveEvolutionActs | null {
 
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
+
+  router.get('/capability-registry', (_req, res) => {
+    const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
+    if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
+    if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
+    const projectionFile = path.join(ctx.config.stateDir, 'capability-registry.json');
+    let projection: CapabilityProjection | null = new CapabilityRegistryWriter(projectionFile, 'local').read();
+    if (!projection) {
+      try {
+        const local = readDoorwaySources(ctx.config.projectDir, ctx.config.stateDir, new Date().toISOString(), 'local');
+        projection = { schemaVersion: 1, machineId: 'local', machineEpoch: 0, projectionSeq: 0, ...local, truncated: false, entries: local.entries } as CapabilityProjection;
+      } catch (error) {
+        DegradationReporter.getInstance().report({
+          feature: 'CapabilityRegistry.routeProjection',
+          primary: 'Durable or freshly rebuilt local capability projection',
+          fallback: 'Receiver snapshot or truthful never-observed response',
+          reason: `local doorway projection unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          impact: 'The read route omits local doorway evidence until a projection or receiver snapshot is available.',
+        });
+      }
+    }
+    const fallbackRows = ctx.capabilityRegistry.snapshot();
+    const scanState = projection?.scanState ?? (fallbackRows.length ? 'observed' : 'never-observed');
+    const capabilities = projection ? classifyProjection(projection) : fallbackRows;
+    return res.status(200).json({ advisory: true, scanState, capabilities });
+  });
+  router.get('/capability-registry/health', (_req, res) => {
+    const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
+    if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
+    if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
+    return res.status(200).json({ advisory: true, ...ctx.capabilityRegistry.health() });
+  });
 
   /**
    * Standby-write reconciliation route seam (spec §3.4): the admission check
