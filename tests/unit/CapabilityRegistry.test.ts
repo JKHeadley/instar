@@ -100,7 +100,7 @@ describe('CapabilityRegistry Increment 1 synthetic receiver fixtures', () => {
     const now = Date.parse('2026-07-25T00:00:00Z');
     const r = new CapabilityRegistryReceiver({ remoteTtlCeilingMs: 100 });
     const p = peerProjection('m2');
-    expect(r.ingestProjection('m2', p, now)).toMatchObject({ status: 'accepted' });
+    expect(r.ingestProjection('m2', p, now, true)).toMatchObject({ status: 'accepted' });
     expect(r.classifyMachine('m2', now + 101)[0]).toMatchObject({ kind: 'capability', status: 'stale' });
     const digest = canonicalDigest({ ...p, entries: p.entries.map(e => ({ ...e, receivedAt: new Date(now).toISOString() })) });
     expect(r.ingestHeartbeat('m2', digest, now + 120, { kind: 'sequence', value: 1 })).toMatchObject({ status: 'noop' });
@@ -213,7 +213,7 @@ describe('CapabilityRegistry Increment 1 synthetic receiver fixtures', () => {
     const now = Date.parse('2026-07-25T00:00:00Z');
     const r = new CapabilityRegistryReceiver({ remoteTtlCeilingMs: 100 });
     const p = peerProjection('m2');
-    r.ingestProjection('m2', p, now);
+    r.ingestProjection('m2', p, now, true);
     const digest = canonicalDigest({ ...p, entries: p.entries.map(e => ({ ...e, receivedAt: new Date(now).toISOString() })) });
     r.ingestHeartbeat('m2', digest, now + 10, { kind: 'sequence', value: 1 });
     expect(r.getLastConfirmedAt('m2')).toBe(now);
@@ -226,7 +226,7 @@ describe('CapabilityRegistry Increment 1 synthetic receiver fixtures', () => {
     const now = Date.parse('2026-07-25T00:00:00Z');
     const r = new CapabilityRegistryReceiver({ remoteTtlCeilingMs: 100 });
     const p = peerProjection('m2');
-    r.ingestProjection('m2', p, now);
+    r.ingestProjection('m2', p, now, true);
     r.ingestPullResponse('m2', { nonce: 'n1', projection: p }, 'n1', now + 10);
     expect(r.getLastConfirmedAt('m2')).toBe(now);
     expect(r.ingestPullResponse('m2', { nonce: 'n1', projection: p }, 'n2', now + 20)).toEqual({ status: 'rejected', reason: 'malformed' });
