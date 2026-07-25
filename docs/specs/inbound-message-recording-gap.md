@@ -466,7 +466,32 @@ change — the `-1` placeholder problem, returning by a different road. And maki
 TopicMemory synchronous on the delivery path changes the performance profile of a
 store currently written asynchronously.
 
-**Recorded, not acted on.** Two large structural changes tonight (the increment
+**RESOLVED by grounding, 2026-07-25T14:0xZ — the answer is NO, and for a reason
+§3.0b could not have guessed from the schema alone.** Reading the live database
+rather than the source:
+
+- `messages` carries a **full-text search index** (`messages_fts`) maintained by
+  **three triggers** — `messages_ai` / `messages_ad` / `messages_au`, each writing
+  into `messages_fts` on insert, delete and update.
+- So a synchronous insert into `messages` on the delivery path would run **FTS
+  tokenisation inside that transaction**, on the event loop, before injection.
+  That is materially more work than an insert into a plain table, and it is
+  exactly the work this design has spent twenty rounds trying to keep off the hot
+  path.
+- The existing `UNIQUE(message_id, topic_id)` also cannot express the
+  platform-scoped `dedupe_id` the design settled on, and `message_id NOT NULL`
+  reintroduces the `-1` placeholder that was deleted.
+
+**A separate `inbound_messages` table is the right call**, and now for a measured
+reason rather than a preference. **`journal_mode` is confirmed `wal` on the live
+database** — the design's assumption, verified rather than assumed.
+
+*(Neither fact is visible in `TopicMemory.ts`'s `CREATE TABLE` block, which is
+what §3.0b was reading. The triggers and the FTS table are created elsewhere. One
+more instance of the night's lesson: the source says what was written, the
+database says what is there.)*
+
+**Originally recorded, not acted on.** Two large structural changes tonight (the increment
 split at round 46, the storage rewrite at round 51) each introduced defects the
 next round had to clean up. A third unreviewed restructure would be the same
 mistake a third time. This goes to review as a question.
