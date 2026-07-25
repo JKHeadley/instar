@@ -6,3 +6,4 @@
 - `assertTimely` and content-sniff/ownership annotation work remain explicitly deferred to Increment 2.
 - Rollback is removing the workflow/script/helper imports; no durable migration is required.
 - The substance-floor matcher accepts single-, double-, and backtick-quoted diff strings so normal source quoting cannot create a false negative.
+- The workflow also runs the messaging E2E in CI, making the three deterministic assertions an enforced, visible check.

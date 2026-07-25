@@ -13,7 +13,7 @@ try {
   const names = execFileSync('git', ['diff', '--name-only', `${base}...${head}`], { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
   const allowlisted = names.filter((p) => p === 'src/server/routes.ts' || p === 'src/commands/server.ts' || p.startsWith('src/messaging/') || p.startsWith('src/dashboard/') || p.startsWith('src/templates/'));
   if (allowlisted.length === 0) { console.log('UX lint: out of scope'); process.exit(0); }
-  const section = body.match(/^## UX Impact\s*\n([\s\S]*?)(?=^##\s|$)/im)?.[1]?.trim() || '';
+  const section = body.match(/^## UX Impact\s*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/im)?.[1]?.trim() || '';
   if (!section) { console.error('::error::UX Impact section is required for user-facing paths'); process.exit(1); }
   if (/UX-Impact:\s*none/i.test(section)) { console.error('::error::UX-Impact: none is not allowed for allowlisted paths'); process.exit(1); }
   if (!/who\s+sees|what\s+(?:the\s+)?user|first[- ]contact|user[- ]visible/i.test(section)) {
