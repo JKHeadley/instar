@@ -124,7 +124,37 @@ make — it's written down as a choice, not left as an oversight.
 One thing worth repeating: this is exactly why credentials shouldn't be pasted
 into chat. Anything you type to me lands in that file verbatim.
 
-## It's now two pieces, and only the first one is small
+## What changed at round 50: put it in a database, not a text file
+
+I'd been storing this in a plain text file, one message per line, and defending
+that as the simpler option. A reviewer added up what "simpler" actually required
+me to build by hand: recovering from a half-written line, reading only the recent
+end of the file at startup, remembering which messages it had already seen across
+restarts, a lock file with rules about what happens when a process crashes, a list
+of storage types to refuse to run on, and a self-test at boot.
+
+That's not a simple option. That's a storage system I'd be writing myself, with
+the actual fix buried inside it.
+
+The reason I'd rejected using a small database was "that means migrating data".
+**I checked, and it doesn't.** The database library is already here — it's what
+powers conversation search. This would be a new table sitting beside the existing
+one. Nothing moves, nothing converts. I'd been repeating that objection since this
+morning without ever testing it.
+
+Using a table deletes nearly all of the list above. Remembering what's been seen
+becomes one line saying "this column must be unique". Half-written lines stop
+being a thing that can happen. The lock file, the storage-type list, the file
+rotation, the ordering rules — all gone.
+
+**And the two-piece split I described below dissolves with it.** Every single
+thing I planned to defer to "piece two" was only needed because of the text file.
+
+I've written this as a recommendation with the old design kept underneath, rather
+than just switching, because I'd formally handed you the file-versus-database
+question earlier and it's not mine to quietly take back.
+
+## The two pieces (this applies only if we keep the text file)
 
 Review kept adding things the fix needed — a size limit on the file, what happens
 if the machine dies mid-write, how long messages are kept. All fair. Together they
