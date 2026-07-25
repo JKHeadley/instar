@@ -96,13 +96,13 @@ that is cheaper than pretending duplication is free.*
 |---|---|
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
 | **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws**; returns `true` on success, `false` if already logged or if the append failed (counted). Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path is required to be local, non-network storage. |
-| **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only when the essential write returned `true`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
+| **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only on `status: 'appended'`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
 | **Fields** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, `messageId` \| absent, `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'received'`, `fromUser: true`. |
 | **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** Scope: **best-effort duplicate suppression within one process** — atomic in-process, not a storage-level uniqueness guarantee. |
 | **Ordering** | `(timestamp, rowid)`. Never `message_id`. |
 | **Authority** | JSONL is authoritative for received history. TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
 | **Failure behavior** | A failed append is caught, counted, and **injection proceeds**. A failed TopicMemory write is caught and counted. Sustained failures raise one deduped Attention item. |
-| **Counters** | `inbound-log-failed`, `inbound-log-dropped`, pending-callback depth (Attention above **8**). |
+| **Counters** | `inbound-log-failed`, `inbound-log-dropped`, pending-callback depth (Attention above **8**), append-latency **max** per window (Attention on any single append > **1 s**), and a one-sided-conversation check (recent outbound with zero inbound). |
 | **Flag** | `messaging.inboundSeamLogging.enabled`, default-off, with emergency disable. |
 | **Acceptance** | **Not** "code landed" — the flag ON for the affected machine, plus live Telegram proof (normal + long message) and an id-less seam regression test. |
 | **Known residual** | A wedged local disk can stall message delivery. Accepted and named, not mitigated. |
@@ -169,6 +169,24 @@ area is another pre-injection drop, or a second intake path that never reaches
 the seam at all — and neither is visible until someone traces where inbound
 traffic actually enters this machine. That tracing is registered as its own work
 item so it survives this spec shipping. <!-- tracked: ACT-1217 -->
+
+**And there is a cheap detector for the gap in the meantime —
+the one that would have caught this bug years earlier.** The fitness test stops
+*new* bypasses; it says nothing about a pre-existing intake path nobody has
+found. But an unrecorded intake path has an observable signature that needs no
+knowledge of where it is: **the agent replies in a conversation that has no
+recorded inbound message.** Outbound is already logged. So a periodic check for
+topics with recent outbound activity and zero inbound rows over the same window
+finds unrecorded traffic without knowing its route — which is precisely the
+condition that held here for five days while everything looked healthy.
+
+It ships as a counter and one deduped Attention item, not a gate. It will have
+false positives (an agent-initiated message, a scheduled job posting into a quiet
+topic), so it is tuned to a *sustained* imbalance rather than a single instance,
+and it reports a suspicion rather than asserting a bug. That is the right
+strength for it: the reason this defect survived is that nothing was watching for
+a one-sided conversation, and a noisy watcher would have been infinitely better
+than none.
 
 **What it is still deliberately NOT:** a queue subsystem, an event bus, a worker,
 a retry ladder, or any new persistent store. The persistence already exists and is
@@ -350,6 +368,15 @@ It works because:
  that can hold a placeholder must travel with the column that says whether it
  is one.
 
+ **The rule is a test, not an audit.** An audit is a snapshot; the next read model
+ someone adds is written after the audit and knows nothing about it. So the
+ rule ships as an **AST check over TopicMemory read paths**: any select,
+ export, or display projection that includes `message_id` must also include
+ `id_source`, or be listed in an explicit exemption fixture with a reason. It
+ rides the same machinery as the architectural fitness test above and fails the
+ build the same way — which is the only version of this rule that is still true
+ in six months.
+
  **TopicMemory's identity columns are INFORMATIONAL, and no index is added.**
  `dedupe_id` and `id_source` land there so a row can be traced back to its
  JSONL counterpart when someone is debugging — not so TopicMemory can enforce
@@ -510,6 +537,17 @@ Two things follow, and neither is a mechanism:
  absolute log path**, so anyone diagnosing a stall can see immediately where
  the writes are going. The requirement is documented and the path is visible;
  neither is dressed up as a guarantee.
+
+ **Plus MAX latency, not only p99.** A p99 is the wrong statistic for
+ this failure: the stall being guarded against is a *single* pathological
+ append, and one sample in a thousand does not move a p99 at all. So the
+ sampler records **max append latency per window**, and a single append above a
+ high threshold (**1 s**) raises an immediate Attention item naming the log
+ path. It still cannot prevent the stall — nothing available can — but it turns
+ "delivery mysteriously froze" into "the message log took 4 seconds to write, on
+ this path", which is the difference between an hour of confusion and a
+ one-line diagnosis. Detection where prevention is unavailable is not a
+ consolation prize; it is the honest control for this class.
 2. **The residual is accepted and named: a wedged local disk can stall message
  delivery.** That is a real dependency this change introduces and it is not
  argued away. The reasoning for accepting it is that a machine whose local disk
@@ -561,8 +599,17 @@ replace the composite call on this path:
 
 | Method | Contract |
 |---|---|
-| `appendInboundJsonlSync(entry)` | Synchronous. **Never throws.** Runs the dedupe check and returns `false` if already logged. Appends and returns `true` on success. On a filesystem failure it catches internally, counts `inbound-log-failed`, and returns `false`. |
-| `scheduleInboundTopicMemory(entry)` | Returns immediately. Honours the backlog cap. Performs no dedupe of its own — it is called **only** when the JSONL append returned `true`, so the upstream check has already gated it. |
+| `appendInboundJsonlSync(entry)` | Synchronous. **Never throws.** Returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. A `'failed'` result has already been caught internally and counted as `inbound-log-failed`. |
+| `scheduleInboundTopicMemory(entry)` | Returns immediately. Honours the backlog cap. Performs no dedupe of its own — it is called **only** on `status: 'appended'`, so the upstream check has already gated it. |
+
+**Three outcomes, not two.** A bare boolean collapsed
+*duplicate* and *failed* into the same `false`. The caller's behavior is
+identical for both — do not schedule the secondary write — but everything else
+about them differs: a duplicate is the system working correctly, a failure is
+data loss, and a test asserting `false` cannot tell which one it caught. The
+distinction costs one field and buys honest counters and tests that mean
+something. The seam's rule stays a single line: schedule the TopicMemory write
+**iff** `status === 'appended'`.
 
 The seam calls the first, and calls the second **only on a `true` return**.
 `logInboundMessage()` remains for the forward route and becomes a thin composite
@@ -588,9 +635,21 @@ for these semantics. Naming that explicitly, because "one call to the existing
 logger" and "JSONL is never dropped while TopicMemory is" cannot both be true of
 the current API.
 
-- The injection proceeds on the current tick; the write happens on the next one.
- **What this protects, stated exactly:** *this* injection is
- never awaited, so *this* message is never delayed. It does **not** make a
+**Everything in this list is about `scheduleInboundTopicMemory` ONLY.** The
+essential JSONL append is synchronous and completes *before* injection; it is
+never deferred and it *can* delay delivery (§3.0). Round-31 (codex) found this
+list still reading as though it described "the write" generally — leftover
+framing from the pre-split design, when both writes were deferred — and flagged
+the real danger correctly: the most likely way this ships wrong is not a bad
+decision but **contradictory prose causing the old async design to be partially
+implemented**. So: below, "the write" always means the TopicMemory write, never
+the JSONL append.
+
+- The injection proceeds on the current tick; the **TopicMemory** write happens on
+ the next one.
+ **What this protects, stated exactly:** *this* injection never
+ awaits the TopicMemory write, so *this* message is never delayed **by that
+ write**. It does **not** make a
  synchronous store non-blocking — a wedged synchronous write on a later tick can
  still stall the event loop for everything behind it. So the operational
  assumption is explicit rather than implied: **the write must fail fast** — and
@@ -814,7 +873,8 @@ waiting for a release.
 
 **Unit** — `injectTelegramMessage` calls **`appendInboundJsonlSync`** with the
 fields it received, and calls **`scheduleInboundTopicMemory` only when that
-returned `true`**; **when `messageId` is absent it still logs, under a per-injection UUID, with
+returned `status: 'appended'`** — and does NOT schedule on `'duplicate'` or
+`'failed'`, asserted as three separate cases rather than one negative; **when `messageId` is absent it still logs, under a per-injection UUID, with
 `idSource: 'derived'`**; two identical messages in the same
 second produce two distinct rows (§3); the dedupe key coerces
 string/number ids; a throwing logger is caught, counted, and the injection still
