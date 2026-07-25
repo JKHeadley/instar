@@ -202,6 +202,23 @@ loop can continue.
 
 ---
 
+## ⚠️ Reading order for the addenda below
+
+Six addenda follow, and **they correct each other**. A reader acting on an early
+one would act on advice later ones withdraw — the exact hazard this project's
+contract generator exists to prevent, reproduced here in my own report.
+
+| # | Status |
+|---|---|
+| 1 | Stands — the size diagnosis was incomplete |
+| **2** | **WITHDRAWN IN FULL** by 4, 5 and 6 |
+| 3 | Stands — the strict contract was truncated by a tool bug |
+| 4 | Corrects half of 2 |
+| 5 | Withdraws the other half of 2 |
+| **6** | **The corrected position — read this one** |
+
+---
+
 ## Addendum — 2026-07-25: the diagnosis in this report was incomplete
 
 This report attributed the failure to converge to **document size and accumulated
@@ -257,7 +274,16 @@ earlier, and was checked before being written.
 
 ---
 
-## Addendum 2 — 2026-07-25T14:2xZ: grounded against the codebase
+## Addendum 2 — ⚠️ WITHDRAWN IN FULL (see Addendums 4, 5 and 6)
+
+> **Do not act on anything below in this section.** Both of its claims were
+> checked against the spec afterwards and both were wrong; the spec already did
+> what this recommended, and the risk it named does not exist as described.
+> Retained only as the record of an error, because deleting it would hide how a
+> withdrawn recommendation reached the operator. **Jump to Addendum 6 for the
+> corrected position.**
+
+### The original text of Addendum 2 — grounded against the codebase
 
 The round-33 review flagged two things about the credential wall: that it
 hand-rolls detection when mature tools exist, and that a **live plaintext index
