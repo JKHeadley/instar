@@ -21,6 +21,8 @@ jobs:
     name: UX impact declaration
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    outputs:
+      internal_error: ${{ steps.lint.outputs.internal_error || 'false' }}
     permissions:
       contents: read
       pull-requests: read
@@ -46,8 +48,9 @@ jobs:
           INSTAR_UX_LINT: "on"
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
+          : > ux-lint-result.json
           set +e
-          node scripts/ux-impact-lint.mjs --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}" --body "$PR_BODY"
+          node scripts/ux-impact-lint.mjs --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}" --scope "${{ github.actor }}" --pusher "${{ github.actor }}" --report ux-lint-result.json --body "$PR_BODY"
           rc=$?
           if [ "$rc" -eq 2 ]; then
             echo "::error::UX lint internal error; fail-open for merge but mark auto-merge ineligible"
@@ -55,6 +58,27 @@ jobs:
             exit 0
           fi
           exit "$rc"
+      - name: Publish exemption-rate artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ux-exemption-rate-${{ github.run_id }}
+          path: ux-lint-result.json
+          if-no-files-found: warn
+
+  ux-merge-safety:
+    name: UX merge safety
+    needs: ux-impact
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse auto-merge after internal lint error
+        if: needs.ux-impact.outputs.internal_error == 'true'
+        run: |
+          echo "::error::UX lint internal error marker present; auto-merge is ineligible"
+          exit 1
+      - name: Confirm no internal-error marker
+        run: echo "UX merge safety PASS"
 
   ux-assertions:
     name: UX assertions (messaging E2E)

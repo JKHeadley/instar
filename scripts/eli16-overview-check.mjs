@@ -29,7 +29,11 @@ export const MIN_ELI16_CHARS = 800;
 export function resolveEli16Path(specPath, specFm) {
   const specDir = path.dirname(specPath);
   const specBase = path.basename(specPath, '.md');
-  const siblingPath = path.join(specDir, `${specBase}.eli16.md`);
+  // Specs already named *.eli16.md use a readable overview sibling; never
+  // manufacture the historical *.eli16.eli16.md suffix.
+  const siblingPath = specBase.endsWith('.eli16')
+    ? path.join(specDir, `${specBase.slice(0, -'.eli16'.length)}.overview.md`)
+    : path.join(specDir, `${specBase}.eli16.md`);
   const fmMatch = specFm.match(/^\s*eli16-overview\s*:\s*["']?([^"'\n]+)/m);
   if (fmMatch) {
     const declared = fmMatch[1].trim().replace(/["']/g, '');
