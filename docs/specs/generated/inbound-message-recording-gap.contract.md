@@ -72,7 +72,25 @@ window. The real cutoff is 2026-07-01. Recorded because the same shape of error 
 a correct statement over an unexamined range — is how the underlying bug went
 unnoticed in the first place.
 
-The recording code is not broken. **It is on a path that is not being used.**
+The recording code is not broken. **It is on a path that is not being used —
+and the reason is now traced (`docs/specs/reports/inbound-intake-path-investigation.md`).**
+This machine is a session-pool **worker**, not the router: `GET /health` reports
+`holdsLease: false`, and its own log repeats `StateManager is read-only (this
+machine is on standby)`. The router peer receives the Telegram message through
+**its** intake route — which logs it **there** — then forwards a `deliverMessage`
+across the mesh, and this machine injects it through the **owner-side bridge**
+(`src/commands/server.ts:20722`, one of the id-less callers), which never touches
+the local logger. So the intake route here is legitimately idle while the
+sessions are busy.
+
+**One link is unverified and stated as such:** no inbound message appears in the
+current log window, so the path is shown to exist and to be the only plausible
+one — not observed carrying a message. The two-minute check that closes it is in
+the investigation report.
+
+**It strengthens the seam choice.** If forwarded delivery bypasses the intake
+route, the injection seam is not merely *a* verified point — it is the **only**
+point local and forwarded delivery share.
 `TelegramAdapter.logInboundMessage()` has exactly one caller — the lifeline
 forward route at `src/server/routes.ts:20124` — and messages on this machine
 arrive by a different path. *(Confirmed on current main, v1.3.953.)*
