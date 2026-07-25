@@ -4,8 +4,8 @@ slug: "cross-machine-door-capability-registry"
 author: "codey"
 status: approved
 approved: true
-approved-by: "Echo (PR #1616 amended convergence)"
-review-convergence: "2026-07-25T07:20:00.000Z"
+approved-by: "Echo — reviewer of record, convergence rounds 6-9 (PRs #1613, #1616, #1617)"
+review-convergence: "2026-07-25T08:05:31Z"
 spec-only: true
 parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 ---
