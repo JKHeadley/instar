@@ -222,8 +222,15 @@ catch { /* never block the injection */ }
   never awaited, so *this* message is never delayed. It does **not** make a
   synchronous store non-blocking — a wedged synchronous write on a later tick can
   still stall the event loop for everything behind it. So the operational
-  assumption is explicit rather than implied: **the write must fail fast**
-  (bounded SQLite `busy_timeout`, no unbounded file-lock waits).
+  assumption is explicit rather than implied: **the write must fail fast** — and
+  it is, verified rather than asserted (round-10, gemini asked *how* it is
+  guaranteed). `TopicMemory` opens its database with `journal_mode = WAL` and
+  **`busy_timeout = 5000`** (`src/memory/TopicMemory.ts`), so a contended write
+  fails after five seconds rather than waiting indefinitely, and WAL means readers
+  never block it in the first place. Five seconds of loop stall is still bad, so
+  the pending-callback guardrail below is what would surface a store behaving that
+  way; but the unbounded case — the one that would wedge the process — is closed
+  by the existing pragma, not by a new assumption.
 - A failure is caught and counted (`inbound-log-failed`). **No retry** — a retry
   is a loop, a loop needs brakes, brakes need a breaker, and that is exactly the
   subsystem this paragraph deleted twice. A best-effort log does not earn it.
@@ -261,6 +268,13 @@ waiting for a release.
 
 ## 4. Honest limits
 
+- **The local-only record is a deliberate trade, with a named ceiling (round-10,
+  gemini).** This optimises for present simplicity and a machine-local record. If
+  cross-machine auditing, centralised analytics or distributed replay ever become
+  requirements, that is **not** an extension of this design — it is a different
+  one, built around an event stream rather than a per-machine log. Forewarned here
+  so the eventual re-architecture is a known cost rather than a surprise; the
+  first step toward it is ACT-1216.
 - **This does not merge histories across machines.** If the operator's message
   lands on machine A and the reply is composed on machine B, each machine now
   records what it saw. Neither holds a merged view. That is a separate, larger
