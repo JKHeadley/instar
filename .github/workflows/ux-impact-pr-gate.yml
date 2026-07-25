@@ -33,7 +33,12 @@ jobs:
       - name: Fetch PR head
         run: git fetch --no-tags origin ${{ github.event.pull_request.head.sha }}
       - name: Load the PR's checker
-        run: git checkout "${{ github.event.pull_request.head.sha }}" -- scripts/ux-impact-lint.mjs
+        run: |
+          if git cat-file -e "${{ github.event.pull_request.base.sha }}:scripts/ux-impact-lint.mjs" 2>/dev/null; then
+            echo "using base copy"
+          else
+            git checkout "${{ github.event.pull_request.head.sha }}" -- scripts/ux-impact-lint.mjs
+          fi
       - name: Evaluate UX declaration
         id: lint
         env:
