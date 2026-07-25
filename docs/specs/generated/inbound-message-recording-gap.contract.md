@@ -129,6 +129,11 @@ It works because:
  records. What they jointly provide is: the known paths are covered, and a new
  one cannot be added silently. The residual — a dynamically-dispatched or
  future non-session intake path — is real and named rather than papered over.
+ **And it is not what "done" rests on:** §5 requires a **user-role live test
+ through the real Telegram surface** before this ships, precisely because
+ seam-level tests prove wiring rather than experience. The caveat here describes
+ the limits of the *static* guarantee; the live-channel test is the acceptance
+ criterion, and the two are complements, not alternatives.
 - **De-duplication already exists, and it is atomic within the process.** Grounded in the implementation: `appendToLog` checks an
  **in-memory `Set`** and appends **synchronously**, with no `await` between the
  check and the write. Node is single-threaded, so two calls in one process
