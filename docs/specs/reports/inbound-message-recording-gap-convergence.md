@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **71 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
+- **74 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -324,6 +324,28 @@ pressed on the riskiest decision, I produced a *more satisfying* argument for th
 thing I had already chosen. Twice those arguments were wrong in a way that made
 the design look better than it was. Neither was a lie; both were reasoning that
 stopped as soon as it reached a comfortable conclusion.
+
+## Two rules this review produced
+
+Both were extracted after making the mistake, not before, and both are stated so
+they can be checked rather than remembered.
+
+**1. A detector must not share a failure domain with the thing it detects.**
+Violated three times in three disguises (below). Every working fix turned out to
+be the cheapest option available: absence of a response is a signal; an in-memory
+flag needs no storage; the external poller already exists.
+
+**2. Observability state must never be able to reject the thing it observes.**
+Round 70 decided that if clearing the degraded alarm failed, the message insert
+should roll back too — "to keep them consistent". That rejects a real message
+because a status flag could not be updated, in a spec whose entire subject is not
+losing messages. Round 74 reversed it: the insert commits, the alarm stays stuck
+on. A system reporting degraded while healthy is annoying, visible and fixable; a
+message never stored is gone.
+
+The second is the more instructive failure, because the reasoning that produced
+it *sounded* principled. Consistency is a real virtue; it was simply the wrong
+one to optimise here, and nothing in the argument signalled that.
 
 ## The circular-detector mistake, made THREE times
 
