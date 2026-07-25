@@ -300,3 +300,17 @@ companion spec learned the hard way today: review checks a document against
 itself, and neither reviewer nor author had looked at what the codebase already
 contained. The design was argued for 33 rounds on the assumption it needed
 building.
+
+
+**And what re-grounding CONFIRMED**, recorded so this addendum does not read as
+though everything checked was wrong: `RULE_DISPOSITIONS` in
+`src/core/MessagingToneGate.ts:589` is **19 `blocking` to 1 `advisory`** —
+exactly what the morning's grounding step recorded (G1: nineteen judgment rules
+still blocking; the advisory mechanism already exists, shipped for B21 alone).
+That claim has held all day.
+
+The distinction matters for reading the rest of today's corrections: grounding
+found errors where the spec described **things that did not exist yet** or
+**the wider environment**, and confirmed the claims that were checked against
+code at the time they were written. The failures were not random — they cluster
+exactly where verification was skipped.
