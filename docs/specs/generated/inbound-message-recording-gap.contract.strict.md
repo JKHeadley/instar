@@ -7,7 +7,7 @@
      rationale. This file says WHAT to build, never why. Read the source
      spec for the reasoning, the alternatives, and the accepted residuals
      in their full form.
-     (8 residual "round-N" reference(s) remain inline.)
+     (7 residual "round-N" reference(s) remain inline.)
 -->
 ---
 title: "Record inbound messages at the injection seam"
@@ -33,16 +33,18 @@ operator alert queue. **Armed**: enabled *and* the store opened writable.
 | | |
 |---|---|
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
-| **Store** | A **new SQLite table**, `inbound_messages`, in the agent's existing database. **Schema migration is required; DATA migration is not.** The DDL is idempotent `CREATE TABLE IF NOT EXISTS` + `CREATE UNIQUE INDEX IF NOT EXISTS`, run at arm time; a DDL failure means `armed: false` with the SQLite error surfaced, never a silent degrade. No existing row is read, moved, backfilled or rewritten. `better-sqlite3` is already a dependency and `TopicMemory` already opens it (`src/memory/TopicMemory.ts:154`). **No migration**: nothing existing is moved or converted. WAL mode, `busy_timeout = 100 ms`. |
+| **Store** | A **new SQLite table**, `inbound_messages`, in the agent's existing database. **Schema migration is required; DATA migration is not.** The DDL is idempotent `CREATE TABLE IF NOT EXISTS` + `CREATE UNIQUE INDEX IF NOT EXISTS`, run at arm time; a DDL failure means `armed: false` with the SQLite error surfaced, never a silent degrade. No existing row is read, moved, backfilled or rewritten. `better-sqlite3` is already a dependency and `TopicMemory` already opens it (`src/memory/TopicMemory.ts:154`). WAL mode, `busy_timeout = 100 ms`. |
 | **Schema** | `dedupe_id TEXT NOT NULL UNIQUE`, `topic_id INTEGER NOT NULL`, `seam_received_at TEXT NOT NULL`, `text TEXT NOT NULL`, `sender_name TEXT`, `telegram_user_id INTEGER`, `message_id INTEGER` (nullable — no `-1` placeholder is needed), `id_source TEXT NOT NULL CHECK(id_source IN ('platform','derived'))`, `delivery_state TEXT NOT NULL DEFAULT 'injection_seam_received'`, `synthetic INTEGER NOT NULL DEFAULT 0`. |
 | **Write** | `INSERT OR IGNORE` inside a transaction, synchronously, **before** injection. Returns `'appended' \| 'duplicate' \| 'failed'` from `changes` and the error path. **Never throws** — a `'failed'` result is caught internally and counted. |
-| **Dedupe** | The `UNIQUE` index on `dedupe_id`. **Storage-enforced, not best-effort** — this answers round-51 directly: there is no in-memory set, no seeding, no restart window, and two processes cannot interleave a duplicate through it. `dedupe_id` = the platform message id when present, else a per-injection UUID, namespaced `in:<topicId>:<id>`. |
+| **Dedupe** | The `UNIQUE` index on `dedupe_id`. **Storage-enforced, not best-effort** — this answers round-51 directly: there is no in-memory set, no seeding, no restart window, and two processes cannot interleave a duplicate through it. `dedupe_id` = `in:telegram:<botId>:<chatId>:<messageId>` when a platform id is present, else `in:derived:<uuid>`. **Fully platform-scoped: Telegram message ids are unique per CHAT, and `topicId` is an instar-side surrogate, so keying on it alone would false-dedupe across a migrated topic, a re-bound topic, or two bots sharing one agent.** The scope now comes from the platform's own identifiers, and `topic_id` remains a column for querying rather than part of identity. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, only on `'appended'`. Backlog capped at 16; beyond that, drop and count. TopicMemory remains a **lossy search index**, never the record. |
 | **Authority** | This table is the **primary received-history store**. It is not proof of receipt: a message dropped before the seam never reaches it (§4), and `synchronous: NORMAL` means a power loss can lose the last transaction. Absence of a row is **not** evidence a message was not received. |
 | **Ordering** | `seq INTEGER PRIMARY KEY AUTOINCREMENT`, read `ORDER BY seq`. **Not bare `rowid`: rowid is insertion-ordered in practice but SQLite does not guarantee monotonicity across deletes or a table rebuild, and "monotonic" was a stronger claim than the store makes.** `AUTOINCREMENT` buys the guarantee explicitly, at the cost of one extra table SQLite maintains. |
 | **Reading** | `SELECT`. No tolerant parsing, no bounded tail read, no torn-line class, no corruption counting — **none of these failure modes exist for a table**, which is most of why it is the recommendation. |
+| **Attention** | The deduped operator alert queue (`POST /attention`). **Cadence:** raised at most once per condition per episode, never per event. **Owner:** the operator. **Actionable:** each item names the condition and the read surface to check; it is not a chat message and does not interrupt a conversation. |
+| **One-sided-conversation check** | A periodic query for topics with recent outbound rows and zero inbound rows over the same window. **Cadence:** hourly. **Owner:** the agent, surfacing to the operator via one deduped Attention item. **Actionable:** it names the topic and the window, and means *either* the recording is broken *or* the agent legitimately spoke unprompted — so it reports a suspicion to check, never an assertion of failure. |
 | **Coverage evidence** | The AST fitness test is a build-time guard, **not** proof of coverage. **The primary production evidence that the seam is on the real path is (1) the live Telegram call-path trace at acceptance and (2) the ongoing one-sided-conversation check** — recent outbound in a topic with zero inbound rows. Round-52 is right that dynamic and import-boundary bypasses stay plausible; the one-sided check is what would catch one *in production*, without knowing where it is, and is therefore the load-bearing detector rather than a nice-to-have. |
-| **Retention** | `DELETE FROM inbound_messages WHERE seq < (SELECT MAX(seq) FROM inbound_messages) -:keep`, on a daily cadence. Default keep **200 000 rows**. **No rotation, no file sequence, no rotation helper, and no size bound** — row count is the only retention dimension. Deleted rows free pages for reuse; **no `VACUUM`** — reclaiming disk to the OS is not worth an exclusive lock on the delivery path's database. |
+| **Retention** | Keep the newest `:keep` rows, delete the rest: `DELETE FROM inbound_messages WHERE seq NOT IN (SELECT seq FROM inbound_messages ORDER BY seq DESC LIMIT:keep)`, daily. **Stated as a set, not an arithmetic offset (round-53: `seq < MAX(seq) -:keep` keeps `:keep + 1` rows when dense and drifts arbitrarily when sparse).** **Synthetic rows count toward retention** — they occupy real rows and pretending otherwise makes the bound wrong — even though they are excluded from history reads and row-count reporting. Default keep **200 000 rows**. **No rotation, no file sequence, no rotation helper, and no size bound** — row count is the only retention dimension. Deleted rows free pages for reuse; **no `VACUUM`** — reclaiming disk to the OS is not worth an exclusive lock on the delivery path's database. |
 | **Single writer** | SQLite's own locking. **No lock file, no boot-id, no stale-reclaim rule, no filesystem allowlist or denylist.** A second writer is handled by the database, not by this design. |
 | **`enabled` vs `armed`** | `enabled` = the config flag (configuration only, never the logging predicate). `armed` = enabled **and** the table opened writable. Arming is attempted at startup and **retried in the background** (60s, backoff to 15m), outside the per-message path. While unarmed the seam call is a no-op, incrementing `inbound-log-arm-failed` once per process and `inbound-messages-skipped-unarmed` per message. **Acceptance FAILS if `armed` is false.** |
 | **Failure behavior** | A failed insert is caught, counted, and **injection proceeds**. A failed secondary write is caught and counted. Sustained failures raise one deduped Attention item. |
@@ -51,50 +53,10 @@ operator alert queue. **Armed**: enabled *and* the store opened writable.
 | **Health** | `enabled`, `armed` (+ reason), `lastArmAttemptAt` / `lastArmResult`, row count, insert failures, max latency, the startup synthetic self-check result, a monotonic loop-tick counter, and the one-sided-conversation check (recent outbound with zero inbound). |
 | **Synthetic rows** | `synthetic = 1`. Excluded from history reads, row counts, and the one-sided check. |
 | **Privacy** | Message text stored **unencrypted** in the agent's database, file mode 0600. Deleting rows removes them from this store only; TopicMemory and any backups are separate. No redaction — a credential pasted into chat is stored verbatim. |
-| **Disclosure** | **Blocking gate before the first enablement on any machine**: a release-note entry and an operator-visible config description, both stating what is stored, where, that it is unencrypted, the retention bound, and that deletion covers this store only. Owner: the implementing agent; both texts linked from the acceptance record. End-user notice beyond the operator is **not** required — instar is operator-run software and the operator is the principal data subject; an operator whose agent receives third-party messages owns whatever notice their context requires, and §4 gives that guidance rather than implying it is handled. |
+| **Disclosure** | **Blocking gate before the first enablement on any machine**: a release-note entry and an operator-visible config description, both stating what is stored, where, that it is unencrypted, the retention bound, and that deletion covers this store only. Owner: the implementing agent; both texts linked from the acceptance record. End-user notice beyond the operator is **not enforced by this feature** — which is a statement about what the code does, **not** a claim that none is required. The config description therefore carries an explicit operator warning: **inbound third-party messages are stored verbatim, and any notice or legal obligation toward those people is external to this software and yours to meet.** |
 | **Flag** | `messaging.inboundSeamLogging.enabled`, default-off, with emergency disable. |
 | **Acceptance** | **Not "code landed".** The flag ON for the affected machine; live Telegram proof (a normal and a long message) **with an instrumented trace of the real call path to the seam**; **a restart, then another message with the row count still increasing**; an id-less seam regression test; `armed: true` confirmed. |
 | **Known residuals** | A wedged device can stall delivery (detected out-of-process, not prevented). Messages dropped before the seam are invisible. Message text is stored unencrypted. Three, all named, none mitigated. |
-
-**The seam is the chokepoint, and that claim carries a proof obligation.** The
-same "surely everything goes through here" assumption is what produced this bug,
-so the change ships with an **architectural fitness test**: a fixture enumerating
-the allowlisted callers of the two low-level primitives `SessionManager.injectMessage`
-and `SessionManager.rawInject`. Those, not `injectTelegramMessage`, are what the
-test scans — a new path bypassing the seam would do so by reaching for the
-primitives beneath it. The test is **AST-based, not a regex**, so renamed imports
-and aliases are caught. A **runtime counter** records raw primitive use outside
-the approved call sites.
-
-**It is evidence, not enforcement, and the framing matters.** An AST scan misses
-dynamic dispatch, reflection, indirect wrappers, runtime monkey-patching,
-generated code and module boundaries; the counter shows a divergence without
-attributing it. Calling that "architectural enforcement" would be exactly the
-false confidence that let the original defect survive — someone assumed a path was
-covered because a check existed. **The real production evidence is the live
-Telegram call-path trace and the one-sided-conversation detector.** The AST test is
-a cheap build-time guard against the easy regression, framed as that and no more.
-
-**One increment.** The round-46 A/B split existed because JSONL needed rotation
-and retention machinery that a table does not. There is nothing left to defer.
-
-> **On the JSONL fallback, honestly.** Round 50 said the JSONL design would be
-> "retained in full as the fallback". Making the contract implementable meant **replacing** that
-> table, not keeping it beside this one — 52,000 characters became 6,400. The
-> JSONL contract is therefore **not in this file any more**; it is recoverable in
-> full from the commit that removed it, and §§3.1-3.2 below still carry its
-> reasoning. Saying "retained" while deleting it would have been the same species
-> of overclaim this review has corrected eight times.
->
-> **The 88% reduction is itself the argument.** Nothing was cut for brevity — every
-> deleted row described machinery that only existed to make a text file behave like
-> a database.
->
-> **Sections 3.1-3.2 below are JSONL-era rationale.** They explain why the ordering
-> is accept-then-inject and why the essential write is synchronous — both still
-> true — alongside torn lines, rotation and lock files, which are not. They are
-> history, not instructions.
-
 
 ### 3.3 Rollout
 
@@ -227,7 +189,7 @@ rather than defaulted:
 | **Retention** | Row-based (§3.0): oldest rows deleted beyond a 200 000-row keep, daily. Not time-based, not size-based. |
 | **Deletion** | `DELETE FROM inbound_messages` (or drop the table). **This deletes THIS store only** — message text also reaches TopicMemory, which has its own delete path, and neither covers filesystem snapshots or any backup system. Any user-facing deletion instruction must say all three, because "delete the log files" will otherwise be read as "delete what I said to you". |
 | **Export** | No dedicated export. The table is readable with any SQLite client. |
-| **Disclosure** **(A)** | **Blocking acceptance gate, with an owner and an artifact — not a config note.** Before the FIRST enablement on any machine: (1) a release-note entry, and (2) an operator-visible config description, both stating what is stored, where, that it is unencrypted, the retention bound, and that deletion covers the JSONL store only (TopicMemory and backups are separate). **Owner: the implementing agent; artifact: both texts linked from the acceptance record; enablement is blocked until they exist.** **End-user notice beyond the operator is explicitly NOT required**, and the reason is stated rather than assumed: instar is operator-run software where the operator is the principal data subject of their own conversation. **Where an agent receives messages from third parties, that operator is responsible for whatever notice their context requires** — this spec cannot make that call for them, and says so instead of implying it has been handled. |
+| **Disclosure** **(A)** | **Blocking acceptance gate, with an owner and an artifact — not a config note.** Before the FIRST enablement on any machine: (1) a release-note entry, and (2) an operator-visible config description, both stating what is stored, where, that it is unencrypted, the retention bound, and that deletion covers the `inbound_messages` table only (TopicMemory's own rows and any backups are separate). **Owner: the implementing agent; artifact: both texts linked from the acceptance record; enablement is blocked until they exist.** **End-user notice beyond the operator is explicitly NOT required**, and the reason is stated rather than assumed: instar is operator-run software where the operator is the principal data subject of their own conversation. **Where an agent receives messages from third parties, that operator is responsible for whatever notice their context requires** — this spec cannot make that call for them, and says so instead of implying it has been handled. |
 
 
 **Encryption at rest was considered and not adopted**, deliberately rather than
@@ -270,7 +232,7 @@ string/number ids; **a failing `INSERT` is caught inside `recordInboundMessage`,
 which returns `status: 'failed'` and never throws** — tests assert the status at
 the seam boundary, so "does a throw cross the seam?" has one answer; the injection still
 happens regardless; the dedupe key is inserted **only after a successful append**, so a
-throwing append leaves the message eligible to be written on its next arrival; and **the JSONL append has COMPLETED — not merely been scheduled —
+throwing append leaves the message eligible to be written on its next arrival; and **the INSERT has COMMITTED — not merely been scheduled —
 before the inject call**, with the TopicMemory write asserted separately as
 happening after it.
 
@@ -353,7 +315,7 @@ spec no longer contains:
 
 
 **Integration** — a message delivered through the real inject path appears in the
-JSONL log and in TopicMemory with `fromUser: true`; the same message arriving via
+`inbound_messages` table with `from_user = 1`; the same message arriving via
 **both** the forward route and the seam is written **once**; with the flag off,
 no inbound row is written and delivery is unaffected.
 
@@ -418,7 +380,7 @@ signed off. A diagnostic artifact that outlives its diagnosis is just another
 copy of the data this spec is trying to be careful with.
 
 **It passes iff** every observed message's chain terminates at
-`injectTelegramMessage`, and the JSONL row for that `dedupeId` exists. A chain
+`injectTelegramMessage`, and the `inbound_messages` row for that `dedupeId` exists. A chain
 that terminates anywhere else is the finding, not a failure of the test — it
 would mean a second delivery path exists, which is the thing ACT-1217 is looking
 for.
@@ -457,7 +419,7 @@ the other.
 
 **E2E** — production initialization path: a message injected into a live session
 is readable back from the topic history **within a bounded interval** (the write
-JSONL row is readable immediately while the searchable copy lands on the next
+row is readable immediately while the searchable copy lands on the next
 tick, so the test awaits the latter rather than asserting
 instantaneity. This is the
 "feature is alive" test, and it is the one that would have caught the original
@@ -473,8 +435,8 @@ that reader consults fails here rather than in production five days later.
 | Decision point | What it decides | Classification | Justification |
 |---|---|---|---|
 | Whether to log an inbound message | Recording, not delivery | **invariant** | A deterministic predicate: **the feature is enabled**. An id is always available — the platform's when present, the derived one otherwise (§3) — so a missing id never decides whether to record. No judgment, no model, no context. |
-| Write ordering | Which write happens when, relative to injection | **invariant** | Per §3.1's table: the **JSONL append completes before injection** (synchronous, may briefly delay it); the **TopicMemory write is scheduled after** and may be dropped. Two writes, two rules — not one scheduling rule for both. |
-| Log-failure disposition | Whether a failed write blocks the message | **invariant** | Always proceed — a failed JSONL append is caught and counted, never rethrown into the delivery path (§3.2). The conservative default is *deliver*, because the harm being prevented is silence. |
+| Write ordering | Which write happens when, relative to injection | **invariant** | The **INSERT commits before injection** (synchronous, may briefly delay it); the **TopicMemory index write is scheduled after** and may be dropped. Two writes, two rules — not one scheduling rule for both. |
+| Log-failure disposition | Whether a failed write blocks the message | **invariant** | Always proceed — a failed INSERT is caught and counted, never rethrown into the delivery path (§3.2). The conservative default is *deliver*, because the harm being prevented is silence. |
 
 ## 6. Multi-machine posture
 
@@ -488,7 +450,7 @@ that reader consults fails here rather than in production five days later.
 1. **Log at the seam, not at each caller** — **four** callers today (§2), three of
  which pass no `messageId`. Logging per-caller would mean four correct
  implementations and a fifth silently reintroducing the gap.
-2. **Append JSONL before injecting; schedule TopicMemory after** (§3.1) — two
+2. **Commit the INSERT before injecting; schedule the index write after** (§3.1) — two
  writes, two rules. Named this way after three rounds of reviewers reading "log first" as a
  synchronous call, which is exactly how it would be mis-implemented.
 3. **A logging *error* never intentionally aborts the message** (§3.2) — phrased
