@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **74 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
+- **75 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -324,6 +324,20 @@ pressed on the riskiest decision, I produced a *more satisfying* argument for th
 thing I had already chosen. Twice those arguments were wrong in a way that made
 the design look better than it was. Neither was a lie; both were reasoning that
 stopped as soon as it reached a comfortable conclusion.
+
+## The one round where a fix made the design SMALLER (75)
+
+Self-checks were described two ways: insert/read/**rollback** in one place, and
+inserting a committed row in another. Settling on always-rollback removed the
+reason the `synthetic` column existed — nothing ever writes one — so **the column
+and its five scattered rules were deleted**, along with the hazard those rules
+were managing rather than eliminating (a committed probe on every 60-second
+arming retry would slowly fill the store with evidence of failing to arm).
+
+Worth marking because it is the exception. **Seventy-four other rounds resolved
+contradictions by adding a qualification.** This one resolved a contradiction by
+picking the option that made a concept unnecessary — which is available more often
+than it gets taken, and is invisible unless you look for it.
 
 ## Two rules this review produced
 
