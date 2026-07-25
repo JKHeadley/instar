@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **44 rounds run, none clean.** Every round has returned findings.
+- **46 rounds run, none clean.** Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -123,9 +123,42 @@ finding rate suggests it may not while the design is maintained as prose in two
 places. The structural answer already identified — generation over restatement —
 landed at round 35/36 and rounds 37+ are the test of whether it works.
 
+## The pattern worth generalising: conservative guards that recreate the outage
+
+**Twice, a guard written to be careful would have caused the exact failure the
+spec exists to prevent** — and both times it took the next round to catch it:
+
+| Round | The careful rule | What it would have done |
+|---|---|---|
+| 43 | A dead-pid lock is "ambiguous", never reclaimed | After any ordinary crash: `enabled && !armed`, silently not recording until a human noticed |
+| 45 | Only `apfs/hfs/ext4/xfs/btrfs` are trusted local filesystems | Refuse to arm on overlayfs, zfs, tmpfs, encrypted volumes, containers, CI — all local |
+
+Stated as a rule in the spec: **a guard whose failure mode is "stop recording"
+must be biased toward arming, because not-recording is the thing it guards
+against.** Both rules were written by the same author who had spent the whole
+review insisting the defect was silent data loss.
+
+## The resolution at round 46: two increments
+
+Round 45 concluded the store choice might be wrong. Round 46 pointed out the
+contract still mandated the whole hand-built log subsystem regardless — an
+incoherence created by round 45's own honesty. The fix is the split two reviewers
+had already recommended (ACT-1219):
+
+- **Increment A** — the seam call and its immediate machinery. JSONL accepted;
+  at that size the format genuinely is the smaller change. Does not rotate; the
+  unbounded file is a named, one-machine, time-boxed exposure and is strictly
+  better than losing every message.
+- **Increment B** — rotation, retention, ordering, recovery. **The store choice is
+  decided here** (ACT-1220), and if it lands as SQLite most of that machinery is
+  never built.
+
+Every contract row is now marked (A) or (B). **This is the first structural change
+in the review that makes the fix shippable sooner rather than later.**
+
 ## The self-inflicted rate, measured rather than asserted
 
-Of 19 rounds folded tonight (26-44), **at least one finding in 6 of them was a
+Of 19 rounds folded tonight (26-44), **at least one finding in 8 of them was a
 defect the previous fold introduced** — the retention-in-the-wrong-section
 (34), the rotation scheme that deleted the newest file (38), the contract/prose
 contradictions (30, 31, 32), and the lock rule that recreated the outage (44).

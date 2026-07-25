@@ -124,6 +124,46 @@ make — it's written down as a choice, not left as an oversight.
 One thing worth repeating: this is exactly why credentials shouldn't be pasted
 into chat. Anything you type to me lands in that file verbatim.
 
+## It's now two pieces, and only the first one is small
+
+Review kept adding things the fix needed — a size limit on the file, what happens
+if the machine dies mid-write, how long messages are kept. All fair. Together they
+turned an afternoon's work into something much bigger.
+
+Then a reviewer pointed out I'd tangled myself: I'd written down that the storage
+choice might be wrong, and in the same document ordered someone to build the
+entire elaborate storage system anyway. Both can't be true.
+
+So it's split:
+
+**Piece one — stop the loss.** Write each message down at the one place they all
+pass through. Small, settled, nobody disputes it. It does *not* limit the file's
+size, and that's a deliberate accepted risk: one machine, switched on on purpose,
+with the size visible. Growing a file is a much better problem than losing every
+message.
+
+**Piece two — everything about keeping it.** Size limits, what happens on a crash,
+how long things are kept, and crucially *what the file even is* — a plain text
+file or a small database. That last question is genuinely open now, and deciding
+it first means most of piece two's complexity might never need building at all.
+
+**Practical effect: piece one could land far sooner than I'd been implying.**
+
+## A pattern worth naming
+
+Twice in this review I wrote a safety check that would have made things worse.
+
+Once: if the program crashed, my rule said "don't start recording again until a
+human checks" — which after any ordinary crash means silently back to losing
+messages. Twice: I listed the disk types I trusted, and the list would have
+refused to run on perfectly normal setups like containers and encrypted drives —
+again, silently not recording.
+
+Both times I'd been *careful*, and both times careful meant broken, in the exact
+way the whole thing exists to prevent. The rule I've written down: when a guard's
+failure mode is "stop recording", it has to lean toward running. The thing you're
+protecting against is the not-recording.
+
 ## What it doesn't fix
 
 It does not stitch the two machines' halves together. After this, each machine
