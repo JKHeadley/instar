@@ -22,6 +22,16 @@ in it (ACT-1215). This spec is scoped so a fold cannot do that.
 
 **The machine that composes replies has no record of what was said to it.**
 
+**Scope, stated before the evidence rather than after it (round-32, codex).**
+What this spec fixes is **session-resume completeness**: a session that restarts
+should be able to read the conversation it is resuming, both halves. What it does
+**not** deliver is an audit of everything Telegram ever sent this machine — a
+message dropped or refused before it reaches a session is invisible to this
+design and stays invisible (§4). The record it builds is therefore a
+**session-injection received log**, not an intake log, and that name is used
+throughout deliberately. The headline above is the symptom; this paragraph is the
+boundary.
+
 Verified on the Mac Mini, 2026-07-25:
 
 | Observation | Value |
@@ -88,7 +98,7 @@ that is cheaper than pretending duplication is free.*
 | | |
 |---|---|
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
-| **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws**; returns `true` on success, `false` if already logged or if the append failed (counted). Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path is required to be local, non-network storage. |
+| **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws**; returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path must be an app-controlled local data directory. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only on `status: 'appended'`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
 | **Fields** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, `messageId` \| absent, `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'received'`, `fromUser: true`. |
 | **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** Scope: **best-effort duplicate suppression within one process** — atomic in-process, not a storage-level uniqueness guarantee. |
@@ -572,6 +582,16 @@ Two things follow, and neither is a mechanism:
    the writes are going. The requirement is documented and the path is visible;
    neither is dressed up as a guarantee.
 
+   **Narrowed to a hard rollout constraint (round-32, codex — "good enough for
+   one Mac Mini" is not a pattern that should spread).** Fleet default-on is
+   valid **only** where the log path resolves inside the application's own local
+   data directory. An operator-configured arbitrary path is supported for this
+   machine's opt-in fix, but it disqualifies a machine from the fleet default —
+   because the residual being accepted here is acceptable in proportion to how
+   well the storage is known, and an arbitrary path is by definition not known.
+   That turns a soft requirement into a rollout precondition, which is the only
+   form of it that survives contact with other machines.
+
    **Plus MAX latency, not only p99 (round-31, codex; round-31, gemini reached
    the same place from the other direction).** A p99 is the wrong statistic for
    this failure: the stall being guarded against is a *single* pathological
@@ -881,6 +901,22 @@ benchmark then shows the cost is unacceptable the flag comes back off — a
 measured retreat, not an unmeasured wait. Reporting "done" with the flag off on
 the machine that has the bug is not a partial success; it is the bug.
 
+**And "on" has to stay on — verified, not assumed (round-32, codex, and this is
+the finding most likely to actually bite).** The realistic failure is not that
+someone forgets to flip it. It is that the flag is flipped, the fix is confirmed
+working, and then a deploy, a restart, or a config reload quietly drops it — and
+because nothing was watching, the bug resumes in exactly the silent form it had
+before, with a merged PR and a live proof sitting in the record saying it was
+fixed. That is the same shape as the original defect: a thing that was supposed
+to be happening, wasn't, and nothing said so.
+
+So the state is **reported, not remembered**: the health surface carries
+`inboundSeamLogging.enabled` alongside a **recent inbound row count** for this
+machine. The pair is what matters — the flag alone says what was configured, the
+count says what is actually being written. A machine reporting `enabled: true`
+with zero inbound rows over a window in which it sent outbound messages is the
+one-sided-conversation signal from §3, pointed at this feature's own regression.
+
 **Default-on is EARNED by explicit thresholds, not by a release count
 (round-17, tightened round-19 — "default-off for exactly one release" was an
 unresolved decision written as though it were closed; if the numbers come back
@@ -960,6 +996,19 @@ timing (round-13, codex: asserting the ordering with a clock would force a
 synchronous mock shape that does not match production; round-22 and round-27
 both caught this paragraph still carrying the pre-split wording, and round-27
 additionally caught it asserting the same thing twice).
+
+**Migration safety (round-32, codex — the test plan covered behavior and skipped
+the schema change, which is the part that runs once on every existing database
+and cannot be retried by hand).** Four tests, all against a database with real
+pre-existing rows rather than a fresh one: the migration **applies** to an
+existing DB and leaves prior rows readable; running it **twice** is a no-op
+(idempotency, since a partially-applied migration is the normal consequence of a
+crash mid-upgrade); a reader hitting `message_id = -1` **with** `id_source`
+resolves it correctly; and a reader hitting `message_id = -1` **without**
+`id_source` — a row written by an older build — degrades to the documented
+back-compat path rather than misreporting. The last one matters most: it is the
+only test that exercises what an old row looks like to new code, which is the
+state every deployed machine passes through.
 
 **Append-failure classes (round-28, codex — the perf gate measures bursts and
 loop delay, and says nothing about the ways a synchronous append actually
