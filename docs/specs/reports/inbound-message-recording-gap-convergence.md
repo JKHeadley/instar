@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **70 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
+- **71 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -325,7 +325,28 @@ thing I had already chosen. Twice those arguments were wrong in a way that made
 the design look better than it was. Neither was a lie; both were reasoning that
 stopped as soon as it reached a comfortable conclusion.
 
-## The circular-detector mistake, made twice
+## The circular-detector mistake, made THREE times
+
+| Round | The detector | Why it could not fire |
+|---|---|---|
+| 47 | In-process latency alarm + Attention | A wedged write blocks the event loop that runs them |
+| 63 | Loop-tick counter on `/health` | A wedged loop cannot serve the `/health` request either |
+| 71 | Durable failure row in the message database | Disk-full / read-only / wedged SQLite kills the recorder for the same reason it killed the write |
+
+**Three times, in three disguises, and I did not recognise the second or third as
+the same shape as the first.** Each fix moved the detector one step further out
+and stopped exactly one step short of a place the failure could not reach.
+
+The rule extracted, stated so it is checkable rather than remembered:
+**a detector must not share a failure domain with the thing it detects.** The
+working answers each turned out to be the cheapest available: absence of a
+response is a signal; an in-memory flag needs no storage; the external poller
+already exists.
+
+It is also the strongest single argument in this report for outside review. Three
+instances of one blind spot, none self-caught.
+
+### The first two instances, in detail
 
 **Round 47:** the stall detector was unreachable — in-process alarms cannot fire
 when a wedged write blocks the event loop that runs them. Fixed by exposing a
