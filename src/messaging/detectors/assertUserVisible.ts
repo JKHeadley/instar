@@ -1,4 +1,5 @@
 /** Deterministic UX assertions for Tier-3 user-surface tests. */
+import type { Clock } from './clock.js';
 
 const INTERNAL_ID = /\b(?:CMT|ACT|PR)[-_#]?\d+\b/i;
 const FILE_PATH = /(?:^|\s)(?:\/|\.\.\/|src\/|tests\/)[^\s]+/;
@@ -41,4 +42,18 @@ export function assertNoZombie(queue: unknown): asserts queue is Array<Record<st
       throw new Error('queue contains a stale queued entry');
     }
   }
+}
+
+/** Assert that a visible event landed within its declared bound. */
+export function assertTimely(events: unknown, boundMs: number, clock: Clock): void {
+  if (!Array.isArray(events) || events.length === 0) throw new Error('timely response event is missing');
+  if (!Number.isFinite(boundMs) || boundMs < 0) throw new Error('timely bound must be non-negative');
+  if (!clock || typeof clock.now !== 'function') throw new Error('timely assertion requires an injected clock');
+  const now = clock.now();
+  const visible = events.find((event) => event && typeof event === 'object' && (event as { userVisible?: unknown }).userVisible !== false);
+  if (!visible || typeof (visible as { startedAt?: unknown }).startedAt !== 'number' || typeof (visible as { at?: unknown }).at !== 'number') {
+    throw new Error('timely response event is malformed');
+  }
+  const event = visible as { startedAt: number; at: number };
+  if (event.at > now || event.at - event.startedAt > boundMs) throw new Error('user-visible response exceeded its time bound');
 }

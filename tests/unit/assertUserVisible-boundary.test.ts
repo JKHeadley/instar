@@ -6,5 +6,6 @@ describe('assertUserVisible import boundary', () => {
     const source = fs.readFileSync('src/messaging/detectors/assertUserVisible.ts', 'utf8');
     expect(source).not.toMatch(/from ['"](?:node:)?(?:child_process|https?|net|tls)/);
     expect(source).not.toMatch(/(?:fetch|execFile|spawn|IntelligenceProvider|LLM)/i);
+    expect(source).toContain('assertTimely');
   });
 });
