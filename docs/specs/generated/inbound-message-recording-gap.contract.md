@@ -100,7 +100,14 @@ It works because:
  Those, not `injectTelegramMessage`, are what the test scans, and deliberately:
  `injectTelegramMessage` is the seam that *does* the logging, so a new path that
  bypasses the gap would do so by reaching for the primitives underneath it. The
- fixture is the list of functions permitted to call them; any new
+ **The test is AST-based, not a regex over source text.**
+ It walks the parsed module graph for references to the two primitives, which
+ catches renamed imports and aliases that a text search would miss. It still
+ cannot see genuinely dynamic dispatch, so a **runtime counter** records raw
+ primitive use from outside the approved call sites — the static test catches
+ what is knowable at build time, the counter reports what is only knowable at
+ run time, and neither pretends to be the other.
+ The fixture is the list of functions permitted to call them; any new
  caller fails it until the allowlist is updated deliberately, at which point a
  human has to decide whether that path also needs to log. **Each entry carries a
  one-line reason and the fixture rejects an entry without one.** Otherwise the guarantee decays into "someone remembered to think
@@ -191,7 +198,12 @@ It works because:
  - **TopicMemory carries a REDUCED contract, and consumers must know it.** JSONL holds `dedupeId` and `idSource`; TopicMemory does
  not, because it keeps its existing columns. So a reader using TopicMemory
  alone can tell a locally-derived id from a platform one **only by its sign**
- (negative ⇒ derived), and has no retry identity available at all. That is
+ (negative ⇒ derived), and has no retry identity available at all. **That sign
+ convention gets a helper, not a comment: consumers call
+ `isSyntheticMessageId(id)` rather than rediscovering `< 0` for themselves.**
+ An implicit convention in a generic integer column is exactly the kind of
+ thing a future reader sorts, compares or displays as if it were a Telegram
+ id. That is
  intentional — TopicMemory backs search and summaries, JSONL backs history —
  and it is written here so the difference is a documented contract rather than
  a discovery. A consumer needing `dedupeId` or `idSource` reads JSONL.
@@ -243,11 +255,13 @@ purpose: it is far better for a resumed session to see a message the operator
 sent and the agent possibly missed, than to miss it entirely. The reader is
 documented as showing *what arrived*, and an injection failure is already loud
 elsewhere. No consumer may read this log as proof the agent acted on a
-message — **and that is enforced by naming, not by asking.** The field is `sessionReceivedAt`, the JSONL
-file is `override-events`-style named for what it holds, and the storage contract
-above states the reduced guarantees inline. A consumer reading a field called
-`sessionReceivedAt` has to work to misinterpret it; a consumer reading
-`deliveredAt` would have to work not to.
+message. **Naming makes that harder to get wrong; it does not enforce it.** What naming buys: a consumer reading
+`sessionReceivedAt` and `deliveryState: 'received'` has to work to misread them,
+where one reading `deliveredAt` would have to work not to. What it does not buy:
+any mechanism preventing a determined consumer from treating presence as
+delivery. **The only real enforcement available is the enum** — a future
+`'injected'` value means a consumer that cares can *check* rather than assume,
+and that is the honest ceiling here.
 
 ### 3.2 Failure direction: never block the message
 
@@ -332,8 +346,17 @@ twice in this section's own history.
 
 ### 3.3 Rollout
 
-`messaging.inboundSeamLogging.enabled`, **default true**, with an emergency
-disable. Not dark-shipped: it restores a recording that the system already
+`messaging.inboundSeamLogging.enabled`, with an emergency disable.
+
+**Default-on is EARNED by the burst numbers, not assumed.** The
+flag ships **default-off for exactly one release**, during which the burst test
+reports concrete loop-delay figures on real hardware; it flips to default-on only
+once those numbers are acceptable and recorded here. The reasoning that made
+default-on attractive still stands — every day off is unrecoverable
+conversation — but "probably fine at human typing speed" is an assumption about
+the same class of thing this spec keeps catching, and a synchronous write with a
+five-second `busy_timeout` behind an unbounded callback backlog is not a place to
+assume. One release is a small price for a measured answer. Not dark-shipped: it restores a recording that the system already
 intends to perform and already performs on one path, and every day it is off is
 another day of unrecoverable conversation. The lever exists for one reason — if
 the write turns out to be hot on some install, the operator can stop it without
@@ -422,7 +445,9 @@ that reader consults fails here rather than in production five days later.
 3. **A log failure never blocks the message** (§3.2).
 4. **The forward route's existing call stays** — dedup makes it harmless, and removing it is unrelated risk.
 5. **A missing `messageId` gets a per-injection UUID** (§3), not silence and not a content hash — an id-less message is recorded, and no cross-message identity is inferred from its bytes.
-6. **Ships enabled, not dark** (§3.3) — every day off is unrecoverable conversation.
+6. **Ships default-OFF for exactly one release, then default-on** (§3.3) — the
+ flip is earned by measured burst/loop-delay numbers, not by the (correct but
+ unmeasured) argument that every day off is unrecoverable conversation.
 7. **No backfill attempted** (§4).
 8. **Cross-machine history merge is explicitly out of scope**, and tracked as
  ACT-1216 rather than left as a note (§8.1).
