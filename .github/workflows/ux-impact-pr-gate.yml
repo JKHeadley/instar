@@ -32,6 +32,8 @@ jobs:
           fetch-depth: 0
       - name: Fetch PR head
         run: git fetch --no-tags origin ${{ github.event.pull_request.head.sha }}
+      - name: Load the PR's checker
+        run: git checkout "${{ github.event.pull_request.head.sha }}" -- scripts/ux-impact-lint.mjs
       - name: Evaluate UX declaration
         id: lint
         env:
