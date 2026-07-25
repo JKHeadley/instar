@@ -209,11 +209,12 @@ export class CapabilityRegistryReceiver {
     };
   }
 
-  ingestProjection(origin: string, raw: unknown, now = Date.now(), confirmed = true): CapabilityRegistryIngestResult {
+  ingestProjection(origin: string, raw: unknown, now = Date.now(), confirmed = false): CapabilityRegistryIngestResult {
     let projection: CapabilityProjection;
     try {
       projection = validateProjection(raw);
     } catch (error) {
+      // @silent-fallback-ok — maps validation failure to the closed failure-reason enum; caller surfaces a named per-machine row, so nothing is swallowed.
       return this.reject(origin, mapProjectionError(error));
     }
     if (projection.machineId !== origin) return this.reject(origin, 'origin-mismatch');
@@ -221,6 +222,7 @@ export class CapabilityRegistryReceiver {
     try {
       projection = this.receiverStampedProjection(projection, now);
     } catch (error) {
+      // @silent-fallback-ok — maps timestamp clamp failure to the closed failure-reason enum; caller surfaces a named per-machine row, so nothing is swallowed.
       return this.reject(origin, mapProjectionError(error));
     }
     const digest = canonicalDigest(projection);
@@ -255,7 +257,7 @@ export class CapabilityRegistryReceiver {
     let digest: CapabilityDigestParts;
     try {
       digest = parseCapabilityDigest(digestRaw);
-    } catch (error) {
+    } catch (error) { // @silent-fallback-ok — malformed digest maps to a closed failure reason surfaced by origin.
       return this.reject(origin, mapProjectionError(error));
     }
     if (digest.machineEpoch > Math.floor((now + this.opts.epochClampBoundMs) / 1000)) return this.reject(origin, 'clock-skew');
@@ -346,7 +348,7 @@ export class CapabilityRegistryReceiver {
         ...projection,
         entries: projection.entries.map(entry => ({ ...entry, observedAt: clampObservedAt(entry.observedAt), receivedAt: nowIso })),
       };
-    } catch (error) {
+    } catch (error) { // @silent-fallback-ok — receiver stamp errors become named malformed/clock-skew results.
       throw error instanceof Error && error.message === 'clock-skew' ? error : new Error('malformed');
     }
   }

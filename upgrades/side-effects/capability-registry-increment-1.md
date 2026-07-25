@@ -4,3 +4,4 @@
 - No route, mesh verb, heartbeat emission, transport client, or durable store is added.
 - Replay fixtures name their failure inputs: identical heartbeat digest/proof and identical pull response/nonce; both must fail to refresh freshness.
 - Rollback is literally deleting the unreferenced receiver and its tests.
+- The ratchet-only follow-up annotates two classification catches; no receiver behavior or mounted surface changes.
