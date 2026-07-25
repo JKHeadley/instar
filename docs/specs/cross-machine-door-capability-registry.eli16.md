@@ -63,3 +63,4 @@ drifted apart between sections while every individual round looked clean. A
 document only counts as converged after a final whole-document consistency
 pass — and the four regression tests protecting these particular fixes are
 named in the build plan, so they cannot quietly go missing later.
+<!-- amended convergence companion -->

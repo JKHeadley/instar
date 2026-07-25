@@ -3,7 +3,7 @@
   "sessionId": "capability-registry-increment-0",
   "timestamp": "2026-07-25T05:57:00.000Z",
   "artifactPath": "upgrades/side-effects/capability-registry-increment-0.md",
-  "artifactSha256": "009070c06f23ef280479c822e7a6929e2524011637d73aa44c84b2ac69599377",
+  "artifactSha256": "ba54e943b9f626f4da6d222fb8f5951b5a7a8ceff14531a54611703e4d76f758",
   "specPath": "docs/specs/cross-machine-door-capability-registry.md",
   "coveredFiles": ["src/core/CapabilityRegistry.ts", "tests/unit/CapabilityRegistry.test.ts"],
   "phase": "complete",

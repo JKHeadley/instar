@@ -4,8 +4,8 @@ slug: "cross-machine-door-capability-registry"
 author: "codey"
 status: approved
 approved: true
-approved-by: "Justin (PR #1613 approval)"
-review-convergence: "2026-07-25T05:53:13.000Z"
+approved-by: "Echo (PR #1616 amended convergence)"
+review-convergence: "2026-07-25T07:20:00.000Z"
 spec-only: true
 parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 ---
@@ -50,6 +50,21 @@ exhaustion. All are resolved above. The standing rule this establishes: EVERY
 fix round must itself be verified, and a fix that adds a field or a fallback
 must be traced to every rule that consumes it (sort orders, counters, config
 key names) before the round is called clean.
+
+Round 8 came from the BUILD, not from a reviewer, and it exposed the blind
+spot that document-only convergence structurally cannot see: the spec named a
+`scanGeneration` counter "incremented on every completed doorway scan" — and
+no such field exists in production (absent from the scan-state writer's field
+allowlist and from `src/` entirely). Seven rounds of reading the document
+could not detect it, because the defect was not IN the document; it was in the
+document's relationship to the code it depends on. It surfaced within minutes
+of the first implementation attempt. The field is now `scanStampSecs`, derived
+from the `lastScanAt` that already exists and already changes on every
+completed scan. The rule this adds: a spec that names an EXTERNAL field, route,
+or store must cite where that thing exists in code — and a convergence round
+must include one grounding pass that checks those citations, not just internal
+consistency. Prose can only be verified against prose; a build verifies against
+reality.
 
 ## Glossary
 
@@ -142,7 +157,7 @@ and bounded.)
   "machineId": "mesh-machine-id",
   "machineEpoch": 1784958000,
   "projectionSeq": 172,
-  "scanGeneration": 41,
+  "scanStampSecs": 1784958000,
   "scanState": "observed|never-observed|source-unavailable",
   "truncated": false,
   "entries": [{
@@ -210,18 +225,30 @@ Field rules (all structurally enforced, not prose):
   backward clock, which is the named residual healed by watermark aging (the
   round-7 finding: this sentence previously asserted "re-mints a higher epoch
   anyway", contradicting the bound stated two rules up).
-- **`scanGeneration` exhaustion (normative — the round-7 finding).** The
-  counter increments on every completed scan and is width-clamped, so it must
-  have a defined transition at its ceiling or its own mechanism eventually
-  violates the clamp. At `9_999_999_999` the next completed scan WRAPS it to
-  `0` and re-mints the `machineEpoch` in the same write. Wrapping is safe
-  because `scanGeneration` is only ever compared for INEQUALITY inside the
-  pull-decision tuple (never ordered), and the epoch re-mint keeps the
-  receiver's `(machineEpoch, projectionSeq)` watermark strictly advancing
-  across the wrap. A receiver never needs to special-case it.
+- **`scanStampSecs` (round-8 finding — replaces the earlier
+  `scanGeneration` counter).** The observation-freshness component of the
+  digest tuple is DERIVED, never counted: it is
+  `floor(Date.parse(clamped lastScanAt) / 1000)`, or `0` when the machine has
+  never completed a scan. Why the change: rounds 6-7 specified a
+  `scanGeneration` counter "incremented on every completed doorway scan", but
+  NO SUCH FIELD EXISTS in production — it is absent from the scan-state
+  writer's field allowlist (`scripts/doorway-scan.mjs`) and from `src/`
+  entirely, so an implementer reading `scan.scanGeneration` gets `undefined`
+  forever and the propagation mechanism is silently dead (caught in review of
+  the Increment-0 build, PR #1615). `lastScanAt` is the field that already
+  exists, is already clamped by `DoorwayRegistryReader`, and already changes
+  on every completed scan — including a no-change one — which is exactly the
+  property the counter was invented to provide.
+  Consequences, all benign: it needs no producer change; it has no exhaustion
+  transition to define (a 10-digit epoch-seconds value is width-safe past year
+  2286); and a backward clock merely changes the tuple, which triggers ONE
+  bounded re-pull rather than corrupting anything, because the tuple is
+  compared for INEQUALITY only (never ordered). The receiver's
+  `(machineEpoch, projectionSeq)` watermark remains the sole ordering
+  authority.
 - **Envelope numeric width clamps (normative, so the digest bound holds by
   construction — the round-6 finding).** `schemaVersion` ≤ 3 decimal digits,
-  `machineEpoch` ≤ 11, `projectionSeq` ≤ 10, `scanGeneration` ≤ 10; all are
+  `machineEpoch` ≤ 11, `projectionSeq` ≤ 10, `scanStampSecs` ≤ 10; all are
   non-negative integers. A value exceeding its width is refused at write and
   rejects the projection on receive (`malformed`). A `projectionSeq` at its
   ceiling forces an epoch re-mint (which resets the sequence) rather than
@@ -236,7 +263,16 @@ Field rules (all structurally enforced, not prose):
   (`never-observed`), or the underlying doorway source could not be read
   (`source-unavailable`). A receiver renders a peer's empty projection using
   this field and NEVER as "no capabilities." It is envelope semantics, so it
-  joins `truncated` in the pull-decision tuple; a peer projection whose
+  joins `truncated` in the pull-decision tuple.
+  **Derivation (normative — the round-8 build finding):** `observed` requires
+  `lastScanAt !== null` in the scan-state, NOT mere existence of the
+  scan-state file. The canonical scan-state ships with `lastScanAt: null` on a
+  machine that has never completed a scan (`freshScanState()`), and main's
+  reader already encodes this rule (`DoorwayRegistryReader`:
+  `scanned = lastScanAt !== null`). Deriving `observed` from file existence
+  reports a never-scanned machine as observed — reintroducing exactly the
+  ambiguity this field exists to remove. An unreadable or corrupt scan-state
+  is `source-unavailable`, kept distinct from `never-observed`; a peer projection whose
   `scanState` is not `observed` produces that machine's named failure/empty
   row (`source-unavailable`, or the receiver-side `no-data-yet` before first
   ingest) instead of an inferred-empty capability list.
@@ -480,7 +516,7 @@ it:
 
 - Each machine's heartbeat carries a fixed-size capability digest, encoded
   as the compact string
-  `cap1:<schemaVersion>:<machineEpoch>:<projectionSeq>:<truncated 0|1>:<scanState 0|1|2>:<scanGeneration>:<entriesSha256-16hex>`
+  `cap1:<schemaVersion>:<machineEpoch>:<projectionSeq>:<truncated 0|1>:<scanState 0|1|2>:<scanStampSecs>:<entriesSha256-16hex>`
   — **≤ 64 bytes, and that bound is arithmetic, not aspirational**: the
   envelope width clamps above (3 + 11 + 10 + 10 decimal digits, one digit
   each for `truncated` and the `scanState` ordinal, a 16-hex truncated
@@ -500,20 +536,21 @@ it:
   sorted by `(doorwayId, capabilityId, sourceDetail)` — `sourceDetail` joins
   the sort key because it is part of the local row key, so two disagreeing
   local sources for one capability serialize deterministically instead of
-  colliding. JSON with sorted keys. `scanGeneration` is the origin's
-  completed-scan counter (increments on every completed doorway scan, even
-  a no-change one) — it propagates OBSERVATION freshness: a scan that
-  changes no facts still bumps the digest tuple, triggering one bounded
+  colliding. JSON with sorted keys. `scanStampSecs` is DERIVED from the
+  scan-state's clamped `lastScanAt` (see the field rules) — it propagates
+  OBSERVATION freshness: a scan that changes no facts still re-stamps
+  `lastScanAt` and therefore bumps the digest tuple, triggering one bounded
   re-pull per origin per scan (daily cadence, ≤200 rows) that refreshes
   receivers' stored `observedAt`, so stable healthy fleets never decay to
-  false observation-staleness (the round-5 non-propagation finding). Timestamps (`observedAt`,
+  false observation-staleness (the round-5 non-propagation finding, now
+  carried by a field that actually exists — the round-8 finding). Timestamps (`observedAt`,
   `doorwayScanAt`, `manifestVerifiedAt`) are EXCLUDED from the
   hash: a rebuild that merely re-stamps time does not churn the digest, so
   digest-compare stays a no-op for unchanged facts (the round-4
   volatile-timestamp finding). Two rebuilds of identical facts produce
   identical digests (fixture-tested in Increment 1).
 - The PULL DECISION keys on the tuple `(schemaVersion, truncated, scanState,
-  scanGeneration, entriesSha256)` — envelope semantics changes fetch too, so a
+  scanStampSecs, entriesSha256)` — envelope semantics changes fetch too, so a
   version bump or truncation change cannot hide behind identical entries
   (the round-4 envelope-fields finding). An epoch/seq bump with an
   unchanged tuple updates the watermark from the digest without fetching
@@ -582,7 +619,7 @@ it:
 - Every read response carries `advisory: true` and rows carry their
   self-reported `evidenceClass`. The marker is enforced by Frontloaded
   Decision 17's ratchet, and the dashboard follow-up must render
-  uncorroborated (all v1) claims distinguishably. <!-- tracked: ACT-1156 -->
+  uncorroborated (all v1) claims distinguishably.
 - `/capabilities` advertises the read surfaces only once the flag actually
   serves them on this install (advertising a dark route breaks
   Self-Discovery).
@@ -667,7 +704,7 @@ presentation.
    empty, structurally distinct.
 6. **Authorization:** `scope=pool` rides the same gate as `GET /pool`;
    deny-by-default until the increment that enables it. Per-row owner
-   restrictions: a named follow-up (all rows pool-visible-redacted in v1). <!-- tracked: ACT-1156 -->
+   restrictions: a named follow-up (all rows pool-visible-redacted in v1).
 7. **Conflict:** self-claim supremacy as a declared backstop (Trust rule 5);
    cross-machine contradictions cannot enter by construction; own-source
    `conflict` stays observe-only with provenance.
@@ -693,7 +730,7 @@ presentation.
    verification (the reserved `receiver-verified` class is that future
    increment's contract).
 10. **Operator UX:** dashboard rendering SCOPED OUT of Increments 0-4
-    (API-only, as `/doorways` shipped). The follow-up is REGISTERED <!-- tracked: ACT-1156 -->
+    (API-only, as `/doorways` shipped). The follow-up is REGISTERED
     (ACT-1156, Close the Loop): a section of the existing Machines tab
     rendering self-reported claims distinguishably; mobile failure summary
     one line per machine
@@ -723,7 +760,7 @@ presentation.
     exactly 2 keys, heartbeat digest ≤ 64 bytes — and that digest bound is
     made arithmetic by the envelope width clamps it depends on
     (`schemaVersion` ≤ 3 digits, `machineEpoch` ≤ 11, `projectionSeq` ≤ 10,
-    `scanGeneration` ≤ 10, `truncated`/`scanState` one digit each, 16-hex
+    `scanStampSecs` ≤ 10, `truncated`/`scanState` one digit each, 16-hex
     entries hash ⇒ 63 bytes worst case). The ingest section states the SAME
     64-byte number; the round-6 finding corrected an earlier 72-vs-64
     disagreement between the two sections. Cheap-tagged with one constraint:
@@ -785,7 +822,7 @@ presentation.
   reaches an install before being enabled there.
 - Tracked dependencies (pinned against auto-expiry sweep — both are
   deadline-bearing registry entries, not ordinary pending items):
-  ACT-1153 (routing consumer, deliberately deferred). <!-- tracked: ACT-1153 --> ACT-1155
+  ACT-1153 (routing consumer, deliberately deferred), ACT-1155 <!-- tracked: ACT-1153 -->
   (doorway-scan graduation, Increment 4 precondition).
 
 ## Alternatives considered
@@ -795,7 +832,7 @@ presentation.
 Rejected for v1: couples dashboard latency to peer availability, creates
 partial-response ambiguity, and makes repeated reads expensive. The
 digest+pull ingest keeps reads local; a true "live probe" mode may layer on
-later.
+later. <!-- tracked: ACT-1153 -->
 
 ### B. Copy every peer's doorway JSON into one canonical global store
 
@@ -834,7 +871,7 @@ machines): digest-compare per heartbeat IS our anti-entropy, at fixed cost.
 The nearest standard pattern is HTTP conditional caching, and v1 is
 deliberately isomorphic to it: the digest IS an ETag, the digest-change
 pull IS a conditional GET, `remoteTtlCeiling` IS the Cache-Control TTL,
-and `scanGeneration` IS a revision counter. What we add beyond ETag-style
+and `scanStampSecs` IS a Last-Modified stamp. What we add beyond ETag-style
 caching is exactly the part a mutually-authenticated-but-not-mutually-
 trusted mesh requires and a trusted HTTP origin does not: origin binding,
 the anti-replay watermark, and receiver-owned freshness. Everything else
@@ -934,4 +971,4 @@ confirmation of self-reported claims (FD 9).
 No implementation, automatic routing, credential synchronization, peer
 configuration mutation, new login/enrollment flow, or LLM-based capability
 classification is included in ACT-409. The supervised routing consumer is
-explicitly out of scope and tracked as ACT-1153.
+explicitly out of scope and tracked as ACT-1153. <!-- tracked: ACT-1153 -->
