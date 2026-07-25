@@ -738,11 +738,22 @@ choice stands, and the delta is stated rather than smoothed over: it is
 **accessibility, not residency**, and it is one more reason the isolated matcher
 is the destination rather than a luxury.
 
-**Honest statement of what this costs, since it is a real reduction.** Vault
-secrets now sit in the server's heap for its lifetime, where before they were
-read transiently. The marginal exposure is: an attacker with a heap dump or
-arbitrary read of this process now also gets the vault subset, having already
-had the config subset. **The upgrade path, with concrete triggers rather than "if that ever matters"
+**Honest statement of what this costs, since it is a real reduction.**
+*(Round-35, codex: this paragraph described the PRE-round-30 design, in which
+the index DID load vault values — it claimed "vault secrets now sit in the
+server's heap for its lifetime" while the bullet above says vault-derived
+credentials are NOT loaded in PR-A. A direct contradiction, stale since round
+30, and it survived five rounds because nothing in the document disagreed with
+either half. Rewritten to the shipped design rather than patched.)*
+The index holds **only credentials already resident in the loaded config**, so
+it adds **no** plaintext that was not already in this process. The cost is
+therefore **not residency but accessibility**: those values now sit in one
+normalized, purpose-built structure rather than scattered through the config
+object, so an attacker with a heap dump or arbitrary read of this process finds
+them more readily than before — the same subset, more conveniently arranged.
+Vault values are **out of scope for PR-A entirely** and are reached only by the
+isolated matcher, which carries its own exposure analysis rather than
+inheriting this one. **The upgrade path, with concrete triggers rather than "if that ever matters"
 (round-29, codex):** an isolated matcher process holding the plaintext and
 answering a yes/no over a local socket. It is the **preferred future
 architecture**, not a hypothetical, and it is taken when **any** of these fires:
@@ -1610,7 +1621,15 @@ evaluate(request):
   if token_presented(request):
     if not token_valid(request):  return HOLD_FRESH           # invalid → new hold
     if text_edited(request):      return HOLD_FRESH           # ack binds to the hash
-    if deterministic_finding_differs_from_acked(request):
+    # "Differs" is NOT a loose comparison: a pending record answers exactly
+    # {producer, rule, detectorKind, candidateSha256} (§3.5). A finding whose
+    # tuple differs in ANY field is a different finding and gets its own hold —
+    # notably a B23 detectorKind that did not fire on the first pass.
+    # (Round-35, codex asked for this to be spelled out and proposed a wider
+    # tuple adding channel/topicId/messageKind; §3.5's four fields are what the
+    # record actually binds, so the spec's own definition is used here rather
+    # than the suggestion.)
+    if finding_tuple(request) != acked_tuple(token):
       return HOLD_FRESH                                       # e.g. index finished rebuilding
     if not authorized_event_appendable():
       return REFUSE_OVERRIDE_UNRECORDABLE                     # row 18 (availability hold)

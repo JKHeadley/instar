@@ -578,3 +578,30 @@ actually see.
 > substitution today (the others: "nothing started in 17 minutes" when it was
 > five, and the machine names reversed for a whole day). Corrected above rather
 > than left to become a stale fact in a report about stale facts.
+
+---
+
+## Round 35 (2026-07-25 15:5xZ) — the folds held; a five-round-old contradiction surfaced
+
+Reviewer `codex-cli:gpt-5.5`, `promptTruncated: false`, **verdict MINOR ISSUES**
+(second consecutive). **None of round 34's five findings recurred** — the folds
+answered them. Five new findings, and the most important is one that only
+becomes visible once a reviewer can read §3 at all:
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **§3.2.1 contradicts itself on vault secrets.** One bullet: "Vault-derived credentials are NOT loaded in PR-A". A later paragraph: "Vault secrets now sit in the server's heap for its lifetime." | **FOLDED.** The paragraph was written against the PRE-round-30 design, when the index DID load vault values; round 30 narrowed it to config-only and this paragraph was never updated. **Stale for five rounds, and invisible to review the whole time because the artifact under review had §3 removed.** Rewritten to the shipped design — cost restated as *accessibility, not residency*, vault explicitly out of PR-A scope. |
+| 4 | Pseudocode's `deterministic_finding_differs_from_acked` too abstract for B23 | **FOLDED** — but **not as proposed.** codex suggested a 7-field tuple adding channel/topicId/messageKind; §3.5 says a pending record answers exactly `{producer, rule, detectorKind, candidateSha256}`. The spec's own four fields are used and the divergence is noted inline. Checking the suggestion against the source rather than adopting it is the whole lesson of this session. |
+| 2 | §3.8.1 rows 15 and 22 overlap on expired/absent-token resend despite "first match wins" | **OPEN.** Genuine table ambiguity of exactly the kind §3.8.1 exists to remove. Fix is to merge 22 into 15 or make 15 explicitly "no ack/reason present" — a table edit needing care, not a prose patch. |
+| 3 | §3.5 vs §3.8.1 disagree on what the unjoined expired-token attempt IS — "recorded but could not be joined" vs "unjoinable/unjudgeable machine-local attempt" | **OPEN.** Two different audit meanings for one event. Needs one event name, one destination, and an explicit statement of whether it is evidence, telemetry, or neither. |
+| 5 | The strict contract still carries extensive rationale/history | **OPEN, and partly a consequence of MY OWN fix today.** Including §3 restored the design body — and its inline round narration with it (residual count 20 → 38). Stated plainly: a contract WITHOUT the design produced four false objections and is strictly worse than one with history in it. The fix is better inline stripping inside §3, **not** re-omitting the design. Anyone tempted to "clean up" the contract by narrowing the allowlist again should read commit `7a4044647` first. |
+
+**Finding 1 is the round's real result.** It is a textbook instance of the
+lesson this session keeps re-learning: removing a concept leaves residue in the
+sections written against the old design, and review cannot catch a contradiction
+in text it was never shown. Two rounds of clean-artifact review have now
+surfaced one genuine design contradiction, one under-specified audit event, one
+table ambiguity, and a self-inflicted noise regression — none of which
+thirty-three rounds against the truncated artifact could see.
+
+**Still NOT converged, no tag written.** Three findings remain open.
