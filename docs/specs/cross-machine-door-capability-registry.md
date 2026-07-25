@@ -49,6 +49,18 @@ fix round must itself be verified, and a fix that adds a field or a fallback
 must be traced to every rule that consumes it (sort orders, counters, config
 key names) before the round is called clean.
 
+Rounds 8-9 came from the BUILD and from verifying the fixes, not from fresh
+document reading. Round 9 closed the last two: the epoch-monotonicity claim
+was STILL too strong after two narrowings (a same-second re-init can mint an
+EQUAL epoch, and an epoch that climbed via `prev + 1` can exceed wall-clock, so
+total state loss guarantees nothing at all — the spec now claims nothing and
+names the bounded lockout plus its healer), and `machineEpoch` exhaustion had
+the same missing-transition defect its sibling counter had, now specified as a
+loud terminal condition. Three rounds in a row found that a FIX carried a
+narrower version of the same defect: the honest generalization is that an
+over-claim tends to survive rewording, so the test for "resolved" must be
+"what input makes this claim false?", not "does the sentence read better now?"
+
 Round 8 came from the BUILD, not from a reviewer, and it exposed the blind
 spot that document-only convergence structurally cannot see: the spec named a
 `scanGeneration` counter "incremented on every completed doorway scan" — and
@@ -187,15 +199,22 @@ Field rules (all structurally enforced, not prose):
   the durable self-projection when present, else 0. Honest bound on that
   rule (the round-6 finding; the earlier text over-claimed): the `prev + 1`
   arm makes minting monotonic across wall-clock rollback and across any
-  re-init that can still READ the durable projection. It CANNOT be monotonic
-  across *total state loss combined with a backward clock* — with the
-  previous value unreadable and the clock behind it, the only inputs
-  available are both lower, so a regressed epoch is possible. That residual
-  is not a permanent lockout and needs no extra mechanism: the receiver's
-  watermark aging (below) accepts the origin fresh after
-  `watermarkMaxAge`, so the worst case is bounded staleness for an origin
-  that lost state while its clock ran backwards — a diagnosable state
-  visible in `/capability-registry/health` per-origin rejection counters.
+  re-init that can still READ the durable projection. Across TOTAL state loss
+  it guarantees NOTHING, and the spec claims nothing (rounds 6-8 each
+  narrowed an over-claim here; this is the honest floor). With the previous
+  value unreadable the origin can only mint `max(now-seconds, 1)`, which may
+  be LOWER than the lost epoch (the clock ran backwards, or the lost epoch had
+  itself climbed above wall-clock through the `prev + 1` arm) or EQUAL to it
+  (loss and re-init inside the same wall-clock second). Both cases are
+  receiver-visible and bounded, not silent: a lower pair is rejected
+  `stale-projection`, and an EQUAL pair with a different digest is rejected
+  `stale-projection` too (rule 2) — so a state-lost origin can be locked out
+  until its watermark ages out. The healer is exactly `watermarkMaxAge`
+  (24h), the lockout is therefore bounded, and the condition is diagnosable
+  from `/capability-registry/health`'s per-origin rejection counters rather
+  than being mistaken for a dead peer. No additional mechanism is specified,
+  deliberately: the alternative (a durable per-origin nonce store on every
+  receiver) buys a rare-case hour at the cost of a new durable surface.
   Minting never references the mesh machine-epoch (whose small-counter
   domain is incomparable with wall-clock values — the round-3 inversion
   finding). It
@@ -223,6 +242,19 @@ Field rules (all structurally enforced, not prose):
   backward clock, which is the named residual healed by watermark aging (the
   round-7 finding: this sentence previously asserted "re-mints a higher epoch
   anyway", contradicting the bound stated two rules up).
+- **`machineEpoch` exhaustion (round-8 finding, second pass).** Two rules can
+  demand an epoch re-mint (`projectionSeq` at its ceiling, and any fresh-init
+  mint), while the width clamp refuses an epoch above 11 digits — so at
+  `99_999_999_999` (wall-clock year ~5138) the mandated re-mint would be
+  refused and an implementer would have to violate one rule or the other.
+  Normative resolution: epoch exhaustion is a TERMINAL, LOUD condition, never
+  a silent wrap. The writer refuses the write, marks the local projection
+  `scanState: source-unavailable`, logs at error level, and the condition is a
+  `schemaVersion` bump's problem (a v2 envelope may widen the field) — exactly
+  the same posture as any other unrepresentable value. It is specified not
+  because it will happen but because "the implementer must invent it" is the
+  defect class this spec keeps finding; a named terminal state costs one
+  paragraph and removes the invention.
 - **`scanStampSecs` (round-8 finding — replaces the earlier
   `scanGeneration` counter).** The observation-freshness component of the
   digest tuple is DERIVED, never counted: it is
