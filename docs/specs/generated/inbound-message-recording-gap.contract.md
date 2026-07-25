@@ -9,7 +9,7 @@
      NOT REMOVED: narrative prose that states a rule and narrates its own
      history in the same sentence. A transform cannot separate those without
      judgment it deliberately does not have, so some review references remain
-     below (17 occurrence(s) of "round-N" in this file).
+     below (20 occurrence(s) of "round-N" in this file).
      Where such a sentence describes what a design USED to be, the surrounding
      normative statement governs. Read the source spec for full context.
 -->
@@ -112,10 +112,10 @@ not what it was asked.
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
 | **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws *once the syscall returns*** — a synchronous filesystem stall can still block the event loop indefinitely (§3.2); the guarantee covers the error path, not the time path. Returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path: an app-controlled local data directory is **required for fleet default-on**; an operator-configured arbitrary local path is **accepted for opt-in use** with the stall risk named (§3.2). Network storage is out of scope for either. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only on `status: 'appended'`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
-| **Fields** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, `messageId` \| absent, `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'session_received'`, `fromUser: true`. |
+| **Fields (JSONL)** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, **`messageId: number \| null`** (present-and-null when absent, never omitted — one shape, so a reader never has to distinguish missing-key from missing-value), `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'session_received'`, `fromUser: true`. |
 | **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** Scope: **best-effort duplicate suppression within one process** — atomic in-process, not a storage-level uniqueness guarantee. |
 | **Ordering** | `(timestamp, rowid)`. Never `message_id`. |
-| **Authority** | JSONL is authoritative for received history. TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
+| **Authority** | JSONL is the **primary received-history store — authoritative *among local stores*, not a proof of receipt**. It has no `fsync`, so a power loss can drop the tail, and an append can fail while injection proceeds. **Absence of a row is therefore not evidence a message was not received**. TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
 | **Failure behavior** | A failed append is caught, counted, and **injection proceeds**. A failed TopicMemory write is caught and counted. Sustained failures raise one deduped Attention item. |
 | **Counters** | Four distinct conditions, never merged: `inbound-log-failed` — the **authoritative** JSONL append failed (reserved for that alone); `inbound-search-index-dropped` — a TopicMemory write **shed by the backlog cap** before it was attempted; `inbound-search-index-failed` — a TopicMemory write that **was attempted and threw**; plus pending-callback depth (Attention above **8**). A shed and a failure are different problems with different fixes, and neither is a lost inbound record. |
 | **Latency** | Append latency sampled; Attention on **p99 > 50 ms** (generally slow filesystem) **and** on any **single append > 1 s** (the pathological stall a p99 cannot see). Both ship. |
@@ -127,7 +127,8 @@ not what it was asked.
 | **Seeding** | `seedMessageLogDedupe()` reads the **current file only**, and at most its **last 64 MB** — never the rotations. A redelivered message older than the current file is written twice; that is the accepted cost of a bounded startup read. |
 | **Deletion (JSONL store only)** | Deleting the current **and rotated** files removes everything this design's JSONL store holds. TopicMemory, filesystem snapshots, and any backup system are **separate stores with separate deletion** — this is not a whole-system erasure guarantee. |
 | **Single writer** | The agent-home **single-instance lock** (one server per agent home) is what makes one-writer-per-log-path true. Its scope covers append, rotation **and** seeding — all three assume it. A second writer is not detected at append time and is not defended against. |
-| **`enabled` vs `armed`** | Two distinct states, both reported. `enabled` = the config flag. `armed` = the flag is on **and** the lock was acquired **and** the log path resolved writable. **A process can run `enabled && !armed`** — that is the silent-failure shape this whole spec exists to close, so it is a first-class reported state with a `inbound-log-arm-failed` counter and its reason, never an inference from a zero row count. **Acceptance FAILS if `armed` is false**, regardless of what the flag says. |
+| **Fields (TopicMemory)** | Same identity fields, except `message_id` is the platform number or the inert placeholder **`-1`** when absent (the column is `NOT NULL`; §3 explains why it is not made nullable). `id_source` carries the meaning. **Three wire shapes for one concept was the round-40 finding — there are now two, each stated where it applies.** |
+| **`enabled` vs `armed`** | Two distinct states, both reported. `enabled` = the config flag. `armed` = the flag is on **and** the lock was acquired **and** the log path resolved writable. **A process can run `enabled && !armed`** — that is the silent-failure shape this whole spec exists to close, so it is a first-class reported state with a `inbound-log-arm-failed` counter and its reason, never an inference from a zero row count. **Acceptance FAILS if `armed` is false**, regardless of what the flag says. **Runtime behaviour when `enabled && !armed`: the seam call is a NO-OP that increments `inbound-log-arm-failed` once per process, not per message** — it does not attempt the append, does not return a `'failed'` status, and never retries. Arming is decided once at startup; a per-message retry would put filesystem work back on the delivery path to fix a condition that does not change per message. |
 | **Synthetic rows** | The startup self-check record is marked `synthetic: true`. It is **excluded** from history reads, the recent-inbound count, the one-sided-conversation check and dedupe seeding. It **is** counted toward rotation size, because it occupies real bytes and pretending otherwise would make the size bound wrong. |
 | **Flag** | `messaging.inboundSeamLogging.enabled`, default-off, with emergency disable. |
 | **Acceptance** | **Not** "code landed". Requires: the flag ON for the affected machine; live Telegram proof (normal + long message) **with an instrumented trace of the real call path from Telegram arrival to the seam**, not merely a row observed afterwards; **a restart, then another message with the inbound count still increasing**; an id-less seam regression test; and the single-instance lock verified active. |
@@ -987,6 +988,20 @@ and recorded here:
 If any gate fails, the flip does not happen and the design is revisited — the
 gate is the decision, not the calendar.
 
+**One machine's numbers cannot earn a fleet default.** The
+gates below are measured on the development agent's machine, and synchronous
+filesystem behaviour is exactly the thing that does not generalise: local disks,
+antivirus filter drivers, network-mounted home directories, container volumes and
+nearly-full disks all differ. Measuring one Mac Mini and flipping a fleet default
+would be reasoning from a sample of one about the property most sensitive to
+environment.
+
+So the gates are **scoped to the affected machine's opt-in**, and fleet default-on
+additionally requires a **staged rollout with per-host append-latency and
+failure-rate health** (the numbers §3.0 already reports) across a meaningful set
+of hosts. If that staged evidence is never gathered, the correct outcome is that
+the fleet default never flips — not that it flips on one machine's numbers.
+
 **Who measures, and what changes.** The benchmark is a committed test
 (`tests/perf/inbound-seam-logging.bench.ts`) run by the implementing agent on the
 **development agent's machine**, against both a healthy and a deliberately
@@ -1132,6 +1147,16 @@ by the retention window — an explicit, statable limit ("I can read back roughl
 the last N days") rather than an implicit promise of forever that the disk would
 eventually break anyway. The exact numbers belong with the benchmark in §3.3,
 because the right size bound depends on the same measurement.
+
+**Rotation invariants, asserted rather than described.** Three tests, each pinning one half of the round-38 bug:
+
+- **Deletion selects the LOWEST suffix.** Rotate past the keep-count and assert
+ `.1` is gone while the highest suffix survives. This is the test that would have
+ caught the round-36 protocol, which deleted the newest file every time.
+- **Read order is current, then descending suffix.** Assert a message written
+ before rotation reads back *after* one written since.
+- **A gap in the sequence changes nothing.** Delete a middle suffix by hand, then
+ rotate and read: no renumbering, no reordering, no crash.
 
 **Migration safety.** Four tests, all against a database with real
 pre-existing rows rather than a fresh one: the migration **applies** to an
