@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **46 rounds run, none clean.** Every round has returned findings.
+- **51 rounds run, none clean.** Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -155,6 +155,39 @@ had already recommended (ACT-1219):
 
 Every contract row is now marked (A) or (B). **This is the first structural change
 in the review that makes the fix shippable sooner rather than later.**
+
+## The result that mattered: rounds 45-51 changed the design
+
+The review's most valuable output was not a list of fixes. It was killing an
+assumption the spec had carried unexamined from round 27 to round 50.
+
+**The claim:** JSONL is the smaller change; SQLite would mean a migration.
+
+**What review established, cumulatively:**
+
+- Round 45 counted what "the smaller change" had grown to require by hand:
+  rotation sequencing, a three-part ordering key, torn-line recovery, bounded
+  seeding, lock semantics with boot-id and stale reclaim, corruption classes, a
+  canonical dedupe key, and a helper that must be the sole reader. Every one
+  arrived as a *review finding*, not a design decision.
+- Round 50 found the objection was simply false. `better-sqlite3` is already a
+  dependency; `TopicMemory` already opens it. A new table migrates nothing.
+- Round 51 established the design could not stay ambiguous — two incompatible
+  designs cannot both be normative.
+
+**Result: the contract went from 52,095 characters to 6,385 — 88% smaller.**
+Nothing was cut for brevity. Every deleted row described machinery that existed
+only to make a text file behave like a database. Dedupe also became *stronger*:
+storage-enforced by a `UNIQUE` index rather than best-effort via an in-memory set
+plus a lock file.
+
+**And the four-round A/B increment split (46-49) evaporated**, because every row
+it deferred was deferred *because JSONL needed it*. Four rounds were spent
+managing a boundary that the storage choice had created.
+
+The lesson is not about SQLite. It is that **a justification stated once at round
+27 was still being repeated at round 50 without ever being re-tested**, while the
+thing it justified grew by an order of magnitude underneath it.
 
 ## The self-inflicted rate, measured rather than asserted
 
