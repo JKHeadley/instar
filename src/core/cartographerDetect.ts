@@ -104,7 +104,7 @@ export interface DetectFreshness {
   neverAuthoredWithinGrace: number;
   neverAuthoredPastGrace: number;
   authorFailedCount: number;
-  freshRatio: number;
+  freshRatio: number | null;
   generatedAt: string | null;
 }
 
@@ -389,7 +389,7 @@ export async function runDetect(
   const emptyFreshness: DetectFreshness = {
     nodeCount: 0, authorableCount: 0, freshCount: 0, staleCount: 0,
     neverAuthoredCount: 0, neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0,
-    authorFailedCount: 0, freshRatio: 1, generatedAt: null,
+    authorFailedCount: 0, freshRatio: null, generatedAt: null,
   };
   const refuse = (reason: DetectRefusalReason): DetectResult => ({
     refused: true, refusalReason: reason, candidates: [], deferredApplied: 0,
@@ -560,7 +560,7 @@ export async function runDetect(
       neverAuthoredWithinGrace: neverWithin,
       neverAuthoredPastGrace: neverPast,
       authorFailedCount: authorFailed,
-      freshRatio: ratioDenom === 0 ? 1 : fresh / ratioDenom,
+      freshRatio: ratioDenom === 0 ? null : fresh / ratioDenom,
       generatedAt: index.generatedAt ?? null,
     },
     revalidationSample: revalHeap.drainSorted(),

@@ -860,7 +860,10 @@ export class CartographerTree {
    * nodes (excludes `path-gone`), plus the two ABSOLUTE backlog counts the CI
    * ratchet also gates on so a green ratio over a small authored set cannot hide
    * a growing un-authored backlog (Goodhart guard). `freshRatio` is `fresh /
-   * authorable` with 1 when there are no authorable nodes. A node is
+   * authorable`, or **`null` when there are no authorable nodes** — an empty
+   * index has NOT earned a perfect score, and reporting 1 there made the CI
+   * ratchet structurally unable to fail on an empty map (the exact case it
+   * exists for). Callers MUST treat `null` as "could not assess", never as a pass. A node is
    * never-authored "past grace" when it has no summary AND was first seen longer
    * ago than `graceMs`.
    */
@@ -878,14 +881,14 @@ export class CartographerTree {
     neverAuthoredWithinGrace: number;
     neverAuthoredPastGrace: number;
     authorFailedCount: number;
-    freshRatio: number;
+    freshRatio: number | null;
     generatedAt: string | null;
   } {
     const index = this.loadIndex();
     const empty = {
       nodeCount: 0, authorableCount: 0, freshCount: 0, staleCount: 0,
       neverAuthoredCount: 0, neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0,
-      authorFailedCount: 0, freshRatio: 1, generatedAt: null as string | null,
+      authorFailedCount: 0, freshRatio: null as number | null, generatedAt: null as string | null,
     };
     if (!index) return empty;
     const nowMs = opts.now ?? Date.parse(this.nowIso());
@@ -923,7 +926,7 @@ export class CartographerTree {
       neverAuthoredWithinGrace: neverWithin,
       neverAuthoredPastGrace: neverPast,
       authorFailedCount: authorFailed,
-      freshRatio: ratioDenom === 0 ? 1 : fresh / ratioDenom,
+      freshRatio: ratioDenom === 0 ? null : fresh / ratioDenom,
       generatedAt: index.generatedAt,
     };
   }
