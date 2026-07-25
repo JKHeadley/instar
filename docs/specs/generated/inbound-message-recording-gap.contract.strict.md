@@ -49,11 +49,21 @@ CREATE TABLE IF NOT EXISTS inbound_messages (
  message_id INTEGER,
  id_source TEXT NOT NULL CHECK(id_source IN ('platform','derived')),
  synthetic INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS inbound_recording_state (
+ key TEXT PRIMARY KEY,
+ last_failure_at TEXT,
+ last_failure_reason TEXT,
+ failure_count INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_inbound_dedupe ON inbound_messages(dedupe_id);
 CREATE INDEX IF NOT EXISTS idx_inbound_topic_seq ON inbound_messages(topic_id, seq);
 ```
 
-**Arming** — WAL outside a transaction; then BEGIN → migrations-table shape →
+**Arming** — **one migration row covers BOTH tables** (`name = 'inbound_messages'`);
+creating and validating `inbound_recording_state` happens inside the same
+versioned transaction, and a failure to create or validate it **refuses arming**
+like any other schema mismatch — it is load-bearing for restoring `degraded`
+across a restart, so an unusable state table means the feature cannot honestly
+report itself. WAL outside a transaction; then BEGIN → migrations-table shape →
 branch on this feature's row (absent = create+validate+INSERT; equal =
 validate only; older = migrate+validate+UPDATE; newer = refuse) → COMMIT.
 Any mismatch: ROLLBACK, `armed: false`, log expected vs actual plus reconciling
@@ -66,13 +76,17 @@ SQL. Never auto-`ALTER`. Retry arming every 60 s, backing off to 15 m.
  Worst case ≈ 370 ms under sustained contention.
 4. Return `appended` | `duplicate` | `failed`. **Never throw.**
 5. `failed` → count `inbound-log-failed`, set `recording: 'degraded'` **on the first
- failure**; clears on **a successful insert followed by 60 s with no further failure** —
- not on elapsed time alone. Wall-clock clearing would let a machine that has
- stopped receiving anything look healthy while still broken, which is this
- bug's exact signature. Across a restart the durable record restores
- `degraded`, and the same rule clears it: the first successful insert starts
- the 60 s, so a process that restarts into a still-broken store stays degraded
- with no traffic required to prove it.
+ failure**; clears by a state machine with exactly three inputs:
+
+ - **Enter `degraded`:** any failed primary insert, or a durable
+ `inbound_recording_state` row found at arm time.
+ - **Start the clear timer:** a **successful primary insert** — nothing else.
+ - **Clear:** 60 s elapsed from that insert with no further failure.
+
+ **No traffic therefore means `degraded` PERSISTS**, indefinitely, which is
+ correct: a machine receiving nothing has produced no evidence it is fixed, and
+ "quiet" is exactly what this bug looked like. Clearing requires proof of work,
+ not the passage of time.
 6. `appended` → `scheduleInboundTopicMemory` via `setImmediate` (skipped entirely
  when `captureBody: false`). Backlog cap 16.
 7. **Inject — unconditionally, in every branch.**
@@ -139,7 +153,7 @@ Validation always runs against the **actual resulting schema**, never against wh
 | **Schema** | `seq INTEGER PRIMARY KEY AUTOINCREMENT`, `from_user INTEGER NOT NULL DEFAULT 1`, `dedupe_id TEXT NOT NULL UNIQUE`, `topic_id INTEGER NOT NULL`, `seam_received_at TEXT NOT NULL`, `text TEXT` (**nullable** — `NULL` when `body_captured = 0`; round-61 caught metadata-only mode contradicting a `NOT NULL` column), `body_captured INTEGER NOT NULL DEFAULT 1`, `sender_name TEXT`, `telegram_user_id INTEGER`, `message_id INTEGER` (nullable — no `-1` placeholder is needed), `id_source TEXT NOT NULL CHECK(id_source IN ('platform','derived'))`, `synthetic INTEGER NOT NULL DEFAULT 0`, `text_truncated INTEGER NOT NULL DEFAULT 0`. |
 | **Write** | `INSERT OR IGNORE` inside a transaction, synchronously, **before** injection. **Bounded retry: up to 3 attempts, 0/20/50 ms** — most realistic failures here are a transient busy lock (retention delete, TopicMemory write, WAL checkpoint), and one attempt against a shared database turns ordinary contention into permanent loss. **Worst case is ~370 ms, not 70 ms:** 3 × 100 ms of lock wait + 70 ms of backoff, plus the SQLite work. That is the number the benchmark gates and the max-latency alarm must use; the 70 ms figure would have set both wrong. It is a **worst case reached only under sustained contention** — an uncontended insert is sub-millisecond — but a bound that only holds when nothing goes wrong is not a bound. After 3 attempts it gives up, counts, degrades — **and injection still proceeds.** |
 | **What this actually guarantees** | **Best-effort recording with first-loss alerting — NOT guaranteed recording.** A record that cannot be written after retries is dropped, and the message is still delivered. The alternative — blocking delivery until the write succeeds — is rejected outright: making a person unreachable to protect a log inverts the priority. So the honest statement of what changes is: **loss goes from silent and undetected for 24 days, to alerted on the first occurrence with the message still delivered.** That is a large improvement and it is not the same thing as "no loss", and the difference is stated here because every other section is written as if recording succeeds. | Returns `'appended' \| 'duplicate' \| 'failed'` from `changes` and the error path. **Never throws** — a `'failed'` result is caught internally and counted. |
-| **Dedupe** | **Storage-enforced for platform-identified messages; id-less messages are intentionally NOT deduped.** **Caller inventory, stated HERE because the strict contract excludes §2 and an outside implementer cannot otherwise verify the non-replay invariant they are asked to accept:** `src/server/routes.ts:20323` passes a platform id; `src/commands/server.ts` at 2763, 2985 and 20711 do not, and those three are server-internal and do not replay. **Any new id-less caller must pass a stable envelope id as `dedupe_id`** — the argument already exists — and the fitness-test allowlist fails the build when a fifth caller appears. The `UNIQUE` index on `dedupe_id` is the mechanism, not best-effort — this answers round-51 directly: there is no in-memory set, no seeding, no restart window, and two processes cannot interleave a duplicate through it. `dedupe_id` = `in:telegram:<botId>:<chatId>:<messageId>` when a platform id is present, else `in:derived:<uuid>`. **Fully platform-scoped: Telegram message ids are unique per CHAT, and `topicId` is an instar-side surrogate, so keying on it alone would false-dedupe across a migrated topic, a re-bound topic, or two bots sharing one agent.** The scope now comes from the platform's own identifiers, and `topic_id` remains a column for querying rather than part of identity. |
+| **Dedupe** | **Storage-enforced for platform-identified messages; id-less messages are intentionally NOT deduped.** **Caller inventory, stated HERE because the strict contract excludes §2 and an outside implementer cannot otherwise verify the non-replay invariant they are asked to accept:** `src/server/routes.ts:20323` passes a platform id; `src/commands/server.ts` at 2763, 2985 and 20711 do not, and those three are server-internal and are **not known to replay — which is weaker than "cannot".** The consequence is bounded: an id-less replay produces a **duplicate row**, never a lost message, and a duplicate is visible in the topic history rather than silent. That is the accepted direction — this design trades a possible duplicate for a guaranteed record — but it is an accepted risk, not a proof. **Any new id-less caller must pass a stable envelope id as `dedupe_id`** — the argument already exists — and the fitness-test allowlist fails the build when a fifth caller appears. The `UNIQUE` index on `dedupe_id` is the mechanism, not best-effort — this answers round-51 directly: there is no in-memory set, no seeding, no restart window, and two processes cannot interleave a duplicate through it. `dedupe_id` = `in:telegram:<botId>:<chatId>:<messageId>` when a platform id is present, else `in:derived:<uuid>`. **Fully platform-scoped: Telegram message ids are unique per CHAT, and `topicId` is an instar-side surrogate, so keying on it alone would false-dedupe across a migrated topic, a re-bound topic, or two bots sharing one agent.** The scope now comes from the platform's own identifiers, and `topic_id` remains a column for querying rather than part of identity. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, only on `'appended'`. Backlog capped at 16; beyond that, drop and count. TopicMemory remains a **lossy search index**, never the record. |
 | **Authority** | This table is the **seam-received store** — the name says the whole guarantee. The row is committed **before** injection, so a crash between the two leaves a row for a message no session processed. That is deliberate — a recorded-but-unprocessed message is recoverable, an unrecorded one is not — and it is why the store is not called "delivered". A future `injected_at`, written after a successful injection, is the honest way to add that distinction if a consumer ever needs it; it is not needed now and is not faked now. It is the **primary received-history store**. It is not proof of receipt: a message dropped before the seam never reaches it (§4), and `synchronous: NORMAL` means a power loss can lose the last transaction. Absence of a row is **not** evidence a message was not received. |
 | **Indexes + health queries** | `UNIQUE(dedupe_id)` for dedupe; `(topic_id, seq)` for per-topic history and the one-sided check; `synthetic` deliberately **not** indexed (low cardinality, and its queries are already bounded by `seq`). **Every health query is bounded and named:** `rowCountTotal` = `COUNT(*)` (fine at 200k), `rowCountUserVisible` = same with `synthetic = 0`, the one-sided check is `SELECT 1 … WHERE topic_id = ? AND seq > ? LIMIT 1` per active topic rather than a scan, and DB/WAL sizes are `stat()` calls, not queries. Health runs on the existing status cadence, never per request. |
