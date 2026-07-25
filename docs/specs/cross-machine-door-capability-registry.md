@@ -2,9 +2,10 @@
 title: "Cross-Machine Door + Capability Registry"
 slug: "cross-machine-door-capability-registry"
 author: "codey"
-status: draft
-approved: false
-review-convergence: pending
+status: approved
+approved: true
+approved-by: "Echo — reviewer of record, convergence rounds 6-9 (PRs #1613, #1616, #1617)"
+review-convergence: "2026-07-25T08:05:31Z"
 spec-only: true
 ---
 
