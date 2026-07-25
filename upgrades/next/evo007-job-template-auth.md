@@ -1,0 +1,30 @@
+## What Changed
+
+Five built-in job templates authenticated their `gate:` line but not their prompt bodies, so all 12 body calls to authenticated endpoints returned `401 Missing or invalid Authorization header` at runtime. The affected jobs — `evolution-proposal-evaluate`, `evolution-proposal-implement`, `evolution-overdue-check`, `insight-harvest`, `reflection-trigger` — woke on schedule, passed their gate, read nothing, and exited "silently". A silently-failing job and a healthy quiet job are indistinguishable, which is why this survived.
+
+Each body now resolves the canonical env-first `AUTH` / `AGENT_ID` / `PORT` block and passes `Authorization: Bearer $AUTH` + `X-Instar-AgentId: $AGENT_ID` on every non-public call.
+
+Two same-class defects found while in the files were fixed in the same change:
+
+- `identity-review.md` defined `AUTH` by reading `.instar/config.json` only. On an agent whose stored token has drifted from the live server token, that read is rejected — confirmed on the dev agent, where the 16-char config value returns `Invalid auth token` and the 36-char `$INSTAR_AUTH_TOKEN` succeeds. It now prefers the environment value.
+- `reflection-trigger.md` emitted its instruction through a double-quoted `echo` whose inner double quotes were consumed by the shell, rendering `-d '{type:quick}'` — invalid JSON — in addition to carrying no auth. Both fixed; the token name is left unexpanded so no secret enters the transcript.
+
+A new CI lint (`tests/unit/job-template-auth-lint.test.ts`) scans every shipped template for curl calls to non-public endpoints missing an `Authorization` header, and for templates that use `$AUTH` without defining it. Its public-endpoint exemptions mirror `authMiddleware()` and a drift guard asserts each exempted path still appears there.
+
+The fix is applied to the **source** templates, not deployed copies: `installBuiltinJobs()` unconditionally overwrites every deployed template on each update run (`InstallBuiltinJobs.ts:127`, reached from `PostUpdateMigrator.ts:4046`), so a hand-patched deployed copy would have been silently reverted at the next update. No separate migration is required — existing agents receive the fix through the normal update path.
+
+## What to Tell Your User
+
+Some scheduled jobs that have always been silent will start producing output — that is the repair working, not a new fault. If a user asks why their proposal-review or insight-harvest job has suddenly become active after months of quiet, the honest answer is that it was never running its body successfully; it was being refused at the door and exiting without saying so.
+
+## Summary of New Capabilities
+
+No new user-facing capability. Five existing scheduled jobs go from silently non-functional to functional, and a build-time lint prevents the class from returning.
+
+## Evidence
+
+- Run against the six pre-fix files extracted from `HEAD`, the lint reports exactly 12 unauthenticated calls — `evolution-overdue-check` 3, `evolution-proposal-evaluate` 3, `evolution-proposal-implement` 2, `insight-harvest` 3, `reflection-trigger` 1 — matching an independently-derived census. Against the fixed files: 0.
+- Live: an unauthenticated call to `/evolution/proposals?status=approved` returns `{"error":"Missing or invalid Authorization header"}`; the fixed template's resolved command returns the real proposal list. Same confirmed for `/evolution/learnings?applied=false` and `/evolution/actions/overdue`.
+- Executing the original `reflection-trigger.md` echo renders `-d '{type:quick}'`; the fixed line renders `-d '{"type":"quick"}'`.
+- The lint's first draft falsely flagged three healthy templates (`initiative-digest-review`, `mentor-onboarding`, `org-intent-drift-audit`) that define `AUTH` inside backticks; the detector was corrected and the false positive pinned by a regression test.
+- `tests/unit/job-template-auth-lint.test.ts` (9 tests) green; template-family tests (`refresh-jobs`, `default-jobs-valid`, `PostUpdateMigrator-templateResolution`) green.
