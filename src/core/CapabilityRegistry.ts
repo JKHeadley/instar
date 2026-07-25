@@ -140,7 +140,7 @@ export function readDoorwaySources(projectDir: string, stateDir: string, now = n
       const doorwayId = door.doorId;
       const scannedAt = d?.lastScannedAt ?? now;
       const capabilityId = canonicalCapabilityId(doorwayId, model.id);
-      const common = { capabilityId, capabilityKind: 'model' as const, doorwayId, machineId, endpointRef: `mesh://${machineId}/doorways`, receivedAt: now, source: 'local-doorways' as const, evidence: { ...(d?.lastScannedAt ? { doorwayScanAt: d.lastScannedAt } : {}) } };
+      const common = { capabilityId, capabilityKind: 'model' as const, doorwayId, machineId, endpointRef: `mesh://${machineId}/doorways`, receivedAt: now, source: 'local-doorways' as const, evidence: { ...(d?.lastScannedAt ? { doorwayScanAt: d.lastScannedAt } : {}), ...(model.verifiedAt ? { manifestVerifiedAt: model.verifiedAt } : {}) } };
       entries.push({ ...common, probeOutcome: 'positive', observedAt: model.verifiedAt ?? now, sourceDetail: 'doorway-manifest', evidenceClass: 'manifest-only' });
       if (d) entries.push({ ...common, probeOutcome: d.probeStatus === 'ok' ? 'positive' : ['not-installed', 'http-4xx'].includes(d.probeStatus) ? 'negative' : 'unknown', observedAt: scannedAt, sourceDetail: 'doorway-scan', evidenceClass: d.probeStatus === 'ok' ? 'probe-answered' : 'cli-present' });
     }

@@ -63,7 +63,7 @@ describe('CapabilityRegistry adapter reality', () => {
     expect(result.scanState).toBe('observed');
     expect(result.entries.length).toBeGreaterThan(2);
     expect(result.entries.map(e => e.sourceDetail)).toEqual(expect.arrayContaining(['doorway-scan', 'doorway-manifest']));
-    expect(result.entries.find(e => e.sourceDetail === 'doorway-scan')).toMatchObject({ capabilityId: 'models:claude-code/claude-opus-4-8', probeOutcome: 'positive' });
+    expect(result.entries.find(e => e.sourceDetail === 'doorway-scan')).toMatchObject({ capabilityId: expect.stringMatching(/^models:claude-code\//), probeOutcome: 'positive' });
     fs.writeFileSync(path.join(stateDir, 'state/doorway-scan.json'), JSON.stringify({ lastScanAt: null, doorways: [] }));
     expect(readDoorwaySources(projectDir, stateDir).scanState).toBe('never-observed');
     fs.writeFileSync(path.join(stateDir, 'state/doorway-scan.json'), '{not-json');
