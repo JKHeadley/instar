@@ -85,7 +85,13 @@ It works because:
   bypasses the gap would do so by reaching for the primitives underneath it. The
   fixture is the list of functions permitted to call them; any new
   caller fails it until the allowlist is updated deliberately, at which point a
-  human has to decide whether that path also needs to log. It does not prove the
+  human has to decide whether that path also needs to log. **Each entry carries a
+  one-line reason and the fixture rejects an entry without one (round-9,
+  gemini).** Otherwise the guarantee decays into "someone remembered to think
+  about it when they added a line" — a willpower dependency, in a project whose
+  founding principle is that willpower is not a mechanism. Requiring the reason
+  means adding a bypass costs a sentence explaining why that path need not log,
+  which is exactly the moment the question should be asked. It does not prove the
   seam is universal — it makes *adding a bypass* a conscious act rather than an
   invisible one, which is the achievable version of the guarantee. **Stated
   plainly because the E2E does not close the gap either (round-4, codex):** the
@@ -98,6 +104,15 @@ It works because:
   `in:<topicId>:<messageId>`, so a message that reaches both the forward route
   and the seam is written once. The forward route's call is left in place —
   removing it would be a second change for no benefit.
+- **The logged `text` is the operator's message, not the wrapper (round-10,
+  codex — "if the seam logs the wrong representation, history remains incomplete
+  or misleading").** Verified against the seam: `injectTelegramMessage` receives
+  the raw `text`, then *builds* the tagged form and, only when that exceeds the
+  file threshold, writes the tagged form to an inbound file and injects a pointer
+  to it. The `text` parameter is therefore always the full operator message —
+  never a file path, never the `[telegram:N]`-tagged wrapper, never a truncation.
+  The log records that parameter, so a long message is recorded **in full** even
+  though what reached the session was a pointer to it.
 - **A missing `messageId` is recorded anyway, not dropped (round-1, raised
   independently by codex and gemini).** v1 said "no id ⇒ no log entry", justified
   by re-deliveries whose originals were already logged. That is an assumption
@@ -113,6 +128,31 @@ It works because:
     a number, so a string id left implicit is a `NaN` collision waiting to
     happen — round-3, codex.)*
   - the entry is marked `idSource: 'platform' | 'derived'`.
+
+  **Storage contract, grounded in the real schema (round-10, codex — and checking
+  it found a genuine blocker).** `topic-memory.db`'s `messages` table declares
+  `message_id INTEGER NOT NULL`. A `messageId: null` entry therefore **cannot be
+  inserted**: the design as written would have failed at implementation, not at
+  review. So:
+
+  - **JSONL** rows are free-form objects, so `dedupeId`, `idSource` and a null
+    `messageId` cost nothing there. This is the record the session-start history
+    reader uses, and it carries the full shape.
+  - **TopicMemory** keeps its existing columns and needs **no migration**. When
+    the platform supplies no id, the insert uses a **synthetic negative integer**
+    `message_id`. Negative is safe by construction — Telegram ids are positive, so
+    a synthetic id can never collide with a real one, and a reader seeing a
+    negative id knows it was minted locally.
+  - **No existing reader is affected:** no column changed type, nothing became
+    nullable, and no reader sees a field it did not see before.
+
+  **Back-compat for the dedupe key (round-9, codex).** A platform-id entry written
+  by the seam and one written by the forward route MUST produce the identical key,
+  or the first post-upgrade delivery of an already-logged message duplicates it.
+  Rows written before this change have no `dedupeId`, so the comparison falls back
+  to `messageId` when `dedupeId` is absent. An id-less entry never compares equal
+  to a legacy row — a `null`/`NaN` key must not collapse distinct messages, which
+  is the same failure the content-hash design was rejected for.
 
   **The per-injection UUID identifies this log entry and nothing more — it never
   collapses two messages (rounds 2–4, and corrected again in round 8: v7 still
@@ -277,7 +317,7 @@ that reader consults fails here rather than in production five days later.
 | Decision point | What it decides | Classification | Justification |
 |---|---|---|---|
 | Whether to log an inbound message | Recording, not delivery | **invariant** | A deterministic predicate: **the feature is enabled**. An id is always available — the platform's when present, the derived one otherwise (§3) — so a missing id never decides whether to record. No judgment, no model, no context. |
-| Log-vs-inject ordering | Which happens first on failure | **invariant** | Stated in §3.1: log first, unconditionally. Not situational. |
+| Log-scheduling-vs-inject ordering | Which happens first | **invariant** | Stated in §3.1: the log task is **scheduled** first, unconditionally. The write itself lands *after* injection, by design — the invariant is about scheduling order, never about the write having completed. |
 | Log-failure disposition | Whether a failed log blocks the message | **invariant** | Always proceed (§3.2). The conservative default here is *deliver*, because the harm being prevented is silence. |
 
 ## 6. Multi-machine posture
@@ -290,7 +330,9 @@ that reader consults fails here rather than in production five days later.
 ## 7. Frontloaded Decisions
 
 1. **Log at the seam, not at each caller** — two callers today, and a third would silently reintroduce the gap.
-2. **Log before injecting** (§3.1).
+2. **Schedule the log before injecting** (§3.1) — scheduling order, never write
+   order. Named this way after three rounds of reviewers reading "log first" as a
+   synchronous call, which is exactly how it would be mis-implemented.
 3. **A log failure never blocks the message** (§3.2).
 4. **The forward route's existing call stays** — dedup makes it harmless, and removing it is unrelated risk.
 5. **A missing `messageId` gets a per-injection UUID** (§3), not silence and not a content hash — an id-less message is recorded, and no cross-message identity is inferred from its bytes.
