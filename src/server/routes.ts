@@ -2455,6 +2455,8 @@ export function createRoutes(ctx: RouteContext): Router {
         budgetFailClosed && globalFailClosed !== true
           ? (latencyMs: number) => buildDegradedToneResult(text, latencyMs, 'budget-timeout')
           : undefined;
+      const templateFingerprint =
+        options.messageKind === 'automated' ? fingerprintAutomatedTemplate(text) : undefined;
       const result = await reviewWithinBudget(
         ctx.messagingToneGate.review(text, {
           channel,
@@ -2462,6 +2464,7 @@ export function createRoutes(ctx: RouteContext): Router {
           signals,
           targetStyle: ctx.config.messagingStyle,
           messageKind: options.messageKind,
+          templateFingerprint,
           agentState,
           recipientClass,
           // Undefined in observe-only mode (the default) and on every uncertainty,
@@ -2481,24 +2484,6 @@ export function createRoutes(ctx: RouteContext): Router {
         operatorTierDeliver,
         budgetDegrade,
       );
-
-      // Observe-only template census: every automated send is still judged;
-      // this adds a stable identity and verdict to the existing provenance row.
-      if (options.messageKind === 'automated' && ctx.judgmentProvenance) {
-        const templateFingerprint = fingerprintAutomatedTemplate(text);
-        ctx.judgmentProvenance.recordDecision({
-          component: 'MessagingToneGate',
-          decisionPoint: 'messaging-tone-gate',
-          context: { messageKind: 'automated', templateFingerprint },
-          optionsPresented: ['pass', 'block'],
-          decision: result.pass ? 'pass' : 'block',
-          reason: result.pass ? 'tone-gate-pass' : 'tone-gate-block',
-          floor: 'automated-template-observe-only',
-          fallbackRung: 'llm',
-          latencyMs: result.latencyMs,
-          templateFingerprint,
-        });
-      }
 
       // Structured observability: log every decision the authority made. This is
       // the "why I blocked" log — over-block audits read this. Invalid-rule

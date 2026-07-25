@@ -203,6 +203,9 @@ export function buildToneDecisionContext(
     bytes: Buffer.byteLength(text, 'utf8'),
     chars: text.length,
   };
+  if (context.messageKind === 'automated' && context.templateFingerprint) {
+    candidate.templateFingerprint = context.templateFingerprint;
+  }
   // Machine-local by construction — see CONTENT_FULL_KEY. Attached to the envelope
   // only when it actually holds something, so an identity-only row stays byte-identical
   // to what it was before this feature existed.
@@ -822,6 +825,8 @@ export interface ToneReviewContext {
    * scheduled-task sends (stamped by the scheduler env, not the model).
    */
   messageKind?: MessageKind;
+  /** Stable identity for observe-only automated-template provenance. */
+  templateFingerprint?: string;
   /**
    * Deterministic agent-state signal (spec §Design 1a). Detected OUTSIDE the
    * prompt (in-process `readSessionClocks` at the route seam) and fed in as
