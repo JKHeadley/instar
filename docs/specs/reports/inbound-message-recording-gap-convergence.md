@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **41 rounds run, none clean.** Every round has returned findings.
+- **43 rounds run, none clean.** Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -121,3 +121,16 @@ landed at round 35/36 and rounds 37+ are the test of whether it works.
 
 **Nothing here should be read as approval-ready.** The design is sound enough
 that no reviewer contests it; the *document* has repeatedly been the defect.
+
+
+## Reviewer-availability caveat (2026-07-25)
+
+**The gemini-cli arm has been failing since round 35.** It returned
+`status: degraded, reason: timeout` on every subsequent attempt, including a
+control test against a ~6KB document — so this is a broken reviewer, not a
+size limit. Logged as a framework issue.
+
+Consequence for reading any round after 35: **there was no second family.**
+Findings from those rounds come from `codex-cli:gpt-5.5` alone. Where this report
+says "both families independently", that claim applies only to rounds 34-35 and
+earlier, and was checked before being written.

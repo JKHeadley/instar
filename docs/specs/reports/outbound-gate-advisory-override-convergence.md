@@ -240,3 +240,16 @@ document restructuring addresses.
 sufficient to build from. A capture-ratio warning now flags that (8/66 sections,
 12%). Findings 2-6 above stand regardless — they concern content that *was*
 present.
+
+
+## Reviewer-availability caveat (2026-07-25)
+
+**The gemini-cli arm has been failing since round 35.** It returned
+`status: degraded, reason: timeout` on every subsequent attempt, including a
+control test against a ~6KB document — so this is a broken reviewer, not a
+size limit. Logged as a framework issue.
+
+Consequence for reading any round after 35: **there was no second family.**
+Findings from those rounds come from `codex-cli:gpt-5.5` alone. Where this report
+says "both families independently", that claim applies only to rounds 34-35 and
+earlier, and was checked before being written.
