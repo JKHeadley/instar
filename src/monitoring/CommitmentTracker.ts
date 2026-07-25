@@ -228,6 +228,45 @@ export interface Commitment {
    * and cadence continues (see Round 3 clarification #4).
    */
   nextUpdateDueAt?: string;
+  /**
+   * A SPECIFIC promised moment — "I'll check in on this by Friday" (ACT-724).
+   * Exactly one reminder is posted to `topicId` when it arrives; see
+   * docs/specs/dated-commitment-reminder.md.
+   *
+   * DELIBERATELY NOT `nextUpdateDueAt`. That field is PromiseBeacon cadence
+   * input with live semantics — it moves as the beacon nudges. Overloading it
+   * would make a one-time dated reminder and a rolling cadence each a side
+   * effect of the other, so a date could be silently rescheduled by unrelated
+   * cadence logic. A promise with a date is a different thing from a nudge
+   * interval, and gets its own field.
+   */
+  checkInAt?: string;
+  /**
+   * Set ONLY after the reminder has actually been delivered.
+   *
+   * The name is load-bearing: an earlier draft stamped this BEFORE sending, so
+   * a failed send left a commitment permanently marked "sent" and the reminder
+   * never fired again — a field asserting a delivery that never happened, on a
+   * feature whose whole purpose is that promises are not silently dropped.
+   * (External review, 2026-07-25.) Send first; stamp only on success.
+   *
+   * Duplicates from a crash between send and stamp are absorbed by the relay's
+   * existing content dedup (identical text to the same topic inside its window),
+   * so at-least-once delivery does not become at-least-twice.
+   */
+  checkInReminderSentAt?: string;
+  /**
+   * How many delivery attempts have been made. Bounds retry so a permanently
+   * broken transport cannot be hammered forever, while a transient failure
+   * still gets another chance — the thing stamp-before-send gave away.
+   */
+  checkInReminderAttempts?: number;
+  /**
+   * Set when retries were EXHAUSTED without delivery. A loud give-up: the
+   * reminder is genuinely undelivered and this is the record that says so,
+   * rather than a "sent" stamp that quietly lies.
+   */
+  checkInReminderFailedAt?: string;
   /** Soft deadline — past it, cadence doubles (no terminal transition). */
   softDeadlineAt?: string;
   /** Hard deadline — past it, commitment transitions to `expired`. */

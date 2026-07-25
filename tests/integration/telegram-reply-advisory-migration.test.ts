@@ -173,6 +173,86 @@ describe('advisory migration through POST /telegram/reply', () => {
     expect(sent[0].text).toBe(PATH_MESSAGE);
   });
 
+
+  /**
+   * A provider whose verdict CHANGES between calls — which is what the live
+   * gate does, because it re-reviews on every attempt.
+   *
+   * Found by dogfooding on 2026-07-25: overriding a live advisory failed four
+   * times with byte-identical text and a matching rule. Every existing test
+   * here pins ONE verdict for the whole run, so `result.rule` is constant by
+   * construction and the ack always matches. That harness cannot see a gate
+   * that re-reviews — it removes the exact variability that breaks the feature.
+   */
+  function shiftingProvider(sequence: Array<{ pass: boolean; rule: string; issue: string; suggestion: string }>) {
+    let call = 0;
+    return {
+      evaluate: vi.fn(async (_prompt: string, opts?: { provenance?: { onCorrelationId?: (id: string) => void } }) => {
+        refCounter += 1;
+        opts?.provenance?.onCorrelationId?.(
+          `d-testmach-00000000-0000-4000-8000-${String(refCounter).padStart(12, '0')}`,
+        );
+        const r = sequence[Math.min(call, sequence.length - 1)];
+        call += 1;
+        return JSON.stringify(r);
+      }),
+    } as unknown as IntelligenceProvider;
+  }
+
+  const B11_VERDICT = {
+    pass: false,
+    rule: 'B11_STYLE_MISMATCH',
+    issue: 'reads as machine output rather than plain English',
+    suggestion: 'rewrite it as plain prose',
+  };
+
+  it('honors an ack when the RE-REVIEW returns the same rule the agent acked', async () => {
+    // The live shape: attempt 1 nudges with rule X; the agent re-sends unchanged
+    // acking X; the gate re-reviews and again says X. The ack must be honored on
+    // that second call — otherwise "the decision is yours" is false and the
+    // advisory is a hard block wearing a nudge's wording.
+    const sent: Array<{ topicId: number; text: string }> = [];
+    const gate = new MessagingToneGate(shiftingProvider([B11_VERDICT, B11_VERDICT]), {
+      advisoryMigration: true,
+    });
+    server = await listen(buildApp({ toneGate: gate, sent }));
+
+    const first = await reply(207, PATH_MESSAGE);
+    expect(first.status).toBe(422);
+    expect(first.body.rule).toBe('B11_STYLE_MISMATCH');
+
+    const acked = await reply(207, PATH_MESSAGE, {
+      toneAdvisoryAck: 'B11_STYLE_MISMATCH',
+      toneAdvisoryAckReason: 'the finding quoted evidence that never appeared in the reviewed text',
+      allowDuplicate: true,
+    });
+    expect(acked.status, JSON.stringify(acked.body)).toBe(200);
+    expect(sent).toHaveLength(1);
+  });
+
+  it('an ack for the PREVIOUS rule does not silently pass a NEW finding', async () => {
+    // The other side of the boundary: the agent acks X, the re-review raises a
+    // DIFFERENT rule Y. Honoring the stale ack would let an unreviewed objection
+    // through. It must nudge again, naming Y.
+    const sent: Array<{ topicId: number; text: string }> = [];
+    const gate = new MessagingToneGate(shiftingProvider([B2_VERDICT, B11_VERDICT]), {
+      advisoryMigration: true,
+    });
+    server = await listen(buildApp({ toneGate: gate, sent }));
+
+    const first = await reply(208, PATH_MESSAGE);
+    expect(first.body.rule).toBe('B2_FILE_PATH');
+
+    const staleAck = await reply(208, PATH_MESSAGE, {
+      toneAdvisoryAck: 'B2_FILE_PATH',
+      toneAdvisoryAckReason: 'the operator asked for the exact path so they can open it',
+      allowDuplicate: true,
+    });
+    expect(staleAck.status).toBe(422);
+    expect(staleAck.body.rule).toBe('B11_STYLE_MISMATCH');
+    expect(sent).toHaveLength(0);
+  });
+
   it('keeps the SAME verdict a hard block when the migration is off (rollback is a flag)', async () => {
     const sent: Array<{ topicId: number; text: string }> = [];
     const gate = new MessagingToneGate(makeProvider(B2_VERDICT), { advisoryMigration: false });
