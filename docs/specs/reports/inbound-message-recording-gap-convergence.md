@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **63 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
+- **64 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -115,6 +115,31 @@ inside it.
 rounds on a real problem without the author hearing it, if the author keeps
 answering a structural complaint with content. Both reviewer families said the
 same thing, in the same words, from round 29 onward.
+
+## An honest assessment at round 64
+
+**Every recent round has found real defects — this is not churn.** Rounds 60-64
+found, in order: the spec's central claim was wrong (it is best-effort recording,
+not guaranteed); a retry budget whose arithmetic was off by 5×; a privacy control
+whose name was false because it still routed text to the search index; a fix for a
+circular detector that was itself circular; and an arming algorithm that could not
+work on a first install.
+
+**And a clean round has not happened in 64 attempts.** The reason is visible in
+that list: most of those defects were introduced by the *previous* round's fold.
+The fold rate and the introduction rate have not separated.
+
+**What this says about the method.** Review is working — every one of those would
+have been a real bug — but review alone cannot converge a hand-maintained document
+of this size, because each correction is itself a hand edit with its own defect
+rate. The structural answers found here (generation over restatement; replacing
+sections rather than sweeping them; a normative checklist with no narration) each
+reduced the rate, and none took it to zero.
+
+**The honest recommendation is therefore not "keep reviewing".** It is: build
+Increment A from the normative checklist, where a compiler and a test suite give
+feedback that prose review cannot, and let the remaining spec defects surface as
+implementation friction rather than as round 65.
 
 ## What would make this converge
 
