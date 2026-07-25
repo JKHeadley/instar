@@ -348,3 +348,36 @@ the reviewed artifact: the hand-rolled credential detection, the live credential
 index, the relay double-check, and the "no open questions" claim. Addendum 2's
 recommendation (build the wall on `DURABLE_SECRET_PATTERNS`, no live secret
 index) is unaffected and remains the substantive advice.
+
+
+---
+
+## Addendum 4 — 2026-07-25T14:4xZ: CORRECTING Addendum 2, which was substantially wrong
+
+Addendum 2 said this spec hand-rolls credential-shape detection and recommended
+building on `DURABLE_SECRET_PATTERNS` instead. **The spec already does that**, and
+says so explicitly:
+
+> §3.2, Arm 2: *"The pattern arm **imports `DURABLE_SECRET_PATTERNS` from
+> `src/core/durableSecretScrub.ts`**. It does not hand-write a list.*"*
+
+It goes further — the risk table lists **"Fourth divergent pattern list"** as a
+named risk with the mitigation *"Import `DURABLE_SECRET_PATTERNS`; ratchet on kind
+coverage"*, citing that module's own header about three prior copies drifting on
+`sk-ant-api…` vs `sk-ant-…`.
+
+**So the recommendation I gave was already the design.** I reached it by reading
+the reviewer's finding and grepping the codebase, and never checked what the spec
+under discussion actually said. Reported to the operator as a changed
+recommendation.
+
+**What survives from Addendum 2, and it is the part that mattered:** the **live
+credential VALUE index** (B22 — "a process-lifetime in-memory index of the
+credential values this install holds") is a genuinely new exposure class.
+`SecretRedactor` has zero references to the secret store; it detects by shape and
+entropy and never learns real values. That finding stands, and it is the one
+worth the operator's attention.
+
+**Method note, and it is the same one for the fourth time today:** I checked the
+codebase and the reviewer's text, which are adjacent to the question, instead of
+the spec, which was the question. Every error today has that shape.
