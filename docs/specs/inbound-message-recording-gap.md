@@ -31,6 +31,16 @@ eli16-overview: "docs/specs/inbound-message-recording-gap.eli16.md"
 > the surrounding prose*; where §3.0 and the generated contract could ever differ,
 > the generated one wins, because it is derived rather than maintained. The build
 > check (`--check`) is what keeps that true over time.
+>
+> **And the review must follow the artifact (round-36, codex).** Declaring the
+> generated contract normative while continuing to send *this* file to reviewers
+> means no reviewer has ever read the thing being built — they cannot verify it,
+> and every finding about "historical prose reading as normative" is a finding
+> about a document that is no longer the contract. From round 37 the cross-model
+> review runs against the **generated contract**, with this file supplied as
+> rationale. That is a change to how this spec is converged, not just to what it
+> says, and it belongs here because the previous six rounds of that finding were
+> partly an artifact of reviewing the wrong file.
 
 > **It is no longer small, and `single-run-completable` is now `false`
 > (round-34, codex).** This opened as one mechanism, one seam, one flag. Review
@@ -137,9 +147,11 @@ that is cheaper than pretending duplication is free.*
 | **Ordering** | `(timestamp, rowid)`. Never `message_id`. |
 | **Authority** | JSONL is authoritative for received history. TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
 | **Failure behavior** | A failed append is caught, counted, and **injection proceeds**. A failed TopicMemory write is caught and counted. Sustained failures raise one deduped Attention item. |
-| **Counters** | `inbound-log-failed` (authoritative append failed), `inbound-search-index-dropped` (TopicMemory write shed by the backlog cap — **not** a lost inbound record), pending-callback depth (Attention above **8**), append-latency **max** per window (Attention on any single append > **1 s**), and a one-sided-conversation check (recent outbound with zero inbound). |
+| **Counters** | Four distinct conditions, never merged (round-36): `inbound-log-failed` — the **authoritative** JSONL append failed (reserved for that alone); `inbound-search-index-dropped` — a TopicMemory write **shed by the backlog cap** before it was attempted; `inbound-search-index-failed` — a TopicMemory write that **was attempted and threw**; plus pending-callback depth (Attention above **8**). A shed and a failure are different problems with different fixes, and neither is a lost inbound record. |
+| **Latency** | Append latency sampled; Attention on **p99 > 50 ms** (generally slow filesystem) **and** on any **single append > 1 s** (the pathological stall a p99 cannot see). Both ship. |
+| **Health** | `enabled` flag state, recent inbound row count, append failures, max latency, rotation state (current size + rotation count), startup synthetic self-check result, and a one-sided-conversation check (recent outbound with zero inbound). |
 | **Storage** | Append-only JSONL in an **app-controlled local data directory**, file mode **0600**, owned by the agent process user. Plaintext — no encryption at rest (§4). |
-| **Rotation** | Rotate at **32 MB**; keep **4** rotated files. Oldest is deleted on rotation — that deletion IS the retention mechanism. **Protocol (ordered, crash-recoverable):** re-resolve the path → rename current to the next free rotation number → append to a fresh current file. Missing or skipped rotation numbers are tolerated, never repaired. |
+| **Rotation** | Rotate at **32 MB**; keep **4** rotated files. Oldest is deleted on rotation — that deletion IS the retention mechanism. **Filenames:** `inbound.jsonl` (current) and `inbound.jsonl.1` … `inbound.jsonl.N`, **N ascending = older**. **Protocol (ordered, crash-recoverable):** re-resolve the path → rename current to `.{highest existing suffix + 1}` → append to a fresh current file. **Deletion selects by highest suffix**, not mtime, so a restored or touched file cannot resurrect itself as newest. Missing or skipped suffixes are tolerated and never renumbered; "keep 4" means *at most 4 rotations survive a rotation event*, counted by suffix. **Read ordering** for history is current first, then ascending suffix. |
 | **Retention** | Whatever fits in current + 4 rotations (~160 MB of message text). Resume history is bounded by this window, not by time. No time-based expiry. |
 | **Seeding** | `seedMessageLogDedupe()` reads the **current file only**, and at most its **last 64 MB** — never the rotations. A redelivered message older than the current file is written twice; that is the accepted cost of a bounded startup read. |
 | **Deletion** | Deleting the current **and rotated** files removes everything this design's JSONL store holds. TopicMemory, filesystem snapshots, and any backup system are **separate stores with separate deletion** — this is not a whole-system erasure guarantee. |
@@ -636,10 +648,15 @@ codex).** `fs.appendFileSync` can stall on disk pressure, a full disk, a slow
 mount or a filesystem hiccup. The trade is deliberate: a microsecond-scale append
 in exchange for the essential record surviving a crash, on a path where the
 alternative — deferring it — demonstrably bought nothing. It is bounded by
-measurement rather than by hope: **append latency is sampled, and a p99 above
-50 ms raises the same deduped Attention item**, because at that point the local
-filesystem is the problem and this feature is merely the messenger. Delivery may
-wait for this append; it may never wait for the TopicMemory write.
+measurement rather than by hope: **append latency is sampled, and both a p99
+above 50 ms and any single append above 1 s raise a deduped Attention item** —
+the p99 catches a filesystem that has become generally slow, the max catches the
+one pathological append a p99 cannot see (§3.0). **Both ship**; round-36 (codex)
+found this paragraph stating only the p99 after §3.0 had added the max, which
+read as two competing requirements rather than two complementary ones. At either
+threshold the local filesystem is the problem and this feature is merely the
+messenger. Delivery may wait for this append; it may never wait for the
+TopicMemory write.
 
 **But sampling a p99 does not bound a stall, and this is the sharpest hole the
 review has found (round-29, codex).** `appendFileSync` can block *indefinitely* —
@@ -733,10 +750,12 @@ write-ahead pattern — durable minimal record synchronously, secondary indexes
 asynchronously:
 
 ```
-try { appendJsonl(entry) } catch { count('inbound-log-failed') }   // sync, essential, never dropped
-try { setImmediate(() => { try { writeTopicMemory(entry) } catch { count() } }) }
-catch { /* never block the injection */ }
-inject(...)
+const r = appendInboundJsonlSync(entry)   // sync, essential, never throws;
+                                          // counts inbound-log-failed itself
+if (r.status === 'appended') {
+  scheduleInboundTopicMemory(entry)       // setImmediate; sheds -> inbound-search-index-dropped,
+}                                         // throws  -> inbound-search-index-failed
+inject(...)                               // ALWAYS reached
 ```
 
 **The ordering invariant, stated so nothing is inferred from the listing
