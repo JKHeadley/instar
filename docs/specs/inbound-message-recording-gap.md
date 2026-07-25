@@ -207,9 +207,14 @@ It works because:
     `idx_messages_topic_id` on `(topic_id, message_id)` is a plain index, **not
     unique**, so a collision produces a duplicate row rather than a lost message —
     the safe direction. The seed is nonetheless fixed properly: at startup the
-    counter is seeded from **`min(message_id)` currently in the table** (or
-    `-1` when there is none) and decreases from there, so a restart continues the
-    sequence instead of restarting it and a clock change is irrelevant. **But chronology must come from `timestamp`, not from
+    counter is seeded from **`min(-1, min(message_id) in the table)`** and
+    decreases from there. **The `min(-1, …)` is load-bearing (round-20, gemini
+    caught a real bug in the round-14 fix):** seeding from the table minimum alone
+    is wrong whenever no synthetic id exists yet, because the minimum is then the
+    *lowest real Telegram id* — a positive number — and decrementing from it
+    produces positive "synthetic" ids, silently breaking the negative-sentinel
+    invariant and `isSyntheticMessageId()` along with it. Clamping at `-1` makes
+    the first synthetic id negative regardless of what the table holds. **But chronology must come from `timestamp`, not from
     `message_id`** — a negative id sorts before every real Telegram id, so any
     reader ordering by `message_id` would place id-less messages at the start of
     history. A test asserts the readers this spec cares about (the session-start
@@ -328,13 +333,28 @@ retries, a breaker, a drop policy and alerting — and codex pointed out that a
 document insisting "this is not a queue, no new abstraction" had just specified a
 queue subsystem. Both fixes were bigger than the problem.
 
-**The problem is only this: a synchronous write can block the injection path.**
-The fix is to not do it synchronously:
+**The problem was only ever the SLOW write blocking the injection path — and once
+the two writes are split (below), only one of them is slow (round-20, codex).**
+Deferring the JSONL append too was cargo-culted from before the split: it is a
+microsecond append-only write, so deferring it bought nothing and cost real
+crash-loss on the record that actually matters. The shape is the ordinary
+write-ahead pattern — durable minimal record synchronously, secondary indexes
+asynchronously:
 
 ```
-try { setImmediate(() => { try { logInbound(entry) } catch { count() } }) }
+try { appendJsonl(entry) } catch { count('inbound-log-failed') }   // sync, essential, never dropped
+try { setImmediate(() => { try { writeTopicMemory(entry) } catch { count() } }) }
 catch { /* never block the injection */ }
+inject(...)
 ```
+
+**This requires the logger to split its phases (round-20, codex).**
+`TelegramAdapter.logInboundMessage()` currently does both writes in one call, so
+it gains an internal split — the JSONL append and the TopicMemory write become
+separately callable — rather than the seam calling one combined method and hoping
+for these semantics. Naming that explicitly, because "one call to the existing
+logger" and "JSONL is never dropped while TopicMemory is" cannot both be true of
+the current API.
 
 - The injection proceeds on the current tick; the write happens on the next one.
   **What this protects, stated exactly (round-8, codex):** *this* injection is
@@ -402,8 +422,12 @@ catch { /* never block the injection */ }
 - **The backlog IS bounded — three lines, not a subsystem (rounds 13–17, codex
   three times and gemini independently; two reviewers converging on one residual
   is the strongest signal available, and "measure then fix" was the wrong answer
-  to it).** A counter tracks scheduled-but-unwritten entries. Above **64**, the
-  entry is **dropped and counted** (`inbound-log-dropped`) instead of scheduled.
+  to it).** A counter tracks pending **TopicMemory** writes. Above **64**, the
+  **TopicMemory write** is dropped and counted (`inbound-log-dropped`) instead of
+  scheduled. **The JSONL append is never affected by the guard** — it is
+  synchronous and has already happened by the time the guard is consulted
+  (round-20, codex flagged this as contradictory when the guard read as applying
+  to "the entry"; it applies to the deferred half only).
 
   **And it is a bounded best-effort in-memory buffer. Calling it "not a queue"
   obscured the model (round-19, codex, and the point is conceded).** `setImmediate`
