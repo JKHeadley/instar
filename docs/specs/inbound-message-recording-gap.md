@@ -223,6 +223,17 @@ It works because:
     platform's when present, and `-1` as an inert placeholder when absent**, with
     `id_source` carrying the meaning instead of the sign.
 
+    **Why `-1` is inert rather than a sentinel (round-23, codex asked whether
+    repeated `-1`s collide).** Grounded in the schema: `idx_messages_topic_id` on
+    `(topic_id, message_id)` is a **plain index, not unique**, so many rows may
+    share `-1` without colliding — the identity for new rows is `dedupe_id`, and
+    nothing enforces uniqueness on `message_id`. Removing `NOT NULL` outright
+    would need a full table rebuild in SQLite, which is a materially bigger
+    migration than two added columns; `-1` plus `id_source` gets the same
+    semantics for an `ALTER TABLE ADD COLUMN`. The difference from the withdrawn
+    sentinel is that **no reader has to interpret it**: meaning lives in
+    `id_source`, and `-1` is just a value that satisfies the constraint.
+
     That deletes the helper, the ordering caveat, the consumer audit and the
     "future reader might misread it" residual — a net reduction, which is why it
     is worth the migration this spec spent four rounds avoiding.
@@ -399,8 +410,13 @@ the current API.
   real ceiling
   (round-18, codex — v17 said "some loop delay" and understated it by two orders
   of magnitude).** A log write that waits five seconds has already failed at its
-  job. This path therefore sets its own **`busy_timeout = 100 ms`** before
-  writing, bounding the worst case to ~6.4 seconds of accumulated delay rather
+  job. This path therefore uses **its own dedicated SQLite connection with
+  `busy_timeout = 100 ms`** (round-23, codex — `busy_timeout` is a *connection*
+  pragma, so setting it on the shared connection before each write would silently
+  change the timeout for every unrelated TopicMemory operation, and restoring it
+  afterwards would be a race waiting to happen). A second connection to the same
+  WAL database is cheap and is the ordinary way to give one workload its own
+  timeout policy. That bounds the worst case to ~6.4 seconds of accumulated delay rather
   than ~320, and a contended store sheds entries quickly instead of holding the
   loop. The burst test runs against a **contended/wedged** database as well as a
   healthy one, because a healthy-storage burst test would have measured the easy
@@ -553,8 +569,9 @@ the retired no-id-no-entry behaviour one fold after the design changed — caugh
 in a 200-line document, which is the point); two identical messages in the same
 second produce two distinct rows (§3); the dedupe key coerces
 string/number ids; a throwing logger is caught, counted, and the injection still
-happens; **the scheduling call precedes the inject call**, and — as a separate
-assertion — the scheduled callback performs the TopicMemory write. **And the
+happens; **the JSONL append has COMPLETED before the inject call** (asserted on
+completion, not on scheduling), and — as a separate assertion — the scheduled
+callback performs the TopicMemory write after it. **And the
 JSONL append is asserted to have COMPLETED before injection**, not scheduled
 (round-22, codex: the test plan still described the pre-split model). *(Round-13,
 codex: asserting "the log call precedes the inject call" would force a
@@ -595,8 +612,8 @@ that reader consults fails here rather than in production five days later.
 | Decision point | What it decides | Classification | Justification |
 |---|---|---|---|
 | Whether to log an inbound message | Recording, not delivery | **invariant** | A deterministic predicate: **the feature is enabled**. An id is always available — the platform's when present, the derived one otherwise (§3) — so a missing id never decides whether to record. No judgment, no model, no context. |
-| Log-scheduling-vs-inject ordering | Which happens first | **invariant** | Stated in §3.1: the log task is **scheduled** first, unconditionally. The write itself lands *after* injection, by design — the invariant is about scheduling order, never about the write having completed. |
-| Log-failure disposition | Whether a failed log blocks the message | **invariant** | Always proceed (§3.2). The conservative default here is *deliver*, because the harm being prevented is silence. |
+| Write ordering | Which write happens when, relative to injection | **invariant** | Per §3.1's table: the **JSONL append completes before injection** (synchronous, may briefly delay it); the **TopicMemory write is scheduled after** and may be dropped. Two writes, two rules — not one scheduling rule for both. |
+| Log-failure disposition | Whether a failed write blocks the message | **invariant** | Always proceed — a failed JSONL append is caught and counted, never rethrown into the delivery path (§3.2). The conservative default is *deliver*, because the harm being prevented is silence. |
 
 ## 6. Multi-machine posture
 
@@ -610,8 +627,8 @@ that reader consults fails here rather than in production five days later.
 1. **Log at the seam, not at each caller** — **four** callers today (§2), three of
    which pass no `messageId`. Logging per-caller would mean four correct
    implementations and a fifth silently reintroducing the gap.
-2. **Schedule the log before injecting** (§3.1) — scheduling order, never write
-   order. Named this way after three rounds of reviewers reading "log first" as a
+2. **Append JSONL before injecting; schedule TopicMemory after** (§3.1) — two
+   writes, two rules. Named this way after three rounds of reviewers reading "log first" as a
    synchronous call, which is exactly how it would be mis-implemented.
 3. **A log failure never blocks the message** (§3.2).
 4. **The forward route's existing call stays** — dedup makes it harmless, and removing it is unrelated risk.
