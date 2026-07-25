@@ -152,7 +152,7 @@ not what it was asked.
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
 | **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws *once the syscall returns*** — a synchronous filesystem stall can still block the event loop indefinitely (§3.2); the guarantee covers the error path, not the time path. Returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path: an app-controlled local data directory is **required for fleet default-on**; an operator-configured arbitrary local path is **accepted for opt-in use** with the stall risk named (§3.2). Network storage is out of scope for either. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only on `status: 'appended'`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
-| **Fields (JSONL)** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, **`messageId: number \| null`** (present-and-null when absent, never omitted — one shape, so a reader never has to distinguish missing-key from missing-value), `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'session_received'`, `fromUser: true`. |
+| **Fields (JSONL)** | `seamReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, **`messageId: number \| null`** (present-and-null when absent, never omitted — one shape, so a reader never has to distinguish missing-key from missing-value), `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'injection_seam_received'`, `fromUser: true`. |
 | **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** Scope: **best-effort duplicate suppression within one process** — atomic in-process, not a storage-level uniqueness guarantee. |
 | **Ordering** | `(timestamp, rowid)`. Never `message_id`. |
 | **Authority** | JSONL is the **primary received-history store — authoritative *among local stores*, not a proof of receipt**. It has no `fsync`, so a power loss can drop the tail, and an append can fail while injection proceeds. **Absence of a row is therefore not evidence a message was not received** (round-40). TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
@@ -161,12 +161,12 @@ not what it was asked.
 | **Latency** | Append latency sampled; Attention on **p99 > 50 ms** (generally slow filesystem) **and** on any **single append > 1 s** (the pathological stall a p99 cannot see). Both ship. |
 | **Health** | `enabled` **and** `armed` (with arm-failure reason), the **resolved absolute log path**, last/max append latency, recent inbound row count, append failures, max latency, rotation state (current size + rotation count), startup synthetic self-check result, and a one-sided-conversation check (recent outbound with zero inbound). |
 | **Storage** | Append-only JSONL in an **app-controlled local data directory**, file mode **0600**, owned by the agent process user. Plaintext — no encryption at rest (§4). |
-| **Rotation** | Rotate at **32 MB**; keep **4** rotated files. Oldest is deleted on rotation — that deletion IS the retention mechanism. **Filenames:** `inbound.jsonl` (current) and `inbound.jsonl.1` … `inbound.jsonl.N`. **N ascending = NEWER** — the suffix is a monotonic sequence number, not a logrotate age rank. **Protocol (ordered, crash-recoverable, ONE rename):** re-resolve the path → rename current to `.{highest existing suffix + 1}` → append to a fresh current file. **Deletion selects the LOWEST suffix** (the oldest), by suffix and never by mtime, so a restored or touched file cannot change its own age. Missing or skipped suffixes are tolerated and never renumbered; "keep 4" means *at most 4 rotations survive a rotation event*, counted by suffix. **Read ordering** for history is current first, then **descending** suffix (newest rotation first). |
+| **Rotation** | Rotate at **32 MB**; keep **4** rotated files. Oldest is deleted on rotation — that deletion IS the retention mechanism. **Filenames:** `inbound.jsonl` (current) and `inbound.jsonl.1` … `inbound.jsonl.N`. **N ascending = NEWER** — the suffix is a monotonic sequence number, not a logrotate age rank. **Protocol (ordered, crash-recoverable, ONE rename):** re-resolve the path → rename current to `.{highest existing suffix + 1}` → append to a fresh current file. **Deletion selects the LOWEST suffix** (the oldest), by suffix and never by mtime, so a restored or touched file cannot change its own age. Missing or skipped suffixes are tolerated and never renumbered; "keep 4" means *at most 4 rotations survive a rotation event*, counted by suffix. **Read ordering** for history is current first, then **descending** suffix (newest rotation first). **A small rotation helper is the ONLY supported reader/writer** (round-41): no caller infers order from filenames, because a scheme that fights logrotate convention will eventually be read by someone who assumes the convention. The invariants in §5 test the helper, not each caller. |
 | **Retention** | Whatever fits in current + 4 rotations (~160 MB of message text). Resume history is bounded by this window, not by time. No time-based expiry. |
 | **Reading** | Every JSONL read — seeding **and** session-history — is line-by-line and tolerant: an unparseable line is skipped and counted (`inbound-log-corrupt-line`), never fatal, because a process killed mid-append leaves exactly that shape. Corruption **beyond the final line** of a file raises Attention: one torn tail is normal, damage in the middle is not. |
 | **Seeding** | `seedMessageLogDedupe()` reads the **current file only**, and at most its **last 64 MB** — never the rotations. A redelivered message older than the current file is written twice; that is the accepted cost of a bounded startup read. |
 | **Deletion (JSONL store only)** | Deleting the current **and rotated** files removes everything this design's JSONL store holds. TopicMemory, filesystem snapshots, and any backup system are **separate stores with separate deletion** — this is not a whole-system erasure guarantee. |
-| **Single writer** | The agent-home **single-instance lock** (one server per agent home) is what makes one-writer-per-log-path true. Its scope covers append, rotation **and** seeding — all three assume it. A second writer is not detected at append time and is not defended against. |
+| **Single writer** | The agent-home **single-instance lock** (one server per agent home) is what makes one-writer-per-log-path true. Its scope covers append, rotation **and** seeding — all three assume it. A second writer is not detected at append time and is not defended against — so the health surface reports the **lock owner and lock state**, and `armed` is **false whenever lock validation is ambiguous** rather than optimistic (round-41). Integrity here depends on the lock; a lock whose state nobody can read is discipline, not a mechanism. |
 | **Fields (TopicMemory)** | Same identity fields, except `message_id` is the platform number or the inert placeholder **`-1`** when absent (the column is `NOT NULL`; §3 explains why it is not made nullable). `id_source` carries the meaning. **Three wire shapes for one concept was the round-40 finding — there are now two, each stated where it applies.** |
 | **`enabled` vs `armed`** | Two distinct states, both reported (round-39). `enabled` = the config flag. `armed` = the flag is on **and** the lock was acquired **and** the log path resolved writable. **A process can run `enabled && !armed`** — that is the silent-failure shape this whole spec exists to close, so it is a first-class reported state with a `inbound-log-arm-failed` counter and its reason, never an inference from a zero row count. **Acceptance FAILS if `armed` is false**, regardless of what the flag says. **Runtime behaviour when `enabled && !armed` (round-40): the seam call is a NO-OP that increments `inbound-log-arm-failed` once per process, not per message** — it does not attempt the append, does not return a `'failed'` status, and never retries. Arming is decided once at startup; a per-message retry would put filesystem work back on the delivery path to fix a condition that does not change per message. |
 | **Synthetic rows** | The startup self-check record is marked `synthetic: true`. It is **excluded** from history reads, the recent-inbound count, the one-sided-conversation check and dedupe seeding. It **is** counted toward rotation size, because it occupies real bytes and pretending otherwise would make the size bound wrong. |
@@ -249,7 +249,23 @@ store is a larger change with its own migration, its own failure modes, and its
 own review, undertaken while messages are actively being lost. Doing the smaller
 thing first is the right sequencing, not a judgment that JSONL is better.
 
-**Recorded as a known cost, not a settled question:** if this log grows in
+**Recorded with TRIGGERS, not as vague future debt (round-41, codex — and Close
+the Loop says an untracked intention is an abandoned one).** ACT-1218 fires when
+**any one** of these becomes true, and each is observable from the health surface
+this spec already requires:
+
+| Trigger | Threshold |
+|---|---|
+| Consumers of the log | **more than two** distinct readers beyond seeding + session history |
+| Retention pressure | rotation dropping data **more than once a week** on any host |
+| Query need | any consumer needing a filter the JSONL scan cannot answer in bounded time |
+| Corruption rate | `inbound-log-corrupt-line` non-zero **beyond final lines** on any host |
+
+Any one of those means the hand-built mechanics have outgrown the format. If none
+of them ever fires, JSONL was the right call and the migration correctly never
+happens — which is what makes these triggers rather than a plan.
+
+**The known cost, restated:** if this log grows in
 importance — more consumers, longer retention, real query needs — the SQLite
 migration is the expected next step, and the hand-built machinery listed above is
 the debt it would retire. <!-- tracked: ACT-1218 -->
@@ -431,18 +447,25 @@ It works because:
     a number, so a string id left implicit is a `NaN` collision waiting to
     happen — round-3, codex.)*
   - the entry is marked `idSource: 'platform' | 'derived'`.
-  - the entry carries **`deliveryState: 'session_received'`** — renamed from a
-    bare `'received'` at round-37 (codex), because the old value was correct only
-    if the reader remembered a caveat written elsewhere, and a value that depends
-    on memory to be read correctly will eventually be read incorrectly. The name
-    now carries its own scope: **received by the session-injection seam — NOT
-    received by Telegram**. A message the bot
+  - the entry carries **`deliveryState: 'injection_seam_received'`**, and the
+    timestamp is **`seamReceivedAt`**.
+
+    **This name has now been wrong three times, each time by one notch of
+    overclaim, and the sequence is worth keeping.** `received` implied Telegram
+    receipt. `sessionReceived` implied the session got it — but the row is written
+    *before* injection, so a crash between the append and the inject leaves a row
+    claiming a session received something it never saw (round-41, codex). Only
+    `injection_seam_received` states what the row can actually prove: **this
+    message reached the injection seam.** Not that Telegram delivered it, not that
+    a session consumed it. Each rename was a real correction and each left a
+    smaller overclaim behind, which is the most concrete illustration in this
+    document of how hard it is to name a thing honestly. A message the bot
     took in and then queued, dropped or refused before injection never reaches
     this record at all (§4). It is a single-valued enum
     today, and deliberately an enum rather than a boolean or an absence
     (round-16, codex). It gives a later `'injected'` or `'delivered'` somewhere
     safe to live, so evolving this record never requires *reinterpreting* an
-    existing field. The alternative — adding meaning to `sessionReceivedAt` later
+    existing field. The alternative — adding meaning to `seamReceivedAt` later
     — is precisely the reinterpretation that makes old rows lie.
 
   **Storage contract, grounded in the real schema (round-10, codex — and checking
@@ -638,7 +661,7 @@ if injection fails, the entry still says the message arrived, and a later reader
 could wrongly infer the agent saw it. Rather than add a delivery-status update
 (a second write, for a distinction no consumer currently needs), the log is
 **named** for what it honestly records — messages received for this session —
-and the field is `sessionReceivedAt`, not `shownAt`. If a consumer ever needs
+and the field is `seamReceivedAt`, not `shownAt`. If a consumer ever needs
 agent-observed semantics, that is a new field with its own write, not a
 reinterpretation of this one.
 
@@ -648,8 +671,8 @@ seam is not the Telegram intake edge. A message that arrives at the bot and is
 queued, dropped, or refused *before* injection is never seen here (§4 admits
 this), so a bare `received` reads as "received by the agent" when it only means
 "reached the point where a session was about to be handed it." The field is
-therefore `sessionReceivedAt` — the `session` prefix is load-bearing, not
-decoration — and `deliveryState: 'session_received'` is defined in one line at its
+therefore `seamReceivedAt` — the `session` prefix is load-bearing, not
+decoration — and `deliveryState: 'injection_seam_received'` is defined in one line at its
 definition site as **received by the session-injection seam, not by Telegram**.
 The enum value stays short because it is written on every row; the definition
 carries the precision.
@@ -664,7 +687,7 @@ elsewhere. No consumer may read this log as proof the agent acted on a
 message. **Naming makes that harder to get wrong; it does not enforce it
 (round-17, codex — and v16 said "enforced by naming", which is an overclaim
 inside the fix for an overclaim).** What naming buys: a consumer reading
-`sessionReceivedAt` and `deliveryState: 'session_received'` has to work to misread them,
+`seamReceivedAt` and `deliveryState: 'injection_seam_received'` has to work to misread them,
 where one reading `deliveredAt` would have to work not to. What it does not buy:
 any mechanism preventing a determined consumer from treating presence as
 delivery. **The only real enforcement available is the enum** — a future
@@ -1376,6 +1399,19 @@ travelled the route this design assumes, and the whole defect is that inbound
 traffic takes a route nobody had traced. So acceptance carries an artifact, not
 just an observation: **the live proof runs with the seam instrumented, and
 records the actual call path from Telegram arrival to `injectTelegramMessage`.**
+**The trace artifact, concretely (round-41, codex — "instrumented trace" is not
+reproducible by another implementer).** A JSON file committed alongside the
+acceptance record, one object per observed inbound message, each carrying:
+`telegramMessageId`, `topicId`, the **ordered list of function names** from the
+first instar frame that saw the message to `injectTelegramMessage`, the module
+path of each, a monotonic timestamp per hop, and the resulting `dedupeId`.
+
+**It passes iff** every observed message's chain terminates at
+`injectTelegramMessage`, and the JSONL row for that `dedupeId` exists. A chain
+that terminates anywhere else is the finding, not a failure of the test — it
+would mean a second delivery path exists, which is the thing ACT-1217 is looking
+for.
+
 That trace is the evidence that the seam is genuinely on the production path —
 the claim §2 makes and that this spec otherwise asks the reader to accept. It
 also feeds ACT-1217 directly, since tracing the path *is* the beginning of
