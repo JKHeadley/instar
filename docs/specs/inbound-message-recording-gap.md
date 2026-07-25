@@ -177,16 +177,27 @@ try { setImmediate(() => { try { logInbound(entry) } catch { count() } }) }
 catch { /* never block the injection */ }
 ```
 
-- The injection proceeds on the current tick. The write happens on the next one.
-  Nothing can delay the message, because nothing is awaited.
+- The injection proceeds on the current tick; the write happens on the next one.
+  **What this protects, stated exactly (round-8, codex):** *this* injection is
+  never awaited, so *this* message is never delayed. It does **not** make a
+  synchronous store non-blocking — a wedged synchronous write on a later tick can
+  still stall the event loop for everything behind it. So the operational
+  assumption is explicit rather than implied: **the write must fail fast**
+  (bounded SQLite `busy_timeout`, no unbounded file-lock waits).
 - A failure is caught and counted (`inbound-log-failed`). **No retry** — a retry
   is a loop, a loop needs brakes, brakes need a breaker, and that is exactly the
-  subsystem this paragraph deleted twice. A best-effort received-log does not
-  earn that machinery.
-- **No queue, no worker, no cap, no drop policy.** Inbound messages arrive at
-  human typing speed; there is no burst to absorb. If the store is wedged, the
-  pending callbacks sit in the event loop and fail — counted, visible, and not
-  blocking anyone.
+  subsystem this paragraph deleted twice. A best-effort log does not earn it.
+- **No queue, no worker, no cap, no drop policy.** Inbound messages normally
+  arrive at human typing speed, so there is no burst to absorb.
+- **That assumption is tested, not asserted (round-9, codex — Telegram genuinely
+  bursts after a reconnect, a restart, a polling backlog or a forwarded batch).**
+  A stress test drives 200 inbound messages and asserts injection latency is
+  unaffected and no unbounded synchronous work occurs. If it ever fails, the
+  assumption is wrong and the design is revisited — rather than pre-building a
+  queue against a burst that may never happen.
+- **One guardrail, not a subsystem (round-7, codex):** a counter tracks pending
+  log callbacks, and crossing a small threshold (32) raises ONE deduped Attention
+  item. It measures the assumption; it does not work around it.
 - **A counter nobody reads is not observability (round-1, gemini):** a sustained
   non-zero failure rate over an hour raises ONE deduped Attention item. Silently
   degrading the agent's memory is precisely the failure this spec exists to end.
