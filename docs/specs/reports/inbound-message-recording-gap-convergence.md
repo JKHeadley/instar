@@ -7,6 +7,34 @@ including the parts that reflect badly on the author.
 
 ---
 
+## If you read one section
+
+**The defect is real and still live.** As of 2026-07-25 13:29Z this machine had
+recorded 94 outbound messages that day and **zero** inbound; the last inbound row
+of any kind is **2026-07-01**. That is 24 days of one-sided memory, and it is why
+a session resuming this conversation reads its own words and not the operator's.
+
+**The spec is ready to build from and has NOT converged.** Those are both true.
+79 review rounds, none clean, no convergence tag written and none earned. The
+design is uncontested — no reviewer disputes logging at the injection seam — but
+the *document* has been the defect repeatedly, and roughly one finding per round
+is something the previous round's fold introduced.
+
+**The recommendation is to stop reviewing and start building** (Increment A, from
+the normative checklist in §3.0). The strongest evidence for that is round 69:
+`INSERT OR IGNORE` would have classified every constraint failure as a duplicate
+— silent data loss inside the data-loss fix — and it survived 68 rounds of prose
+review because it *reads* idiomatic. The first integration test that inserted a
+malformed row would have caught it immediately.
+
+**What it delivers, stated honestly:** not "no lost messages". Loss goes from
+silent and undetected for 24 days to **alerted on the first occurrence, with the
+message still delivered**.
+
+**Blocked on:** operator approval. Nothing has been self-approved.
+
+---
+
 ## What the spec is
 
 Close a live data-loss defect: the machine that composes replies records every
