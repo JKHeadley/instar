@@ -149,7 +149,7 @@ import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForward
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
-import { relayOutbound } from '../core/TelegramRelay.js';
+import { RelayRefusedError, isRelayRefusal, relayOutbound } from '../core/TelegramRelay.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
 import { wireRegistrySync } from '../core/wireRegistrySync.js';
@@ -16796,7 +16796,18 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Single wiring point: resolveToneGateOperatorConfig reads the TOP-LEVEL
       // toneGate block (messaging is an array — a messaging.toneGate read is
       // structurally dead, the cause of the 2026-07-24 capture wiring gap).
-      messagingToneGate = new MessagingToneGate(sharedIntelligence, () => resolveToneGateOperatorConfig(config));
+      // The getter re-runs on EVERY review, but `config` is the boot-time
+      // snapshot — nothing re-reads the file into it, so a knob resolved only
+      // from `config` is restart-required no matter how often the getter fires.
+      // Layering the LIVE block on top is what makes the documented rollback
+      // ("set advisoryMigration:false, no restart") actually true; without it
+      // the spec would promise a lever that does not move until a bounce.
+      messagingToneGate = new MessagingToneGate(sharedIntelligence, () => {
+        const live = liveConfig.get<Record<string, unknown>>('toneGate', undefined as never);
+        return resolveToneGateOperatorConfig(
+          live && typeof live === 'object' ? { ...config, toneGate: live } : config,
+        );
+      });
       console.log(pc.green('  Messaging tone gate: active (Haiku via shared IntelligenceProvider)'));
     } else {
       console.log(pc.yellow('  Messaging tone gate: inactive (no IntelligenceProvider available)'));
@@ -23315,8 +23326,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               const v = (config as { multiMachine?: { relayTimeoutMs?: number } }).multiMachine?.relayTimeoutMs;
               return typeof v === 'number' && v > 0 ? v : 15_000;
             })();
-            telegram.outboundRelay = (topicId, text, opts) =>
-              relayOutbound(topicId, text, opts, {
+            telegram.outboundRelay = async (topicId, text, opts) => {
+              const r = await relayOutbound(topicId, text, opts, {
                 leaseHolder: () => coordinator.getSyncStatus().leaseHolder,
                 selfMachineId: meshSelfId,
                 peerUrl,
@@ -23324,6 +23335,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                 timeoutMs: relayTimeoutMs,
                 log: (line) => console.warn(pc.yellow(`  ${line}`)),
               });
+              // A holder REFUSAL (422 — a tone-gate nudge, the credential wall)
+              // is not a transport failure and must not be reported as one. It
+              // is thrown as a typed error so the standby's route can re-emit
+              // the holder's own body verbatim; otherwise the agent sees
+              // "router unreachable" and can never answer the nudge that is
+              // actually waiting for it.
+              if (isRelayRefusal(r)) throw new RelayRefusedError(r);
+              return r;
+            };
           }
 
           // ── L4 transfer-by-nickname activation: the "move/run this on <nickname>"

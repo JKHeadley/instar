@@ -12,7 +12,7 @@ import { resolveToneGateOperatorConfig } from '../../src/core/MessagingToneGate.
  * bodies were ever captured despite the feature merging green.
  */
 describe('resolveToneGateOperatorConfig', () => {
-  it('passes all four knobs through from the top-level toneGate block (realistic config shape)', () => {
+  it('passes every knob through from the top-level toneGate block (realistic config shape)', () => {
     const config = {
       // messaging is an ARRAY in every real config — the shape that killed the
       // legacy messaging.toneGate read.
@@ -22,6 +22,7 @@ describe('resolveToneGateOperatorConfig', () => {
         failClosedMode: 'tiered' as const,
         toneTierDryRun: true,
         recordCandidateBody: true,
+        advisoryMigration: true,
       },
     };
     expect(resolveToneGateOperatorConfig(config)).toEqual({
@@ -29,6 +30,7 @@ describe('resolveToneGateOperatorConfig', () => {
       failClosedMode: 'tiered',
       toneTierDryRun: true,
       recordCandidateBody: true,
+      advisoryMigration: true,
     });
   });
 
@@ -62,12 +64,46 @@ describe('resolveToneGateOperatorConfig', () => {
       failClosedMode: undefined,
       toneTierDryRun: undefined,
       recordCandidateBody: undefined,
+      // A config-less install is a FLEET install by definition: the dev-agent
+      // gate resolves the migration dark, never undefined-and-therefore-truthy.
+      advisoryMigration: false,
     });
     expect(resolveToneGateOperatorConfig(undefined)).toEqual({
       failClosedOnExhaustion: undefined,
       failClosedMode: undefined,
       toneTierDryRun: undefined,
       recordCandidateBody: undefined,
+      advisoryMigration: false,
+    });
+  });
+
+  describe('advisoryMigration dev-agent gate', () => {
+    it('resolves LIVE on a development agent when the knob is omitted', () => {
+      expect(resolveToneGateOperatorConfig({ developmentAgent: true }).advisoryMigration).toBe(true);
+    });
+
+    it('resolves DARK on a fleet agent when the knob is omitted', () => {
+      expect(resolveToneGateOperatorConfig({ developmentAgent: false }).advisoryMigration).toBe(false);
+      expect(resolveToneGateOperatorConfig({ messaging: [] }).advisoryMigration).toBe(false);
+    });
+
+    it('an explicit false is the operator rollback and BEATS the dev-agent gate', () => {
+      // The rollback must work on the very agent the gate would otherwise flip
+      // live — otherwise a dev agent could not turn the migration back off
+      // without a deploy, which is the point of a live-read kill switch.
+      const resolved = resolveToneGateOperatorConfig({
+        developmentAgent: true,
+        toneGate: { advisoryMigration: false },
+      });
+      expect(resolved.advisoryMigration).toBe(false);
+    });
+
+    it('an explicit true is the fleet flip and beats a non-dev agent', () => {
+      const resolved = resolveToneGateOperatorConfig({
+        developmentAgent: false,
+        toneGate: { advisoryMigration: true },
+      });
+      expect(resolved.advisoryMigration).toBe(true);
     });
   });
 });

@@ -853,6 +853,28 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
     evidenceStrength: 'self-report',
     owningComponent: 'CompletionChokepoint',
   },
+  // ── Tone-gate agent-reaction evidence (advisory migration, 2026-07-19) ────
+  // The tone gate's FIRST real evidence source. Before the advisory migration a
+  // BLOCK was terminal, so the agent's disagreement could not exist as data and
+  // every tone decision could only ever grade `unknown` at window close. An
+  // overridable nudge makes the reaction observable: the agent either delivers
+  // unchanged (disputing the verdict) or revises (accepting it).
+  //
+  // Rung `self-report` ON PURPOSE (§5.4.3): the agent is an interested party
+  // grading a judgment about its own message. Precedence guarantees this can
+  // never outrank an independent grader, and the read surface segregates it from
+  // proof-like evidence — so "the gate was wrong 40% of the time" is always
+  // legible as *the agent said so*, not as measured truth.
+  'tone-agent-override-v1': {
+    ruleId: 'tone-agent-override-v1', decisionPoint: DP_MESSAGING_TONE_GATE,
+    rung: 'self-report', evidenceStrength: 'self-report',
+    owningComponent: 'ToneGateAdvisory',
+  },
+  'tone-agent-complied-v1': {
+    ruleId: 'tone-agent-complied-v1', decisionPoint: DP_MESSAGING_TONE_GATE,
+    rung: 'self-report', evidenceStrength: 'self-report',
+    owningComponent: 'ToneGateAdvisory',
+  },
   // Phase B terminalizers. These rules do not manufacture a right/wrong
   // verdict from silence: once the bounded evidence window closes without an
   // independent outcome, they record the honest `unknown` grade so old rows

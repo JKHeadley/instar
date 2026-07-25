@@ -50,6 +50,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Local bounded JSONL projection only; no external action, spend, or product-resolution authority.',
   },
   {
+    name: 'toneGateAdvisoryMigration',
+    configPath: 'toneGate.advisoryMigration',
+    description:
+      'Outbound tone-gate representation rules resolve as overridable nudges (with a recorded reason) instead of terminal blocks; the self-stop family and the deterministic credential wall stay hard.',
+    justification:
+      'Takes LESS action, not more — it removes blocking authority rather than adding it, and is self-limiting: the advisory disposition is withdrawn back to a block whenever the override could not be recorded. No external action, no spend, and the rollback is a config flag.',
+  },
+  {
     name: 'feedbackFactoryDrain',
     configPath: 'feedbackFactory.drain.enabled',
     description: 'Canonical feedback readiness/outbox drain cadence.',

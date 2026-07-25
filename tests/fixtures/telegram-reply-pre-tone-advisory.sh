@@ -66,10 +66,6 @@
 FORMAT=""
 STDIN_BASE64=0
 ACK_ADVISORY=0
-TONE_ACK=""
-TONE_ACK_REASON=""
-TONE_COMPLIED=""
-TONE_DECISION_REF=""
 
 # Parse leading flags before positional args.
 while [ $# -gt 0 ]; do
@@ -89,27 +85,6 @@ while [ $# -gt 0 ]; do
     --ack-advisory)
       ACK_ADVISORY=1
       shift
-      ;;
-    # ── Tone-gate advisory migration (2026-07-19) ────────────────────────────
-    # DISTINCT from --ack-advisory above, which acknowledges the deterministic
-    # PREFLIGHT. These four answer the SERVER-SIDE tone gate's 422 nudge. The
-    # names are deliberately un-abbreviated so the two ack families can never be
-    # confused at a callsite.
-    --tone-ack)
-      TONE_ACK="$2"
-      shift 2
-      ;;
-    --tone-reason)
-      TONE_ACK_REASON="$2"
-      shift 2
-      ;;
-    --tone-complied)
-      TONE_COMPLIED="$2"
-      shift 2
-      ;;
-    --tone-decision-ref)
-      TONE_DECISION_REF="$2"
-      shift 2
       ;;
     --)
       shift
@@ -324,9 +299,7 @@ fi
 # component is enum-validated or charset-clamped above, so this fragment is
 # safe to interpolate into JSON and (parameterized) SQL contexts.
 METADATA_JSON=""
-if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] \
-  || [ -n "$TONE_ACK" ] || [ -n "$TONE_COMPLIED" ] \
-  || { [ "$ACK_ADVISORY" = "1" ] && [ "$SENDER_CLASS" != "script" ]; }; then
+if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] || { [ "$ACK_ADVISORY" = "1" ] && [ "$SENDER_CLASS" != "script" ]; }; then
   META_PARTS=""
   [ -n "$MESSAGE_KIND" ] && META_PARTS="\"messageKind\":\"${MESSAGE_KIND}\""
   if [ -n "$SENDER_CLASS" ]; then
@@ -349,31 +322,6 @@ if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] \
     [ -z "$ACK_CODES_JSON" ] && ACK_CODES_JSON="[]"
     [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
     META_PARTS="${META_PARTS}\"advisoryAck\":true,\"advisoryCodes\":${ACK_CODES_JSON}"
-  fi
-  # ── Tone-gate reaction metadata ─────────────────────────────────────────
-  # Without these four the migration is inert through the only sanctioned send
-  # path: the agent would be told by the 422 to override and have no way to do
-  # it. Values are charset-clamped — a rule id and a correlation id have narrow
-  # alphabets, and the reason is JSON-escaped via python3 (the only field that
-  # can contain arbitrary prose).
-  if [ -n "$TONE_ACK" ]; then
-    TONE_ACK_CLEAN=$(printf '%s' "$TONE_ACK" | tr -cd 'A-Z0-9_' | cut -c1-64)
-    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
-    META_PARTS="${META_PARTS}\"toneAdvisoryAck\":\"${TONE_ACK_CLEAN}\""
-    if [ -n "$TONE_ACK_REASON" ]; then
-      TONE_REASON_JSON=$(printf '%s' "$TONE_ACK_REASON" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()[:500]))' 2>/dev/null || printf '""')
-      META_PARTS="${META_PARTS},\"toneAdvisoryAckReason\":${TONE_REASON_JSON}"
-    fi
-  fi
-  if [ -n "$TONE_COMPLIED" ]; then
-    TONE_COMPLIED_CLEAN=$(printf '%s' "$TONE_COMPLIED" | tr -cd 'A-Z0-9_' | cut -c1-64)
-    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
-    META_PARTS="${META_PARTS}\"toneAdvisoryComplied\":\"${TONE_COMPLIED_CLEAN}\""
-  fi
-  if [ -n "$TONE_DECISION_REF" ]; then
-    TONE_REF_CLEAN=$(printf '%s' "$TONE_DECISION_REF" | tr -cd 'a-zA-Z0-9-' | cut -c1-128)
-    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
-    META_PARTS="${META_PARTS}\"toneAdvisoryDecisionRef\":\"${TONE_REF_CLEAN}\""
   fi
   METADATA_JSON="{${META_PARTS}}"
 fi
@@ -472,48 +420,9 @@ elif [ "$HTTP_CODE" = "408" ]; then
   echo "AMBIGUOUS (HTTP 408): outcome unknown — verify in conversation before retrying"
   exit 0
 elif [ "$HTTP_CODE" = "422" ]; then
-  # The 422 class is no longer one thing. Branch on `error` so a NUDGE reads as
-  # a nudge and the unoverridable wall reads as a wall — before the advisory
-  # migration this branch printed "BLOCKED" for every 422, which would have made
-  # the migration invisible through the only sanctioned send path.
-  # `blockedBy` is the machine code for the deterministic guards (whose `error`
-  # field carries the human sentence); the tone-gate classes put their code in
-  # `error`. Prefer `blockedBy` so both shapes classify correctly.
-  ERR_KIND=$(echo "$BODY" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("blockedBy") or d.get("error",""))' 2>/dev/null || echo "")
+  # Tone gate blocked the message — surface the issue + suggestion to the agent
   ISSUE=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("issue","unknown"))' 2>/dev/null || echo "unknown")
   SUGGESTION=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("suggestion",""))' 2>/dev/null || echo "")
-  TONE_RULE=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("rule",""))' 2>/dev/null || echo "")
-  TONE_REF=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("decisionRef",""))' 2>/dev/null || echo "")
-  HOW_TO=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("howToProceed",""))' 2>/dev/null || echo "")
-
-  if [ "$ERR_KIND" = "credential-exposure-guard" ]; then
-    # The one outbound check with NO override. Print the server's own message —
-    # it names the credential CLASS and the remedy, and never the value.
-    GUARD_MSG=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("error",""))' 2>/dev/null || echo "")
-    echo "BLOCKED — live credential exposure. This one cannot be overridden." >&2
-    [ -n "$GUARD_MSG" ] && echo "  $GUARD_MSG" >&2
-    echo "  Remove the value, refer to the secret by NAME, and use Secret Drop if the recipient needs it." >&2
-    exit 1
-  elif [ "$ERR_KIND" = "tone-gate-advisory" ]; then
-    echo "ADVISORY — not sent yet, and the decision is YOURS (this is a nudge, not a wall)." >&2
-    echo "  Rule: ${TONE_RULE:-unknown}" >&2
-    echo "  Issue: $ISSUE" >&2
-    [ -n "$SUGGESTION" ] && echo "  Suggestion: $SUGGESTION" >&2
-    [ -n "$TONE_REF" ] && echo "  decisionRef: $TONE_REF" >&2
-    echo "  AGREE  → revise, then re-run with: --tone-complied ${TONE_RULE:-RULE}${TONE_REF:+ --tone-decision-ref $TONE_REF}" >&2
-    echo "  DISAGREE → re-run unchanged with: --tone-ack ${TONE_RULE:-RULE} --tone-reason \"why the nudge is wrong here\"${TONE_REF:+ --tone-decision-ref $TONE_REF}" >&2
-    [ -n "$HOW_TO" ] && echo "  $HOW_TO" >&2
-    # exit 1 (not 0): the message genuinely did NOT send, and a caller that
-    # treats 0 as delivered would drop it silently. The wording above is what
-    # tells the agent this is its call — not the exit code.
-    exit 1
-  elif [ "$ERR_KIND" = "tone-gate-advisory-reason-required" ]; then
-    echo "NOT SENT — an override needs a reason (it is the evidence that grades this check)." >&2
-    echo "  Re-run with: --tone-ack ${TONE_RULE:-RULE} --tone-reason \"why the nudge is wrong here\"" >&2
-    [ -n "$HOW_TO" ] && echo "  $HOW_TO" >&2
-    exit 1
-  fi
-
   echo "BLOCKED by tone gate — message not sent to user." >&2
   echo "  Issue: $ISSUE" >&2
   if [ -n "$SUGGESTION" ]; then

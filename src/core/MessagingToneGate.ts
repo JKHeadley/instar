@@ -32,6 +32,7 @@ import { detectDeferralShape } from './deferral-floor.js';
 import { DP_MESSAGING_TONE_GATE } from '../data/provenanceCoverage.js';
 import { scrubForStore } from './durableSecretScrub.js';
 import { CONTENT_FULL_KEY } from './JudgmentProvenanceLog.js';
+import { resolveDevAgentGate } from './devAgentGate.js';
 
 /** Normalize volatile fields so repeated automated templates share one identity. */
 export function normalizeAutomatedTemplate(text: string): string {
@@ -317,6 +318,7 @@ export function buildDegradedToneResult(
   text: string,
   latencyMs: number,
   reason: DegradeReason,
+  advisoryMigration = false,
 ): ToneReviewResult {
   const leak = detectDeterministicLeak(text);
   if (leak) {
@@ -328,6 +330,10 @@ export function buildDegradedToneResult(
       latencyMs,
       failedClosed: true,
       degradedToDeterministic: true,
+      // The disposition follows the RULE, not the path that reached it: a file
+      // path is the same opinion whether the judge or the floor named it. The
+      // credential guard runs BEFORE this floor and is unaffected.
+      ...(resolveRuleDisposition(leak.rule, advisoryMigration) === 'advisory' ? { advisory: true } : {}),
     };
   }
   // ux-is-the-product-hardening §2.1 — the behavioral self-stop guard (B15/B18)
@@ -349,6 +355,9 @@ export function buildDegradedToneResult(
       latencyMs,
       failedClosed: true,
       degradedToDeterministic: true,
+      ...(resolveRuleDisposition('B15_CONTEXT_DEATH_STOP', advisoryMigration) === 'advisory'
+        ? { advisory: true }
+        : {}),
     };
   }
   return {
@@ -451,6 +460,24 @@ export interface ToneReviewResult {
    * Spec: docs/specs/tone-gate-graceful-degradation.md (postmortem F4).
    */
   degradedToDeterministic?: boolean;
+  /**
+   * The §5.1 decision-quality correlation id of THIS review, when the router
+   * minted one (absent on the degraded/deterministic paths, which never reach
+   * the router). The route seam returns it to the agent on an advisory verdict
+   * so a subsequent override/compliance can be JOINED to the decision it
+   * reacted to — the correlation that turns an override into gradeable
+   * evidence instead of an unattached log line.
+   */
+  decisionRef?: string;
+  /**
+   * Set by the route seam when an ADVISORY verdict was withdrawn back to a
+   * BLOCK because its reaction could not have been recorded (no correlation id,
+   * or the quality seam dark/dry-run). Audit-only — it exists so the fallback
+   * is observable rather than looking like an ordinary block.
+   */
+  advisoryUnrecordable?: boolean;
+  /** Bounded, scrubbed head of the agent's override reason — audit only. */
+  overrideReasonHead?: string;
 }
 
 export const VALID_RULES = new Set([
@@ -581,6 +608,82 @@ export const RULE_DISPOSITIONS: Record<string, GateRuleDisposition> = {
   B20_INTERNAL_ID_LEAK: 'blocking',
   B21_USER_TASK_SUBSTITUTION: 'advisory',
 };
+
+/**
+ * The advisory MIGRATION (operator approval 2026-07-19, topic 33368 — the
+ * CMT-904 follow-up the map above anticipated). Under the migration EVERY
+ * `blocking` rule above resolves `advisory`: the gate names the pitfall and
+ * hands the message back to the AGENT, who may re-send unchanged with a
+ * RECORDED reason. Two things make this the right shape rather than a
+ * weakening:
+ *
+ *  1. The hard wall moved to where it belongs. A judgment about a file path or
+ *     a phrasing is an opinion; a LIVE CREDENTIAL in outbound text is
+ *     irreversible exposure. The latter is now a DETERMINISTIC, non-overridable
+ *     guard at the route seam (`outbound-credential-guard`) that needs no LLM
+ *     and cannot be acknowledged away — so removing the LLM hard-block removes
+ *     no credential protection.
+ *  2. A hard block produces NO evidence. When the gate overrules the agent and
+ *     the agent has no recourse, there is no disagreement to record, and the
+ *     decision-quality meter can only ever grade `unknown` (observed: 1,440
+ *     tone-gate decisions over 7 days, zero graded). The override reason IS the
+ *     evidence source (`tone-agent-override-v1` / `tone-agent-complied-v1`).
+ *
+ * An override is a SIGNAL, never authority: it is recorded at the `self-report`
+ * rung, so it can never outrank an independent grader.
+ */
+export const ADVISORY_MIGRATION_EXEMPT_RULES: ReadonlySet<string> = new Set<string>([
+  // ── The self-stop family stays a WALL (review finding, 2026-07-25) ────────
+  // The operator's directive was about REPRESENTATION — "a check blocking me
+  // from sending you a directory path is too much power". Reading it as also
+  // covering the behavioural self-stop guards is an inference, and the two rule
+  // families have opposite harm profiles:
+  //
+  //   B1–B7 / B11–B14 / B20–B21: the agent judges an externally verifiable fact
+  //   ("is this path useful to the user?"). It is a reasonably disinterested
+  //   judge, a wrong override costs one leaked path, and the disagreement is
+  //   genuinely informative evidence.
+  //
+  //   B15–B19: the agent is THE PARTY THE RULE CONSTRAINS. The override reason
+  //   would be produced by the same reasoning process that produced the stop —
+  //   and the gate's founding premise is that this exact judgment, in this exact
+  //   state, is the compromised one. Worse, the harm is not the message: it is
+  //   the abandoned work, which happens the instant the message sends. Bulk
+  //   judging at T+7d cannot un-abandon it, so the evidence rationale that
+  //   justifies the whole migration does not reach this family.
+  //
+  // Migrating these is a real operator decision, surfaced rather than assumed.
+  // A future migration should give them a THIRD disposition rather than a plain
+  // nudge: overridable only by naming a `stop_reason_kind` from the enum the
+  // prompt already emits (external-blocker | design-fork | operator-stop |
+  // completion), with `agent-state` refused — a falsifiable claim that can be
+  // cross-checked against BlockerLedger instead of free prose.
+  'B15_CONTEXT_DEATH_STOP',
+  'B16_UNVERIFIED_WALL',
+  'B17_FALSE_BLOCKER',
+  'B18_AUTONOMY_STOP',
+  'B19_PARKED_ON_USER',
+]);
+
+/**
+ * The effective disposition of a cited rule. `RULE_DISPOSITIONS` is the
+ * unmigrated baseline (kept intact so the rollback is a flag, not a revert);
+ * this resolver applies the migration on top.
+ *
+ * A rule NOT in the baseline map — `GATE_UNAVAILABLE`, or any id a future
+ * caller invents — resolves `blocking`. That is deliberate and load-bearing:
+ * an AVAILABILITY hold ("the authority could not produce a verdict") is not a
+ * judgment the agent can acknowledge away, and an unregistered id must never
+ * inherit advisory leniency by omission.
+ */
+export function resolveRuleDisposition(rule: string, advisoryMigration: boolean): GateRuleDisposition {
+  if (!rule) return 'blocking';
+  const baseline = RULE_DISPOSITIONS[rule];
+  if (baseline === undefined) return 'blocking';
+  if (baseline === 'advisory') return 'advisory';
+  if (!advisoryMigration) return 'blocking';
+  return ADVISORY_MIGRATION_EXEMPT_RULES.has(rule) ? 'blocking' : 'advisory';
+}
 
 export const PHASE2_MIGRATION_DEBT = {
   rules: [] as const,
@@ -907,6 +1010,18 @@ export interface ToneGateConfig {
    * layer that does not exist yet.
    */
   recordCandidateBody?: boolean;
+  /**
+   * The advisory migration (see ADVISORY_MIGRATION_EXEMPT_RULES): every
+   * judgment/representation rule becomes an overridable NUDGE, with the live
+   * credential guard as the one remaining hard wall.
+   *
+   * OMITTED in ConfigDefaults ON PURPOSE — absence resolves through the
+   * development-agent gate (live on a dev agent, dark on the fleet). An
+   * explicit `false` is the operator rollback (restores the pre-migration
+   * blocking behaviour without a deploy, read live per review); an explicit
+   * `true` is the fleet flip.
+   */
+  advisoryMigration?: boolean;
 }
 
 /**
@@ -928,6 +1043,11 @@ export function resolveToneGateOperatorConfig(config: unknown): ToneGateConfig {
     failClosedMode: tg?.failClosedMode,
     toneTierDryRun: tg?.toneTierDryRun,
     recordCandidateBody: tg?.recordCandidateBody,
+    // Dev-gated: absent ⇒ live on a development agent, dark on the fleet.
+    advisoryMigration: resolveDevAgentGate(
+      tg?.advisoryMigration,
+      config as { developmentAgent?: boolean } | undefined,
+    ),
   };
 }
 
@@ -953,6 +1073,12 @@ export class MessagingToneGate {
 
   async review(text: string, context: ToneReviewContext): Promise<ToneReviewResult> {
     const start = Date.now();
+    // The router mints the decision-quality correlation id synchronously at
+    // entry (before the first attempt) and hands it to this callback. Captured
+    // here so an ADVISORY verdict can carry it back to the agent as
+    // `decisionRef` — without it an override is an orphan log line that no
+    // grader can ever join to the decision it disputes.
+    let decisionRef: string | undefined;
     const prompt = this.buildPrompt(
       text,
       context.channel,
@@ -996,9 +1122,16 @@ export class MessagingToneGate {
         }),
         optionsPresented: [...TONE_OPTIONS_PRESENTED],
         promptId: TONE_GATE_PROMPT_ID,
+        onCorrelationId: (id: string) => {
+          decisionRef = id;
+        },
       },
     };
     const cfg = this.getConfig();
+    const advisoryMigration = cfg.advisoryMigration === true;
+    /** Stamp the correlation id onto whichever disposition this review returns. */
+    const withRef = (r: ToneReviewResult): ToneReviewResult =>
+      decisionRef ? { ...r, decisionRef } : r;
     // Availability-sensitive disposition (spec §Design 6 + tone-gate-graceful-
     // degradation F4). THREE-valued — distinguishes "operator forced pure-hold"
     // from "default degrade-to-deterministic". RAW tri-state (NOT normalized):
@@ -1027,19 +1160,27 @@ export class MessagingToneGate {
 
     try {
       // First pass.
-      let interp = this.interpret(this.parseResponse(await this.provider.evaluate(prompt, opts)), start);
+      let interp = this.interpret(
+        this.parseResponse(await this.provider.evaluate(prompt, opts)),
+        start,
+        advisoryMigration,
+      );
       // ONE re-prompt on a model-output-discipline failure (invalid/empty rule,
       // unparseable response, or a contradictory structured verdict) — same
       // candidate + context envelope, no narrowing.
       if (interp.kind === 'retry') {
-        interp = this.interpret(this.parseResponse(await this.provider.evaluate(prompt, opts)), start);
+        interp = this.interpret(
+          this.parseResponse(await this.provider.evaluate(prompt, opts)),
+          start,
+          advisoryMigration,
+        );
       }
-      if (interp.kind === 'ok') return interp.result;
+      if (interp.kind === 'ok') return withRef(interp.result);
       // Still a discipline failure after one re-prompt → no usable verdict
       // (availability). Tier for the operator channel; else FAIL-CLOSED (hold).
-      if (tierDeliver) return this.operatorChannelDeliver(start);
+      if (tierDeliver) return withRef(this.operatorChannelDeliver(start));
       dryRunHold('unparseable-after-retry');
-      return this.failClosed(start, interp.reason);
+      return withRef(this.failClosed(start, interp.reason));
     } catch (err) {
       // Fork-bomb P3 (forkbomb-prevention-simple §D-DISPOSITION): a capacity shed
       // (host spawn cap saturated) HOLDS — UNLESS tiered-operator, where DELIVERY
@@ -1049,45 +1190,45 @@ export class MessagingToneGate {
       // host is too saturated to do extra work and the shed is brief/retryable,
       // so the P3 invariant (a spawn-cap shed of a gating call fails closed) holds.
       if (isCapacityUnavailable(err)) {
-        if (tierDeliver) return this.operatorChannelDeliver(start);
+        if (tierDeliver) return withRef(this.operatorChannelDeliver(start));
         dryRunHold('capacity-shed');
-        return {
+        return withRef({
           pass: false,
           rule: 'CAPACITY_UNAVAILABLE',
           issue: 'Outbound tone review unavailable — host spawn capacity saturated.',
           suggestion: 'Held (fail-closed) under load; retry shortly.',
           latencyMs: Date.now() - start,
           capacityUnavailable: true,
-        };
+        });
       }
       // Provider-exhaustion / error path — the SUSTAINED outage class that
       // silently cut the user off (rate-limit → breaker open → every verdict
       // dropped). operator-channel-sacred tiers toward DELIVERY for the verified
       // operator; otherwise THREE-valued (tone-gate-graceful-degradation F4):
       //   true → pure-hold · false → fail-open · undefined → degrade-to-deterministic.
-      if (tierDeliver) return this.operatorChannelDeliver(start);
+      if (tierDeliver) return withRef(this.operatorChannelDeliver(start));
       dryRunHold('provider-error');
       if (failClosedOnExhaustion === true) {
         // Operator override → pure-hold (legacy strict, No Silent Degradation).
-        return this.failClosed(start, 'provider-error');
+        return withRef(this.failClosed(start, 'provider-error'));
       }
       if (failClosedOnExhaustion === false) {
         // Operator override → fail-open (legacy permissive: send unchecked).
-        return {
+        return withRef({
           pass: true,
           rule: '',
           issue: '',
           suggestion: '',
           latencyMs: Date.now() - start,
           failedOpen: true,
-        };
+        });
       }
       // DEFAULT (F4): degrade to the in-process deterministic leak floor. No LLM,
       // no subprocess — a clean message SENDS (the user is never silently cut
       // off during a backend outage); a real leaked artifact still HOLDS. The
       // SLOW manifestation of this same outage (the gate stalling past the route
       // budget) degrades identically at the route seam via `reviewWithinBudget`.
-      return buildDegradedToneResult(text, Date.now() - start, 'provider-error');
+      return withRef(buildDegradedToneResult(text, Date.now() - start, 'provider-error', advisoryMigration));
     }
   }
 
@@ -1134,6 +1275,7 @@ export class MessagingToneGate {
   private interpret(
     parsed: ParsedToneResponse | null,
     start: number,
+    advisoryMigration = false,
   ): { kind: 'ok'; result: ToneReviewResult } | { kind: 'retry'; reason: string } {
     if (!parsed) return { kind: 'retry', reason: 'unparseable' };
 
@@ -1154,6 +1296,14 @@ export class MessagingToneGate {
               parsed.suggestion ||
               'Continue the work; reserve a stop for a genuine external blocker, a real design fork only the user can resolve, an operator instruction to stop, or a real completion.',
             latencyMs: Date.now() - start,
+            // The DERIVED B15 block carries the same disposition as a cited
+            // one. Before the migration this branch built its result inline and
+            // silently skipped the disposition lookup, so a B15 flipped to
+            // advisory would still have hard-blocked here — the one path where
+            // the two verdict routes could disagree.
+            ...(resolveRuleDisposition('B15_CONTEXT_DEATH_STOP', advisoryMigration) === 'advisory'
+              ? { advisory: true }
+              : {}),
           },
         };
       }
@@ -1175,10 +1325,10 @@ export class MessagingToneGate {
         issue: parsed.issue,
         suggestion: parsed.suggestion,
         latencyMs: Date.now() - start,
-        // Advisory disposition (operator directive 2026-07-18): a cited
-        // advisory rule is a NUDGE, not a block — the seam gives the agent the
-        // final call with a recorded override path.
-        ...(!parsed.pass && RULE_DISPOSITIONS[parsed.rule] === 'advisory'
+        // Advisory disposition (operator directive 2026-07-18, migrated
+        // 2026-07-19): a cited advisory rule is a NUDGE, not a block — the seam
+        // gives the agent the final call with a recorded override path.
+        ...(!parsed.pass && resolveRuleDisposition(parsed.rule, advisoryMigration)=== 'advisory'
           ? { advisory: true }
           : {}),
       },

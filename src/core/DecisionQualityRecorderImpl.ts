@@ -198,6 +198,16 @@ export class DecisionQualityRecorderImpl implements DecisionQualityRecorder {
     this.nowFn = opts.now ?? (() => Date.now());
   }
 
+  /**
+   * True when an annotation would land durably (see
+   * `decisionQualityRecordingLive`). Read by callers that relax an enforcement
+   * decision in exchange for recorded evidence, so the relaxation can be made
+   * conditional on the evidence actually being collected.
+   */
+  isRecordingLive(): boolean {
+    return this.enabled && !this.dryRun;
+  }
+
   /** The resolved gate state (wiring-integrity/status surface). */
   gateState(): { enabled: boolean; dryRun: boolean } {
     return { enabled: this.enabled, dryRun: this.dryRun };
@@ -459,6 +469,24 @@ export function installDecisionQualityRecorder(impl: DecisionQualityRecorderImpl
 export function annotateDecisionOutcome(a: DecisionOutcomeAnnotationInput): DecisionOutcomeAnnotationResult {
   if (!_activeAnnotator) return { applied: false, disabled: true };
   return _activeAnnotator.annotateOutcome(a);
+}
+
+/**
+ * Would an outcome annotation land DURABLY right now? (`enabled && !dryRun`)
+ *
+ * WHY THIS EXISTS (review finding, 2026-07-25): a caller that RELAXES an
+ * enforcement decision in exchange for evidence must be able to check that the
+ * evidence is actually being collected. `annotateOutcome` returns
+ * `{applied:false, dryRun:true}` when the seam is dry — and `dryRun` DEFAULTS
+ * TRUE — so a feature that trades authority for recording could otherwise give
+ * up the authority and record nothing, silently, in the default configuration.
+ * Answering the question BEFORE the trade is the only way to make the trade
+ * conditional on its own premise.
+ *
+ * No installed recorder ⇒ false (a CLI process records nothing).
+ */
+export function decisionQualityRecordingLive(): boolean {
+  return _activeAnnotator?.isRecordingLive() === true;
 }
 
 /* ── Small helpers ──────────────────────────────────────────────────────── */
