@@ -66,6 +66,7 @@ import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
+import { CapabilityRegistryReceiver } from '../core/CapabilityRegistry.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
@@ -738,6 +739,7 @@ export function createDeliveryFailedHandler(opts: {
 }
 
 export interface RouteContext {
+  capabilityRegistry?: CapabilityRegistryReceiver | null;
   /** Unified work-intake registry; absent while fleet rollout is dark. */
   workQueue?: WorkQueueRegistry | null;
   config: InstarConfig;
@@ -2001,6 +2003,16 @@ function readLiveEvolutionActs(stateDir: string): LiveEvolutionActs | null {
 
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
+
+  router.get('/capability-registry', (_req, res) => {
+    if ((ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry?.enabled !== true) return res.status(503).json({ code: 'capability-registry-disabled' });
+    if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
+    return res.status(200).json({ scanState: 'never-observed', capabilities: [] });
+  });
+  router.get('/capability-registry/health', (_req, res) => {
+    if ((ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry?.enabled !== true) return res.status(503).json({ code: 'capability-registry-disabled' });
+    return res.status(200).json({ status: ctx.capabilityRegistry ? 'ok' : 'unavailable' });
+  });
 
   /**
    * Standby-write reconciliation route seam (spec §3.4): the admission check

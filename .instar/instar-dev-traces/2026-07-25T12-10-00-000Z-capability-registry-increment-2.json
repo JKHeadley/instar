@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "sessionId": "capability-registry-increment-2",
+  "timestamp": "2026-07-25T12:10:00.000Z",
+  "artifactPath": "upgrades/side-effects/capability-registry-increment-2.md",
+  "artifactSha256": "0c89b7d3490e4604ffc9deef8ccdaa2c84c8bf2aed0c8149d9ead80031dc02a0",
+  "specPath": "docs/specs/cross-machine-door-capability-registry.md",
+  "coveredFiles": ["src/server/routes.ts", "src/server/AgentServer.ts", "src/server/CapabilityIndex.ts", "src/core/PostUpdateMigrator.ts", "tests/e2e/capability-registry-lifecycle.test.ts"],
+  "phase": "complete",
+  "secondPass": "required",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {"verdict": "clear", "cause": null, "degraded": true, "notes": ["Observe-only route surface; no authority consumer."], "specSlug": "cross-machine-door-capability-registry", "phase": "build-start", "disposition": {"decision": "proceed", "reason": "Increment 2 dark contract and awareness wiring.", "acknowledgedEvidenceIds": [], "recordedAt": "2026-07-25T12:10:00.000Z"}}
+}
