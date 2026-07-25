@@ -7,6 +7,32 @@ including the parts that reflect badly on the author.
 
 ---
 
+## Why this stopped at round 80 (a decision, not an ending)
+
+The loop was stopped, not exhausted. Every round to the last was still finding
+real defects. The reason for stopping is what those defects became:
+
+**Rounds 26-51 contested the design** — the missing intake-edge alternative, the
+storage choice, the increment split, the unbounded stall.
+**Rounds 60-80 contested my prose about the design** — an overclaimed title, a
+residual framed too narrowly, one rule stated three ways, four incomplete
+removals. All real; none about whether the approach is right.
+
+The standing argument is round 69. `INSERT OR IGNORE` would have classified
+genuinely lost messages as harmless duplicates — silent data loss in the one line
+that does the work — and it survived **68 rounds of careful reading** because it
+looks completely idiomatic. The first integration test inserting a malformed row
+finds it in milliseconds.
+
+So the two methods have complementary blind spots, and this document has
+exhausted what one of them can do. Prose review found what building would not: a
+privacy control with a false name, a gate that gated nothing, three detectors
+that could not detect, a policy claim I had no standing to make. It cannot find
+what building finds instantly.
+
+**No convergence tag is written and none is earned.** Stopping is not converging,
+and this report exists partly so nobody later mistakes one for the other.
+
 ## If you read one section
 
 **The defect is real and still live.** As of 2026-07-25 13:29Z this machine had
@@ -56,7 +82,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **78 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
+- **80 rounds run, none clean. STOPPED deliberately at 80** — see below. Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
