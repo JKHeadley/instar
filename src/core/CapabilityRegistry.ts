@@ -112,8 +112,9 @@ export function deriveStatus(entries: CapabilityEntry[], now = Date.now(), opts:
   if (entries.every(e => e.evidenceClass === 'manifest-only')) return 'unknown';
   if (entries.some(e => e.probeOutcome === 'unknown')) return 'unknown';
   const observedStale = entries.some(e => now - Date.parse(e.observedAt) > (opts.localStaleAfterMs ?? 86_400_000));
+  const manifestStale = entries.some(e => e.evidence.manifestVerifiedAt !== undefined && now - Date.parse(e.evidence.manifestVerifiedAt) > (opts.localStaleAfterMs ?? 86_400_000));
   const transportStale = opts.lastConfirmedAt !== undefined && now - opts.lastConfirmedAt > (opts.remoteTtlCeilingMs ?? 600_000);
-  if (transportStale || observedStale) return 'stale';
+  if (transportStale || observedStale || manifestStale) return 'stale';
   return entries[0].probeOutcome === 'positive' ? 'available' : 'unavailable';
 }
 
