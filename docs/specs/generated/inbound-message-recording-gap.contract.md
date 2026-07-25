@@ -84,12 +84,17 @@ call to it — an orchestration line, not a second responsibility. What would
 violate SRP is inlining the write into the seam, and that is expressly not what
 this does.
 
-That is the whole mechanism. **It is deliberately not a queue, an event bus or a
-write-ahead log:** the persistence it needs already exists and is already written to
-by the same function on another path, the record is machine-local by nature
-(§6), and nothing downstream consumes it transactionally. Introducing an
-abstraction here would be the mistake the companion spec made four times and
-undid three.
+That is the whole mechanism. **What it is, named honestly:** it is
+a **miniature write-ahead split** — a durable minimal record written
+synchronously, secondary indexes updated asynchronously. That is an industry
+pattern, not an invention, and pretending otherwise made the design harder to
+evaluate rather than smaller.
+
+**What it is still deliberately NOT:** a queue subsystem, an event bus, a worker,
+a retry ladder, or any new persistent store. The persistence already exists and is
+already written by the same function on another path; the record is machine-local
+by nature (§6); nothing downstream consumes it transactionally. That is the real
+distinction, and it is the one rounds 5 and 6 deleted machinery to preserve.
 
 It works because:
 
@@ -268,7 +273,8 @@ attempted** — — so an
 injection failure cannot *by itself* produce an unrecorded message.
 
 **The invariant, stated exactly:** *recording is attempted before injection, unless the backlog guard
-drops it; and recording never blocks delivery.* Three things can still leave a
+drops it; the essential JSONL write is synchronous and may briefly delay delivery;
+the deferred TopicMemory write never can.* Three things can still leave a
 message unrecorded — the backlog guard dropping it, a crash before the next tick,
 or the write failing — and all three are counted. What the ordering buys is
 narrower than it sounded: an injection that fails does not *cause* the gap.
@@ -298,7 +304,23 @@ delivery. **The only real enforcement available is the enum** — a future
 `'injected'` value means a consumer that cares can *check* rather than assume,
 and that is the honest ceiling here.
 
-### 3.2 Failure direction: never block the message
+### 3.2 Failure direction: the essential write is synchronous, the rest never blocks
+
+**The invariant, split by write.**
+
+| Write | Timing | May it delay delivery? | May it be dropped? |
+|---|---|---|---|
+| **JSONL** (essential — what history reads) | **synchronous, before injection** | **Yes — briefly, and deliberately** | Never |
+| **TopicMemory** (secondary — search, summaries) | deferred to the next tick | No | Yes, above the backlog bound |
+
+**The JSONL append is not "non-blocking", and saying so was wrong.** `fs.appendFileSync` can stall on disk pressure, a full disk, a slow
+mount or a filesystem hiccup. The trade is deliberate: a microsecond-scale append
+in exchange for the essential record surviving a crash, on a path where the
+alternative — deferring it — demonstrably bought nothing. It is bounded by
+measurement rather than by hope: **append latency is sampled, and a p99 above
+50 ms raises the same deduped Attention item**, because at that point the local
+filesystem is the problem and this feature is merely the messenger. Delivery may
+wait for this append; it may never wait for the TopicMemory write.
 
 **The write is fire-and-forget on the next tick. That is the whole mechanism.**
 
@@ -557,9 +579,8 @@ that reader consults fails here rather than in production five days later.
 3. **A log failure never blocks the message** (§3.2).
 4. **The forward route's existing call stays** — dedup makes it harmless, and removing it is unrelated risk.
 5. **A missing `messageId` gets a per-injection UUID** (§3), not silence and not a content hash — an id-less message is recorded, and no cross-message identity is inferred from its bytes.
-6. **Ships default-OFF for exactly one release, then default-on** (§3.3) — the
- flip is earned by measured burst/loop-delay numbers, not by the (correct but
- unmeasured) argument that every day off is unrecoverable conversation.
+6. **Ships default-OFF; the flip to default-on is earned by three measured gates**
+ (§3.3), not by a release count. 
 7. **No backfill attempted** (§4).
 8. **Cross-machine history merge is explicitly out of scope**, and tracked as
  ACT-1216 rather than left as a note (§8.1).
