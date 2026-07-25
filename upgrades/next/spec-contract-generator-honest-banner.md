@@ -1,0 +1,89 @@
+<!-- internal-only -->
+
+## What Changed
+
+Two fixes to `scripts/generate-spec-contract.mjs`, both found by reviewing the
+tool's own output as a build artifact for the first time:
+
+1. **Meta-blockquotes are stripped.** Blocks that talk *about* the document —
+   normative-boundary markers, "this file is rationale", scope-change notices —
+   are now removed alongside history sections, and counted separately.
+
+2. **The banner stopped overclaiming.** It previously said review history "is
+   deliberately absent." That was false: narrative prose that states a rule and
+   narrates its own history in the same sentence cannot be separated by a
+   transform, and such sentences remained. The banner now states what is removed,
+   what is not, and prints the **count of `round-N` references still present**.
+
+**Why it matters.** The first version produced a file claiming to be
+normative-only that contained a `NON-NORMATIVE FROM HERE` marker — a boundary
+marker inside a document denying it had boundaries. An implementer trusting the
+banner would have been trusting a false statement. A tool that lies in its own
+header is worse than one with a stated limit, and this tool exists specifically
+to stop retired designs from being implemented.
+
+## Evidence
+
+- Before: `inbound-message-recording-gap` generated with **3 meta-blocks
+  surviving**, banner claiming history absent, `NON-NORMATIVE` marker present in
+  the output.
+- After: 1 history section + **3 meta-blocks** excluded, 13% smaller, zero
+  `NON-NORMATIVE` occurrences, banner reporting **14 narrative round-references
+  remain**.
+- Regression check on the large spec: unchanged behaviour — still **37 history
+  sections, 0 meta-blocks, 37% smaller** — confirming the new pattern does not
+  over-match on a document that has none.
+- `--check` passes for both specs after regeneration and reports the new counts.
+
+## Second change in the same push: `--strict` (allowlist mode)
+
+The default transform is a **denylist** — "remove what is definitely history,
+keep everything else." For an implementation artifact that is the wrong default:
+rationale, accepted residuals and self-correcting narrative are all "not
+definitely history", so they survive. Seven consecutive review rounds (33-39)
+said the generated contract still read as archaeology.
+
+`--strict` inverts it to an **allowlist** of contract-bearing headings (final
+contract, rollout, honest limits, decision points, test plan, dependencies).
+Everything else is absent by default rather than by pattern-match, and the output
+lands at `<slug>.contract.strict.md`.
+
+**Evidence:** `inbound-message-recording-gap` 1487 → 874 lines (42% smaller, 11
+allowlisted sections). `outbound-gate-advisory-override` 2765 → 270 lines (**90%
+smaller**, 8 sections) — a spec that never converged in 33 rounds, and whose
+history-stripped denylist version was still large enough to time a reviewer out,
+now has a contract short enough to actually review.
+
+Additive: the default mode and its output path are unchanged.
+
+
+## And the predicted failure happened immediately
+
+The over-block risk documented for `--strict` — dropping a normative section whose
+heading is not on the allowlist — occurred on the first spec with a different
+heading scheme. `outbound-gate-advisory-override` captured 8 of 66 sections and
+lost its normative outcome table; the reviewer's first finding was "normative
+behavior is missing from the strict contract."
+
+A `WARNING (strict)` now fires when a spec with >=8 headings matches under 25% of
+them, naming the ratio. It flags that spec at 12% and stays silent on the one that
+captures correctly. It warns rather than refuses, because the ratio is a heuristic
+and a rationale-heavy spec can legitimately capture low — a refusal on a heuristic
+blocks correct output, a warning that names the number hands the judgment to a
+human.
+
+## A content-loss guard for `--strict`
+
+The capture-ratio warning catches *too few sections matching*. It cannot see a
+section that matched and captured **nothing** — which happened live: a
+sub-heading added inside an allowlisted section ended that section's capture and
+dropped the entire contract table from the output, while the section count stayed
+identical and the guard stayed silent.
+
+A second warning now compares captured bytes to source bytes per section. Three
+implementations were needed: averaging hid the empty section behind healthy ones;
+an absolute threshold false-positived permanently on legitimate container
+headings; and the working version required the source measurement to stop using
+the capture's own rule, which had made it shrink in lockstep with the truncation.
+
+Each version was verified against the real regression and the correct file.

@@ -41,6 +41,147 @@ own judgment about what counts as current — and it would drift out of step wit
 the document exactly the way the document drifted out of step with itself. A dumb
 rule is checkable at a glance; a clever one is a second thing to review.
 
+## The time it lied about itself
+
+Worth recording, because it's the most useful thing that happened to this tool.
+
+The clean copy carried a header saying review history was "deliberately absent."
+Then the clean copy was reviewed for the first time as the thing to build from —
+and it still contained history. Worse, it contained a marker reading "NON-NORMATIVE
+FROM HERE", sitting inside a file whose own header claimed it had no non-normative
+parts.
+
+Two problems, and only one of them was a bug.
+
+The bug: blocks of text that talk *about* the document — "this file is the
+reasoning", "the plan is elsewhere" — weren't being removed. They are now.
+
+The other problem was the header itself. Some history genuinely cannot be
+removed: a sentence that states a rule and explains its own history at the same
+time can't be split by a tool that doesn't understand English. The header
+promised an absence the tool could never deliver.
+
+So the header now says three things instead of one: what it removed, what it
+couldn't remove, and **a count of how many historical references are still in the
+file**. If that number is 15, you know to read carefully. Before, you were told
+it was zero.
+
+A tool whose whole purpose is preventing people from building the wrong thing
+cannot have a false statement at the top of its output. That's not a small
+detail — it's the entire job.
+
+## One thing to watch
+
+Because the rule is blunt, it only recognises the heading shapes it knows. Run it
+against a document that organises its history differently and it will strip
+nothing, report "0 sections excluded", and exit successfully — which looks
+exactly like a document that had no history to strip.
+
+That happened the first time it was pointed at a second spec. The fix was one
+extra heading shape, but the failure mode is worth remembering: **always read
+what it says it removed, not just whether it succeeded.** A tool that silently
+does nothing is the same species of problem as a check that silently doesn't run.
+
+## The stricter mode
+
+There's now a second way to run it: instead of "remove what looks like history",
+it can do "keep only the sections that say what to build, drop everything else."
+
+That sounds like a small difference and isn't. The first approach keeps anything
+it isn't sure about, so all the reasoning and self-correction survives. The second
+starts from nothing and adds back only the parts on a short list.
+
+On the big design document — the one that ran thirty-three rounds and never
+finished — that takes it from 2,765 lines to about 270. A document nobody could
+review is suddenly one you could read over a coffee.
+
+**The trade is real and worth knowing.** The first approach fails by keeping too
+much, which makes a confusing document. The second fails by dropping something
+important if its heading isn't on the list, which makes an *incomplete* one. That's
+the worse failure, so the tool prints how many sections it kept — and that number
+is how a real bug was caught during testing, where two sections were silently
+vanishing because of a full stop in a heading. The strict mode is opt-in for
+exactly this reason; nothing depends on it.
+
+## The strict mode broke, exactly as predicted, within the hour
+
+I wrote down that the risk of the strict mode was dropping something important
+whose heading wasn't on the list. Then I pointed it at the other big design
+document and it did precisely that — kept 8 sections out of 66, and the one it
+lost was the table describing what the thing actually does. The reviewer's first
+words were "the actual behaviour is missing."
+
+So it now counts what fraction of a document it kept, and shouts when that
+fraction is implausibly small. On that document it reports 12% and warns you not
+to build from the result. On the one where it works, it says nothing.
+
+It warns rather than refusing, deliberately. A document that really is mostly
+reasoning would legitimately score low, and a tool that refuses on a rough
+measure would block correct work. Printing the number and letting a person judge
+is the honest division of labour — the tool knows the ratio, it doesn't know
+whether the ratio is fine.
+
+## The guard that needed guarding
+
+The strict mode has a warning for "I kept suspiciously few sections". It turned
+out to have a blind spot: a section can *match* and still come out empty, if you
+put a sub-heading inside it. That happened for real — a heading I added inside the
+main contract section silently deleted the whole contract from the output, and the
+existing warning stayed quiet because the section count hadn't changed.
+
+There's now a second check comparing how much each section *should* contain
+against how much came out.
+
+It took three tries, and the two failed ones are instructive. The first averaged
+across all sections, so nine healthy ones hid the empty one. The second used a
+fixed size threshold and fired constantly on sections that are legitimately short
+— and **a warning that always fires is one nobody reads**, which is worse than no
+warning. The third works, but only after I noticed the "how much should it
+contain" measurement was using the same rule as the thing it was checking, so it
+shrank in step with the problem instead of noticing it.
+
+Each attempt was tested against the actual broken file rather than assumed to
+work. That's the only reason the first two were caught.
+
+## The warning that cried wolf
+
+The check I added to catch "this section came out empty" had a flaw I only found
+by running it on both documents instead of the one I was working on: it fired
+every single time on any document with numbered sections.
+
+The reason is a bit subtle. To notice that a section came out short, the check
+has to measure how long it *should* be — and it can't measure that the same way
+the tool decides what to keep, or it would shrink along with the problem. So it
+measured too far, ran into the *next* section, and reported that section's
+content as missing.
+
+Two situations look identical from the outside. A heading that was meant as a
+sub-part of the section above it, where losing the text really is a bug. And a
+heading that's simply the next section, where excluding it is correct. The fix
+tells them apart by whether the next heading is numbered in sequence.
+
+**This is the third time this check needed fixing, and the second time the
+problem was "it complains constantly".** That's worth naming: a warning that
+always fires isn't a careful warning, it's a switched-off one, because people
+stop reading it. I'd written that exact sentence in the design notes a couple of
+hours earlier — while the check was already doing it.
+
+## The list was too short to work on anything but the first document
+
+Run against the second design document, the strict mode produced something that
+started at the test plan — no design, no data layout, no behaviour table. A
+reviewer reading it said "the actual behaviour is missing", and it was.
+
+The reason is dull: the list of section names to keep was written from one
+document, and the other one calls its sections different things. Perfectly good
+names — "what an implementer builds", "current design overview", "normative
+outcome table" — just not on the list.
+
+The uncomfortable part is that the tool's own warning fired at the time, said
+only 12% of sections matched, and I read it, noted it, and carried on. A warning
+that gets acknowledged but not acted on is only half a guard. That document sat
+in the repo for three hours looking like something you could build from.
+
 ## What it doesn't do
 
 It doesn't check whether the design is any *good*, or even whether it's
@@ -56,3 +197,27 @@ Those stay.
 Close to none. It's a build-time script that reads one file and writes another.
 Nothing at runtime reads a design document, no agent behaviour depends on it, and
 backing it out means deleting two files.
+
+## Update (2026-07-25): the tool was quietly throwing away the design
+
+The generator's job is to strip a spec's review history and leave the parts a
+builder actually needs. It did that by walking headings and keeping the ones on
+an approved list.
+
+The bug: it decided fresh at *every* heading. So when it opened a kept section
+called "3. Design", the very next line — "3.1", a heading *inside* that section —
+made it decide again, saw "3.1" wasn't on the approved list, and stopped. The
+whole design was dropped, but the section heading was still there, so the
+document looked complete.
+
+On the outbound-gate spec that meant 14 bytes survived out of 86,000. Reviewers
+reading it raised four objections about things the spec answered at length — the
+answers had simply been cut out before they saw it.
+
+Now the tool understands nesting: a heading *inside* a kept section stays with
+it. A heading at the same level, or one that starts its own kept section, still
+ends it. Nothing that used to be kept is dropped — both affected documents grew.
+
+There is also now a test for this, the first this tool has had. It was checked
+against the old code first to confirm it actually catches the bug rather than
+just agreeing with whatever the code does today.

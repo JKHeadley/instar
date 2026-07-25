@@ -234,7 +234,7 @@ Nine gaps stand between that and the approved design.
 | Class | Members | Disposition |
 |---|---|---|
 | Judgment / representation | B1–B21 (every LLM-citable rule) | **advisory** — overridable with a recorded reason |
-| Deterministic credential **wall** | **B22_HELD_CREDENTIAL** (new, non-LLM) — **proven possession only**: the candidate contains a credential value this install actually holds, verified by exact comparison | **blocking**, no agent override |
+| Deterministic credential **wall** | **B22_HELD_CREDENTIAL** (new, non-LLM) — **held-value match only**: the candidate contains a credential value this install actually holds, verified by exact comparison | **blocking**, no agent override |
 | Deterministic credential **nudge** | **B23_CREDENTIAL_SHAPED** (new, non-LLM) — **every** credential-*shaped* pattern match (§3.2) | **advisory** — overridable with a recorded reason **wherever recourse exists; observe-only everywhere else** (the B23 rule, below) |
 | Availability holds | `CAPACITY_UNAVAILABLE`, `GATE_UNAVAILABLE` | **blocking**, non-overridable, and *not a judgment* — nothing concluded. *(The degraded deterministic floor is NOT in this class: it does conclude something, so round 17 made it advisory — see below.)* |
 
@@ -669,14 +669,27 @@ security boundary; it is a lot of bespoke code standing next to an open door.
   (round-30, codex #3 — its sixth time on this, and the narrower proposal is
   right).** `authToken`, the Telegram bot token, tunnel tokens and the other
   config leaves are in this process's heap whether or not this feature exists,
-  so indexing them adds **zero** plaintext residency — and `authToken` is the
+  so indexing them adds **no new credential VALUES** — though it does add
+  derived *forms* of them, which is not the same claim; see below — and
+  `authToken` is the
   highest-value one, since it plus the tunnel URL is full remote control of the
   agent. **Vault-derived credentials are NOT loaded in PR-A**; they wait for the
   isolated matcher process, which becomes a required deliverable rather than a
   threshold-triggered upgrade. This costs reach — a vault secret pasted into a
   message is caught by B23 as a shape rather than by B22 as possession — and buys
-  the property the earlier design only claimed: **this feature expands plaintext
-  residency by nothing at all.**
+  most of the property the earlier design overclaimed. **Stated precisely
+  (round-36, codex — and this correction is overdue):** the index introduces
+  **no credential this process did not already hold**, but it is NOT true that
+  it "expands plaintext residency by nothing at all", and that phrasing is
+  withdrawn. §3.2's matcher keeps **three normalized forms per credential**, and
+  a separator-stripped form is a byte sequence that did **not** previously exist
+  anywhere in the process — so a memory scan for it would have found nothing
+  before and finds a hit now. The accurate claim is: **no new secrets, but new
+  derived representations of existing ones, in one purpose-built structure.**
+  The exposure delta is therefore real if bounded — an attacker already needed
+  arbitrary read of this process, and already had the originals. Recorded as a
+  correction rather than smoothed, because "zero" was the load-bearing word in
+  every prior round's security argument and it was wrong.
 - Matching is `String.prototype.includes` per credential per form — native,
   and at the real bound (≤4,096-char candidate × ≤512 credentials × 3 forms
   ≈ 1,536 native substring scans) comfortably sub-millisecond. **No fingerprint,
@@ -738,11 +751,22 @@ choice stands, and the delta is stated rather than smoothed over: it is
 **accessibility, not residency**, and it is one more reason the isolated matcher
 is the destination rather than a luxury.
 
-**Honest statement of what this costs, since it is a real reduction.** Vault
-secrets now sit in the server's heap for its lifetime, where before they were
-read transiently. The marginal exposure is: an attacker with a heap dump or
-arbitrary read of this process now also gets the vault subset, having already
-had the config subset. **The upgrade path, with concrete triggers rather than "if that ever matters"
+**Honest statement of what this costs, since it is a real reduction.**
+*(Round-35, codex: this paragraph described the PRE-round-30 design, in which
+the index DID load vault values — it claimed "vault secrets now sit in the
+server's heap for its lifetime" while the bullet above says vault-derived
+credentials are NOT loaded in PR-A. A direct contradiction, stale since round
+30, and it survived five rounds because nothing in the document disagreed with
+either half. Rewritten to the shipped design rather than patched.)*
+The index holds **only credentials already resident in the loaded config**, so
+it adds **no** plaintext that was not already in this process. The cost is
+therefore **not residency but accessibility**: those values now sit in one
+normalized, purpose-built structure rather than scattered through the config
+object, so an attacker with a heap dump or arbitrary read of this process finds
+them more readily than before — the same subset, more conveniently arranged.
+Vault values are **out of scope for PR-A entirely** and are reached only by the
+isolated matcher, which carries its own exposure analysis rather than
+inheriting this one. **The upgrade path, with concrete triggers rather than "if that ever matters"
 (round-29, codex):** an isolated matcher process holding the plaintext and
 answering a yes/no over a local socket. It is the **preferred future
 architecture**, not a hypothetical, and it is taken when **any** of these fires:
@@ -937,7 +961,18 @@ without the store, and there is no key to manage. A token whose record is absent
   the current verdict is "fine". The helper says exactly that ("your token had
   expired; the message was re-reviewed and passed, so it was sent — the earlier
   disagreement was recorded but could not be joined"), so the author is never
-  left guessing whether their reason counted. (Round-5, codex:
+  left guessing whether their reason counted.
+  **What that record IS, named once (round-35, codex).** This prose and row 22
+  described the same thing in two different vocabularies — "recorded but could
+  not be joined" here, "unjoined + unjudgeable machine-local attempt" there —
+  which left its audit status genuinely ambiguous. Pinned: exactly ONE event,
+  **`expired-token-override-attempt`**, written to the **machine-local**
+  operational log and nowhere else. It is **telemetry, NOT evidence**: it never
+  enters the graded corpus, is never joined to a decision, and is never counted
+  as an override. It exists so the rate of expired-token attempts is visible
+  (a rising rate means the token window is too short), and for no other purpose.
+  The helper text above is a user-facing paraphrase of this event, not a second
+  record. (Round-5, codex:
   otherwise an override attempt silently becomes a new advisory decision, and a
   fresh review that cites a *different* rule would confuse both a script and the
   metrics). That
@@ -1206,6 +1241,22 @@ the same append; there is no second write and therefore no second failure mode.
   does not depend on the provenance seam, and if **it**
   cannot be written the override is **refused** (`overrideUnrecordable: true`)
   rather than granted.
+- **`overrideUnrecordable` is an AVAILABILITY hold, and must be surfaced as one.**
+  Naming it is not enough: while it holds, a rule that is advisory by design
+  behaves as a wall, so an ordinary local fault (disk full, a permission change,
+  a read-only mount) silently acquires authority the design deliberately refused
+  to give any judgment rule. Required posture, all three:
+  (a) it is classified an availability/security hold alongside
+  `CAPACITY_UNAVAILABLE` and `GATE_UNAVAILABLE` in §3.1 — *not* a judgment, since
+  nothing about the message was concluded;
+  (b) the FIRST occurrence raises ONE deduped operator notice naming the cause
+  (write failure, not "your message was refused"), because an agent silently
+  unable to override is exactly the state nobody notices;
+  (c) recovery is automatic and requires no operator action once the write
+  succeeds again — the hold is a function of live writability, never a latched
+  flag, so a freed disk restores advisory behaviour on the next send.
+  Without (b) this is the failure the whole spec is against: an unappealable
+  refusal, with no one told.
 - The **rich** provenance annotation may still fail afterwards; that failure
   delivers and is counted `override-unrecorded`, because the override *fact* is
   already durable and only the detail is missing. Making the rich write a
@@ -1424,7 +1475,7 @@ asking for while keeping one reviewed contract.
 
 - **Stage 0 (ship state).** Advisory widening `enabled: false`. **Dissent-on-block
   is live** — data starts immediately. B22 ships **ON**, with its emergency
-  lever. It enforces from day one because it is **proven possession verified by
+  lever. It enforces from day one because it is **a held-value match verified by
   exact comparison** — not matcher inference — which is also why round 11's
   narrowing (§3.2) removed the shadow-mode staging round 9 had added: that
   staging existed only to let an *inferring* arm earn wall authority, and no
@@ -1571,9 +1622,92 @@ advisory forever).**
 - **Phase C — review.** Reached only when Phase B did not resolve the request:
   the LLM review and its dispositions.
 
+**The same ordering as illustrative pseudocode — NOT authority.**
+*(Round-37, codex, and the correction is mine to make: I originally wrote that
+this block was "the authority on the order". It is **not**, and that label was
+dangerous. This sketch omits ack/reason validation, `dissentOnly`, the malformed
+override, and the reason-vs-B22 outcomes covered by rows 15c, 16, 17, 20, 20a
+and 21 — an implementer who treated an incomplete sketch as authoritative would
+ship those gaps. **The TABLE is the sole authority on both outcome and order.**
+This block is a reading aid for the phase structure and nothing more; where it
+and the table differ, the table is right and this is a defect.)*
+The table below is the authority on every individual *outcome* **and on the
+order they are consulted in**. **The test plan (§3.10) derives its cases from
+the table**, not from this sketch
+— a reviewer noted that "the table wins" resolves prose-vs-table conflicts but
+does nothing for an implementer misreading precedence across rows 8/8a/8b,
+13/13a, 15/22 and 18/18a/18c/18d. If this pseudocode and the table ever
+disagree, that is a defect in one of them, not a choice.
+
+```
+evaluate(request):
+  # Phase A — deterministic wall. Runs on EVERY request, resends included.
+  #           Nothing downstream can waive a Phase A outcome.
+  if b22_matches(request):        return REFUSE_TERMINAL      # rows 1a / 1d
+  if b22_threw(request):          return HOLD_DETECTOR_INCOMPLETE   # row 2
+  # NOTE: a missing or stale index is NOT a hold — it narrows the wall's
+  # reach and is surfaced. See row 2a; holding every message because a
+  # vault is unreadable is worse than the exposure it prevents.
+
+  # Phase A ALSO evaluates the deterministic ADVISORY detector, every time.
+  # (Round-36, codex: the first version of this pseudocode ran only B22 here
+  # and then compared a single "finding_tuple" in Phase B. That was WRONG —
+  # it left no defined way to notice a B23 kind that fires only on the resend,
+  # which is exactly what row 13a requires, so a new advisory finding could be
+  # skipped by an ack for a different one. B23 is evaluated up front and the
+  # comparison below is per-finding, not whole-request.)
+  current = b23_findings(request)          # set, possibly empty; each a tuple
+                                           # {producer, rule, detectorKind,
+                                           #  candidateSha256} per §3.5
+
+  # Phase B — override resolution. Only when a token is presented.
+  if token_presented(request):
+    # Consuming a token needs MORE than the answering tuple: §3.5 additionally
+    # requires channel + topicId + messageKind to match the record, or the
+    # token could authorize identical text into the wrong conversation.
+    # A record that is absent/expired/consumed/evicted, or a context mismatch,
+    # is `override-uncorrelated` — counted, never a delivery.
+    # (Round-36: round 35 proposed exactly this wider tuple and I declined it,
+    # citing the four-field ANSWERING tuple. That was wrong — answering and
+    # consuming are different checks, and §3.5 states both. The suggestion was
+    # right; dismissing it repeated the morning's error of trusting my reading
+    # over the source.)
+    if not token_record_found(request):
+      return HOLD_FRESH_UNCORRELATED                          # override-uncorrelated
+    if not context_matches(request, token):                   # channel/topic/kind
+      return HOLD_FRESH_UNCORRELATED                          # override-uncorrelated
+    if text_edited(request):      return HOLD_FRESH           # ack binds to the hash
+    # An ack answers EXACTLY the one finding it cites. Every other current
+    # finding is unanswered and still holds (row 13a).
+    unanswered = [f for f in current if f != acked_tuple(token)]
+    if unanswered:                return HOLD_FRESH           # new citation, new token
+    if not authorized_event_appendable():
+      return REFUSE_OVERRIDE_UNRECORDABLE                     # row 18 (availability hold)
+    return DELIVER                                            # acked citation answered
+
+  # Phase C — review. Reached only if Phase B did not resolve the request.
+  return llm_review(request)      # dispositions per §3.1
+```
+
+**What `recordingLive: true` MEANS in every row below (round-38, codex).** The
+column is not just "the recorder is up". A row's `recordingLive: true`
+**presupposes the FD36 coupling**: live widening requires **both** capture flags
+(§3.11), and where they are not both on, `judgeableCorpus: false` is surfaced
+with the missing flag named. This was stated in §3.11 and FD36 but **not here**,
+and since the table is the authority an implementer building from it alone could
+ship live overrides that are structurally unjudgeable — which would starve the
+grading corpus this whole change exists to fill. Recorded as a definition rather
+than as new rows: re-partitioning this table by hand has produced a fresh
+unreachable row on three consecutive attempts, so the coupling is stated once,
+here, where the authority is. **Dissent stays deliberately uncoupled** (§3.11) —
+a refusal to deliver needs no gradeable body.
+
+Within each phase the **first matching row wins**; the phases themselves are
+strictly ordered A → B → C and never revisited.
+
 | # | Producer / condition | `advisoryCapable` | Token | `recordingLive` | Outcome |
 |---|---|---|---|---|---|
-| 1a | **B22** (proven possession — the value arm is the whole wall), **seam** | any | any | any | **Refuse, terminal.** Never overridable. Returns a **dissent-only** token (§3.3). |
+| 1a | **B22** (held-value match — the value arm is the whole wall), **seam** | any | any | any | **Refuse, terminal.** Never overridable. Returns a **dissent-only** token (§3.3). |
 | 1d | **B22, ADAPTER layer** | n/a | n/a | n/a | **Refuse at egress**, local audit event only — **no token, no agent-facing protocol**. The adapter's callers are system templates, relays and the lifeline fallback; there is nobody to hand a token to (§3.2). Counted `b22-adapter-caught-post-seam`. |
 | 2 | **B22 matcher threw** on a built index | any | any | any | **Hold**, `detectorIncomplete`. |
 | 2a | **No index exists** (never built at startup) or a **refresh failed** while a previous index is served | any | any | any | **Degraded, NEVER a hold** — the wall's reach narrows (to nothing, or to the previous index), `valueArmScope` + `b22-index-degraded` surfaced unconditionally (§3.2.2). Holding every message because a vault cannot be read is worse than the exposure it would prevent, and that trade is stated rather than implied. |
@@ -1594,7 +1728,10 @@ advisory forever).**
 | 13 | Resend, ack + reason + **valid** token, hash matches | true | valid | true | **Phase A** runs (rows 1–2 still apply); the acked citation is treated as answered; **Phase C is skipped**; deliver; annotate once. |
 | 13a | Resend as above, but a **different** deterministic rule now fires | true | valid | true | Fresh hold on the new citation with a new token — an ack for one rule never answers another. |
 | 14 | Resend, token valid, **hash mismatch** (edited message) | true | valid | true | Full fresh review (the edit is a new message). |
-| 15 | Resend, token **absent/expired/consumed** | true | invalid | true | Fresh review; response carries `tokenExpiredFreshReview: true`; counted separately; never a join on text. |
+| 15 | Resend, **no token presented at all**, **NO ack+reason**, **and NO live pending record matches this text** | true | n/a | true | **Ordinary fresh review.** No override was attempted, so nothing override-flavoured is emitted: **no** `tokenExpiredFreshReview`, no telemetry. Counted as a first-pass advisory. *(Round-35 added the ack-absent clause because without it row 22 was unreachable. Round-36 found the row still conflated **absent** with **expired**. **Round-37 found that my round-36 split made row 19 unreachable** — the broadened row 15 swallowed "text hash matches a live record" — so the no-live-record clause is now required too. Three consecutive edits to this row, each fixing one unreachability and creating another; that history is left visible because it is the argument for a reachability lint over this table rather than more hand-editing.)* |
+| 15a | Resend, a token **was** presented but its record is **expired/consumed/evicted**, **NO ack+reason** | true | invalid | true | Fresh review; response carries `tokenExpiredFreshReview: true`; counted separately; never a join on text. This is the only row that may claim expiry, because it is the only one that saw a token. |
+| 15b | Resend, token presented but **context mismatch** (`channel`/`topicId`/`messageKind` differ from the record, §3.5) | true | invalid | true | **`override-uncorrelated`** — counted, never a delivery, never `tokenExpiredFreshReview`. A valid token in the wrong conversation is not an expired token; conflating them would hide the exact cross-context leak the token replaced a hash map to prevent. |
+| 15c | **ack+reason present but NO token at all** | true | n/a | true | **Malformed override.** Fresh review, and counted as `override-malformed` — distinct from row 22, which had a token that aged out. An ack citing a rule with no token was never a valid override attempt and must not inflate the expired-attempt rate. |
 | 16 | Resend, ack present, **reason missing/short after scrub** | true | valid | true | 422 with `reasonRequired: true`, `refusedField: 'reason'`; nothing delivered, nothing annotated. |
 | 17 | Resend, **reason itself trips B22** | true | valid | true | 422 `reasonRejected: true`, `refusedField: 'reason'`; nothing delivered, nothing annotated. |
 | 18 | Valid override, the **`authorized` event cannot be appended** | true | valid | true | **Refuse the override** (`overrideUnrecordable: true`) — nothing delivered. Authority is granted only against durable evidence (§3.8). |
@@ -1608,7 +1745,7 @@ advisory forever).**
 | 21 | Resend carrying `agentDissentReason` against an **availability hold** or `detectorIncomplete` | any | any | any | Refused with `notAJudgment: true`; nothing annotated — there is no verdict to dissent from. |
 | 23 | Send where `isProxy` / `isSystemTemplate` / `willRelay` (review short-circuited) — **B22** | n/a | n/a | any | **Evaluates and refuses.** Hoisted above the early return; possession needs no protocol to be answerable (dissent is available wherever the caller can carry it, and the refusal is audited regardless). |
 | 23a | Same paths — **B23** | n/a | n/a | any | **Per the sender class's policy** (§3.8). These callers have no advisory protocol, so a hold can never be *answered* — but round 22 established that the operator, not the rule, decides whether an unanswerable hold is preferable to delivery for a given sender: **every class defaults to `observe`**; `fail-closed` exists only where an operator has explicitly opted that class in. Records `b23-would-hold` either way. *(Round-23 hand-check: this row said "observe-only, always", which the round-22 class map contradicted — these paths ARE the relay and system-template classes.)* |
-| 22 | Resend with ack + reason but an **expired/absent** token | true | invalid | true | Fresh review (row 15) **and** `expired-token-override-attempt` recorded machine-local, explicitly marked unjoined + unjudgeable, so the corpus does not silently over-represent overrides whose token happened to survive (round-7, codex). |
+| 22 | Resend with ack + reason and a token **that was presented but whose record is expired/consumed/evicted** | true | invalid | true | Fresh review (**row 15a**) **and** `expired-token-override-attempt` recorded machine-local, explicitly marked unjoined + unjudgeable, so the corpus does not silently over-represent overrides whose token happened to survive (round-7, codex). *(Round-36: this row previously read "expired/**absent**" and cross-referenced row 15. Both became wrong when 15 was split — an ack with NO token is row 15c `override-malformed`, not an expired attempt, and folding it in here would inflate the expired-attempt rate that row 22's telemetry exists to measure.)* |
 
 ### 3.9 Fail directions
 
@@ -1651,7 +1788,7 @@ cause is crafted text or a matcher bug).**
 `VALID_RULES` and `RULE_CLASSES`; **B23's kind set covers `DurableSecretKind`**
 minus the reasoned exclusions (a new kind fails the build rather than shipping
 unhandled); an LLM citation of B22 *or* B23 is invalid-rule; **B22 fires only on
-proven possession** — per normalization form, and for this install's own
+held-value match** — per normalization form, and for this install's own
 `authToken`; **every pattern match is B23 and never B22**, with the prose cases
 as named fixtures (`your api_key: not-configured-yet`, `Bearer your-token-here-example`,
 a dotted identifier matching the `jwt` shape) — each asserted overridable;
@@ -1933,6 +2070,52 @@ judgeable-decision-record v1
   sentences, and it costs only the ability to stop an agent that has written down
   a justification — never the ability to stop an accident. Anything this install
   actually holds is unaffected: that is the wall.
+  **And on a structurally no-recourse sender it is not even a nudge (round-38,
+  codex).** B23 defaults relay, system-template and automated-job senders to
+  `observe` — correct, because a hold nobody can answer is an unappealable
+  refusal — but the consequence must be said plainly: **a credential-shaped
+  third-party secret on a high-volume automated path is DELIVERED by default,
+  with a counter.** So the honest scope of "credentials stay a wall" is: *values
+  this install holds are a wall everywhere; credential-shaped values are a nudge
+  where someone can answer it, and observation-only where nobody can.* Anyone
+  reading the headline as "credential-shaped text cannot leave on any path" is
+  reading more than the design delivers. If that gap matters for a given sender,
+  the lever is a build-time or template check on that path plus a sampled runtime
+  threshold — **not** widening the wall, which would re-create unanswerable holds
+  on exactly the senders that cannot answer them.
+- **"Held-value match" is the honest name, and it is weaker than "possession".**
+  *(Round-37, codex; the normative sections said "proven possession" and the
+  vocabulary is now consistent with the rule's own name, `B22_HELD_CREDENTIAL`.
+  Change-log rows keep the old wording — they record what was said at the
+  time.)* A B22 hit proves exactly one thing: **this candidate contains a byte
+  sequence that also appears in this install's loaded config.** It does **not**
+  prove the credential is live (it may be revoked or rotated), that this install
+  owns it, that it was ever intended to be secret, or even that the message is
+  *disclosing* it rather than quoting a stale or template value. Those are all
+  reasons the wall stays deliberately narrow — a match on a value we hold is a
+  strong enough signal to refuse without appeal; a claim to have proven
+  *possession* would be a stronger statement than the evidence supports.
+- **PARTIAL disclosure of a held credential is a nudge at best, and sometimes
+  nothing.** B22 matches a held value as a normalized substring, so it fires only
+  on the value *in full*. Most of a token, a fixed prefix or suffix alone, or the
+  value with one character altered does **not** reach the wall — and where the
+  value is pattern-light (bare hex, no recognizable vendor prefix) it may not
+  reach B23's nudge either, so nothing fires at all. This is an **accepted
+  limit**, not an oversight: the alternatives are a prefix/window matcher whose
+  false-positive rate on ordinary hex-looking text has no bound anyone has
+  measured, and false positives on a NON-overridable wall have no recourse by
+  construction (§3.1's whole reason for keeping the wall narrow). Recorded here
+  rather than implied away. Revisit only with a measured false-positive bound.
+- **In-memory plaintext has exposure channels the startup checklist does not
+  cover.** §3.2.1's hardening addresses heap snapshots, the inspector, route
+  exposure and crash reports. It does **not** address swap, ptrace or equivalent
+  debug entitlements, `/proc`-style access where the platform offers it, child
+  process inheritance, or platform-level crash collection. These are **accepted
+  residuals for as long as the normalized index lives in this process** — the
+  isolated matcher §3.2.1 already requires for vault values is the real fix, and
+  it retires this bullet rather than shrinking it. Anyone with the local access
+  these channels need can generally read the config the index is built from
+  anyway, which bounds the added exposure without eliminating it.
 - **The value arm is machine-scoped.** On the relay path the composing machine's
   credentials are what matter; see §6.
 - The change grades nothing. It produces evidence; the judging is later, in bulk,
@@ -2070,7 +2253,7 @@ judgeable-decision-record v1
     recorded as a live dependency rather than as an open question (§8.1).
 41. **Consuming a token requires the full binding tuple** — rule, detector kind,
     candidate hash, **channel, topic and message kind** (§3.5).
-42. **B22 enforces from day one** — proven possession verified by exact
+42. **B22 enforces from day one** — held-value match verified by exact
     comparison needs no soak. *(Round 9 added a shadow-mode stage for the
     pattern arm; round 11 removed the pattern arm from the wall entirely, so the
     staging went with it — recorded rather than silently dropped.)*
@@ -2097,10 +2280,52 @@ cross-checking rather than for trusting a careful author.)*
 
 ## Open questions (§8)
 
-*(none)*
+**ONE, raised in rounds 35, 36, 37 and 38 — the same finding four rounds
+running. It is a decision, not an edit, and it is the operator's.**
 
-> No decision is parked on the operator. The live external dependency is recorded
-> in §8.1 rather than disguised as a question (round-8, codex).
+> *Previously this section read `*(none)*`, and that was accurate when written.
+> It stopped being accurate once clean-artifact review could see §3.8. Leaving
+> "none" standing while a reviewer raised the same structural objection four
+> times would be the "no open questions is not credible" criticism becoming
+> true rather than being answered.*
+
+### Q1 — Does the override lifecycle become a durable outbox, or get cut back?
+
+**The observation (codex, rounds 35-38).** §3.5.1 explicitly REJECTS a durable
+approval table. §3.5 and §3.8 then specify: a token store with pending records,
+an append-only event log (`authorized` / `sent` / `egress-refused` /
+`send-failed`), a projector over it, terminal-event semantics, startup
+reconciliation, and repair. **That is a small workflow/event-sourcing system,
+assembled from parts and split across process memory and a local log.** The
+rejection and the construction are both in the spec.
+
+**Option A — adopt the pattern.** A durable approval/outbox table with explicit
+states, schema versioning, and idempotent projection.
+*Costs:* a real store and its migrations; the durability §3.5.1 argued was
+disproportionate for a 15-minute TTL; more surface at rollout.
+*Buys:* the lifecycle stops being implicit, restart semantics are a property of
+the store instead of reconstruction logic, and the failure modes are the
+well-understood ones of a pattern with prior art.
+
+**Option B — cut it back.** Reduce to a minimal local evidence log: append the
+`authorized` fact, drop the projector, terminal-event semantics and startup
+reconciliation.
+*Costs:* loses the ability to answer "what happened to this override" after a
+restart; some counters become approximate.
+*Buys:* honours §3.5.1's own reasoning; markedly less to implement and to get
+wrong.
+
+**What is NOT an option:** keeping the current shape while the spec says it
+rejected a durable table. That is the state a reviewer has objected to four
+times, and it is the one that ships a workflow engine nobody designed as one.
+
+**Recommendation (advisory, not a decision).** **Option B.** §3.5.1's argument
+against durability was made on the 15-minute TTL and still holds; the lifecycle
+grew round by round without a moment where durability was actually chosen. B is
+also the cheaper mistake — if the counters prove insufficient, A remains
+available, whereas building A now commits to a store and its migrations before
+anything is measured. **This is a recommendation only; the call is the
+operator's and nothing downstream should read it as settled.**
 
 ## 8.1 Dependencies (live, external to this spec)
 
