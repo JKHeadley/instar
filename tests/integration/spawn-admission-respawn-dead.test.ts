@@ -9,6 +9,7 @@ describe('respawn-dead SpawnAdmission integration', () => {
       readOwnership: () => ({ owner: 'laptop', epoch: 4, status: 'owned' }),
       readHardPinOwner: () => 'laptop',
       isMachineAlive: () => alive,
+      hasLiveSession: () => true,
       durableCustodyLive: () => true,
       journal: vi.fn(), raiseAttention: vi.fn(), provenance: vi.fn(), log: vi.fn(),
     };
