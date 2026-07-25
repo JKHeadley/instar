@@ -822,12 +822,26 @@ detector. The design was proposing to observe a stall using the machinery the
 stall stops. That is circular, and it means the most serious failure mode was
 formally the *least* observable one.
 
-The honest fix is out-of-process: the existing **fleet watchdog** already polls
-this agent from outside, so it gains one check — **"process alive but event loop
-not advancing"** (a heartbeat counter the server bumps on a timer; alive process +
-frozen counter = blocked loop). That is a genuinely external observer and it costs
-one counter. It does not *prevent* the stall; it makes the stall visible, which
-the in-process alarms provably cannot.
+The honest fix is out-of-process, and it needs less new machinery than first
+written — **checked against the code rather than assumed**:
+`src/templates/scripts/instar-watchdog.sh` is launchd-scheduled, runs outside the
+server, and already probes `http://localhost:<port>/health` per agent, escalating
+via a healthy peer. **A blocked event loop cannot answer that probe**, so the
+existing check already sees the failure; what it cannot do is tell a blocked loop
+apart from a dead process.
+
+So the addition is one field, not a new watcher: `/health` carries a **monotonic
+loop-tick counter** bumped on a timer. The watchdog then distinguishes three
+states it previously conflated — *answering and tick advancing* (healthy),
+*answering but tick frozen* (loop blocked, which is this failure), and *not
+answering at all* (process dead or hard-blocked). It does not *prevent* the
+stall; it makes it visible from outside, which the in-process alarms provably
+cannot.
+
+*(The first draft of this paragraph invented "a heartbeat counter the watchdog
+polls" without checking what the watchdog does. It polls `/health`. Writing a
+design against an assumed interface is how the original defect happened — the
+recording code was on a path nobody verified was in use.)*
 
 For the remainder the position stays honest rather than mechanical: it is
 **detected out-of-process**, it **degrades health**, and it is **named as a
