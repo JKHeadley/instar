@@ -1,0 +1,65 @@
+## What Changed
+
+A newly created scheduled job fired immediately on the next server restart —
+including one scheduled months ahead.
+
+At startup the scheduler sweeps for work that was missed while the machine was
+off. To decide, it compares now against the job's last run. For a job that has
+**never** run there is no last run, and the code resolved that case by treating
+it as overdue and triggering it. That is right for a job added while the server
+was down that slept through its window, and wrong for a job created minutes ago
+whose first window is in December — "has never run" describes both identically.
+
+The comment directly above that branch stated the correct rule —
+
+> *"Jobs that have never run: trigger on startup if their first expected run
+> time has already passed"*
+
+— and the code never checked the condition. It couldn't: nothing recorded when a
+job started existing, so there was no fact to reason from.
+
+`JobState.firstSeenAt` is now stamped once at registration, and the sweep applies
+the intended rule: a never-run job is missed only if it has existed longer than
+one of its own intervals. A December reminder created today waits; a job that has
+sat unrun through six four-hour windows still catches up.
+
+Every unknown resolves to **not firing** — missing or unparseable `firstSeenAt`,
+uncomputable interval. That asymmetry is deliberate: a skipped catch-up costs one
+delayed run, while a future-dated job that fires early marks itself delivered and
+never fires again, so nobody goes looking for it.
+
+**Why now:** this is the prerequisite for dated commitments materializing real
+scheduled reminders (ACT-724). A reminder built on a scheduler that fires
+future-dated jobs at boot would discharge itself before its date — worse than
+never having built it. The standard itself is not in this change.
+
+## Evidence
+
+- `tests/unit/job-scheduler-never-run-future-job.test.ts` (3 cases): a never-run
+  annual job and a freshly-registered daily job both stay at zero triggers; a job
+  registered 6h ago on a 5-minute cron still catches up. Written failing first —
+  the two "must not fire" cases failed against the old code, the catch-up case
+  already passed.
+- `tests/unit/job-scheduler-edge.test.ts`: the existing test that asserted the
+  buggy behaviour was **updated, not deleted** — it now seeds `firstSeenAt` in the
+  past so it exercises the scenario it was written for (a job that genuinely
+  missed windows), plus a new sibling pinning the other side of the boundary.
+- Full scheduler suite: 76 tests across 8 files, green.
+
+## What to Tell Your User
+
+If you've ever seen a scheduled job run for no obvious reason shortly after a
+restart, this was probably it.
+
+The practical effect: reminders and scheduled work now happen when they're
+scheduled, not when the server next happens to reboot. A job that's been waiting
+less than one of its own cycles will now wait for its proper turn rather than
+firing at startup — that delay is the point.
+
+## Summary of New Capabilities
+
+- Scheduled jobs with a future first window are no longer discharged at server
+  startup.
+- Job state records when a job was first registered, so "brand new" and "long
+  overdue" are distinguishable facts rather than a guess.
+- The startup sweep fails toward not-running on every uncertainty.
