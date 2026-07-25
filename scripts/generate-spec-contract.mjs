@@ -121,7 +121,22 @@ export function splitStrictContract(markdown) {
   }
   const body = stripInlineAnnotations(kept.join('\n')).replace(/\n{4,}/g, '\n\n\n');
   const narrativeResidual = (body.match(NARRATIVE_HISTORY_RE) || []).length;
-  return { contract: body, keptSections, narrativeResidual };
+  // Guard against the allowlist's own failure mode: SILENT OMISSION. If strict
+  // mode keeps only a small slice of a large spec, the likely cause is that the
+  // spec's headings do not match the allowlist — not that the spec is mostly
+  // rationale. Confirmed in practice on outbound-gate-advisory-override, where
+  // the normative outcome table lived under headings the list did not name, and
+  // the reviewer's first finding was "normative behavior is missing".
+  const sourceHeadings = (markdown.match(/^#{2,3}\s/gm) || []).length;
+  const keptRatio = sourceHeadings ? keptSections / sourceHeadings : 1;
+  const underCaptureWarning =
+    sourceHeadings >= 8 && keptRatio < 0.25
+      ? `only ${keptSections}/${sourceHeadings} sections matched the allowlist ` +
+        `(${Math.round(keptRatio * 100)}%) — the strict contract may be MISSING ` +
+        `normative sections whose headings are not on the list. Verify before ` +
+        `building from it.`
+      : null;
+  return { contract: body, keptSections, narrativeResidual, sourceHeadings, underCaptureWarning };
 }
 
 export function splitContract(markdown) {
@@ -215,6 +230,9 @@ function main() {
   const droppedMetaBlocks = res.droppedMetaBlocks ?? 0;
   const keptSections = res.keptSections ?? 0;
   const output = banner(specRel, narrativeResidual, strict) + contract;
+  if (res.underCaptureWarning) {
+    console.error(`WARNING (strict): ${res.underCaptureWarning}`);
+  }
 
   const slug = path.basename(specPath, '.md');
   const suffix = strict ? '.contract.strict.md' : '.contract.md';

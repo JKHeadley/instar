@@ -198,3 +198,45 @@ proceed to implementation — knowing that one reviewer'sresidual findings are p
 consistency work rather than a clean bill of health. Approving is a real
 decision. Declining and asking for further rounds is equally reasonable, and the
 loop can continue.
+
+
+---
+
+## Addendum — 2026-07-25: the diagnosis in this report was incomplete
+
+This report attributed the failure to converge to **document size and accumulated
+history**. A test run today says that is at most half the story.
+
+**What was tested.** The spec was reduced to a strict implementation contract —
+2,765 lines to 290, history and rationale removed — and reviewed independently.
+
+**Result 1: the size hypothesis is unproven, and the evidence I first cited for it
+was wrong.** `gemini-cli` timed out on the 290-line contract exactly as it had on
+the full spec. A single timeout at 2,032 lines had earlier been offered as
+evidence that size was the blocker; the same timeout at 290 lines shows it is the
+reviewer, not the length. That inference should not have been drawn from one
+failure.
+
+**Result 2: the design has real open findings, not just document problems.**
+`codex-cli:gpt-5.5` returned **SERIOUS ISSUES** on the short contract, and the
+substantive ones are not about readability:
+
+| Finding | Why it matters |
+|---|---|
+| **Hand-rolled credential-shape detection** | Gitleaks, TruffleHog, detect-secrets and Semgrep rule packs exist. The spec never justifies preferring its own pattern set over an established detector with suppression/override semantics. |
+| **The live credential index is the highest-risk element** | Normalized plaintext secret material held in-process for matching, with no stated memory lifetime, zeroization, or crash/log exclusion. The reviewer asks whether matching could use handles, an isolated helper, or streaming comparison instead. |
+| **Relay double-check is fragile** | Composing machine checks A's credentials, adapter checks B's — the failure mode is each side believing the other checked. Needs telemetry proving both scopes ran, or recording which was unavailable. |
+| **"No open questions" is not credible** | Stage 3 depends on ACT-1198, Slack parity is deferred, several limits are in-scope-but-unhandled. |
+
+**Corrected conclusion.** The document was genuinely hard to review, and fixing
+that was worth doing — but it was masking substantive design questions rather
+than being the whole problem. Anyone deciding on this spec should weigh the
+credential-index and hand-rolled-detection findings above, which no amount of
+document restructuring addresses.
+
+**Also learned about the tooling used for this test:** the strict contract
+*dropped the spec's normative outcome table*, and the reviewer's first finding was
+"normative behavior is missing." The 290-line artifact was therefore not
+sufficient to build from. A capture-ratio warning now flags that (8/66 sections,
+12%). Findings 2-6 above stand regardless — they concern content that *was*
+present.

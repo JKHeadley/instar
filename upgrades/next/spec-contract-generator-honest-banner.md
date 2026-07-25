@@ -55,3 +55,19 @@ history-stripped denylist version was still large enough to time a reviewer out,
 now has a contract short enough to actually review.
 
 Additive: the default mode and its output path are unchanged.
+
+
+## And the predicted failure happened immediately
+
+The over-block risk documented for `--strict` — dropping a normative section whose
+heading is not on the allowlist — occurred on the first spec with a different
+heading scheme. `outbound-gate-advisory-override` captured 8 of 66 sections and
+lost its normative outcome table; the reviewer's first finding was "normative
+behavior is missing from the strict contract."
+
+A `WARNING (strict)` now fires when a spec with >=8 headings matches under 25% of
+them, naming the ratio. It flags that spec at 12% and stays silent on the one that
+captures correctly. It warns rather than refuses, because the ratio is a heuristic
+and a rationale-heavy spec can legitimately capture low — a refusal on a heuristic
+blocks correct output, a warning that names the number hands the judgment to a
+human.

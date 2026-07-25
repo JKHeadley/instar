@@ -93,6 +93,25 @@ requirement rather than a confusing one. It is therefore additive and opt-in —
 the default denylist mode and its output path are unchanged, and no build gate
 requires strict mode.
 
+**The over-block risk was confirmed within an hour of shipping it.** Pointed at
+`outbound-gate-advisory-override`, strict mode kept 8 of 66 sections and dropped
+the normative outcome table, whose headings are not on the allowlist. The
+reviewer's *first* finding was "normative behavior is missing from the strict
+contract" — the exact silent-omission failure predicted above, on the first spec
+with a different heading scheme.
+
+**Guard added:** strict mode now computes the kept-section ratio and prints a
+`WARNING (strict)` when a spec with >=8 headings matches under 25% of them,
+naming the ratio and saying the output may be missing normative sections. It
+fires on `outbound-gate-advisory-override` (8/66, 12%) and stays silent on
+`inbound-message-recording-gap` (11 sections, 41% capture) — a real signal on the
+real failure, no noise on the working case.
+
+The guard is a warning, not a refusal, and deliberately: the ratio is a heuristic,
+and a genuinely rationale-heavy spec can legitimately capture low. A refusal on a
+heuristic would block correct output; a warning that names the number lets a human
+apply the judgment the tool does not have.
+
 **Under-block:** unchanged. A rule narrated inside an allowlisted section still
 carries its own history; strict mode reduces the surface, it does not clean prose.
 

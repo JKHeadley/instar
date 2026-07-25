@@ -103,6 +103,24 @@ is how a real bug was caught during testing, where two sections were silently
 vanishing because of a full stop in a heading. The strict mode is opt-in for
 exactly this reason; nothing depends on it.
 
+## The strict mode broke, exactly as predicted, within the hour
+
+I wrote down that the risk of the strict mode was dropping something important
+whose heading wasn't on the list. Then I pointed it at the other big design
+document and it did precisely that — kept 8 sections out of 66, and the one it
+lost was the table describing what the thing actually does. The reviewer's first
+words were "the actual behaviour is missing."
+
+So it now counts what fraction of a document it kept, and shouts when that
+fraction is implausibly small. On that document it reports 12% and warns you not
+to build from the result. On the one where it works, it says nothing.
+
+It warns rather than refusing, deliberately. A document that really is mostly
+reasoning would legitimately score low, and a tool that refuses on a rough
+measure would block correct work. Printing the number and letting a person judge
+is the honest division of labour — the tool knows the ratio, it doesn't know
+whether the ratio is fine.
+
 ## What it doesn't do
 
 It doesn't check whether the design is any *good*, or even whether it's
