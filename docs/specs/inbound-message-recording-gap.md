@@ -168,7 +168,7 @@ not what it was asked.
 | **Reading** | Every JSONL read — seeding **and** session-history — is line-by-line and tolerant: an unparseable line is skipped and counted (`inbound-log-corrupt-line`), never fatal, because a process killed mid-append leaves exactly that shape. Corruption **beyond the final line** of a file raises Attention: one torn tail is normal, damage in the middle is not. |
 | **Seeding** | `seedMessageLogDedupe()` reads the **current file only**, and at most its **last 64 MB** — never the rotations. A redelivered message older than the current file is written twice; that is the accepted cost of a bounded startup read. |
 | **Deletion (JSONL store only)** | Deleting the current **and rotated** files removes everything this design's JSONL store holds. TopicMemory, filesystem snapshots, and any backup system are **separate stores with separate deletion** — this is not a whole-system erasure guarantee. |
-| **Single writer** | The agent-home **single-instance lock** (one server per agent home) is what makes one-writer-per-log-path true. Its scope covers append, rotation **and** seeding — all three assume it. A second writer is not detected at append time and is not defended against — so the health surface reports the **lock owner and lock state**, and `armed` is **false whenever lock validation is ambiguous** rather than optimistic (round-41). **Stale-lock semantics, because "both processes believe they are safe" is the realistic failure (round-43):** a lock is VALID if its recorded pid is live **and** its boot-id matches the current boot (defeating pid reuse) **and** its host matches. **A same-host lock whose boot-id matches but whose pid is dead is STALE and is reclaimed automatically** — that is the ordinary crash case, and the round-43 version of this rule treated it as ambiguous, which would have left the feature `enabled && !armed` after *any* crash until a human intervened. **That policy recreated the outage it exists to prevent** (round-44), and being conservative about a lock is not a virtue when the conservative branch means silently not recording messages again. Genuine ambiguity is narrower: a **foreign host**, a **mismatched boot-id**, or a lock file that cannot be read or parsed — those refuse to arm, never take over. **Network and shared home directories remain unsupported** for the log path: lock semantics there cannot be relied on, and this design would rather refuse to arm than pretend. Integrity here depends on the lock; a lock whose state nobody can read is discipline, not a mechanism. |
+| **Single writer** | The agent-home **single-instance lock** (one server per agent home) is what makes one-writer-per-log-path true. Its scope covers append, rotation **and** seeding — all three assume it. A second writer is not detected at append time and is not defended against — so the health surface reports the **lock owner and lock state**, and `armed` is **false whenever lock validation is ambiguous** rather than optimistic (round-41). **Stale-lock semantics, because "both processes believe they are safe" is the realistic failure (round-43):** a lock is VALID if its recorded pid is live **and** its boot-id matches the current boot (defeating pid reuse) **and** its host matches. **A same-host lock whose boot-id matches but whose pid is dead is STALE and is reclaimed automatically** — that is the ordinary crash case, and the round-43 version of this rule treated it as ambiguous, which would have left the feature `enabled && !armed` after *any* crash until a human intervened. **That policy recreated the outage it exists to prevent** (round-44), and being conservative about a lock is not a virtue when the conservative branch means silently not recording messages again. Genuine ambiguity is narrower: a **foreign host**, a **mismatched boot-id**, or a lock file that cannot be read or parsed — those refuse to arm, never take over. **Network and shared home directories remain unsupported** for the log path, and that is **detected before the path is used, not assumed (round-45)**: at startup the resolved path's filesystem type is checked (`statfs`/`getmntinfo` on macOS, `/proc/mounts` on Linux) against a known-local allowlist (`apfs`, `hfs`, `ext4`, `xfs`, `btrfs`). An unrecognised or network type (`nfs`, `smbfs`, `afpfs`, `fuse.*`) is a **startup refusal to arm with a named diagnostic** — the concrete filesystem type in the message, not "unsupported storage". An undetectable type is treated as unsupported: this design would rather refuse to arm than pretend. Integrity here depends on the lock; a lock whose state nobody can read is discipline, not a mechanism. |
 | **Fields (TopicMemory)** | Same identity fields, except `message_id` is the platform number or the inert placeholder **`-1`** when absent (the column is `NOT NULL`; §3 explains why it is not made nullable). `id_source` carries the meaning. **Three wire shapes for one concept was the round-40 finding — there are now two, each stated where it applies.** |
 | **`enabled` vs `armed`** | Two distinct states, both reported (round-39). `enabled` = the config flag. `armed` = the flag is on **and** the lock was acquired **and** the log path resolved writable. **A process can run `enabled && !armed`** — that is the silent-failure shape this whole spec exists to close, so it is a first-class reported state with a `inbound-log-arm-failed` counter and its reason, never an inference from a zero row count. **Acceptance FAILS if `armed` is false**, regardless of what the flag says. **Runtime behaviour when `enabled && !armed` (round-40): the seam call is a NO-OP that increments `inbound-log-arm-failed` once per process, not per message** — **plus a monotonic `inbound-messages-skipped-unarmed` counter that DOES increment per message** (round-42: a once-per-process flag says the condition exists, it does not say how much data is being lost, and "ongoing loss" is exactly what this feature is for) — it does not attempt the append, does not return a `'failed'` status, and never retries. Arming is decided once at startup; a per-message retry would put filesystem work back on the delivery path to fix a condition that does not change per message. |
 | **Synthetic rows** | The startup self-check record is marked `synthetic: true`. It is **excluded** from history reads, the recent-inbound count, the one-sided-conversation check and dedupe seeding. It **is** counted toward rotation size, because it occupies real bytes and pretending otherwise would make the size bound wrong. |
@@ -252,7 +252,38 @@ policy, the in-memory dedupe set and its restart seeding. **Roughly four of the
 review findings across rounds 27-34 exist only because the store is a text
 file.** That is not a small observation and it should not be buried.
 
-It is still JSONL, for one reason: **the log already exists and is already
+**THAT JUSTIFICATION NO LONGER HOLDS, and round-45 is where it broke.** The
+argument for JSONL was always "the smaller change". Count what the smaller change
+now requires the implementer to hand-build:
+
+rotation sequencing · a three-part ordering key · torn-line recovery · bounded
+startup seeding · single-writer lock semantics with boot-id and stale reclaim ·
+corruption counting with a mid-file/end-of-file distinction · a canonical dedupe
+key with a malformed-input rule · a rotation helper that must be the only reader
+
+**Every one of those is free in SQLite**, and every one of them arrived as a
+review finding rather than as a design decision — which is what it looks like
+when a format is being asked to do a job it was not chosen for. The spec has been
+carrying an argument ("smaller change") that stopped being true somewhere around
+round 38 without anyone re-checking it. Both reviewer families flagged the store
+choice; one of them has now flagged it three times, each time with more evidence.
+
+**The honest position: JSONL is no longer obviously the smaller change, and may
+be the larger one.** A SQLite append table replaces the whole list above with a
+schema and an INSERT. What it costs is a migration on an existing store — real
+work, but bounded and well-understood, against an open-ended list of hand-built
+log mechanics each of which is a place to be wrong.
+
+**This is not resolved here, deliberately.** Switching the store mid-review would
+restart a 45-round review on a different design while messages are actively being
+lost, and the decision interacts with the split question (ACT-1219) — if the
+recording fix ships separately from the retention machinery, most of the list
+above goes with the *second* half, and the first half genuinely is small. It is
+recorded as a decision the operator should make with the real numbers in front of
+them, not one the author should quietly settle by continuing.
+<!-- tracked: ACT-1218 -->
+
+The original reason, kept for the record: **the log already exists and is already
 written by the same function on the other path.** This spec's job is to close a
 data-loss bug by adding a call at a seam; converting the message log to a new
 store is a larger change with its own migration, its own failure modes, and its
@@ -750,6 +781,17 @@ way to cancel an in-flight synchronous write, which is the same wall v4 hit.
 
 Two things follow, and neither is a mechanism:
 
+**Hostile-storage evidence is a fleet precondition (round-45).** `appendFileSync`
+on a wedged disk freezes the *event loop*, which means it freezes **every**
+conversation on the machine, not just the topic being written. That is the real
+shape of this risk and the spec had been describing it per-message. Before fleet
+default-on, the benchmark must include **hostile cases, not just healthy and
+contended**: a full disk, a disk made to stall, and a revoked-permission path —
+with the measured effect on *other* topics' delivery, not only on the append. If
+availability turns out to matter more than pre-injection persistence, the
+alternative is an async bounded queue with a crash-aware flush, and that
+trade is the operator's to make with those numbers in hand.
+
 1. **The log path is required to be local, non-network storage.** This is an
    **operational requirement, not an enforced assertion** (round-30, codex —
    "asserted at startup" was the third overclaim in this paragraph's history, and
@@ -1217,7 +1259,7 @@ rather than defaulted:
 | **Retention** | Bounded by rotation (§3.0): oldest rotation deleted, ~160 MB window. Not time-based. |
 | **Deletion** | Delete the current **and rotated** JSONL files. **This deletes the JSONL store only** — message text also reaches TopicMemory, which has its own delete path, and neither covers filesystem snapshots or any backup system. Any user-facing deletion instruction must say all three, because "delete the log files" will otherwise be read as "delete what I said to you" (round-39). |
 | **Export** | No dedicated export. The files are plain JSONL and readable directly. |
-| **Disclosure** | **Storing every inbound message verbatim is product behaviour, not an implementation detail (round-43).** Turning this on requires a release-note entry and an operator-visible config description stating: what is stored, where, that it is unencrypted, the retention bound, and the limits of deletion. A person should not have to read a spec to learn their messages are being kept. |
+| **Disclosure** | **Storing every inbound message verbatim is product behaviour, not an implementation detail (round-43).** Turning this on requires a release-note entry and an operator-visible config description stating: what is stored, where, that it is unencrypted, the retention bound, and the limits of deletion. A person should not have to read a spec to learn their messages are being kept. **And release notes are not enough beyond one machine (round-45): the people whose messages are stored are the DATA SUBJECTS, and an operator reading a changelog is not the same as them being told.** A user-facing disclosure path — or an explicit policy decision that one is not required — is a **precondition of enabling this anywhere but the single affected machine**, and must account for TopicMemory storing message text separately. |
 
 **Encryption at rest was considered and not adopted**, deliberately rather than
 by omission: the vault exists for secrets and this is not a secret store, the
@@ -1440,7 +1482,11 @@ the message, any intermediate hand-off, and `injectTelegramMessage` — each
 carrying a span id shared across the three. Not distributed tracing, not a
 framework: three `console`-level structured lines behind the same flag, removed
 or left dark after acceptance. The artifact is **attached to the acceptance
-record, not committed to the repo**, because it contains real message ids.
+record, not committed to the repo**, because it contains real message ids —
+**and message ids are the only identifier it may carry (round-45): no message
+text, no sender names, no user ids.** It is deleted once the acceptance record is
+signed off. A diagnostic artifact that outlives its diagnosis is just another
+copy of the data this spec is trying to be careful with.
 
 **It passes iff** every observed message's chain terminates at
 `injectTelegramMessage`, and the JSONL row for that `dedupeId` exists. A chain
