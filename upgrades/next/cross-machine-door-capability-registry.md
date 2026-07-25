@@ -11,3 +11,9 @@ observations.
 This PR defines the problem, boundaries, rollout ladder, rollback posture, and
 open convergence questions. It intentionally ships no implementation or routing
 behavior.
+
+## Summary of New Capabilities
+
+- A convergible design for joining local doorway facts with authenticated
+  machine capability observations.
+- Explicit freshness, conflict, privacy, rollout, and rollback contracts.
