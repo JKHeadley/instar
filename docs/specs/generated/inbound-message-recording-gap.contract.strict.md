@@ -7,7 +7,7 @@
      rationale. This file says WHAT to build, never why. Read the source
      spec for the reasoning, the alternatives, and the accepted residuals
      in their full form.
-     (5 residual "round-N" reference(s) remain inline.)
+     (7 residual "round-N" reference(s) remain inline.)
 -->
 ---
 title: "Record inbound messages at the injection seam (best-effort, with first-loss alerting)"
@@ -87,6 +87,14 @@ SQL. Never auto-`ALTER`. Retry arming every 60 s, backing off to 15 m.
  clearing DELETES the durable `inbound_recording_state` row in the same
  transaction as the next successful insert**.
 
+ **If that delete fails, the WHOLE transaction rolls back: the
+ insert returns `failed` and the state stays `degraded`.** Committing the
+ message while failing to clear the alarm leaves a permanently-degraded
+ machine that is actually fine; committing the clear while losing the message
+ is worse. Rolling both back costs one message the retry may recover, keeps
+ the two consistent, and is honest — a state table that cannot be written is
+ itself a reason to be degraded.
+
  The durable row is therefore **present iff there is an unresolved failure**.
  `failure_count` accumulates while it exists and goes with it when it is
  deleted; the count is a diagnostic for the current episode, not a lifetime
@@ -158,9 +166,12 @@ operator alert queue. **Armed**: enabled *and* the store opened writable.
 2. `BEGIN`.
 3. Create/validate the **`schema_migrations` table shape** itself.
 4. Read this feature's row (`name = 'inbound_messages'`).
- - **Row absent** → first install: create `inbound_messages` + index, validate the resulting schema, then **INSERT** the row.
- - **Row present and equal to this build's version** → validate the existing schema; **do not write**.
- - **Row present and older** → apply the ordered migration, validate, then **UPDATE** the row.
+ **Every branch covers BOTH tables and all indexes** — `inbound_messages` with
+ its unique and topic indexes, **and `inbound_recording_state`**.
+
+ - **Row absent** → first install: create **both tables and both indexes**, validate the resulting schema of **both**, then **INSERT** the row.
+ - **Row present and equal to this build's version** → validate the existing schema of **both**; **do not write**.
+ - **Row present and older** → apply the ordered migration, validate **both**, then **UPDATE** the row.
  - **Row present and NEWER than this build** → refuse to arm. A downgrade must never rewrite a schema it does not understand.
 5. `COMMIT` — or `ROLLBACK` and `armed: false`, naming the difference, on any validation failure.
 
@@ -271,6 +282,16 @@ and recorded here:
 | **`/health` still answers while inserts contend** | **< 1 s** response, sustained |
 | Loop delay, contended/wedged store | **< 2 s** total |
 | `inbound-search-index-dropped` during the burst | **0** on a healthy store |
+| **Slow `fsync`** (injected delay) | `/health` < 1 s, injection still proceeds |
+| **Nearly-full / full disk** | insert returns `failed`, counted, **injection still proceeds** |
+| **WAL checkpoint pause** | `/health` < 1 s, unrelated conversations unaffected |
+| **Filter-driver / network-volume latency** (simulated) | `/health` < 1 s, injection still proceeds |
+
+*(These four were reported as added at round 67 and were not: the batched edit
+that introduced them aborted on a later assertion and wrote nothing. Caught at
+round 70 when the reviewer said they were missing. Third time tonight that
+batching edits has silently discarded work — and the first time it also produced
+a false progress report.)*
 
 If any gate fails, the flip does not happen and the design is revisited — the
 gate is the decision, not the calendar.
