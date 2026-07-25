@@ -27,9 +27,13 @@ the normative checklist in §3.0). The strongest evidence for that is round 69:
 review because it *reads* idiomatic. The first integration test that inserted a
 malformed row would have caught it immediately.
 
-**What it delivers, stated honestly:** not "no lost messages". Loss goes from
-silent and undetected for 24 days to **alerted on the first occurrence, with the
-message still delivered**.
+**What it delivers, stated honestly** (corrected at round 79, which found the
+flattering framing sitting in this very claim): not "no lost messages", and not
+even "first-loss alerting" unqualified. It is **best-effort recording, with
+first-loss health degradation while the process lives and best-effort restoration
+across a restart** — because the durable marker can fail for the same reasons the
+insert did. Against 24 days of silence that is still a large improvement, and it
+is not a guarantee.
 
 **Blocked on:** operator approval. Nothing has been self-approved.
 
