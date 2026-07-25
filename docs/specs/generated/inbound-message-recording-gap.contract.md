@@ -141,17 +141,19 @@ not what it was asked.
 **Config keys**
 - `messaging.inboundSeamLogging.enabled` — default `false`
 - `messaging.inboundSeamLogging.captureBody` — default `true`
-- `messaging.inboundSeamLogging.captureBodyAcknowledgedAt` — **no default; arming
- REFUSES to capture bodies until it is set**. Unset ⇒ the feature arms in
- metadata-only mode. **Two distinct fields, because one key with two effective
- values is unimplementable: `requestedCaptureBody` (the config value)
- and `effectiveCaptureBody` (`requested && acknowledgedAt is set`). `/health`
- reports BOTH, plus `captureBodyAcknowledgedAt` itself — an ISO-8601 timestamp;
- any unparseable value is treated as unset rather than as acknowledgement.**: the operator flips two things, not one, because
- "record that a message arrived" and "keep the text of everything anyone types
- to this agent" are different decisions and only the second is a privacy
- decision. The default stays `true` because session-resume reading — the actual
- purpose — needs the body; what changes is that nobody gets it by not noticing.
+- `messaging.inboundSeamLogging.captureBodyAcknowledgedAt` — **no default.** An
+ ISO-8601 timestamp; anything unparseable counts as unset, never as consent.
+ **Two derived fields, because one key cannot carry two effective values:**
+ `requestedCaptureBody` (the config value) and `effectiveCaptureBody`
+ (`requested && acknowledgedAt is set`). `/health` reports both plus the
+ timestamp. **Unset ⇒ the feature arms in metadata-only mode.**
+
+ *Why two flips and not one:* "record that a message arrived" and "keep the text
+ of everything anyone types to this agent" are different decisions, and only the
+ second is a privacy decision. The default stays `true` because session-resume
+ reading — the feature's purpose — needs the body; what changes is that nobody
+ gets body capture by not noticing.
+
 - emergency disable honoured at the same key
 
 **DDL**
@@ -180,22 +182,38 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_inbound_dedupe ON inbound_messages(dedupe_
 CREATE INDEX IF NOT EXISTS idx_inbound_topic_seq ON inbound_messages(topic_id, seq);
 ```
 
-**Arming** — **one migration row covers BOTH tables** (plus a second row, `name = 'inbound_messages_validation'`, holding `validation_version`). **Its branches, stated so they are not left to inference:** absent → run probes, INSERT the row; equal → run probes anyway (they are cheap and rolled back) and do not write; older → run probes, UPDATE the row; **newer than this build → run probes and do NOT write** — a newer validation version is not a reason to refuse arming, because validation is behaviour rather than schema and a newer build's stricter probes say nothing about whether THIS build can operate (`name = 'inbound_messages'`);
-creating and validating `inbound_recording_state` happens inside the same
-versioned transaction, and a failure to create or validate it **refuses arming**
-like any other schema mismatch — it is load-bearing for restoring `degraded`
-across a restart, so an unusable state table means the feature cannot honestly
-report itself. WAL outside a transaction; then BEGIN → migrations-table shape →
-branch on this feature's row (absent = create+validate+INSERT; equal =
-validate only; older = migrate+validate+UPDATE; newer = refuse) → COMMIT.
-Any mismatch: ROLLBACK, `armed: false`, log expected vs actual plus reconciling
-SQL. Never auto-`ALTER`. Retry arming every 60 s, backing off to 15 m.
+**Arming**
+
+1. Open the database; set/verify `PRAGMA journal_mode = WAL` **outside any
+ transaction** (journal mode cannot be changed inside one).
+2. `BEGIN`. Create/validate the `schema_migrations` table shape.
+3. **Schema row** (`name = 'inbound_messages'`) — covers BOTH data tables:
+ - absent → create both tables + both indexes, validate both, **INSERT**
+ - equal → validate both, **do not write**
+ - older → migrate, validate both, **UPDATE**
+ - **newer → REFUSE to arm** (a downgrade must not rewrite a schema it does
+ not understand)
+4. **Validation row** (`name = 'inbound_messages_validation'`) — the opposite
+ rule, because validation is behaviour rather than structure:
+ - absent → run probes, **INSERT**
+ - equal / newer → run probes, **do not write**, **never refuse**
+ - older → run probes, **UPDATE**
+5. `COMMIT`. Any validation mismatch → `ROLLBACK`, `armed: false`, log expected
+ vs actual plus the reconciling SQL. **Never auto-`ALTER`.**
+
+`inbound_recording_state` is created and validated inside the same transaction
+and a failure there **refuses arming** like any other mismatch — it is
+load-bearing for restoring `degraded` across a restart, so an unusable state
+table means the feature cannot honestly report itself.
+
+Retry arming every 60 s, backing off to 15 m, outside the per-message path.
 
 **Write** (`recordInboundMessage`, synchronous, before injection)
 1. If not armed → no-op; count `inbound-messages-skipped-unarmed`; **inject**.
 2. `dedupe_id` = `in:telegram:<botId>:<chatId>:<messageId>`, else `in:derived:<uuid>`.
 3. Plain `INSERT` in a transaction (never `OR IGNORE`). Up to **3 attempts**, backoff 0/20/50 ms.
- Worst case ≈ 370 ms under sustained contention.
+ Worst case ≈ 370 ms of LOCK WAIT under sustained contention — **not a latency
+ bound: `busy_timeout` does not bound `fsync` or a stalled filesystem.**
 4. Return `appended` | `duplicate` | `failed`. `duplicate` **only** for a UNIQUE violation on `dedupe_id`; any other constraint error is `failed`. **Never throw.**
 5. `failed` → count `inbound-log-failed`, set `recording: 'degraded'` **on the first
  failure**; clears by a state machine with exactly three inputs:
@@ -222,12 +240,7 @@ SQL. Never auto-`ALTER`. Retry arming every 60 s, backing off to 15 m.
  `degraded`, which is the intended behaviour: it has produced no evidence it
  recovered.
 
-**The invariant, weakened to what is actually true:**
-**presence of the row PROVES an unresolved failure; ABSENCE proves nothing**
-unless the current process has itself observed the clear. That asymmetry is the
-honest one — a missing row can mean recovered, or can mean the recorder could not
-write — and it is why the in-memory flag, not the row, is the primary signal.
- `failure_count` accumulates while it exists and goes with it when it is
+`failure_count` accumulates while it exists and goes with it when it is
  deleted; the count is a diagnostic for the current episode, not a lifetime
  total.
 
@@ -235,18 +248,27 @@ write — and it is why the in-memory flag, not the row, is the primary signal.
  correct: a machine receiving nothing has produced no evidence it is fixed, and
  "quiet" is exactly what this bug looked like. Clearing requires proof of work,
  not the passage of time.
+
+ **The invariant, weakened to what is actually true:**
+**presence of the row PROVES an unresolved failure; ABSENCE proves nothing**
+unless the current process has itself observed the clear. That asymmetry is the
+honest one — a missing row can mean recovered, or can mean the recorder could not
+write — and it is why the in-memory flag, not the row, is the primary signal.
+
 6. `appended` → `scheduleInboundTopicMemory` via `setImmediate` (skipped entirely
  when `captureBody: false`). Backlog cap 16.
 7. **Inject — unconditionally, in every branch.**
 
 **Retention** — daily; cutoff via `ORDER BY seq DESC LIMIT 1 OFFSET:keep`; delete
-`WHERE seq IN (SELECT seq … LIMIT 1000)` in batches with yields; keep 200 000 rows;
+`WHERE seq IN (SELECT seq … LIMIT 1000)` in batches with yields (**`1000` UNVALIDATED**); keep **200 000 rows — MEASURED AS A NO-OP: ~7.4 years at this store's real ~74 rows/day, so the bound never binds; operator decision, see the measured section**;
 cap stored text at **65 536 UTF-8 bytes — UNREACHABLE in practice: Telegram's limit is 4 096 characters and the largest row ever stored here is 4 094 bytes** — truncated on a character boundary if it ever applies (never mid-sequence, so the stored value is always valid UTF-8); abort if an insert failed or p99 exceeded the gate in the
 last 5 minutes.
 
 **Health** — `recording`, `enabled`, `armed` (+reason), `lastArmAttemptAt/Result`,
 `rowCountTotal`, `rowCountUserVisible`, `dbFileBytes`, `walFileBytes`, insert
-failures, max latency, self-check result, last retention run, loop-tick counter.
+failures, max latency, self-check result, last retention run, and the **existing
+`eventLoop` gauge** (p50/p99/max + `starvedWindows24h`) — **not a new loop-tick
+counter; the gauge already exists and is better.**
 
 #### NOT measured: the retention batch size (1000) is still an invented number
 
