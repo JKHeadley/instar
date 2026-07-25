@@ -28,7 +28,13 @@ eli16-overview: "docs/specs/inbound-message-recording-gap.eli16.md"
 
 **Config keys**
 - `messaging.inboundSeamLogging.enabled` — default `false`
-- `messaging.inboundSeamLogging.captureBody` — default `true`
+- `messaging.inboundSeamLogging.captureBody` — default `true`, **but body
+ capture requires its own explicit opt-in at first enablement, separate from
+ `enabled`**: the operator flips two things, not one, because
+ "record that a message arrived" and "keep the text of everything anyone types
+ to this agent" are different decisions and only the second is a privacy
+ decision. The default stays `true` because session-resume reading — the actual
+ purpose — needs the body; what changes is that nobody gets it by not noticing.
 - emergency disable honoured at the same key
 
 **DDL**
@@ -152,9 +158,15 @@ ladder is therefore stated rather than assumed: **(1) in-memory
 `recording: 'degraded'` is set FIRST and needs no storage at all — it is what
 `/health` reports, and `/health` is what the external watchdog reads; (2) the
 durable row is written best-effort, its own failure counted, never retried, never
-fatal; (3) an Attention item is attempted.** **Named residual: a crash between
-the failed insert and the durable write loses the first-loss marker across that
-restart.** In-memory covers the common case, the row covers restarts, neither
+fatal; (3) an Attention item is attempted.** **Named residual, stated at its real size: ANY restart after a failure whose durable row did not get
+written loses the degraded state.** That is not just a same-instant crash. The
+state table lives in the same database, so the disk-full / read-only / wedged
+cases that cause the insert to fail are exactly the cases that stop the failure
+being recorded — and then an ordinary restart hours later comes up clean. The
+narrow crash window was the flattering version of this. **Persisting the marker
+outside SQLite would close it and is deliberately not done**: it means a second
+storage mechanism with its own failure modes, for a marker whose job is already
+covered in-process while the process lives. In-memory covers the common case, the row covers restarts, neither
 covers a same-instant crash — said plainly, because the alternative is implying a
 guarantee that three layers of storage cannot give.
 
