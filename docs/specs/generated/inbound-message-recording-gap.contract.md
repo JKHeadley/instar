@@ -132,6 +132,12 @@ It works because:
  one server per agent home (§6). Across processes it would be best-effort, and a
  race-shaped test — both writers invoked in the same tick — pins the in-process
  case rather than only testing sequential delivery.
+ **It also survives restart:**
+ `seedMessageLogDedupe()` rebuilds the in-memory set by reading the JSONL file on
+ first use, so a restarted process re-learns every key. One caveat worth stating —
+ seeding skips rows whose `messageId` is not a number, so **id-less entries are
+ not re-seeded**. Harmless here precisely because their per-injection UUID never
+ deduped across arrivals anyway: nothing is lost that was ever promised.
  The existing key is `in:<topicId>:<messageId>`, so a message that reaches both
  the forward route and the seam is written once. The forward route's call is left in place —
  removing it would be a second change for no benefit.
@@ -203,7 +209,14 @@ It works because:
  `isSyntheticMessageId(id)` rather than rediscovering `< 0` for themselves.**
  An implicit convention in a generic integer column is exactly the kind of
  thing a future reader sorts, compares or displays as if it were a Telegram
- id. That is
+ id. **A helper reduces that risk; it does not eliminate it, least of all for
+ a SQL reader.** Adding metadata columns would eliminate it
+ properly, at the cost of a migration this change is scoped to avoid. Since
+ avoiding the migration is the deliberate choice, the price is paid in tests:
+ **every current TopicMemory consumer that exposes, orders or compares
+ `message_id` gets a test asserting it behaves correctly with a negative id.**
+ That enumerates today's risk; it does not protect tomorrow's new consumer,
+ and the honest mitigation for that is the helper plus this paragraph. That is
  intentional — TopicMemory backs search and summaries, JSONL backs history —
  and it is written here so the difference is a documented contract rather than
  a discovery. A consumer needing `dedupeId` or `idSource` reads JSONL.
@@ -237,7 +250,14 @@ It works because:
 
 The entry is **scheduled for best-effort logging before the injection is
 attempted** — — so an
-injection failure cannot produce an unrecorded message. 
+injection failure cannot *by itself* produce an unrecorded message.
+
+**The invariant, stated exactly:** *recording is attempted before injection, unless the backlog guard
+drops it; and recording never blocks delivery.* Three things can still leave a
+message unrecorded — the backlog guard dropping it, a crash before the next tick,
+or the write failing — and all three are counted. What the ordering buys is
+narrower than it sounded: an injection that fails does not *cause* the gap.
+
 
 **This makes it an inbound-*received* log, not an agent-*observed* log.** "Shown-or-nearly-shown" was a category that does not exist:
 if injection fails, the entry still says the message arrived, and a later reader
@@ -292,7 +312,15 @@ catch { /* never block the injection */ }
  it is, verified rather than asserted. `TopicMemory` opens its database with `journal_mode = WAL` and
  **`busy_timeout = 5000`** (`src/memory/TopicMemory.ts`), so a contended write
  fails after five seconds rather than waiting indefinitely, and WAL means readers
- never block it in the first place. Five seconds of loop stall is still bad, so
+ never block it in the first place.
+
+ **Five seconds is far too long for THIS path, and 64 × 5s is the real ceiling.** A log write that waits five seconds has already failed at its
+ job. This path therefore sets its own **`busy_timeout = 100 ms`** before
+ writing, bounding the worst case to ~6.4 seconds of accumulated delay rather
+ than ~320, and a contended store sheds entries quickly instead of holding the
+ loop. The burst test runs against a **contended/wedged** database as well as a
+ healthy one, because a healthy-storage burst test would have measured the easy
+ case and reported the wrong number. Five seconds of loop stall is still bad, so
  the pending-callback guardrail below is what would surface a store behaving that
  way; but the unbounded case — the one that would wedge the process — is closed
  by the existing pragma, not by a new assumption.
