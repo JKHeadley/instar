@@ -164,7 +164,14 @@ SQL. Never auto-`ALTER`. Retry arming every 60 s, backing off to 15 m.
  - **Enter `degraded`:** any failed primary insert, or a durable
  `inbound_recording_state` row found at arm time.
  - **Start the clear timer:** a **successful primary insert** — nothing else.
- - **Clear:** 60 s elapsed from that insert with no further failure.
+ - **Clear:** 60 s elapsed from that insert with no further failure — **and
+ clearing DELETES the durable `inbound_recording_state` row in the same
+ transaction as the next successful insert**.
+
+ The durable row is therefore **present iff there is an unresolved failure**.
+ `failure_count` accumulates while it exists and goes with it when it is
+ deleted; the count is a diagnostic for the current episode, not a lifetime
+ total.
 
  **No traffic therefore means `degraded` PERSISTS**, indefinitely, which is
  correct: a machine receiving nothing has produced no evidence it is fixed, and
@@ -182,6 +189,14 @@ last 5 minutes.
 **Health** — `recording`, `enabled`, `armed` (+reason), `lastArmAttemptAt/Result`,
 `rowCountTotal`, `rowCountUserVisible`, `dbFileBytes`, `walFileBytes`, insert
 failures, max latency, self-check result, last retention run, loop-tick counter.
+
+**Latency measurement** — one rolling window, defined once because three rules
+depend on it: a **5-minute sliding window** of primary-insert
+durations, **excluding synthetic self-check inserts** (not user traffic, and
+including them would flatter the numbers), reset only by process restart,
+exported as p50 / p99 / max. "p99 exceeded the gate in the last 5 minutes" and
+"max latency" both read that one window. Unpinned, one implementer's retention
+never runs and another's runs during a stall.
 
 **Counters** — process-local and monotonic, **plus a DURABLE last-failure record** in its own table:
 `CREATE TABLE IF NOT EXISTS inbound_recording_state (key TEXT PRIMARY KEY,
@@ -216,7 +231,7 @@ operator alert queue. **Armed**: enabled *and* the store opened writable.
 | | |
 |---|---|
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
-| **Store** | A **new SQLite table**, `inbound_messages`, in the agent's existing database. **Schema migration is required; DATA migration is not.** The DDL is idempotent `CREATE TABLE IF NOT EXISTS` + `CREATE UNIQUE INDEX IF NOT EXISTS`, run at arm time. **DDL success is not schema validation** — `IF NOT EXISTS` silently accepts a pre-existing table with wrong columns, constraints or index shape. Arming therefore VALIDATES: **a feature-local migration row** equals this build's expected schema version — `CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, version INTEGER NOT NULL)`, this feature's row keyed `'inbound_messages'`. **The migrations table gets the same validation as the data table, and table creation, index creation and the migration row are committed in ONE transaction** so a crash cannot leave a version claiming a schema that was never created — **not `PRAGMA user_version`, which is database-GLOBAL: `TopicMemory` shares this database, so claiming that pragma would either falsely fail arming or overwrite another component's migration state**; **`PRAGMA table_info`** shows every expected column, compared on **normalised type affinity rather than raw string equality** — extra columns tolerated, missing ones not. **Trigger/constraint detection uses the stable surfaces, not SQL-text parsing.** Triggers: `SELECT name FROM sqlite_schema WHERE type='trigger' AND tbl_name='inbound_messages'` — an existence query, no parsing. Everything else is covered by **representative insert probes** rather than by reading DDL: the synthetic round-trip is extended to exercise the realistic row shapes (body captured and not, `message_id` present and NULL, truncated and not), so a stricter `CHECK` or a generated column is caught by the insert failing rather than by a regex on schema text — an existing table can pass a column-and-index check and still reject inserts because of a trigger or a stricter CHECK, and the synthetic round-trip only exercises one row shape. Unsupported extras refuse to arm rather than being worked around; **`PRAGMA index_list`/`index_info`** shows a UNIQUE index on `dedupe_id` alone; **`PRAGMA journal_mode`** reports `wal` — **set and verified OUTSIDE the schema transaction**; and a **synthetic insert/read round-trip** passes. **When validation fails, the operator needs a path, not just a refusal.** `armed: false` naming the difference is the signal; the artifact is a **written repair note in the arm-failure log** giving the expected schema, the actual schema, and the exact SQL to reconcile them — which the operator runs, or does not, having read it. The code still never runs it: refusing to auto-`ALTER` is the safety property, and handing over the statement is not the same as executing it. Without that note the refusal is a dead end, and a dead end on the arming path means the bug stays unfixed for whoever hits it.
+| **Store** | A **new SQLite table**, `inbound_messages`, in the agent's existing database. **Schema migration is required; DATA migration is not.** The DDL is idempotent `CREATE TABLE IF NOT EXISTS` + `CREATE UNIQUE INDEX IF NOT EXISTS`, run at arm time. **DDL success is not schema validation** — `IF NOT EXISTS` silently accepts a pre-existing table with wrong columns, constraints or index shape. Arming therefore VALIDATES: **a feature-local migration row** equals this build's expected schema version — `CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, version INTEGER NOT NULL)`, this feature's row keyed `'inbound_messages'`. **The migrations table gets the same validation as the data table, and table creation, index creation and the migration row are committed in ONE transaction** so a crash cannot leave a version claiming a schema that was never created — **not `PRAGMA user_version`, which is database-GLOBAL: `TopicMemory` shares this database, so claiming that pragma would either falsely fail arming or overwrite another component's migration state**; **`PRAGMA table_info`** shows every expected column, compared on **normalised type affinity rather than raw string equality** — extra columns tolerated, missing ones not. **Trigger/constraint detection uses the stable surfaces, not SQL-text parsing.** Triggers: `SELECT name FROM sqlite_schema WHERE type='trigger' AND tbl_name='inbound_messages'` — an existence query, no parsing. Everything else is covered by **representative insert probes** rather than by reading DDL: the synthetic round-trip is extended to exercise the realistic row shapes (body captured and not, `message_id` present and NULL, truncated and not), so a stricter `CHECK` or a generated column is caught by the insert failing rather than by a regex on schema text. **The probe set is enumerated rather than left to judgment:** (a) body captured with a platform id; (b) body captured, `message_id` NULL, `id_source='derived'`; (c) `body_captured = 0` with `text` NULL; (d) text at the 65 536-byte cap with `text_truncated = 1`; (e) `synthetic = 1`. **Representative, not exhaustive** — probes cannot prove every future valid row stays valid — so this is stated as coverage of the shapes this design actually writes, and any shape added later must add its probe — an existing table can pass a column-and-index check and still reject inserts because of a trigger or a stricter CHECK, and the synthetic round-trip only exercises one row shape. Unsupported extras refuse to arm rather than being worked around; **`PRAGMA index_list`/`index_info`** shows a UNIQUE index on `dedupe_id` alone; **`PRAGMA journal_mode`** reports `wal` — **set and verified OUTSIDE the schema transaction**; and a **synthetic insert/read round-trip** passes. **When validation fails, the operator needs a path, not just a refusal.** `armed: false` naming the difference is the signal; the artifact is a **written repair note in the arm-failure log** giving the expected schema, the actual schema, and the exact SQL to reconcile them — which the operator runs, or does not, having read it. The code still never runs it: refusing to auto-`ALTER` is the safety property, and handing over the statement is not the same as executing it. Without that note the refusal is a dead end, and a dead end on the arming path means the bug stays unfixed for whoever hits it.
 
 **Full arming algorithm**:
 
@@ -485,9 +500,14 @@ fallback, chosen on those numbers.
 **CONSTRAINT, not just a description:** this design is **approved for
 single-machine hotfix use only**, and **a revisit of the main-thread choice is
 MANDATORY before any default-on beyond the affected machine.** **And the rule is
-normative, not a review item: if ANY benchmark gate fails — including
-the `/health`-responsiveness-under-contention gate — the implementation MUST
-switch to the worker-owned writer before enablement.** "Revisit" is how a
+normative with a concrete trigger, not a review item: the
+implementation MUST switch to the worker-owned writer before enablement if, on
+the affected machine, ANY of — contended insert p99 > 250 ms, insert max > 1 s,
+`/health` response > 1 s under contention, or any pathological-case gate — fails.**
+A named number, not a judgement call. **Also honest about the detector's limits:
+a 30 s `/health` timeout is the WEDGE signal, far too slow to catch a
+delivery-path stall that a user feels in seconds — the latency gates above are
+what must catch that, before enablement, because nothing catches it live.** "Revisit" is how a
 tactical choice becomes permanent; a failed gate with a vague follow-up is not a
 gate. That is a gate, not an aspiration: the residual is a whole-process
 stall on the delivery path, and carrying it to a fleet on a simplicity argument
