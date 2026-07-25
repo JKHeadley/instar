@@ -60,7 +60,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'capabilityRegistry',
     prefixes: ['/capability-registry'],
     description: 'Local capability registry read surface; dark until explicitly enabled.',
-    build: ({ ctx }) => ({ configured: (ctx.config as any).capabilityRegistry?.enabled === true, endpoints: ['GET /capability-registry', 'GET /capability-registry/health'] }),
+    build: ({ ctx }) => ({ configured: resolveDevAgentGate((ctx.config as any).capabilityRegistry?.enabled, ctx.config), endpoints: ['GET /capability-registry', 'GET /capability-registry/health'] }),
   },
   // E2E-PAIRING: EXEMPT — capability classification metadata only (no new endpoint
   // behavior); the subscription-pool routes already have integration + e2e tests

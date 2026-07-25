@@ -2005,13 +2005,17 @@ export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
 
   router.get('/capability-registry', (_req, res) => {
-    if ((ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry?.enabled !== true) return res.status(503).json({ code: 'capability-registry-disabled' });
+    const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
+    if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
     if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
-    return res.status(200).json({ scanState: 'never-observed', capabilities: [] });
+    const rows = ctx.capabilityRegistry.snapshot();
+    return res.status(200).json({ advisory: true, scanState: rows.length ? 'observed' : 'never-observed', capabilities: rows });
   });
   router.get('/capability-registry/health', (_req, res) => {
-    if ((ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry?.enabled !== true) return res.status(503).json({ code: 'capability-registry-disabled' });
-    return res.status(200).json({ status: ctx.capabilityRegistry ? 'ok' : 'unavailable' });
+    const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
+    if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
+    if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
+    return res.status(200).json({ advisory: true, ...ctx.capabilityRegistry.health() });
   });
 
   /**

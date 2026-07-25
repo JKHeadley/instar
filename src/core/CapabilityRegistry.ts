@@ -321,6 +321,11 @@ export class CapabilityRegistryReceiver {
 
   getLastConfirmedAt(origin: string): number | undefined { return this.states.get(origin)?.lastConfirmedAt; }
   getFailureReason(origin: string): CapabilityRegistryFailureReason | undefined { return this.states.get(origin)?.failureReason; }
+  snapshot(now = Date.now()): CapabilityRegistryPoolRow[] { return [...this.states.keys()].flatMap(origin => this.classifyMachine(origin, now)); }
+  health(now = Date.now()): Record<string, unknown> {
+    const rows = this.snapshot(now);
+    return { scanState: rows.length ? 'observed' : 'never-observed', origins: this.states.size, rows: rows.length, byStatus: rows.filter(r => r.kind === 'capability').reduce<Record<string, number>>((acc, r) => { acc[r.status] = (acc[r.status] ?? 0) + 1; return acc; }, {}), failures: rows.filter(r => r.kind === 'failure').length };
+  }
 
   private state(origin: string): CapabilityReceiverOriginState {
     const current = this.states.get(origin);
