@@ -1488,6 +1488,19 @@ evaluate(request):
  return llm_review(request) # dispositions per §3.1
 ```
 
+**What `recordingLive: true` MEANS in every row below.** The
+column is not just "the recorder is up". A row's `recordingLive: true`
+**presupposes the FD36 coupling**: live widening requires **both** capture flags
+(§3.11), and where they are not both on, `judgeableCorpus: false` is surfaced
+with the missing flag named. This was stated in §3.11 and FD36 but **not here**,
+and since the table is the authority an implementer building from it alone could
+ship live overrides that are structurally unjudgeable — which would starve the
+grading corpus this whole change exists to fill. Recorded as a definition rather
+than as new rows: re-partitioning this table by hand has produced a fresh
+unreachable row on three consecutive attempts, so the coupling is stated once,
+here, where the authority is. **Dissent stays deliberately uncoupled** (§3.11) —
+a refusal to deliver needs no gradeable body.
+
 Within each phase the **first matching row wins**; the phases themselves are
 strictly ordered A → B → C and never revisited.
 
@@ -1654,6 +1667,18 @@ this is the honest scoping answer).
  sentences, and it costs only the ability to stop an agent that has written down
  a justification — never the ability to stop an accident. Anything this install
  actually holds is unaffected: that is the wall.
+ **And on a structurally no-recourse sender it is not even a nudge.** B23 defaults relay, system-template and automated-job senders to
+ `observe` — correct, because a hold nobody can answer is an unappealable
+ refusal — but the consequence must be said plainly: **a credential-shaped
+ third-party secret on a high-volume automated path is DELIVERED by default,
+ with a counter.** So the honest scope of "credentials stay a wall" is: *values
+ this install holds are a wall everywhere; credential-shaped values are a nudge
+ where someone can answer it, and observation-only where nobody can.* Anyone
+ reading the headline as "credential-shaped text cannot leave on any path" is
+ reading more than the design delivers. If that gap matters for a given sender,
+ the lever is a build-time or template check on that path plus a sampled runtime
+ threshold — **not** widening the wall, which would re-create unanswerable holds
+ on exactly the senders that cannot answer them.
 - **"Held-value match" is the honest name, and it is weaker than "possession".**
  A B22 hit proves exactly one thing: **this candidate contains a byte
  sequence that also appears in this install's loaded config.** It does **not**

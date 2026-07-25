@@ -708,3 +708,23 @@ exactly how an implementer ships the gaps.
 trend is that clean-artifact review keeps finding real defects — including ones
 I introduce — faster than hand-editing resolves them. Findings 3, 4 and 5 are
 the substance now, and 4 is a decision rather than an edit.
+
+---
+
+## Round 38 (2026-07-25 16:1xZ) — the fixes held; two more folded
+
+**Every defect fixed in round 37 stayed fixed** — no recurrence of the row-19
+unreachability, the pseudocode authority overclaim, or the possession
+vocabulary. Verdict SERIOUS, on findings that are new rather than repeats.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **Judgeability gate inconsistent, and it undercuts the point of the change.** §3.6 makes body capture opt-in and counts body-less overrides `override-unjudgeable`; FD36 requires BOTH capture flags for live widening; **§3.8.1's rows ignore capture entirely** and allow delivery on `recordingLive: true`. Since the table wins, an implementer building from it could ship live overrides that are structurally unjudgeable — starving the grading corpus this change exists to fill. | **FOLDED as a DEFINITION, not new rows.** `recordingLive: true` is now defined at the table to presuppose the FD36 coupling, with `judgeableCorpus: false` surfaced and the missing flag named. Stated once, where the authority is. Deliberately *not* re-partitioned into rows: hand-partitioning this table has produced a fresh unreachable row on three consecutive attempts, so the instrument was chosen against that record. Dissent stays uncoupled — a refusal needs no gradeable body. |
+| 3 | **"Credentials stay a wall" over-promises.** B23 defaults structurally no-recourse senders (relay, system-template, automated job) to `observe`, so a credential-*shaped* third-party secret on a high-volume automated path is delivered by default. | **FOLDED into §4.** Honest scope now stated: *values this install holds are a wall everywhere; credential-shaped values are a nudge where someone can answer, and observation-only where nobody can.* The `observe` default is still correct — a hold nobody can answer is an unappealable refusal — but the headline was doing more work than the design supports. Named remedy for a sender that needs more: build-time/template check plus sampled runtime threshold, **not** widening the wall. |
+| 2 | Contract still carries history/rationale | **OPEN, unchanged, and the decision is already recorded** (round 35, finding 5): improve inline stripping *inside* §3; never re-omit §3. Recurring because the symptom is visible every round while the fix is a tooling change. |
+| 4 | Token store + append-only log + projector + reconciliation is a small workflow system despite rejecting one | **OPEN — fourth consecutive round.** Unchanged: adopt a durable approval/outbox table with states and idempotent projection, or justify why log+projector is simpler than a table with states. **A decision, not an edit.** |
+
+**Status: NOT converged, no tag.** Two of the four are folded; the two that
+remain are the same two that have persisted for rounds — one a tooling change,
+one an architectural decision. Neither is resolved by another editing pass, and
+the second is explicitly the operator's.
