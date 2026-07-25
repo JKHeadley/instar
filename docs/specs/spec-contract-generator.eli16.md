@@ -41,6 +41,18 @@ own judgment about what counts as current — and it would drift out of step wit
 the document exactly the way the document drifted out of step with itself. A dumb
 rule is checkable at a glance; a clever one is a second thing to review.
 
+## One thing to watch
+
+Because the rule is blunt, it only recognises the heading shapes it knows. Run it
+against a document that organises its history differently and it will strip
+nothing, report "0 sections excluded", and exit successfully — which looks
+exactly like a document that had no history to strip.
+
+That happened the first time it was pointed at a second spec. The fix was one
+extra heading shape, but the failure mode is worth remembering: **always read
+what it says it removed, not just whether it succeeded.** A tool that silently
+does nothing is the same species of problem as a check that silently doesn't run.
+
 ## What it doesn't do
 
 It doesn't check whether the design is any *good*, or even whether it's

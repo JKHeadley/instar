@@ -22,7 +22,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /** A heading that begins the review-history half. Matched case-insensitively. */
-const HISTORY_HEADING_RE = /^##\s+(?:\d+\.\s+)?(?:Round-\d+\b[^\n]*?(?:change log|hand-check|consistency sweep)|Appendix\b)/i;
+const HISTORY_HEADING_RE =
+  /^##\s+(?:\d+\.\s+)?(?:Round-\d+\b[^\n]*?(?:change log|hand-check|consistency sweep)|Review record\b|Appendix\b)/i;
 
 /** Headings that are contract even though they sort after a history heading. */
 const ALWAYS_CONTRACT_RE = /^##\s+(?:\d+\.\s+)?(?:Decision points touched|Open questions|Frontloaded Decisions|Dependencies|Honest limits|Multi-machine posture|What this does not do)/i;
