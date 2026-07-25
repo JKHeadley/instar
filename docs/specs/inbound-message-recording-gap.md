@@ -167,6 +167,20 @@ It works because:
   seeding skips rows whose `messageId` is not a number, so **id-less entries are
   not re-seeded**. Harmless here precisely because their per-injection UUID never
   deduped across arrivals anyway: nothing is lost that was ever promised.
+  **The key is inserted only AFTER the append returns (round-27, codex — insert
+  order was unstated, and getting it wrong is silent permanent loss).** If the key
+  went in first and the append then threw, the in-memory set would suppress every
+  later retry of that same message: the write that failed would be the only write
+  ever attempted. So `appendInboundJsonlSync` inserts on the success path only, and
+  a thrown append leaves the key absent — the next arrival of the same message is
+  treated as new and written. The cost of that ordering is a possible duplicate row
+  if the append *partially* succeeded before throwing; the cost of the other
+  ordering is losing the message entirely. A duplicate is recoverable and a loss is
+  not, so the ordering follows the recoverable failure. **Seeding tolerates a torn
+  tail**: `seedMessageLogDedupe()` parses line-by-line and skips a final unparseable
+  line rather than aborting, because a process killed mid-append leaves exactly that
+  shape and an aborted seed would drop every key in the file.
+
   The existing key is `in:<topicId>:<messageId>`, so a message that reaches both
   the forward route and the seam is written once **to JSONL**. **TopicMemory is a
   different story and the guarantee does not extend to it (round-24, codex):**
@@ -241,9 +255,20 @@ It works because:
     sentinel is that **no reader has to interpret it**: meaning lives in
     `id_source`, and `-1` is just a value that satisfies the constraint.
 
-    That deletes the helper, the ordering caveat, the consumer audit and the
-    "future reader might misread it" residual — a net reduction, which is why it
-    is worth the migration this spec spent four rounds avoiding.
+    That deletes the helper and the ordering caveat — a net reduction, which is
+    why it is worth the migration this spec spent four rounds avoiding.
+
+    **The consumer audit is not deleted, though (round-27, codex).** Claiming "no
+    reader has to interpret it" was too strong: `-1` is still an observable value
+    in a shared table, and an existing reader that sorts, filters, displays or
+    exports on `message_id` sees it whether or not it is asked to interpret it. The
+    honest scope is narrower — *no reader has to interpret it to get correct
+    behavior from this feature*, and that is only true if no reader is currently
+    keying on `message_id` in a way `-1` disturbs. So the change ships with a
+    one-time audit of TopicMemory read paths, and the rule that follows it: **any
+    read model exposing `message_id` exposes `id_source` alongside it.** A column
+    that can hold a placeholder must travel with the column that says whether it
+    is one.
   - **Ordering still comes from `(timestamp, rowid)`, not `message_id`.** With the
     sentinel withdrawn this is no longer a sign-related trap, but it remains true
     for a plainer reason: burst messages can share a timestamp, and `message_id`
@@ -540,8 +565,8 @@ the current API.
   bounded now, not eliminated. The earlier phrase "no unbounded synchronous work
   occurs" was wrong and is removed; so is v16's "observable but not mitigated",
   which stopped being true when the bound landed. The honest position: a burst
-  costs at most 64 writes of loop time and sheds the rest, and the measured delay
-  figure tells us whether 64 is the right number.
+  costs at most 16 writes of loop time and sheds the rest, and the measured delay
+  figure tells us whether 16 is the right number.
 - **Two counters, still not a subsystem:** pending callbacks (Attention above
   **8** — half the drop cap, so the warning fires *before* the cap bites; the old
   32/64 pair survived the cap change to 16 and would have meant the warning never
@@ -582,6 +607,31 @@ twice in this section's own history.
 ### 3.3 Rollout
 
 `messaging.inboundSeamLogging.enabled`, with an emergency disable.
+
+**"Code landed" is NOT "bug fixed" (round-27, codex — the strongest finding in
+the review, and it lands).** This spec opens by calling the defect unrecoverable
+data loss, then ships the fix default-off. Those two facts together mean the PR
+can merge, the tests can pass, the work can be reported complete — and **not one
+additional inbound message is recorded**. The defect would continue for exactly
+as long as nobody performs the flip, which is precisely the failure mode a
+default-off rollout is supposed to be careful about, applied to a bug where being
+careful costs the thing being protected.
+
+So the two states are named separately and neither is allowed to stand in for the
+other:
+
+| State | Meaning | Evidence |
+|---|---|---|
+| **Code landed** | The seam records when enabled; tests green; flag exists, default-off. | Merged PR. |
+| **Bug fixed** | The flag is ON for the affected machine and inbound rows are accumulating. | A non-zero inbound row count for a live topic, read back after a real message. |
+
+**Acceptance for this work is "bug fixed", not "code landed."** The benchmark
+gates below govern the *fleet* default; they do not govern the affected machine,
+which is the one currently losing data. On that machine the flag is turned on as
+part of the same change, verified by reading back a real inbound row, and if the
+benchmark then shows the cost is unacceptable the flag comes back off — a
+measured retreat, not an unmeasured wait. Reporting "done" with the flag off on
+the machine that has the bug is not a partial success; it is the bug.
 
 **Default-on is EARNED by explicit thresholds, not by a release count
 (round-17, tightened round-19 — "default-off for exactly one release" was an
@@ -650,14 +700,17 @@ the retired no-id-no-entry behaviour one fold after the design changed — caugh
 in a 200-line document, which is the point); two identical messages in the same
 second produce two distinct rows (§3); the dedupe key coerces
 string/number ids; a throwing logger is caught, counted, and the injection still
-happens; **the JSONL append has COMPLETED before the inject call** (asserted on
-completion, not on scheduling), and — as a separate assertion — the scheduled
-callback performs the TopicMemory write after it. **And the
-JSONL append is asserted to have COMPLETED before injection**, not scheduled
-(round-22, codex: the test plan still described the pre-split model). *(Round-13,
-codex: asserting "the log call precedes the inject call" would force a
-synchronous mock shape that does not match production.)* Asserted by call order, not by
-timing).
+happens; the dedupe key is inserted **only after a successful append**, so a
+throwing append leaves the message eligible to be written on its next arrival
+(round-27); and **the JSONL append has COMPLETED — not merely been scheduled —
+before the inject call**, with the TopicMemory write asserted separately as
+happening after it.
+
+That last assertion is by **call order against the split logger API**, not by
+timing (round-13, codex: asserting the ordering with a clock would force a
+synchronous mock shape that does not match production; round-22 and round-27
+both caught this paragraph still carrying the pre-split wording, and round-27
+additionally caught it asserting the same thing twice).
 
 **Integration** — a message delivered through the real inject path appears in the
 JSONL log and in TopicMemory with `fromUser: true`; the same message arriving via
