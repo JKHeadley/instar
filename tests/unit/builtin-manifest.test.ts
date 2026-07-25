@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -56,15 +58,41 @@ describe('INSTAR_BUILTIN_MANIFEST', () => {
   });
 
   it('is up-to-date with current source', () => {
-    // Regenerate and compare
-    const before = fs.readFileSync(MANIFEST_PATH, 'utf-8');
-    execSync('node scripts/generate-builtin-manifest.cjs', { cwd: ROOT });
-    const after = fs.readFileSync(MANIFEST_PATH, 'utf-8');
+    // Generate to a TEMP path and diff against the committed file.
+    //
+    // This used to regenerate over MANIFEST_PATH itself and compare the file
+    // before/after — a verifier that mutates the artifact it verifies. Under the
+    // parallel suite it raced package-completeness.test.ts, whose full `npx tsc`
+    // build regenerates the same tracked file, so the comparison could read a
+    // half-written or foreign manifest and go red on a perfectly good tree.
+    // Generating elsewhere makes the check read-only and order-independent.
+    const tmpOut = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'builtin-manifest-check-')),
+      'builtin-manifest.json',
+    );
+    try {
+      execSync('node scripts/generate-builtin-manifest.cjs', {
+        cwd: ROOT,
+        env: { ...process.env, INSTAR_BUILTIN_MANIFEST_OUT: tmpOut },
+        stdio: 'pipe',
+      });
 
-    // Strip generatedAt timestamp for comparison (changes every run)
-    const normalize = (s: string) => s.replace(/"generatedAt":\s*"[^"]+"/, '"generatedAt": "NORMALIZED"');
+      const committed = fs.readFileSync(MANIFEST_PATH, 'utf-8');
+      const regenerated = fs.readFileSync(tmpOut, 'utf-8');
 
-    expect(normalize(after)).toBe(normalize(before));
+      // Strip generatedAt timestamp for comparison (changes every run)
+      const normalize = (s: string) => s.replace(/"generatedAt":\s*"[^"]+"/, '"generatedAt": "NORMALIZED"');
+
+      expect(
+        normalize(regenerated),
+        'src/data/builtin-manifest.json is stale — run `node scripts/generate-builtin-manifest.cjs` and commit the result',
+      ).toBe(normalize(committed));
+    } finally {
+      SafeFsExecutor.safeRmSync(path.dirname(tmpOut), {
+        recursive: true, force: true,
+        operation: 'tests/unit/builtin-manifest.test.ts',
+      });
+    }
   });
 
   it('covers all 14 built-in hooks', () => {

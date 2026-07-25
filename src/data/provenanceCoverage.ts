@@ -12,10 +12,12 @@
  *     runtime and counts unknowns). Wired entries declare their volumeClass —
  *     the PROVENANCE store's volume valve (§5.6; the ~250-byte decision_quality
  *     row is written for every enrolled settlement regardless of class).
- *   - status 'pending:<ACT-ref>'    — the retrofit backlog, format-validated +
+ *   - status 'pending:<ref>'        — the retrofit backlog, format-validated +
  *     PINNED shrink-only in tests/unit/provenance-coverage-ratchet.test.ts
- *     (count can only go down; re-pointing an entry to a different ACT is a
- *     reviewed baseline change — shrink-only covers count, not identity). The
+ *     (count can only go down; re-pointing an entry to a different tracker is a
+ *     reviewed baseline change — shrink-only covers count, not identity). A ref
+ *     is one of two KINDS: `ACT-<n>` (machine-local) or `backlog:<key>`
+ *     (fleet-stable, resolved against BACKLOG_TRACKERS below). The
  *     runtime half of the two-layer check (§5.6 pending-ref-dead) lives on
  *     GET /decision-quality, where the evolution queue exists.
  *   - status 'exempt:<taxonomy>'    — a CLOSED taxonomy (an exemption is a
@@ -58,8 +60,85 @@ export const EXEMPT_TAXONOMY_KEYS: ReadonlyArray<ExemptTaxonomyKey> = [
 ];
 
 /**
- * A decision point's provenance posture. `pending:<ACT-ref>` refs are
- * format-validated (^ACT-\d+$) and baseline-pinned by the ratchet;
+ * A BACKLOG TRACKER — a fleet-stable owner for a body of pending work.
+ *
+ * WHY THIS EXISTS (census-tracker-ref-kinds). A pending entry needs to name
+ * something a reader can resolve to answer "is this still tracked?". Two
+ * candidate anchors were rejected on evidence:
+ *
+ *  - An evolution-action id (`ACT-1193`) is a MACHINE-LOCAL handle. Written
+ *    into this constant — which is byte-identical on every install — it can
+ *    resolve on exactly one machine in the fleet.
+ *  - A spec DOCUMENT path was the obvious next reach, and is wrong for a
+ *    reason worth recording: `docs/` is excluded from the published package
+ *    (`.npmignore`; absent from package.json `files[]`). An existence check
+ *    against a doc path resolves FALSE on every fleet install, converting
+ *    "unverifiable" into a fleet-wide false "deleted" — strictly worse than
+ *    the status quo, and a re-run of the exact false alarm the 2026-07-23 fix
+ *    removed. (External cross-model review, 2026-07-25, caught this.)
+ *
+ * A source constant is the anchor that survives both objections: `src/data/`
+ * IS published, it compiles into `dist/`, and this record is therefore
+ * byte-identical everywhere BY CONSTRUCTION — no filesystem, no packaging
+ * assumption, no sub-document anchor that can silently drift.
+ *
+ * Removing a key while entries still point at it is a REAL deletion, and the
+ * adjudicator reports it as `dead` on every machine at once. That is the
+ * signal the debt check was built to raise.
+ */
+export interface BacklogTracker {
+  /** Stable key. Charset-clamped by the ratchet: ^[a-z0-9][a-z0-9-]*$ */
+  readonly key: string;
+  /** Where the work is specified. Documentation for a reader — NEVER resolved. */
+  readonly owner: string;
+  /** What the backlog is, in one line. */
+  readonly summary: string;
+  /**
+   * What must become TRUE for this backlog to be finished — the answer to
+   * "when does this key get deleted?".
+   *
+   * WHY IT IS REQUIRED (external review, 2026-07-25): without it, `alive` decays
+   * into "still listed". A key nobody ever retires makes the debt check pass
+   * forever while the work rots — the same class of empty-green the whole change
+   * exists to remove, just moved one level up. A closure condition makes the
+   * key's own staleness reviewable by a human reading the registry.
+   */
+  readonly closureCondition: string;
+}
+
+/**
+ * The backlog registry. Adding a key is a reviewed source change; removing one
+ * while referenced surfaces as `dead` fleet-wide, which is the intended alarm.
+ *
+ * `owner` is prose for a human reader. It is deliberately NOT resolved at
+ * runtime: resolving it would reintroduce the docs-do-not-ship defect above.
+ */
+export const BACKLOG_TRACKERS: Readonly<Record<string, BacklogTracker>> = {
+  'decision-quality-enrolment': {
+    key: 'decision-quality-enrolment',
+    owner: 'docs/specs/llm-decision-quality-meter.md §5.6 (Census + enrolment backlog)',
+    summary:
+      'Decision points enumerated in the census but not yet wired to record ' +
+      'provenance + outcomes. Each is retrofitted by enrolling its callsite ' +
+      'through the annotate chokepoint; the census debt counters track the drain.',
+    closureCondition:
+      'Every census entry is `wired` or carries a closed-taxonomy exemption — ' +
+      'i.e. NO entry carries this key. At that point the last reference is gone ' +
+      'and this key is deleted from the registry in the same change.',
+  },
+};
+
+/** Is this backlog key live? Pure lookup over a shipped constant. */
+export function backlogTrackerExists(key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(BACKLOG_TRACKERS, key);
+}
+
+/**
+ * A decision point's provenance posture. A `pending:<ref>` ref is
+ * format-validated and baseline-pinned by the ratchet, and carries one of two
+ * KINDS: `ACT-<n>` (a machine-local work item — legitimately local, resolved
+ * against the local queue with high-water adjudication) or
+ * `backlog:<key>` (fleet-stable, resolved against BACKLOG_TRACKERS above).
  * `exempt:operator-ratified:` carries a resolvable ref (PR / standards-registry
  * anchor), also ratchet-validated.
  */
@@ -263,7 +342,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'input-guard',
     component: 'InputGuard',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Input-coherence verdict over an inbound prompt; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -271,7 +350,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'session-activity-digest',
     component: 'SessionActivitySentinel',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Activity digest authored over session tmux output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -279,7 +358,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'stall-triage-diagnosis',
     component: 'StallTriageNurse',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Stall-triage diagnosis over session output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -287,7 +366,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'commitment-detect',
     component: 'CommitmentSentinel',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Commitment detection over conversation text; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -295,7 +374,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'presence-stall-judge',
     component: 'PresenceProxy',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Tier-3 stall judgment over session output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -303,7 +382,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'message-sentinel-classify',
     component: 'MessageSentinel',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Pause/emergency/normal intent classification over an inbound user message (latency-critical); enrollment queued in the ACT-1193 retrofit backlog.',
@@ -311,7 +390,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'project-drift-check',
     component: 'ProjectDriftChecker',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Is-work-on-project coherence verdict over session work + files; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -319,7 +398,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'temporal-coherence-check',
     component: 'TemporalCoherenceChecker',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Temporal-coherence verdict over conversation content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -327,7 +406,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'watchdog-stuck-judge',
     component: 'SessionWatchdog',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Stuck-session judgment over live session output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -335,7 +414,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'resume-sanity-check',
     component: 'ResumeQueueDrainer',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Resume-sanity verdict before a queued mid-work revival; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -343,7 +422,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'topic-intent-arc-check',
     component: 'TopicIntentArcCheck',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Arc-check classification of a topic intent over conversation; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -351,7 +430,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'slack-stall-confirm',
     component: 'SlackAdapter',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Stall-confirm alert-suppression judgment over session output (Slack arm); enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -361,7 +440,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'prompt-injection-detect',
     component: 'PromptGate',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Prompt-injection detection over inbound content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -369,7 +448,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'external-operation-gate',
     component: 'ExternalOperationGate',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Operation mutability/reversibility classification incl. in-content approval claims; enrollment queued in the ACT-1193 retrofit backlog.',
@@ -377,7 +456,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'warrants-reply-gate',
     component: 'WarrantsReplyGate',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Should-I-reply verdict over an inbound message; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -385,7 +464,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'unjustified-stop-gate',
     component: 'UnjustifiedStopGate',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Stop-justified verdict over session state; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -393,7 +472,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'coherence-review',
     component: 'CoherenceReviewer',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Outbound coherence review — THE measured high-volume point (3,641 of 4,098 llm calls/24h on the dev agent, spec §5.6); MUST declare sampled:<rate> or budget:<rows/day> at enrollment, never full.',
@@ -401,7 +480,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'move-intent-classify',
     component: 'MoveIntentClassifier',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Move/pin command-vs-discussion intent over an inbound message + context; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -409,7 +488,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'hub-intent-classify',
     component: 'HubIntentClassifier',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Hub open/tie bind-intent over an inbound hub message; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -417,7 +496,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'profile-intent-classify',
     component: 'ProfileIntentClassifier',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Topic-profile change intent (framework/model/thinking) over an inbound message; enrollment queued in the ACT-1193 retrofit backlog.',
@@ -425,7 +504,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'llm-sanitize',
     component: 'LLMSanitizer',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Sanitize verdict over untrusted inbound content (definitionally injection-exposed); enrollment queued in the ACT-1193 retrofit backlog.',
@@ -433,7 +512,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'override-detect',
     component: 'OverrideDetector',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Override-intent detection over a user turn (uxConfirm pre-routing); enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -441,7 +520,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'task-classify',
     component: 'TaskClassifier',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Task-type classification over a user task description; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -451,7 +530,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'job-reflect',
     component: 'JobReflector',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Job-outcome reflection over job output/transcript; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -459,7 +538,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'cross-model-review',
     component: 'crossModelReviewer',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Cross-model spec-document review over file content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -467,7 +546,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'self-knowledge-extract',
     component: 'SelfKnowledgeTree',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Self-knowledge extraction over transcripts; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -475,7 +554,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'tree-triage',
     component: 'TreeTriage',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Knowledge-tree fragment triage over stored content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -483,7 +562,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'topic-summarize',
     component: 'TopicSummarizer',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Topic summary authoring over conversation content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -491,7 +570,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'contextual-evaluate',
     component: 'ContextualEvaluator',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Context-relevance evaluation over conversation/session content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -499,7 +578,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'relationship-extract',
     component: 'RelationshipManager',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Relationship-fact extraction from conversation (PII-adjacent content); enrollment queued in the ACT-1193 retrofit backlog.',
@@ -507,7 +586,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'standards-conformance-review',
     component: 'StandardsConformanceReviewer',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Artifact-vs-standard conformance review over file content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -515,7 +594,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'discovery-evaluate',
     component: 'DiscoveryEvaluator',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Serendipity-discovery evaluation over subagent output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -523,7 +602,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'dashboard-insight',
     component: 'DashboardInsightEngine',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Awareness-only page-data insight authoring (degrades to a deterministic floor); enrollment queued in the ACT-1193 retrofit backlog.',
@@ -533,7 +612,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'pipe-session-spawn',
     component: 'PipeSessionSpawner',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Session authoring from (possibly user-authored) task descriptions; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -541,7 +620,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'cartographer-summary-author',
     component: 'CartographerSweep',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Doc-tree summary authoring over untrusted code; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -549,7 +628,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'standards-coverage-enrich',
     component: 'StandardsCoverageEnrichment',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Standards-coverage row enrichment over repo content (dark LLM path); enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -559,7 +638,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'input-classify',
     component: 'InputClassifier',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Auto-approve vs relay classification of inbound input; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -567,7 +646,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'session-summary-extract',
     component: 'SessionSummarySentinel',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Task/phase/files extraction over tmux output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -575,7 +654,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'telegram-stall-confirm',
     component: 'TelegramAdapter',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Stall-confirm alert-suppression judgment over session output (Telegram arm); enrollment queued in the ACT-1193 retrofit backlog.',
@@ -583,7 +662,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'resume-uuid-validate',
     component: 'ResumeValidator',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Resume-UUID-vs-topic match verdict over session/resume state; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -591,7 +670,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'usher-topic-route',
     component: 'Usher',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Per-turn topic routing over an inbound user turn; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -599,7 +678,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'topic-intent-extract',
     component: 'TopicIntentExtractor',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Topic-intent extraction from a user turn; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -607,7 +686,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'pre-compaction-flush',
     component: 'PreCompactionFlush',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Durable-fact extraction over a transcript before compaction; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -615,7 +694,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'tree-synthesize',
     component: 'TreeSynthesis',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Knowledge-fragment synthesis into an answer; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -623,7 +702,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'llm-conflict-resolve',
     component: 'LLMConflictResolver',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Divergent multi-machine state resolution over untrusted peer data; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -631,7 +710,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'open-conversation-brief',
     component: 'openConversationBrief',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'A2A conversation-brief authoring over peer content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -639,7 +718,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'a2a-checkin-summarize',
     component: 'a2a-checkin',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'A2A check-in thread summarization over peer-authored threads; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -647,7 +726,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'correction-distill',
     component: 'correction-learning',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Recurring-correction distillation into a durable preference; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
@@ -655,7 +734,7 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   {
     decisionPoint: 'mentor-stage-b-classify',
     component: 'mentor-stage-b',
-    status: 'pending:ACT-1193',
+    status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Mentor-signal classification over mentee output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
