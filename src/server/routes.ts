@@ -92,7 +92,7 @@ import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowl
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
-import { buildDegradedToneResult, resolveToneGateOperatorConfig } from '../core/MessagingToneGate.js';
+import { buildDegradedToneResult, resolveToneGateOperatorConfig, fingerprintAutomatedTemplate } from '../core/MessagingToneGate.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -2455,6 +2455,8 @@ export function createRoutes(ctx: RouteContext): Router {
         budgetFailClosed && globalFailClosed !== true
           ? (latencyMs: number) => buildDegradedToneResult(text, latencyMs, 'budget-timeout')
           : undefined;
+      const templateFingerprint =
+        options.messageKind === 'automated' ? fingerprintAutomatedTemplate(text) : undefined;
       const result = await reviewWithinBudget(
         ctx.messagingToneGate.review(text, {
           channel,
@@ -2462,6 +2464,7 @@ export function createRoutes(ctx: RouteContext): Router {
           signals,
           targetStyle: ctx.config.messagingStyle,
           messageKind: options.messageKind,
+          templateFingerprint,
           agentState,
           recipientClass,
           // Undefined in observe-only mode (the default) and on every uncertainty,

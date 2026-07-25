@@ -143,6 +143,8 @@ export interface DecisionRowInput {
   contentClass?: string;
   /** Who minted the correlation id ('router'; breaker mints never settle). */
   mintedBy?: string;
+  /** Stable identity for an automated message template; body never stored here. */
+  templateFingerprint?: string;
 }
 
 export interface ProvenanceRow {
@@ -176,6 +178,7 @@ export interface ProvenanceRow {
   promptId?: string;
   contentClass?: string;
   mintedBy?: string;
+  templateFingerprint?: string;
   /** Outcome rows only (§5.4): FD3 grade, validated at write (invalid → omitted + counted). */
   grade?: string;
   /** Outcome rows only: the grading component (the ruleId's registered owner). */
@@ -352,6 +355,7 @@ export class JudgmentProvenanceLog {
       tokensIn: input.tokensIn,
       tokensOut: input.tokensOut,
       latencyMs: input.latencyMs,
+      templateFingerprint: input.templateFingerprint,
       ...(seamRow
         ? {
             correlationId: input.correlationId,
