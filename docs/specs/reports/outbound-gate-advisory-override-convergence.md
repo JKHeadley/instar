@@ -652,3 +652,59 @@ findings remain open, one of them architectural. The honest read is that this
 spec's folds need a reviewer pass *between* each one rather than a batch of
 folds followed by a round — the defect rate per fold is not low enough to
 verify by re-reading alone.
+
+---
+
+## Round 37 (2026-07-25 16:1xZ) — SERIOUS again; the table needs a MACHINE check, not a better editor
+
+**Third consecutive hand-edit to row 15, third new unreachability.** The
+sequence, all mine:
+
+- R35: row 15 lacked "no ack+reason" → **row 22 unreachable**. Fixed.
+- R36: row 15 conflated *absent* with *expired* → false expiry flag on a plain
+  resend. Split into 15/15a/15b/15c. Fixed.
+- R37: the broadened row 15 swallowed "text hash matches a live record" →
+  **row 19 unreachable**. Fixed (row 15 now also requires no live pending
+  record).
+
+Each fix was correct in isolation and each created the next defect. I applied
+the mitigation I had written down one round earlier — a reviewer pass *between*
+folds rather than a batch — **and it still regressed.** That is the finding:
+
+> **Under "first matching row wins", a table of ~25 prose-predicate rows cannot
+> be kept reachable by hand.** Every edit silently re-partitions the input space,
+> and the only reliable detector so far has been an external reviewer reading
+> the whole table — which costs a full round per defect.
+
+**REQUIRED GUARD (recorded, not built):** a **row-reachability check** over
+§3.8.1, distinct from the prose-vs-table lint already promised at round 123.
+That lint resolves *assertions elsewhere* against the table; it does **not**
+detect that row N makes row N+k dead. The reachability check needs each row's
+predicate expressed as structured fields — the columns already are
+(`advisoryCapable`, token state, `recordingLive`) plus the discriminators now
+written into row text (ack present, token presented, live-record match) — so
+the honest next step is to **lift those discriminators out of prose into
+columns**, at which point reachability is a mechanical subsumption test rather
+than a reading exercise. Attempting the check against prose predicates would be
+a guard that cannot work, which is worse than none.
+
+**Also fixed this round — my own overclaim.** I had labelled the §3.8.1
+pseudocode "the authority on the order". Round 37 correctly called that
+dangerous: the sketch omits ack/reason validation, `dissentOnly`, the malformed
+override, and rows 15c/16/17/20/20a/21. **Demoted to an illustrative reading
+aid; the TABLE is sole authority on both outcome and order, and §3.10's tests
+derive from the table.** An incomplete sketch wearing an authority label is
+exactly how an implementer ships the gaps.
+
+**Open and NOT edited further this round — deliberately, on evidence:**
+
+| # | Finding | Why untouched |
+|---|---|---|
+| 3 | "Proven possession" overstates what B22 shows — substring equality against loaded config proves *local storage containment*, not liveness, ownership, or intent | Real, and a **vocabulary change across many sections**. Given three-for-three regressions on a single table row, a sweeping rename by hand is the wrong instrument. Needs the replace-the-section discipline, not a find-and-replace. |
+| 4 | §3.5/§3.8 reject durable outbox/workflow patterns, then build tokens + pending states + append-only events + projection + reconciliation + terminal events + startup repair | **Architectural, recurring for the third round.** Either specify a small durable approval/outbox table with states and idempotent projection, or justify why log+projector is simpler than a table with states. A design call with real cost either way. |
+| 5 | Critical rules live outside §3.8.1 (emergency disable, context-capture gating, posture readiness, self-heal, migration), threatening implementability | Related to 4; the same call decides much of it. |
+
+**Status: NOT converged, no tag, and rounds 36-37 both SERIOUS.** The honest
+trend is that clean-artifact review keeps finding real defects — including ones
+I introduce — faster than hand-editing resolves them. Findings 3, 4 and 5 are
+the substance now, and 4 is a decision rather than an edit.

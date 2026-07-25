@@ -1622,10 +1622,18 @@ advisory forever).**
 - **Phase C — review.** Reached only when Phase B did not resolve the request:
   the LLM review and its dispositions.
 
-**The same ordering as executable pseudocode.** The table below is the
-authority on every individual *outcome*; this is the authority on the *order*
-they are consulted in. Both describe one procedure, and **the test plan (§3.10)
-derives its cases from this ordering** rather than from a reading of the table
+**The same ordering as illustrative pseudocode — NOT authority.**
+*(Round-37, codex, and the correction is mine to make: I originally wrote that
+this block was "the authority on the order". It is **not**, and that label was
+dangerous. This sketch omits ack/reason validation, `dissentOnly`, the malformed
+override, and the reason-vs-B22 outcomes covered by rows 15c, 16, 17, 20, 20a
+and 21 — an implementer who treated an incomplete sketch as authoritative would
+ship those gaps. **The TABLE is the sole authority on both outcome and order.**
+This block is a reading aid for the phase structure and nothing more; where it
+and the table differ, the table is right and this is a defect.)*
+The table below is the authority on every individual *outcome* **and on the
+order they are consulted in**. **The test plan (§3.10) derives its cases from
+the table**, not from this sketch
 — a reviewer noted that "the table wins" resolves prose-vs-table conflicts but
 does nothing for an implementer misreading precedence across rows 8/8a/8b,
 13/13a, 15/22 and 18/18a/18c/18d. If this pseudocode and the table ever
@@ -1707,7 +1715,7 @@ strictly ordered A → B → C and never revisited.
 | 13 | Resend, ack + reason + **valid** token, hash matches | true | valid | true | **Phase A** runs (rows 1–2 still apply); the acked citation is treated as answered; **Phase C is skipped**; deliver; annotate once. |
 | 13a | Resend as above, but a **different** deterministic rule now fires | true | valid | true | Fresh hold on the new citation with a new token — an ack for one rule never answers another. |
 | 14 | Resend, token valid, **hash mismatch** (edited message) | true | valid | true | Full fresh review (the edit is a new message). |
-| 15 | Resend, **no token presented at all**, **and NO ack+reason present** | true | n/a | true | **Ordinary fresh review.** No override was attempted, so nothing override-flavoured is emitted: **no** `tokenExpiredFreshReview`, no telemetry. Counted as a first-pass advisory. *(Round-35 added the ack-absent clause because without it row 22 was unreachable under "first matching row wins". Round-36 then found the row still conflated **absent** with **expired** — an absent token cannot prove expiry, and flagging a plain resend as an expired override is simply false. Split below.)* |
+| 15 | Resend, **no token presented at all**, **NO ack+reason**, **and NO live pending record matches this text** | true | n/a | true | **Ordinary fresh review.** No override was attempted, so nothing override-flavoured is emitted: **no** `tokenExpiredFreshReview`, no telemetry. Counted as a first-pass advisory. *(Round-35 added the ack-absent clause because without it row 22 was unreachable. Round-36 found the row still conflated **absent** with **expired**. **Round-37 found that my round-36 split made row 19 unreachable** — the broadened row 15 swallowed "text hash matches a live record" — so the no-live-record clause is now required too. Three consecutive edits to this row, each fixing one unreachability and creating another; that history is left visible because it is the argument for a reachability lint over this table rather than more hand-editing.)* |
 | 15a | Resend, a token **was** presented but its record is **expired/consumed/evicted**, **NO ack+reason** | true | invalid | true | Fresh review; response carries `tokenExpiredFreshReview: true`; counted separately; never a join on text. This is the only row that may claim expiry, because it is the only one that saw a token. |
 | 15b | Resend, token presented but **context mismatch** (`channel`/`topicId`/`messageKind` differ from the record, §3.5) | true | invalid | true | **`override-uncorrelated`** — counted, never a delivery, never `tokenExpiredFreshReview`. A valid token in the wrong conversation is not an expired token; conflating them would hide the exact cross-context leak the token replaced a hash map to prevent. |
 | 15c | **ack+reason present but NO token at all** | true | n/a | true | **Malformed override.** Fresh review, and counted as `override-malformed` — distinct from row 22, which had a token that aged out. An ack citing a rule with no token was never a valid override attempt and must not inflate the expired-attempt rate. |
