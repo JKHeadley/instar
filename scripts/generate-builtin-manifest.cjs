@@ -426,8 +426,18 @@ function main() {
     manifest.entries[entry.id] = entry;
   }
 
-  // Write to src/data/
-  const outputPath = path.join(ROOT, 'src/data/builtin-manifest.json');
+  // Write to src/data/ — or to an explicit override.
+  //
+  // WHY THE OVERRIDE EXISTS: the up-to-date CHECK in
+  // tests/unit/builtin-manifest.test.ts used to run this generator against the
+  // real path and diff the file before/after — i.e. a test that verifies the
+  // committed manifest is current by OVERWRITING the committed manifest. Under
+  // the parallel suite that races tests/unit/package-completeness.test.ts,
+  // whose full `npx tsc` build regenerates the same file, producing a random
+  // red on a green tree. A verifier must not mutate the artifact it verifies.
+  const outputPath = process.env.INSTAR_BUILTIN_MANIFEST_OUT
+    ? path.resolve(process.env.INSTAR_BUILTIN_MANIFEST_OUT)
+    : path.join(ROOT, 'src/data/builtin-manifest.json');
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(manifest, null, 2) + '\n');
 

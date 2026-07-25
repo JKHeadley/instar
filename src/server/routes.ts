@@ -123,7 +123,7 @@ import { decorateWithRopeCondition } from './poolRopeCondition.js';
 import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
 import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
-import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
+import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -1901,10 +1901,75 @@ export function parseActOrdinal(id: string): number | null {
  */
 export type PendingTrackerVerdict = 'alive' | 'dead' | 'unverifiable';
 
+/**
+ * A pending tracker reference, typed by KIND.
+ *
+ * WHY A KIND EXISTS (census-tracker-ref-kinds): `ACT-1193` was never a *broken*
+ * id — it is the wrong KIND of id for the job. An evolution-action id is a
+ * MACHINE-LOCAL bookkeeping handle, and `PROVENANCE_COVERAGE` is a shipped
+ * source constant that is byte-identical on every install. A per-machine handle
+ * written into a fleet-wide constant can only resolve on the one machine that
+ * minted it, so the debt check is structurally incapable of answering anywhere
+ * else. The 2026-07-23 fix stopped that reading as a DELETION (`unverifiable`
+ * instead of `dead`), which was correct — but a check that can only ever answer
+ * "I don't know" is not yet doing its job.
+ *
+ * A `backlog:` ref resolves against BACKLOG_TRACKERS — a SHIPPED SOURCE
+ * CONSTANT, byte-identical on every install. That is the whole difference.
+ *
+ * REJECTED ALTERNATIVE, recorded because it is the intuitive one and it is
+ * wrong: anchoring to a spec DOCUMENT path (`spec:<slug>`). `docs/` is excluded
+ * from the published package (`.npmignore`; absent from package.json `files[]`),
+ * so a file-existence check resolves FALSE on every fleet install — turning 49
+ * `unverifiable` entries into 49 fleet-wide false DELETIONS. That is strictly
+ * worse than the status quo and re-runs the exact false alarm the 2026-07-23 fix
+ * removed. Caught by external cross-model review, 2026-07-25.
+ */
+export type TrackerRef =
+  | { kind: 'act'; id: string }
+  | { kind: 'backlog'; key: string }
+  | { kind: 'unknown' };
+
+/**
+ * Classify a tracker ref. Shape-only — resolution is the adjudicator's job.
+ *
+ * `backlog:<key>` names an entry in BACKLOG_TRACKERS. The key is charset-clamped
+ * to the same shape the ratchet enforces, so a malformed ref parses as `unknown`
+ * (and reads `dead`) rather than silently becoming a lookup miss.
+ */
+export function parseTrackerRef(ref: string): TrackerRef {
+  const s = (ref ?? '').trim();
+  if (/^ACT-\d+$/.test(s)) return { kind: 'act', id: s };
+  const m = /^backlog:([a-z0-9][a-z0-9-]*)$/.exec(s);
+  if (m) return { kind: 'backlog', key: m[1] };
+  return { kind: 'unknown' };
+}
+
 export function adjudicatePendingTracker(
   act: string,
-  liveActs: LiveEvolutionActs,
+  // NULLABLE on purpose: a machine with no evolution queue on disk can still
+  // adjudicate a `backlog:` ref (it needs no queue). Before this, the CALLSITE
+  // skipped adjudication entirely when the queue was missing, which would have
+  // made every fleet-stable ref silently uncounted on exactly the installs the
+  // fleet-stable kind exists to serve.
+  liveActs: LiveEvolutionActs | null,
 ): PendingTrackerVerdict {
+  const ref = parseTrackerRef(act);
+
+  if (ref.kind === 'backlog') {
+    // Pure lookup over a shipped constant: the same answer on every machine,
+    // with no filesystem and no packaging assumption. A missing key IS a real
+    // deletion — the registry ships with the code, so its absence is a fact
+    // everywhere at once rather than a local gap. `unverifiable` is therefore
+    // unreachable for this kind BY CONSTRUCTION, which is the point.
+    return backlogTrackerExists(ref.key) ? 'alive' : 'dead';
+  }
+
+  // ── ACT kind: unchanged behaviour ──────────────────────────────────────
+  // No queue readable ⇒ this machine cannot resolve a machine-local id. Report
+  // `unverifiable`, never `dead`: not-knowing must not be reported as deletion,
+  // which is the false alarm the 2026-07-23 fix removed.
+  if (liveActs === null) return 'unverifiable';
   if (liveActs.alive.has(act)) return 'alive';
   const ord = parseActOrdinal(act);
   if (ord !== null && ord > liveActs.highWater) return 'unverifiable';
@@ -16576,12 +16641,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (entry.status === 'wired') wired++;
       else if (entry.status.startsWith('pending:')) {
         pending++;
-        if (liveActs !== null) {
-          const act = entry.status.slice('pending:'.length);
-          const verdict = adjudicatePendingTracker(act, liveActs);
-          if (verdict === 'dead') pendingRefDead.push(`${entry.decisionPoint}:${act}`);
-          else if (verdict === 'unverifiable') pendingRefUnverifiable.push(`${entry.decisionPoint}:${act}`);
-        }
+        const act = entry.status.slice('pending:'.length);
+        // No liveActs guard here: the adjudicator handles a missing queue itself
+        // (ACT ⇒ unverifiable, backlog ⇒ resolved against the shipped registry).
+        const verdict = adjudicatePendingTracker(act, liveActs);
+        if (verdict === 'dead') pendingRefDead.push(`${entry.decisionPoint}:${act}`);
+        else if (verdict === 'unverifiable') pendingRefUnverifiable.push(`${entry.decisionPoint}:${act}`);
       } else if (entry.status.startsWith('exempt:')) exempt++;
     }
 
