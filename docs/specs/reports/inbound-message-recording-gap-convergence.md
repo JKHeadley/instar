@@ -7,6 +7,36 @@ including the parts that reflect badly on the author.
 
 ---
 
+## What review could not do, and what ten minutes of looking did
+
+After the loop stopped, two grounding checks produced findings **eighty rounds of
+review had not**:
+
+**1. Where inbound messages actually arrive** (ACT-1217, the unknown that blocks
+fleet default-on). `GET /health` and `GET /pool` show this machine does not hold
+the serving lease; the router peer receives and logs the message, then forwards a
+`deliverMessage` across the mesh, and this machine injects it through the
+owner-side bridge — a call site that never touches the local logger. Ten minutes.
+Report: `inbound-intake-path-investigation.md`.
+
+**2. The two machines were named backwards** throughout the spec's evidence
+section — "verified on the Mac Mini", "the Laptop owns the topic". `hostname`
+refuted it in one second. That claim survived **80 rounds and two independent
+reviewers reading that exact section.**
+
+**Why it survived is the point.** A reviewer checks a document against itself:
+internal consistency, completeness, whether the conclusions follow. A statement
+that is coherent but false about the world offers no seam to catch. Nothing in
+the spec contradicted it, so nothing found it.
+
+**That is the same shape as the defect under investigation.** The recording code
+was correct. The design was coherent. Nothing compared either against what was
+actually running — for 24 days.
+
+**Consistency and correctness are different properties, and review only tests the
+first.** Everything found by reading was found by reading carefully; the two
+things found by looking were not reachable from the text at all.
+
 ## Why this stopped at round 80 (a decision, not an ending)
 
 The loop was stopped, not exhausted. Every round to the last was still finding
