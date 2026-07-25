@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **64 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
+- **69 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -115,6 +115,37 @@ inside it.
 rounds on a real problem without the author hearing it, if the author keeps
 answering a structural complaint with content. Both reviewer families said the
 same thing, in the same words, from round 29 onward.
+
+## The single worst defect, found at round 69
+
+The write used `INSERT OR IGNORE`. That suppresses **every** constraint
+violation, not only unique conflicts — so a `NOT NULL` breach, a `CHECK` failure,
+a trigger side effect or a bad binding all return zero changes, and the design
+classified zero changes as `'duplicate'`.
+
+**A lost message would have been reported as the system correctly recognising a
+duplicate.** Silent data loss, inside the fix for silent data loss, in the one
+line that does the actual work — and it survived 68 rounds of review because it
+*reads* correct: `OR IGNORE` is idiomatic, and dedupe is genuinely what it was
+there for.
+
+It is also the clearest argument in this report for building rather than
+continuing to review: a type checker would not have caught it, but the first
+integration test that inserted a malformed row would have, immediately.
+
+## The overcorrection pattern (rounds 66-69)
+
+The degraded-clearing rule was wrong three times, alternating direction:
+
+| Round | Rule | Failure |
+|---|---|---|
+| 66 | Clear after 60 s elapsed | A machine receiving nothing looks healthy — this bug's exact signature |
+| 67 | Clear only after a success + 60 s | A machine receiving one message a day stays degraded forever |
+| 69 | 60 s since last *failure*, checked on each success | — |
+
+Each correction overshot in the opposite direction. Worth recording because the
+corrections *felt* like convergence at the time; what they actually were is a
+search, and it took two wrong answers to bracket the right one.
 
 ## An honest assessment at round 64
 
