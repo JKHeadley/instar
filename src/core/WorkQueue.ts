@@ -25,14 +25,28 @@ export interface WorkQueueReader {
 }
 
 const PRIORITY: Record<NonNullable<WorkItem['priority']>, number> = { critical: 100, high: 70, medium: 40, low: 10 };
+/** Named scoring knobs: age can never bridge one explicit-priority band. */
+export const AGE_SCORE_PER_DAY = 0.5;
+export const MAX_AGE_SCORE = 20;
+export const STALE_AFTER_DAYS = 30;
+export const STALE_DISCOUNT_PER_DAY = 0.5;
+export const MAX_STALE_DISCOUNT = 60;
+
+function ageScore(ageDays: number): number {
+  return Math.min(MAX_AGE_SCORE, Math.max(0, ageDays) * AGE_SCORE_PER_DAY);
+}
+
+function stalenessDiscount(ageDays: number): number {
+  return Math.min(MAX_STALE_DISCOUNT, Math.max(0, ageDays - STALE_AFTER_DAYS) * STALE_DISCOUNT_PER_DAY);
+}
 
 export function scoreWorkItem(item: WorkItem): number {
   const explicit = item.priority ? PRIORITY[item.priority] : 0;
   const directed = item.userDirected ? 50 : 0;
-  const age = Math.min(30, Math.max(0, item.ageDays)) * 2;
+  const age = ageScore(item.ageDays);
   const urgency = Math.max(0, Math.min(100, item.urgency));
   const goals = item.goalAlignment.length > 0 ? 10 : 0;
-  return explicit + directed + urgency + age + goals;
+  return explicit + directed + urgency + age + goals - stalenessDiscount(item.ageDays);
 }
 
 export function normalizeAndRank(items: WorkItem[]): WorkItem[] {
