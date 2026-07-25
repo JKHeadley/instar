@@ -605,3 +605,14 @@ table ambiguity, and a self-inflicted noise regression — none of which
 thirty-three rounds against the truncated artifact could see.
 
 **Still NOT converged, no tag written.** Three findings remain open.
+
+### Round-35 findings 2 and 3 — folded 16:1xZ
+
+| # | Finding | Disposition |
+|---|---|---|
+| 2 | Rows 15 and 22 overlap; row 22 unreachable under "first match wins" | **FOLDED.** Row 15 now reads "…**and NO ack+reason present**". The two rows differ *only* in whether an ack+reason rode along, so the discriminator had to appear on both — stated on row 15 it was missing from. Row 22 is now reachable, which it was not. |
+| 3 | §3.5 prose and row 22 give the expired-token attempt two different audit meanings | **FOLDED.** Pinned to exactly ONE event, `expired-token-override-attempt`, machine-local log only, and explicitly **telemetry, NOT evidence** — never in the graded corpus, never joined, never counted as an override. Its only purpose is making the expired-attempt *rate* visible (a rising rate means the token window is too short). The helper text is named as a user-facing paraphrase of that event, not a second record. |
+
+**Finding 5 remains the only one open**, and deliberately: it is noise, not
+correctness, and the decision it needs is already recorded above — better inline
+stripping *inside* §3, never re-omitting §3.

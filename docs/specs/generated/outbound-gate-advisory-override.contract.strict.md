@@ -805,7 +805,18 @@ without the store, and there is no key to manage. A token whose record is absent
  the current verdict is "fine". The helper says exactly that ("your token had
  expired; the message was re-reviewed and passed, so it was sent — the earlier
  disagreement was recorded but could not be joined"), so the author is never
- left guessing whether their reason counted.. That
+ left guessing whether their reason counted.
+ **What that record IS, named once.** This prose and row 22
+ described the same thing in two different vocabularies — "recorded but could
+ not be joined" here, "unjoined + unjudgeable machine-local attempt" there —
+ which left its audit status genuinely ambiguous. Pinned: exactly ONE event,
+ **`expired-token-override-attempt`**, written to the **machine-local**
+ operational log and nowhere else. It is **telemetry, NOT evidence**: it never
+ enters the graded corpus, is never joined to a decision, and is never counted
+ as an override. It exists so the rate of expired-token attempts is visible
+ (a rising rate means the token window is too short), and for no other purpose.
+ The helper text above is a user-facing paraphrase of this event, not a second
+ record.. That
  is the whole cost, and it is why persisting the records is not worth a durable
  store. Worker affinity is a non-issue by construction — the agent runs a single
  server process per agent home, enforced by the existing single-instance lock —
@@ -1478,7 +1489,7 @@ strictly ordered A → B → C and never revisited.
 | 13 | Resend, ack + reason + **valid** token, hash matches | true | valid | true | **Phase A** runs (rows 1–2 still apply); the acked citation is treated as answered; **Phase C is skipped**; deliver; annotate once. |
 | 13a | Resend as above, but a **different** deterministic rule now fires | true | valid | true | Fresh hold on the new citation with a new token — an ack for one rule never answers another. |
 | 14 | Resend, token valid, **hash mismatch** (edited message) | true | valid | true | Full fresh review (the edit is a new message). |
-| 15 | Resend, token **absent/expired/consumed** | true | invalid | true | Fresh review; response carries `tokenExpiredFreshReview: true`; counted separately; never a join on text. |
+| 15 | Resend, token **absent/expired/consumed**, **and NO ack+reason present** | true | invalid | true | Fresh review; response carries `tokenExpiredFreshReview: true`; counted separately; never a join on text. |
 | 16 | Resend, ack present, **reason missing/short after scrub** | true | valid | true | 422 with `reasonRequired: true`, `refusedField: 'reason'`; nothing delivered, nothing annotated. |
 | 17 | Resend, **reason itself trips B22** | true | valid | true | 422 `reasonRejected: true`, `refusedField: 'reason'`; nothing delivered, nothing annotated. |
 | 18 | Valid override, the **`authorized` event cannot be appended** | true | valid | true | **Refuse the override** (`overrideUnrecordable: true`) — nothing delivered. Authority is granted only against durable evidence (§3.8). |
