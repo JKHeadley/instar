@@ -114,8 +114,10 @@ It works because:
     happen — round-3, codex.)*
   - the entry is marked `idSource: 'platform' | 'derived'`.
 
-  **The per-injection UUID is for retry idempotency only — it never collapses two
-  messages (rounds 2–4, codex, across three attempts at this).** Two earlier
+  **The per-injection UUID identifies this log entry and nothing more — it never
+  collapses two messages (rounds 2–4, and corrected again in round 8: v7 still
+  called it "retry idempotency", which stopped being true when round 6 deleted the
+  retry).** Two earlier
   designs tried to derive identity from content: one hashed a timestamp the seam
   never receives (so a retry produced a *different* id, defeating the very dedupe
   it claimed), and one hashed topic+text (so every byte-identical message
@@ -235,6 +237,16 @@ timing).
 JSONL log and in TopicMemory with `fromUser: true`; the same message arriving via
 **both** the forward route and the seam is written **once**; with the flag off,
 no inbound row is written and delivery is unaffected.
+
+**Live-user-channel proof (required before this is called done).** The E2E below
+exercises the injection seam, **not** the real Telegram surface — the standards
+gate flagged exactly that, and it is right: this is a Telegram-channel behavior,
+so "done" requires a user-role live test that sends a real message through
+Telegram and reads it back out of the topic history. That test is the acceptance
+criterion, not the unit and integration tiers. The seam-level E2E below is the
+fast check that the wiring exists; the live-channel test is the one that proves
+the defect is actually gone, and it is the one that would have caught this bug in
+the first place.
 
 **E2E** — production initialization path: a message injected into a live session
 is readable back from the topic history **within a bounded interval** (the write
