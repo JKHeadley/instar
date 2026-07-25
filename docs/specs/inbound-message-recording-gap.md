@@ -296,6 +296,48 @@ last 5 minutes.
 `rowCountTotal`, `rowCountUserVisible`, `dbFileBytes`, `walFileBytes`, insert
 failures, max latency, self-check result, last retention run, loop-tick counter.
 
+#### MEASURED BASELINE — this likely settles the implementation choice
+
+Grounded 2026-07-25T14:0xZ against the live `/health` on the machine this fix
+targets. **`/health` already reports event-loop lag** — the "monotonic loop-tick
+counter" this spec proposed adding is largely redundant, and what exists is
+better:
+
+```
+eventLoop: { p50: 35ms, p99: 57ms, max: 58ms, starvedWindows24h: 91 }
+```
+
+`starvedWindows24h` counts sampling windows whose **max event-loop delay reached
+≥ 1000 ms** (`STARVED_WINDOW_THRESHOLD_MS`, `src/core/WriteAdmission.ts:200`).
+
+**So this machine already stalls its event loop past one full second, 91 times a
+day, before this feature exists.**
+
+Three consequences, none of them arguable:
+
+1. **The rollout gate "`/health` answers within 1 s under contention" is already
+   failing on the baseline.** It was written as a gate the design would probably
+   pass. It is a gate the machine does not pass *today*.
+2. **Per §7 Decision 0's own normative rule** — any failed gate forces the
+   worker-owned writer before enablement — **the worker-owned writer is now the
+   indicated implementation, by the spec's own criterion.** Not a fallback.
+3. **The accepted residual was understated for the third time.** "A wedged device
+   could stall delivery" reads as a rare hardware fault. The measurement says the
+   loop on this machine is starved ~91 times daily by ordinary work, and a
+   synchronous write on that path joins a queue that is already visibly
+   congested.
+
+**This is the finding I said building would produce.** It came from reading a
+health endpoint instead — ten minutes, after eighty rounds of arguing about the
+same decision from first principles. **The argument had reached the wrong answer
+and stayed there because nobody measured the floor.**
+
+*Not treated as final on its own:* `starvedWindows24h` is machine-wide and does
+not attribute the stalls, so it establishes the floor is congested rather than
+what congests it. The hostile-storage benchmark still runs — but it now runs to
+confirm a decision the baseline has already indicated, rather than to discover
+one.
+
 **Latency thresholds — one window, three DIFFERENT consumers, named separately
 (round-72: the document used 50 ms, 250 ms and 1 s in different places without
 saying which governs what):**
@@ -357,7 +399,8 @@ restored rather than forgotten. Counters: `inbound-log-failed`, `inbound-search-
 `inbound-messages-skipped-unarmed`, insert-latency histogram.
 
 **Wedge detection** — out-of-process: **no `/health` response within 30 s** is the
-signal; a frozen loop-tick in a response is the weaker, partial case.
+signal. The weaker partial case reads the **existing** `eventLoop` gauge in a
+response that does arrive; no new counter is added.
 
 **Acceptance** — pre-enable local probe; flag ON for the affected machine; live
 Telegram normal + long message with a call-path trace; restart; another message
@@ -433,7 +476,7 @@ rather than a nicety.
 | **Why `/health` and not Attention** | Every other mitigation here leans on the Attention queue, whose reliability and persistence this spec does not own and cannot assert (round-56). `/health` is a synchronous read of local state by an external poller — no queue, no delivery, no dedupe window. **Anything load-bearing is expressed there**; Attention carries the human-readable version. |
 | **Counters** | `inbound-log-failed` (the authoritative insert failed), `inbound-search-index-dropped` (shed by the backlog cap), `inbound-search-index-failed` (attempted and threw), `inbound-log-arm-failed` (once per process), `inbound-messages-skipped-unarmed` (per message), insert-latency histogram. All monotonic within a process; `topic_id` is the only label. |
 | **Latency** | Attention on p99 > 50 ms **and** on any single insert > 1 s. **Operational bound with an ACTION (round-57), corrected (round-63): the primary signal is `/health` NOT ANSWERING, not a frozen counter in an answer.** A wedged event loop cannot serve the request at all, so the round-47 loop-tick counter — added to fix exactly this circularity — is *itself* unreachable in the failure it exists for. That is the same circular mistake twice, one layer deeper. So the watchdog treats **no `/health` response within 30 s** as the wedge signal (which its existing timeout already produces), and the loop-tick counter is the *weaker, secondary* case: a response that arrives with a frozen tick means partially-degraded rather than wedged. Either way it escalates through its existing path — the same treatment any hung server gets. This design does not add a new recovery mechanism; it makes sure the existing one can see this failure. A wedged device can still block the event loop; that residual is named below and detected **out-of-process** via the loop-tick counter on `/health`. |
-| **Health** | `recording` (`ok`/`degraded`/`off`), `enabled`, `armed` (+ reason, naming any schema-validation mismatch), `lastArmAttemptAt` / `lastArmResult`, **`rowCountTotal`, `rowCountUserVisible`, and measured `dbFileBytes` / `walFileBytes`** — both, kept as distinct fields so a future non-user writer restores the distinction; today they are equal because self-checks roll back — insert failures, max latency, the startup self-check result, a monotonic loop-tick counter, and the one-sided-conversation check (recent outbound with zero inbound). |
+| **Health** | `recording` (`ok`/`degraded`/`off`), `enabled`, `armed` (+ reason, naming any schema-validation mismatch), `lastArmAttemptAt` / `lastArmResult`, **`rowCountTotal`, `rowCountUserVisible`, and measured `dbFileBytes` / `walFileBytes`** — both, kept as distinct fields so a future non-user writer restores the distinction; today they are equal because self-checks roll back — insert failures, max latency, the startup self-check result, **the EXISTING `eventLoop` gauge (p50/p99/max + `starvedWindows24h`) rather than a new loop-tick counter — it already exists and is better than what this spec proposed adding**, and the one-sided-conversation check (recent outbound with zero inbound). |
 | **Self-checks never commit** | The startup and operator store checks run `INSERT` → `SELECT` → **`ROLLBACK`**, always. **Nothing therefore ever writes a synthetic row, so the `synthetic` column and every rule about it are DELETED (round-75).** They existed only to describe rows the self-check committed, and a self-check that commits pollutes retention and the row counts on every arming retry — a machine that cannot arm would have slowly filled its own store with evidence of failing to arm. One consequence, stated: `rowCountTotal` and `rowCountUserVisible` are now the same number, and both are kept only because a future non-user writer would need the distinction back. |
 | **Privacy** | Message text stored **unencrypted** in the agent's database, file mode 0600. Deleting rows removes them from this store only; TopicMemory and any backups are separate. No redaction — a credential pasted into chat is stored verbatim. |
 | **Disclosure** | **Blocking gate before the first enablement on any machine**: a release-note entry and an operator-visible config description, both stating what is stored, where, that it is unencrypted, the retention bound, and that deletion covers this store only. Owner: the implementing agent; both texts linked from the acceptance record. End-user notice beyond the operator is **not enforced by this feature** — which is a statement about what the code does, **not** a claim that none is required (round-53: "not required" asserted a policy position this spec has no standing to assert; the operator is not necessarily the principal data subject when third parties message the agent). The config description therefore carries an explicit operator warning: **inbound third-party messages are stored verbatim, and any notice or legal obligation toward those people is external to this software and yours to meet.** |
