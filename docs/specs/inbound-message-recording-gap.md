@@ -156,15 +156,16 @@ operator alert queue. **Armed**: enabled *and* the store opened writable.
 | | |
 |---|---|
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
-| **Store** | A **new SQLite table**, `inbound_messages`, in the agent's existing database. `better-sqlite3` is already a dependency and `TopicMemory` already opens it (`src/memory/TopicMemory.ts:154`). **No migration**: nothing existing is moved or converted. WAL mode, `busy_timeout = 100 ms`. |
+| **Store** | A **new SQLite table**, `inbound_messages`, in the agent's existing database. **Schema migration is required; DATA migration is not (round-52 — "no migration" was too loose).** The DDL is idempotent `CREATE TABLE IF NOT EXISTS` + `CREATE UNIQUE INDEX IF NOT EXISTS`, run at arm time; a DDL failure means `armed: false` with the SQLite error surfaced, never a silent degrade. No existing row is read, moved, backfilled or rewritten. `better-sqlite3` is already a dependency and `TopicMemory` already opens it (`src/memory/TopicMemory.ts:154`). **No migration**: nothing existing is moved or converted. WAL mode, `busy_timeout = 100 ms`. |
 | **Schema** | `dedupe_id TEXT NOT NULL UNIQUE`, `topic_id INTEGER NOT NULL`, `seam_received_at TEXT NOT NULL`, `text TEXT NOT NULL`, `sender_name TEXT`, `telegram_user_id INTEGER`, `message_id INTEGER` (nullable — no `-1` placeholder is needed), `id_source TEXT NOT NULL CHECK(id_source IN ('platform','derived'))`, `delivery_state TEXT NOT NULL DEFAULT 'injection_seam_received'`, `synthetic INTEGER NOT NULL DEFAULT 0`. |
 | **Write** | `INSERT OR IGNORE` inside a transaction, synchronously, **before** injection. Returns `'appended' \| 'duplicate' \| 'failed'` from `changes` and the error path. **Never throws** — a `'failed'` result is caught internally and counted. |
 | **Dedupe** | The `UNIQUE` index on `dedupe_id`. **Storage-enforced, not best-effort** — this answers round-51 directly: there is no in-memory set, no seeding, no restart window, and two processes cannot interleave a duplicate through it. `dedupe_id` = the platform message id when present, else a per-injection UUID, namespaced `in:<topicId>:<id>`. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, only on `'appended'`. Backlog capped at 16; beyond that, drop and count. TopicMemory remains a **lossy search index**, never the record. |
 | **Authority** | This table is the **primary received-history store**. It is not proof of receipt: a message dropped before the seam never reaches it (§4), and `synchronous: NORMAL` means a power loss can lose the last transaction. Absence of a row is **not** evidence a message was not received. |
-| **Ordering** | `ORDER BY rowid`. Chronological, monotonic, free. |
+| **Ordering** | `seq INTEGER PRIMARY KEY AUTOINCREMENT`, read `ORDER BY seq`. **Not bare `rowid` (round-52): rowid is insertion-ordered in practice but SQLite does not guarantee monotonicity across deletes or a table rebuild, and "monotonic" was a stronger claim than the store makes.** `AUTOINCREMENT` buys the guarantee explicitly, at the cost of one extra table SQLite maintains. |
 | **Reading** | `SELECT`. No tolerant parsing, no bounded tail read, no torn-line class, no corruption counting — **none of these failure modes exist for a table**, which is most of why it is the recommendation. |
-| **Retention** | `DELETE FROM inbound_messages WHERE rowid < (SELECT MAX(rowid) - :keep …)`, run on a cadence. **No rotation, no file sequence, no rotation helper.** Default keep: 200 000 rows. |
+| **Coverage evidence** | The AST fitness test is a build-time guard, **not** proof of coverage. **The primary production evidence that the seam is on the real path is (1) the live Telegram call-path trace at acceptance and (2) the ongoing one-sided-conversation check** — recent outbound in a topic with zero inbound rows. Round-52 is right that dynamic and import-boundary bypasses stay plausible; the one-sided check is what would catch one *in production*, without knowing where it is, and is therefore the load-bearing detector rather than a nice-to-have. |
+| **Retention** | `DELETE FROM inbound_messages WHERE seq < (SELECT MAX(seq) FROM inbound_messages) - :keep`, on a daily cadence. Default keep **200 000 rows**. **No rotation, no file sequence, no rotation helper, and no size bound** — row count is the only retention dimension (round-52: §4.0 still quoted a ~160 MB rotation window, which was the JSONL model). Deleted rows free pages for reuse; **no `VACUUM`** — reclaiming disk to the OS is not worth an exclusive lock on the delivery path's database. |
 | **Single writer** | SQLite's own locking. **No lock file, no boot-id, no stale-reclaim rule, no filesystem allowlist or denylist.** A second writer is handled by the database, not by this design. |
 | **`enabled` vs `armed`** | `enabled` = the config flag (configuration only, never the logging predicate). `armed` = enabled **and** the table opened writable. Arming is attempted at startup and **retried in the background** (60s, backoff to 15m), outside the per-message path. While unarmed the seam call is a no-op, incrementing `inbound-log-arm-failed` once per process and `inbound-messages-skipped-unarmed` per message. **Acceptance FAILS if `armed` is false.** |
 | **Failure behavior** | A failed insert is caught, counted, and **injection proceeds**. A failed secondary write is caught and counted. Sustained failures raise one deduped Attention item. |
@@ -481,7 +482,7 @@ write-ahead pattern — durable minimal record synchronously, secondary indexes
 asynchronously:
 
 ```
-const r = appendInboundJsonlSync(entry)   // sync, essential, never throws;
+const r = recordInboundMessage(entry)     // sync INSERT OR IGNORE, never throws;
                                           // counts inbound-log-failed itself
 if (r.status === 'appended') {
   scheduleInboundTopicMemory(entry)       // setImmediate; sheds -> inbound-search-index-dropped,
@@ -504,7 +505,7 @@ replace the composite call on this path:
 
 | Method | Contract |
 |---|---|
-| `appendInboundJsonlSync(entry)` | Synchronous. **Never throws.** Returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. A `'failed'` result has already been caught internally and counted as `inbound-log-failed`. |
+| `recordInboundMessage(entry)` | Synchronous `INSERT OR IGNORE` in a transaction. **Never throws.** Returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. A `'failed'` result has already been caught internally and counted as `inbound-log-failed`. |
 | `scheduleInboundTopicMemory(entry)` | Returns immediately. Honours the backlog cap. Performs no dedupe of its own — it is called **only** on `status: 'appended'`, so the upstream check has already gated it. |
 
 **Three outcomes, not two (round-31, codex).** A bare boolean collapsed
@@ -774,12 +775,13 @@ one-sided-conversation signal from §3, pointed at this feature's own regression
 
 **That pair detects total regression and nothing subtler (round-34, codex — a
 health signal that only catches the loudest failure invites confidence it has not
-earned).** It cannot see partial loss, a rotation misconfiguration, TopicMemory
+earned).** It cannot see partial loss, TopicMemory
 drops, or two processes writing the same file. So the health surface reports
 four more things, each cheap and each already computed elsewhere in this design:
-**append failures**, **max append latency**, **rotation state** (current file
-size and rotation count), and a **startup self-check** that writes a synthetic
-non-user record and reads it back. The self-check is the one that turns "the flag
+**insert failures**, **max insert latency**, **store readiness** (DB writable,
+WAL mode confirmed, `busy_timeout` set, row count), and a **startup self-check**
+that inserts a synthetic non-user row and reads it back. *(Round-52: this list
+still named rotation state, which the SQLite design has no concept of.)* The self-check is the one that turns "the flag
 says on" into "the path works right now" — it exercises append, dedupe and read
 on the real configured path, at the moment the process starts, without waiting
 for a real message to prove it. Synthetic records are marked and excluded from
@@ -787,7 +789,7 @@ history reads.
 
 **A startup self-check proves the path once, not continuously (round-35,
 codex).** It cannot see a permission change, a path change, a filled disk, or a
-rotation misconfiguration that happens at 3am on a process that started
+store going read-only at 3am on a process that started
 yesterday — and a machine can run for weeks between restarts. Rather than add a
 periodic synthetic writer (a background job writing fake records into a message
 log, forever, to guard a rare failure), the honest position is: **the self-check
@@ -861,13 +863,13 @@ rather than defaulted:
 |---|---|
 | **What is stored** | Full message text, sender display name, sender platform id, timestamps. |
 | **Where** **(A)** | An app-controlled local data directory on one machine. Never transmitted, never replicated to other machines by this design. |
-| **File permissions** | **0600**, owned by the agent process user. Anyone with root or that user's account can read it. |
+| **File permissions** | The database file's existing mode (**0600**), owned by the agent process user. Anyone with root or that user's account can read it. |
 | **Encryption at rest** | **None** today, with a trigger rather than a permanent stance (round-44 — this is data minimisation, not a safety fence, and "we measured latency" is an underpowered reason to keep full message text in plaintext). **Before fleet default-on, either field-level capture becomes configurable (store metadata without body) or the store is encrypted.** The opt-in single-machine fix ships as-is; the fleet does not inherit the plaintext default by silence. |
 | **Encryption rationale** | **None currently.** Disk-level encryption (FileVault) is the only protection, and it protects a powered-off machine, not a running one. |
 | **Redaction** | None. Secrets pasted into a message are stored verbatim — which is one more reason Secret Drop exists and pasting credentials into chat does not. |
-| **Retention** **(B)** | Bounded by rotation (§3.0): oldest rotation deleted, ~160 MB window. Not time-based. |
-| **Deletion** | Delete the current **and rotated** JSONL files. **This deletes the JSONL store only** — message text also reaches TopicMemory, which has its own delete path, and neither covers filesystem snapshots or any backup system. Any user-facing deletion instruction must say all three, because "delete the log files" will otherwise be read as "delete what I said to you" (round-39). |
-| **Export** | No dedicated export. The files are plain JSONL and readable directly. |
+| **Retention** | Row-based (§3.0): oldest rows deleted beyond a 200 000-row keep, daily. Not time-based, not size-based. |
+| **Deletion** | `DELETE FROM inbound_messages` (or drop the table). **This deletes THIS store only** — message text also reaches TopicMemory, which has its own delete path, and neither covers filesystem snapshots or any backup system. Any user-facing deletion instruction must say all three, because "delete the log files" will otherwise be read as "delete what I said to you" (round-39). |
+| **Export** | No dedicated export. The table is readable with any SQLite client. |
 | **Disclosure** **(A)** | **Blocking acceptance gate, with an owner and an artifact — not a config note (round-49).** Before the FIRST enablement on any machine: (1) a release-note entry, and (2) an operator-visible config description, both stating what is stored, where, that it is unencrypted, the retention bound, and that deletion covers the JSONL store only (TopicMemory and backups are separate). **Owner: the implementing agent; artifact: both texts linked from the acceptance record; enablement is blocked until they exist.** **End-user notice beyond the operator is explicitly NOT required**, and the reason is stated rather than assumed: instar is operator-run software where the operator is the principal data subject of their own conversation. **Where an agent receives messages from third parties, that operator is responsible for whatever notice their context requires** — this spec cannot make that call for them, and says so instead of implying it has been handled. |
 
 
@@ -918,7 +920,9 @@ authoritative. Three things follow that the spec had simply not addressed:
 
 ## 5. Test plan
 
-**Unit** — `injectTelegramMessage` calls **`appendInboundJsonlSync`** with the
+**Unit** — `injectTelegramMessage` calls **`recordInboundMessage`** (the SQLite
+insert seam; the `appendInboundJsonlSync` / `appendRawJsonlSync` pair belonged to
+the superseded JSONL design — round-52) with the
 fields it received, and calls **`scheduleInboundTopicMemory` only when that
 returned `status: 'appended'`** — and does NOT schedule on `'duplicate'` or
 `'failed'`, asserted as three separate cases rather than one negative
@@ -927,10 +931,9 @@ returned `status: 'appended'`** — and does NOT schedule on `'duplicate'` or
 the retired no-id-no-entry behaviour one fold after the design changed — caught
 in a 200-line document, which is the point); two identical messages in the same
 second produce two distinct rows (§3); the dedupe key coerces
-string/number ids; the **lower-level `appendRawJsonlSync` may throw and
-`appendInboundJsonlSync` wraps it**, returning `status: 'failed'` — tests assert
-the STATUS at the seam boundary and the THROW only at the raw layer, so "does a
-throw cross the seam?" has one answer (round-44: §5 still tested a throwing
+string/number ids; **a failing `INSERT` is caught inside `recordInboundMessage`,
+which returns `status: 'failed'` and never throws** — tests assert the status at
+the seam boundary, so "does a throw cross the seam?" has one answer (round-44: §5 still tested a throwing
 logger against a §3.0 contract saying it never throws); the injection still
 happens regardless; the dedupe key is inserted **only after a successful append**, so a
 throwing append leaves the message eligible to be written on its next arrival
@@ -998,49 +1001,29 @@ the last N days") rather than an implicit promise of forever that the disk would
 eventually break anyway. The exact numbers belong with the benchmark in §3.3,
 because the right size bound depends on the same measurement.
 
-> **The three tests below are INCREMENT B ONLY.** They exercise rotation, which
-> Increment A does not implement. An implementer building (A) today skips this
-> block entirely (round-49: rotation tests sitting in an undifferentiated test
-> plan invite (A) implementers to build (B) assumptions).
+**Store-level tests (SQLite).** These replace the JSONL-era rotation invariants,
+append-failure classes and `-1` migration tests, which described a design this
+spec no longer contains (round-52):
 
-**Rotation invariants, asserted rather than described (round-40, codex — the
-monotonic scheme is defensible but `.1` being the OLDEST is the opposite of most
-people's instinct, and a scheme that reads wrong is a scheme that gets
-implemented wrong).** Three tests, each pinning one half of the round-38 bug:
+- **Idempotent DDL.** Running the `CREATE TABLE IF NOT EXISTS` / `CREATE UNIQUE
+  INDEX IF NOT EXISTS` twice is a no-op; a DDL failure leaves `armed: false` with
+  the SQLite error surfaced, never a silent degrade.
+- **Uniqueness is storage-enforced.** Insert the same `dedupe_id` twice and assert
+  one row and a `'duplicate'` status — including from two connections, which the
+  old in-memory set could not have caught.
+- **Dedupe survives restart with no seeding step.** Insert, close, reopen, insert
+  the same `dedupe_id`, assert `'duplicate'`. There is no dedupe set to rebuild.
+- **Ordering is monotonic across deletes.** Insert, delete the oldest rows, insert
+  again, and assert `seq` still ascends — the `AUTOINCREMENT` guarantee that bare
+  `rowid` does not give.
+- **Retention deletes oldest-first and only beyond the keep count**, leaving the
+  newest N intact.
+- **Insert failure is contained.** Make the DB read-only and assert
+  `status: 'failed'`, the counter incremented, no throw crossing the seam, and
+  **the injection still happening**.
+- **A crash between insert and the secondary write** leaves the row present and
+  the index short — the accepted lossy-index case, asserted rather than assumed.
 
-- **Deletion selects the LOWEST suffix.** Rotate past the keep-count and assert
-  `.1` is gone while the highest suffix survives. This is the test that would have
-  caught the round-36 protocol, which deleted the newest file every time.
-- **Read order is current, then descending suffix.** Assert a message written
-  before rotation reads back *after* one written since.
-- **A gap in the sequence changes nothing.** Delete a middle suffix by hand, then
-  rotate and read: no renumbering, no reordering, no crash.
-
-**Migration safety (round-32, codex — the test plan covered behavior and skipped
-the schema change, which is the part that runs once on every existing database
-and cannot be retried by hand).** Four tests, all against a database with real
-pre-existing rows rather than a fresh one: the migration **applies** to an
-existing DB and leaves prior rows readable; running it **twice** is a no-op
-(idempotency, since a partially-applied migration is the normal consequence of a
-crash mid-upgrade); a reader hitting `message_id = -1` **with** `id_source`
-resolves it correctly; and a reader hitting `message_id = -1` **without**
-`id_source` — a row written by an older build — degrades to the documented
-back-compat path rather than misreporting. The last one matters most: it is the
-only test that exercises what an old row looks like to new code, which is the
-state every deployed machine passes through.
-
-**Append-failure classes (round-28, codex — the perf gate measures bursts and
-loop delay, and says nothing about the ways a synchronous append actually
-fails).** Each is a test, not a hope: a **disk-full** append, a **permission-denied**
-append, a **missing/unwritable log directory**, a **rotated log** (the file moved
-out from under a held path), and **seeding against a very large existing file**.
-The first three assert the same contract — the throw is caught, the counter
-increments, the injection still happens — and that a *sustained* run of them
-raises Attention rather than only incrementing a counter nobody reads, since a
-counter that never surfaces is how this class of bug stays invisible. Rotation
-asserts that the next append re-resolves the path rather than writing into an
-unlinked handle. Large-file seeding asserts a bounded read, so a long-lived log
-cannot make process start slow.
 
 **Integration** — a message delivered through the real inject path appears in the
 JSONL log and in TopicMemory with `fromUser: true`; the same message arriving via
@@ -1127,7 +1110,9 @@ stops at step 2 would pass on a machine that reverts to the bug an hour later �
 and would leave a recorded proof saying otherwise. Restarting *during* acceptance
 costs a minute and closes that gap.
 
-**Also verified during acceptance: the single-instance lock is active** on the
+**Also verified during acceptance: the store is genuinely armed** — DB writable,
+WAL confirmed, the unique index present, and the synthetic insert/read round-trip
+passing — on the
 affected machine (round-33, codex). The whole dedupe story rests on one writer
 per log path, and two processes appending to the same file risk interleaved
 records, not merely duplicate ones. The lock is what makes that hypothetical; an
