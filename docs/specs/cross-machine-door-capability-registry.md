@@ -650,7 +650,7 @@ it:
   `429`, jittered when fired on mesh-reconnect.
 - Every read response carries `advisory: true` and rows carry their
   self-reported `evidenceClass`. The marker is enforced by Frontloaded
-  Decision 17's ratchet, and the dashboard follow-up must render
+  Decision 17's ratchet, and the dashboard follow-up must render <!-- tracked: ACT-1156 -->
   uncorroborated (all v1) claims distinguishably.
 - `/capabilities` advertises the read surfaces only once the flag actually
   serves them on this install (advertising a dark route breaks
@@ -736,7 +736,7 @@ presentation.
    empty, structurally distinct.
 6. **Authorization:** `scope=pool` rides the same gate as `GET /pool`;
    deny-by-default until the increment that enables it. Per-row owner
-   restrictions: a named follow-up (all rows pool-visible-redacted in v1).
+   restrictions: a named follow-up (all rows pool-visible-redacted in v1). <!-- tracked: ACT-1156 -->
 7. **Conflict:** self-claim supremacy as a declared backstop (Trust rule 5);
    cross-machine contradictions cannot enter by construction; own-source
    `conflict` stays observe-only with provenance.
@@ -762,7 +762,7 @@ presentation.
    verification (the reserved `receiver-verified` class is that future
    increment's contract).
 10. **Operator UX:** dashboard rendering SCOPED OUT of Increments 0-4
-    (API-only, as `/doorways` shipped). The follow-up is REGISTERED
+    (API-only, as `/doorways` shipped). The follow-up is REGISTERED <!-- tracked: ACT-1156 -->
     (ACT-1156, Close the Loop): a section of the existing Machines tab
     rendering self-reported claims distinguishably; mobile failure summary
     one line per machine
