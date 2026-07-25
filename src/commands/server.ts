@@ -22569,6 +22569,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return pin?.pinned === true && pin.preferredMachine ? pin.preferredMachine : null;
                 },
                 hasLiveSession: (sk) => {
+                  // Liveness keeps legitimate respawns admissible while live duplicates remain visible.
                   const topicSessions = telegram?.getAllTopicSessions?.();
                   const sessionName = topicSessions?.get(Number(sk));
                   if (!sessionName) return false;
