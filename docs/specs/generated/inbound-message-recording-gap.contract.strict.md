@@ -24,6 +24,76 @@ eli16-overview: "docs/specs/inbound-message-recording-gap.eli16.md"
 # Record inbound messages at the injection seam
 ### 3.0 Final contract
 
+#### Normative checklist (build from this; everything after it is elaboration)
+
+**Config keys**
+- `messaging.inboundSeamLogging.enabled` — default `false`
+- `messaging.inboundSeamLogging.captureBody` — default `true`
+- emergency disable honoured at the same key
+
+**DDL**
+```sql
+CREATE TABLE IF NOT EXISTS schema_migrations (
+ name TEXT PRIMARY KEY, version INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS inbound_messages (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT,
+ dedupe_id TEXT NOT NULL,
+ topic_id INTEGER NOT NULL,
+ seam_received_at TEXT NOT NULL,
+ from_user INTEGER NOT NULL DEFAULT 1,
+ text TEXT,
+ body_captured INTEGER NOT NULL DEFAULT 1,
+ text_truncated INTEGER NOT NULL DEFAULT 0,
+ sender_name TEXT,
+ telegram_user_id INTEGER,
+ message_id INTEGER,
+ id_source TEXT NOT NULL CHECK(id_source IN ('platform','derived')),
+ synthetic INTEGER NOT NULL DEFAULT 0);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inbound_dedupe ON inbound_messages(dedupe_id);
+CREATE INDEX IF NOT EXISTS idx_inbound_topic_seq ON inbound_messages(topic_id, seq);
+```
+
+**Arming** — WAL outside a transaction; then BEGIN → migrations-table shape →
+branch on this feature's row (absent = create+validate+INSERT; equal =
+validate only; older = migrate+validate+UPDATE; newer = refuse) → COMMIT.
+Any mismatch: ROLLBACK, `armed: false`, log expected vs actual plus reconciling
+SQL. Never auto-`ALTER`. Retry arming every 60 s, backing off to 15 m.
+
+**Write** (`recordInboundMessage`, synchronous, before injection)
+1. If not armed → no-op; count `inbound-messages-skipped-unarmed`; **inject**.
+2. `dedupe_id` = `in:telegram:<botId>:<chatId>:<messageId>`, else `in:derived:<uuid>`.
+3. `INSERT OR IGNORE` in a transaction. Up to **3 attempts**, backoff 0/20/50 ms.
+ Worst case ≈ 370 ms under sustained contention.
+4. Return `appended` | `duplicate` | `failed`. **Never throw.**
+5. `failed` → count `inbound-log-failed`, set `recording: 'degraded'` **on the first
+ failure**; clears after 60 s clean.
+6. `appended` → `scheduleInboundTopicMemory` via `setImmediate` (skipped entirely
+ when `captureBody: false`). Backlog cap 16.
+7. **Inject — unconditionally, in every branch.**
+
+**Retention** — daily; cutoff via `ORDER BY seq DESC LIMIT 1 OFFSET:keep`; delete
+`WHERE seq IN (SELECT seq … LIMIT 1000)` in batches with yields; keep 200 000 rows;
+cap stored text at 64 KB; abort if an insert failed or p99 exceeded the gate in the
+last 5 minutes.
+
+**Health** — `recording`, `enabled`, `armed` (+reason), `lastArmAttemptAt/Result`,
+`rowCountTotal`, `rowCountUserVisible`, `dbFileBytes`, `walFileBytes`, insert
+failures, max latency, self-check result, last retention run, loop-tick counter.
+
+**Counters** — `inbound-log-failed`, `inbound-search-index-dropped`,
+`inbound-search-index-failed`, `inbound-log-arm-failed`,
+`inbound-messages-skipped-unarmed`, insert-latency histogram.
+
+**Wedge detection** — out-of-process: **no `/health` response within 30 s** is the
+signal; a frozen loop-tick in a response is the weaker, partial case.
+
+**Acceptance** — pre-enable local probe; flag ON for the affected machine; live
+Telegram normal + long message with a call-path trace; restart; another message
+with the row count still rising; id-less seam regression test; `armed: true`
+confirmed; disclosure texts published.
+
+---
+
 **Local terms** — **injection seam**: `SessionManager.injectTelegramMessage`, the
 function that hands an inbound message to a running session. **Forward route**:
 `POST /internal/telegram-forward`, the lifeline's delivery path. **TopicMemory**:
@@ -35,7 +105,19 @@ operator alert queue. **Armed**: enabled *and* the store opened writable.
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
 | **Store** | A **new SQLite table**, `inbound_messages`, in the agent's existing database. **Schema migration is required; DATA migration is not.** The DDL is idempotent `CREATE TABLE IF NOT EXISTS` + `CREATE UNIQUE INDEX IF NOT EXISTS`, run at arm time. **DDL success is not schema validation** — `IF NOT EXISTS` silently accepts a pre-existing table with wrong columns, constraints or index shape. Arming therefore VALIDATES: **a feature-local migration row** equals this build's expected schema version — `CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, version INTEGER NOT NULL)`, this feature's row keyed `'inbound_messages'`. **The migrations table gets the same validation as the data table, and table creation, index creation and the migration row are committed in ONE transaction** so a crash cannot leave a version claiming a schema that was never created — **not `PRAGMA user_version`, which is database-GLOBAL: `TopicMemory` shares this database, so claiming that pragma would either falsely fail arming or overwrite another component's migration state**; **`PRAGMA table_info`** shows every expected column, compared on **normalised type affinity rather than raw string equality** — extra columns tolerated, missing ones not. **Also checked via `sqlite_schema`: NO triggers on the table, and no `CHECK` constraints or generated columns beyond those declared** — an existing table can pass a column-and-index check and still reject inserts because of a trigger or a stricter CHECK, and the synthetic round-trip only exercises one row shape. Unsupported extras refuse to arm rather than being worked around; **`PRAGMA index_list`/`index_info`** shows a UNIQUE index on `dedupe_id` alone; **`PRAGMA journal_mode`** reports `wal` — **set and verified OUTSIDE the schema transaction**; and a **synthetic insert/read round-trip** passes. **When validation fails, the operator needs a path, not just a refusal.** `armed: false` naming the difference is the signal; the artifact is a **written repair note in the arm-failure log** giving the expected schema, the actual schema, and the exact SQL to reconcile them — which the operator runs, or does not, having read it. The code still never runs it: refusing to auto-`ALTER` is the safety property, and handing over the statement is not the same as executing it. Without that note the refusal is a dead end, and a dead end on the arming path means the bug stays unfixed for whoever hits it.
 
-**Full ordering:** open the database → set/verify `PRAGMA journal_mode = WAL` **outside any transaction** → then the schema transaction below.
+**Full arming algorithm**:
+
+1. Open the database; set/verify `PRAGMA journal_mode = WAL` **outside any transaction**.
+2. `BEGIN`.
+3. Create/validate the **`schema_migrations` table shape** itself.
+4. Read this feature's row (`name = 'inbound_messages'`).
+ - **Row absent** → first install: create `inbound_messages` + index, validate the resulting schema, then **INSERT** the row.
+ - **Row present and equal to this build's version** → validate the existing schema; **do not write**.
+ - **Row present and older** → apply the ordered migration, validate, then **UPDATE** the row.
+ - **Row present and NEWER than this build** → refuse to arm. A downgrade must never rewrite a schema it does not understand.
+5. `COMMIT` — or `ROLLBACK` and `armed: false`, naming the difference, on any validation failure.
+
+Validation always runs against the **actual resulting schema**, never against what the DDL intended, so a pre-existing wrong table fails identically whether this build created it or not.
 
 **Exact ordering, because "create, validate, and commit atomically" is ambiguous about which happens first:** BEGIN → create table/index `IF NOT EXISTS` → **validate the ACTUAL resulting schema** (the pragmas above) → **only if validation passes**, write/update the migration row → COMMIT. Validation runs against what is really there, never against what the DDL intended, so a pre-existing wrong table fails the same way whether this build created it or not; and the migration row can never claim a schema that was not validated, because it is written after the check and inside the same transaction. **Any mismatch means ROLLBACK and `armed: false` naming the specific difference** — never a silent degrade, and **never an automatic `ALTER`**: repairing a schema this design did not create is how a careful guard destroys someone else's data. No existing row is read, moved, backfilled or rewritten. `better-sqlite3` is already a dependency and `TopicMemory` already opens it (`src/memory/TopicMemory.ts:154`). WAL mode, `busy_timeout = 100 ms`. |
 | **Schema** | `seq INTEGER PRIMARY KEY AUTOINCREMENT`, `from_user INTEGER NOT NULL DEFAULT 1`, `dedupe_id TEXT NOT NULL UNIQUE`, `topic_id INTEGER NOT NULL`, `seam_received_at TEXT NOT NULL`, `text TEXT` (**nullable** — `NULL` when `body_captured = 0`; round-61 caught metadata-only mode contradicting a `NOT NULL` column), `body_captured INTEGER NOT NULL DEFAULT 1`, `sender_name TEXT`, `telegram_user_id INTEGER`, `message_id INTEGER` (nullable — no `-1` placeholder is needed), `id_source TEXT NOT NULL CHECK(id_source IN ('platform','derived'))`, `synthetic INTEGER NOT NULL DEFAULT 0`, `text_truncated INTEGER NOT NULL DEFAULT 0`. |
@@ -50,7 +132,7 @@ operator alert queue. **Armed**: enabled *and* the store opened writable.
 | **Attention** | The deduped operator alert queue (`POST /attention`). **Cadence:** raised at most once per condition per episode, never per event. **Owner:** the operator. **Actionable:** each item names the condition and the read surface to check; it is not a chat message and does not interrupt a conversation. |
 | **One-sided-conversation check** | A periodic query for topics with recent outbound rows and zero inbound rows over the same window. **Cadence:** hourly. **Owner:** the agent, surfacing to the operator via one deduped Attention item. **Actionable:** it names the topic and the window, and means *either* the recording is broken *or* the agent legitimately spoke unprompted — so it reports a suspicion to check, never an assertion of failure. |
 | **Coverage evidence** | Three signals that SHIP, ranked honestly, none of them enforcement. **(1) The live call-path trace at acceptance** — proves the seam is on the real path, once, at one moment. **(2) The one-sided-conversation check** — recent outbound with zero inbound rows for a topic. Detects TOTAL regression in a topic and nothing subtler; kept because it needs no cooperation from the sending side and would have caught the original 24-day defect. **(3) The AST fitness test** — a build-time guard against the easy regression, blind to dynamic dispatch, reflection and module boundaries. **Reconciliation against the forward route is DEFERRED, not shipped.** It would be the strongest signal — it alone catches partial loss and wrong-topic writes — but it needs a durable, crash-safe, wrap-aware store of observed ids that this spec had waved at rather than specified, and making acceptance depend on an unspecified store is how a check becomes decorative. Tracked as follow-up rather than claimed. <!-- tracked: ACT-1222 --> |
-| **Retention** | **Two dimensions.** (1) Keep the newest **200 000 rows**; synthetic rows count toward the bound. (2) Cap stored text at **64 KB per row**, longer messages stored truncated with `text_truncated = 1`. Not time-based. **The two caps bound the PAYLOAD, not the store** — SQLite page overhead, the index, WAL growth and free pages after deletes all sit outside them, so `200k x 64KB` is not a filesystem guarantee. `/health` reports **actual DB and WAL file sizes** instead, which is a measured number rather than an inferred one. **Deletion is two-step and batched**, never one statement: `SELECT seq … ORDER BY seq DESC LIMIT 1 OFFSET:keep` for the cutoff, then `DELETE FROM inbound_messages WHERE seq IN (SELECT seq FROM inbound_messages WHERE seq <=:cutoff LIMIT 1000)` repeated with a yield between batches — **the subquery form because `DELETE … LIMIT` requires SQLite compiled with `SQLITE_ENABLE_UPDATE_DELETE_LIMIT`, which is not guaranteed**, reporting rows deleted and per-batch latency. Daily. A single large DELETE would take locks on the same database the synchronous insert uses. Deleted rows free pages for reuse; **no `VACUUM`** — returning disk to the OS is not worth an exclusive lock on the delivery path's database. |
+| **Retention** | **Two dimensions.** (1) Keep the newest **200 000 rows**; synthetic rows count toward the bound. (2) Cap stored text at **64 KB per row**, longer messages stored truncated with `text_truncated = 1`. Not time-based. **The two caps bound the PAYLOAD, not the store** — SQLite page overhead, the index, WAL growth and free pages after deletes all sit outside them, so `200k x 64KB` is not a filesystem guarantee. `/health` reports **actual DB and WAL file sizes** instead, which is a measured number rather than an inferred one. **Deletion is two-step and batched**, never one statement: `SELECT seq … ORDER BY seq DESC LIMIT 1 OFFSET:keep` for the cutoff, then `DELETE FROM inbound_messages WHERE seq IN (SELECT seq FROM inbound_messages WHERE seq <=:cutoff LIMIT 1000)` repeated with a yield between batches — **the subquery form because `DELETE … LIMIT` requires SQLite compiled with `SQLITE_ENABLE_UPDATE_DELETE_LIMIT`, which is not guaranteed**, reporting rows deleted and per-batch latency. Daily. A single large DELETE would take locks on the same database the synchronous insert uses. **Retention YIELDS to recording: it does not start, and aborts between batches, if there has been an insert failure or a p99 above the latency gate in the last 5 minutes** — recording is the point of the feature and cleanup is housekeeping, so under contention the housekeeping loses. Last retention run time, duration, rows deleted and abort reason are on `/health`. Deleted rows free pages for reuse; **no `VACUUM`** — returning disk to the OS is not worth an exclusive lock on the delivery path's database. |
 | **Single writer** | SQLite serialises writers; it does **not** guarantee this write completes within `busy_timeout`. The realistic contenders on this shared database are the retention delete, TopicMemory's own writes, and WAL checkpoints. Mitigations, in order: retention runs in **small batches with yields** (§Retention) so it never holds a long write lock; the seam uses its **own connection** with `busy_timeout = 100 ms`; and the **bounded retry** above covers the residual contention. **No lock file, no boot-id, no stale-reclaim rule, no filesystem allowlist.** Injection never waits on lock acquisition beyond the retry budget. |
 | **`enabled` vs `armed`** | `enabled` = the config flag (configuration only, never the logging predicate). `armed` = enabled **and** the table opened writable. Arming is attempted at startup and **retried in the background** (60s, backoff to 15m), outside the per-message path. While unarmed the seam call is a no-op, incrementing `inbound-log-arm-failed` once per process and `inbound-messages-skipped-unarmed` per message. **Acceptance FAILS if `armed` is false.** |
 | **Failure behavior** | A failed insert is caught, counted, and **injection proceeds**. A failed secondary write is caught and counted. |

@@ -71,3 +71,19 @@ captures correctly. It warns rather than refuses, because the ratio is a heurist
 and a rationale-heavy spec can legitimately capture low — a refusal on a heuristic
 blocks correct output, a warning that names the number hands the judgment to a
 human.
+
+## A content-loss guard for `--strict`
+
+The capture-ratio warning catches *too few sections matching*. It cannot see a
+section that matched and captured **nothing** — which happened live: a
+sub-heading added inside an allowlisted section ended that section's capture and
+dropped the entire contract table from the output, while the section count stayed
+identical and the guard stayed silent.
+
+A second warning now compares captured bytes to source bytes per section. Three
+implementations were needed: averaging hid the empty section behind healthy ones;
+an absolute threshold false-positived permanently on legitimate container
+headings; and the working version required the source measurement to stop using
+the capture's own rule, which had made it shrink in lockstep with the truncation.
+
+Each version was verified against the real regression and the correct file.

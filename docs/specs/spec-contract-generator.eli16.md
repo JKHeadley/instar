@@ -121,6 +121,28 @@ measure would block correct work. Printing the number and letting a person judge
 is the honest division of labour — the tool knows the ratio, it doesn't know
 whether the ratio is fine.
 
+## The guard that needed guarding
+
+The strict mode has a warning for "I kept suspiciously few sections". It turned
+out to have a blind spot: a section can *match* and still come out empty, if you
+put a sub-heading inside it. That happened for real — a heading I added inside the
+main contract section silently deleted the whole contract from the output, and the
+existing warning stayed quiet because the section count hadn't changed.
+
+There's now a second check comparing how much each section *should* contain
+against how much came out.
+
+It took three tries, and the two failed ones are instructive. The first averaged
+across all sections, so nine healthy ones hid the empty one. The second used a
+fixed size threshold and fired constantly on sections that are legitimately short
+— and **a warning that always fires is one nobody reads**, which is worse than no
+warning. The third works, but only after I noticed the "how much should it
+contain" measurement was using the same rule as the thing it was checking, so it
+shrank in step with the problem instead of noticing it.
+
+Each attempt was tested against the actual broken file rather than assumed to
+work. That's the only reason the first two were caught.
+
 ## What it doesn't do
 
 It doesn't check whether the design is any *good*, or even whether it's

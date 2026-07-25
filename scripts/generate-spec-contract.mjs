@@ -95,9 +95,33 @@ const STRICT_CONTRACT_HEADING_RE =
 
 export function splitStrictContract(markdown) {
   const lines = markdown.split('\n');
+  // Pre-pass: how big is each allowlisted section in the SOURCE (to the next
+  // heading of the same-or-higher level)?
+  const sourceSizes = new Map();
+  for (let i = 0; i < lines.length; i++) {
+    if (!STRICT_CONTRACT_HEADING_RE.test(lines[i])) continue;
+    const level = (lines[i].match(/^#+/) || ['##'])[0].length;
+    let bytes = 0;
+    for (let j = i + 1; j < lines.length; j++) {
+      const m = lines[j].match(/^(#+)\s/);
+      // The source measure must NOT use the capture's stopping rule, or it
+      // shrinks in lockstep with the truncation it is meant to detect (an
+      // interior non-allowlisted H3 would end both, and the guard sees nothing).
+      // Stop only at the next ALLOWLISTED heading or the next H2.
+      if (m && (STRICT_CONTRACT_HEADING_RE.test(lines[j]) || m[1].length <= 2)) break;
+      // Content that belongs to a NESTED allowlisted subsection is captured
+      // under that subsection's own entry — it is not lost, so it must not
+      // count against this section (otherwise a container heading like
+      // "## 4. Honest limits" followed by an allowlisted "### 4.0 …" warns
+      // forever, and a guard that always warns is a guard nobody reads).
+      bytes += lines[j].length + 1;
+    }
+    sourceSizes.set(lines[i].trim(), bytes);
+  }
   const kept = [];
   let keeping = false;
   let keptSections = 0;
+  const sectionSizes = [];
   // Front matter always rides along — it carries the approval + convergence tags.
   let inFrontMatter = lines[0] === '---';
   for (let i = 0; i < lines.length; i++) {
@@ -109,7 +133,10 @@ export function splitStrictContract(markdown) {
     }
     if (/^#{1,3}\s/.test(line)) {
       keeping = STRICT_CONTRACT_HEADING_RE.test(line);
-      if (keeping) keptSections++;
+      if (keeping) {
+        keptSections++;
+        sectionSizes.push({ heading: line.trim(), bytes: 0, sourceBytes: sourceSizes.get(line.trim()) || 0 });
+      }
       // An H1 (the title) is kept as an anchor but does not open a section.
       if (/^#\s/.test(line)) {
         kept.push(line);
@@ -117,7 +144,10 @@ export function splitStrictContract(markdown) {
         continue;
       }
     }
-    if (keeping) kept.push(line);
+    if (keeping) {
+      kept.push(line);
+      if (sectionSizes.length) sectionSizes[sectionSizes.length - 1].bytes += line.length + 1;
+    }
   }
   const body = stripInlineAnnotations(kept.join('\n')).replace(/\n{4,}/g, '\n\n\n');
   const narrativeResidual = (body.match(NARRATIVE_HISTORY_RE) || []).length;
@@ -129,6 +159,28 @@ export function splitStrictContract(markdown) {
   // the reviewer's first finding was "normative behavior is missing".
   const sourceHeadings = (markdown.match(/^#{2,3}\s/gm) || []).length;
   const keptRatio = sourceHeadings ? keptSections / sourceHeadings : 1;
+  // Section COUNT is not content coverage: an H3 inside an allowlisted section
+  // ends its capture, silently emptying it while the count stays identical.
+  // Observed live (2026-07-25) — a new "### Normative checklist" heading inside
+  // §3.0 dropped the entire contract table and the checklist itself from the
+  // output, and the capture-ratio guard below did not fire because 10 sections
+  // still "matched". So also guard on captured BYTES per kept section.
+  // A short section is only suspicious when the SOURCE section is long — a
+  // container heading (e.g. "## 4. Honest limits" immediately followed by an
+  // allowlisted "### 4.0 …") is legitimately near-empty and must not warn.
+  const truncated = sectionSizes.filter(
+    (x) => x.sourceBytes > 1000 && x.bytes < x.sourceBytes * 0.25,
+  );
+  const thinSectionWarning = truncated.length
+    ? `${truncated.length} allowlisted section(s) captured far less than the ` +
+      `source contains: ` +
+      truncated
+        .map((x) => `${x.heading} (${x.bytes}/${x.sourceBytes} bytes)`)
+        .join(' | ') +
+      ` — an H3 inside an allowlisted section ENDS its capture, emptying it while ` +
+      `the section count stays the same. Sub-headings inside a contract section ` +
+      `must be H4.`
+    : null;
   const underCaptureWarning =
     sourceHeadings >= 8 && keptRatio < 0.25
       ? `only ${keptSections}/${sourceHeadings} sections matched the allowlist ` +
@@ -136,7 +188,7 @@ export function splitStrictContract(markdown) {
         `normative sections whose headings are not on the list. Verify before ` +
         `building from it.`
       : null;
-  return { contract: body, keptSections, narrativeResidual, sourceHeadings, underCaptureWarning };
+  return { contract: body, keptSections, narrativeResidual, sourceHeadings, underCaptureWarning, thinSectionWarning };
 }
 
 export function splitContract(markdown) {
@@ -232,6 +284,9 @@ function main() {
   const output = banner(specRel, narrativeResidual, strict) + contract;
   if (res.underCaptureWarning) {
     console.error(`WARNING (strict): ${res.underCaptureWarning}`);
+  }
+  if (res.thinSectionWarning) {
+    console.error(`WARNING (strict): ${res.thinSectionWarning}`);
   }
 
   const slug = path.basename(specPath, '.md');

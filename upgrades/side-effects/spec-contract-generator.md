@@ -112,6 +112,32 @@ and a genuinely rationale-heavy spec can legitimately capture low. A refusal on 
 heuristic would block correct output; a warning that names the number lets a human
 apply the judgment the tool does not have.
 
+### A third failure mode, found by shipping it (2026-07-25)
+
+The capture-ratio warning guards against *too few sections matching*. It does not
+see **a matched section that captured nothing** — and that happened live: adding a
+`### Normative checklist` heading inside the allowlisted `### 3.0 Final contract`
+ended that section's capture, dropping the entire contract table **and the new
+checklist** from the output. The section count stayed at 10, so the existing guard
+was silent, and the emptied contract would have shipped.
+
+A second guard now compares **captured bytes against source bytes per section**
+and warns when a section captures under 25% of a source section over 1 KB.
+
+**Getting it right took three attempts, each verified against the real regression
+rather than assumed:**
+
+1. *Average bytes per section* — nine healthy sections masked one empty one.
+2. *Absolute per-section threshold* — permanently false-positived on legitimate
+   container headings (`## 4. Honest limits` immediately followed by an allowlisted
+   `### 4.0 …`). **A guard that always warns is a guard nobody reads.**
+3. *Captured vs source, per section* — worked only after the source measurement
+   stopped using the capture's own stopping rule, which had made it shrink in
+   lockstep with the truncation it was meant to detect.
+
+Verified in both directions each time: fires on the regression, silent on the
+correct file, large-spec behaviour unchanged.
+
 **Under-block:** unchanged. A rule narrated inside an allowlisted section still
 carries its own history; strict mode reduces the surface, it does not clean prose.
 
