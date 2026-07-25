@@ -95,6 +95,34 @@ mid-write. `fsync` per message is deliberately **not** added: it would cost
 milliseconds of real disk latency on every inbound message, on the delivery path,
 to protect against a failure mode that loses the running session anyway.
 
+**Why not log at the intake edge instead? (round-28, codex — and this is the
+alternative the spec should have considered first.)** The obvious industry shape
+for this problem is an **outbox/intake event log**: append an event where Telegram
+traffic actually enters — the webhook or polling boundary — and project it
+forward into session history and search. It is a better-known pattern than what
+this spec proposes, and it covers strictly more: the messages queued, dropped or
+refused *before* injection, which this design admits it cannot see (§4). Twenty-six
+rounds of review spent effort rejecting queues and workers and never named it.
+
+It is still not what this spec does, for two reasons, and the second is the real
+one:
+
+1. **The goal is session-resume completeness, not audit completeness.** The
+   defect is that a resumed session reads its own half of the conversation. That
+   is fixed by recording what reaches the session. Recording everything Telegram
+   ever sent is a different, larger goal — a genuinely good one, and not this one.
+2. **The intake edge on the affected machine is not known.** The whole bug is that
+   inbound traffic here does *not* arrive through the route that logs it (§1: zero
+   hits on the forward route). An intake-edge log would first require finding
+   where intake actually happens on this machine — the same discovery work, plus a
+   new store, before recording a single message. The seam is chosen because it is
+   the point that is *verified* to be on the path, not because it is the
+   theoretically best point.
+
+If audit completeness is later wanted, the intake-edge log is the right build and
+this record does not obstruct it — they answer different questions and can
+coexist.
+
 **What it is still deliberately NOT:** a queue subsystem, an event bus, a worker,
 a retry ladder, or any new persistent store. The persistence already exists and is
 already written by the same function on another path; the record is machine-local
@@ -112,7 +140,8 @@ It works because:
   — `SessionManager.injectMessage` and `SessionManager.rawInject` — in a fixture.
   Those, not `injectTelegramMessage`, are what the test scans, and deliberately:
   `injectTelegramMessage` is the seam that *does* the logging, so a new path that
-  bypasses the gap would do so by reaching for the primitives underneath it. The
+  bypasses the gap would do so by reaching for the primitives underneath it.
+
   **The test is AST-based, not a regex over source text (round-17, codex — a
   regex fixture invites exactly the false confidence this test exists to avoid).**
   It walks the parsed module graph for references to the two primitives, which
@@ -126,8 +155,20 @@ It works because:
   need stack inspection, which is expensive and fragile; the counter instead
   records *total* primitive invocations and compares against the count the
   approved sites report making. A divergence says "something else called this"
-  without saying who — an anomaly signal, not an attribution mechanism, and
+  without saying who — an anomaly signal, not an attribution mechanism, and it is
   described as such.
+
+  **What to do when it fires (round-28, gemini — an anomaly nobody can act on is
+  a counter, not a signal).** The investigation path is deliberately manual and
+  cheap: the counter reports the divergence *per topic and per session*, which
+  narrows a search to one conversation's code path rather than the whole tree.
+  From there the step is a one-off debug build that turns on stack capture at the
+  two primitives — expensive enough that it stays off by default, cheap enough to
+  switch on for an hour once something is known to be wrong. That is the honest
+  plan: the counter tells you *that* and *roughly where*, and finding *who* costs
+  a deliberate debugging session. Pretending otherwise would mean paying stack
+  capture on every inject forever to answer a question that should almost never
+  be asked.
   The fixture is the list of functions permitted to call them; any new
   caller fails it until the allowlist is updated deliberately, at which point a
   human has to decide whether that path also needs to log. **Each entry carries a
@@ -215,7 +256,10 @@ It works because:
     a number, so a string id left implicit is a `NaN` collision waiting to
     happen — round-3, codex.)*
   - the entry is marked `idSource: 'platform' | 'derived'`.
-  - the entry carries **`deliveryState: 'received'`** — a single-valued enum
+  - the entry carries **`deliveryState: 'received'`**, which means **received by
+    the session-injection seam — NOT received by Telegram**. A message the bot
+    took in and then queued, dropped or refused before injection never reaches
+    this record at all (§4). It is a single-valued enum
     today, and deliberately an enum rather than a boolean or an absence
     (round-16, codex). It gives a later `'injected'` or `'delivered'` somewhere
     safe to live, so evolving this record never requires *reinterpreting* an
@@ -269,6 +313,17 @@ It works because:
     read model exposing `message_id` exposes `id_source` alongside it.** A column
     that can hold a placeholder must travel with the column that says whether it
     is one.
+
+    **TopicMemory's identity columns are INFORMATIONAL, and no index is added
+    (round-28, codex asked for an explicit decision rather than an omission).**
+    `dedupe_id` and `id_source` land there so a row can be traced back to its
+    JSONL counterpart when someone is debugging — not so TopicMemory can enforce
+    anything. Uniqueness is deliberately absent: enforcing it would make a
+    duplicate a *write failure* on the lossy secondary store, which is exactly
+    backwards — a duplicate searchable row is a cosmetic problem, a rejected
+    write is a missing one. Correctness therefore stays with the JSONL-side
+    in-memory gate, permanently and by design, and that is stated here rather
+    than left as an implication of an absent constraint.
   - **Ordering still comes from `(timestamp, rowid)`, not `message_id`.** With the
     sentinel withdrawn this is no longer a sign-related trap, but it remains true
     for a plainer reason: burst messages can share a timestamp, and `message_id`
@@ -282,6 +337,16 @@ It works because:
     A test asserts the session-start history reader consults JSONL, and this
     sentence exists so a future search feature does not quietly become a
     counting feature.
+
+    **And the user should be told, not just the code (round-28, gemini).** A
+    person who knows they sent a message and cannot find it in search has hit a
+    real gap, and "the index is lossy" is only an answer if someone says it out
+    loud. Any surface built on TopicMemory search or summaries carries a plain
+    line to that effect when it returns nothing or returns during a known drop
+    window — not a permanent disclaimer on every result, which trains people to
+    ignore it. The honest framing for a user is: *search may miss messages from a
+    period when the machine was overloaded or restarted; the full record is still
+    kept.*
   - **JSONL and TopicMemory now carry the same identity fields** (`dedupe_id`,
     `id_source`), which retires the round-15 "reduced contract" caveat — that
     caveat existed only because the migration was being avoided.
@@ -339,9 +404,21 @@ if injection fails, the entry still says the message arrived, and a later reader
 could wrongly infer the agent saw it. Rather than add a delivery-status update
 (a second write, for a distinction no consumer currently needs), the log is
 **named** for what it honestly records — messages received for this session —
-and the field is `receivedAt`, not `shownAt`. If a consumer ever needs
+and the field is `sessionReceivedAt`, not `shownAt`. If a consumer ever needs
 agent-observed semantics, that is a new field with its own write, not a
 reinterpretation of this one.
+
+**"Received" still over-named it, though (round-27/28, codex — and the fix for an
+overclaim carrying a smaller overclaim is now a pattern in this document).** The
+seam is not the Telegram intake edge. A message that arrives at the bot and is
+queued, dropped, or refused *before* injection is never seen here (§4 admits
+this), so a bare `received` reads as "received by the agent" when it only means
+"reached the point where a session was about to be handed it." The field is
+therefore `sessionReceivedAt` — the `session` prefix is load-bearing, not
+decoration — and `deliveryState: 'received'` is defined in one line at its
+definition site as **received by the session-injection seam, not by Telegram**.
+The enum value stays short because it is written on every row; the definition
+carries the precision.
 
 **What a consumer must therefore assume (round-2, codex).** The session-start
 history reader — the one consumer that matters today — may show a message that
@@ -712,6 +789,19 @@ synchronous mock shape that does not match production; round-22 and round-27
 both caught this paragraph still carrying the pre-split wording, and round-27
 additionally caught it asserting the same thing twice).
 
+**Append-failure classes (round-28, codex — the perf gate measures bursts and
+loop delay, and says nothing about the ways a synchronous append actually
+fails).** Each is a test, not a hope: a **disk-full** append, a **permission-denied**
+append, a **missing/unwritable log directory**, a **rotated log** (the file moved
+out from under a held path), and **seeding against a very large existing file**.
+The first three assert the same contract — the throw is caught, the counter
+increments, the injection still happens — and that a *sustained* run of them
+raises Attention rather than only incrementing a counter nobody reads, since a
+counter that never surfaces is how this class of bug stays invisible. Rotation
+asserts that the next append re-resolves the path rather than writing into an
+unlinked handle. Large-file seeding asserts a bounded read, so a long-lived log
+cannot make process start slow.
+
 **Integration** — a message delivered through the real inject path appears in the
 JSONL log and in TopicMemory with `fromUser: true`; the same message arriving via
 **both** the forward route and the seam is written **once**; with the flag off,
@@ -726,6 +816,21 @@ criterion, not the unit and integration tiers. The seam-level E2E below is the
 fast check that the wiring exists; the live-channel test is the one that proves
 the defect is actually gone, and it is the one that would have caught this bug in
 the first place.
+
+**One message is not enough (round-28, codex).** §2 found four callers of the
+seam and only one passes a platform id — so a single live message proves at most
+one of four paths, and most likely the *best-covered* one. Acceptance requires
+three:
+
+| Path | Proves |
+|---|---|
+| A normal Telegram message (platform id present) | `idSource: 'platform'`, dedupe against redelivery |
+| A message arriving via an id-less caller | The derived-UUID path that three of four callers take |
+| A long message (file-pointer injection) | The logged text is the operator's message, not the wrapper |
+
+The third is included because long messages take the file-pointer path rather
+than inline injection, and a log that recorded the pointer instead of the message
+would look healthy in every count while storing nothing readable.
 
 **E2E** — production initialization path: a message injected into a live session
 is readable back from the topic history **within a bounded interval** (the write
