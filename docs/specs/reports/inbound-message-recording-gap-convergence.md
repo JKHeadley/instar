@@ -84,6 +84,15 @@ says *build from this*:
   said one thing while the code did another") — the inline stripper never reached
   inside table cells
 
+  **Re-measured 2026-07-25 15:09Z: now 6, by the generator's own residual
+  counter.** The 21 was counted against a contract generated BEFORE the
+  allowlist fix; regenerating from the current source is byte-identical to the
+  committed artifact and reports `RESIDUAL: 6`. The remaining 6 are the class
+  the generator documents as unremovable — a sentence that states a rule and
+  narrates its history at once — not a stripper miss. **Keeping the 21 here
+  unqualified would have left a stale defect count in the report about stale
+  artifacts**, which is why it is corrected rather than quietly overwritten.
+
 **Eighty rounds of review happened without anyone opening it.** Reviewers read the
 source spec. My edits went into the source spec. The generated instructions —
 what a builder would actually use — went unexamined for nine hours.
