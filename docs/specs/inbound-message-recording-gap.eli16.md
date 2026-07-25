@@ -194,6 +194,22 @@ way the whole thing exists to prevent. The rule I've written down: when a guard'
 failure mode is "stop recording", it has to lean toward running. The thing you're
 protecting against is the not-recording.
 
+## What this actually promises — corrected
+
+I've been describing this as fixing the problem. A reviewer pointed out that
+isn't quite what it does, and the distinction matters to you.
+
+If writing a message down fails — a busy database, a full disk — the design
+retries a couple of times, and if it still fails, **it drops the record and
+delivers your message anyway.** It will not hold your message hostage to its own
+bookkeeping; making you unreachable to protect a log would be exactly backwards.
+
+So the honest promise is: **loss goes from silent and unnoticed for twenty-four
+days, to flagged the first time it happens, with your message still delivered.**
+
+That's a large improvement. It is not "no loss", and every other part of the
+document was written as though recording always succeeds. Now it says so.
+
 ## What it doesn't fix
 
 It does not stitch the two machines' halves together. After this, each machine
