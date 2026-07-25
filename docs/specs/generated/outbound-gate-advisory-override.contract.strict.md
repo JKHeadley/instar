@@ -544,14 +544,26 @@ security boundary; it is a lot of bespoke code standing next to an open door.
  holding the credential values in memory in the three normalized forms (§3.2).
 - **PR-A indexes ONLY credentials already resident in the loaded config.** `authToken`, the Telegram bot token, tunnel tokens and the other
  config leaves are in this process's heap whether or not this feature exists,
- so indexing them adds **zero** plaintext residency — and `authToken` is the
+ so indexing them adds **no new credential VALUES** — though it does add
+ derived *forms* of them, which is not the same claim; see below — and
+ `authToken` is the
  highest-value one, since it plus the tunnel URL is full remote control of the
  agent. **Vault-derived credentials are NOT loaded in PR-A**; they wait for the
  isolated matcher process, which becomes a required deliverable rather than a
  threshold-triggered upgrade. This costs reach — a vault secret pasted into a
  message is caught by B23 as a shape rather than by B22 as possession — and buys
- the property the earlier design only claimed: **this feature expands plaintext
- residency by nothing at all.**
+ most of the property the earlier design overclaimed. **Stated precisely:** the index introduces
+ **no credential this process did not already hold**, but it is NOT true that
+ it "expands plaintext residency by nothing at all", and that phrasing is
+ withdrawn. §3.2's matcher keeps **three normalized forms per credential**, and
+ a separator-stripped form is a byte sequence that did **not** previously exist
+ anywhere in the process — so a memory scan for it would have found nothing
+ before and finds a hit now. The accurate claim is: **no new secrets, but new
+ derived representations of existing ones, in one purpose-built structure.**
+ The exposure delta is therefore real if bounded — an attacker already needed
+ arbitrary read of this process, and already had the originals. Recorded as a
+ correction rather than smoothed, because "zero" was the load-bearing word in
+ every prior round's security argument and it was wrong.
 - Matching is `String.prototype.includes` per credential per form — native,
  and at the real bound (≤4,096-char candidate × ≤512 credentials × 3 forms
  ≈ 1,536 native substring scans) comfortably sub-millisecond. **No fingerprint,
@@ -1444,17 +1456,29 @@ evaluate(request):
  # reach and is surfaced. See row 2a; holding every message because a
  # vault is unreadable is worse than the exposure it prevents.
 
+ # Phase A ALSO evaluates the deterministic ADVISORY detector, every time.
+ #
+ current = b23_findings(request) # set, possibly empty; each a tuple
+ # {producer, rule, detectorKind,
+ # candidateSha256} per §3.5
+
  # Phase B — override resolution. Only when a token is presented.
  if token_presented(request):
- if not token_valid(request): return HOLD_FRESH # invalid → new hold
- if text_edited(request): return HOLD_FRESH # ack binds to the hash
- # "Differs" is NOT a loose comparison: a pending record answers exactly
- # {producer, rule, detectorKind, candidateSha256} (§3.5). A finding whose
- # tuple differs in ANY field is a different finding and gets its own hold —
- # notably a B23 detectorKind that did not fire on the first pass.
+ # Consuming a token needs MORE than the answering tuple: §3.5 additionally
+ # requires channel + topicId + messageKind to match the record, or the
+ # token could authorize identical text into the wrong conversation.
+ # A record that is absent/expired/consumed/evicted, or a context mismatch,
+ # is `override-uncorrelated` — counted, never a delivery.
  #
- if finding_tuple(request) != acked_tuple(token):
- return HOLD_FRESH # e.g. index finished rebuilding
+ if not token_record_found(request):
+ return HOLD_FRESH_UNCORRELATED # override-uncorrelated
+ if not context_matches(request, token): # channel/topic/kind
+ return HOLD_FRESH_UNCORRELATED # override-uncorrelated
+ if text_edited(request): return HOLD_FRESH # ack binds to the hash
+ # An ack answers EXACTLY the one finding it cites. Every other current
+ # finding is unanswered and still holds (row 13a).
+ unanswered = [f for f in current if f != acked_tuple(token)]
+ if unanswered: return HOLD_FRESH # new citation, new token
  if not authorized_event_appendable():
  return REFUSE_OVERRIDE_UNRECORDABLE # row 18 (availability hold)
  return DELIVER # acked citation answered

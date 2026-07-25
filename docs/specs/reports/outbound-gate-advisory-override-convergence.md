@@ -616,3 +616,39 @@ thirty-three rounds against the truncated artifact could see.
 **Finding 5 remains the only one open**, and deliberately: it is noise, not
 correctness, and the decision it needs is already recorded above — better inline
 stripping *inside* §3, never re-omitting §3.
+
+---
+
+## Round 36 (2026-07-25 16:0xZ) — SERIOUS, and two of the four findings were MINE
+
+**The verdict went MINOR → SERIOUS, and the regression is mine.** Two of the
+four findings are defects my own round-35 folds introduced. This is the pattern
+the inbound spec's report documents — *"most of those defects were introduced by
+the previous round's fold"* — reproduced here in one round, on a spec where I
+had just written that I was avoiding exactly this by folding singly. Folding
+one at a time is necessary and was not sufficient.
+
+| # | Finding | Origin | Disposition |
+|---|---|---|---|
+| 1 | Phase B pseudocode under-specified and likely wrong: Phase A ran only B22, so `finding_tuple` had no defined computation and a B23 kind firing only on the resend could be skipped — contradicting row 13a | **MINE (round 35)** | **FIXED.** B23 is now evaluated in Phase A every time, and the comparison is **per-finding**, not whole-request: an ack answers exactly the one finding it cites, every other current finding still holds. |
+| 4 | §3.2.1's exposure analysis too optimistic — "zero plaintext residency" ignores the normalized copies | Pre-existing, **and my round-35 fold left it standing** while correcting the adjacent paragraph | **FIXED, and the claim WITHDRAWN.** §3.2 keeps **three normalized forms per credential**; a separator-stripped form is a byte sequence that did not previously exist in the process, so a memory scan finds a hit where it previously found nothing. Accurate claim now stated: *no new secrets, but new derived representations of existing ones.* "Zero" was the load-bearing word in every prior round's security argument, and it was wrong. |
+| 2 | §3.5 vs rows 15/22 conflict on absent-vs-expired tokens; "absent token cannot prove expiry" | Partly **MINE (round 35)** — my row-15 edit fixed reachability and introduced this | **PARTIALLY FIXED.** The pseudocode now distinguishes *record absent/expired/consumed* and *context mismatch* — both `override-uncorrelated` per §3.5 — from an edited-text hold. The remaining table-level four-way split (no-token/no-ack vs ack-without-token vs expired-known-token vs mismatched) is **OPEN**. |
+| 3 | §3.8's append log + projector + startup reconciliation + terminal-event semantics is a durable workflow/event-sourcing subsystem, while §3.5.1 explicitly rejected a durable approval table | Pre-existing, architectural | **OPEN — and not an editing decision.** Either embrace the pattern (durable outbox with transitions, schema versioning, idempotent projection) or cut the lifecycle back to a minimal local evidence log. That is a design call with real cost either way. |
+
+**A second self-correction inside this round.** In round 35 I declined codex's
+wider comparison tuple, writing that §3.5's four fields "are what the record
+actually binds, so the spec's own definition is used rather than the
+suggestion." **That was wrong.** §3.5 states both: a record *answers*
+`{producer, rule, detectorKind, candidateSha256}`, and *consuming* it
+**additionally** requires `channel` + `topicId` + `messageKind` to match, or a
+token could authorize identical text into the wrong conversation. Answering and
+consuming are different checks. The suggestion was right and I dismissed it by
+reading half the section — the same failure as the morning, one round after
+writing that checking suggestions against the source "is the whole lesson of
+this session."
+
+**Status: NOT converged, no tag, and the trend this round was backwards.** Two
+findings remain open, one of them architectural. The honest read is that this
+spec's folds need a reviewer pass *between* each one rather than a batch of
+folds followed by a round — the defect rate per fold is not low enough to
+verify by re-reading alone.
