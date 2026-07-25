@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **59 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
+- **63 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -249,6 +249,26 @@ pressed on the riskiest decision, I produced a *more satisfying* argument for th
 thing I had already chosen. Twice those arguments were wrong in a way that made
 the design look better than it was. Neither was a lie; both were reasoning that
 stopped as soon as it reached a comfortable conclusion.
+
+## The circular-detector mistake, made twice
+
+**Round 47:** the stall detector was unreachable — in-process alarms cannot fire
+when a wedged write blocks the event loop that runs them. Fixed by exposing a
+loop-tick counter on `/health` for the out-of-process watchdog.
+
+**Round 63:** that fix is *also* circular. A wedged event loop cannot serve the
+`/health` request either, so the counter is unreachable in exactly the failure it
+was added for.
+
+The working answer was available at round 47 and is almost embarrassingly simple:
+**no response is the signal.** The watchdog's existing request timeout already
+produces it. Two rounds were spent adding a mechanism when the absence of a
+mechanism's output was the evidence.
+
+Worth keeping because the shape recurs: when a detector lives inside the thing it
+detects, moving the *readout* outside is not enough — the *read path* has to be
+outside too, and the strongest evidence is often the absence of a signal rather
+than the presence of one.
 
 ## Findings that came from the review disagreeing with itself
 
