@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **51 rounds run, none clean.** Every round has returned findings.
+- **54 rounds run, none clean.** Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -188,6 +188,40 @@ managing a boundary that the storage choice had created.
 The lesson is not about SQLite. It is that **a justification stated once at round
 27 was still being repeated at round 50 without ever being re-tested**, while the
 thing it justified grew by an order of magnitude underneath it.
+
+## The lesson from rounds 51-54: sweep-vs-replace
+
+The storage rewrite at round 51 replaced §3.0 wholesale. The four rounds after it
+were spent finding JSONL residue elsewhere in the document — and each round I
+answered with a **grep-based sweep**, and each sweep left pockets:
+
+| Round | Residue found after the previous sweep |
+|---|---|
+| 52 | Health reported rotation state; retention quoted a 160 MB window; tests covered rotation and a `-1` migration; acceptance verified a file lock |
+| 53 | Append/rotation/lock language in test plan, acceptance, decision points, frontloaded decisions |
+| 54 | Rotation protocols, suffix ordering, dedupe seeding, append helpers, file interleaving — still in §5 |
+
+At round 54 the approach changed: **§5 was replaced wholesale**, 15,036 characters
+to 5,099, the way §3.0 had been. **Partial sweeps are how residue survives** — a
+grep finds the phrases you thought of, and a section written against a different
+design has assumptions the phrases do not name.
+
+Generalised: when a design changes, **replace the sections that describe it;
+do not edit them.** Editing preserves the shape of the old design in the prose
+structure even after every keyword is gone.
+
+## Grounding found what 52 rounds of review did not
+
+At round 53, reading `src/memory/TopicMemory.ts` — the file this spec extends —
+showed the existing `messages` table already has `AUTOINCREMENT` ordering, a
+uniqueness constraint, and every field the new table specifies. **A new table may
+be unnecessary entirely.**
+
+No reviewer found that in 52 rounds, because reviewers read the spec. The spec's
+own §1 records that the original defect existed because nobody verified which code
+path was actually in use. Recorded as an open question (§3.0b) rather than acted
+on — two large unreviewed restructures tonight each introduced defects the next
+round cleaned up.
 
 ## The self-inflicted rate, measured rather than asserted
 
