@@ -35,7 +35,8 @@ Verified on the Mac Mini, 2026-07-25:
 
 The recording code is not broken. **It is on a path that is not being used.**
 `TelegramAdapter.logInboundMessage()` has exactly one caller — the lifeline
-forward route — and messages on this machine arrive by a different path.
+forward route at `src/server/routes.ts:20124` — and messages on this machine
+arrive by a different path. *(Confirmed on current main, v1.3.953.)*
 
 **The observed cost, not a hypothetical.** On 2026-07-25 the agent re-derived a
 design the operator had specified on 2026-07-23 and reported it back as a new
@@ -45,9 +46,15 @@ not what it was asked.
 
 ## 2. What exists today (verified against the running tree)
 
-- `SessionManager.injectTelegramMessage(tmuxSession, topicId, text, topicName?, senderName?, telegramUserId?, messageId?)` — `src/core/SessionManager.ts:3836`. **Every inbound message reaches a session through it**, whether injected inline or written to an inbound file for long messages.
+- `SessionManager.injectTelegramMessage(tmuxSession, topicId, text, topicName?, senderName?, telegramUserId?, messageId?)` — `src/core/SessionManager.ts:5045` **on current main (v1.3.953)**. **Every inbound message reaches a session through it**, whether injected inline or written to an inbound file for long messages.
 - It already receives **every field the log needs**. No plumbing is required.
-- Two callers: `src/server/routes.ts:15746` and `src/commands/server.ts:2097`.
+- **Four callers, not two** — `src/server/routes.ts:20323`, and `src/commands/server.ts` at 2763, 2985 and 20711. **Only the first passes a `messageId`**; the others call the seam without one, which is precisely why §3 records id-less messages rather than dropping them. Had that decision gone the other way, three of the four inbound paths would have stayed invisible.
+
+  *(Re-verified against the worktree at v1.3.953 after discovering the earlier
+  numbers came from the agent-home checkout, which is pinned at v1.3.626 — six
+  hundred versions stale. The running server is v1.3.953, so the worktree is the
+  tree that matters. The correction changed a real fact: "two callers" was wrong,
+  and the extra two are exactly the id-less ones.)*
 - `TelegramAdapter.logInboundMessage()` (`src/messaging/TelegramAdapter.ts:1279`) already writes to both the JSONL log and TopicMemory, and `appendToLog` already de-duplicates on `{fromUser, topicId, messageId}`.
   **The key is normalized before use (round-1, codex; refined round-3):** the
   dedupe runs on the explicit `dedupeId` string (§3) with `topicId` coerced to a
