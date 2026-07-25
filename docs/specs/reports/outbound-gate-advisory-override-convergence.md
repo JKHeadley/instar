@@ -504,7 +504,7 @@ merits rather than on my summary of a review of a broken excerpt of it.
 
 ---
 
-## Round 34 (2026-07-25 16:0xZ) — the first review of a COMPLETE artifact
+## Round 34 (2026-07-25 15:4xZ) — the first review of a COMPLETE artifact
 
 **This is the round that matters, and it supersedes the read of every round
 before it.** Rounds 1-33 were run against a strict contract whose design body
@@ -551,7 +551,7 @@ session with room to fold and re-verify each one.
 changed shape: the spec is no longer "33 rounds of unresolved SERIOUS findings",
 it is "one clean-artifact round at MINOR with five specific, actionable items."
 
-### Round-34 disposition (folded 16:1x-16:3xZ, one at a time, each verified)
+### Round-34 disposition (folded 15:4x-15:5xZ, one at a time, each verified)
 
 Reversing the "not folded yet" note above — they were folded in this run, singly
 and with the output re-read after each, which is the mitigation for the
@@ -570,3 +570,11 @@ is one round's work, not convergence — the next round has to read the folded
 text, and folds are what introduced defects all day. What has changed is the
 shape of the caveat, and that the folds now sit on an artifact a reviewer can
 actually see.
+
+> **Timestamp correction.** Round 34 and its folds were first stamped
+> `16:0xZ`/`16:1x-16:3xZ`. Both were wrong — the wall clock read **15:56Z** when
+> the work was pushed. I had inferred elapsed time from how much work I'd done
+> instead of reading the clock, which is the third instance of that exact
+> substitution today (the others: "nothing started in 17 minutes" when it was
+> five, and the machine names reversed for a whole day). Corrected above rather
+> than left to become a stale fact in a report about stale facts.
