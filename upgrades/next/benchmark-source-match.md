@@ -1,0 +1,70 @@
+## What Changed
+
+The Benchmark-Divergence Detector — which compares how a model performs in
+production against how it scored on its benchmark — has never produced a single
+actionable verdict since it shipped. It does now.
+
+Before comparing, the detector verifies that the benchmark it holds actually
+corresponds to the live prompt; if it can't confirm that, it declines to judge
+rather than blame a model for a test it never sat. That verification compares two
+strings for exact equality:
+
+- the mirror's `benchedPromptSource`: `src/core/MessagingToneGate.ts:TONE_GATE_PROMPT_TEMPLATE`
+- the registry's `source`: `src/core/MessagingToneGate.ts#TONE_GATE_PROMPT_TEMPLATE`
+
+A colon against a hash. One character, on both benchmarked tasks. So
+`registrySourceMatches` was `false` on every run, step 2 of the verdict ladder
+fired, and every comparison returned `precondition-failed / hash-unverifiable` —
+permanently.
+
+**It never looked broken.** `precondition-failed` is a legitimate, designed
+verdict: the correct answer when a benchmark is genuinely stale. The analysis
+pass completed cleanly, emitted a valid verdict, and never errored. A
+permanently blindfolded detector is output-identical to a correctly cautious one.
+
+Fixed: the mirror's two source strings now match the registry, and a CI ratchet
+(`tests/unit/benchmark-mirror-registry-agreement.test.ts`) asserts they stay
+identical — plus that the benched prompt hash still matches the live template,
+that every benchmarked task is registry-known, and that no task has empty
+baselines.
+
+**The comparison itself was deliberately not loosened.** Making `:` and `#`
+interchangeable would have hidden the symptom while weakening a real safety
+check — letting genuine benchmark/prompt mismatches through so the detector
+could confidently blame models for tests they never sat. The strict comparison is
+the guard. What was missing was anything keeping the two sides in step, and that
+absence — not the typo — was the defect.
+
+## Evidence
+
+- `tests/unit/benchmark-mirror-registry-agreement.test.ts` (9 cases): source
+  equality, hash-vs-live-template, registry↔mirror task coverage both ways,
+  non-empty baselines, a fixture-is-real guard against vacuity, and a
+  behavioural pair proving the ladder's outcome flips on `registrySourceMatches`
+  alone (identical evidence → `precondition-failed` vs `aligned`, plus
+  `divergent-worse` on a genuinely worse rate).
+- Mutation-tested: restoring the original `:` turns the ratchet red with a
+  message naming the separator.
+- Live hashes computed and compared against the mirror before changing anything
+  — they match, ruling out prompt drift as the cause.
+
+## What to Tell Your User
+
+If you've ever looked at the benchmark-divergence read and seen nothing useful,
+this is why: it wasn't quiet because everything agreed, it was quiet because it
+couldn't get past its own front door.
+
+Expect its first real answers to be modest — mostly "not enough evidence yet"
+until enough graded decisions accumulate. That's the system being careful, and
+this time for the right reason rather than because of a punctuation mismatch.
+
+Note this fix makes the detector *able* to answer; it doesn't turn it on. Whether
+findings get recorded is still governed by its dry-run setting.
+
+## Summary of New Capabilities
+
+- The Benchmark-Divergence Detector can reach a real verdict for the first time.
+- A build-time invariant keeps the benchmark mirror and the prompt registry in
+  step, so a one-character drift can never again silently disable the subsystem.
+- A drifted prompt hash now fails the build instead of quietly suppressing every
+  verdict.
