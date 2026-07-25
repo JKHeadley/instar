@@ -359,6 +359,18 @@ internally, and **no correctness depends on the answer**. Reading an ordering ou
 of the source lines above would be inferring a guarantee the design does not
 make.
 
+**The exact logger API, named.** Two new methods
+replace the composite call on this path:
+
+| Method | Contract |
+|---|---|
+| `appendInboundJsonlSync(entry)` | Synchronous. Runs the dedupe check; returns `false` if already logged. Appends and returns `true`. Throws only on filesystem failure, which the seam catches. |
+| `scheduleInboundTopicMemory(entry)` | Returns immediately. Honours the backlog cap. Performs no dedupe of its own — it is called **only** when the JSONL append returned `true`, so the upstream check has already gated it. |
+
+The seam calls the first, and calls the second **only on a `true` return**.
+`logInboundMessage()` remains for the forward route and becomes a thin composite
+of the two, so that caller is unchanged.
+
 **This requires the logger to split its phases.**
 `TelegramAdapter.logInboundMessage()` currently does both writes in one call, so
 it gains an internal split — the JSONL append and the TopicMemory write become
@@ -400,7 +412,8 @@ the current API.
  job. This path therefore uses **its own dedicated SQLite connection with
  `busy_timeout = 100 ms`**. A second connection to the same
  WAL database is cheap and is the ordinary way to give one workload its own
- timeout policy. That bounds the worst case to ~6.4 seconds of accumulated delay rather
+ timeout policy. With the backlog capped at 16 (below), that bounds the worst
+ case to **16 × 100 ms ≈ 1.6 seconds** of accumulated delay rather
  than ~320, and a contended store sheds entries quickly instead of holding the
  loop. The burst test runs against a **contended/wedged** database as well as a
  healthy one, because a healthy-storage burst test would have measured the easy
@@ -425,9 +438,14 @@ the current API.
  harm. If it ever fails, the assumption is wrong and the design is
  revisited — rather than pre-building a queue against a burst that may never
  happen.
-- **The backlog IS bounded — three lines, not a subsystem.** A counter tracks pending **TopicMemory** writes. Above **64**, the
+- **The backlog IS bounded — three lines, not a subsystem.** A counter tracks pending **TopicMemory** writes. Above **16**, the
  **TopicMemory write** is dropped and counted (`inbound-log-dropped`) instead of
- scheduled. **The JSONL append is never affected by the guard** — it is
+ scheduled. **The bound and the rollout gate are consistent by construction:** v24 paired a 64-write cap with a gate requiring under 2 s
+ of contended loop delay, but 64 × 100 ms is 6.4 s — the gate could only have
+ passed on luck, contended writes usually failing faster than their timeout,
+ while the stated bound said otherwise. At **16** the worst case is 1.6 s and
+ the gate tests the bound rather than the weather.
+ **The JSONL append is never affected by the guard** — it is
  synchronous and has already happened by the time the guard is consulted.
 
  **And it is a bounded best-effort in-memory buffer. Calling it "not a queue"
@@ -485,8 +503,18 @@ the current API.
  non-zero failure rate over an hour raises ONE deduped Attention item. Silently
  degrading the agent's memory is precisely the failure this spec exists to end.
 
-**Residual, stated plainly:** a crash between the injection and the next tick
-loses that message's *searchable copy* (the JSONL row is already written), and a wedged store loses entries for as long as it is wedged.
+**Residual, stated plainly — and it is permanent, which round 24 did not say.** A crash between the JSONL append and
+the deferred write loses that message's *searchable copy*, and **it cannot heal
+itself**: on restart the dedupe set is seeded from the JSONL file, so the row is
+already "logged" and a redelivery short-circuits before either write runs. The
+searchable copy is therefore **permanently absent** for that message, not merely
+delayed. Accepted rather than repaired: a repair path means reconciling two stores
+at startup, which is a background job with its own failure modes, for a
+consequence whose blast radius is *one message missing from search* while history —
+the thing this spec exists to fix — is intact. Recorded so the absence is a known
+property rather than a future mystery.
+
+The narrower loss: and a wedged store loses entries for as long as it is wedged.
 Both are real, both are counted, and both are vastly smaller than the defect being
 fixed — which is *every* inbound message, always, silently. Making the write
 durable across a crash would mean a write-ahead store on the inbound path, and
