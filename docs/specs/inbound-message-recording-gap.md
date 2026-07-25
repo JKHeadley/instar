@@ -479,6 +479,20 @@ It works because:
   stated rather than discovered: an id-less message that is genuinely re-delivered
   produces two rows.
 
+---
+
+> **NON-NORMATIVE FROM HERE TO §3.3.** Sections 3.1 and 3.2 are *rationale*: why
+> the contract in §3.0 is shaped the way it is, what was tried and reversed, and
+> which residuals were accepted deliberately. **They record how the design got
+> here; §3.0 records what to build.** Five consecutive review rounds (29-33) named
+> the same hazard — normative and historical text coexisting, so an implementer
+> reading linearly can follow a retired design — and three of those rounds found a
+> real instance of it in this document. Where anything below disagrees with §3.0,
+> **§3.0 wins and the text below is the defect**. Build from §3.0 and the generated
+> contract; read this for judgment, not instructions.
+
+---
+
 ### 3.1 Ordering: accept first, then inject — and it is a RECEIVED log
 
 The **essential JSONL append happens before the injection is attempted**, and the
@@ -669,7 +683,7 @@ distinction costs one field and buys honest counters and tests that mean
 something. The seam's rule stays a single line: schedule the TopicMemory write
 **iff** `status === 'appended'`.
 
-The seam calls the first, and calls the second **only on a `true` return**.
+The seam calls the first, and calls the second **only on `status === 'appended'`**.
 `logInboundMessage()` remains for the forward route and becomes a thin composite
 of the two, so that caller is unchanged.
 
@@ -678,8 +692,9 @@ of the two, so that caller is unchanged.
 the seam catches" — two different contracts for the same function, introduced by
 the very fix that was supposed to make the design easier to read. The settled
 answer is **never throws**: the helper owns its own failure, counts it, and
-returns `false`. The seam then has exactly one rule — *call the second write only
-on `true`* — instead of a rule plus a try/catch, and the impossible-to-forget
+returns a `'failed'` status. The seam then has exactly one rule — *call the
+second write only on `status === 'appended'`* — instead of a rule plus a
+try/catch, and the impossible-to-forget
 version of "a logging failure never stops delivery" is the one where the caller
 has nothing to remember. (The seam still wraps the call defensively, because a
 helper promising never to throw and a caller assuming it are two different
@@ -872,6 +887,13 @@ durable across a crash would mean a write-ahead store on the inbound path, and
 that is the abstraction §3 declines for a reason that has now been demonstrated
 twice in this section's own history.
 
+---
+
+> **NORMATIVE AGAIN FROM HERE.** §3.3 (rollout + acceptance), §4 (honest limits)
+> and §5 (test plan) are part of the contract.
+
+---
+
 ### 3.3 Rollout
 
 `messaging.inboundSeamLogging.enabled`, with an emergency disable.
@@ -997,6 +1019,30 @@ synchronous mock shape that does not match production; round-22 and round-27
 both caught this paragraph still carrying the pre-split wording, and round-27
 additionally caught it asserting the same thing twice).
 
+**Retention, growth and what is actually being stored (round-33, codex — thirty-
+two rounds went by without anyone, me included, asking how big this file gets or
+how long it keeps people's messages).** The design writes the **full text of every
+inbound message** to an append-only local file, forever, and called that
+authoritative. Three things follow that the spec had simply not addressed:
+
+- **Growth is unbounded.** No rotation, no max size, no retention. The disk-full
+  test proves the *failure* is handled; nothing prevents reaching it.
+- **Reading is unbounded too.** `seedMessageLogDedupe()` reads the file at
+  startup. A large enough log makes process start slow, which round-28 flagged as
+  a test and this makes a policy: seeding reads a bounded tail, not the file.
+- **This is personal content, not telemetry.** An indefinitely-retained plaintext
+  record of everything a person has said to the agent is a privacy posture, and
+  one that should be *chosen* rather than arrived at by leaving retention
+  unspecified.
+
+The policy is deliberately the smallest one that answers all three: **rotate at a
+size bound, keep a fixed number of rotated files, and let resume history read
+across the current file plus rotations.** Resume history is consequently bounded
+by the retention window — an explicit, statable limit ("I can read back roughly
+the last N days") rather than an implicit promise of forever that the disk would
+eventually break anyway. The exact numbers belong with the benchmark in §3.3,
+because the right size bound depends on the same measurement.
+
 **Migration safety (round-32, codex — the test plan covered behavior and skipped
 the schema change, which is the part that runs once on every existing database
 and cannot be retried by hand).** Four tests, all against a database with real
@@ -1051,10 +1097,26 @@ no user can exercise, or quietly reclassifying it later. So they are split:
 
 **Live Telegram acceptance** — performed by sending real messages:
 
-| Path | Proves |
+| Step | Proves |
 |---|---|
-| A normal Telegram message (platform id present) | `idSource: 'platform'`, dedupe against redelivery |
-| A long Telegram message (file-pointer injection) | The logged text is the operator's message, not the wrapper |
+| 1. A normal Telegram message (platform id present) | `idSource: 'platform'`, dedupe against redelivery |
+| 2. A long Telegram message (file-pointer injection) | The logged text is the operator's message, not the wrapper |
+| 3. **Restart the server / reload config** | — |
+| 4. Another normal message; inbound count still increases | **The fix survives the thing most likely to undo it** |
+
+**Steps 3 and 4 are the point (round-33, codex).** A single readback proves the
+code works; it does not prove the *machine* is fixed, because the realistic
+regression is the flag not surviving a restart (§3.3). An acceptance test that
+stops at step 2 would pass on a machine that reverts to the bug an hour later —
+and would leave a recorded proof saying otherwise. Restarting *during* acceptance
+costs a minute and closes that gap.
+
+**Also verified during acceptance: the single-instance lock is active** on the
+affected machine (round-33, codex). The whole dedupe story rests on one writer
+per log path, and two processes appending to the same file risk interleaved
+records, not merely duplicate ones. The lock is what makes that hypothetical; an
+acceptance run that never checks the lock is trusting the load-bearing assumption
+without looking at it.
 
 The second is included because long messages take the file-pointer path rather
 than inline injection, and a log that recorded the pointer instead of the message
