@@ -7,7 +7,7 @@
      rationale. This file says WHAT to build, never why. Read the source
      spec for the reasoning, the alternatives, and the accepted residuals
      in their full form.
-     (7 residual "round-N" reference(s) remain inline.)
+     (4 residual "round-N" reference(s) remain inline.)
 -->
 ---
 title: "Record inbound messages at the injection seam"
@@ -34,7 +34,7 @@ operator alert queue. **Armed**: enabled *and* the store opened writable.
 |---|---|
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
 | **Store** | A **new SQLite table**, `inbound_messages`, in the agent's existing database. **Schema migration is required; DATA migration is not.** The DDL is idempotent `CREATE TABLE IF NOT EXISTS` + `CREATE UNIQUE INDEX IF NOT EXISTS`, run at arm time; a DDL failure means `armed: false` with the SQLite error surfaced, never a silent degrade. No existing row is read, moved, backfilled or rewritten. `better-sqlite3` is already a dependency and `TopicMemory` already opens it (`src/memory/TopicMemory.ts:154`). WAL mode, `busy_timeout = 100 ms`. |
-| **Schema** | `dedupe_id TEXT NOT NULL UNIQUE`, `topic_id INTEGER NOT NULL`, `seam_received_at TEXT NOT NULL`, `text TEXT NOT NULL`, `sender_name TEXT`, `telegram_user_id INTEGER`, `message_id INTEGER` (nullable — no `-1` placeholder is needed), `id_source TEXT NOT NULL CHECK(id_source IN ('platform','derived'))`, `delivery_state TEXT NOT NULL DEFAULT 'injection_seam_received'`, `synthetic INTEGER NOT NULL DEFAULT 0`. |
+| **Schema** | `seq INTEGER PRIMARY KEY AUTOINCREMENT`, `from_user INTEGER NOT NULL DEFAULT 1`, `dedupe_id TEXT NOT NULL UNIQUE`, `topic_id INTEGER NOT NULL`, `seam_received_at TEXT NOT NULL`, `text TEXT NOT NULL`, `sender_name TEXT`, `telegram_user_id INTEGER`, `message_id INTEGER` (nullable — no `-1` placeholder is needed), `id_source TEXT NOT NULL CHECK(id_source IN ('platform','derived'))`, `delivery_state TEXT NOT NULL DEFAULT 'injection_seam_received'`, `synthetic INTEGER NOT NULL DEFAULT 0`. |
 | **Write** | `INSERT OR IGNORE` inside a transaction, synchronously, **before** injection. Returns `'appended' \| 'duplicate' \| 'failed'` from `changes` and the error path. **Never throws** — a `'failed'` result is caught internally and counted. |
 | **Dedupe** | The `UNIQUE` index on `dedupe_id`. **Storage-enforced, not best-effort** — this answers round-51 directly: there is no in-memory set, no seeding, no restart window, and two processes cannot interleave a duplicate through it. `dedupe_id` = `in:telegram:<botId>:<chatId>:<messageId>` when a platform id is present, else `in:derived:<uuid>`. **Fully platform-scoped: Telegram message ids are unique per CHAT, and `topicId` is an instar-side surrogate, so keying on it alone would false-dedupe across a migrated topic, a re-bound topic, or two bots sharing one agent.** The scope now comes from the platform's own identifiers, and `topic_id` remains a column for querying rather than part of identity. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, only on `'appended'`. Backlog capped at 16; beyond that, drop and count. TopicMemory remains a **lossy search index**, never the record. |
@@ -162,7 +162,7 @@ design is revisited rather than the gate lowered. The reasoning that made
 default-on attractive still stands — every day off is unrecoverable
 conversation — but "probably fine at human typing speed" is an assumption about
 the same class of thing this spec keeps catching, and a synchronous write with a
-five-second `busy_timeout` behind an unbounded callback backlog is not a place to
+**stale numbers: TopicMemory's own connection uses `busy_timeout = 5000`, but this design opens its OWN connection at `100 ms` and caps the secondary backlog at 16 — the five-second-behind-an-unbounded-backlog figure described a shape this contract no longer has, and quoting it would have made the benchmark gates meaningless.** The real shape is not a place to
 assume. One release is a small price for a measured answer. Not dark-shipped: it restores a recording that the system already
 intends to perform and already performs on one path, and every day it is off is
 another day of unrecoverable conversation. The lever exists for one reason — if
@@ -220,223 +220,92 @@ discover later.
 
 ## 5. Test plan
 
-**Unit** — `injectTelegramMessage` calls **`recordInboundMessage`** (the SQLite
-insert seam; the `appendInboundJsonlSync` / `appendRawJsonlSync` pair belonged to
-the superseded JSONL design — round-52) with the
-fields it received, and calls **`scheduleInboundTopicMemory` only when that
-returned `status: 'appended'`** — and does NOT schedule on `'duplicate'` or
-`'failed'`, asserted as three separate cases rather than one negative; **when `messageId` is absent it still logs, under a per-injection UUID, with
-`idSource: 'derived'`**; two identical messages in the same
-second produce two distinct rows (§3); the dedupe key coerces
-string/number ids; **a failing `INSERT` is caught inside `recordInboundMessage`,
-which returns `status: 'failed'` and never throws** — tests assert the status at
-the seam boundary, so "does a throw cross the seam?" has one answer; the injection still
-happens regardless; the dedupe key is inserted **only after a successful append**, so a
-throwing append leaves the message eligible to be written on its next arrival; and **the INSERT has COMMITTED — not merely been scheduled —
-before the inject call**, with the TopicMemory write asserted separately as
-happening after it.
+*Rewritten wholesale for the SQLite design. Three successive grep-based
+sweeps left pockets of JSONL-era material — rotation protocols, suffix ordering,
+dedupe seeding, append helpers, file interleaving — and partial sweeps are how
+residue survives. The JSONL test plan is recoverable from the removing commit.*
 
-That last assertion is by **call order against the split logger API**, not by
-timing.
+**Unit** — `injectTelegramMessage` calls `recordInboundMessage` with the fields it
+received, and calls `scheduleInboundTopicMemory` **only on `status: 'appended'`**
+(asserted as three distinct cases: `'appended'` schedules, `'duplicate'` does not,
+`'failed'` does not). When `messageId` is absent the row is still written, under
+`id_source: 'derived'` with a per-injection UUID. The text logged is the
+operator's message, not the injection wrapper. A failing `INSERT` is caught inside
+`recordInboundMessage`, which returns `'failed'` and **never throws** — asserted at
+the seam boundary, so "does a throw cross the seam?" has exactly one answer. **The
+INSERT has COMMITTED before the inject call**, asserted by call order against the
+seam API rather than by timing.
 
-**The round-36 version of this protocol was wrong in a way that destroyed data, and it is worth stating plainly.** It said suffixes ascend
-with *age*, then renamed the current file to `highest + 1`, then deleted the
-highest. Those three rules together mean **the newest rotation is deleted every
-time** and history reads back in the wrong order. That is not a wording problem;
-it is a specification that, implemented exactly as written, throws away the most
-recent messages it just rotated.
-
-Two coherent schemes exist and the choice is deliberate:
-
-- **Conventional logrotate** — shift every file down (`.1`→`.2`, current→`.1`),
- delete the highest. Familiar, and ages read naturally. Costs **N renames per
- rotation**, so a crash mid-rotation can leave the set half-shifted.
-- **Monotonic sequence (chosen)** — the suffix is a *sequence number*, ascending
- = newer. Current becomes `highest + 1`; the **lowest** suffix is deleted.
- Costs **one rename**, so the crash window is a single atomic operation and any
- interruption leaves a valid set.
-
-The monotonic scheme is chosen for that crash property, which matters more here
-than familiarity — this is a log whose entire purpose is surviving crashes. The
-cost is that "the.1 file" is the *oldest*, which is the opposite of most
-people's instinct, so it is stated in the contract rather than left to be
-inferred.
-
-**Rotation needs a protocol, not a size number.** Retention, bounded seeding and deletion completeness all now depend on
-rotation behaving predictably, including when a process dies in the middle of it.
-The protocol in §3.0 is chosen so that every interruption point leaves a
-recoverable state:
-
-- **Crash after rename, before the new current file exists** → the next append
- creates it. No data is lost; the rename already succeeded.
-- **Crash between the size check and the append** → the append lands in whichever
- file the re-resolved path points at. Both are valid log files, so a message can
- land in the tail of the old file rather than the head of the new one. Harmless:
- nothing depends on which file a given message is in.
-- **Missing or skipped rotation numbers** → tolerated and never repaired.
- Renumbering to close a gap would rewrite history to look tidier than it was,
- which is the opposite of what a message log is for.
-
-The one real consequence is stated rather than hidden: **a message in a rotation
-older than the current file is not seeded into the dedupe set** (§3.0), so a
-redelivery of a very old message would be written twice. That is the accepted
-cost of a bounded startup read, and a duplicate is the recoverable direction.
-
-The policy is deliberately the smallest one that answers all three: **rotate at a
-size bound, keep a fixed number of rotated files, and let resume history read
-across the current file plus rotations.** Resume history is consequently bounded
-by the retention window — an explicit, statable limit ("I can read back roughly
-the last N days") rather than an implicit promise of forever that the disk would
-eventually break anyway. The exact numbers belong with the benchmark in §3.3,
-because the right size bound depends on the same measurement.
-
-**Store-level tests (SQLite).** These replace the JSONL-era rotation invariants,
-append-failure classes and `-1` migration tests, which described a design this
-spec no longer contains:
+**Store-level (SQLite).**
 
 - **Idempotent DDL.** Running the `CREATE TABLE IF NOT EXISTS` / `CREATE UNIQUE
- INDEX IF NOT EXISTS` twice is a no-op; a DDL failure leaves `armed: false` with
- the SQLite error surfaced, never a silent degrade.
-- **Uniqueness is storage-enforced.** Insert the same `dedupe_id` twice and assert
- one row and a `'duplicate'` status — including from two connections, which the
- old in-memory set could not have caught.
-- **Dedupe survives restart with no seeding step.** Insert, close, reopen, insert
- the same `dedupe_id`, assert `'duplicate'`. There is no dedupe set to rebuild.
-- **Ordering is monotonic across deletes.** Insert, delete the oldest rows, insert
- again, and assert `seq` still ascends — the `AUTOINCREMENT` guarantee that bare
- `rowid` does not give.
-- **Retention deletes oldest-first and only beyond the keep count**, leaving the
- newest N intact.
-- **Insert failure is contained.** Make the DB read-only and assert
- `status: 'failed'`, the counter incremented, no throw crossing the seam, and
- **the injection still happening**.
-- **A crash between insert and the secondary write** leaves the row present and
- the index short — the accepted lossy-index case, asserted rather than assumed.
+ INDEX IF NOT EXISTS` twice is a no-op. A DDL failure leaves `armed: false` with
+ the SQLite error surfaced — never a silent degrade.
+- **Uniqueness is storage-enforced**, including **from two connections**, which an
+ in-memory dedupe set structurally could not have caught.
+- **Dedupe survives restart with no seeding step**: insert, close, reopen, insert
+ the same `dedupe_id`, assert `'duplicate'`.
+- **`dedupe_id` is platform-scoped**: the same Telegram `messageId` under two
+ different `chatId`s produces **two** rows, not one — the false-merge this key
+ was changed to prevent.
+- **Ordering is monotonic across deletes**: insert, delete oldest, insert again,
+ assert `seq` still ascends.
+- **Retention keeps exactly the newest N**, deletes the rest, and counts synthetic
+ rows toward the bound.
+- **Insert failure is contained**: make the DB read-only, assert `'failed'`, the
+ counter incremented, no throw crossing the seam, **and the injection still
+ happening**.
+- **A crash between the INSERT and the secondary write** leaves the row present
+ and the search index short — the accepted lossy-index case, asserted rather than
+ assumed.
+- **`enabled && !armed`** is a no-op that increments `inbound-log-arm-failed` once
+ per process and `inbound-messages-skipped-unarmed` per message, and the
+ background re-arm recovers without a restart.
 
+**Integration** — a message delivered through the real inject path appears in
+`inbound_messages` with `from_user = 1`; the same message arriving via **both** the
+forward route and the seam is stored **once**; with the flag off, no row is written
+and delivery is unaffected.
 
-**Integration** — a message delivered through the real inject path appears in the
-`inbound_messages` table with `from_user = 1`; the same message arriving via
-**both** the forward route and the seam is written **once**; with the flag off,
-no inbound row is written and delivery is unaffected.
-
-**Live-user-channel proof (required before this is called done).** The E2E below
-exercises the injection seam, **not** the real Telegram surface — the standards
-gate flagged exactly that, and it is right: this is a Telegram-channel behavior,
-so "done" requires a user-role live test that sends a real message through
-Telegram and reads it back out of the topic history. That test is the acceptance
-criterion, not the unit and integration tiers. The seam-level E2E below is the
-fast check that the wiring exists; the live-channel test is the one that proves
-the defect is actually gone, and it is the one that would have caught this bug in
-the first place.
-
-**One message is not enough.** §2 found four callers of the
-seam and only one passes a platform id — so a single live message proves at most
-one of four paths, and most likely the *best-covered* one. Acceptance requires
-three:
-
-**These are two different tiers, and round-29 (codex) is right that merging them
-was sloppy** — only one of the four callers is reachable by sending a Telegram
-message; the id-less ones are server/command paths a user cannot trigger. Calling
-all three "live-user proof" would have meant either failing acceptance on a path
-no user can exercise, or quietly reclassifying it later. So they are split:
-
-**Live Telegram acceptance** — performed by sending real messages:
+**Live-user-channel proof (required before this is called done).** The integration
+tier exercises the seam, **not** the real Telegram surface. This is Telegram-channel
+behaviour, so "done" requires a user-role live test through Telegram itself.
 
 | Step | Proves |
 |---|---|
-| 1. A normal Telegram message (platform id present) | `idSource: 'platform'`, dedupe against redelivery |
-| 2. A long Telegram message (file-pointer injection) | The logged text is the operator's message, not the wrapper |
+| 1. A normal Telegram message | `id_source: 'platform'`, dedupe against redelivery |
+| 2. A long Telegram message (file-pointer injection) | The stored text is the operator's message, not the wrapper |
 | 3. **Restart the server / reload config** | — |
-| 4. Another normal message; inbound count still increases | **The fix survives the thing most likely to undo it** |
+| 4. Another message; row count still increasing | **The fix survives the thing most likely to undo it** |
 
-**Observing a row is not proving the path.** A row appearing
-after a message proves *something* wrote it; it does not prove the message
-travelled the route this design assumes, and the whole defect is that inbound
-traffic takes a route nobody had traced. So acceptance carries an artifact, not
-just an observation: **the live proof runs with the seam instrumented, and
-records the actual call path from Telegram arrival to `injectTelegramMessage`.**
-**The trace artifact, concretely.** A JSON file committed alongside the
-acceptance record, one object per observed inbound message, each carrying:
-`telegramMessageId`, `topicId`, the **ordered list of function names** from the
-first instar frame that saw the message to `injectTelegramMessage`, the module
-path of each, a monotonic timestamp per hop, and the resulting `dedupeId`.
+Steps 3-4 are the point: a single readback proves the code works, not that the
+machine is fixed, and the realistic regression is the flag or the arm not
+surviving a restart.
 
-**The minimum acceptable implementation:** a temporary structured log
-line at three explicit instrumentation points — the first instar frame that sees
-the message, any intermediate hand-off, and `injectTelegramMessage` — each
-carrying a span id shared across the three. Not distributed tracing, not a
-framework: three `console`-level structured lines behind the same flag, removed
-or left dark after acceptance. **Normative artifact handling:** stored **only** in the acceptance
-record, **never** in the repo and never in the log directory; **redacted to
-message ids, topic ids and function names** — no message text, no display names,
-no user ids; **deleted at sign-off**, with the acceptance record noting the
-deletion. If that handling cannot be met, the fallback is temporary structured
-logs plus a written acceptance transcript, which proves the same thing with no
-durable artifact at all. The artifact is **attached to the acceptance
-record, not committed to the repo**, because it contains real message ids —
-**and message ids are the only identifier it may carry: no message
-text, no sender names, no user ids.** It is deleted once the acceptance record is
-signed off. A diagnostic artifact that outlives its diagnosis is just another
-copy of the data this spec is trying to be careful with.
+**Also verified during acceptance (SQLite-specific, replacing the JSONL lock
+check):** the DB is writable, WAL mode is confirmed, the unique index exists,
+`busy_timeout` is set, and a synthetic insert/read round-trip passes — i.e.
+`armed: true` is true for the reasons it claims.
 
-**It passes iff** every observed message's chain terminates at
-`injectTelegramMessage`, and the `inbound_messages` row for that `dedupeId` exists. A chain
-that terminates anywhere else is the finding, not a failure of the test — it
-would mean a second delivery path exists, which is the thing ACT-1217 is looking
-for.
+**Id-less seam regression** — a separate seam-level test, not a live-channel
+claim, exercising the callers in `src/commands/server.ts` that pass no
+`messageId`. That is **three of the four callers**, the majority of the seam's
+traffic shape, and a path a Telegram message cannot reach.
 
-That trace is the evidence that the seam is genuinely on the production path —
-the claim §2 makes and that this spec otherwise asks the reader to accept. It
-also feeds ACT-1217 directly, since tracing the path *is* the beginning of
-finding the intake edge.
-
-**Steps 3 and 4 are the point.** A single readback proves the
-code works; it does not prove the *machine* is fixed, because the realistic
-regression is the flag not surviving a restart (§3.3). An acceptance test that
-stops at step 2 would pass on a machine that reverts to the bug an hour later —
-and would leave a recorded proof saying otherwise. Restarting *during* acceptance
-costs a minute and closes that gap.
-
-**Also verified during acceptance: the store is genuinely armed** — DB writable,
-WAL confirmed, the unique index present, and the synthetic insert/read round-trip
-passing — on the
-affected machine. The whole dedupe story rests on one writer
-per log path, and two processes appending to the same file risk interleaved
-records, not merely duplicate ones. The lock is what makes that hypothetical; an
-acceptance run that never checks the lock is trusting the load-bearing assumption
-without looking at it.
-
-The second is included because long messages take the file-pointer path rather
-than inline injection, and a log that recorded the pointer instead of the message
-would look healthy in every count while storing nothing readable.
-
-**Id-less seam regression** — a separate test at the seam, not a live-channel
-claim, exercising the three callers in `src/commands/server.ts` that pass no
-`messageId`. It proves the derived-UUID path that **three of the four callers
-take**, which is the majority of the seam's traffic shape and the part a Telegram
-message cannot reach. Both tiers are required for "done"; neither substitutes for
-the other.
+**The acceptance trace artifact.** Three structured log lines sharing a span id —
+first instar frame, any hand-off, `injectTelegramMessage` — behind the same flag,
+removed after acceptance. **It passes iff** every observed message's chain
+terminates at `injectTelegramMessage` **and** the `inbound_messages` row for that
+`dedupe_id` exists. A chain terminating elsewhere is a *finding*, not a test
+failure: it means a second delivery path exists, which is what ACT-1217 hunts.
+**Handling:** acceptance record only, never the repo; redacted to message ids,
+topic ids and function names — no message text, no display names, no user ids;
+deleted at sign-off.
 
 **E2E** — production initialization path: a message injected into a live session
-is readable back from the topic history **within a bounded interval** (the write
-row is readable immediately while the searchable copy lands on the next
-tick, so the test awaits the latter rather than asserting
-instantaneity. This is the
-"feature is alive" test, and it is the one that would have caught the original
-gap.
+is readable back from topic history within a bounded interval, and `GET /health`
+reports `armed: true` with a non-zero row count.
 
-**Regression** — the specific defect: after a message is injected, a
-session-start history read for that topic contains it. Asserted against the same
-reader the session-start hook uses, so a future refactor that changes which store
-that reader consults fails here rather than in production five days later.
-
-## Decision points touched (§5)
-
-| Decision point | What it decides | Classification | Justification |
-|---|---|---|---|
-| Whether to log an inbound message | Recording, not delivery | **invariant** | A deterministic predicate: **the feature is enabled**. An id is always available — the platform's when present, the derived one otherwise (§3) — so a missing id never decides whether to record. No judgment, no model, no context. |
-| Write ordering | Which write happens when, relative to injection | **invariant** | The **INSERT commits before injection** (synchronous, may briefly delay it); the **TopicMemory index write is scheduled after** and may be dropped. Two writes, two rules — not one scheduling rule for both. |
-| Log-failure disposition | Whether a failed write blocks the message | **invariant** | Always proceed — a failed INSERT is caught and counted, never rethrown into the delivery path (§3.2). The conservative default is *deliver*, because the harm being prevented is silence. |
 
 ## 6. Multi-machine posture
 
