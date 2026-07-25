@@ -155,8 +155,20 @@ It works because:
  `message_id`. Negative is safe by construction — Telegram ids are positive, so
  a synthetic id can never collide with a real one, and a reader seeing a
  negative id knows it was minted locally.
+ - **How the synthetic id is generated, and the ordering caveat.** A process-local monotonically *decreasing* counter seeded from
+ `-(Date.now())`, so ids are unique within a process and ordered consistently
+ with arrival. **But chronology must come from `timestamp`, not from
+ `message_id`** — a negative id sorts before every real Telegram id, so any
+ reader ordering by `message_id` would place id-less messages at the start of
+ history. A test asserts the readers this spec cares about (the session-start
+ history read) order by `timestamp`. Flagged rather than assumed, because the
+ failure would look like scrambled history rather than an error.
  - **No existing reader is affected:** no column changed type, nothing became
  nullable, and no reader sees a field it did not see before.
+ - **This is best-effort received history, not a durable intake acknowledgment.** A crash before the next tick loses the row, so a reader
+ may not treat the absence of an entry as proof a message never arrived, nor
+ its presence as proof of delivery. One sentence, stated in the storage
+ contract itself, because "received log" is a name a consumer can over-read.
 
  **Back-compat for the dedupe key.** A platform-id entry written
  by the seam and one written by the forward route MUST produce the identical key,
@@ -242,9 +254,17 @@ catch { /* never block the injection */ }
  arrive at human typing speed, so there is no burst to absorb.
 - **That assumption is tested, not asserted.**
  A stress test drives 200 inbound messages and asserts injection latency is
- unaffected and no unbounded synchronous work occurs. If it ever fails, the
- assumption is wrong and the design is revisited — rather than pre-building a
- queue against a burst that may never happen.
+ unaffected. If it ever fails, the assumption is wrong and the design is
+ revisited — rather than pre-building a queue against a burst that may never
+ happen.
+- **What that test does NOT prove, stated because v12 overclaimed it.** 200 scheduled writes can still run back-to-back on the next tick, so
+ the burst is **observable but not mitigated**: the pending-callback counter
+ reports the pile-up after it exists, it does not bound it. The earlier phrase
+ "no unbounded synchronous work occurs" was wrong and is removed. The honest
+ position is that a large burst trades a loop stall for message delivery, the
+ stall is measured, and the mitigation — batching, yielding, or the queue this
+ design deleted twice — is deliberately not built until the counter says it is
+ needed.
 - **One guardrail, not a subsystem:** a counter tracks pending
  log callbacks, and crossing a small threshold (32) raises ONE deduped Attention
  item. It measures the assumption; it does not work around it.
@@ -295,7 +315,8 @@ received; **when `messageId` is absent it still logs, under a per-injection UUID
 `idSource: 'derived'`**; two identical messages in the same
 second produce two distinct rows (§3); the dedupe key coerces
 string/number ids; a throwing logger is caught, counted, and the injection still
-happens; the log call precedes the inject call (asserted by call order, not by
+happens; **the scheduling call precedes the inject call**, and — as a separate
+assertion — the scheduled callback invokes `logInboundMessage`. Asserted by call order, not by
 timing).
 
 **Integration** — a message delivered through the real inject path appears in the
@@ -342,7 +363,9 @@ that reader consults fails here rather than in production five days later.
 
 ## 7. Frontloaded Decisions
 
-1. **Log at the seam, not at each caller** — two callers today, and a third would silently reintroduce the gap.
+1. **Log at the seam, not at each caller** — **four** callers today (§2), three of
+ which pass no `messageId`. Logging per-caller would mean four correct
+ implementations and a fifth silently reintroducing the gap.
 2. **Schedule the log before injecting** (§3.1) — scheduling order, never write
  order. Named this way after three rounds of reviewers reading "log first" as a
  synchronous call, which is exactly how it would be mis-implemented.
