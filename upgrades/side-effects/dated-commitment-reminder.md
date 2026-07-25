@@ -193,3 +193,48 @@ the point: the bound is load-bearing, not decorative.
 
 **Instantaneous mass** is separately bounded by the per-pass cap (25), which logs
 when it defers rather than dropping silently.
+
+
+---
+
+## Addendum — three CI gates, and a coverage gap they led me to
+
+**1. Write-domain classification.** `POST /commitments/check-in-reminder/pass`
+mutates the commitment store and was undeclared. Classified `cluster-shared` in
+`WriteDomainRegistry`, matching the requirement that the pass run on the
+serving-lease holder only — the same single-writer shape as the feedback-factory
+routes. This does NOT weaken the honest gap in section 7: the lease gate is still
+not wired, and the classification records the intended posture rather than
+asserting the wiring exists.
+
+**2. Agent-id header.** The job's curl shipped Bearer-only; I dropped the
+AGENT_ID line when adapting the template I copied from. Restored. Worth noting
+as a pattern: adapting a template is where declared requirements silently fall
+out.
+
+**3. Docs coverage.** Job coverage fell 85% to 83% because the new built-in job
+was undocumented. Added to the default-jobs reference. That floor caught a real
+Agent-Awareness omission, not a bureaucratic one — an undocumented job is one no
+operator can discover.
+
+**And the thing worth more than all three: a coverage gap in the tone-gate suite.**
+
+While dogfooding I hit a live advisory I could not override — four attempts,
+byte-identical text, matching rule, sufficient reason, refused every time. That
+is the RELEASING half of the advisory migration failing in production.
+
+Investigating: every existing test in the advisory-migration integration file
+pins ONE verdict for the whole run via a fixed mock, so the rule is constant by
+construction and an ack always matches. The live gate RE-REVIEWS on every attempt
+and can return a different rule — mine went B20_INTERNAL_ID_LEAK then
+B11_STYLE_MISMATCH. That variability was not covered at all.
+
+Two tests added: (a) re-review returns the SAME acked rule, ack honored, message
+sent; (b) re-review returns a DIFFERENT rule, the stale ack is refused rather
+than silently passing an objection nobody reviewed.
+
+BOTH PASS, which exonerates the ack mechanism and kills my working hypothesis. I
+therefore have a reproducible symptom and NO diagnosis, and I am shipping the
+closed coverage gap rather than a guess dressed as a fix. The evidence and the
+candidates I have not ruled out are in the run log; the four tone-gate tracking
+actions stay OPEN because the releasing half is unproven in production.

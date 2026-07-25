@@ -18,10 +18,12 @@ mcpAccess: none
 Trigger one commitment check-in reminder pass. This is a mechanical cadence job — do NOT message the user yourself. The reminder message is composed and delivered server-side from a fixed template; your job is only to fire the pass and report the counts.
 
 AUTH="${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
 PORT="${INSTAR_PORT:-4042}"
 
 curl -sS -m 60 -X POST \
   -H "Authorization: Bearer $AUTH" \
+  -H "X-Instar-AgentId: $AGENT_ID" \
   -H 'Content-Type: application/json' \
   -d '{}' \
   "http://localhost:${PORT}/commitments/check-in-reminder/pass"
