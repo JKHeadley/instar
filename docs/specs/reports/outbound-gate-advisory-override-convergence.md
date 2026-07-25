@@ -381,3 +381,56 @@ worth the operator's attention.
 **Method note, and it is the same one for the fourth time today:** I checked the
 codebase and the reviewer's text, which are adjacent to the question, instead of
 the spec, which was the question. Every error today has that shape.
+
+
+---
+
+## Addendum 5 — 2026-07-25T14:5xZ: WITHDRAWING Addendum 2 entirely
+
+Addendum 4 corrected half of Addendum 2. Reading §3.2.1 withdraws the other half.
+
+I claimed the held-credential index "would introduce a class of exposure this
+codebase has avoided". **The spec settled that across rounds 16, 17 and 30, and
+reached the opposite conclusion on a checked premise:**
+
+- The server process **already holds credentials in plaintext for its whole
+  lifetime** — `authToken`, the Telegram bot token, tunnel tokens, the dashboard
+  PIN are ordinary fields of the loaded config object.
+- **PR-A indexes ONLY those config-resident values.** So, in the spec's words,
+  *"this feature expands plaintext residency by nothing at all."*
+- **Vault-derived credentials are NOT loaded in PR-A.** They wait for an isolated
+  matcher process, made a **required deliverable** rather than a
+  threshold-triggered upgrade — accepting a real cost (a vault secret pasted into
+  a message is caught by B23 as a *shape* rather than by B22 as *possession*).
+- The elaborate fingerprint scheme every earlier version carried was **deleted**
+  precisely because it *"bought plaintext-avoidance for the vault subset only,
+  inside a process that was already a bag of credentials — not a security
+  boundary, a lot of bespoke code standing next to an open door."*
+
+codex raised this six times across the review; the narrower proposal was adopted.
+**The design is more careful about this than my objection was.**
+
+### So Addendum 2 is withdrawn in full
+
+Both of its claims were wrong, and both were reported to the operator as reasons
+to withhold approval:
+
+| Claim | Reality |
+|---|---|
+| "hand-rolls credential detection" | §3.2 imports `DURABLE_SECRET_PATTERNS` and says it "does not hand-write a list" |
+| "introduces a new plaintext-exposure class" | PR-A indexes only already-resident config values; residency expands by zero; vault values are deferred to an isolated process |
+
+**What actually remains open on this spec:** the relay double-check (findings 3),
+the "no open questions" framing (finding 6), and whatever the two reviewers'
+remaining points are worth on their merits. **Not the two I amplified.**
+
+### The method failure, stated plainly
+
+I formed both objections from the *reviewer's summary* plus a *grep of the
+codebase*, and never opened the spec's own §3.2/§3.2.1 — where both were already
+answered at length. Two sources adjacent to the question; not the question.
+
+That is the fifth instance today of the identical shape, and the third *after* I
+wrote it up as the session's lesson. **Reading the artifact under discussion is
+not a step I can reliably remember to take**, which is precisely the argument for
+making it structural rather than intentional.
