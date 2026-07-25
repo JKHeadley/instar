@@ -5,3 +5,4 @@
 - Adds three pure assertions with no network, subprocess, or LLM dependency and wires them into the real messaging E2E scenario.
 - `assertTimely` and content-sniff/ownership annotation work remain explicitly deferred to Increment 2.
 - Rollback is removing the workflow/script/helper imports; no durable migration is required.
+- The substance-floor matcher accepts single-, double-, and backtick-quoted diff strings so normal source quoting cannot create a false negative.

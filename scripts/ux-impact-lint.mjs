@@ -20,7 +20,7 @@ try {
     console.error('::error::UX Impact must describe audience, visible behavior, and first contact'); process.exit(1);
   }
   const diff = execFileSync('git', ['diff', '--unified=0', `${base}...${head}`, '--', ...allowlisted], { encoding: 'utf8' });
-  const quoted = [...section.matchAll(/[`"“]([^`"”]+)[`"”]/g)].map((m) => m[1]);
+  const quoted = [...section.matchAll(/[`'"“]([^`'"”]+)[`'"”]/g)].map((m) => m[1]);
   if (!quoted.some((q) => q.length > 2 && diff.includes(q))) {
     console.error('::error::UX Impact must quote a concrete string from the diff'); process.exit(1);
   }
