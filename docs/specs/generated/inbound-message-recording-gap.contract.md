@@ -155,9 +155,15 @@ It works because:
  `message_id`. Negative is safe by construction — Telegram ids are positive, so
  a synthetic id can never collide with a real one, and a reader seeing a
  negative id knows it was minted locally.
- - **How the synthetic id is generated, and the ordering caveat.** A process-local monotonically *decreasing* counter seeded from
- `-(Date.now())`, so ids are unique within a process and ordered consistently
- with arrival. **But chronology must come from `timestamp`, not from
+ - **How the synthetic id is generated, and the ordering caveat.** codex flagged that a counter seeded from `-(Date.now())`
+ can collide after a restart or a clock rollback, and asked whether that is an
+ insert-loss mode. **Checked the schema rather than assuming: it is not.**
+ `idx_messages_topic_id` on `(topic_id, message_id)` is a plain index, **not
+ unique**, so a collision produces a duplicate row rather than a lost message —
+ the safe direction. The seed is nonetheless fixed properly: at startup the
+ counter is seeded from **`min(message_id)` currently in the table** (or
+ `-1` when there is none) and decreases from there, so a restart continues the
+ sequence instead of restarting it and a clock change is irrelevant. **But chronology must come from `timestamp`, not from
  `message_id`** — a negative id sorts before every real Telegram id, so any
  reader ordering by `message_id` would place id-less messages at the start of
  history. A test asserts the readers this spec cares about (the session-start
@@ -193,7 +199,8 @@ It works because:
 
 ### 3.1 Ordering: accept first, then inject — and it is a RECEIVED log
 
-The entry is **accepted for logging before the injection is attempted**, so an
+The entry is **scheduled for best-effort logging before the injection is
+attempted** — — so an
 injection failure cannot produce an unrecorded message. 
 
 **This makes it an inbound-*received* log, not an agent-*observed* log.** "Shown-or-nearly-shown" was a category that does not exist:
@@ -268,6 +275,12 @@ catch { /* never block the injection */ }
 - **One guardrail, not a subsystem:** a counter tracks pending
  log callbacks, and crossing a small threshold (32) raises ONE deduped Attention
  item. It measures the assumption; it does not work around it.
+- **And the alert names its own remediation.** The Attention item says
+ exactly what to do: if pending callbacks or event-loop delay stay above
+ threshold across more than one episode, switch to batched or yielding writes as
+ a follow-up change. That is the trigger for building the thing this design
+ deliberately did not pre-build — written down now, so the decision is a
+ threshold rather than someone's judgment months from now.
 - **A counter nobody reads is not observability:** a sustained
  non-zero failure rate over an hour raises ONE deduped Attention item. Silently
  degrading the agent's memory is precisely the failure this spec exists to end.
