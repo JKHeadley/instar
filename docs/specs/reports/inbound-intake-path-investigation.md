@@ -10,6 +10,12 @@ unknown blocks fleet default-on. This is the investigation.
 
 ## What is VERIFIED
 
+**0. Which machine this is.** `hostname` → *Justin's MacBook Pro*; `GET /pool`
+lists `Laptop` (`m_cc2ec651…`) and `Mac Mini` (`m_4cbc0d4a…`), both online. This
+session runs on the **Laptop**. **Earlier revisions of the spec named these
+backwards** — they said the measurements were taken on the Mini and that the
+Laptop was the router. The reverse is true, and the error stood all day.
+
 **1. This machine is on standby; it does not hold the serving lease.**
 `GET /health` → `multiMachine.syncStatus`: `holdsLease: false`,
 `leaseHolder: m_4cbc0d4a0c557cf7e221882f9b42518f`, `splitBrainState: clear`.
@@ -44,7 +50,7 @@ from today).
 
 ## The most likely explanation
 
-The router peer receives the Telegram message through **its** lifeline and
+The router peer — **the Mac Mini** — receives the Telegram message through **its** lifeline and
 **its** `/internal/telegram-forward` — which logs it **there** — then forwards a
 `deliverMessage` across the mesh to whichever machine runs the session. This
 machine injects it via the owner-side bridge, which never touches the local

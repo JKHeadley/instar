@@ -366,7 +366,7 @@ gate is the decision, not the calendar.
 gates below are measured on the development agent's machine, and synchronous
 filesystem behaviour is exactly the thing that does not generalise: local disks,
 antivirus filter drivers, network-mounted home directories, container volumes and
-nearly-full disks all differ. Measuring one Mac Mini and flipping a fleet default
+nearly-full disks all differ. Measuring one laptop and flipping a fleet default
 would be reasoning from a sample of one about the property most sensitive to
 environment.
 

@@ -32,10 +32,18 @@ particular delivery route. That route has been used zero times on this machine.
 Your messages arrive by a different road, and that road has no recording step
 on it.
 
-There's a second thing going on underneath. This conversation is *owned* by the
-laptop, while replies are composed on the mini. So your side lands on one machine
-and my side on the other, and no single machine ends up with a whole
-conversation.
+There's a second thing going on underneath, and I had it backwards until 14:00
+today. **Your messages arrive at the Mac Mini. This conversation runs on the
+laptop.** The Mini writes your message down where it arrives, then hands it
+across to the laptop for me to actually respond to — and that handover doesn't
+write anything down on the laptop.
+
+So your half is probably not lost at all. It's on the Mini. The machine doing the
+talking is the one that never sees your side written down, which is why a session
+restarting here reads only me.
+
+(I'd had the two machines the wrong way round in this document all day — saying
+the laptop received and the Mini replied. Corrected.)
 
 ## Why it matters more than "missing history"
 

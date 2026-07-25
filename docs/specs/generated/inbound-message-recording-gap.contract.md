@@ -49,7 +49,18 @@ design and stays invisible (§4). The record it builds is therefore a
 throughout deliberately. The headline above is the symptom; this paragraph is the
 boundary.
 
-Verified on the Mac Mini, 2026-07-25:
+Verified on **this machine — Justin's MacBook Pro, the pool machine named
+"Laptop"** — 2026-07-25.
+
+**Correction (2026-07-25T14:0xZ): earlier revisions of this spec said "the Mac
+Mini", and said the topic was owned by the Laptop while the Mini composed
+replies. Both were backwards, and the error was carried all day.** Verified now:
+`hostname` is *Justin's MacBook Pro*; `GET /pool` lists two online machines,
+`Laptop` (`m_cc2ec651…`, this one) and `Mac Mini` (`m_4cbc0d4a…`); and the
+serving lease is held by **`m_4cbc0d4a…`, the Mac Mini**. So the **Mini is the
+router** and the **Laptop runs this session** — the reverse of what was written.
+Every measurement below was taken on the Laptop and is unaffected; only the
+machine names were wrong.
 
 **Re-verified against live state at 2026-07-25T11:19Z**, and the re-check moved a
 headline number in the worse direction — which is the reason for re-checking
@@ -1081,7 +1092,7 @@ gate is the decision, not the calendar.
 gates below are measured on the development agent's machine, and synchronous
 filesystem behaviour is exactly the thing that does not generalise: local disks,
 antivirus filter drivers, network-mounted home directories, container volumes and
-nearly-full disks all differ. Measuring one Mac Mini and flipping a fleet default
+nearly-full disks all differ. Measuring one laptop and flipping a fleet default
 would be reasoning from a sample of one about the property most sensitive to
 environment.
 
