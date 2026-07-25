@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **57 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
+- **59 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -222,6 +222,33 @@ own §1 records that the original defect existed because nobody verified which c
 path was actually in use. Recorded as an open question (§3.0b) rather than acted
 on — two large unreviewed restructures tonight each introduced defects the next
 round cleaned up.
+
+## The most instructive thing in the whole review
+
+**One decision — synchronous main-thread SQLite before injection — produced three
+successive justifications from me, and the reviewer knocked down the first two.**
+
+1. **Round 54:** "no new subsystem". Named the alternative without weighing it.
+2. **Round 57:** weighed it — but against *in-memory* enqueue, a strawman. The
+   real pattern is a durable outbox, and **that is what this design already is**.
+   Conclusion drawn: "the stall lives in the requirement, not the implementation."
+3. **Round 59:** that conclusion is **false**. Durability-before-injection is only
+   synchronous *on the main thread*. A worker-owned SQLite connection waits for
+   the commit while yielding the event loop — same guarantee, no whole-process
+   stall.
+
+What survives is much smaller than what I argued: main-thread `better-sqlite3` is
+already the dependency and already `TopicMemory`'s pattern, so it is one call
+rather than a worker plus a protocol plus a lifecycle. **A simplicity argument for
+a local single-agent fix** — and the residual is correspondingly *worse* than I
+had been stating, because a wedged device stalling every conversation is now
+attributable to the implementation choice rather than to the guarantee.
+
+**The pattern to notice is the author's, not the design's.** Each time a reviewer
+pressed on the riskiest decision, I produced a *more satisfying* argument for the
+thing I had already chosen. Twice those arguments were wrong in a way that made
+the design look better than it was. Neither was a lie; both were reasoning that
+stopped as soon as it reached a comfortable conclusion.
 
 ## Findings that came from the review disagreeing with itself
 
