@@ -51,9 +51,23 @@ const CURRENT_TEMPLATE = fs.readFileSync(
   path.resolve(__dirname, '..', '..', 'src', 'templates', 'scripts', 'telegram-reply.sh'),
   'utf-8',
 );
-const IMMEDIATELY_PRIOR_SHIPPED_SCRIPT = CURRENT_TEMPLATE
-  .replace('  --connect-timeout 3\n  --max-time 125\n', '')
-  .replace(/\nCURL_STATUS=\$\?[\s\S]*?\nHTTP_CODE=/, '\n\nHTTP_CODE=');
+/**
+ * The immediately-prior SHIPPED template, captured as a fixture.
+ *
+ * This used to be DERIVED from the current template by stripping the two edits
+ * that version introduced — which silently coupled the pinned SHA to the current
+ * template never changing again. The next template edit (the tone-gate advisory
+ * flags) broke it, and the failure pointed at the SHA rather than at the
+ * derivation, which is the wrong place to look.
+ *
+ * A prior shipped artifact is a FACT, not a function of the present one. Pinning
+ * the real bytes keeps the test asserting what it means — "the previous stock
+ * script upgrades in place" — and stops it re-breaking on every future edit.
+ */
+const IMMEDIATELY_PRIOR_SHIPPED_SCRIPT = fs.readFileSync(
+  path.resolve(__dirname, '..', 'fixtures', 'telegram-reply-pre-tone-advisory.sh'),
+  'utf-8',
+);
 
 // User-customized script — no shipped-header marker, so migration must not touch.
 const USER_CUSTOM_SCRIPT = `#!/bin/bash
@@ -102,7 +116,7 @@ describe('PostUpdateMigrator — telegram-reply.sh 408 migration', () => {
 
   it('upgrades the immediately prior stock template in place to the bounded outcome version', async () => {
     expect(crypto.createHash('sha256').update(IMMEDIATELY_PRIOR_SHIPPED_SCRIPT).digest('hex'))
-      .toBe('d55feb9a203c7835c36b6bf0e23972c79a1e26fe6ea29683f31f831fb956c0f3');
+      .toBe('1182b2c7e3779a9c37355e7317962ea48122a5f4a42425d7f3f9973e8127aa19');
     fs.writeFileSync(scriptPath, IMMEDIATELY_PRIOR_SHIPPED_SCRIPT, { mode: 0o755 });
 
     const migrator = createMigrator(projectDir);

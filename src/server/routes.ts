@@ -92,7 +92,7 @@ import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowl
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
-import { buildDegradedToneResult, resolveToneGateOperatorConfig, fingerprintAutomatedTemplate } from '../core/MessagingToneGate.js';
+import { RULE_DISPOSITIONS, buildDegradedToneResult, resolveToneGateOperatorConfig, fingerprintAutomatedTemplate } from '../core/MessagingToneGate.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -121,9 +121,9 @@ import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
-import { annotateDecisionOutcome, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
+import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
-import { DP_COMPLETION_EVALUATE, PROVENANCE_COVERAGE, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
+import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -356,6 +356,9 @@ import type { CoherenceGate } from '../core/CoherenceGate.js';
 import type { MessagingToneGate } from '../core/MessagingToneGate.js';
 import { isJunkPayload } from '../core/junk-payload.js';
 import { detectLocalhostLink } from '../core/localhost-link.js';
+import { RelayRefusedError } from '../core/TelegramRelay.js';
+import { scrubForStore } from '../core/durableSecretScrub.js';
+import { credentialGuardMessage, detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
@@ -2113,6 +2116,177 @@ export function createRoutes(ctx: RouteContext): Router {
     | { ok: true }
     | { ok: false; status: number; reason: string; body: Record<string, unknown> };
 
+  /**
+   * Minimum override-reason length. Low ON PURPOSE — this is a "did you type
+   * anything" floor, not a quality bar. A length check cannot judge whether a
+   * reason is good; that is the bulk judge's job, later, reading the recorded
+   * text. Setting it high would only teach the agent to pad.
+   */
+  const TONE_ADVISORY_REASON_MIN = 8;
+
+  /**
+   * Record how the agent REACTED to an advisory nudge — the tone gate's first
+   * real evidence source (`tone-agent-override-v1` / `tone-agent-complied-v1`).
+   *
+   * override → the verdict is graded `wrong`; complied → `right`. Both land at
+   * the `self-report` rung, so an interested party's account can never outrank
+   * an independent grader.
+   *
+   * Silent no-op without a `decisionRef`: an outcome with nothing to join to is
+   * an orphan row that inflates volume and grades nothing. Total and
+   * fire-and-forget — observability must never break the message path.
+   */
+  /**
+   * A router-minted correlation id: `d-<uuid>` / `b-<uuid>`, optionally with a
+   * machine segment. The agent hands this back through request metadata, so it
+   * is UNTRUSTED input to a durable write — shape-check before it reaches the
+   * annotate chokepoint. (The chokepoint validates grade/rung/owner but has
+   * never had to validate a correlation id, because until this feature no
+   * agent-supplied string could reach it.)
+   */
+  /**
+   * Parse the four tone-advisory reaction fields off a request `metadata`
+   * object, clamped. One helper rather than four inline ternaries per callsite:
+   * the review found the fields plumbed into 2 of 7 outbound routes, and
+   * per-callsite duplication is exactly how that happens again.
+   */
+  function toneAdvisoryMetadata(metadata: Record<string, unknown> | undefined): {
+    toneAdvisoryAck?: string;
+    toneAdvisoryAckReason?: string;
+    toneAdvisoryDecisionRef?: string;
+    toneAdvisoryComplied?: string;
+  } {
+    const str = (v: unknown, max: number): string | undefined =>
+      typeof v === 'string' ? v.slice(0, max) : undefined;
+    return {
+      toneAdvisoryAck: str(metadata?.toneAdvisoryAck, 64),
+      toneAdvisoryAckReason: str(metadata?.toneAdvisoryAckReason, 500),
+      toneAdvisoryDecisionRef: str(metadata?.toneAdvisoryDecisionRef, 128),
+      toneAdvisoryComplied: str(metadata?.toneAdvisoryComplied, 64),
+    };
+  }
+
+  /**
+   * ── Server-side compliance correlation ──────────────────────────────────
+   *
+   * The problem this removes: an override is STRUCTURALLY enforced (the message
+   * will not send without its reason, so the `wrong` grade always lands), while
+   * compliance was an opt-in field the agent had to remember on a revised
+   * re-send. That asymmetry biases the sample toward "the gate was wrong" — the
+   * exact bias the compliance path exists to prevent — and "remember to declare
+   * it" is precisely the willpower this codebase refuses to build on.
+   *
+   * So the server remembers instead. When an advisory 422 goes out we note
+   * (topic → rule, decisionRef, text fingerprint). If the next PASSING send to
+   * that topic within the window carries DIFFERENT text, the agent revised: the
+   * original verdict is graded `right` automatically, with no agent metadata.
+   *
+   * Deliberately conservative — it grades `right` only on positive evidence of a
+   * revision (a passing send with changed text inside the window). A silent
+   * abandonment records nothing rather than being counted either way.
+   */
+  // 10 minutes, not 30: the correlation cannot distinguish "revised the nudged
+  // message" from "gave up on it and sent something unrelated next". A shorter
+  // window is the cheap discriminator — a revision follows a nudge promptly,
+  // while an unrelated message is more likely to arrive later. A similarity
+  // threshold was considered and REJECTED: a genuine rewrite in response to a
+  // nudge often shares almost no wording with the original ("I put it in
+  // docs/x.md" → "want a link or the summary here?"), so similarity would
+  // silently discard exactly the compliances worth recording.
+  const ADVISORY_PENDING_TTL_MS = 10 * 60 * 1000;
+  const ADVISORY_PENDING_MAX = 500;
+  const pendingAdvisories = new Map<number, { rule: string; decisionRef?: string; textSha: string; at: number }>();
+
+  function sha256Short(s: string): string {
+    return createHash('sha256').update(s).digest('hex').slice(0, 32);
+  }
+
+  function notePendingAdvisory(topicId: number | undefined, rule: string, decisionRef: string | undefined, text: string): void {
+    if (typeof topicId !== 'number') return;
+    // Bounded: drop the oldest rather than grow without limit.
+    if (pendingAdvisories.size >= ADVISORY_PENDING_MAX) {
+      const oldest = [...pendingAdvisories.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (oldest) pendingAdvisories.delete(oldest[0]);
+    }
+    pendingAdvisories.set(topicId, { rule, decisionRef, textSha: sha256Short(text), at: Date.now() });
+  }
+
+  /** Returns the reaction to record, if this passing send revises a pending advisory. */
+  function takeRevisionOf(topicId: number | undefined, text: string): { rule: string; decisionRef?: string } | null {
+    if (typeof topicId !== 'number') return null;
+    const p = pendingAdvisories.get(topicId);
+    if (!p) return null;
+    if (Date.now() - p.at > ADVISORY_PENDING_TTL_MS) {
+      pendingAdvisories.delete(topicId);
+      return null;
+    }
+    // Identical text is not a revision — it is a resend, and a resend that
+    // happens to pass is NOT evidence the gate was right.
+    if (sha256Short(text) === p.textSha) return null;
+    pendingAdvisories.delete(topicId);
+    return { rule: p.rule, decisionRef: p.decisionRef };
+  }
+
+  function isPlausibleDecisionRef(ref: string): boolean {
+    return /^[db]-[0-9a-f]{8}(-[0-9a-f-]{8,})?[0-9a-f-]*$/i.test(ref) && ref.length <= 128;
+  }
+
+  function recordToneAdvisoryReaction(input: {
+    decisionRef?: string;
+    rule: string;
+    reaction: 'override' | 'complied';
+    reason?: string;
+    /**
+     * How a `complied` was established. `declared` = the agent named the rule it
+     * accepted; `inferred` = the SERVER correlated a revised re-send after a
+     * nudge. The two are NOT equally strong — an inferred credit cannot tell a
+     * revision from an unrelated next message — so the distinction is RECORDED
+     * on the row rather than flattened. A later judge can weight or discard the
+     * inferred ones; it cannot recover a distinction that was never written down.
+     */
+    derivation?: 'declared' | 'inferred';
+  }): void {
+    try {
+      if (!input.decisionRef || !isPlausibleDecisionRef(input.decisionRef)) return;
+      const ref = input.decisionRef;
+      const reaction = input.reaction;
+      const rule = input.rule;
+      const derivation = input.derivation;
+      // The reason IS the evidence, and it is agent-authored free text landing
+      // in two durable stores. The chokepoint's own scrub is weaker than the
+      // pattern set this very change treats as authoritative (it misses a
+      // 20-char AWS key), so scrub with the strong list HERE before handing it
+      // over. A guard that walls a credential in the message body while storing
+      // one from the reason field would be theatre.
+      const note = input.reason ? scrubForStore(input.reason).text.slice(0, 500) : undefined;
+      // ── Off the send path ────────────────────────────────────────────────
+      // `upsertOutcome` is a synchronous better-sqlite3 transaction that
+      // recomputes the whole (decision_point, day) rollup twice over a window-
+      // function view SQLite cannot push a predicate into. Measured: ~3ms at
+      // today's 1.4k rows, ~80ms at 60k, ~190ms at 120k — and this change puts
+      // the FIRST high-frequency conversational path in front of it. The result
+      // is discarded either way, so there is no reason for the operator's reply
+      // latency to carry a growing rollup recompute.
+      setImmediate(() => {
+        try {
+          annotateDecisionOutcome({
+            correlationId: ref,
+            ruleId: reaction === 'override' ? 'tone-agent-override-v1' : 'tone-agent-complied-v1',
+            gradedBy: { component: 'ToneGateAdvisory' },
+            grade: reaction === 'override' ? 'wrong' : 'right',
+            decisionPoint: DP_MESSAGING_TONE_GATE,
+            ...(note ? { evidenceNote: note } : {}),
+            evidence: { reaction, rule, ...(derivation ? { derivation } : {}) },
+          });
+        } catch {
+          /* @silent-fallback-ok — recording a reaction must never affect delivery */
+        }
+      });
+    } catch {
+      /* @silent-fallback-ok — recording a reaction must never affect delivery */
+    }
+  }
+
   async function evaluateOutbound(
     text: string,
     channel: string,
@@ -2140,6 +2314,23 @@ export function createRoutes(ctx: RouteContext): Router {
        * decision-quality meter, never authority. Never overrides a blocking rule.
        */
       toneAdvisoryAck?: string;
+      /**
+       * WHY the agent is overriding — REQUIRED alongside `toneAdvisoryAck`.
+       * Recorded as the evidence note on the `tone-agent-override-v1` outcome.
+       */
+      toneAdvisoryAckReason?: string;
+      /**
+       * The `decisionRef` returned on the advisory response, joining this
+       * reaction to the exact verdict it answers. Falls back to the current
+       * review's own id when omitted (a re-review of the same text).
+       */
+      toneAdvisoryDecisionRef?: string;
+      /**
+       * The rule the agent ACCEPTED: set on the revised re-send so a good catch
+       * is graded `right`. Without it, compliance is invisible and the meter
+       * only ever sees the overrides — a systematically unflattering sample.
+       */
+      toneAdvisoryComplied?: string;
     },
   ): Promise<OutboundEvaluation> {
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
@@ -2164,6 +2355,31 @@ export function createRoutes(ctx: RouteContext): Router {
               `If the operator explicitly asked for the raw local URL, resend with metadata.allowLocalhostLink: true.`,
             blockedBy: 'localhost-link-guard',
             match: localLink.match,
+          },
+        };
+      }
+    }
+
+    // ── Live-credential hard wall (operator directive 2026-07-19) ──────────
+    // The ONE non-overridable outbound check, and the precondition that makes
+    // the advisory migration safe: every LLM judgment became an overridable
+    // nudge, so the thing that must never be overridable moved to a
+    // deterministic guard. Runs BEFORE the authority — like the localhost-link
+    // guard — so it holds on installs with no gate configured, during a
+    // provider outage, and under spawn-cap saturation. No `metadata` escape
+    // hatch exists by design; the error names the credential CLASS only.
+    {
+      const cred = detectOutboundCredential(text);
+      if (cred.detected && cred.kind) {
+        return {
+          ok: false,
+          status: 422,
+          reason: 'credential-exposure-guard',
+          body: {
+            error: credentialGuardMessage(cred.kind),
+            blockedBy: 'credential-exposure-guard',
+            credentialKind: cred.kind,
+            overridable: false,
           },
         };
       }
@@ -2453,7 +2669,11 @@ export function createRoutes(ctx: RouteContext): Router {
       const budgetFailClosed = !operatorTierDeliver && perCallAllowsClosed && globalFailClosed !== false;
       const budgetDegrade =
         budgetFailClosed && globalFailClosed !== true
-          ? (latencyMs: number) => buildDegradedToneResult(text, latencyMs, 'budget-timeout')
+          ? (latencyMs: number) =>
+              // Same disposition as review()'s fast-throw degrade: the SLOW and
+              // FAST manifestations of one outage must not disagree about
+              // whether a caught artifact is a nudge or a wall.
+              buildDegradedToneResult(text, latencyMs, 'budget-timeout', _toneCfg?.advisoryMigration === true)
           : undefined;
       const templateFingerprint =
         options.messageKind === 'automated' ? fingerprintAutomatedTemplate(text) : undefined;
@@ -2497,6 +2717,36 @@ export function createRoutes(ctx: RouteContext): Router {
         result,
       });
 
+      // ── Compliance credit ────────────────────────────────────────────────
+      // The revised re-send passed → the ORIGINAL verdict is graded `right`.
+      // Recording only overrides would measure the gate exclusively through the
+      // cases the agent disputed: a sample guaranteed to look worse than the
+      // gate is.
+      //
+      // The SERVER correlates this (see notePendingAdvisory) so it does not
+      // depend on the agent remembering two metadata fields across a revise
+      // cycle — the override path is structurally enforced, and an opt-in
+      // counterpart would leave the sample permanently skewed. The explicit
+      // `toneAdvisoryComplied` remains honored as a direct declaration.
+      if (result.pass) {
+        const revised = takeRevisionOf(options.topicId, text);
+        if (options.toneAdvisoryComplied) {
+          recordToneAdvisoryReaction({
+            decisionRef: options.toneAdvisoryDecisionRef ?? revised?.decisionRef,
+            rule: options.toneAdvisoryComplied,
+            reaction: 'complied',
+            derivation: 'declared',
+          });
+        } else if (revised) {
+          recordToneAdvisoryReaction({
+            decisionRef: revised.decisionRef,
+            rule: revised.rule,
+            reaction: 'complied',
+            derivation: 'inferred',
+          });
+        }
+      }
+
       if (!result.pass) {
         // ── Advisory disposition (operator directive 2026-07-18, topic 29723) ──
         // An advisory-rule citation is a NUDGE, never a terminal block: the
@@ -2505,9 +2755,96 @@ export function createRoutes(ctx: RouteContext): Router {
         // resend unchanged with metadata.toneAdvisoryAck = "<rule>" to
         // acknowledge; the override is RECORDED (a decision-quality signal,
         // never authority). A blocking rule can NEVER be overridden this way.
+        // ── The evidence-capturability invariant ─────────────────────────────
+        // NEVER trade authority for evidence we are not collecting.
+        //
+        // The migration's entire justification is that an overridable nudge
+        // produces the disagreement data a hard block cannot. That bargain is
+        // void whenever the reaction could not actually be recorded, and there
+        // are two independent ways for that to be true — both reachable in the
+        // DEFAULT configuration, which is what makes this a real hazard rather
+        // than a theoretical one:
+        //
+        //   1. The quality seam is dark or dry-run. `provenance.uniformSeam` is
+        //      a SEPARATE gate from `toneGate.advisoryMigration`, and its dryRun
+        //      DEFAULTS TRUE — so flipping the migration on without it would
+        //      hand out every loosening and record nothing.
+        //   2. No `decisionRef` was minted. The budget-timeout degrade builds
+        //      its verdict in the route, outside the gate, where the router's
+        //      correlation id is unreachable — precisely the path that fires
+        //      under load.
+        //
+        // In either case the verdict falls back to a BLOCK. That is the safe
+        // direction (it preserves today's behaviour rather than relaxing it),
+        // and it makes the migration self-limiting: it can only ever be as live
+        // as its own evidence collection.
+        //
+        // SCOPE: only a MIGRATION-derived advisory is subject to this. A rule
+        // whose BASELINE disposition is already advisory (B21, which shipped
+        // that way in the correction-derived-hardening work) never made the
+        // evidence bargain — it was always simply the agent's call — so
+        // demoting it here would silently harden a shipped, working behaviour
+        // on every install where the quality seam is dark. That would be a
+        // regression introduced by a safety check, which is its own bug class.
+        if (
+          result.advisory === true &&
+          RULE_DISPOSITIONS[result.rule] !== 'advisory' &&
+          (!result.decisionRef || !decisionQualityRecordingLive())
+        ) {
+          logToneGateDecision({
+            text,
+            channel,
+            topicId: options.topicId,
+            signals,
+            result: { ...result, advisory: false, advisoryUnrecordable: true },
+          });
+          return {
+            ok: false,
+            status: 422,
+            reason: 'tone-gate-blocked',
+            body: {
+              error: 'tone-gate-blocked',
+              rule: result.rule,
+              issue: result.issue,
+              suggestion: result.suggestion,
+              // Named, never silent: the operator can see WHY a nudge came back
+              // as a wall (No Silent Degradation).
+              advisoryUnavailable: !result.decisionRef
+                ? 'no-decision-ref'
+                : 'quality-recording-not-live',
+              latencyMs: result.latencyMs,
+            },
+          };
+        }
         if (result.advisory === true) {
           if (options.toneAdvisoryAck === result.rule) {
-            const overridden = { ...result, advisoryOverridden: true };
+            // The override REASON is structurally required, not requested. The
+            // whole point of the migration is the evidence: an override with no
+            // recorded reason is an ungradeable event, and "remember to explain
+            // yourself" is exactly the willpower this codebase refuses to rely
+            // on. So a reasonless ack is refused and the message stays unsent.
+            const reason = (options.toneAdvisoryAckReason ?? '').trim();
+            if (reason.length < TONE_ADVISORY_REASON_MIN) {
+              return {
+                ok: false,
+                status: 422,
+                reason: 'tone-gate-advisory-reason-required',
+                body: {
+                  error: 'tone-gate-advisory-reason-required',
+                  notSent: true,
+                  rule: result.rule,
+                  howToProceed:
+                    `The override needs a reason: re-send with metadata.toneAdvisoryAck = "${result.rule}" AND ` +
+                    `metadata.toneAdvisoryAckReason = a short sentence on why the nudge is wrong here. ` +
+                    `It is recorded as the evidence that grades this check.`,
+                },
+              };
+            }
+            const overridden = {
+              ...result,
+              advisoryOverridden: true,
+              overrideReasonHead: scrubForStore(reason).text.slice(0, 120),
+            };
             logToneGateDecision({
               text,
               channel,
@@ -2515,8 +2852,17 @@ export function createRoutes(ctx: RouteContext): Router {
               signals,
               result: overridden,
             });
+            recordToneAdvisoryReaction({
+              decisionRef: options.toneAdvisoryDecisionRef ?? result.decisionRef,
+              rule: result.rule,
+              reaction: 'override',
+              reason,
+            });
             return { ok: true };
           }
+          // Remember it so a later revised send is credited WITHOUT the agent
+          // having to carry metadata back (the asymmetry fix).
+          notePendingAdvisory(options.topicId, result.rule, result.decisionRef, text);
           return {
             ok: false,
             status: 422,
@@ -2527,7 +2873,17 @@ export function createRoutes(ctx: RouteContext): Router {
               rule: result.rule,
               issue: result.issue,
               suggestion: result.suggestion,
-              howToProceed: `ADVISORY — the message was NOT sent, and the decision is yours: revise and re-send, or re-send unchanged with metadata.toneAdvisoryAck set to "${result.rule}" to acknowledge and deliver (the override is recorded).`,
+              // Handed back so the resend can JOIN its reaction to this exact
+              // decision. Without it an override is an orphan the grader can
+              // never attach to the verdict it disputes.
+              ...(result.decisionRef ? { decisionRef: result.decisionRef } : {}),
+              howToProceed:
+                `ADVISORY — the message was NOT sent, and the decision is yours. Either (a) revise and re-send, adding ` +
+                `metadata.toneAdvisoryComplied = "${result.rule}"` +
+                (result.decisionRef ? ` and metadata.toneAdvisoryDecisionRef = "${result.decisionRef}"` : '') +
+                ` so the check gets credit for a catch; or (b) re-send unchanged with metadata.toneAdvisoryAck = ` +
+                `"${result.rule}" plus metadata.toneAdvisoryAckReason explaining why the nudge is wrong here. ` +
+                `Both are recorded — they are how this check learns whether it is any good.`,
               latencyMs: result.latencyMs,
             },
           };
@@ -2569,6 +2925,9 @@ export function createRoutes(ctx: RouteContext): Router {
       messageKind?: MessageKind;
       failClosedOnBudgetTimeout?: boolean;
       toneAdvisoryAck?: string;
+      toneAdvisoryAckReason?: string;
+      toneAdvisoryDecisionRef?: string;
+      toneAdvisoryComplied?: string;
     },
   ): Promise<boolean> {
     // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
@@ -2917,6 +3276,22 @@ export function createRoutes(ctx: RouteContext): Router {
         // failure so it is AUDITED, never silent (the No-Silent-Degradation
         // reconciliation rests on this being observable).
         failedOpenOperatorChannel: entry.result.failedOpenOperatorChannel || false,
+        // ── Advisory migration audit (ALWAYS ON) ──────────────────────────
+        // The override is the one event this whole feature exists to observe,
+        // and until this line existed an override logged BYTE-IDENTICALLY to
+        // the verdict it overrode. The structured evidence row is the rich
+        // record, but it lives behind a separate feature gate that defaults to
+        // recording nothing — so the audit that must never be absent belongs
+        // HERE, on the unconditional stderr line, not there.
+        advisory: entry.result.advisory || false,
+        advisoryOverridden: entry.result.advisoryOverridden || false,
+        // Present only when the advisory disposition was withdrawn because its
+        // evidence could not be captured — names the reason rather than
+        // silently reverting to a wall.
+        advisoryUnrecordable: entry.result.advisoryUnrecordable || false,
+        // A bounded, scrubbed head of the override reason. Enough to audit that
+        // a reason existed and roughly what it said; never the whole field.
+        overrideReasonHead: entry.result.overrideReasonHead ?? null,
         latencyMs: entry.result.latencyMs,
         signals: {
           junk: entry.signals.junk?.detected ?? null,
@@ -13307,6 +13682,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Advisory-rule override (operator directive 2026-07-18): the FULL rule id
     // the sender explicitly acknowledges. Length-clamped; validated against the
     // cited rule at the seam (a mismatch or a blocking rule is never overridden).
+    const toneAdvisoryAckReason =
+      typeof metadata?.toneAdvisoryAckReason === 'string'
+        ? metadata.toneAdvisoryAckReason.slice(0, 500)
+        : undefined;
+    const toneAdvisoryDecisionRef =
+      typeof metadata?.toneAdvisoryDecisionRef === 'string'
+        ? metadata.toneAdvisoryDecisionRef.slice(0, 128)
+        : undefined;
+    const toneAdvisoryComplied =
+      typeof metadata?.toneAdvisoryComplied === 'string'
+        ? metadata.toneAdvisoryComplied.slice(0, 64)
+        : undefined;
     const toneAdvisoryAck =
       typeof metadata?.toneAdvisoryAck === 'string'
         ? metadata.toneAdvisoryAck.slice(0, 64)
@@ -13396,6 +13783,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         allowLocalhostLink,
         messageKind,
         toneAdvisoryAck,
+        toneAdvisoryAckReason,
+        toneAdvisoryDecisionRef,
+        toneAdvisoryComplied,
       }))
     )
       return;
@@ -13426,12 +13816,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // lease holder, the kind metadata must survive the hop so the
         // HOLDER's gate/audit see accurate context. Direct sends ignore it.
         kindMetadata:
-          messageKind || senderClass || advisoryAck
+          messageKind || senderClass || advisoryAck || toneAdvisoryAck || toneAdvisoryComplied
             ? {
                 ...(messageKind ? { messageKind } : {}),
                 ...(senderClass ? { senderClass } : {}),
                 ...(metadataJobSlug ? { jobSlug: metadataJobSlug } : {}),
                 ...(advisoryAck ? { advisoryAck: true, advisoryCodes } : {}),
+                // ── Tone-advisory reaction across the relay hop ─────────────
+                // A tokenless standby SKIPS its own gate and relays to the
+                // lease holder, which gates on receipt. Without these four the
+                // holder re-cites the advisory on every attempt and the ack can
+                // never reach it — a relayed topic would hold a permanently
+                // unsendable message with no recourse, which is the exact
+                // failure the migration exists to remove.
+                ...(toneAdvisoryAck ? { toneAdvisoryAck } : {}),
+                ...(toneAdvisoryAckReason ? { toneAdvisoryAckReason } : {}),
+                ...(toneAdvisoryDecisionRef ? { toneAdvisoryDecisionRef } : {}),
+                ...(toneAdvisoryComplied ? { toneAdvisoryComplied } : {}),
               }
             : undefined,
       });
@@ -13524,6 +13925,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // retry of this exact text is not wrongly suppressed as a duplicate. Safe
       // no-op when nothing was reserved (allowDuplicate / below-floor text).
       outboundContentDedup.releaseReservation(topicId, text);
+      // ── Holder refusal, relayed verbatim ────────────────────────────────
+      // On a tokenless standby the tone gate runs on the HOLDER, so its 422
+      // arrives here as a thrown RelayRefusedError. Re-emit the holder's own
+      // status and body: reporting an actionable refusal (a nudge with a rule,
+      // a decisionRef and how to proceed) as a generic 500 is what left a
+      // relayed topic holding a permanently unanswerable message.
+      if (err instanceof RelayRefusedError) {
+        res.status(err.status).json({ ...err.body, relayedFromHolder: true });
+        return;
+      }
       // @silent-fallback-ok — NOT a silent fallback: this catch surfaces a 500 to the
       // caller. The tag exists because the no-silent-fallbacks scanner's fixed 20-line
       // window reaches past this route's end into the next route's `db = null`
@@ -13755,6 +14166,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // verdicts (a fast block) still hold; only the no-verdict-in-time path
         // delivers. (Block/allow on a returned verdict is unchanged.)
         failClosedOnBudgetTimeout: false,
+        // Channel parity for the advisory migration. This route is MANDATED by
+        // the agent template for every ship/restart narration and has no
+        // fallback channel — so an advisory 422 here that promised an override
+        // the route could not accept would loop the agent with nowhere to go.
+        ...toneAdvisoryMetadata(metadata),
       })
     )
       return;
@@ -14339,10 +14755,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       await checkOutboundMessage(text, 'slack', res, {
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
-        toneAdvisoryAck:
-          typeof metadata?.toneAdvisoryAck === 'string'
-            ? metadata.toneAdvisoryAck.slice(0, 64)
-            : undefined,
+        // Channel parity: the override/compliance evidence path is not a
+        // Telegram feature. A Slack override that recorded nothing would make
+        // the meter's sample silently channel-dependent.
+        ...toneAdvisoryMetadata(metadata),
         // Kind threading mirrors /telegram/reply — the jargon/filePath signal
         // computation is single-sourced inside evaluateOutbound, so every
         // channel gets it uniformly (spec outbound-jargon-filepath-gap §2.2).
@@ -16087,6 +16503,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       let right = 0;
       let wrong = 0;
       let unknown = 0;
+      // right+wrong outcomes whose evidence is the interested party's own
+      // account (see the honesty marker on gradeDistribution below).
+      let selfReportGraded = 0;
       const byRule: Record<string, GradeCounts> = {};
       const byRung: Record<string, GradeCounts> = {};
       const byStrength: Record<string, GradeCounts> = {};
@@ -16094,6 +16513,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (r.grade === 'right') right += r.n;
         else if (r.grade === 'wrong') wrong += r.n;
         else if (r.grade === 'unknown') unknown += r.n;
+        if ((r.grade === 'right' || r.grade === 'wrong') && r.evidenceStrength === 'self-report') {
+          selfReportGraded += r.n;
+        }
         bump(byRule, r.ruleId, r.grade, r.n);
         bump(byRung, r.rung, r.grade, r.n);
         bump(byStrength, r.evidenceStrength, r.grade, r.n);
@@ -16110,7 +16532,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         outcomesKnownRatio: decisions > 0 ? outcomesKnown / decisions : 0,
         // Below the minimum sample an aggregate rate is not actionable (§5.5 codex r5).
         insufficientEvidence: outcomesKnown < minSample,
-        gradeDistribution: { right, wrong, unknown, expired: expiredByPoint.get(entry.decisionPoint) ?? 0 },
+        gradeDistribution: {
+          right,
+          wrong,
+          unknown,
+          expired: expiredByPoint.get(entry.decisionPoint) ?? 0,
+          // ── Self-report honesty marker ────────────────────────────────────
+          // `byStrength` segregates evidence classes, but this FLAT sibling
+          // blends them — and it is the field a casual reader (or a future
+          // automated consumer) quotes. With the tone gate's agent-reaction
+          // rules registered, a decision point can now have right/wrong grades
+          // that are ENTIRELY the agent's own account of a judgment about its
+          // own message. Unmarked, that reads as measured error rate.
+          //
+          // These two fields let any consumer of the flat distribution see how
+          // much of it is self-report without having to know `byStrength`
+          // exists. `selfReportOnly` is the loud case: every graded outcome
+          // here is the interested party's word.
+          selfReportShare: right + wrong > 0 ? selfReportGraded / (right + wrong) : 0,
+          selfReportOnly: right + wrong > 0 && selfReportGraded === right + wrong,
+        },
         // Strength FIRST (default aggregate) — proof-like and heuristic grades are never conflated.
         byStrength,
         byRule,
@@ -18033,6 +18474,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       await checkOutboundMessage(text, 'whatsapp', res, {
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
+        // Channel parity for the advisory migration — an override path that
+        // works on Telegram and silently does not on WhatsApp would make the
+        // meter's sample channel-dependent, and strand this channel's agent.
+        ...toneAdvisoryMetadata(metadata),
       })
     )
       return;
@@ -18093,6 +18538,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         await checkOutboundMessage(text, 'imessage', res, {
           allowDebugText: imessageMetadata?.allowDebugText === true,
           allowDuplicate: imessageMetadata?.allowDuplicate === true,
+          ...toneAdvisoryMetadata(imessageMetadata),
         })
       )
         return;

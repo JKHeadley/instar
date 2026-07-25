@@ -134,6 +134,23 @@ export function ULTRACODE_SPAWN_CLAUDEMD_SECTION(port: number): string {
 Claude Code's ultracode mode is xhigh effort plus dynamic workflow orchestration. It is deliberately NOT a \`--effort\` CLI value. Instar uses Claude's supported prompt-keyword trigger instead: \`POST /sessions/spawn\` accepts \`{"name":"deep-task","prompt":"...","framework":"claude-code","ultracode":true}\` and prefixes \`ultracode\` to that spawned turn. Claude's \`workflowKeywordTriggerEnabled\` setting defaults to true; an operator who disabled it has deliberately disabled this trigger, so the prefixed keyword becomes ordinary prompt text. The option ships dark (false/absent changes nothing), is rejected for non-Claude frameworks, and applies only to that one-shot spawn — it does not pin a topic or mutate Claude settings. Status/result uses the normal \`GET /sessions\` surface at \`http://localhost:${port}\`.\n`;
 }
 
+/**
+ * Tone-gate advisory migration (operator approval 2026-07-19, topic 33368).
+ * Shared by `generateClaudeMd` (new installs) and `migrateClaudeMd` (existing
+ * agents) — Agent Awareness Standard + Migration Parity. An agent that does not
+ * know the override path cannot use it, and an override it never performs is a
+ * grading signal the meter never receives.
+ *
+ * Unique content-sniff marker: 'Most checks are NUDGES you may override'.
+ */
+export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**Most checks are NUDGES you may override — two things are walls.** Under the advisory migration (operator approval 2026-07-19; \`toneGate.advisoryMigration\`, dev-gated live / fleet-dark) a cited judgment rule returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded**:
+- **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
+- **You disagree** → re-send unchanged with \`metadata.toneAdvisoryAck: "<RULE>"\` **and** \`metadata.toneAdvisoryAckReason: "<why the nudge is wrong here>"\` → the check is graded \`wrong\`. **The reason is required** — a reasonless ack is refused (\`tone-gate-advisory-reason-required\`) and nothing sends. That reason IS the evidence that tunes this gate; without it every tone decision grades \`unknown\` forever.
+- **Wall 1 — a LIVE credential** in outbound text → \`422\` with \`blockedBy: credential-exposure-guard\`, \`overridable: false\`. Deterministic, runs before the LLM authority, holds during an outage, and **no metadata reaches it**. Remove the value, refer to the secret by NAME, and route it through Secret Drop if the recipient genuinely needs it.
+- **Wall 2 — the self-stop family** (B15–B19: quitting for a context/fatigue reason, declaring an unverified wall, handing a doable task back to the user). These stay hard blocks. They exist to constrain YOU, so an override reason written by you is produced by exactly the reasoning the rule distrusts — and the harm (work abandoned) lands the moment the message sends, which no later review can undo.
+- **How to tell whether this is live here**: read the RESPONSE, never assume. \`error: tone-gate-advisory\` = nudges are on. \`error: tone-gate-blocked\` = this install blocks (either the migration is dark, or you hit a wall). A \`tone-gate-blocked\` carrying \`advisoryUnavailable\` means the nudge was withdrawn because the override could not have been RECORDED — the check keeps its authority rather than loosen for nothing.
+- **When to use** (PROACTIVE — this is the trigger): the moment you get a \`tone-gate-advisory\`, decide and declare it — comply or override-with-reason. Never silently drop the message, and never re-send in a loop hoping the verdict changes. Your override is a SIGNAL recorded at the self-report rung, never authority.`;
+
 export function EXTERNAL_HOG_CLAUDEMD_SECTION(port: number): string {
   return `\n### External-Hog Zombie Auto-Kill Sentinel (⚗️ dev-gated dark, watch-only) — the runaway-editor-zombie killer
 
@@ -5288,6 +5305,17 @@ setTimeout(() => process.exit(0), 2000);
     // CMT-1901) — Agent Awareness Standard + Migration Parity: existing agents learn the
     // GET /external-hog status + the PIN-gated arm / Bearer disarm routes, the two-key
     // floor+model kill rule, the watch-only/PIN-arm posture, and the proactive triggers.
+    // Tone-gate advisory migration (operator approval 2026-07-19, topic 33368) —
+    // Agent Awareness Standard + Migration Parity: an existing agent that does not
+    // know about `toneAdvisoryAckReason` / `toneAdvisoryComplied` will keep treating
+    // a nudge as a wall and will never produce the override evidence the whole
+    // migration exists to collect. Content-sniffed for idempotency.
+    if (!content.includes('Most checks are NUDGES you may override')) {
+      content += `\n${TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added tone-gate advisory migration (nudge/override/credential-wall) section');
+    }
+
     if (!content.includes('External-Hog Zombie Auto-Kill Sentinel')) {
       content += EXTERNAL_HOG_CLAUDEMD_SECTION(port);
       patched = true;
@@ -5562,7 +5590,7 @@ setTimeout(() => process.exit(0), 2000);
     // Framework-agnostic (server-side); the marker is mirrored to the shadows.
     // Content-sniffed; idempotent.
     if (!content.includes('### Outbound Message Gate')) {
-      content += `\n### Outbound Message Gate\n\nYour messages to the user pass an always-on LLM gate (the tone gate) before they send. It blocks high-stakes leaks (CLI commands, file paths, config keys, endpoints) AND the self-stop anti-patterns (B15–B18: quitting on yourself for a context/fatigue reason, calling a doable thing impossible, parking your own work on the user). It judges the behavioral rules **by MEANING, not by literal phrases — a paraphrase of the anti-pattern is caught exactly the same as the canonical wording**, so do not assume rewording evades it. The gate FAILS CLOSED (holds the message, queued for retry — never silently delivers) if it can't produce a verdict (provider down, unparseable output, or a slow-review timeout); the operator kill-switch is \`toneGate.failClosedOnExhaustion\`. Constitution: "Intelligent Prompts — An LLM Gate Must Not String-Match".\n`;
+      content += `\n### Outbound Message Gate\n\nYour messages to the user pass an always-on LLM gate (the tone gate) before they send. It reviews high-stakes leaks (CLI commands, file paths, config keys, endpoints) AND the self-stop anti-patterns (B15–B19: quitting on yourself for a context/fatigue reason, calling a doable thing impossible, parking your own work on the user). The two families are treated DIFFERENTLY — the leak/representation rules are overridable nudges (see below); the self-stop family stays a hard block, because there the check exists to constrain YOU and your reason for overriding would come from the very reasoning it distrusts. It judges the behavioral rules **by MEANING, not by literal phrases — a paraphrase of the anti-pattern is caught exactly the same as the canonical wording**, so do not assume rewording evades it. The gate FAILS CLOSED (holds the message, queued for retry — never silently delivers) if it can't produce a verdict (provider down, unparseable output, or a slow-review timeout); the operator kill-switch is \`toneGate.failClosedOnExhaustion\`. Constitution: "Intelligent Prompts — An LLM Gate Must Not String-Match".\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Outbound Message Gate section');
     }
@@ -8934,6 +8962,14 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Mesh Rope Health (recovery probe + partition alerts)',
+      // Tone-gate advisory migration: framework-agnostic by construction — the
+      // outbound gate sits on the SERVER, so a Codex/Gemini agent's messages hit
+      // exactly the same nudge. Without this marker such an agent receives a
+      // `422 tone-gate-advisory` telling it to override, with no idea that
+      // `toneAdvisoryAck` + a reason exist — it would read the nudge as a wall
+      // and either loop or silently drop the message, which is the pre-migration
+      // failure reproduced on the frameworks that never learned the fix.
+      'Most checks are NUDGES you may override',
       // Owned-Identities Registry (correction-derived-hardening): framework-
       // agnostic — a Codex/Gemini agent provisions identities too, and its
       // self-unblock exhaustion consults the same server-side probe. It must
@@ -14326,6 +14362,15 @@ process.stdin.on('end', async () => {
     // Recovery-queue reopen-and-prove + outbound advisory acknowledgement
     // version shipped through v1.3.882 (pre bounded final transport outcome).
     'd55feb9a203c7835c36b6bf0e23972c79a1e26fe6ea29683f31f831fb956c0f3',
+    // Bounded final transport outcome — the version shipped immediately BEFORE
+    // the tone-gate advisory migration added --tone-ack / --tone-reason /
+    // --tone-complied / --tone-decision-ref and the branching 422 renderer.
+    // Registering it here is what lets a deployed agent actually RECEIVE those
+    // flags: without this entry the SHA-history migrator leaves the old script
+    // in place with a `.new` candidate beside it, and the migration would be
+    // reachable only through a hand-rolled curl — i.e. inert on the one send
+    // path the agent template mandates.
+    '1182b2c7e3779a9c37355e7317962ea48122a5f4a42425d7f3f9973e8127aa19',
   ]);
 
   /**
