@@ -16,7 +16,7 @@ parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded 
 
 Spec-first deliverable for ACT-409. It proposes a cross-machine read model; it
 does not implement routes, storage, mesh verbs, or fleet rollout. Convergence
-rounds 1-7 (2026-07-25: six internal reviewer lanes + GPT-tier external passes
+rounds 1-10 (2026-07-25: six internal reviewer lanes + GPT-tier external passes
 + the standards-conformance gate each round) surfaced and resolved ~48
 material findings; the former ten open questions are resolved in
 `## Frontloaded Decisions`.
@@ -631,11 +631,28 @@ it:
 
 - `GET /capability-registry` — this machine's redacted projection. Serves the
   stored snapshot (validation once at ingest; read-time work is rule 4's
-  per-row timestamp comparison only). `200` with `scanState:
-  "never-observed"` and empty entries when no observation exists
-  (truthful-empty, mirroring `/doorways`' `never-run`); `503` ONLY when the
-  feature flag is dark. Disabled reads as disabled; empty reads as empty —
-  never interchangeable.
+  per-row timestamp comparison only). `503` ONLY when the feature flag is
+  dark. Disabled reads as disabled; empty reads as empty — never
+  interchangeable.
+  **`scanState` and row presence are INDEPENDENT (round-10 clarification —
+  the earlier wording "and empty entries when no observation exists" was
+  ambiguous and produced a real defect).** They answer different questions:
+  `scanState` reports whether a doorway SCAN has run; the rows report what
+  the catalog and any scan actually say. So a machine with a manifest and NO
+  scan-state returns `scanState: "never-observed"` **together with its
+  manifest-derived rows at status `unknown`** — never zero rows. Dropping
+  them loses real information ("the catalog lists these models and nothing
+  has probed them" is strictly more useful than "nothing here"), and it
+  collapses the three-way distinction `scanState` exists to preserve. Empty
+  `entries` is correct only when there is genuinely no manifest either
+  (`scanState` then still distinguishes never-scanned from
+  source-unavailable). Failing input for this rule: on a machine with a
+  manifest and no scan-state the route MUST return rows with status
+  `unknown`; a change that makes it return zero rows must fail a test.
+  Why it was ambiguous: manifest rows ARE observations — the record admits
+  them with `sourceDetail: doorway-manifest`, and the status matrix gives
+  `manifest-only` evidence the status `unknown` precisely so documented
+  existence is reportable without ever implying reachability.
 - `GET /capability-registry?scope=pool` — the local-serve merged view (see
   Ingest and transport). Per-machine failure rows with the closed reason
   enum; mixed failures return `200` with `pool.failed` rows — never a 500,
