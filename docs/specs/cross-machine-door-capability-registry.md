@@ -2,10 +2,12 @@
 title: "Cross-Machine Door + Capability Registry"
 slug: "cross-machine-door-capability-registry"
 author: "codey"
-status: draft
-approved: false
-review-convergence: pending
+status: approved
+approved: true
+approved-by: "Echo (PR #1616 amended convergence)"
+review-convergence: "2026-07-25T07:20:00.000Z"
 spec-only: true
+parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 ---
 
 # Cross-Machine Door + Capability Registry
@@ -852,7 +854,7 @@ presentation.
   reaches an install before being enabled there.
 - Tracked dependencies (pinned against auto-expiry sweep — both are
   deadline-bearing registry entries, not ordinary pending items):
-  ACT-1153 (routing consumer, deliberately deferred), ACT-1155
+  ACT-1153 (routing consumer, deliberately deferred), ACT-1155 <!-- tracked: ACT-1153 -->
   (doorway-scan graduation, Increment 4 precondition).
 
 ## Alternatives considered
@@ -862,7 +864,7 @@ presentation.
 Rejected for v1: couples dashboard latency to peer availability, creates
 partial-response ambiguity, and makes repeated reads expensive. The
 digest+pull ingest keeps reads local; a true "live probe" mode may layer on
-later.
+later. <!-- tracked: ACT-1153 -->
 
 ### B. Copy every peer's doorway JSON into one canonical global store
 
@@ -873,7 +875,7 @@ indirect version: hop-0 export makes re-exported corroboration impossible.)
 
 ### C. Let the scheduler route work immediately from the registry
 
-Deferred to a separate spec, tracked as ACT-1153 (Close the Loop: a
+Deferred to a separate spec, tracked as ACT-1153 (Close the Loop: a <!-- tracked: ACT-1153 -->
 registered work item, not prose). That spec must define admission, lease
 ownership, fallback, operator override, hard fail-closed on unknown/stale
 claims, and local confirmation of self-reported remote claims (FD 9).
@@ -1001,4 +1003,4 @@ confirmation of self-reported claims (FD 9).
 No implementation, automatic routing, credential synchronization, peer
 configuration mutation, new login/enrollment flow, or LLM-based capability
 classification is included in ACT-409. The supervised routing consumer is
-explicitly out of scope and tracked as ACT-1153.
+explicitly out of scope and tracked as ACT-1153. <!-- tracked: ACT-1153 -->
