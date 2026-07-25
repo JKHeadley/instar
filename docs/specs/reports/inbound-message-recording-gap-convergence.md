@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **75 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
+- **76 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -324,6 +324,27 @@ pressed on the riskiest decision, I produced a *more satisfying* argument for th
 thing I had already chosen. Twice those arguments were wrong in a way that made
 the design look better than it was. Neither was a lie; both were reasoning that
 stopped as soon as it reached a comfortable conclusion.
+
+## The recurring root cause: I search for what I remember
+
+**Four times tonight a removal or rename left the document unbuildable**, each
+time because I found the mentions I could think of rather than the mentions that
+existed:
+
+| Rounds | What was changed | What survived it |
+|---|---|---|
+| 52-54 | JSONL → SQLite | rotation state in health, JSONL deletion in privacy, rotation tests, a file-lock acceptance check |
+| 58 | Two round-57 edits | Never written at all — a batched script aborted |
+| 67→70 | Hostile-storage gates | Never written, **and reported to the operator as done** |
+| 75→76 | The `synthetic` column | Schema row, validation probe, index rule, two count rules, retention |
+
+**The fix that works is not a better search.** It is replacing the section rather
+than editing it (round 54, §5 rewritten wholesale), and verifying by reading the
+output rather than trusting the edit reported success. Both were written down in
+this report before rounds 67 and 75, and neither prevented them.
+
+That gap — between having written a lesson down and applying it — is the most
+durable finding of the night, and it is not one more review round will fix.
 
 ## The one round where a fix made the design SMALLER (75)
 
