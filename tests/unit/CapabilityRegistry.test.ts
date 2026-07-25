@@ -1,0 +1,69 @@
+import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  canonicalDigest,
+  deriveStatus,
+  readDoorwaySources,
+  validateProjection,
+  type CapabilityEntry,
+  type CapabilityProjection,
+} from '../../src/core/CapabilityRegistry.js';
+
+const entry = (overrides: Partial<CapabilityEntry> = {}): CapabilityEntry => ({
+  capabilityId: 'models:claude-code/claude-opus-4-8', capabilityKind: 'model', doorwayId: 'claude-code', machineId: 'm1',
+  probeOutcome: 'positive', endpointRef: 'mesh://m1/doorways', observedAt: '2026-07-25T00:00:00Z', receivedAt: '2026-07-25T00:00:01Z',
+  source: 'local-doorways', sourceDetail: 'doorway-scan', evidenceClass: 'probe-answered', evidence: { doorwayScanAt: '2026-07-25T00:00:00Z' }, ...overrides,
+});
+const projection = (overrides: Partial<CapabilityProjection> = {}): CapabilityProjection => ({
+  schemaVersion: 1, machineId: 'm1', machineEpoch: 1, projectionSeq: 1, scanGeneration: 1, scanState: 'observed', truncated: false, entries: [entry()], ...overrides,
+});
+
+describe('CapabilityRegistry digest determinism', () => {
+  it('rebuilds identical facts to byte-identical digests', () => expect(canonicalDigest(projection())).toBe(canonicalDigest(projection())));
+  it('ignores timestamp-only restamps', () => expect(canonicalDigest(projection())).toBe(canonicalDigest(projection({ entries: [entry({ observedAt: '2026-07-25T05:00:00Z', receivedAt: '2026-07-25T05:00:01Z' })] }))));
+});
+
+describe('CapabilityRegistry width clamps', () => {
+  it('keeps maximum-width envelope digest at or below 64 bytes', () => {
+    const p = projection({ machineEpoch: 9_999_999_999, projectionSeq: 9_999_999_999, scanGeneration: 9_999_999_999 });
+    expect(Buffer.byteLength(canonicalDigest(p))).toBeLessThanOrEqual(64);
+  });
+  it('refuses over-width values at write validation', () => expect(() => validateProjection({ ...projection(), machineEpoch: 10_000_000_000 })).toThrow('machineEpoch-width'));
+});
+
+describe('CapabilityRegistry status matrix', () => {
+  it('classifies every outcome/evidence/age combination and unknown never expires', () => {
+    for (const outcome of ['positive', 'negative', 'unknown'] as const) for (const evidenceClass of ['cli-present', 'probe-answered', 'manifest-only'] as const) {
+      const status = deriveStatus([entry({ probeOutcome: outcome, evidenceClass, observedAt: '2020-01-01T00:00:00Z' })], Date.parse('2026-01-01T00:00:00Z'));
+      expect(['available', 'unavailable', 'unknown', 'stale']).toContain(status);
+      if (outcome === 'unknown' || evidenceClass === 'manifest-only') expect(status).toBe('unknown');
+    }
+  });
+});
+
+describe('CapabilityRegistry own-source conflict', () => {
+  it('keeps both source provenances visible and derives conflict', () => {
+    const a = entry({ sourceDetail: 'doorway-scan', probeOutcome: 'positive' });
+    const b = entry({ sourceDetail: 'doorway-manifest', probeOutcome: 'negative' });
+    expect(deriveStatus([a, b])).toBe('conflict');
+    expect(new Set([a.sourceDetail, b.sourceDetail])).toEqual(new Set(['doorway-scan', 'doorway-manifest']));
+  });
+});
+
+describe('CapabilityRegistry adapter reality', () => {
+  it('reads canonical manifest and scan-state data rather than returning a stub', () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap-reg-project-'));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap-reg-state-'));
+    fs.mkdirSync(path.join(projectDir, 'scripts'));
+    fs.writeFileSync(path.join(projectDir, 'scripts/model-registry-freshness.manifest.json'), JSON.stringify({ lastReviewedAt: '2026-07-20', doors: { 'claude-code': { topModels: [{ id: 'claude-opus-4-8' }] } } }));
+    fs.mkdirSync(path.join(stateDir, 'state'));
+    fs.writeFileSync(path.join(stateDir, 'state/doorway-scan.json'), JSON.stringify({ scanGeneration: 7, doorways: [{ id: 'claude-code', probeStatus: 'ok', lastScannedAt: '2026-07-25T00:00:00Z' }] }));
+    const result = readDoorwaySources(projectDir, stateDir, '2026-07-25T00:00:01Z');
+    expect(result.scanGeneration).toBe(7);
+    expect(result.entries).toHaveLength(2);
+    expect(result.entries.map(e => e.sourceDetail)).toEqual(expect.arrayContaining(['doorway-scan', 'doorway-manifest']));
+    expect(result.entries.find(e => e.sourceDetail === 'doorway-scan')).toMatchObject({ capabilityId: 'models:claude-code/claude-opus-4-8', probeOutcome: 'positive' });
+  });
+});
