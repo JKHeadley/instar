@@ -160,9 +160,49 @@ an outside implementer cannot be expected to hold):
 | **Increment A / B** | The two shipping halves defined immediately below. |
 
 
-**Two increments, because a contract cannot mandate a subsystem while saying its
-foundation may be wrong (round-46, codex — and this resolves the incoherence
-round-45 created).** Round 45 concluded the store choice may be wrong; round 46
+> ## RECOMMENDATION CHANGED AT ROUND 50: use SQLite, and the increments collapse
+>
+> Round 50 made the point that five rounds had been circling. Increment A — the
+> supposedly minimal slice — still requires tolerant reading, a bounded 64 MB
+> read, dedupe seeding, a lock file with boot-id and stale-reclaim semantics, a
+> filesystem denylist, health file-size reporting, and a synthetic self-check.
+> **That is not a small patch. It is a hand-built storage engine with a small
+> patch inside it.**
+>
+> **And the objection that kept JSONL alive turns out to be false.** "SQLite means
+> a migration" — it does not. `better-sqlite3` is already a dependency and
+> `TopicMemory` already runs it (`src/memory/TopicMemory.ts:154`, `CREATE TABLE IF
+> NOT EXISTS` at 240). The seam log becomes a **new table**; the existing JSONL log
+> stays exactly as it is for the forward route. **Nothing is migrated. Nothing is
+> converted. No existing data moves.** That objection was carried unexamined from
+> round 27 to round 50.
+>
+> **What a table deletes from this spec:**
+>
+> | Hand-built for JSONL | With a table |
+> |---|---|
+> | In-memory dedupe set, `seedMessageLogDedupe`, bounded 64 MB startup read | `UNIQUE` index on `dedupe_id` |
+> | Torn-line tolerance, corrupt-line counting, mid-file-vs-final-line | Transactions |
+> | Lock file schema, boot-id, stale reclaim, filesystem denylist | SQLite's own locking |
+> | Rotation sequencing, retention, the rotation helper, read ordering | `DELETE WHERE`, `ORDER BY rowid` |
+> | A three-part ordering key | `rowid` |
+>
+> **The increment split then collapses.** Rounds 46-49 spent four rounds on an
+> A/B boundary — and every row that had to be deferred to (B) was deferred
+> *because JSONL needed it*. With a table there is no rotation to defer, so
+> there is nothing to split. **The split was solving a problem the storage choice
+> created.**
+>
+> **This is a recommendation, not a unilateral rewrite.** ACT-1220 registered the
+> store as the operator's call while it was a genuine trade; the evidence has
+> since moved decisively, and presenting it as still-open would be handing over a
+> decision the review has effectively made. The JSONL design below is retained in
+> full as the fallback, and remains correct if the operator prefers it.
+
+**The superseded two-increment structure (retained — it applies if JSONL is
+chosen). Two increments, because a contract cannot mandate a subsystem while
+saying its foundation may be wrong (round-46, codex — and this resolves the
+incoherence round-45 created).** Round 45 concluded the store choice may be wrong; round 46
 correctly pointed out that the contract nevertheless still ordered the entire
 hand-built log subsystem. Those cannot both stand. The split — already recommended
 independently as ACT-1219 — is what makes them coherent:
@@ -828,6 +868,17 @@ way to cancel an in-flight synchronous write, which is the same wall v4 hit.
 
 Two things follow, and neither is a mechanism:
 
+**The sync-append stall is a BLOCKING risk for opt-in, not a residual to measure
+later (round-50).** A wedged disk or an antivirus filter driver blocking the Node
+event loop stops *all* delivery on the machine — turning a recording fix into an
+availability regression is a worse outcome than the bug it fixes. So it is not
+carried as a "measured rollout concern": either the bounded mechanism below holds
+under the hostile benchmark, or the design goes async with explicit
+"may-miss-crash-before-flush" semantics. **Under the SQLite recommendation this
+risk shrinks substantially** — a transactional insert on a WAL database is bounded
+work against a file the driver has already opened, not an open-plus-append on a
+path resolved per call.
+
 **Bounded append, not unbounded trust (round-46).** "Accept the stall and observe
 it" is a weak answer for a chat system, where freezing the event loop is often
 worse than losing one local history row. Increment A therefore appends to a
@@ -1351,12 +1402,7 @@ rather than defaulted:
 | **Deletion** | Delete the current **and rotated** JSONL files. **This deletes the JSONL store only** — message text also reaches TopicMemory, which has its own delete path, and neither covers filesystem snapshots or any backup system. Any user-facing deletion instruction must say all three, because "delete the log files" will otherwise be read as "delete what I said to you" (round-39). |
 | **Export** | No dedicated export. The files are plain JSONL and readable directly. |
 | **Disclosure** **(A)** | **Blocking acceptance gate, with an owner and an artifact — not a config note (round-49).** Before the FIRST enablement on any machine: (1) a release-note entry, and (2) an operator-visible config description, both stating what is stored, where, that it is unencrypted, the retention bound, and that deletion covers the JSONL store only (TopicMemory and backups are separate). **Owner: the implementing agent; artifact: both texts linked from the acceptance record; enablement is blocked until they exist.** **End-user notice beyond the operator is explicitly NOT required**, and the reason is stated rather than assumed: instar is operator-run software where the operator is the principal data subject of their own conversation. **Where an agent receives messages from third parties, that operator is responsible for whatever notice their context requires** — this spec cannot make that call for them, and says so instead of implying it has been handled. |
-followed contradicted that (round-47).** Resolved in one direction: **the
-operator-visible description and the user-facing disclosure are BOTH preconditions
-of the first enablement, on the affected machine.** The people there are data
-subjects, and "it is only one machine" is a statement about scale, not consent.
-Nothing about disclosure is deferred to fleet rollout. **What fleet rollout adds
-(round-45): the people whose messages are stored are the DATA SUBJECTS, and an operator reading a changelog is not the same as them being told.** A user-facing disclosure path — or an explicit policy decision that one is not required — is a **precondition of enabling this anywhere but the single affected machine**, and must account for TopicMemory storing message text separately. |
+
 
 **Encryption at rest was considered and not adopted**, deliberately rather than
 by omission: the vault exists for secrets and this is not a secret store, the
@@ -1583,7 +1629,13 @@ line at three explicit instrumentation points — the first instar frame that se
 the message, any intermediate hand-off, and `injectTelegramMessage` — each
 carrying a span id shared across the three. Not distributed tracing, not a
 framework: three `console`-level structured lines behind the same flag, removed
-or left dark after acceptance. The artifact is **attached to the acceptance
+or left dark after acceptance. **Normative artifact handling (round-50):** stored **only** in the acceptance
+record, **never** in the repo and never in the log directory; **redacted to
+message ids, topic ids and function names** — no message text, no display names,
+no user ids; **deleted at sign-off**, with the acceptance record noting the
+deletion. If that handling cannot be met, the fallback is temporary structured
+logs plus a written acceptance transcript, which proves the same thing with no
+durable artifact at all. The artifact is **attached to the acceptance
 record, not committed to the repo**, because it contains real message ids —
 **and message ids are the only identifier it may carry (round-45): no message
 text, no sender names, no user ids.** It is deleted once the acceptance record is
