@@ -661,6 +661,21 @@ export interface AgentMdExecute {
 
 export interface JobState {
   slug: string;
+  /**
+   * When this job was first REGISTERED with the scheduler (ISO). Distinct from
+   * `lastRun`: it answers "how long has this job existed?" for a job that has
+   * never run.
+   *
+   * WHY IT EXISTS: the startup missed-job sweep treated every job with no
+   * `lastRun` as overdue, so a brand-new job whose first window was months away
+   * fired immediately on the next boot (ACT-724 defect (a) — an annual reminder
+   * discharged itself the day it was created). The intended rule was already
+   * written in the comment above that branch — "trigger on startup if their
+   * first expected run time has already passed" — but nothing recorded when the
+   * job started existing, so the condition was uncheckable and the code simply
+   * fired everything. This is the missing fact.
+   */
+  firstSeenAt?: string;
   lastRun?: string;
   lastResult?: 'success' | 'failure' | 'timeout' | 'pending';
   /** Error message from the last failure (cleared on success) */
