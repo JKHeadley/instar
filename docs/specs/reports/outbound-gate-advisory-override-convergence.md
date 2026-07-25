@@ -550,3 +550,23 @@ session with room to fold and re-verify each one.
 **Status: still NOT converged, no tag written, none earned.** But the caveat has
 changed shape: the spec is no longer "33 rounds of unresolved SERIOUS findings",
 it is "one clean-artifact round at MINOR with five specific, actionable items."
+
+### Round-34 disposition (folded 16:1x-16:3xZ, one at a time, each verified)
+
+Reversing the "not folded yet" note above — they were folded in this run, singly
+and with the output re-read after each, which is the mitigation for the
+batching pattern that damaged the inbound spec today.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Partial held-credential disclosure unclassified | **Folded → §4** as an explicit **accepted limit**, with the reason stated: a prefix/window matcher has no measured false-positive bound, and false positives on a NON-overridable wall have no recourse by construction. Revisit only with a bound. |
+| 2 | Row 18 turns a local write fault into a practical wall | **Folded → §3.8** as a required three-part posture: classified an availability hold beside `CAPACITY_UNAVAILABLE`/`GATE_UNAVAILABLE` (nothing concluded); FIRST occurrence raises ONE deduped operator notice naming the cause; recovery automatic and unlatched. Without the notice this is the unappealable-refusal-nobody-sees failure the spec exists to prevent. |
+| 3 | Hardening checklist omits swap / ptrace / child-process inheritance / platform crash collection | **Folded → §4** as accepted residuals *for as long as the index lives in-process*; the isolated matcher §3.2.1 already requires retires the bullet rather than shrinking it. Added bound: the local access these channels need generally also reads the config the index is built from. |
+| 4 | Table too complex to be the only behavioural source | **Folded → §3.8.1** as executable pseudocode beside the table: the table stays authority on each *outcome*, the pseudocode is authority on the *order*, and §3.10's tests derive from the ordering. Disagreement between them is defined as a defect, not a choice. |
+| 5 | Reasons may become boilerplate ritual | **NOT folded — already answered, verified by reading §3.4.** The spec states the author *is* the agent, that reasons *can* be boilerplate, and that this is exactly why they sit at the `self-report` rung graded `unknown` for a later judge; §3.8 measures the boilerplate rate rather than gating on it, because an admission-time sufficiency check reintroduces the authority being removed. The reviewer's structured-categories idea is a compatible **enhancement**, recorded here, not a defect. |
+
+**Still NOT converged and no tag written.** Four folds and one reasoned decline
+is one round's work, not convergence — the next round has to read the folded
+text, and folds are what introduced defects all day. What has changed is the
+shape of the caveat, and that the folds now sit on an artifact a reviewer can
+actually see.

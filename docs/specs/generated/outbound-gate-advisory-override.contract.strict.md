@@ -1057,6 +1057,22 @@ the same append; there is no second write and therefore no second failure mode.
  does not depend on the provenance seam, and if **it**
  cannot be written the override is **refused** (`overrideUnrecordable: true`)
  rather than granted.
+- **`overrideUnrecordable` is an AVAILABILITY hold, and must be surfaced as one.**
+ Naming it is not enough: while it holds, a rule that is advisory by design
+ behaves as a wall, so an ordinary local fault (disk full, a permission change,
+ a read-only mount) silently acquires authority the design deliberately refused
+ to give any judgment rule. Required posture, all three:
+ (a) it is classified an availability/security hold alongside
+ `CAPACITY_UNAVAILABLE` and `GATE_UNAVAILABLE` in §3.1 — *not* a judgment, since
+ nothing about the message was concluded;
+ (b) the FIRST occurrence raises ONE deduped operator notice naming the cause
+ (write failure, not "your message was refused"), because an agent silently
+ unable to override is exactly the state nobody notices;
+ (c) recovery is automatic and requires no operator action once the write
+ succeeds again — the hold is a function of live writability, never a latched
+ flag, so a freed disk restores advisory behaviour on the next send.
+ Without (b) this is the failure the whole spec is against: an unappealable
+ refusal, with no one told.
 - The **rich** provenance annotation may still fail afterwards; that failure
  delivers and is counted `override-unrecorded`, because the override *fact* is
  already durable and only the detail is missing. Making the rich write a
@@ -1392,6 +1408,42 @@ drift again):
 - **Phase C — review.** Reached only when Phase B did not resolve the request:
  the LLM review and its dispositions.
 
+**The same ordering as executable pseudocode.** The table below is the
+authority on every individual *outcome*; this is the authority on the *order*
+they are consulted in. Both describe one procedure, and **the test plan (§3.10)
+derives its cases from this ordering** rather than from a reading of the table
+— a reviewer noted that "the table wins" resolves prose-vs-table conflicts but
+does nothing for an implementer misreading precedence across rows 8/8a/8b,
+13/13a, 15/22 and 18/18a/18c/18d. If this pseudocode and the table ever
+disagree, that is a defect in one of them, not a choice.
+
+```
+evaluate(request):
+ # Phase A — deterministic wall. Runs on EVERY request, resends included.
+ # Nothing downstream can waive a Phase A outcome.
+ if b22_matches(request): return REFUSE_TERMINAL # rows 1a / 1d
+ if b22_threw(request): return HOLD_DETECTOR_INCOMPLETE # row 2
+ # NOTE: a missing or stale index is NOT a hold — it narrows the wall's
+ # reach and is surfaced. See row 2a; holding every message because a
+ # vault is unreadable is worse than the exposure it prevents.
+
+ # Phase B — override resolution. Only when a token is presented.
+ if token_presented(request):
+ if not token_valid(request): return HOLD_FRESH # invalid → new hold
+ if text_edited(request): return HOLD_FRESH # ack binds to the hash
+ if deterministic_finding_differs_from_acked(request):
+ return HOLD_FRESH # e.g. index finished rebuilding
+ if not authorized_event_appendable():
+ return REFUSE_OVERRIDE_UNRECORDABLE # row 18 (availability hold)
+ return DELIVER # acked citation answered
+
+ # Phase C — review. Reached only if Phase B did not resolve the request.
+ return llm_review(request) # dispositions per §3.1
+```
+
+Within each phase the **first matching row wins**; the phases themselves are
+strictly ordered A → B → C and never revisited.
+
 | # | Producer / condition | `advisoryCapable` | Token | `recordingLive` | Outcome |
 |---|---|---|---|---|---|
 | 1a | **B22** (proven possession — the value arm is the whole wall), **seam** | any | any | any | **Refuse, terminal.** Never overridable. Returns a **dissent-only** token (§3.3). |
@@ -1552,6 +1604,27 @@ this is the honest scoping answer).
  sentences, and it costs only the ability to stop an agent that has written down
  a justification — never the ability to stop an accident. Anything this install
  actually holds is unaffected: that is the wall.
+- **PARTIAL disclosure of a held credential is a nudge at best, and sometimes
+ nothing.** B22 matches a held value as a normalized substring, so it fires only
+ on the value *in full*. Most of a token, a fixed prefix or suffix alone, or the
+ value with one character altered does **not** reach the wall — and where the
+ value is pattern-light (bare hex, no recognizable vendor prefix) it may not
+ reach B23's nudge either, so nothing fires at all. This is an **accepted
+ limit**, not an oversight: the alternatives are a prefix/window matcher whose
+ false-positive rate on ordinary hex-looking text has no bound anyone has
+ measured, and false positives on a NON-overridable wall have no recourse by
+ construction (§3.1's whole reason for keeping the wall narrow). Recorded here
+ rather than implied away. Revisit only with a measured false-positive bound.
+- **In-memory plaintext has exposure channels the startup checklist does not
+ cover.** §3.2.1's hardening addresses heap snapshots, the inspector, route
+ exposure and crash reports. It does **not** address swap, ptrace or equivalent
+ debug entitlements, `/proc`-style access where the platform offers it, child
+ process inheritance, or platform-level crash collection. These are **accepted
+ residuals for as long as the normalized index lives in this process** — the
+ isolated matcher §3.2.1 already requires for vault values is the real fix, and
+ it retires this bullet rather than shrinking it. Anyone with the local access
+ these channels need can generally read the config the index is built from
+ anyway, which bounds the added exposure without eliminating it.
 - **The value arm is machine-scoped.** On the relay path the composing machine's
  credentials are what matter; see §6.
 - The change grades nothing. It produces evidence; the judging is later, in bulk,
