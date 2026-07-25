@@ -2280,10 +2280,52 @@ cross-checking rather than for trusting a careful author.)*
 
 ## Open questions (§8)
 
-*(none)*
+**ONE, raised in rounds 35, 36, 37 and 38 — the same finding four rounds
+running. It is a decision, not an edit, and it is the operator's.**
 
-> No decision is parked on the operator. The live external dependency is recorded
-> in §8.1 rather than disguised as a question (round-8, codex).
+> *Previously this section read `*(none)*`, and that was accurate when written.
+> It stopped being accurate once clean-artifact review could see §3.8. Leaving
+> "none" standing while a reviewer raised the same structural objection four
+> times would be the "no open questions is not credible" criticism becoming
+> true rather than being answered.*
+
+### Q1 — Does the override lifecycle become a durable outbox, or get cut back?
+
+**The observation (codex, rounds 35-38).** §3.5.1 explicitly REJECTS a durable
+approval table. §3.5 and §3.8 then specify: a token store with pending records,
+an append-only event log (`authorized` / `sent` / `egress-refused` /
+`send-failed`), a projector over it, terminal-event semantics, startup
+reconciliation, and repair. **That is a small workflow/event-sourcing system,
+assembled from parts and split across process memory and a local log.** The
+rejection and the construction are both in the spec.
+
+**Option A — adopt the pattern.** A durable approval/outbox table with explicit
+states, schema versioning, and idempotent projection.
+*Costs:* a real store and its migrations; the durability §3.5.1 argued was
+disproportionate for a 15-minute TTL; more surface at rollout.
+*Buys:* the lifecycle stops being implicit, restart semantics are a property of
+the store instead of reconstruction logic, and the failure modes are the
+well-understood ones of a pattern with prior art.
+
+**Option B — cut it back.** Reduce to a minimal local evidence log: append the
+`authorized` fact, drop the projector, terminal-event semantics and startup
+reconciliation.
+*Costs:* loses the ability to answer "what happened to this override" after a
+restart; some counters become approximate.
+*Buys:* honours §3.5.1's own reasoning; markedly less to implement and to get
+wrong.
+
+**What is NOT an option:** keeping the current shape while the spec says it
+rejected a durable table. That is the state a reviewer has objected to four
+times, and it is the one that ships a workflow engine nobody designed as one.
+
+**Recommendation (advisory, not a decision).** **Option B.** §3.5.1's argument
+against durability was made on the 15-minute TTL and still holds; the lifecycle
+grew round by round without a moment where durability was actually chosen. B is
+also the cheaper mistake — if the counters prove insufficient, A remains
+available, whereas building A now commits to a store and its migrations before
+anything is measured. **This is a recommendation only; the call is the
+operator's and nothing downstream should read it as settled.**
 
 ## 8.1 Dependencies (live, external to this spec)
 
