@@ -240,6 +240,9 @@ export const DP_FEEDBACK_READINESS = 'feedback-readiness';
 /** The stop-justified authority (src/core/UnjustifiedStopGate.ts). */
 export const DP_UNJUSTIFIED_STOP_GATE = 'unjustified-stop-gate';
 
+/** Topic-intent extraction from a conversational turn (src/core/TopicIntentExtractor.ts). */
+export const DP_TOPIC_INTENT_EXTRACT = 'topic-intent-extract';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -703,12 +706,32 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Per-turn topic routing over an inbound user turn; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'topic-intent-extract',
+    decisionPoint: DP_TOPIC_INTENT_EXTRACT,
     component: 'TopicIntentExtractor',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    // ~733 calls/7d (GET /metrics/features) — the highest-volume unenrolled
+    // point remaining after the stop gate. It fires on conversational turns, so
+    // a per-UTC-day COUNT budget rather than `full`: the decision_quality row is
+    // written for every settlement regardless, so counts stay complete while the
+    // provenance archive is capped.
+    volumeClass: 'budget:200',
+    // Content-bearing: the extractor reads a user TURN and a rolling
+    // conversational summary — both untrusted, both quotable. Entered as
+    // IDENTITY ONLY (hashes, counts, code-derived booleans); never the message
+    // text, never the summary.
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'No outcome rule exists YET. Grading an extraction needs a downstream fact — ' +
+      'was the proposed signal later affirmed, contradicted, or silently dropped by ' +
+      'the arc it was attached to? Those transitions exist in the intent store but ' +
+      'joining them to a decision row is real plumbing, not a predicate. Enrolling ' +
+      'the DECISION side first is deliberate and is what this posture is for: rows ' +
+      'accumulate now so the grader has history when it lands. Declared rather than ' +
+      'left implicit so the census shows recorded-not-graded instead of implying ' +
+      'this point is measured when only half of it is.',
     reason:
-      'Topic-intent extraction from a user turn; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Topic-intent extraction from a conversational turn — the highest-volume unenrolled point after the stop gate.',
   },
   {
     decisionPoint: 'pre-compaction-flush',

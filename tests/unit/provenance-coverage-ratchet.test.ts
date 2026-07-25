@@ -118,7 +118,6 @@ const PENDING_BASELINE = [
   'telegram-stall-confirm::TelegramAdapter::backlog:decision-quality-enrolment',
   'temporal-coherence-check::TemporalCoherenceChecker::backlog:decision-quality-enrolment',
   'topic-intent-arc-check::TopicIntentArcCheck::backlog:decision-quality-enrolment',
-  'topic-intent-extract::TopicIntentExtractor::backlog:decision-quality-enrolment',
   'topic-summarize::TopicSummarizer::backlog:decision-quality-enrolment',
   'tree-synthesize::TreeSynthesis::backlog:decision-quality-enrolment',
   'tree-triage::TreeTriage::backlog:decision-quality-enrolment',
