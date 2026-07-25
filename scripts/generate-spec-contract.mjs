@@ -107,8 +107,20 @@ export function splitStrictContract(markdown) {
       // The source measure must NOT use the capture's stopping rule, or it
       // shrinks in lockstep with the truncation it is meant to detect (an
       // interior non-allowlisted H3 would end both, and the guard sees nothing).
-      // Stop only at the next ALLOWLISTED heading or the next H2.
-      if (m && (STRICT_CONTRACT_HEADING_RE.test(lines[j]) || m[1].length <= 2)) break;
+      // Stop at the next ALLOWLISTED heading, the next H2, or a NUMBERED SIBLING
+      // at the same level.
+      //
+      // The sibling test is what separates the two shapes this guard cannot
+      // otherwise tell apart (both are "a same-level heading follows"):
+      //   "### 3.0 Final contract" → "### Normative checklist"  = meant as a CHILD;
+      //       its content belongs to 3.0 and capture losing it is a real defect.
+      //   "### 3.10 Test plan"     → "### 3.11 Judgeable-record" = a genuine SIBLING;
+      //       its content was never 3.10's and excluding it is correct.
+      // Without this, the guard fired permanently on every numbered spec — and a
+      // warning that always fires is one nobody reads (the lesson from its own
+      // second implementation).
+      const isNumberedSibling = m && m[1].length === level && /^#+\s+\d+(\.\d+)*[.\s]/.test(lines[j]);
+      if (m && (STRICT_CONTRACT_HEADING_RE.test(lines[j]) || m[1].length <= 2 || isNumberedSibling)) break;
       // Content that belongs to a NESTED allowlisted subsection is captured
       // under that subsection's own entry — it is not lost, so it must not
       // count against this section (otherwise a container heading like
@@ -275,7 +287,17 @@ function main() {
   const specRel = path.relative(process.cwd(), specPath);
 
   const strict = args.includes('--strict');
-  const markdown = fs.readFileSync(specPath, 'utf8');
+  if (!fs.existsSync(specPath)) {
+    console.error(`ERROR: spec not found: ${specRel}`);
+    process.exit(2);
+  }
+  let markdown;
+  try {
+    markdown = fs.readFileSync(specPath, 'utf8');
+  } catch (err) {
+    console.error(`ERROR: cannot read ${specRel}: ${err instanceof Error ? err.message : err}`);
+    process.exit(2);
+  }
   const res = strict ? splitStrictContract(markdown) : splitContract(markdown);
   const { contract, narrativeResidual } = res;
   const droppedSections = res.droppedSections ?? 0;

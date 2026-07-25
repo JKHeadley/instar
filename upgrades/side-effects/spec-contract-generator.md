@@ -138,6 +138,32 @@ rather than assumed:**
 Verified in both directions each time: fires on the regression, silent on the
 correct file, large-spec behaviour unchanged.
 
+### The guard's own false-positive mode (found before merge)
+
+The captured-vs-source guard fired permanently on every **numbered** spec. Cause:
+the source measure deliberately does not use the capture's stopping rule (or it
+would shrink in lockstep with the truncation it detects), so it ran past the next
+*sibling* section and counted that sibling's bytes as "missing".
+
+Both shapes look identical structurally — a same-level heading follows an
+allowlisted one:
+
+- `### 3.0 Final contract` → `### Normative checklist` — meant as a **child**;
+  its content belongs to 3.0 and losing it is a real defect.
+- `### 3.10 Test plan` → `### 3.11 Judgeable-record` — a genuine **sibling**;
+  its content was never 3.10's and excluding it is correct.
+
+Separated by a numbered-sibling test. Verified in both directions: silent on the
+numbered spec, still warning on the child-heading regression.
+
+**This is the third time this guard needed correcting, and the second time the
+failure was "it warns constantly".** That mode is worth naming as its own defect
+class: a permanently-firing warning is not a conservative guard, it is a disabled
+one, because the reader stops looking.
+
+**Also fixed before merge:** a nonexistent `--spec` path threw a raw Node stack
+trace; it now exits 2 with a one-line error.
+
 **Under-block:** unchanged. A rule narrated inside an allowlisted section still
 carries its own history; strict mode reduces the surface, it does not clean prose.
 

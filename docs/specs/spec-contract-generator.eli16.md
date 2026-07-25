@@ -143,6 +143,29 @@ shrank in step with the problem instead of noticing it.
 Each attempt was tested against the actual broken file rather than assumed to
 work. That's the only reason the first two were caught.
 
+## The warning that cried wolf
+
+The check I added to catch "this section came out empty" had a flaw I only found
+by running it on both documents instead of the one I was working on: it fired
+every single time on any document with numbered sections.
+
+The reason is a bit subtle. To notice that a section came out short, the check
+has to measure how long it *should* be — and it can't measure that the same way
+the tool decides what to keep, or it would shrink along with the problem. So it
+measured too far, ran into the *next* section, and reported that section's
+content as missing.
+
+Two situations look identical from the outside. A heading that was meant as a
+sub-part of the section above it, where losing the text really is a bug. And a
+heading that's simply the next section, where excluding it is correct. The fix
+tells them apart by whether the next heading is numbered in sequence.
+
+**This is the third time this check needed fixing, and the second time the
+problem was "it complains constantly".** That's worth naming: a warning that
+always fires isn't a careful warning, it's a switched-off one, because people
+stop reading it. I'd written that exact sentence in the design notes a couple of
+hours earlier — while the check was already doing it.
+
 ## What it doesn't do
 
 It doesn't check whether the design is any *good*, or even whether it's
