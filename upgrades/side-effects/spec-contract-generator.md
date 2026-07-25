@@ -33,6 +33,19 @@ silent.
 
 ## 2. Under-block — what does it still miss?
 
+**Found in practice, not in review:** the first version recognised only per-round
+`## Round-N … change log` headings. Pointed at a second spec that consolidates its
+history into a single `## Review record` section, it matched nothing, stripped
+nothing, reported `0 history sections excluded` and **exited 0**. A silent no-op
+that presents as success — the same species as a check that cannot run.
+
+Widened by one alternative (`Review record`). The residual is unchanged and now
+explicit: the pattern is a closed list of heading shapes, so a document using a
+convention not on the list is silently unstripped. The mitigation is the output
+line itself — it always reports how many sections it excluded, so *reading* it
+catches this. The ELI16 now says so directly.
+
+
 - **Narrative history inside normative prose.** The generator strips history
   *sections* and *inline annotations*; it cannot strip a paragraph of normative
   prose that happens to narrate how a decision evolved. Those remain in the
