@@ -582,7 +582,13 @@ normative with a concrete trigger, not a review item: the
 implementation MUST switch to the worker-owned writer before enablement if, on
 the affected machine, ANY of — contended insert p99 > 250 ms, insert max > 1 s,
 `/health` response > 1 s under contention, or any pathological-case gate — fails.**
-A named number, not a judgement call. **Also honest about the detector's limits:
+A named number, not a judgement call. **And a specified BRANCH, not a revisit: the seam calls a worker over a request/response channel and waits for
+the worker's COMMIT acknowledgement before injecting — durability preserved,
+because the wait is for the commit rather than for the enqueue — and the main
+thread never opens a write connection at all. The blast radius is the reason a
+gate failure must force this rather than prompt a discussion: a synchronous
+main-thread write freezes every conversation in the process, and the watchdog
+detects that after the harm instead of containing it.** **Also honest about the detector's limits:
 a 30 s `/health` timeout is the WEDGE signal, far too slow to catch a
 delivery-path stall that a user feels in seconds — the latency gates above are
 what must catch that, before enablement, because nothing catches it live.** "Revisit" is how a
