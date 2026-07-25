@@ -314,3 +314,37 @@ found errors where the spec described **things that did not exist yet** or
 **the wider environment**, and confirmed the claims that were checked against
 code at the time they were written. The failures were not random — they cluster
 exactly where verification was skipped.
+
+
+---
+
+## Addendum 3 — 2026-07-25T14:4xZ: one of the four findings was my tool, not this spec
+
+Addendum 1 recorded that reviewing the strict contract produced **SERIOUS ISSUES**,
+and listed as the first finding that *"normative behavior is missing from the
+strict contract"*. I attributed that to the spec and reported it to the operator
+that way.
+
+**It was a defect in the contract generator.** Its allowlist of contract-bearing
+section headings was written from the *other* spec. This spec names its normative
+sections `0.0 What an implementer builds`, `0.2 Current design overview`,
+`0. Glossary` and `3.8.1 Normative outcome table` — all genuinely normative, none
+on the list. So the generated artifact **began at the test plan**, with the
+design, the schema and the outcome table silently absent.
+
+The reviewer was reading a document with the design removed, and said so
+accurately.
+
+**The generator's own warning fired at the time** — `only 8/66 sections matched
+the allowlist (12%)` — and I recorded it in a commit message without acting on
+it. The unusable contract then sat in the repo for three hours.
+
+**Corrected:** allowlist widened (8 → 13 sections captured), the contract now
+opens with what an implementer builds and contains the outcome table.
+
+**What this changes about Addendum 1:** finding 1 is withdrawn as a criticism of
+this spec. **Findings 2-6 stand** — they concern content that *was* present in
+the reviewed artifact: the hand-rolled credential detection, the live credential
+index, the relay double-check, and the "no open questions" claim. Addendum 2's
+recommendation (build the wall on `DURABLE_SECRET_PATTERNS`, no live secret
+index) is unaffected and remains the substantive advice.
