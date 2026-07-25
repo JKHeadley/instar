@@ -763,3 +763,43 @@ WITHDRAWN. It is a **source-prose rewrite**, not a tooling change, and it should
 be scoped as its own pass with a reviewer between batches — not folded in
 alongside design work. **Never** re-narrow the allowlist to make the number go
 down; that is how §3 disappeared for a whole day.
+
+---
+
+## Round 39 (2026-07-25 16:3xZ) — the loop has reached a genuine operator dependency
+
+**Verdict SERIOUS. The decisive finding is #1, and it is a status change rather
+than a defect:**
+
+> *"The spec both rejects a durable approval/outbox table and then specifies an
+> event log, states, projector, reconciliation, and terminal semantics. §8
+> correctly admits this is unresolved. **That makes the contract not
+> implementable as strict guidance.** Resolution: pick Option A or B before
+> implementation, then rewrite §3.8.1 and tests to match the chosen lifecycle."*
+
+That is an independent reviewer stating that **convergence cannot be reached
+while Q1 is open** — not because the writing is unfinished, but because the
+lifecycle the table and tests must describe depends on which option is chosen.
+§3.8.1 and §3.10 would both be rewritten by the answer. Running further rounds
+against the current text would re-derive the same conclusion; findings 1 and 4
+of this round are already the same objection stated twice.
+
+**This is the honest reason the review loop stops here, and it is structural,
+not a matter of remaining effort:** the next productive action on this spec is a
+decision only the operator can make, and every subsequent editing pass is
+downstream of it.
+
+**Round 39's other findings, recorded:**
+
+| # | Finding | Disposition |
+|---|---|---|
+| 2 | Rows 15a and 22 still overlap; §3.5 says absent/expired/mismatched is `override-uncorrelated` while some rows say fresh review. Wants **one row per exact request shape**: no token · invalid token without ack · invalid token with ack+reason · context mismatch · consumed replay | **OPEN, and deliberately not attempted by hand.** This is a full re-partition of the token-failure space — precisely the operation that produced three consecutive unreachable-row regressions this session. It is the same work as the round-37 conclusion: **lift the discriminators into COLUMNS first**, then re-partition mechanically with the reachability check. Attempting it as a fourth hand-edit would be repeating a measured failure. |
+| 3 | Contract too narrative-heavy | Known; remedy corrected earlier today — a **source-prose rewrite**, not a stripper change. |
+| 4 | Operational burden underestimated: multiple local logs, sweeps, fsync, key lifecycle, posture fields, attention items, projection, startup reconciliation — "a lot of bespoke infra for advisory sends" | **Same objection as #1**, from the cost side. Option B answers it directly; Option A accepts it deliberately. Folded into Q1 rather than tracked separately. |
+| 5 | Evidence quality depends heavily on agent self-report | **Already answered** (§3.4): the reason sits at the `self-report` rung, graded `unknown`, handed to a stronger later judge. Declined in round 34 for the same reason and the answer has not changed. |
+
+**Final status of the convergence effort this session: NOT converged, no tag
+written, none earned.** Six rounds (34-39) against a complete artifact. The
+trajectory: MINOR → MINOR → SERIOUS (my regressions) → SERIOUS → SERIOUS →
+SERIOUS-with-a-status-change. Every round found something real; several were
+mine; the last one found that the remaining work is gated on a decision.
