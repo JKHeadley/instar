@@ -7,7 +7,7 @@
      rationale. This file says WHAT to build, never why. Read the source
      spec for the reasoning, the alternatives, and the accepted residuals
      in their full form.
-     (10 residual "round-N" reference(s) remain inline.)
+     (11 residual "round-N" reference(s) remain inline.)
 -->
 ---
 title: "Record inbound messages at the injection seam"
@@ -30,8 +30,10 @@ eli16-overview: "docs/specs/inbound-message-recording-gap.eli16.md"
 | **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws *once the syscall returns*** — a synchronous filesystem stall can still block the event loop indefinitely (§3.2); the guarantee covers the error path, not the time path. Returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path: an app-controlled local data directory is **required for fleet default-on**; an operator-configured arbitrary local path is **accepted for opt-in use** with the stall risk named (§3.2). Network storage is out of scope for either. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only on `status: 'appended'`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
 | **Fields (JSONL)** | `seamReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, **`messageId: number \| null`** (present-and-null when absent, never omitted — one shape, so a reader never has to distinguish missing-key from missing-value), `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'injection_seam_received'`, `fromUser: true`. |
-| **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** Scope: **best-effort duplicate suppression within one process** — atomic in-process, not a storage-level uniqueness guarantee. |
-| **Ordering** | `(timestamp, rowid)`. Never `message_id`. |
+| **Dedupe key** | Canonical form, exactly: **`` `in:${Number(topicId)}:${dedupeId}` ``** — never `dedupeId` alone, never a different join. `dedupeId` is the platform id when present, else a per-injection UUID. **If `topicId` is not a finite number the entry is NOT deduped** (a `NaN` would collapse every malformed row onto one key, which is worse than a duplicate); it is written and counted as `inbound-log-undedupable`. **Inserted into the in-memory set only after a successful append.** Scope: **best-effort duplicate suppression within one process** — atomic in-process, not a storage-level uniqueness guarantee. |
+| **Ordering (TopicMemory)** | `(timestamp, rowid)`. Never `message_id`. |
+| **Ordering (JSONL)** | JSONL has no `rowid` — round-42 caught the contract borrowing TopicMemory's key for a store that cannot supply it. The key is **`(seamReceivedAt, fileSequence, lineNumber)`**, where `fileSequence` is the rotation suffix (current = highest+1 conceptually) and `lineNumber` is the 0-based line within that file. Ties on `seamReceivedAt` are broken by file then line, which is append order — the only true ordering a log has. |
+| **History order** | Session history returns **chronological (oldest first)**. Rotation read order is newest-file-first for *locating* records; the assembled result is re-sorted by the ordering key above. Those are different things and conflating them was the round-42 ambiguity. |
 | **Authority** | JSONL is the **primary received-history store — authoritative *among local stores*, not a proof of receipt**. It has no `fsync`, so a power loss can drop the tail, and an append can fail while injection proceeds. **Absence of a row is therefore not evidence a message was not received**. TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
 | **Failure behavior** | A failed append is caught, counted, and **injection proceeds**. A failed TopicMemory write is caught and counted. Sustained failures raise one deduped Attention item. |
 | **Counters** | Four distinct conditions, never merged: `inbound-log-failed` — the **authoritative** JSONL append failed (reserved for that alone); `inbound-search-index-dropped` — a TopicMemory write **shed by the backlog cap** before it was attempted; `inbound-search-index-failed` — a TopicMemory write that **was attempted and threw**; plus pending-callback depth (Attention above **8**). A shed and a failure are different problems with different fixes, and neither is a lost inbound record. |
@@ -45,7 +47,7 @@ eli16-overview: "docs/specs/inbound-message-recording-gap.eli16.md"
 | **Deletion (JSONL store only)** | Deleting the current **and rotated** files removes everything this design's JSONL store holds. TopicMemory, filesystem snapshots, and any backup system are **separate stores with separate deletion** — this is not a whole-system erasure guarantee. |
 | **Single writer** | The agent-home **single-instance lock** (one server per agent home) is what makes one-writer-per-log-path true. Its scope covers append, rotation **and** seeding — all three assume it. A second writer is not detected at append time and is not defended against — so the health surface reports the **lock owner and lock state**, and `armed` is **false whenever lock validation is ambiguous** rather than optimistic. Integrity here depends on the lock; a lock whose state nobody can read is discipline, not a mechanism. |
 | **Fields (TopicMemory)** | Same identity fields, except `message_id` is the platform number or the inert placeholder **`-1`** when absent (the column is `NOT NULL`; §3 explains why it is not made nullable). `id_source` carries the meaning. **Three wire shapes for one concept was the round-40 finding — there are now two, each stated where it applies.** |
-| **`enabled` vs `armed`** | Two distinct states, both reported. `enabled` = the config flag. `armed` = the flag is on **and** the lock was acquired **and** the log path resolved writable. **A process can run `enabled && !armed`** — that is the silent-failure shape this whole spec exists to close, so it is a first-class reported state with a `inbound-log-arm-failed` counter and its reason, never an inference from a zero row count. **Acceptance FAILS if `armed` is false**, regardless of what the flag says. **Runtime behaviour when `enabled && !armed`: the seam call is a NO-OP that increments `inbound-log-arm-failed` once per process, not per message** — it does not attempt the append, does not return a `'failed'` status, and never retries. Arming is decided once at startup; a per-message retry would put filesystem work back on the delivery path to fix a condition that does not change per message. |
+| **`enabled` vs `armed`** | Two distinct states, both reported. `enabled` = the config flag. `armed` = the flag is on **and** the lock was acquired **and** the log path resolved writable. **A process can run `enabled && !armed`** — that is the silent-failure shape this whole spec exists to close, so it is a first-class reported state with a `inbound-log-arm-failed` counter and its reason, never an inference from a zero row count. **Acceptance FAILS if `armed` is false**, regardless of what the flag says. **Runtime behaviour when `enabled && !armed`: the seam call is a NO-OP that increments `inbound-log-arm-failed` once per process, not per message** — **plus a monotonic `inbound-messages-skipped-unarmed` counter that DOES increment per message** — it does not attempt the append, does not return a `'failed'` status, and never retries. Arming is decided once at startup; a per-message retry would put filesystem work back on the delivery path to fix a condition that does not change per message. |
 | **Synthetic rows** | The startup self-check record is marked `synthetic: true`. It is **excluded** from history reads, the recent-inbound count, the one-sided-conversation check and dedupe seeding. It **is** counted toward rotation size, because it occupies real bytes and pretending otherwise would make the size bound wrong. |
 | **Flag** | `messaging.inboundSeamLogging.enabled`, default-off, with emergency disable. |
 | **Acceptance** | **Not** "code landed". Requires: the flag ON for the affected machine; live Telegram proof (normal + long message) **with an instrumented trace of the real call path from Telegram arrival to the seam**, not merely a row observed afterwards; **a restart, then another message with the inbound count still increasing**; an id-less seam regression test; and the single-instance lock verified active. |
@@ -365,7 +367,16 @@ It works because:
  behavior from this feature*, and that is only true if no reader is currently
  keying on `message_id` in a way `-1` disturbs. So the change ships with a
  one-time audit of TopicMemory read paths, and the rule that follows it: **any
- read model exposing `message_id` exposes `id_source` alongside it.** A column
+ read model exposing `message_id` exposes `id_source` alongside it.**
+
+ **With a migration trigger, not an indefinite convention.** `-1`
+ is a local convention over a shared SQL column, and the AST check protects
+ the consumers that exist today. **If any consumer begins sorting or filtering
+ by `message_id`, the table is rebuilt with a nullable column** — the full
+ rebuild this spec avoided for cost reasons becomes correct the moment the
+ placeholder starts being reasoned about rather than merely carried. That is
+ an observable condition (the AST check sees the projection), so it is a
+ trigger rather than an intention. <!-- tracked: ACT-1218 --> A column
  that can hold a placeholder must travel with the column that says whether it
  is one.
 
@@ -635,20 +646,6 @@ happening after it.
 
 That last assertion is by **call order against the split logger API**, not by
 timing.
-
-**Retention, growth and what is actually being stored.** The design writes the **full text of every
-inbound message** to an append-only local file, forever, and called that
-authoritative. Three things follow that the spec had simply not addressed:
-
-- **Growth is unbounded.** No rotation, no max size, no retention. The disk-full
- test proves the *failure* is handled; nothing prevents reaching it.
-- **Reading is unbounded too.** `seedMessageLogDedupe()` reads the file at
- startup. A large enough log makes process start slow, which round-28 flagged as
- a test and this makes a policy: seeding reads a bounded tail, not the file.
-- **This is personal content, not telemetry.** An indefinitely-retained plaintext
- record of everything a person has said to the agent is a privacy posture, and
- one that should be *chosen* rather than arrived at by leaving retention
- unspecified.
 
 **The round-36 version of this protocol was wrong in a way that destroyed data, and it is worth stating plainly.** It said suffixes ascend
 with *age*, then renamed the current file to `highest + 1`, then deleted the
