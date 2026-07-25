@@ -728,3 +728,38 @@ vocabulary. Verdict SERIOUS, on findings that are new rather than repeats.
 remain are the same two that have persisted for rounds — one a tooling change,
 one an architectural decision. Neither is resolved by another editing pass, and
 the second is explicitly the operator's.
+
+---
+
+## The "contract still carries history" finding — remedy CORRECTED (16:3xZ)
+
+Rounds 35 and 38 both flagged that the strict contract still reads as history.
+I recorded the remedy twice as **"improve the inline stripping inside §3"**.
+**That was wrong, and a future session should not spend time on it.**
+
+Measured against the current artifact: the generator reports **38** residual
+`round-N` mentions (its pattern matches `round 17` with a space as well as
+`round-17`; a hyphen-only grep undercounts to 13 — the 38 is the correct
+figure). Of those, **zero** are the delimited `(round-N, reviewer — …)` form the
+stripper already removes. Every one is the class the generator's own header
+documents as unremovable: **prose stating a rule and narrating its history in
+the same sentence.** Samples, verbatim:
+
+- "…it does conclude something, so **round 17** made it advisory — see below."
+- "**Round 16** deleted the verification…"
+- "…and after **round 11's** narrowing this is the…"
+- "…but **round 22** established that the operator…"
+
+`round 17` cannot be deleted from "so round 17 made it advisory" without
+destroying the sentence: the rule and its provenance are the same clause. **No
+regex reaches this.** The only real remedy is rewriting those ~38 sentences *in
+the source spec* to state the rule without the history — prose editing, at
+roughly the volume and in exactly the document where this session's edits
+carried a measured defect rate (three consecutive unreachable-row regressions on
+one table, two self-inflicted findings in round 36).
+
+**Recorded position:** the finding is REAL and its previously-recorded remedy is
+WITHDRAWN. It is a **source-prose rewrite**, not a tooling change, and it should
+be scoped as its own pass with a reviewer between batches — not folded in
+alongside design work. **Never** re-narrow the allowlist to make the number go
+down; that is how §3 disappeared for a whole day.
