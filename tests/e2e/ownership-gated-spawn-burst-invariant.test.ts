@@ -49,6 +49,7 @@ function makeHarness(opts: { flag: SpawnAdmissionFlag; ownerAlive?: () => boolea
     readOwnership: () => ({ owner: 'mini', epoch: 3, status: 'owned' }),
     isMachineAlive: (m: string) => (m === 'mini' ? ownerAlive() : true),
     readHardPinOwner: () => opts.hardPinOwner ?? null,
+    hasLiveSession: () => true,
     durableCustodyLive: () => true,
     journal: (r: Row) => journalRows.push(r),
     raiseAttention: () => {},

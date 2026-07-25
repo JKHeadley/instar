@@ -129,6 +129,8 @@ export interface SpawnAdmissionFlag {
 }
 
 export interface SpawnAdmissionDeps {
+  /** Liveness-aware local session lookup for the conversation key. */
+  hasLiveSession?: (sessionKey: string) => boolean;
   /** Mesh self machine id; null/undefined = pool not wired (single machine). */
   selfMachineId: () => string | null | undefined;
   /** Session-pool rollout stage; 'dark' = the pool is off → short-circuit. */
@@ -323,6 +325,18 @@ export class SpawnAdmission {
       this.counters.routerVerdictsConsumed++;
       const action = input.routerVerdict.action;
       if (action === 'queued' || action === 'placement-blocked') {
+        const liveSessionExists = this.deps.hasLiveSession?.(input.sessionKey) ?? false;
+        if (!liveSessionExists) {
+          this.counters.admitted++;
+          return {
+            allow: true,
+            mode,
+            row: 'router-queued-suppress',
+            wouldBlock: false,
+            reason: `router-verdict=${action} has no live session for ${input.sessionKey}; respawn is admissible`,
+            consumedRouterVerdict: action,
+          };
+        }
         const pinnedOwner = this.livePinnedRespawnOwner(input, mode);
         return this.decide(input, pinnedOwner ? 'enforce' : mode, {
           row: 'router-queued-suppress',

@@ -22568,6 +22568,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                   const pin = _pinPlacementMetadata ? _pinPlacementMetadata(sk) : _topicPinStore?.asTopicMetadata(sk);
                   return pin?.pinned === true && pin.preferredMachine ? pin.preferredMachine : null;
                 },
+                hasLiveSession: (sk) => {
+                  // Liveness keeps legitimate respawns admissible while live duplicates remain visible.
+                  const topicSessions = telegram?.getAllTopicSessions?.();
+                  const sessionName = topicSessions?.get(Number(sk));
+                  if (!sessionName) return false;
+                  return sessionManager.getCachedRunningSessions().sessions.some((session) =>
+                    session.tmuxSession === sessionName && (session.status === 'starting' || session.status === 'running'));
+                },
                 durableCustodyLive: () => !!_inboundQueue,
                 journal: (row) => ownerDarkAudit.append(row),
                 raiseAttention: (item) => {
