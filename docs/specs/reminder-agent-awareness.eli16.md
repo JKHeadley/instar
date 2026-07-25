@@ -69,3 +69,21 @@ confidently relying on something that isn't running.
 
 Nothing directly. But it's the difference between the feature existing and the
 feature being usable, and I'd rather fix that the same day I caused it.
+
+## A footnote I earned an hour later
+
+CI rejected my first attempt at this, for a good reason.
+
+The briefing text includes example commands with the agent's port number in
+them. In the code that inserts that text, the port is a placeholder that gets
+filled in per agent. I wrote the section inside a shell command, and escaped
+that placeholder so the shell wouldn't eat it — which left the escape behind in
+the code, so the placeholder would have been written out **literally**.
+
+Every example command in the new section would have been copy-paste-broken, in
+the one document agents rely on to know how to call things.
+
+A test caught it: something that checks no literal placeholder ever survives
+into a patched briefing. Someone built that guard for exactly this mistake,
+which tells you it has happened before. It cost me one CI cycle instead of
+shipping a page of broken examples to every agent.

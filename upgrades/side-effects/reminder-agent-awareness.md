@@ -97,3 +97,28 @@ been invisible in review and would have reached zero existing agents. The test
 `that arm is SEPARATE from the Commitments-section arm` exists specifically
 because I caught myself about to do the wrong thing, and a comment saying "don't
 do that" would not have survived the next edit.
+
+
+## Addendum — the migration emitted a literal placeholder
+
+CI rejected the first version, correctly.
+
+The subsection's example commands carry the agent's port, which the surrounding
+template literal interpolates. I authored the section inside a shell heredoc and
+escaped the interpolation so the shell would not consume it — and the escape
+survived into the TypeScript. A patched CLAUDE.md would therefore have contained
+the literal placeholder text instead of a port number, making **every curl
+example in the new section copy-paste-broken**, in the one document agents rely
+on to know how to call things.
+
+Caught by `tests/unit/PostUpdateMigrator-coordinationAwareness.test.ts`, which
+asserts no literal placeholder survives into a patched file. That guard exists
+because this has happened before; it earned its keep.
+
+**The generalizable bit:** authoring template-literal content through a shell
+heredoc puts two escaping regimes in series, and the second one is invisible in
+the diff — the TypeScript looks correct in isolation. Worth writing such content
+with a file-write tool rather than a heredoc when it contains interpolations.
+
+Side effects of the fix: none beyond the corrected string. No test was weakened;
+the existing guard is what caught it.
