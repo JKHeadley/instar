@@ -168,7 +168,14 @@ It works because:
   not re-seeded**. Harmless here precisely because their per-injection UUID never
   deduped across arrivals anyway: nothing is lost that was ever promised.
   The existing key is `in:<topicId>:<messageId>`, so a message that reaches both
-  the forward route and the seam is written once. The forward route's call is left in place —
+  the forward route and the seam is written once **to JSONL**. **TopicMemory is a
+  different story and the guarantee does not extend to it (round-24, codex):**
+  its `(topic_id, message_id)` index is plain, so nothing there prevents a
+  duplicate row. In practice the in-memory dedupe short-circuits before *either*
+  write happens, so duplicates do not arise on this path — but the guarantee that
+  is *enforced* is JSONL's, and TopicMemory's freedom from duplicates is a
+  consequence of the caller, not a property of the store. Said plainly because
+  "written once" reads as a storage guarantee and is not one. The forward route's call is left in place —
   removing it would be a second change for no benefit.
 - **The logged `text` is the operator's message, not the wrapper (round-10,
   codex — "if the seam logs the wrong representation, history remains incomplete
@@ -366,6 +373,15 @@ catch { /* never block the injection */ }
 inject(...)
 ```
 
+**The ordering invariant, stated so nothing is inferred from the listing
+(round-24, codex).** Only two orderings are guaranteed and only two matter: the
+**JSONL append completes before `inject` is called**, and the TopicMemory write
+executes on a **later event-loop turn**. Whether that later turn lands before or
+after `inject` returns is deliberately unspecified — `inject` may yield
+internally, and **no correctness depends on the answer**. Reading an ordering out
+of the source lines above would be inferring a guarantee the design does not
+make.
+
 **This requires the logger to split its phases (round-20, codex).**
 `TelegramAdapter.logInboundMessage()` currently does both writes in one call, so
 it gains an internal split — the JSONL append and the TopicMemory write become
@@ -481,6 +497,15 @@ the current API.
   stalling delivery for everything behind it. The alternative I kept defending —
   observe the pile-up, fix later — left the worst case unbounded in exchange for
   nothing.
+- **General event-loop congestion is a silent third cause, acknowledged
+  (round-24, gemini).** The backlog counter sees *this feature's* pending writes.
+  It does not see the loop being busy with unrelated work, which delays the
+  deferred TopicMemory write just as effectively and increments nothing. So a
+  quiet `inbound-log-dropped` is **not** evidence that searchable copies are
+  landing promptly — only that this feature did not shed them. That is an
+  inherent property of `setImmediate` scheduling and is accepted rather than
+  worked around; the JSONL record, which is what history reads, is unaffected
+  because it never waits for a turn.
 - **What the test still does not prove.** Up to 64 scheduled writes can run
   back-to-back on the next tick, so a burst still costs *some* loop delay — it is
   bounded now, not eliminated. The earlier phrase "no unbounded synchronous work
@@ -642,7 +667,10 @@ that reader consults fails here rather than in production five days later.
    ACT-1216 rather than left as a note (§8.1).
 9. **This is a RECEIVED log, not an OBSERVED log** (§3.1) — the honest name for
    what it records, chosen over a second write to track delivery status.
-10. **No new abstraction** — no queue, worker, event bus or write-ahead log
+10. **No new SUBSYSTEM** — no queue, worker, event bus, retry ladder or new
+    persistent store. (Not "no write-ahead log": §3 names the design as a
+    miniature write-ahead split, and FD10 contradicting that was review scar
+    tissue — round-24, codex.)
     (§3, §3.2). The persistence already exists and nothing consumes it
     transactionally. This decision was violated twice during review (a timeout
     budget, then a queue subsystem) and restored both times; the record is left
