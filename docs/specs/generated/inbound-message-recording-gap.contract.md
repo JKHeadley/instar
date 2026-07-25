@@ -9,7 +9,7 @@
      NOT REMOVED: narrative prose that states a rule and narrates its own
      history in the same sentence. A transform cannot separate those without
      judgment it deliberately does not have, so some review references remain
-     below (23 occurrence(s) of "round-N" in this file).
+     below (24 occurrence(s) of "round-N" in this file).
      Where such a sentence describes what a design USED to be, the surrounding
      normative statement governs. Read the source spec for full context.
 -->
@@ -114,7 +114,11 @@ not what it was asked.
 - `messaging.inboundSeamLogging.captureBody` — default `true`
 - `messaging.inboundSeamLogging.captureBodyAcknowledgedAt` — **no default; arming
  REFUSES to capture bodies until it is set**. Unset ⇒ the feature arms in
- metadata-only mode and says so on `/health`: the operator flips two things, not one, because
+ metadata-only mode. **Two distinct fields, because one key with two effective
+ values is unimplementable: `requestedCaptureBody` (the config value)
+ and `effectiveCaptureBody` (`requested && acknowledgedAt is set`). `/health`
+ reports BOTH, plus `captureBodyAcknowledgedAt` itself — an ISO-8601 timestamp;
+ any unparseable value is treated as unset rather than as acknowledgement.**: the operator flips two things, not one, because
  "record that a message arrived" and "keep the text of everything anyone types
  to this agent" are different decisions and only the second is a privacy
  decision. The default stays `true` because session-resume reading — the actual
@@ -171,7 +175,13 @@ SQL. Never auto-`ALTER`. Retry arming every 60 s, backing off to 15 m.
 
  ```
  on failure: degraded = true; last_failure_at = now (durable, best-effort)
- on successful insert: if (now - last_failure_at >= 60s) clear()
+ on insert appended
+ OR duplicate: if (now - last_failure_at >= 60s) clear()
+ // a UNIQUE violation proves the DB is reachable, writable
+ // enough to reach the index, and enforcing constraints —
+ // it is recovery evidence. Round-80: without this, a
+ // machine seeing only redeliveries stays degraded while
+ // demonstrably healthy.
  on operator check ok: clear() // no wait
  clear(): degraded = false; DELETE the durable row (failure to
  delete leaves degraded true; it NEVER rolls back an insert)
@@ -298,6 +308,11 @@ operator alert queue. **Armed**: enabled *and* the store opened writable.
  - **Row present and equal to this build's version** → validate the existing schema of **both**; **do not write**.
  - **Row present and older** → apply the ordered migration, validate **both**, then **UPDATE** the row.
  - **Row present and NEWER than this build** → refuse to arm. A downgrade must never rewrite a schema it does not understand.
+
+ **That refusal is the SCHEMA row only. The VALIDATION row behaves oppositely:** a newer `validation_version` runs the
+ current probes, does not overwrite the row, and **does not refuse** — validation
+ is behaviour, not structure, so a future build's stricter probes say nothing
+ about whether this build can operate against this schema.
 5. `COMMIT` — or `ROLLBACK` and `armed: false`, naming the difference, on any validation failure.
 
 Validation always runs against the **actual resulting schema**, never against what the DDL intended, so a pre-existing wrong table fails identically whether this build created it or not.
