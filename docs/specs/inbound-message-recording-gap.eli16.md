@@ -7,10 +7,18 @@ you have sent me is.
 
 ## How that was confirmed
 
-Two separate places store conversation history. Both were checked. For this
-conversation, one holds 71 messages and the other 77 — and in both, every single
-one is mine. Across all conversations, nothing you have sent since the 20th of
-July was recorded here, while everything I sent was.
+Two separate places store conversation history. Both were checked, then checked
+again several hours later — and the second check made it worse.
+
+For this conversation there are now 111 stored messages, every one of them mine.
+Across all conversations, the last message from you that this machine recorded
+was on the **1st of July**. That is 24 days. Today alone I have sent 67 messages
+here and recorded none of yours.
+
+I had first written "nothing since the 20th of July." That was true, and it
+understated the problem by three weeks — I'd measured over a window picked for
+another reason and never asked what came before it. Which is the same shape of
+mistake as the bug itself: something correct, over a range nobody examined.
 
 So it isn't a display quirk or a search problem. The messages genuinely aren't
 being written down.
@@ -123,8 +131,8 @@ honestly records what *it* saw — which is what session startup actually reads,
 it solves the problem that bit us. A single merged view across both machines is a
 bigger change and is deliberately left for later rather than smuggled in here.
 
-It also can't recover what's already gone. Everything between the 20th of July
-and this shipping is lost on this machine.
+It also can't recover what's already gone. Everything you have sent me since the
+1st of July is lost on this machine, and stays lost.
 
 ## Why this document is short
 
@@ -135,9 +143,12 @@ more of them. The lesson written down from that: keep a specification small
 enough that fixing it doesn't break it. This one is one problem, one place, one
 switch.
 
-That said — this one hasn't finished its review either. Twenty-eight rounds so
-far. The difference is what the rounds are finding: the big one kept surfacing
-contradictions I'd introduced myself, while this one is still surfacing real
-things I'd missed, like the alternative above. When the rounds stop finding
-anything new I'll say so; I'm not going to declare it finished because I'm tired
-of the loop.
+That said — this one hasn't finished its review either. Thirty-eight rounds so
+far, none of them clean. The difference is what the rounds keep finding: the big
+one mostly surfaced contradictions I'd introduced myself, while this one is still
+surfacing real things I'd missed — a whole alternative design, an unbounded file,
+a privacy question nobody asked for thirty-three rounds. It's also true that
+roughly one problem per round is one I created in the previous round, which is
+why it hasn't settled. Every round's outcome is written into the commit history
+as it happens, so where it actually lands is a matter of record rather than of me
+remembering to mention it.

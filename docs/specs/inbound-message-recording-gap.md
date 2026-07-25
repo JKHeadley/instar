@@ -91,14 +91,26 @@ boundary.
 
 Verified on the Mac Mini, 2026-07-25:
 
+**Re-verified against live state at 2026-07-25T11:19Z**, and the re-check moved a
+headline number in the worse direction — which is the reason for re-checking
+rather than quoting the first measurement:
+
 | Observation | Value |
 |---|---|
-| Messages stored for topic 33368 | 71 |
+| Messages stored for topic 33368 | 111 |
 | …of which inbound (`fromUser: true`) | **0** |
-| Inbound rows machine-wide since 2026-07-20 | **0** |
-| Outbound rows machine-wide in the same window | 324 |
-| Confirmed independently in `topic-memory.db` | same result: 77 rows, 0 inbound |
+| **Last inbound row machine-wide (any topic)** | **2026-07-01T21:40:22Z — 24 days ago** |
+| Last outbound row machine-wide | 2026-07-25T11:19:46Z (current) |
+| Inbound / outbound since 2026-07-20 | **0** / 392 |
+| Inbound / outbound on 2026-07-25 alone | **0** / 67 |
 | Hits on the route that logs inbound (`/internal/telegram-forward`) in `logs/server.log` | **0** |
+
+**The earlier figure was "zero inbound since 2026-07-20", which was true and
+understated the defect by three weeks.** It was true because it was measured over
+a window chosen for a different reason, and no one asked what lay before the
+window. The real cutoff is 2026-07-01. Recorded because the same shape of error —
+a correct statement over an unexamined range — is how the underlying bug went
+unnoticed in the first place.
 
 The recording code is not broken. **It is on a path that is not being used.**
 `TelegramAdapter.logInboundMessage()` has exactly one caller — the lifeline
@@ -155,7 +167,7 @@ that is cheaper than pretending duplication is free.*
 | | |
 |---|---|
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
-| **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws *once the syscall returns*** — a synchronous filesystem stall can still block the event loop indefinitely (§3.2); the guarantee covers the error path, not the time path. Returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path must be an app-controlled local data directory. |
+| **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws *once the syscall returns*** — a synchronous filesystem stall can still block the event loop indefinitely (§3.2); the guarantee covers the error path, not the time path. Returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path: an app-controlled local data directory is **required for fleet default-on**; an operator-configured arbitrary local path is **accepted for opt-in use** with the stall risk named (§3.2). Network storage is out of scope for either. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only on `status: 'appended'`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
 | **Fields** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, `messageId` \| absent, `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'session_received'`, `fromUser: true`. |
 | **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** Scope: **best-effort duplicate suppression within one process** — atomic in-process, not a storage-level uniqueness guarantee. |
@@ -166,14 +178,14 @@ that is cheaper than pretending duplication is free.*
 | **Latency** | Append latency sampled; Attention on **p99 > 50 ms** (generally slow filesystem) **and** on any **single append > 1 s** (the pathological stall a p99 cannot see). Both ship. |
 | **Health** | `enabled` flag state, recent inbound row count, append failures, max latency, rotation state (current size + rotation count), startup synthetic self-check result, and a one-sided-conversation check (recent outbound with zero inbound). |
 | **Storage** | Append-only JSONL in an **app-controlled local data directory**, file mode **0600**, owned by the agent process user. Plaintext — no encryption at rest (§4). |
-| **Rotation** | Rotate at **32 MB**; keep **4** rotated files. Oldest is deleted on rotation — that deletion IS the retention mechanism. **Filenames:** `inbound.jsonl` (current) and `inbound.jsonl.1` … `inbound.jsonl.N`, **N ascending = older**. **Protocol (ordered, crash-recoverable):** re-resolve the path → rename current to `.{highest existing suffix + 1}` → append to a fresh current file. **Deletion selects by highest suffix**, not mtime, so a restored or touched file cannot resurrect itself as newest. Missing or skipped suffixes are tolerated and never renumbered; "keep 4" means *at most 4 rotations survive a rotation event*, counted by suffix. **Read ordering** for history is current first, then ascending suffix. |
+| **Rotation** | Rotate at **32 MB**; keep **4** rotated files. Oldest is deleted on rotation — that deletion IS the retention mechanism. **Filenames:** `inbound.jsonl` (current) and `inbound.jsonl.1` … `inbound.jsonl.N`. **N ascending = NEWER** — the suffix is a monotonic sequence number, not a logrotate age rank. **Protocol (ordered, crash-recoverable, ONE rename):** re-resolve the path → rename current to `.{highest existing suffix + 1}` → append to a fresh current file. **Deletion selects the LOWEST suffix** (the oldest), by suffix and never by mtime, so a restored or touched file cannot change its own age. Missing or skipped suffixes are tolerated and never renumbered; "keep 4" means *at most 4 rotations survive a rotation event*, counted by suffix. **Read ordering** for history is current first, then **descending** suffix (newest rotation first). |
 | **Retention** | Whatever fits in current + 4 rotations (~160 MB of message text). Resume history is bounded by this window, not by time. No time-based expiry. |
 | **Seeding** | `seedMessageLogDedupe()` reads the **current file only**, and at most its **last 64 MB** — never the rotations. A redelivered message older than the current file is written twice; that is the accepted cost of a bounded startup read. |
 | **Deletion** | Deleting the current **and rotated** files removes everything this design's JSONL store holds. TopicMemory, filesystem snapshots, and any backup system are **separate stores with separate deletion** — this is not a whole-system erasure guarantee. |
 | **Single writer** | The agent-home **single-instance lock** (one server per agent home) is what makes one-writer-per-log-path true. Its scope covers append, rotation **and** seeding — all three assume it. If the lock cannot be acquired at startup, the seam logging feature **does not arm** (the process may still run; it does not write this log). A second writer is not detected at append time and is not defended against. |
 | **Synthetic rows** | The startup self-check record is marked `synthetic: true`. It is **excluded** from history reads, the recent-inbound count, the one-sided-conversation check and dedupe seeding. It **is** counted toward rotation size, because it occupies real bytes and pretending otherwise would make the size bound wrong. |
 | **Flag** | `messaging.inboundSeamLogging.enabled`, default-off, with emergency disable. |
-| **Acceptance** | **Not** "code landed" — the flag ON for the affected machine, live Telegram proof (normal + long message), **a restart, then another message with the inbound count still increasing**, an id-less seam regression test, and the single-instance lock verified active. |
+| **Acceptance** | **Not** "code landed". Requires: the flag ON for the affected machine; live Telegram proof (normal + long message) **with an instrumented trace of the real call path from Telegram arrival to the seam**, not merely a row observed afterwards; **a restart, then another message with the inbound count still increasing**; an id-less seam regression test; and the single-instance lock verified active. |
 | **Known residuals** | A wedged local disk can stall message delivery. Messages dropped before injection are invisible. Message text is stored in local plaintext. All three accepted and named, none mitigated. |
 
 
@@ -894,7 +906,7 @@ the JSONL append.
   the pending-callback guardrail below is what would surface a store behaving that
   way; but the unbounded case — the one that would wedge the process — is closed
   by the existing pragma, not by a new assumption.
-- A failure is caught and counted (`inbound-log-failed`). **No retry** — a retry
+- A failure is caught and counted (`inbound-search-index-failed` — **not** `inbound-log-failed`, which §3.0 reserves for the authoritative append; round-38, codex, and the third time a counter name has drifted between the contract and the prose). **No retry** — a retry
   is a loop, a loop needs brakes, brakes need a breaker, and that is exactly the
   subsystem this paragraph deleted twice. A best-effort log does not earn it.
 - **No *application-level* queue, worker or retry — and the precision matters
@@ -1211,7 +1223,31 @@ authoritative. Three things follow that the spec had simply not addressed:
   one that should be *chosen* rather than arrived at by leaving retention
   unspecified.
 
-**Rotation is now load-bearing, so it needs a protocol, not a size number
+**The round-36 version of this protocol was wrong in a way that destroyed data
+(round-38, codex), and it is worth stating plainly.** It said suffixes ascend
+with *age*, then renamed the current file to `highest + 1`, then deleted the
+highest. Those three rules together mean **the newest rotation is deleted every
+time** and history reads back in the wrong order. That is not a wording problem;
+it is a specification that, implemented exactly as written, throws away the most
+recent messages it just rotated.
+
+Two coherent schemes exist and the choice is deliberate:
+
+- **Conventional logrotate** — shift every file down (`.1`→`.2`, current→`.1`),
+  delete the highest. Familiar, and ages read naturally. Costs **N renames per
+  rotation**, so a crash mid-rotation can leave the set half-shifted.
+- **Monotonic sequence (chosen)** — the suffix is a *sequence number*, ascending
+  = newer. Current becomes `highest + 1`; the **lowest** suffix is deleted.
+  Costs **one rename**, so the crash window is a single atomic operation and any
+  interruption leaves a valid set.
+
+The monotonic scheme is chosen for that crash property, which matters more here
+than familiarity — this is a log whose entire purpose is surviving crashes. The
+cost is that "the .1 file" is the *oldest*, which is the opposite of most
+people's instinct, so it is stated in the contract rather than left to be
+inferred.
+
+**Rotation needs a protocol, not a size number
 (round-35, codex — a gap the round-34 fold created by adding rotation without
 one).** Retention, bounded seeding and deletion completeness all now depend on
 rotation behaving predictably, including when a process dies in the middle of it.
@@ -1301,6 +1337,17 @@ no user can exercise, or quietly reclassifying it later. So they are split:
 | 2. A long Telegram message (file-pointer injection) | The logged text is the operator's message, not the wrapper |
 | 3. **Restart the server / reload config** | — |
 | 4. Another normal message; inbound count still increases | **The fix survives the thing most likely to undo it** |
+
+**Observing a row is not proving the path (round-38, codex).** A row appearing
+after a message proves *something* wrote it; it does not prove the message
+travelled the route this design assumes, and the whole defect is that inbound
+traffic takes a route nobody had traced. So acceptance carries an artifact, not
+just an observation: **the live proof runs with the seam instrumented, and
+records the actual call path from Telegram arrival to `injectTelegramMessage`.**
+That trace is the evidence that the seam is genuinely on the production path —
+the claim §2 makes and that this spec otherwise asks the reader to accept. It
+also feeds ACT-1217 directly, since tracing the path *is* the beginning of
+finding the intake edge.
 
 **Steps 3 and 4 are the point (round-33, codex).** A single readback proves the
 code works; it does not prove the *machine* is fixed, because the realistic
