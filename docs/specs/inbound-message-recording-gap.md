@@ -289,14 +289,48 @@ write — and it is why the in-memory flag, not the row, is the primary signal.
 
 **Retention** — daily; cutoff via `ORDER BY seq DESC LIMIT 1 OFFSET :keep`; delete
 `WHERE seq IN (SELECT seq … LIMIT 1000)` in batches with yields; keep 200 000 rows;
-cap stored text at **65 536 UTF-8 bytes, truncated on a character boundary** (never mid-sequence, so the stored value is always valid UTF-8); abort if an insert failed or p99 exceeded the gate in the
+cap stored text at **65 536 UTF-8 bytes — UNREACHABLE in practice: Telegram's limit is 4 096 characters and the largest row ever stored here is 4 094 bytes** — truncated on a character boundary if it ever applies (never mid-sequence, so the stored value is always valid UTF-8); abort if an insert failed or p99 exceeded the gate in the
 last 5 minutes.
 
 **Health** — `recording`, `enabled`, `armed` (+reason), `lastArmAttemptAt/Result`,
 `rowCountTotal`, `rowCountUserVisible`, `dbFileBytes`, `walFileBytes`, insert
 failures, max latency, self-check result, last retention run, loop-tick counter.
 
-#### MEASURED BASELINE — this likely settles the implementation choice
+#### MEASURED: both retention numbers I chose are no-ops
+
+Measured against the live store, 2026-07-25T14:1xZ — 25,711 rows, 28.5 MB:
+
+| | Measured | The bound I wrote |
+|---|---|---|
+| Rows added per day | **~74** | keep **200 000** ⇒ **~7.4 YEARS** of history |
+| Average message | **507 bytes** | — |
+| p99 message | **2 862 bytes** | — |
+| Largest message ever | **4 094 bytes** | cap at **65 536 bytes** (16× larger) |
+| Rows ever over 64 KB | **0** | — |
+
+**Neither bound binds.** A 200 000-row cap on a store growing at 74 rows/day is
+not a retention policy, it is "never delete" with a number attached — and I used
+it to argue the privacy posture was bounded. The 64 KB text cap guards against a
+message Telegram cannot send: the platform limit is 4 096 characters, which is
+exactly why the largest row ever recorded is 4 094 bytes.
+
+**Both were invented, and neither was checked against a store that has been
+sitting there the whole time.** This is the third invented-number finding today,
+after the 370 ms "bound" that bounded the wrong thing and the alert thresholds
+that had no stated consumer.
+
+**What follows** — flagged for the operator rather than silently re-picked,
+because retention is a privacy decision and not mine to set:
+
+- **A bound that never binds should be stated as "no retention limit" or made
+  real.** ~90 days at the current rate is ~6 700 rows; a year is ~27 000. If the
+  privacy argument matters, the number has to be one that actually deletes.
+- **The text cap can go**, or drop to just above the platform limit. Carrying a
+  64 KB cap implies a risk the channel cannot produce.
+- **The truncation flag and its test become dead code** unless the cap is
+  lowered to somewhere reachable.
+
+#### MEASURED BASELINE — the event loop, and the implementation choice
 
 Grounded 2026-07-25T14:0xZ against the live `/health` on the machine this fix
 targets. **`/health` already reports event-loop lag** — the "monotonic loop-tick
@@ -468,7 +502,7 @@ rather than a nicety.
 | **Indexes + health queries** | `UNIQUE(dedupe_id)` for dedupe; `(topic_id, seq)` for per-topic history and the one-sided check; there is no `synthetic` column to index — self-checks roll back. **Every health query is bounded and named (round-60: unindexed health checks become the new load source):** `rowCountTotal` = `COUNT(*)` (fine at 200k), `rowCountUserVisible` = the same count today, since no non-user row is ever committed — kept as a distinct field so a future non-user writer restores the distinction; it is not a chat message and does not interrupt a conversation. |
 | **One-sided-conversation check** | A periodic query for topics with recent outbound rows and zero inbound rows over the same window. **Cadence:** hourly. **Owner:** the agent, surfacing to the operator via one deduped Attention item. **Actionable:** it names the topic and the window, and means *either* the recording is broken *or* the agent legitimately spoke unprompted — so it reports a suspicion to check, never an assertion of failure. |
 | **Coverage evidence** | Three signals that SHIP, ranked honestly, none of them enforcement. **(1) The live call-path trace at acceptance** — proves the seam is on the real path, once, at one moment. **(2) The one-sided-conversation check** — recent outbound with zero inbound rows for a topic. Detects TOTAL regression in a topic and nothing subtler; kept because it needs no cooperation from the sending side and would have caught the original 24-day defect. **(3) The AST fitness test** — a build-time guard against the easy regression, blind to dynamic dispatch, reflection and module boundaries. **Reconciliation against the forward route is DEFERRED, not shipped (round-62).** It would be the strongest signal — it alone catches partial loss and wrong-topic writes — but it needs a durable, crash-safe, wrap-aware store of observed ids that this spec had waved at rather than specified, and making acceptance depend on an unspecified store is how a check becomes decorative. Tracked as follow-up rather than claimed. <!-- tracked: ACT-1222 --> |
-| **Retention** | **Two dimensions.** (1) Keep the newest **200 000 rows**. (2) Cap stored text at **65 536 UTF-8 bytes per row** (bytes, not characters; truncation lands on a character boundary so the value stays valid UTF-8), longer messages stored truncated with `text_truncated = 1`. Not time-based. **The two caps bound the PAYLOAD, not the store** — SQLite page overhead, the index, WAL growth and free pages after deletes all sit outside them, so `200k x 64KB` is not a filesystem guarantee. `/health` reports **actual DB and WAL file sizes** instead, which is a measured number rather than an inferred one. **Deletion is two-step and batched**, never one statement: `SELECT seq … ORDER BY seq DESC LIMIT 1 OFFSET :keep` for the cutoff, then `DELETE FROM inbound_messages WHERE seq IN (SELECT seq FROM inbound_messages WHERE seq <= :cutoff LIMIT 1000)` repeated with a yield between batches — **the subquery form because `DELETE … LIMIT` requires SQLite compiled with `SQLITE_ENABLE_UPDATE_DELETE_LIMIT`, which is not guaranteed (round-59)**, reporting rows deleted and per-batch latency. Daily. A single large DELETE would take locks on the same database the synchronous insert uses. **Retention YIELDS to recording (round-64): it does not start, and aborts between batches, if there has been an insert failure or a p99 above the latency gate in the last 5 minutes** — recording is the point of the feature and cleanup is housekeeping, so under contention the housekeeping loses. Last retention run time, duration, rows deleted and abort reason are on `/health`. Deleted rows free pages for reuse; **no `VACUUM`** — returning disk to the OS is not worth an exclusive lock on the delivery path's database. |
+| **Retention** | **Two dimensions, BOTH MEASURED AS NO-OPS — see the measured section above; left as-is pending an operator decision rather than silently re-picked, since retention is a privacy call.** (1) Keep the newest **200 000 rows** — ~7.4 years at this store's real rate of ~74/day, so the bound never binds. (2) Cap stored text at **65 536 UTF-8 bytes per row** (bytes, not characters; truncation lands on a character boundary so the value stays valid UTF-8), longer messages stored truncated with `text_truncated = 1`. Not time-based. **The two caps bound the PAYLOAD, not the store** — SQLite page overhead, the index, WAL growth and free pages after deletes all sit outside them, so `200k x 64KB` is not a filesystem guarantee. `/health` reports **actual DB and WAL file sizes** instead, which is a measured number rather than an inferred one. **Deletion is two-step and batched**, never one statement: `SELECT seq … ORDER BY seq DESC LIMIT 1 OFFSET :keep` for the cutoff, then `DELETE FROM inbound_messages WHERE seq IN (SELECT seq FROM inbound_messages WHERE seq <= :cutoff LIMIT 1000)` repeated with a yield between batches — **the subquery form because `DELETE … LIMIT` requires SQLite compiled with `SQLITE_ENABLE_UPDATE_DELETE_LIMIT`, which is not guaranteed (round-59)**, reporting rows deleted and per-batch latency. Daily. A single large DELETE would take locks on the same database the synchronous insert uses. **Retention YIELDS to recording (round-64): it does not start, and aborts between batches, if there has been an insert failure or a p99 above the latency gate in the last 5 minutes** — recording is the point of the feature and cleanup is housekeeping, so under contention the housekeeping loses. Last retention run time, duration, rows deleted and abort reason are on `/health`. Deleted rows free pages for reuse; **no `VACUUM`** — returning disk to the OS is not worth an exclusive lock on the delivery path's database. |
 | **Single writer** | SQLite serialises writers; it does **not** guarantee this write completes within `busy_timeout` (round-60 — "SQLite handles it" was too broad). The realistic contenders on this shared database are the retention delete, TopicMemory's own writes, and WAL checkpoints. Mitigations, in order: retention runs in **small batches with yields** (§Retention) so it never holds a long write lock; the seam uses its **own connection** with `busy_timeout = 100 ms`; and the **bounded retry** above covers the residual contention. **No lock file, no boot-id, no stale-reclaim rule, no filesystem allowlist.** Injection never waits on lock acquisition beyond the retry budget. |
 | **`enabled` vs `armed`** | `enabled` = the config flag (configuration only, never the logging predicate). `armed` = enabled **and** the table opened writable. Arming is attempted at startup and **retried in the background** (60s, backoff to 15m), outside the per-message path. While unarmed the seam call is a no-op, incrementing `inbound-log-arm-failed` once per process and `inbound-messages-skipped-unarmed` per message. **Acceptance FAILS if `armed` is false.** |
 | **Failure behavior** | A failed insert is caught, counted, and **injection proceeds**. A failed secondary write is caught and counted. |
