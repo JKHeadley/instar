@@ -9,7 +9,7 @@
      NOT REMOVED: narrative prose that states a rule and narrates its own
      history in the same sentence. A transform cannot separate those without
      judgment it deliberately does not have, so some review references remain
-     below (19 occurrence(s) of "round-N" in this file).
+     below (20 occurrence(s) of "round-N" in this file).
      Where such a sentence describes what a design USED to be, the surrounding
      normative statement governs. Read the source spec for full context.
 -->
@@ -127,7 +127,7 @@ operator alert queue. **Armed**: enabled *and* the store opened writable.
 | **Attention** | The deduped operator alert queue (`POST /attention`). **Cadence:** raised at most once per condition per episode, never per event. **Owner:** the operator. **Actionable:** each item names the condition and the read surface to check; it is not a chat message and does not interrupt a conversation. |
 | **One-sided-conversation check** | A periodic query for topics with recent outbound rows and zero inbound rows over the same window. **Cadence:** hourly. **Owner:** the agent, surfacing to the operator via one deduped Attention item. **Actionable:** it names the topic and the window, and means *either* the recording is broken *or* the agent legitimately spoke unprompted — so it reports a suspicion to check, never an assertion of failure. |
 | **Coverage evidence** | The AST fitness test is a build-time guard, **not** proof of coverage. **The primary production evidence that the seam is on the real path is (1) the live Telegram call-path trace at acceptance and (2) the ongoing one-sided-conversation check** — recent outbound in a topic with zero inbound rows. Round-52 is right that dynamic and import-boundary bypasses stay plausible; the one-sided check is what would catch one *in production*, without knowing where it is, and is therefore the load-bearing detector rather than a nice-to-have. |
-| **Retention** | Keep the newest `:keep` rows, delete the rest: `DELETE FROM inbound_messages WHERE seq NOT IN (SELECT seq FROM inbound_messages ORDER BY seq DESC LIMIT:keep)`, daily. **Stated as a set, not an arithmetic offset (round-53: `seq < MAX(seq) -:keep` keeps `:keep + 1` rows when dense and drifts arbitrarily when sparse).** **Synthetic rows count toward retention** — they occupy real rows and pretending otherwise makes the bound wrong — even though they are excluded from history reads and row-count reporting. Default keep **200 000 rows**. **No rotation, no file sequence, no rotation helper, and no size bound** — row count is the only retention dimension. Deleted rows free pages for reuse; **no `VACUUM`** — reclaiming disk to the OS is not worth an exclusive lock on the delivery path's database. |
+| **Retention** | **Two-step and batched, never one big statement (round-55: a daily `DELETE … NOT IN (SELECT … LIMIT:keep)` over a growing table takes locks on the same database the synchronous insert uses — self-inflicting the exact stall this design treats as its main residual).** Step 1: `SELECT seq FROM inbound_messages ORDER BY seq DESC LIMIT 1 OFFSET:keep` to find the cutoff. Step 2: `DELETE FROM inbound_messages WHERE seq <=:cutoff LIMIT 1000`, repeated with a yield between batches, reporting rows deleted and per-batch latency. Daily. **Stated as a set, not an arithmetic offset (round-53: `seq < MAX(seq) -:keep` keeps `:keep + 1` rows when dense and drifts arbitrarily when sparse).** **Synthetic rows count toward retention** — they occupy real rows and pretending otherwise makes the bound wrong — even though they are excluded from history reads and row-count reporting. Default keep **200 000 rows** **AND a stored-text cap of 64 KB per row** (longer messages are stored truncated, with a `text_truncated` flag) — **row count alone does not bound bytes, and one very large message can dominate a store that privacy and disk-growth arguments both assume is bounded**. Two dimensions, both enforced. **No rotation, no file sequence, no rotation helper, and no size bound** — row count is the only retention dimension. Deleted rows free pages for reuse; **no `VACUUM`** — reclaiming disk to the OS is not worth an exclusive lock on the delivery path's database. |
 | **Single writer** | SQLite's own locking. **No lock file, no boot-id, no stale-reclaim rule, no filesystem allowlist or denylist.** A second writer is handled by the database, not by this design. |
 | **`enabled` vs `armed`** | `enabled` = the config flag (configuration only, never the logging predicate). `armed` = enabled **and** the table opened writable. Arming is attempted at startup and **retried in the background** (60s, backoff to 15m), outside the per-message path. While unarmed the seam call is a no-op, incrementing `inbound-log-arm-failed` once per process and `inbound-messages-skipped-unarmed` per message. **Acceptance FAILS if `armed` is false.** |
 | **Failure behavior** | A failed insert is caught, counted, and **injection proceeds**. A failed secondary write is caught and counted. Sustained failures raise one deduped Attention item. |
@@ -353,7 +353,19 @@ fallback, chosen on those numbers.
 **Narrowed claim:** this is a **local single-agent minimal fix**, not a general
 message-durability architecture. At the point where multiple consumers, replay,
 or cross-machine durability matter, the queue design is correct and this one is
-not.
+not — and **that point is defined rather than left to judgment**. Any
+one of these triggers the event-stream migration:
+
+| Trigger | Threshold |
+|---|---|
+| Consumers | a **third** reader beyond history and search |
+| Replay | any consumer needing to re-process past messages, not just read them |
+| Cross-machine | history required to be complete on a machine that did not receive it |
+| Retention pressure | the row or byte cap discarding data anyone still wants |
+
+Until one fires, SQLite is acceptable because the requirement is genuinely
+"one machine records what it received". If none ever fires, the migration
+correctly never happens.
 
 **Bounded append, not unbounded trust.** "Accept the stall and observe
 it" is a weak answer for a chat system, where freezing the event loop is often
@@ -832,7 +844,7 @@ rather than defaulted:
 | **Retention** | Row-based (§3.0): oldest rows deleted beyond a 200 000-row keep, daily. Not time-based, not size-based. |
 | **Deletion** | `DELETE FROM inbound_messages` (or drop the table). **This deletes THIS store only** — message text also reaches TopicMemory, which has its own delete path, and neither covers filesystem snapshots or any backup system. Any user-facing deletion instruction must say all three, because "delete the log files" will otherwise be read as "delete what I said to you". |
 | **Export** | No dedicated export. The table is readable with any SQLite client. |
-| **Disclosure** **(A)** | **Blocking acceptance gate, with an owner and an artifact — not a config note.** Before the FIRST enablement on any machine: (1) a release-note entry, and (2) an operator-visible config description, both stating what is stored, where, that it is unencrypted, the retention bound, and that deletion covers the `inbound_messages` table only (TopicMemory's own rows and any backups are separate). **Owner: the implementing agent; artifact: both texts linked from the acceptance record; enablement is blocked until they exist.** **End-user notice beyond the operator is explicitly NOT required**, and the reason is stated rather than assumed: instar is operator-run software where the operator is the principal data subject of their own conversation. **Where an agent receives messages from third parties, that operator is responsible for whatever notice their context requires** — this spec cannot make that call for them, and says so instead of implying it has been handled. |
+| **Disclosure** **(A)** | **Blocking acceptance gate, with an owner and an artifact — not a config note.** Before the FIRST enablement on any machine: (1) a release-note entry, and (2) an operator-visible config description, both stating what is stored, where, that it is unencrypted, the retention bound, and that deletion covers the `inbound_messages` table only (TopicMemory's own rows and any backups are separate). **Owner: the implementing agent; artifact: both texts linked from the acceptance record; enablement is blocked until they exist.** **End-user notice beyond the operator is NOT ENFORCED BY THIS FEATURE** — a statement about what the code does, **not** a conclusion that none is required. **Where an agent receives messages from third parties, whatever notice or legal obligation applies to those people is external to this software and the operator's to meet** — this spec has no standing to decide it, and says so instead of implying it is handled. |
 
 
 **Encryption at rest was considered and not adopted**, deliberately rather than
@@ -922,8 +934,14 @@ seam API rather than by timing.
  background re-arm recovers without a restart.
 
 **Integration** — a message delivered through the real inject path appears in
-`inbound_messages` with `from_user = 1`; the same message arriving via **both** the
-forward route and the seam is stored **once**; with the flag off, no row is written
+`inbound_messages` with `from_user = 1`; a message **carrying a platform id** arriving via **both** the
+forward route and the seam is stored **once** — **and an id-less message arriving
+twice is stored TWICE, asserted as such.** A per-injection UUID cannot
+dedupe across two delivery paths; claiming otherwise was a logical impossibility
+sitting in the acceptance criteria. Cross-path dedupe covers platform-id messages
+only, which is every Telegram-originated message; the id-less callers are
+server-internal paths that do not double-deliver. Narrowed rather than papered
+over, and a stable envelope id would be the fix if that ever changes; with the flag off, no row is written
 and delivery is unaffected.
 
 **Live-user-channel proof (required before this is called done).** The integration
