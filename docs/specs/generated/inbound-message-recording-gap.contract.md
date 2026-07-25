@@ -239,6 +239,14 @@ It works because:
  sentinel withdrawn this is no longer a sign-related trap, but it remains true
  for a plainer reason: burst messages can share a timestamp, and `message_id`
  was never an arrival order. Insertion order is.
+ - **JSONL is authoritative for received history; TopicMemory is a lossy index.** After a crash between the
+ two writes, TopicMemory is permanently missing that row, so search and
+ summaries see a partial corpus with nothing marking the gap. Every consumer
+ contract therefore reads: *count and completeness questions go to JSONL;
+ TopicMemory answers "find me messages like…", never "how many were there".*
+ A test asserts the session-start history reader consults JSONL, and this
+ sentence exists so a future search feature does not quietly become a
+ counting feature.
  - **JSONL and TopicMemory now carry the same identity fields** (`dedupe_id`,
  `id_source`), which retires the round-15 "reduced contract" caveat — that
  caveat existed only because the migration was being avoided.
@@ -427,7 +435,7 @@ the current API.
 - **No *application-level* queue, worker or retry — and the precision matters.** `setImmediate` callbacks *are* queued work; they sit in
  Node's event loop rather than in a subsystem this design owns. Saying "no queue"
  flatly would mislead an implementer. What is true: **no persistent queue, no
- worker, no retry** — and, since round 17, the backlog is **bounded at 64** by
+ worker, no retry** — and, since round 17, the backlog is **bounded at 16** by
  the drop rule below rather than left to grow. Inbound messages normally arrive
  at human typing speed, so there is normally nothing to bound at all.
 - **That assumption is tested, not asserted.**
@@ -482,15 +490,17 @@ the current API.
  inherent property of `setImmediate` scheduling and is accepted rather than
  worked around; the JSONL record, which is what history reads, is unaffected
  because it never waits for a turn.
-- **What the test still does not prove.** Up to 64 scheduled writes can run
+- **What the test still does not prove.** Up to 16 scheduled writes can run
  back-to-back on the next tick, so a burst still costs *some* loop delay — it is
  bounded now, not eliminated. The earlier phrase "no unbounded synchronous work
  occurs" was wrong and is removed; so is v16's "observable but not mitigated",
  which stopped being true when the bound landed. The honest position: a burst
  costs at most 64 writes of loop time and sheds the rest, and the measured delay
  figure tells us whether 64 is the right number.
-- **Two counters, still not a subsystem:** pending callbacks (Attention above 32,
- the early warning) and `inbound-log-dropped` (the bound actually firing). The
+- **Two counters, still not a subsystem:** pending callbacks (Attention above
+ **8** — half the drop cap, so the warning fires *before* the cap bites; the old
+ 32/64 pair survived the cap change to 16 and would have meant the warning never
+ fired at all. The
  first measures the assumption; the second records what it cost when the
  assumption was wrong.
 - **And the alert names its own remediation.** The Attention item says
@@ -536,7 +546,16 @@ and recorded here:
 | `inbound-log-dropped` during the burst | **0** on a healthy store |
 
 If any gate fails, the flip does not happen and the design is revisited — the
-gate is the decision, not the calendar. The reasoning that made
+gate is the decision, not the calendar.
+
+**Who measures, and what changes.** The benchmark is a committed test
+(`tests/perf/inbound-seam-logging.bench.ts`) run by the implementing agent on the
+**development agent's machine**, against both a healthy and a deliberately
+contended database. Results are recorded in this section as a dated table — three
+numbers, in the spec, reviewable. The flip itself is a one-line default change in
+`ConfigDefaults`, shipped as its own small PR citing that table. If the numbers
+are not recorded, the default does not move; if they are recorded and fail, the
+design is revisited rather than the gate lowered. The reasoning that made
 default-on attractive still stands — every day off is unrecoverable
 conversation — but "probably fine at human typing speed" is an assumption about
 the same class of thing this spec keeps catching, and a synchronous write with a
@@ -568,8 +587,9 @@ waiting for a release.
 
 ## 5. Test plan
 
-**Unit** — `injectTelegramMessage` calls `logInboundMessage` with the fields it
-received; **when `messageId` is absent it still logs, under a per-injection UUID, with
+**Unit** — `injectTelegramMessage` calls **`appendInboundJsonlSync`** with the
+fields it received, and calls **`scheduleInboundTopicMemory` only when that
+returned `true`**; **when `messageId` is absent it still logs, under a per-injection UUID, with
 `idSource: 'derived'`**; two identical messages in the same
 second produce two distinct rows (§3); the dedupe key coerces
 string/number ids; a throwing logger is caught, counted, and the injection still
