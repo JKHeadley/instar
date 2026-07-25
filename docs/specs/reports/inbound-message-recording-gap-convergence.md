@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **54 rounds run, none clean.** Every round has returned findings.
+- **57 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -222,6 +222,24 @@ own §1 records that the original defect existed because nobody verified which c
 path was actually in use. Recorded as an open question (§3.0b) rather than acted
 on — two large unreviewed restructures tonight each introduced defects the next
 round cleaned up.
+
+## Findings that came from the review disagreeing with itself
+
+Three rounds produced findings by weighing an alternative the spec had only
+*named*:
+
+- **Round 54** asked for a real comparison against a durable queue. I wrote one.
+- **Round 57** showed that comparison had **strawmanned** the alternative —
+  weighing in-memory enqueue rather than a durable outbox.
+- Weighed honestly, **the durable outbox is what this design already is**: the
+  synchronous `INSERT` is the outbox write, the deferred index write is the drain.
+
+The useful part is the conclusion that fell out: **the stall risk lives in the
+requirement, not the implementation.** "Make it durable before proceeding" is
+synchronous in every design that satisfies it. Any variant that removes the stall
+removes the durability — which is the defect this spec exists to fix. That
+reframes the residual from "a weakness of this design" to "the cost of the
+guarantee", and it took being wrong twice to get there.
 
 ## The self-inflicted rate, measured rather than asserted
 
