@@ -434,3 +434,44 @@ That is the fifth instance today of the identical shape, and the third *after* I
 wrote it up as the session's lesson. **Reading the artifact under discussion is
 not a step I can reliably remember to take**, which is precisely the argument for
 making it structural rather than intentional.
+
+
+---
+
+## Addendum 6 — 2026-07-25T14:5xZ: ALL FOUR relayed objections were pre-answered
+
+Addendums 4 and 5 withdrew two. Checking the remaining two against the spec —
+which is what should have happened before any of them were relayed — withdraws
+those as well.
+
+| # | What I relayed to the operator | What the spec says |
+|---|---|---|
+| 1 | Hand-rolls credential detection | §3.2 Arm 2 **imports `DURABLE_SECRET_PATTERNS`** and states "It does not hand-write a list"; the risk table names "fourth divergent pattern list" with that import as the mitigation |
+| 2 | Live secret index is a new exposure class | §3.2.1, settled across rounds 16/17/30: PR-A indexes **only already-resident config values**, "expands plaintext residency by nothing at all"; vault values deferred to a **required** isolated matcher |
+| 3 | Relay double-check — each side may assume the other checked | §3.2, round-12: the deterministic evaluation is **hoisted above the `isProxy \|\| isSystemTemplate \|\| willRelay` early return** so both arms run on the composing machine; `valueArmScope` reports the stage "so a miss is never silent" |
+| 4 | "No open questions" not credible | §8 states `*(none)*` **deliberately**, with a round-8 note that the live dependency (ACT-1198) is recorded in §8.1 "rather than disguised as a question" |
+
+**Four for four.** Every objection I passed to the operator as a reason to
+withhold approval had been raised in review, argued, and answered — several of
+them by the same reviewer, across multiple rounds, with the narrower proposal
+adopted each time.
+
+### What actually happened
+
+The round-33 review I ran was against **a strict contract with the design
+sections missing** (Addendum 3 — my allowlist bug). The reviewer was reading the
+test plan and the honest-limits section, without §3.2, §3.2.1 or §8. Its findings
+were reasonable **inferences from an artifact with the answers cut out**, and I
+relayed them as findings against the spec without opening the spec.
+
+**So the tool bug and the method failure compounded**: a truncated artifact
+produced plausible objections, and the missing step that would have caught it —
+reading the spec — was the same step missing everywhere else today.
+
+### Corrected position
+
+**I have no substantiated objection to this spec.** Its convergence status is
+unchanged (33 rounds, never converged, no tag) and that remains a real caveat.
+But the four specific reasons I gave the operator to withhold approval do not
+survive contact with the document, and the decision should be made on the spec's
+merits rather than on my summary of a review of a broken excerpt of it.
