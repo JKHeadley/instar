@@ -14,13 +14,26 @@ status: "draft"
 approved: false
 review-convergence: ""
 review-iterations: 0
-single-run-completable: true
+single-run-completable: false
 eli16-overview: "docs/specs/inbound-message-recording-gap.eli16.md"
 ---
 
 # Record inbound messages at the injection seam
 
-**Deliberately small.** One mechanism, one seam, one flag. The companion spec
+> **It is no longer small, and `single-run-completable` is now `false`
+>.** This opened as one mechanism, one seam, one flag. Review
+> has since added — each for a good reason — a schema migration, a split logger
+> API, rotation and retention, two AST build checks, a one-sided-conversation
+> detector, a health surface with a synthetic self-check, and a privacy posture.
+> Every one of those is defensible; the aggregate is not one run's work, and
+> claiming otherwise would put the wrong thing in the frontmatter for a machine to
+> read. **The natural split is retention/rotation** (§3.0 rows 5-9), which is
+> independent of the recording fix and could ship separately. It is kept here for
+> now because shipping unbounded-growth recording and *then* bounding it means
+> deliberately shipping the unbounded version — but if this spec is broken up,
+> that is the seam to break it on.
+
+**It began deliberately small.** One mechanism, one seam, one flag. The companion spec
 `outbound-gate-advisory-override.md` took 33 review rounds and never converged,
 because every fold of a 2,700-line document created new contradictions elsewhere
 in it (ACT-1215). This spec is scoped so a fold cannot do that.
@@ -113,9 +126,14 @@ that is cheaper than pretending duplication is free.*
 | **Authority** | JSONL is authoritative for received history. TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
 | **Failure behavior** | A failed append is caught, counted, and **injection proceeds**. A failed TopicMemory write is caught and counted. Sustained failures raise one deduped Attention item. |
 | **Counters** | `inbound-log-failed`, `inbound-log-dropped`, pending-callback depth (Attention above **8**), append-latency **max** per window (Attention on any single append > **1 s**), and a one-sided-conversation check (recent outbound with zero inbound). |
+| **Storage** | Append-only JSONL in an **app-controlled local data directory**, file mode **0600**, owned by the agent process user. Plaintext — no encryption at rest (§4). |
+| **Rotation** | Rotate at **32 MB**; keep **4** rotated files. Oldest is deleted on rotation — that deletion IS the retention mechanism. |
+| **Retention** | Whatever fits in current + 4 rotations (~160 MB of message text). Resume history is bounded by this window, not by time. No time-based expiry. |
+| **Seeding** | `seedMessageLogDedupe()` reads the **current file only**, and at most its **last 64 MB** — never the rotations. A redelivered message older than the current file is written twice; that is the accepted cost of a bounded startup read. |
+| **Deletion** | Deleting the log files is supported and complete — nothing else holds inbound text except the lossy TopicMemory index, which has its own delete path. |
 | **Flag** | `messaging.inboundSeamLogging.enabled`, default-off, with emergency disable. |
-| **Acceptance** | **Not** "code landed" — the flag ON for the affected machine, plus live Telegram proof (normal + long message) and an id-less seam regression test. |
-| **Known residual** | A wedged local disk can stall message delivery. Accepted and named, not mitigated. |
+| **Acceptance** | **Not** "code landed" — the flag ON for the affected machine, live Telegram proof (normal + long message), **a restart, then another message with the inbound count still increasing**, an id-less seam regression test, and the single-instance lock verified active. |
+| **Known residuals** | A wedged local disk can stall message delivery. Messages dropped before injection are invisible. Message text is stored in local plaintext. All three accepted and named, none mitigated. |
 
 
 **Log at the injection seam.** `injectTelegramMessage` records the message
@@ -171,6 +189,27 @@ one:
 If audit completeness is later wanted, the intake-edge log is the right build and
 this record does not obstruct it — they answer different questions and can
 coexist.
+
+**Why not a SQLite append table instead of JSONL?** SQLite would
+give bounded reads, atomic appends with no torn tail, real migration discipline,
+indexed lookups instead of a dedupe set rebuilt at startup, and retention as a
+query rather than file rotation. Every one of those is a thing this spec had to
+solve by hand — the torn-tail seeding rule, the bounded-read cap, the rotation
+policy, the in-memory dedupe set and its restart seeding. **Roughly four of the
+review findings across rounds 27-34 exist only because the store is a text
+file.** That is not a small observation and it should not be buried.
+
+It is still JSONL, for one reason: **the log already exists and is already
+written by the same function on the other path.** This spec's job is to close a
+data-loss bug by adding a call at a seam; converting the message log to a new
+store is a larger change with its own migration, its own failure modes, and its
+own review, undertaken while messages are actively being lost. Doing the smaller
+thing first is the right sequencing, not a judgment that JSONL is better.
+
+**Recorded as a known cost, not a settled question:** if this log grows in
+importance — more consumers, longer retention, real query needs — the SQLite
+migration is the expected next step, and the hand-built machinery listed above is
+the debt it would retire. <!-- tracked: ACT-1218 -->
 
 **Choosing the seam does not close the routing question, and that is tracked, not
 waved.** "The intake edge is unknown" is a reason to log
@@ -521,7 +560,7 @@ delivery. **The only real enforcement available is the enum** — a future
 `'injected'` value means a consumer that cares can *check* rather than assume,
 and that is the honest ceiling here.
 
-### 3.2 Failure direction: the essential write is synchronous, the rest never blocks
+### 3.2 Failure direction: the essential write is synchronous and CAN delay delivery; the secondary write never does
 
 **The invariant, split by write.**
 
@@ -875,6 +914,17 @@ count says what is actually being written. A machine reporting `enabled: true`
 with zero inbound rows over a window in which it sent outbound messages is the
 one-sided-conversation signal from §3, pointed at this feature's own regression.
 
+**That pair detects total regression and nothing subtler.** It cannot see partial loss, a rotation misconfiguration, TopicMemory
+drops, or two processes writing the same file. So the health surface reports
+four more things, each cheap and each already computed elsewhere in this design:
+**append failures**, **max append latency**, **rotation state** (current file
+size and rotation count), and a **startup self-check** that writes a synthetic
+non-user record and reads it back. The self-check is the one that turns "the flag
+says on" into "the path works right now" — it exercises append, dedupe and read
+on the real configured path, at the moment the process starts, without waiting
+for a real message to prove it. Synthetic records are marked and excluded from
+history reads.
+
 **Default-on is EARNED by explicit thresholds, not by a release count.** The flag ships **default-off**, and
 flips to default-on when **all three** of these hold, measured on real hardware
 and recorded here:
@@ -907,6 +957,33 @@ the write turns out to be hot on some install, the operator can stop it without
 waiting for a release.
 
 ## 4. Honest limits
+
+### 4.0 Privacy posture
+
+The design retains the full plaintext of every message a person sends the agent.
+Thirty-three rounds discussed atomicity, latency and dedupe keys before anyone
+asked what that means for the person doing the typing. Stated plainly, chosen
+rather than defaulted:
+
+| | |
+|---|---|
+| **What is stored** | Full message text, sender display name, sender platform id, timestamps. |
+| **Where** | An app-controlled local data directory on one machine. Never transmitted, never replicated to other machines by this design. |
+| **File permissions** | **0600**, owned by the agent process user. Anyone with root or that user's account can read it. |
+| **Encryption at rest** | **None.** Disk-level encryption (FileVault) is the only protection, and it protects a powered-off machine, not a running one. |
+| **Redaction** | None. Secrets pasted into a message are stored verbatim — which is one more reason Secret Drop exists and pasting credentials into chat does not. |
+| **Retention** | Bounded by rotation (§3.0): oldest rotation deleted, ~160 MB window. Not time-based. |
+| **Deletion** | Delete the log files; that is complete and supported. TopicMemory has its own delete path. |
+| **Export** | No dedicated export. The files are plain JSONL and readable directly. |
+
+**Encryption at rest was considered and not adopted**, deliberately rather than
+by omission: the vault exists for secrets and this is not a secret store, the
+essential write is on the delivery path where per-message crypto is real latency,
+and a key that lives on the same disk as the data protects against a narrow
+threat. That reasoning is stated so it can be *disagreed with* — if the answer
+should be different, this is the paragraph to argue with rather than a gap to
+discover later.
+
 
 - **The local-only record is a deliberate trade, with a named ceiling.** This optimises for present simplicity and a machine-local record. If
  cross-machine auditing, centralised analytics or distributed replay ever become
@@ -1082,7 +1159,12 @@ that reader consults fails here rather than in production five days later.
 2. **Append JSONL before injecting; schedule TopicMemory after** (§3.1) — two
  writes, two rules. Named this way after three rounds of reviewers reading "log first" as a
  synchronous call, which is exactly how it would be mis-implemented.
-3. **A log failure never blocks the message** (§3.2).
+3. **A logging *error* never intentionally aborts the message** (§3.2) — phrased
+ this way because the stronger "never blocks delivery" is false and kept
+ surviving folds in summary form. A synchronous storage **stall** can delay or
+ prevent delivery; only the *error path* is guaranteed. The distinction is the
+ whole of §3.2's accepted residual, and a summary that erases it re-tells the
+ comfortable version.
 4. **The forward route's existing call stays** — dedup makes it harmless, and removing it is unrelated risk.
 5. **A missing `messageId` gets a per-injection UUID** (§3), not silence and not a content hash — an id-less message is recorded, and no cross-message identity is inferred from its bytes.
 6. **Ships default-OFF; the flip to default-on is earned by three measured gates**
