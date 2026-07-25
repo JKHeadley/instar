@@ -122,7 +122,7 @@ is right.
 | Class | Members | Disposition |
 |---|---|---|
 | Judgment / representation | B1–B21 (every LLM-citable rule) | **advisory** — overridable with a recorded reason |
-| Deterministic credential **wall** | **B22_HELD_CREDENTIAL** (new, non-LLM) — **proven possession only**: the candidate contains a credential value this install actually holds, verified by exact comparison | **blocking**, no agent override |
+| Deterministic credential **wall** | **B22_HELD_CREDENTIAL** (new, non-LLM) — **held-value match only**: the candidate contains a credential value this install actually holds, verified by exact comparison | **blocking**, no agent override |
 | Deterministic credential **nudge** | **B23_CREDENTIAL_SHAPED** (new, non-LLM) — **every** credential-*shaped* pattern match (§3.2) | **advisory** — overridable with a recorded reason **wherever recourse exists; observe-only everywhere else** (the B23 rule, below) |
 | Availability holds | `CAPACITY_UNAVAILABLE`, `GATE_UNAVAILABLE` | **blocking**, non-overridable, and *not a judgment* — nothing concluded. *(The degraded deterministic floor is NOT in this class: it does conclude something, so round 17 made it advisory — see below.)* |
 
@@ -1302,7 +1302,7 @@ asking for while keeping one reviewed contract.
 
 - **Stage 0 (ship state).** Advisory widening `enabled: false`. **Dissent-on-block
  is live** — data starts immediately. B22 ships **ON**, with its emergency
- lever. It enforces from day one because it is **proven possession verified by
+ lever. It enforces from day one because it is **a held-value match verified by
  exact comparison** — not matcher inference — which is also why round 11's
  narrowing (§3.2) removed the shadow-mode staging round 9 had added: that
  staging existed only to let an *inferring* arm earn wall authority, and no
@@ -1493,7 +1493,7 @@ strictly ordered A → B → C and never revisited.
 
 | # | Producer / condition | `advisoryCapable` | Token | `recordingLive` | Outcome |
 |---|---|---|---|---|---|
-| 1a | **B22** (proven possession — the value arm is the whole wall), **seam** | any | any | any | **Refuse, terminal.** Never overridable. Returns a **dissent-only** token (§3.3). |
+| 1a | **B22** (held-value match — the value arm is the whole wall), **seam** | any | any | any | **Refuse, terminal.** Never overridable. Returns a **dissent-only** token (§3.3). |
 | 1d | **B22, ADAPTER layer** | n/a | n/a | n/a | **Refuse at egress**, local audit event only — **no token, no agent-facing protocol**. The adapter's callers are system templates, relays and the lifeline fallback; there is nobody to hand a token to (§3.2). Counted `b22-adapter-caught-post-seam`. |
 | 2 | **B22 matcher threw** on a built index | any | any | any | **Hold**, `detectorIncomplete`. |
 | 2a | **No index exists** (never built at startup) or a **refresh failed** while a previous index is served | any | any | any | **Degraded, NEVER a hold** — the wall's reach narrows (to nothing, or to the previous index), `valueArmScope` + `b22-index-degraded` surfaced unconditionally (§3.2.2). Holding every message because a vault cannot be read is worse than the exposure it would prevent, and that trade is stated rather than implied. |
@@ -1572,7 +1572,7 @@ strictly ordered A → B → C and never revisited.
 `VALID_RULES` and `RULE_CLASSES`; **B23's kind set covers `DurableSecretKind`**
 minus the reasoned exclusions (a new kind fails the build rather than shipping
 unhandled); an LLM citation of B22 *or* B23 is invalid-rule; **B22 fires only on
-proven possession** — per normalization form, and for this install's own
+held-value match** — per normalization form, and for this install's own
 `authToken`; **every pattern match is B23 and never B22**, with the prose cases
 as named fixtures (`your api_key: not-configured-yet`, `Bearer your-token-here-example`,
 a dotted identifier matching the `jwt` shape) — each asserted overridable;
@@ -1654,6 +1654,15 @@ this is the honest scoping answer).
  sentences, and it costs only the ability to stop an agent that has written down
  a justification — never the ability to stop an accident. Anything this install
  actually holds is unaffected: that is the wall.
+- **"Held-value match" is the honest name, and it is weaker than "possession".**
+ A B22 hit proves exactly one thing: **this candidate contains a byte
+ sequence that also appears in this install's loaded config.** It does **not**
+ prove the credential is live (it may be revoked or rotated), that this install
+ owns it, that it was ever intended to be secret, or even that the message is
+ *disclosing* it rather than quoting a stale or template value. Those are all
+ reasons the wall stays deliberately narrow — a match on a value we hold is a
+ strong enough signal to refuse without appeal; a claim to have proven
+ *possession* would be a stronger statement than the evidence supports.
 - **PARTIAL disclosure of a held credential is a nudge at best, and sometimes
  nothing.** B22 matches a held value as a normalized substring, so it fires only
  on the value *in full*. Most of a token, a fixed prefix or suffix alone, or the
@@ -1811,7 +1820,7 @@ this is the honest scoping answer).
  recorded as a live dependency rather than as an open question (§8.1).
 41. **Consuming a token requires the full binding tuple** — rule, detector kind,
  candidate hash, **channel, topic and message kind** (§3.5).
-42. **B22 enforces from day one** — proven possession verified by exact
+42. **B22 enforces from day one** — held-value match verified by exact
  comparison needs no soak. 
 43. **Dissent is scoped by "false-positive-reportable verdict"**, not by
  "judgment" — the conclusion makes it reportable, not the reasoning style (§3.3).
