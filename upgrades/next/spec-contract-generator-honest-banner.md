@@ -34,3 +34,24 @@ to stop retired designs from being implemented.
   sections, 0 meta-blocks, 37% smaller** — confirming the new pattern does not
   over-match on a document that has none.
 - `--check` passes for both specs after regeneration and reports the new counts.
+
+## Second change in the same push: `--strict` (allowlist mode)
+
+The default transform is a **denylist** — "remove what is definitely history,
+keep everything else." For an implementation artifact that is the wrong default:
+rationale, accepted residuals and self-correcting narrative are all "not
+definitely history", so they survive. Seven consecutive review rounds (33-39)
+said the generated contract still read as archaeology.
+
+`--strict` inverts it to an **allowlist** of contract-bearing headings (final
+contract, rollout, honest limits, decision points, test plan, dependencies).
+Everything else is absent by default rather than by pattern-match, and the output
+lands at `<slug>.contract.strict.md`.
+
+**Evidence:** `inbound-message-recording-gap` 1487 → 874 lines (42% smaller, 11
+allowlisted sections). `outbound-gate-advisory-override` 2765 → 270 lines (**90%
+smaller**, 8 sections) — a spec that never converged in 33 rounds, and whose
+history-stripped denylist version was still large enough to time a reviewer out,
+now has a contract short enough to actually review.
+
+Additive: the default mode and its output path are unchanged.

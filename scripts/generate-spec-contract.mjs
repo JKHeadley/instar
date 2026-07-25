@@ -74,6 +74,56 @@ const META_BLOCKQUOTE_RE =
  */
 const NARRATIVE_HISTORY_RE = /\b(?:round|rounds)[- ]\d+\b/gi;
 
+/**
+ * STRICT mode (`--strict`): an ALLOWLIST of contract-bearing headings, instead of
+ * the default denylist of history headings.
+ *
+ * The denylist answers "what is definitely history?" and keeps everything else.
+ * That is the wrong default for an implementation artifact: rationale, accepted
+ * residuals and self-correcting narrative are all "not definitely history", so
+ * they survive — and SEVEN consecutive review rounds (33-39) said the resulting
+ * contract still read as archaeology. An allowlist answers the question that
+ * actually matters, "what must be built?", and everything else is absent by
+ * default rather than by pattern-match.
+ *
+ * Kept deliberately narrow: the contract table, rollout/acceptance, honest
+ * limits, decision points, and the test plan. Rationale lives in the source spec,
+ * which is where a reader goes for judgment.
+ */
+const STRICT_CONTRACT_HEADING_RE =
+  /^#{2,3}\s+(?:\d+(?:\.\d+)?\.?\s+)?(?:Final contract|Rollout|Honest limits|Privacy posture|Decision points touched|Open questions|Frontloaded Decisions|Dependencies|Multi-machine posture|Test plan|What this does not do)/i;
+
+export function splitStrictContract(markdown) {
+  const lines = markdown.split('\n');
+  const kept = [];
+  let keeping = false;
+  let keptSections = 0;
+  // Front matter always rides along — it carries the approval + convergence tags.
+  let inFrontMatter = lines[0] === '---';
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (inFrontMatter) {
+      kept.push(line);
+      if (i > 0 && line === '---') inFrontMatter = false;
+      continue;
+    }
+    if (/^#{1,3}\s/.test(line)) {
+      keeping = STRICT_CONTRACT_HEADING_RE.test(line);
+      if (keeping) keptSections++;
+      // An H1 (the title) is kept as an anchor but does not open a section.
+      if (/^#\s/.test(line)) {
+        kept.push(line);
+        keeping = false;
+        continue;
+      }
+    }
+    if (keeping) kept.push(line);
+  }
+  const body = stripInlineAnnotations(kept.join('\n')).replace(/\n{4,}/g, '\n\n\n');
+  const narrativeResidual = (body.match(NARRATIVE_HISTORY_RE) || []).length;
+  return { contract: body, keptSections, narrativeResidual };
+}
+
 export function splitContract(markdown) {
   const lines = markdown.split('\n');
   const kept = [];
@@ -109,7 +159,23 @@ export function splitContract(markdown) {
 }
 
 /** The banner that makes the generated file unmistakable and un-editable-by-hand. */
-function banner(specRel, narrativeResidual) {
+function banner(specRel, narrativeResidual, strict) {
+  if (strict) {
+    return [
+      '<!-- GENERATED FILE — DO NOT EDIT.',
+      `     Source: ${specRel}`,
+      '     Regenerate: node scripts/generate-spec-contract.mjs --spec ' + specRel + ' --strict',
+      '     STRICT IMPLEMENTATION CONTRACT: allowlisted contract sections only.',
+      '',
+      '     Everything not on the allowlist is ABSENT BY DEFAULT — including all',
+      '     rationale. This file says WHAT to build, never why. Read the source',
+      '     spec for the reasoning, the alternatives, and the accepted residuals',
+      '     in their full form.',
+      `     (${narrativeResidual} residual "round-N" reference(s) remain inline.)`,
+      '-->',
+      '',
+    ].join('\n');
+  }
   return [
     '<!-- GENERATED FILE — DO NOT EDIT.',
     `     Source: ${specRel}`,
@@ -141,13 +207,18 @@ function main() {
   const check = args.includes('--check');
   const specRel = path.relative(process.cwd(), specPath);
 
+  const strict = args.includes('--strict');
   const markdown = fs.readFileSync(specPath, 'utf8');
-  const { contract, droppedSections, droppedMetaBlocks, narrativeResidual } =
-    splitContract(markdown);
-  const output = banner(specRel, narrativeResidual) + contract;
+  const res = strict ? splitStrictContract(markdown) : splitContract(markdown);
+  const { contract, narrativeResidual } = res;
+  const droppedSections = res.droppedSections ?? 0;
+  const droppedMetaBlocks = res.droppedMetaBlocks ?? 0;
+  const keptSections = res.keptSections ?? 0;
+  const output = banner(specRel, narrativeResidual, strict) + contract;
 
   const slug = path.basename(specPath, '.md');
-  const outPath = path.join(path.dirname(specPath), 'generated', `${slug}.contract.md`);
+  const suffix = strict ? '.contract.strict.md' : '.contract.md';
+  const outPath = path.join(path.dirname(specPath), 'generated', `${slug}${suffix}`);
 
   if (check) {
     if (!fs.existsSync(outPath)) {
@@ -163,9 +234,12 @@ function main() {
       process.exit(1);
     }
     console.log(
-      `OK: contract is current (${droppedSections} history sections, ` +
-        `${droppedMetaBlocks} meta-blocks excluded; ${narrativeResidual} narrative ` +
-        `round-references remain).`,
+      strict
+        ? `OK: strict contract is current (${keptSections} allowlisted sections; ` +
+            `${narrativeResidual} narrative round-references remain).`
+        : `OK: contract is current (${droppedSections} history sections, ` +
+            `${droppedMetaBlocks} meta-blocks excluded; ${narrativeResidual} narrative ` +
+            `round-references remain).`,
     );
     return;
   }
@@ -174,7 +248,11 @@ function main() {
   fs.writeFileSync(outPath, output, 'utf8');
   const pct = Math.round((1 - output.length / markdown.length) * 100);
   console.log(
-    `wrote ${path.relative(process.cwd(), outPath)} — ${droppedSections} history ` +
+    strict
+    ? `wrote ${path.relative(process.cwd(), outPath)} — STRICT: ${keptSections} ` +
+        `allowlisted sections kept, ${pct}% smaller. RESIDUAL: ${narrativeResidual} ` +
+        `narrative round-reference(s).`
+    : `wrote ${path.relative(process.cwd(), outPath)} — ${droppedSections} history ` +
       `sections + ${droppedMetaBlocks} meta-blocks excluded, ${pct}% smaller. ` +
       `RESIDUAL: ${narrativeResidual} narrative round-reference(s) the transform ` +
       `cannot remove.`,

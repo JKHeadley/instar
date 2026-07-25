@@ -82,6 +82,27 @@ extra heading shape, but the failure mode is worth remembering: **always read
 what it says it removed, not just whether it succeeded.** A tool that silently
 does nothing is the same species of problem as a check that silently doesn't run.
 
+## The stricter mode
+
+There's now a second way to run it: instead of "remove what looks like history",
+it can do "keep only the sections that say what to build, drop everything else."
+
+That sounds like a small difference and isn't. The first approach keeps anything
+it isn't sure about, so all the reasoning and self-correction survives. The second
+starts from nothing and adds back only the parts on a short list.
+
+On the big design document — the one that ran thirty-three rounds and never
+finished — that takes it from 2,765 lines to about 270. A document nobody could
+review is suddenly one you could read over a coffee.
+
+**The trade is real and worth knowing.** The first approach fails by keeping too
+much, which makes a confusing document. The second fails by dropping something
+important if its heading isn't on the list, which makes an *incomplete* one. That's
+the worse failure, so the tool prints how many sections it kept — and that number
+is how a real bug was caught during testing, where two sections were silently
+vanishing because of a full stop in a heading. The strict mode is opt-in for
+exactly this reason; nothing depends on it.
+
 ## What it doesn't do
 
 It doesn't check whether the design is any *good*, or even whether it's

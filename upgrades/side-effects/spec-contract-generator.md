@@ -76,6 +76,26 @@ Two fixes, one mechanical and one honest:
   contradictory. The separate spec lint (required by the outbound spec) is what
   addresses that; this is not it.
 
+### `--strict` (allowlist mode) — over/under-block
+
+**Over-block risk, and it is real:** an allowlist drops a genuinely normative
+section whose heading is not on the list. That is a *silent* omission — the
+opposite failure from the denylist's silent retention. Mitigated by the run
+reporting `N allowlisted sections kept`: a spec that should yield 10 sections and
+reports 2 is visibly wrong, which is exactly how the missing-trailing-period bug
+in the heading pattern was caught (§4 "Honest limits" and §5 "Test plan" were
+silently dropped until the count was read).
+
+That mitigation is a human reading a number, which is weaker than a check. The
+honest position: **`--strict` trades a silent-retention failure for a
+silent-omission failure**, and the omission is the one that could cause a missing
+requirement rather than a confusing one. It is therefore additive and opt-in —
+the default denylist mode and its output path are unchanged, and no build gate
+requires strict mode.
+
+**Under-block:** unchanged. A rule narrated inside an allowlisted section still
+carries its own history; strict mode reduces the surface, it does not clean prose.
+
 ## 3. Level-of-abstraction fit
 
 Correct layer: it is a build-time document transform, alongside the other

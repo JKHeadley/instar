@@ -147,23 +147,6 @@ not what it was asked.
 
 ### 3.0 Final contract
 
-*Three reviewers across rounds 24, 28 and 29 asked for the same thing: the
-contract without the archaeology. The generated companion at
-`docs/specs/generated/inbound-message-recording-gap.contract.md` strips history
-document-wide, but a reader opening the source spec should not have to leave it
-to find out what is being built. Everything below this table is reasoning; this
-table is the build.*
-
-*And it immediately proved the point in the worst way: the first version of this
-table contradicted the body on two counts (round-30), because restating a design
-in a second place creates a second place to be wrong. That is the same mechanism
-that stopped the 2,700-line companion spec from ever converging (ACT-1215),
-appearing here at a tenth the size. **The table is normative; where the body
-disagrees with it, the table wins and the body is the bug.** The only durable fix
-is generation rather than restatement, which is why the generated contract exists
-— this table is a readability convenience with a known failure mode, and naming
-that is cheaper than pretending duplication is free.*
-
 | | |
 |---|---|
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
@@ -176,13 +159,15 @@ that is cheaper than pretending duplication is free.*
 | **Failure behavior** | A failed append is caught, counted, and **injection proceeds**. A failed TopicMemory write is caught and counted. Sustained failures raise one deduped Attention item. |
 | **Counters** | Four distinct conditions, never merged (round-36): `inbound-log-failed` — the **authoritative** JSONL append failed (reserved for that alone); `inbound-search-index-dropped` — a TopicMemory write **shed by the backlog cap** before it was attempted; `inbound-search-index-failed` — a TopicMemory write that **was attempted and threw**; plus pending-callback depth (Attention above **8**). A shed and a failure are different problems with different fixes, and neither is a lost inbound record. |
 | **Latency** | Append latency sampled; Attention on **p99 > 50 ms** (generally slow filesystem) **and** on any **single append > 1 s** (the pathological stall a p99 cannot see). Both ship. |
-| **Health** | `enabled` flag state, recent inbound row count, append failures, max latency, rotation state (current size + rotation count), startup synthetic self-check result, and a one-sided-conversation check (recent outbound with zero inbound). |
+| **Health** | `enabled` **and** `armed` (with arm-failure reason), the **resolved absolute log path**, last/max append latency, recent inbound row count, append failures, max latency, rotation state (current size + rotation count), startup synthetic self-check result, and a one-sided-conversation check (recent outbound with zero inbound). |
 | **Storage** | Append-only JSONL in an **app-controlled local data directory**, file mode **0600**, owned by the agent process user. Plaintext — no encryption at rest (§4). |
 | **Rotation** | Rotate at **32 MB**; keep **4** rotated files. Oldest is deleted on rotation — that deletion IS the retention mechanism. **Filenames:** `inbound.jsonl` (current) and `inbound.jsonl.1` … `inbound.jsonl.N`. **N ascending = NEWER** — the suffix is a monotonic sequence number, not a logrotate age rank. **Protocol (ordered, crash-recoverable, ONE rename):** re-resolve the path → rename current to `.{highest existing suffix + 1}` → append to a fresh current file. **Deletion selects the LOWEST suffix** (the oldest), by suffix and never by mtime, so a restored or touched file cannot change its own age. Missing or skipped suffixes are tolerated and never renumbered; "keep 4" means *at most 4 rotations survive a rotation event*, counted by suffix. **Read ordering** for history is current first, then **descending** suffix (newest rotation first). |
 | **Retention** | Whatever fits in current + 4 rotations (~160 MB of message text). Resume history is bounded by this window, not by time. No time-based expiry. |
+| **Reading** | Every JSONL read — seeding **and** session-history — is line-by-line and tolerant: an unparseable line is skipped and counted (`inbound-log-corrupt-line`), never fatal, because a process killed mid-append leaves exactly that shape. Corruption **beyond the final line** of a file raises Attention: one torn tail is normal, damage in the middle is not. |
 | **Seeding** | `seedMessageLogDedupe()` reads the **current file only**, and at most its **last 64 MB** — never the rotations. A redelivered message older than the current file is written twice; that is the accepted cost of a bounded startup read. |
-| **Deletion** | Deleting the current **and rotated** files removes everything this design's JSONL store holds. TopicMemory, filesystem snapshots, and any backup system are **separate stores with separate deletion** — this is not a whole-system erasure guarantee. |
-| **Single writer** | The agent-home **single-instance lock** (one server per agent home) is what makes one-writer-per-log-path true. Its scope covers append, rotation **and** seeding — all three assume it. If the lock cannot be acquired at startup, the seam logging feature **does not arm** (the process may still run; it does not write this log). A second writer is not detected at append time and is not defended against. |
+| **Deletion (JSONL store only)** | Deleting the current **and rotated** files removes everything this design's JSONL store holds. TopicMemory, filesystem snapshots, and any backup system are **separate stores with separate deletion** — this is not a whole-system erasure guarantee. |
+| **Single writer** | The agent-home **single-instance lock** (one server per agent home) is what makes one-writer-per-log-path true. Its scope covers append, rotation **and** seeding — all three assume it. A second writer is not detected at append time and is not defended against. |
+| **`enabled` vs `armed`** | Two distinct states, both reported (round-39). `enabled` = the config flag. `armed` = the flag is on **and** the lock was acquired **and** the log path resolved writable. **A process can run `enabled && !armed`** — that is the silent-failure shape this whole spec exists to close, so it is a first-class reported state with a `inbound-log-arm-failed` counter and its reason, never an inference from a zero row count. **Acceptance FAILS if `armed` is false**, regardless of what the flag says. |
 | **Synthetic rows** | The startup self-check record is marked `synthetic: true`. It is **excluded** from history reads, the recent-inbound count, the one-sided-conversation check and dedupe seeding. It **is** counted toward rotation size, because it occupies real bytes and pretending otherwise would make the size bound wrong. |
 | **Flag** | `messaging.inboundSeamLogging.enabled`, default-off, with emergency disable. |
 | **Acceptance** | **Not** "code landed". Requires: the flag ON for the affected machine; live Telegram proof (normal + long message) **with an instrumented trace of the real call path from Telegram arrival to the seam**, not merely a row observed afterwards; **a restart, then another message with the inbound count still increasing**; an id-less seam regression test; and the single-instance lock verified active. |
@@ -607,6 +592,25 @@ It works because:
 > contract; read this for judgment, not instructions.
 
 ---
+
+### 3.0a Why the contract is a table (rationale — not part of the contract)
+
+*Three reviewers across rounds 24, 28 and 29 asked for the same thing: the
+contract without the archaeology. The generated companion at
+`docs/specs/generated/inbound-message-recording-gap.contract.md` strips history
+document-wide, but a reader opening the source spec should not have to leave it
+to find out what is being built. Everything below this table is reasoning; this
+table is the build.*
+
+*And it immediately proved the point in the worst way: the first version of this
+table contradicted the body on two counts (round-30), because restating a design
+in a second place creates a second place to be wrong. That is the same mechanism
+that stopped the 2,700-line companion spec from ever converging (ACT-1215),
+appearing here at a tenth the size. **The table is normative; where the body
+disagrees with it, the table wins and the body is the bug.** The only durable fix
+is generation rather than restatement, which is why the generated contract exists
+— this table is a readability convenience with a known failure mode, and naming
+that is cheaper than pretending duplication is free.*
 
 ### 3.1 Ordering: accept first, then inject — and it is a RECEIVED log
 
@@ -1153,7 +1157,7 @@ rather than defaulted:
 | **Encryption at rest** | **None.** Disk-level encryption (FileVault) is the only protection, and it protects a powered-off machine, not a running one. |
 | **Redaction** | None. Secrets pasted into a message are stored verbatim — which is one more reason Secret Drop exists and pasting credentials into chat does not. |
 | **Retention** | Bounded by rotation (§3.0): oldest rotation deleted, ~160 MB window. Not time-based. |
-| **Deletion** | Delete the log files; that is complete and supported. TopicMemory has its own delete path. |
+| **Deletion** | Delete the current **and rotated** JSONL files. **This deletes the JSONL store only** — message text also reaches TopicMemory, which has its own delete path, and neither covers filesystem snapshots or any backup system. Any user-facing deletion instruction must say all three, because "delete the log files" will otherwise be read as "delete what I said to you" (round-39). |
 | **Export** | No dedicated export. The files are plain JSONL and readable directly. |
 
 **Encryption at rest was considered and not adopted**, deliberately rather than
