@@ -59,6 +59,7 @@ describe('CapabilityRegistry adapter reality', () => {
     fs.mkdirSync(path.join(stateDir, 'state'));
     fs.writeFileSync(path.join(stateDir, 'state/doorway-scan.json'), JSON.stringify({ lastScanAt: '2026-07-25T00:00:00Z', doorways: [{ id: 'claude-code', probeStatus: 'ok', lastScannedAt: '2026-07-25T00:00:00Z' }] }));
     const result = readDoorwaySources(projectDir, stateDir, '2026-07-25T00:00:01Z');
+    expect(() => validateProjection({ schemaVersion: 1, machineId: 'local', machineEpoch: 1, projectionSeq: 1, scanStampSecs: result.scanStampSecs, scanState: result.scanState, truncated: false, entries: result.entries })).not.toThrow();
     expect(result.scanStampSecs).toBe(Math.floor(Date.parse('2026-07-25T00:00:00Z') / 1000));
     expect(result.scanState).toBe('observed');
     expect(result.entries.length).toBeGreaterThan(2);
