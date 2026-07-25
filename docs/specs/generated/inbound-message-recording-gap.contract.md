@@ -53,7 +53,7 @@ not what it was asked.
 
 ## 2. What exists today (verified against the running tree)
 
-- `SessionManager.injectTelegramMessage(tmuxSession, topicId, text, topicName?, senderName?, telegramUserId?, messageId?)` — `src/core/SessionManager.ts:5045` **on current main (v1.3.953)**. **Every inbound message reaches a session through it**, whether injected inline or written to an inbound file for long messages.
+- `SessionManager.injectTelegramMessage(tmuxSession, topicId, text, topicName?, senderName?, telegramUserId?, messageId?)` — `src/core/SessionManager.ts:5045` **on current main (v1.3.953)**. **Every currently-verified inbound session delivery reaches a session through it**, whether injected inline or written to an inbound file for long messages. 
 - It already receives **every field the log needs**. No plumbing is required.
 - **Four callers, not two** — `src/server/routes.ts:20323`, and `src/commands/server.ts` at 2763, 2985 and 20711. **Only the first passes a `messageId`**; the others call the seam without one, which is precisely why §3 records id-less messages rather than dropping them. Had that decision gone the other way, three of the four inbound paths would have stayed invisible.
 
@@ -171,6 +171,13 @@ It works because:
  failure would look like scrambled history rather than an error.
  - **No existing reader is affected:** no column changed type, nothing became
  nullable, and no reader sees a field it did not see before.
+ - **TopicMemory carries a REDUCED contract, and consumers must know it.** JSONL holds `dedupeId` and `idSource`; TopicMemory does
+ not, because it keeps its existing columns. So a reader using TopicMemory
+ alone can tell a locally-derived id from a platform one **only by its sign**
+ (negative ⇒ derived), and has no retry identity available at all. That is
+ intentional — TopicMemory backs search and summaries, JSONL backs history —
+ and it is written here so the difference is a documented contract rather than
+ a discovery. A consumer needing `dedupeId` or `idSource` reads JSONL.
  - **This is best-effort received history, not a durable intake acknowledgment.** A crash before the next tick loses the row, so a reader
  may not treat the absence of an entry as proof a message never arrived, nor
  its presence as proof of delivery. One sentence, stated in the storage
@@ -219,7 +226,11 @@ purpose: it is far better for a resumed session to see a message the operator
 sent and the agent possibly missed, than to miss it entirely. The reader is
 documented as showing *what arrived*, and an injection failure is already loud
 elsewhere. No consumer may read this log as proof the agent acted on a
-message.
+message — **and that is enforced by naming, not by asking.** The field is `sessionReceivedAt`, the JSONL
+file is `override-events`-style named for what it holds, and the storage contract
+above states the reduced guarantees inline. A consumer reading a field called
+`sessionReceivedAt` has to work to misinterpret it; a consumer reading
+`deliveredAt` would have to work not to.
 
 ### 3.2 Failure direction: never block the message
 
@@ -260,8 +271,11 @@ catch { /* never block the injection */ }
 - **No queue, no worker, no cap, no drop policy.** Inbound messages normally
  arrive at human typing speed, so there is no burst to absorb.
 - **That assumption is tested, not asserted.**
- A stress test drives 200 inbound messages and asserts injection latency is
- unaffected. If it ever fails, the assumption is wrong and the design is
+ A stress test drives 200 inbound messages and asserts **event-loop delay**
+ during and after the burst — not merely injection latency. The Attention
+ threshold is likewise expressed in **measured loop delay**, with the pending
+ count as a secondary signal, because the count is a proxy and the delay is the
+ harm. If it ever fails, the assumption is wrong and the design is
  revisited — rather than pre-building a queue against a burst that may never
  happen.
 - **What that test does NOT prove, stated because v12 overclaimed it.** 200 scheduled writes can still run back-to-back on the next tick, so
