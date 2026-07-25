@@ -77,6 +77,13 @@ not what it was asked.
 before injecting it — **always, whenever the feature is enabled**, using the
 platform's `messageId` when present and a per-injection id when not.
 
+**The seam orchestrates; it does not do the logging.** The concern is fair in shape but does not apply here:
+`TelegramAdapter.logInboundMessage()` **is** the dedicated logger, and it already
+exists and is already used by the forward route. `injectTelegramMessage` gains one
+call to it — an orchestration line, not a second responsibility. What would
+violate SRP is inlining the write into the seam, and that is expressly not what
+this does.
+
 That is the whole mechanism. **It is deliberately not a queue, an event bus or a
 write-ahead log:** the persistence it needs already exists and is already written to
 by the same function on another path, the record is machine-local by nature
