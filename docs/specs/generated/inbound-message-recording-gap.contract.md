@@ -73,6 +73,31 @@ not what it was asked.
 
 ## 3. Design
 
+### 3.0 Final contract
+
+*Three reviewers across rounds 24, 28 and 29 asked for the same thing: the
+contract without the archaeology. The generated companion at
+`docs/specs/generated/inbound-message-recording-gap.contract.md` strips history
+document-wide, but a reader opening the source spec should not have to leave it
+to find out what is being built. Everything below this table is reasoning; this
+table is the build.*
+
+| | |
+|---|---|
+| **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
+| **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. Returns `true`/`false`; never throws to the caller. Log path must be local, non-network storage. |
+| **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only when the essential write returned `true`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
+| **Fields** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, `messageId` \| absent, `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'received'`, `fromUser: true`. |
+| **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** |
+| **Ordering** | `(timestamp, rowid)`. Never `message_id`. |
+| **Authority** | JSONL is authoritative for received history. TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
+| **Failure behavior** | A failed append is caught, counted, and **injection proceeds**. A failed TopicMemory write is caught and counted. Sustained failures raise one deduped Attention item. |
+| **Counters** | `inbound-log-failed`, `inbound-log-dropped`, pending-callback depth (Attention above **8**). |
+| **Flag** | `messaging.inboundSeamLogging.enabled`, default-off, with emergency disable. |
+| **Acceptance** | **Not** "code landed" — the flag ON for the affected machine, plus live Telegram proof (normal + long message) and an id-less seam regression test. |
+| **Known residual** | A wedged local disk can stall message delivery. Accepted and named, not mitigated. |
+
+
 **Log at the injection seam.** `injectTelegramMessage` records the message
 before injecting it — **always, whenever the feature is enabled**, using the
 platform's `messageId` when present and a per-injection id when not.
@@ -126,6 +151,14 @@ one:
 If audit completeness is later wanted, the intake-edge log is the right build and
 this record does not obstruct it — they answer different questions and can
 coexist.
+
+**Choosing the seam does not close the routing question, and that is tracked, not
+waved.** "The intake edge is unknown" is a reason to log
+somewhere verified; it is not an answer. The likeliest next failure of this whole
+area is another pre-injection drop, or a second intake path that never reaches
+the seam at all — and neither is visible until someone traces where inbound
+traffic actually enters this machine. That tracing is registered as its own work
+item so it survives this spec shipping. <!-- tracked: ACT-1217 -->
 
 **What it is still deliberately NOT:** a queue subsystem, an event bus, a worker,
 a retry ladder, or any new persistent store. The persistence already exists and is
@@ -333,6 +366,16 @@ It works because:
  ignore it. The honest framing for a user is: *search may miss messages from a
  period when the machine was overloaded or restarted; the full record is still
  kept.*
+
+ **A dropped index row IS reconstructable, and no tool is built for it.** JSONL
+ holds every field TopicMemory needs, so a gap can be repaired by re-reading
+ the log and re-inserting the missing rows: a straightforward one-off script
+ when someone actually needs it. It is deliberately not shipped now. Building
+ a repair tool for a gap never yet observed is speculative, and a repair path
+ that exists but is never exercised is worse than a documented manual one,
+ because it invites trust it has not earned. What matters for a reader hitting
+ a gap is that the data is *not gone* — the index is reconstructable from the
+ record.
  - **JSONL and TopicMemory now carry the same identity fields** (`dedupe_id`,
  `id_source`), which retires the round-15 "reduced contract" caveat — that
  caveat existed only because the migration was being avoided.
@@ -429,6 +472,34 @@ measurement rather than by hope: **append latency is sampled, and a p99 above
 50 ms raises the same deduped Attention item**, because at that point the local
 filesystem is the problem and this feature is merely the messenger. Delivery may
 wait for this append; it may never wait for the TopicMemory write.
+
+**But sampling a p99 does not bound a stall, and this is the sharpest hole the
+review has found.** `appendFileSync` can block *indefinitely* —
+a wedged filesystem, a network mount that stops answering, a failing disk, an
+antivirus filter driver. The whole "log failure never stops delivery" invariant
+rests on the syscall **returning**, even to throw. If it never returns, the
+message is not delivered late; it is not delivered at all, and the feature built
+to protect the conversation is what stopped it. A p99 alarm reports this
+afterwards. It does not prevent it, and a timeout cannot help — Node offers no
+way to cancel an in-flight synchronous write, which is the same wall v4 hit.
+
+Two things follow, and neither is a mechanism:
+
+1. **The log path is required to be local, non-network storage**, and is asserted
+ as such at startup rather than assumed. A message log on a network mount is
+ outside what this design is safe for, and saying so is cheaper and more honest
+ than pretending a guard exists.
+2. **The residual is accepted and named: a wedged local disk can stall message
+ delivery.** That is a real dependency this change introduces and it is not
+ argued away. The reasoning for accepting it is that a machine whose local disk
+ has stopped answering is not a machine that is about to have a working
+ conversation anyway — every other write on the delivery path is in the same
+ position. What makes it acceptable is that it is *stated*, so a future reader
+ deciding to move this log somewhere clever knows what they are trading.
+
+The alternative — deferring the essential write too — was tried in v4 and v5 and
+loses the crash-survival property that is the entire point. Trading a certain
+data-loss bug for a rare stall is the trade being made, deliberately.
 
 **The SECONDARY write is fire-and-forget on the next tick; the essential one is
 not. That is the whole mechanism.**
@@ -753,15 +824,29 @@ seam and only one passes a platform id — so a single live message proves at mo
 one of four paths, and most likely the *best-covered* one. Acceptance requires
 three:
 
+**These are two different tiers, and round-29 (codex) is right that merging them
+was sloppy** — only one of the four callers is reachable by sending a Telegram
+message; the id-less ones are server/command paths a user cannot trigger. Calling
+all three "live-user proof" would have meant either failing acceptance on a path
+no user can exercise, or quietly reclassifying it later. So they are split:
+
+**Live Telegram acceptance** — performed by sending real messages:
+
 | Path | Proves |
 |---|---|
 | A normal Telegram message (platform id present) | `idSource: 'platform'`, dedupe against redelivery |
-| A message arriving via an id-less caller | The derived-UUID path that three of four callers take |
-| A long message (file-pointer injection) | The logged text is the operator's message, not the wrapper |
+| A long Telegram message (file-pointer injection) | The logged text is the operator's message, not the wrapper |
 
-The third is included because long messages take the file-pointer path rather
+The second is included because long messages take the file-pointer path rather
 than inline injection, and a log that recorded the pointer instead of the message
 would look healthy in every count while storing nothing readable.
+
+**Id-less seam regression** — a separate test at the seam, not a live-channel
+claim, exercising the three callers in `src/commands/server.ts` that pass no
+`messageId`. It proves the derived-UUID path that **three of the four callers
+take**, which is the majority of the seam's traffic shape and the part a Telegram
+message cannot reach. Both tiers are required for "done"; neither substitutes for
+the other.
 
 **E2E** — production initialization path: a message injected into a live session
 is readable back from the topic history **within a bounded interval** (the write

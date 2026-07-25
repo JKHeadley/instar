@@ -56,6 +56,39 @@ Two small details that are deliberate:
 - **If writing it down fails, show me the message anyway.** Recording is
   bookkeeping. It must never become the reason you can't reach me.
 
+## "Built" and "fixed" are not the same day
+
+This is worth being blunt about, because the review caught me heading for it.
+
+The switch that turns recording on starts off. That's the normal careful way to
+ship something — get the code in, watch it, turn it on. But this is a bug that is
+losing data right now, so shipping the code with the switch off would mean the
+work is finished, the tests pass, everything looks done, and **not one extra
+message gets recorded**. The bug would carry on for exactly as long as nobody
+flips the switch.
+
+So the finish line is not "the code is in." It is: the switch is on for this
+machine, you send me a message, and I can read it back. If it then turns out to
+be slower than it should be, the switch comes back off — that's a measured
+retreat, not an excuse to leave it off from the start.
+
+## The alternative I should have considered first
+
+The reviewer pointed out that there's a better-known way to do this: record
+messages where they first arrive from Telegram, rather than where they get handed
+to me. That would catch more — including messages that get dropped before they
+ever reach me.
+
+Two reasons it's still not what I'm proposing. The first is that the goal here is
+narrow: make session restarts read the real conversation. The second is the
+honest one — *the place where messages first arrive on this machine is exactly
+what I don't know*. That's the bug. The road they take has no recording step and
+I haven't traced where it starts. The spot I'm proposing is the one I have
+actually verified they all pass through.
+
+If you later want the fuller version, it's a good build and this doesn't get in
+its way.
+
 ## What it doesn't fix
 
 It does not stitch the two machines' halves together. After this, each machine
@@ -74,3 +107,10 @@ two other sections describing the old behaviour, and each round of fixing create
 more of them. The lesson written down from that: keep a specification small
 enough that fixing it doesn't break it. This one is one problem, one place, one
 switch.
+
+That said — this one hasn't finished its review either. Twenty-eight rounds so
+far. The difference is what the rounds are finding: the big one kept surfacing
+contradictions I'd introduced myself, while this one is still surfacing real
+things I'd missed, like the alternative above. When the rounds stop finding
+anything new I'll say so; I'm not going to declare it finished because I'm tired
+of the loop.
