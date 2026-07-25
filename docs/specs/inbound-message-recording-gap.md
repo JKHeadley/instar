@@ -54,6 +54,21 @@ eli16-overview: "docs/specs/inbound-message-recording-gap.eli16.md"
 > now because shipping unbounded-growth recording and *then* bounding it means
 > deliberately shipping the unbounded version — but if this spec is broken up,
 > that is the seam to break it on.
+>
+> **Round-37 (codex) pushed back on keeping it bundled, and is the second
+> reviewer to do so.** The counter-argument is good: this spec is already
+> `single-run-completable: false`, so bundling does not buy a single shippable
+> unit — it buys one document that cannot be built in one go instead of two that
+> can. And the half that stops live data loss is the seam call, which is small and
+> could ship much sooner than the retention machinery. Against that, the
+> unbounded-growth window is real but narrow: the log only grows on a machine
+> where the flag is deliberately on, which today is one machine.
+>
+> **The recommendation is to split; the prioritisation is the operator's call**,
+> because it trades "fix the data loss sooner" against "carry an unbounded log for
+> a while", and that is a judgment about acceptable exposure rather than a
+> technical fact. Registered as a decision rather than resolved unilaterally.
+> <!-- tracked: ACT-1219 -->
 
 **It began deliberately small.** One mechanism, one seam, one flag. The companion spec
 `outbound-gate-advisory-override.md` took 33 review rounds and never converged,
@@ -142,7 +157,7 @@ that is cheaper than pretending duplication is free.*
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
 | **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws *once the syscall returns*** — a synchronous filesystem stall can still block the event loop indefinitely (§3.2); the guarantee covers the error path, not the time path. Returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path must be an app-controlled local data directory. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only on `status: 'appended'`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
-| **Fields** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, `messageId` \| absent, `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'received'`, `fromUser: true`. |
+| **Fields** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, `messageId` \| absent, `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'session_received'`, `fromUser: true`. |
 | **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** Scope: **best-effort duplicate suppression within one process** — atomic in-process, not a storage-level uniqueness guarantee. |
 | **Ordering** | `(timestamp, rowid)`. Never `message_id`. |
 | **Authority** | JSONL is authoritative for received history. TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
@@ -155,6 +170,8 @@ that is cheaper than pretending duplication is free.*
 | **Retention** | Whatever fits in current + 4 rotations (~160 MB of message text). Resume history is bounded by this window, not by time. No time-based expiry. |
 | **Seeding** | `seedMessageLogDedupe()` reads the **current file only**, and at most its **last 64 MB** — never the rotations. A redelivered message older than the current file is written twice; that is the accepted cost of a bounded startup read. |
 | **Deletion** | Deleting the current **and rotated** files removes everything this design's JSONL store holds. TopicMemory, filesystem snapshots, and any backup system are **separate stores with separate deletion** — this is not a whole-system erasure guarantee. |
+| **Single writer** | The agent-home **single-instance lock** (one server per agent home) is what makes one-writer-per-log-path true. Its scope covers append, rotation **and** seeding — all three assume it. If the lock cannot be acquired at startup, the seam logging feature **does not arm** (the process may still run; it does not write this log). A second writer is not detected at append time and is not defended against. |
+| **Synthetic rows** | The startup self-check record is marked `synthetic: true`. It is **excluded** from history reads, the recent-inbound count, the one-sided-conversation check and dedupe seeding. It **is** counted toward rotation size, because it occupies real bytes and pretending otherwise would make the size bound wrong. |
 | **Flag** | `messaging.inboundSeamLogging.enabled`, default-off, with emergency disable. |
 | **Acceptance** | **Not** "code landed" — the flag ON for the affected machine, live Telegram proof (normal + long message), **a restart, then another message with the inbound count still increasing**, an id-less seam regression test, and the single-instance lock verified active. |
 | **Known residuals** | A wedged local disk can stall message delivery. Messages dropped before injection are invisible. Message text is stored in local plaintext. All three accepted and named, none mitigated. |
@@ -416,8 +433,12 @@ It works because:
     a number, so a string id left implicit is a `NaN` collision waiting to
     happen — round-3, codex.)*
   - the entry is marked `idSource: 'platform' | 'derived'`.
-  - the entry carries **`deliveryState: 'received'`**, which means **received by
-    the session-injection seam — NOT received by Telegram**. A message the bot
+  - the entry carries **`deliveryState: 'session_received'`** — renamed from a
+    bare `'received'` at round-37 (codex), because the old value was correct only
+    if the reader remembered a caveat written elsewhere, and a value that depends
+    on memory to be read correctly will eventually be read incorrectly. The name
+    now carries its own scope: **received by the session-injection seam — NOT
+    received by Telegram**. A message the bot
     took in and then queued, dropped or refused before injection never reaches
     this record at all (§4). It is a single-valued enum
     today, and deliberately an enum rather than a boolean or an absence
@@ -611,7 +632,7 @@ queued, dropped, or refused *before* injection is never seen here (§4 admits
 this), so a bare `received` reads as "received by the agent" when it only means
 "reached the point where a session was about to be handed it." The field is
 therefore `sessionReceivedAt` — the `session` prefix is load-bearing, not
-decoration — and `deliveryState: 'received'` is defined in one line at its
+decoration — and `deliveryState: 'session_received'` is defined in one line at its
 definition site as **received by the session-injection seam, not by Telegram**.
 The enum value stays short because it is written on every row; the definition
 carries the precision.
@@ -626,7 +647,7 @@ elsewhere. No consumer may read this log as proof the agent acted on a
 message. **Naming makes that harder to get wrong; it does not enforce it
 (round-17, codex — and v16 said "enforced by naming", which is an overclaim
 inside the fix for an overclaim).** What naming buys: a consumer reading
-`sessionReceivedAt` and `deliveryState: 'received'` has to work to misread them,
+`sessionReceivedAt` and `deliveryState: 'session_received'` has to work to misread them,
 where one reading `deliveredAt` would have to work not to. What it does not buy:
 any mechanism preventing a determined consumer from treating presence as
 delivery. **The only real enforcement available is the enum** — a future

@@ -1,9 +1,17 @@
 <!-- GENERATED FILE — DO NOT EDIT.
      Source: docs/specs/inbound-message-recording-gap.md
      Regenerate: node scripts/generate-spec-contract.mjs --spec docs/specs/inbound-message-recording-gap.md
-     This is the IMPLEMENTATION CONTRACT: the normative design only.
-     Review history (change logs, retired designs, reversed decisions) is
-     deliberately absent — read the source spec for how the design got here.
+     This is the IMPLEMENTATION CONTRACT.
+
+     REMOVED: history sections, delimited round-annotations, and blockquote
+     meta-blocks that talk about the document rather than the design.
+
+     NOT REMOVED: narrative prose that states a rule and narrates its own
+     history in the same sentence. A transform cannot separate those without
+     judgment it deliberately does not have, so some review references remain
+     below (15 occurrence(s) of "round-N" in this file).
+     Where such a sentence describes what a design USED to be, the surrounding
+     normative statement governs. Read the source spec for full context.
 -->
 ---
 title: "Record inbound messages at the injection seam"
@@ -22,46 +30,6 @@ eli16-overview: "docs/specs/inbound-message-recording-gap.eli16.md"
 
 > ## The normative artifact is the generated contract, not this file
 >
-> **Build from `docs/specs/generated/inbound-message-recording-gap.contract.md`.**
-> This file is the **rationale and review record**: why the contract is shaped as
-> it is, what was tried and reversed, and which residuals were accepted
-> deliberately.
->
-> Six consecutive rounds (29-35) asked for this, from **both** reviewer families
-> independently, and three of those rounds found a real instance of the hazard —
-> a retired design still described in normative-looking prose, which is how the
-> wrong thing gets built. Restating a design in a second place creates a second
-> place to be wrong, and this document proved that repeatedly at a tenth the size
-> of the spec that first taught the lesson (ACT-1215).
->
-> §3.0 remains in this file as the in-place summary and stays authoritative *over
-> the surrounding prose*; where §3.0 and the generated contract could ever differ,
-> the generated one wins, because it is derived rather than maintained. The build
-> check (`--check`) is what keeps that true over time.
->
-> **And the review must follow the artifact.** Declaring the
-> generated contract normative while continuing to send *this* file to reviewers
-> means no reviewer has ever read the thing being built — they cannot verify it,
-> and every finding about "historical prose reading as normative" is a finding
-> about a document that is no longer the contract. From round 37 the cross-model
-> review runs against the **generated contract**, with this file supplied as
-> rationale. That is a change to how this spec is converged, not just to what it
-> says, and it belongs here because the previous six rounds of that finding were
-> partly an artifact of reviewing the wrong file.
-
-> **It is no longer small, and `single-run-completable` is now `false`
->.** This opened as one mechanism, one seam, one flag. Review
-> has since added — each for a good reason — a schema migration, a split logger
-> API, rotation and retention, two AST build checks, a one-sided-conversation
-> detector, a health surface with a synthetic self-check, and a privacy posture.
-> Every one of those is defensible; the aggregate is not one run's work, and
-> claiming otherwise would put the wrong thing in the frontmatter for a machine to
-> read. **The natural split is retention/rotation** (§3.0 rows 5-9), which is
-> independent of the recording fix and could ship separately. It is kept here for
-> now because shipping unbounded-growth recording and *then* bounding it means
-> deliberately shipping the unbounded version — but if this spec is broken up,
-> that is the seam to break it on.
-
 **It began deliberately small.** One mechanism, one seam, one flag. The companion spec
 `outbound-gate-advisory-override.md` took 33 review rounds and never converged,
 because every fold of a 2,700-line document created new contradictions elsewhere
@@ -149,7 +117,7 @@ that is cheaper than pretending duplication is free.*
 | **Where** | `SessionManager.injectTelegramMessage`, before the injection. |
 | **Essential write** | `appendInboundJsonlSync(entry)` — synchronous append to the JSONL log. **Never throws *once the syscall returns*** — a synchronous filesystem stall can still block the event loop indefinitely (§3.2); the guarantee covers the error path, not the time path. Returns `{ status: 'appended' \| 'duplicate' \| 'failed' }`. Not shed by any application policy — but it can still *fail*, and a failure is counted, not silent. Log path must be an app-controlled local data directory. |
 | **Secondary write** | `scheduleInboundTopicMemory(entry)` via `setImmediate`, called **only on `status: 'appended'`**. Dedicated SQLite connection, `busy_timeout = 100 ms`. Backlog capped at **16**; beyond that, drop and count. |
-| **Fields** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, `messageId` \| absent, `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'received'`, `fromUser: true`. |
+| **Fields** | `sessionReceivedAt`, `text` (the operator's message, not the wrapper), `topicId`, `senderName`, `telegramUserId`, `messageId` \| absent, `dedupeId`, `idSource: 'platform' \| 'derived'`, `deliveryState: 'session_received'`, `fromUser: true`. |
 | **Dedupe key** | `dedupeId` — the platform id when present, else a per-injection UUID. Compared with `topicId` coerced to a number. **Inserted into the in-memory set only after a successful append.** Scope: **best-effort duplicate suppression within one process** — atomic in-process, not a storage-level uniqueness guarantee. |
 | **Ordering** | `(timestamp, rowid)`. Never `message_id`. |
 | **Authority** | JSONL is authoritative for received history. TopicMemory is a **lossy index** — search, never counting. Its identity columns are informational; no uniqueness constraint. |
@@ -162,6 +130,8 @@ that is cheaper than pretending duplication is free.*
 | **Retention** | Whatever fits in current + 4 rotations (~160 MB of message text). Resume history is bounded by this window, not by time. No time-based expiry. |
 | **Seeding** | `seedMessageLogDedupe()` reads the **current file only**, and at most its **last 64 MB** — never the rotations. A redelivered message older than the current file is written twice; that is the accepted cost of a bounded startup read. |
 | **Deletion** | Deleting the current **and rotated** files removes everything this design's JSONL store holds. TopicMemory, filesystem snapshots, and any backup system are **separate stores with separate deletion** — this is not a whole-system erasure guarantee. |
+| **Single writer** | The agent-home **single-instance lock** (one server per agent home) is what makes one-writer-per-log-path true. Its scope covers append, rotation **and** seeding — all three assume it. If the lock cannot be acquired at startup, the seam logging feature **does not arm** (the process may still run; it does not write this log). A second writer is not detected at append time and is not defended against. |
+| **Synthetic rows** | The startup self-check record is marked `synthetic: true`. It is **excluded** from history reads, the recent-inbound count, the one-sided-conversation check and dedupe seeding. It **is** counted toward rotation size, because it occupies real bytes and pretending otherwise would make the size bound wrong. |
 | **Flag** | `messaging.inboundSeamLogging.enabled`, default-off, with emergency disable. |
 | **Acceptance** | **Not** "code landed" — the flag ON for the affected machine, live Telegram proof (normal + long message), **a restart, then another message with the inbound count still increasing**, an id-less seam regression test, and the single-instance lock verified active. |
 | **Known residuals** | A wedged local disk can stall message delivery. Messages dropped before injection are invisible. Message text is stored in local plaintext. All three accepted and named, none mitigated. |
@@ -403,8 +373,12 @@ It works because:
  a number, so a string id left implicit is a `NaN` collision waiting to
  happen.)*
  - the entry is marked `idSource: 'platform' | 'derived'`.
- - the entry carries **`deliveryState: 'received'`**, which means **received by
- the session-injection seam — NOT received by Telegram**. A message the bot
+ - the entry carries **`deliveryState: 'session_received'`** — renamed from a
+ bare `'received'` at round-37 (codex), because the old value was correct only
+ if the reader remembered a caveat written elsewhere, and a value that depends
+ on memory to be read correctly will eventually be read incorrectly. The name
+ now carries its own scope: **received by the session-injection seam — NOT
+ received by Telegram**. A message the bot
  took in and then queued, dropped or refused before injection never reaches
  this record at all (§4). It is a single-valued enum
  today, and deliberately an enum rather than a boolean or an absence. It gives a later `'injected'` or `'delivered'` somewhere
@@ -539,16 +513,6 @@ It works because:
 
 ---
 
-> **NON-NORMATIVE FROM HERE TO §3.3.** Sections 3.1 and 3.2 are *rationale*: why
-> the contract in §3.0 is shaped the way it is, what was tried and reversed, and
-> which residuals were accepted deliberately. **They record how the design got
-> here; §3.0 records what to build.** Five consecutive review rounds (29-33) named
-> the same hazard — normative and historical text coexisting, so an implementer
-> reading linearly can follow a retired design — and three of those rounds found a
-> real instance of it in this document. Where anything below disagrees with §3.0,
-> **§3.0 wins and the text below is the defect**. Build from §3.0 and the generated
-> contract; read this for judgment, not instructions.
-
 ---
 
 ### 3.1 Ordering: accept first, then inject — and it is a RECEIVED log
@@ -581,7 +545,7 @@ queued, dropped, or refused *before* injection is never seen here (§4 admits
 this), so a bare `received` reads as "received by the agent" when it only means
 "reached the point where a session was about to be handed it." The field is
 therefore `sessionReceivedAt` — the `session` prefix is load-bearing, not
-decoration — and `deliveryState: 'received'` is defined in one line at its
+decoration — and `deliveryState: 'session_received'` is defined in one line at its
 definition site as **received by the session-injection seam, not by Telegram**.
 The enum value stays short because it is written on every row; the definition
 carries the precision.
@@ -594,7 +558,7 @@ sent and the agent possibly missed, than to miss it entirely. The reader is
 documented as showing *what arrived*, and an injection failure is already loud
 elsewhere. No consumer may read this log as proof the agent acted on a
 message. **Naming makes that harder to get wrong; it does not enforce it.** What naming buys: a consumer reading
-`sessionReceivedAt` and `deliveryState: 'received'` has to work to misread them,
+`sessionReceivedAt` and `deliveryState: 'session_received'` has to work to misread them,
 where one reading `deliveredAt` would have to work not to. What it does not buy:
 any mechanism preventing a determined consumer from treating presence as
 delivery. **The only real enforcement available is the enum** — a future
@@ -925,9 +889,6 @@ that is the abstraction §3 declines for a reason that has now been demonstrated
 twice in this section's own history.
 
 ---
-
-> **NORMATIVE AGAIN FROM HERE.** §3.3 (rollout + acceptance), §4 (honest limits)
-> and §5 (test plan) are part of the contract.
 
 ---
 

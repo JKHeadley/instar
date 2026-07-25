@@ -41,6 +41,35 @@ own judgment about what counts as current — and it would drift out of step wit
 the document exactly the way the document drifted out of step with itself. A dumb
 rule is checkable at a glance; a clever one is a second thing to review.
 
+## The time it lied about itself
+
+Worth recording, because it's the most useful thing that happened to this tool.
+
+The clean copy carried a header saying review history was "deliberately absent."
+Then the clean copy was reviewed for the first time as the thing to build from —
+and it still contained history. Worse, it contained a marker reading "NON-NORMATIVE
+FROM HERE", sitting inside a file whose own header claimed it had no non-normative
+parts.
+
+Two problems, and only one of them was a bug.
+
+The bug: blocks of text that talk *about* the document — "this file is the
+reasoning", "the plan is elsewhere" — weren't being removed. They are now.
+
+The other problem was the header itself. Some history genuinely cannot be
+removed: a sentence that states a rule and explains its own history at the same
+time can't be split by a tool that doesn't understand English. The header
+promised an absence the tool could never deliver.
+
+So the header now says three things instead of one: what it removed, what it
+couldn't remove, and **a count of how many historical references are still in the
+file**. If that number is 15, you know to read carefully. Before, you were told
+it was zero.
+
+A tool whose whole purpose is preventing people from building the wrong thing
+cannot have a false statement at the top of its output. That's not a small
+detail — it's the entire job.
+
 ## One thing to watch
 
 Because the rule is blunt, it only recognises the heading shapes it knows. Run it

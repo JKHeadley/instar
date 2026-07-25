@@ -1,9 +1,17 @@
 <!-- GENERATED FILE — DO NOT EDIT.
      Source: docs/specs/outbound-gate-advisory-override.md
      Regenerate: node scripts/generate-spec-contract.mjs --spec docs/specs/outbound-gate-advisory-override.md
-     This is the IMPLEMENTATION CONTRACT: the normative design only.
-     Review history (change logs, retired designs, reversed decisions) is
-     deliberately absent — read the source spec for how the design got here.
+     This is the IMPLEMENTATION CONTRACT.
+
+     REMOVED: history sections, delimited round-annotations, and blockquote
+     meta-blocks that talk about the document rather than the design.
+
+     NOT REMOVED: narrative prose that states a rule and narrates its own
+     history in the same sentence. A transform cannot separate those without
+     judgment it deliberately does not have, so some review references remain
+     below (39 occurrence(s) of "round-N" in this file).
+     Where such a sentence describes what a design USED to be, the surrounding
+     normative statement governs. Read the source spec for full context.
 -->
 ---
 title: "Outbound gate advisory override — judgment rules become nudges, credentials stay a wall"

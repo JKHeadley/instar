@@ -54,11 +54,33 @@ export function stripInlineAnnotations(text) {
   return out.replace(/[ \t]{2,}/g, ' ').replace(/ +([.,;:])/g, '$1');
 }
 
+/**
+ * A blockquote block that exists to talk ABOUT the document — normative-boundary
+ * markers, "this file is rationale", scope-changed notices. They are meta, not
+ * contract, and they read as especially authoritative because of the `>` and the
+ * bold. Round-37 (codex) found several of them surviving into the generated
+ * contract, where a "NON-NORMATIVE FROM HERE" marker inside a file that claims to
+ * be normative-only is worse than no marker at all.
+ */
+const META_BLOCKQUOTE_RE =
+  /^>\s*(?:#{1,4}\s*)?\**\s*(?:NON-)?NORMATIVE\b|^>\s*\**\s*(?:It (?:is|began)|This file|Build from|The normative artifact|And the review)/i;
+
+/**
+ * A residual the generator CANNOT remove: narrative prose that states a rule and
+ * narrates its history in the same sentence ("round-36 found this paragraph
+ * stating only the p99"). Counting them is the honest alternative to pretending
+ * they are gone — the run reports the number so a reader knows what they are
+ * getting.
+ */
+const NARRATIVE_HISTORY_RE = /\b(?:round|rounds)[- ]\d+\b/gi;
+
 export function splitContract(markdown) {
   const lines = markdown.split('\n');
   const kept = [];
   let inHistory = false;
+  let inMetaQuote = false;
   let droppedSections = 0;
+  let droppedMetaBlocks = 0;
   for (const line of lines) {
     if (/^##\s/.test(line)) {
       if (HISTORY_HEADING_RE.test(line) && !ALWAYS_CONTRACT_RE.test(line)) {
@@ -69,21 +91,40 @@ export function splitContract(markdown) {
       // A non-history H2 ends a history run (sections are not strictly ordered).
       inHistory = false;
     }
+    // Meta blockquotes run until the first non-blockquote, non-blank line.
+    if (!inHistory) {
+      if (!inMetaQuote && META_BLOCKQUOTE_RE.test(line)) {
+        inMetaQuote = true;
+        droppedMetaBlocks++;
+      } else if (inMetaQuote && !/^>/.test(line) && line.trim() !== '') {
+        inMetaQuote = false;
+      }
+      if (inMetaQuote) continue;
+    }
     if (!inHistory) kept.push(line);
   }
   const body = stripInlineAnnotations(kept.join('\n')).replace(/\n{4,}/g, '\n\n\n');
-  return { contract: body, droppedSections };
+  const narrativeResidual = (body.match(NARRATIVE_HISTORY_RE) || []).length;
+  return { contract: body, droppedSections, droppedMetaBlocks, narrativeResidual };
 }
 
 /** The banner that makes the generated file unmistakable and un-editable-by-hand. */
-function banner(specRel) {
+function banner(specRel, narrativeResidual) {
   return [
     '<!-- GENERATED FILE — DO NOT EDIT.',
     `     Source: ${specRel}`,
     '     Regenerate: node scripts/generate-spec-contract.mjs --spec ' + specRel,
-    '     This is the IMPLEMENTATION CONTRACT: the normative design only.',
-    '     Review history (change logs, retired designs, reversed decisions) is',
-    '     deliberately absent — read the source spec for how the design got here.',
+    '     This is the IMPLEMENTATION CONTRACT.',
+    '',
+    '     REMOVED: history sections, delimited round-annotations, and blockquote',
+    '     meta-blocks that talk about the document rather than the design.',
+    '',
+    '     NOT REMOVED: narrative prose that states a rule and narrates its own',
+    '     history in the same sentence. A transform cannot separate those without',
+    '     judgment it deliberately does not have, so some review references remain',
+    `     below (${narrativeResidual} occurrence(s) of "round-N" in this file).`,
+    '     Where such a sentence describes what a design USED to be, the surrounding',
+    '     normative statement governs. Read the source spec for full context.',
     '-->',
     '',
   ].join('\n');
@@ -101,8 +142,9 @@ function main() {
   const specRel = path.relative(process.cwd(), specPath);
 
   const markdown = fs.readFileSync(specPath, 'utf8');
-  const { contract, droppedSections } = splitContract(markdown);
-  const output = banner(specRel) + contract;
+  const { contract, droppedSections, droppedMetaBlocks, narrativeResidual } =
+    splitContract(markdown);
+  const output = banner(specRel, narrativeResidual) + contract;
 
   const slug = path.basename(specPath, '.md');
   const outPath = path.join(path.dirname(specPath), 'generated', `${slug}.contract.md`);
@@ -120,7 +162,11 @@ function main() {
       );
       process.exit(1);
     }
-    console.log(`OK: contract is current (${droppedSections} history sections excluded).`);
+    console.log(
+      `OK: contract is current (${droppedSections} history sections, ` +
+        `${droppedMetaBlocks} meta-blocks excluded; ${narrativeResidual} narrative ` +
+        `round-references remain).`,
+    );
     return;
   }
 
@@ -128,7 +174,10 @@ function main() {
   fs.writeFileSync(outPath, output, 'utf8');
   const pct = Math.round((1 - output.length / markdown.length) * 100);
   console.log(
-    `wrote ${path.relative(process.cwd(), outPath)} — ${droppedSections} history sections excluded, ${pct}% smaller.`,
+    `wrote ${path.relative(process.cwd(), outPath)} — ${droppedSections} history ` +
+      `sections + ${droppedMetaBlocks} meta-blocks excluded, ${pct}% smaller. ` +
+      `RESIDUAL: ${narrativeResidual} narrative round-reference(s) the transform ` +
+      `cannot remove.`,
   );
 }
 

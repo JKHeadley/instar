@@ -46,6 +46,25 @@ line itself — it always reports how many sections it excluded, so *reading* it
 catches this. The ELI16 now says so directly.
 
 
+**Found again, worse, by pointing the tool at its own output (round-37, codex).**
+The generated contract was reviewed as the build artifact for the first time, and
+it was **not contract-only**: blockquote meta-blocks survived, including a
+"NON-NORMATIVE FROM HERE" marker sitting inside a file whose banner claimed
+review history was "deliberately absent." A boundary marker inside a document
+that denies having boundaries is worse than no marker — and the banner was
+straightforwardly false.
+
+Two fixes, one mechanical and one honest:
+
+1. **Meta-blockquotes are now stripped** — blocks that talk *about* the document
+   (normative-boundary markers, "this file is rationale", scope notices) rather
+   than about the design. Counted and reported separately from history sections.
+2. **The banner no longer overclaims.** It now states what is removed, what is
+   *not* removed, and prints the **count of narrative round-references remaining**
+   in the file. The previous wording promised absence it could not deliver, which
+   is exactly the class of overclaim the spec under review kept being corrected
+   for. A tool that lies in its own header is worse than one with a stated limit.
+
 - **Narrative history inside normative prose.** The generator strips history
   *sections* and *inline annotations*; it cannot strip a paragraph of normative
   prose that happens to narrate how a decision evolved. Those remain in the
