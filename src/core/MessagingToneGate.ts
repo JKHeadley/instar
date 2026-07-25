@@ -33,6 +33,20 @@ import { DP_MESSAGING_TONE_GATE } from '../data/provenanceCoverage.js';
 import { scrubForStore } from './durableSecretScrub.js';
 import { CONTENT_FULL_KEY } from './JudgmentProvenanceLog.js';
 
+/** Normalize volatile fields so repeated automated templates share one identity. */
+export function normalizeAutomatedTemplate(text: string): string {
+  return text
+    .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g, '<timestamp>')
+    .replace(/\b(?:mesh|topic|session|message|job|run|agent)[-_:#]?\d+[a-z0-9-]*\b/gi, '<id>')
+    .replace(/\b\d{6,}\b/g, '<number>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function fingerprintAutomatedTemplate(text: string): string {
+  return crypto.createHash('sha256').update(normalizeAutomatedTemplate(text), 'utf8').digest('hex');
+}
+
 /**
  * Hard ceiling on a recorded candidate body, in characters. A CEILING, not a default
  * the caller can raise: `maxBodyChars` is clamped DOWN to it, never up, so no config

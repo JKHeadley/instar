@@ -92,7 +92,7 @@ import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowl
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
-import { buildDegradedToneResult, resolveToneGateOperatorConfig } from '../core/MessagingToneGate.js';
+import { buildDegradedToneResult, resolveToneGateOperatorConfig, fingerprintAutomatedTemplate } from '../core/MessagingToneGate.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -2481,6 +2481,24 @@ export function createRoutes(ctx: RouteContext): Router {
         operatorTierDeliver,
         budgetDegrade,
       );
+
+      // Observe-only template census: every automated send is still judged;
+      // this adds a stable identity and verdict to the existing provenance row.
+      if (options.messageKind === 'automated' && ctx.judgmentProvenance) {
+        const templateFingerprint = fingerprintAutomatedTemplate(text);
+        ctx.judgmentProvenance.recordDecision({
+          component: 'MessagingToneGate',
+          decisionPoint: 'messaging-tone-gate',
+          context: { messageKind: 'automated', templateFingerprint },
+          optionsPresented: ['pass', 'block'],
+          decision: result.pass ? 'pass' : 'block',
+          reason: result.pass ? 'tone-gate-pass' : 'tone-gate-block',
+          floor: 'automated-template-observe-only',
+          fallbackRung: 'llm',
+          latencyMs: result.latencyMs,
+          templateFingerprint,
+        });
+      }
 
       // Structured observability: log every decision the authority made. This is
       // the "why I blocked" log — over-block audits read this. Invalid-rule
