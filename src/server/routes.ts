@@ -168,6 +168,7 @@ import { randomUUID as cryptoRandomUUID } from 'node:crypto';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { resolveGhBinary } from '../core/resolveGhBinary.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { validateStageTransition, type ValidationContext as StageValidationContext } from '../core/StageTransitionValidator.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
@@ -16114,8 +16115,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // out multimachine-coherence P0). Both helpers are READ-ONLY git/gh against
       // the project's target repo.
       ghPrView: async (prNumber: number) => {
+        // Resolve gh by absolute path: the server is launched by launchd with a
+        // minimal PATH that omits /opt/homebrew/bin, so bare 'gh' died with a raw
+        // `spawnSync gh ENOENT` and NO project item could reach `merged`
+        // (found 2026-07-25). A missing binary is now a NAMED diagnostic rather
+        // than an opaque spawn error — the gate still refuses, but says why.
+        const ghBin = resolveGhBinary();
+        if (!ghBin) {
+          throw new Error(
+            'the GitHub CLI (gh) could not be found. The server may be running with a ' +
+            'minimal PATH; set INSTAR_GH_PATH to its absolute path. The merge cannot be ' +
+            'verified without it, so this transition is refused rather than assumed.',
+          );
+        }
         const out = execFileSync(
-          'gh',
+          ghBin,
           ['pr', 'view', String(prNumber), '--json', 'state,mergeCommit,statusCheckRollup'],
           { cwd: project.targetRepoPath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
         );
