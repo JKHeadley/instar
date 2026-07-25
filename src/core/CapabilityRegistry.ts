@@ -18,10 +18,23 @@ export const SCAN_STATES = ['observed', 'never-observed', 'source-unavailable'] 
 export const SOURCES = ['local-doorways'] as const;
 export const SOURCE_DETAILS = ['doorway-scan', 'doorway-manifest', 'pool-observation'] as const;
 export const EVIDENCE_CLASSES = ['cli-present', 'probe-answered', 'manifest-only'] as const;
+export const CAPABILITY_REGISTRY_FAILURE_REASONS = [
+  'timeout',
+  'stale-projection',
+  'origin-mismatch',
+  'clock-skew',
+  'malformed',
+  'version-unsupported',
+  'over-limit',
+  'source-unavailable',
+  'not-participating',
+  'no-data-yet',
+] as const;
 export type ProbeOutcome = (typeof PROBE_OUTCOMES)[number];
 export type ScanState = (typeof SCAN_STATES)[number];
 export type SourceDetail = (typeof SOURCE_DETAILS)[number];
 export type CapabilityStatus = 'available' | 'unavailable' | 'unknown' | 'stale' | 'conflict';
+export type CapabilityRegistryFailureReason = (typeof CAPABILITY_REGISTRY_FAILURE_REASONS)[number];
 
 export interface CapabilityEvidence { doorwayScanAt?: string; manifestVerifiedAt?: string }
 export interface CapabilityEntry {
@@ -117,6 +130,266 @@ export function deriveStatus(entries: CapabilityEntry[], now = Date.now(), opts:
   const transportStale = opts.lastConfirmedAt !== undefined && now - opts.lastConfirmedAt > (opts.remoteTtlCeilingMs ?? 600_000);
   if (transportStale || observedStale || manifestStale) return 'stale';
   return entries[0].probeOutcome === 'positive' ? 'available' : 'unavailable';
+}
+
+export interface CapabilityDigestParts {
+  schemaVersion: number; machineEpoch: number; projectionSeq: number; truncated: boolean;
+  scanState: ScanState; scanStampSecs: number; entriesHash: string; tuple: string;
+}
+
+export function parseCapabilityDigest(raw: unknown): CapabilityDigestParts {
+  if (typeof raw !== 'string' || Buffer.byteLength(raw) > 64) throw new Error('malformed');
+  const parts = raw.split(':');
+  if (parts.length !== 8 || parts[0] !== 'cap1') throw new Error('malformed');
+  const schemaVersion = int(Number(parts[1]), MAX_SCHEMA_VERSION, 'schemaVersion');
+  if (schemaVersion > CAPABILITY_REGISTRY_SCHEMA_VERSION) throw new Error('version-unsupported');
+  const machineEpoch = int(Number(parts[2]), MAX_MACHINE_EPOCH, 'machineEpoch');
+  const projectionSeq = int(Number(parts[3]), MAX_PROJECTION_SEQ, 'projectionSeq');
+  if (!['0', '1'].includes(parts[4])) throw new Error('malformed');
+  const scanStateIdx = int(Number(parts[5]), SCAN_STATES.length - 1, 'scanState');
+  const scanStampSecs = int(Number(parts[6]), MAX_SCAN_STAMP_SECS, 'scanStampSecs');
+  if (!/^[0-9a-f]{16}$/.test(parts[7])) throw new Error('malformed');
+  const tuple = `${schemaVersion}:${parts[4]}:${scanStateIdx}:${scanStampSecs}:${parts[7]}`;
+  return { schemaVersion, machineEpoch, projectionSeq, truncated: parts[4] === '1', scanState: SCAN_STATES[scanStateIdx], scanStampSecs, entriesHash: parts[7], tuple };
+}
+
+export type CapabilityHeartbeatProof =
+  | { kind: 'sequence'; value: number }
+  | { kind: 'signed-time'; value: string | number | Date };
+
+export type CapabilityRegistryIngestResult =
+  | { status: 'accepted'; digest: string }
+  | { status: 'noop'; digest: string }
+  | { status: 'pull-required'; digest: string }
+  | { status: 'pull-suppressed'; reason: CapabilityRegistryFailureReason }
+  | { status: 'rejected'; reason: CapabilityRegistryFailureReason };
+
+export type CapabilityRegistryPoolRow =
+  | { kind: 'failure'; machineId: string; reason: CapabilityRegistryFailureReason }
+  | { kind: 'capability'; machineId: string; entry: CapabilityEntry; status: CapabilityStatus };
+
+interface CapabilityReceiverOriginState {
+  projection?: CapabilityProjection;
+  digest?: string;
+  digestTuple?: string;
+  watermark?: { machineEpoch: number; projectionSeq: number; lastAcceptedAt: number };
+  lastConfirmedAt?: number;
+  lastHeartbeatSequence?: number;
+  lastHeartbeatSignedTime?: number;
+  failureReason?: CapabilityRegistryFailureReason;
+  pullFailures: number;
+  breakerOpenUntil?: number;
+  notParticipating?: boolean;
+}
+
+export interface CapabilityRegistryReceiverOptions {
+  remoteTtlCeilingMs?: number;
+  localStaleAfterMs?: number;
+  manifestStaleAfterMs?: number;
+  epochClampBoundMs?: number;
+  watermarkMaxAgeMs?: number;
+  pullFailureBreakerThreshold?: number;
+  pullBreakerMs?: number;
+}
+
+// RULE 3: EXEMPT — ingest consumes only validated in-repo projections and never raw provider or tmux output, so a state-detection canary has no external format to exercise.
+export class CapabilityRegistryReceiver {
+  private readonly states = new Map<string, CapabilityReceiverOriginState>();
+  private readonly opts: Required<CapabilityRegistryReceiverOptions>;
+
+  constructor(opts: CapabilityRegistryReceiverOptions = {}) {
+    this.opts = {
+      remoteTtlCeilingMs: opts.remoteTtlCeilingMs ?? 600_000,
+      localStaleAfterMs: opts.localStaleAfterMs ?? 86_400_000,
+      manifestStaleAfterMs: opts.manifestStaleAfterMs ?? 45 * 86_400_000,
+      epochClampBoundMs: opts.epochClampBoundMs ?? 86_400_000,
+      watermarkMaxAgeMs: opts.watermarkMaxAgeMs ?? 86_400_000,
+      pullFailureBreakerThreshold: opts.pullFailureBreakerThreshold ?? 5,
+      pullBreakerMs: opts.pullBreakerMs ?? 600_000,
+    };
+  }
+
+  ingestProjection(origin: string, raw: unknown, now = Date.now(), confirmed = true): CapabilityRegistryIngestResult {
+    let projection: CapabilityProjection;
+    try {
+      projection = validateProjection(raw);
+    } catch (error) {
+      return this.reject(origin, mapProjectionError(error));
+    }
+    if (projection.machineId !== origin) return this.reject(origin, 'origin-mismatch');
+    if (projection.machineEpoch > Math.floor((now + this.opts.epochClampBoundMs) / 1000)) return this.reject(origin, 'clock-skew');
+    try {
+      projection = this.receiverStampedProjection(projection, now);
+    } catch (error) {
+      return this.reject(origin, mapProjectionError(error));
+    }
+    const digest = canonicalDigest(projection);
+    const state = this.state(origin);
+    this.ageWatermark(state, now);
+    const monotonic = this.compareWatermark(state, projection.machineEpoch, projection.projectionSeq, digest);
+    if (monotonic === 'reject') return this.reject(origin, 'stale-projection');
+    if (monotonic === 'noop') {
+      state.failureReason = undefined;
+      state.notParticipating = false;
+      return { status: 'noop', digest };
+    }
+    state.projection = projection;
+    state.digest = digest;
+    state.digestTuple = parseCapabilityDigest(digest).tuple;
+    state.watermark = { machineEpoch: projection.machineEpoch, projectionSeq: projection.projectionSeq, lastAcceptedAt: now };
+    if (confirmed) state.lastConfirmedAt = now;
+    state.failureReason = undefined;
+    state.notParticipating = false;
+    state.pullFailures = 0;
+    state.breakerOpenUntil = undefined;
+    return { status: 'accepted', digest };
+  }
+
+  ingestHeartbeat(origin: string, digestRaw: unknown, now = Date.now(), proof?: CapabilityHeartbeatProof): CapabilityRegistryIngestResult {
+    const state = this.state(origin);
+    if (digestRaw === undefined || digestRaw === null || digestRaw === '') {
+      state.notParticipating = true;
+      state.failureReason = 'not-participating';
+      return { status: 'rejected', reason: 'not-participating' };
+    }
+    let digest: CapabilityDigestParts;
+    try {
+      digest = parseCapabilityDigest(digestRaw);
+    } catch (error) {
+      return this.reject(origin, mapProjectionError(error));
+    }
+    if (digest.machineEpoch > Math.floor((now + this.opts.epochClampBoundMs) / 1000)) return this.reject(origin, 'clock-skew');
+    this.ageWatermark(state, now);
+    const rendered = digestRaw as string;
+    const monotonic = this.compareWatermarkParts(state, digest, rendered);
+    if (monotonic === 'reject') return this.reject(origin, 'stale-projection');
+    const fresh = this.acceptHeartbeatProof(state, now, proof);
+    if (monotonic === 'noop') {
+      return { status: 'noop', digest: rendered };
+    }
+    if (state.digestTuple === digest.tuple) {
+      state.watermark = { machineEpoch: digest.machineEpoch, projectionSeq: digest.projectionSeq, lastAcceptedAt: now };
+      state.digest = rendered;
+      if (fresh) state.lastConfirmedAt = now;
+      return { status: 'noop', digest: rendered };
+    }
+    if (state.breakerOpenUntil !== undefined && state.breakerOpenUntil > now) return { status: 'pull-suppressed', reason: 'timeout' };
+    return { status: 'pull-required', digest: rendered };
+  }
+
+  ingestPullResponse(origin: string, response: unknown, expectedNonce: string, now = Date.now()): CapabilityRegistryIngestResult {
+    if (!response || typeof response !== 'object') return this.reject(origin, 'malformed');
+    const r = response as Record<string, unknown>;
+    if (r.nonce !== expectedNonce) return this.recordPullFailure(origin, 'malformed', now);
+    return this.ingestProjection(origin, r.projection, now, true);
+  }
+
+  recordPullFailure(origin: string, reason: CapabilityRegistryFailureReason = 'timeout', now = Date.now()): CapabilityRegistryIngestResult {
+    const state = this.state(origin);
+    state.pullFailures += 1;
+    state.failureReason = reason;
+    if (state.pullFailures >= this.opts.pullFailureBreakerThreshold) state.breakerOpenUntil = now + this.opts.pullBreakerMs;
+    return { status: 'rejected', reason };
+  }
+
+  classifyMachine(origin: string, now = Date.now()): CapabilityRegistryPoolRow[] {
+    const state = this.states.get(origin);
+    if (!state) return [{ kind: 'failure', machineId: origin, reason: 'no-data-yet' }];
+    if (state.notParticipating) return [{ kind: 'failure', machineId: origin, reason: 'not-participating' }];
+    if (state.failureReason && !state.projection) return [{ kind: 'failure', machineId: origin, reason: state.failureReason }];
+    if (!state.projection) return [{ kind: 'failure', machineId: origin, reason: state.failureReason ?? 'no-data-yet' }];
+    if (state.projection.scanState === 'source-unavailable') return [{ kind: 'failure', machineId: origin, reason: 'source-unavailable' }];
+    if (state.projection.scanState === 'never-observed') return [{ kind: 'failure', machineId: origin, reason: 'no-data-yet' }];
+    return state.projection.entries.map(entry => ({
+      kind: 'capability' as const,
+      machineId: origin,
+      entry,
+      status: deriveStatus([entry], now, {
+        localStaleAfterMs: this.opts.localStaleAfterMs,
+        manifestStaleAfterMs: this.opts.manifestStaleAfterMs,
+        remoteTtlCeilingMs: this.opts.remoteTtlCeilingMs,
+        lastConfirmedAt: state.lastConfirmedAt,
+      }),
+    }));
+  }
+
+  classifyPool(machineIds: string[], now = Date.now()): CapabilityRegistryPoolRow[] {
+    return machineIds.flatMap(machineId => this.classifyMachine(machineId, now));
+  }
+
+  getLastConfirmedAt(origin: string): number | undefined { return this.states.get(origin)?.lastConfirmedAt; }
+  getFailureReason(origin: string): CapabilityRegistryFailureReason | undefined { return this.states.get(origin)?.failureReason; }
+
+  private state(origin: string): CapabilityReceiverOriginState {
+    const current = this.states.get(origin);
+    if (current) return current;
+    const next: CapabilityReceiverOriginState = { pullFailures: 0 };
+    this.states.set(origin, next);
+    return next;
+  }
+
+  private reject(origin: string, reason: CapabilityRegistryFailureReason): CapabilityRegistryIngestResult {
+    const state = this.state(origin);
+    state.failureReason = reason;
+    return { status: 'rejected', reason };
+  }
+
+  private receiverStampedProjection(projection: CapabilityProjection, now: number): CapabilityProjection {
+    const nowIso = new Date(now).toISOString();
+    const clampObservedAt = (raw: string): string => {
+      const t = Date.parse(raw);
+      if (t > now + this.opts.epochClampBoundMs) throw new Error('clock-skew');
+      return t > now ? nowIso : raw;
+    };
+    try {
+      return {
+        ...projection,
+        entries: projection.entries.map(entry => ({ ...entry, observedAt: clampObservedAt(entry.observedAt), receivedAt: nowIso })),
+      };
+    } catch (error) {
+      throw error instanceof Error && error.message === 'clock-skew' ? error : new Error('malformed');
+    }
+  }
+
+  private ageWatermark(state: CapabilityReceiverOriginState, now: number): void {
+    if (state.watermark && now - state.watermark.lastAcceptedAt > this.opts.watermarkMaxAgeMs) state.watermark = undefined;
+  }
+
+  private compareWatermark(state: CapabilityReceiverOriginState, epoch: number, seq: number, digest: string): 'accept' | 'noop' | 'reject' {
+    if (!state.watermark) return 'accept';
+    if (epoch < state.watermark.machineEpoch || (epoch === state.watermark.machineEpoch && seq < state.watermark.projectionSeq)) return 'reject';
+    if (epoch === state.watermark.machineEpoch && seq === state.watermark.projectionSeq) return digest === state.digest ? 'noop' : 'reject';
+    return 'accept';
+  }
+
+  private compareWatermarkParts(state: CapabilityReceiverOriginState, parts: CapabilityDigestParts, rendered: string): 'accept' | 'noop' | 'reject' {
+    if (!state.watermark) return 'accept';
+    if (parts.machineEpoch < state.watermark.machineEpoch || (parts.machineEpoch === state.watermark.machineEpoch && parts.projectionSeq < state.watermark.projectionSeq)) return 'reject';
+    if (parts.machineEpoch === state.watermark.machineEpoch && parts.projectionSeq === state.watermark.projectionSeq) return rendered === state.digest ? 'noop' : 'reject';
+    return 'accept';
+  }
+
+  private acceptHeartbeatProof(state: CapabilityReceiverOriginState, now: number, proof?: CapabilityHeartbeatProof): boolean {
+    if (!proof) return false;
+    if (proof.kind === 'sequence') {
+      if (!Number.isSafeInteger(proof.value) || proof.value <= (state.lastHeartbeatSequence ?? -1)) return false;
+      state.lastHeartbeatSequence = proof.value;
+      return true;
+    }
+    const t = proof.value instanceof Date ? proof.value.getTime() : typeof proof.value === 'number' ? proof.value : Date.parse(proof.value);
+    if (!Number.isFinite(t) || Math.abs(t - now) > this.opts.epochClampBoundMs || t <= (state.lastHeartbeatSignedTime ?? -Infinity)) return false;
+    state.lastHeartbeatSignedTime = t;
+    return true;
+  }
+}
+
+function mapProjectionError(error: unknown): CapabilityRegistryFailureReason {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'version-unsupported') return 'version-unsupported';
+  if (message === 'over-limit') return 'over-limit';
+  if (message === 'origin-mismatch') return 'origin-mismatch';
+  if (message === 'clock-skew') return 'clock-skew';
+  return 'malformed';
 }
 
 export function readDoorwaySources(projectDir: string, stateDir: string, now = new Date().toISOString(), machineId = 'local'): { entries: CapabilityEntry[]; scanState: ScanState; scanStampSecs: number } {

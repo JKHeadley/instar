@@ -6,3 +6,4 @@
 - No routes, mesh traffic, durable schema changes, or fleet behavior are added.
 - Follow-up tests now assert both the manifest stamp producer and the stale-manifest status arm.
 - Real-manifest adapter output is now validated through `validateProjection`; non-ISO sentinel stamps are treated as absent, and the 45-day manifest window is honored.
+- Increment 1 adds only in-memory, test-exercised receiver fixtures; replayed identical heartbeats and pull responses do not refresh transport freshness, and wrong nonces fail closed.
