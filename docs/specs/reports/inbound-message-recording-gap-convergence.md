@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **40 rounds run, none clean.** Every round has returned findings.
+- **41 rounds run, none clean.** Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -79,6 +79,8 @@ review runs against the generated contract.
 | 38 | **Rotation protocol deleted the newest file every time** and read history backwards | Monotonic-sequence scheme with the reasoning stated; invariant tests added |
 | 40 | `messageId` had three wire shapes; "authoritative" overclaimed with no `fsync`; `enabled && !armed` had no runtime rule | All three pinned in the contract |
 | 40 | Fleet default-on evidence measured on one machine | Gates re-scoped to the affected machine; fleet default requires staged per-host health |
+| 41 | The state field name had been wrong **three times**, each by one notch of overclaim | `received` → `sessionReceived` → `injection_seam_received`: only the last states what the row can prove |
+| 41 | ACT-1218 was vague future debt | Given four observable migration triggers; if none fires, JSONL was the right call |
 
 ## Tracked follow-ups
 
