@@ -10,6 +10,18 @@ describe('WorkQueue', () => {
   it('ranks explicit priority, user direction, and age deterministically', () => {
     expect(scoreWorkItem(item({ priority: 'critical', userDirected: true, ageDays: 10 }))).toBeGreaterThan(scoreWorkItem(item()));
   });
+  it('keeps a fresh high-priority item above an old medium item', () => {
+    const freshHigh = item({ id: 'fresh-high', title: 'Fresh high' , priority: 'high', ageDays: 0 });
+    const oldMedium = item({ id: 'old-medium', title: 'Old medium', priority: 'medium', ageDays: 90 });
+    expect(scoreWorkItem(freshHigh)).toBeGreaterThan(scoreWorkItem(oldMedium));
+    expect(normalizeAndRank([oldMedium, freshHigh]).map((x) => x.id)).toEqual(['fresh-high', 'old-medium']);
+  });
+  it('discounts an untouched three-month critical below a fresh critical', () => {
+    const freshCritical = item({ id: 'fresh-critical', title: 'Fresh critical', priority: 'critical', ageDays: 0 });
+    const staleCritical = item({ id: 'stale-critical', title: 'Stale critical', priority: 'critical', ageDays: 90 });
+    expect(scoreWorkItem(freshCritical)).toBeGreaterThan(scoreWorkItem(staleCritical));
+    expect(normalizeAndRank([staleCritical, freshCritical]).map((x) => x.id)).toEqual(['fresh-critical', 'stale-critical']);
+  });
   it('deduplicates cross-source overlap and excludes terminal work', () => {
     const ranked = normalizeAndRank([item(), item({ id: 'ACT-9', source: 'evolution-action' }), item({ id: 'CMT-2', status: 'completed' })]);
     expect(ranked).toHaveLength(1);

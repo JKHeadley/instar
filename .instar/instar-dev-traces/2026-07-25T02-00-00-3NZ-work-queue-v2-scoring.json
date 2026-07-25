@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "sessionId": "work-queue-v2-scoring",
+  "timestamp": "2026-07-25T02:00:00.000Z",
+  "artifactPath": "upgrades/side-effects/work-queue-v2-scoring.md",
+  "artifactSha256": "d8cc2a603eb9b565864d18697750757f97d17b79386e5523282b813b1047aedc",
+  "specPath": "docs/specs/ux-first-enforcement-inc1.eli16.md",
+  "coveredFiles": ["src/core/WorkQueue.ts", "tests/unit/WorkQueue.test.ts"],
+  "phase": "complete",
+  "secondPass": "required",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {"verdict": "clear", "cause": null, "causes": [], "degraded": true, "substrateIntroducing": false, "evidence": [], "notes": ["Pure deterministic scoring increment with synthetic proof only."], "specSlug": "work-queue-v2-scoring", "phase": "build-start", "disposition": {"decision": "proceed", "reason": "Queue-fed dispatch targets the two observed ranking defects with named deterministic knobs.", "acknowledgedEvidenceIds": [], "recordedAt": "2026-07-25T02:00:00.000Z"}}
+}
