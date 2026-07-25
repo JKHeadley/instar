@@ -21,9 +21,18 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { getDefaultJobs } from '../../src/commands/init.js';
 
 const TEMPLATE_DIR = path.resolve(__dirname, '../../src/scaffold/templates/jobs/instar');
 const MIDDLEWARE_PATH = path.resolve(__dirname, '../../src/server/middleware.ts');
+/**
+ * The .md templates are GENERATED from getDefaultJobs() in init.ts by
+ * scripts/regen-default-job-templates.mjs. Linting only the generated output
+ * is not enough: a regen would happily reintroduce an unauthenticated body
+ * from the canonical source, silently reverting the fix. So init.ts is linted
+ * too — that is what actually closes the class.
+ */
+const INIT_PATH = path.resolve(__dirname, '../../src/commands/init.ts');
 
 /**
  * Endpoints the server serves WITHOUT the API bearer token.
@@ -187,6 +196,52 @@ describe('built-in job template auth lint', () => {
   it('still catches a genuine undefined $AUTH', () => {
     const bad = 'curl -s -H "Authorization: Bearer $AUTH" http://localhost:$PORT/evolution';
     expect(findUndefinedAuthVar(bad, 'bad.md')).toEqual(['bad.md']);
+  });
+
+  it('the canonical source (getDefaultJobs) authenticates its non-public API calls', () => {
+    // Lints the RESOLVED job objects, not the raw file. init.ts also contains
+    // the CLAUDE.md template prose, which carries illustrative curl examples
+    // that are documentation, not job bodies — regexing the whole file would
+    // flag those. Resolving getDefaultJobs(port) gives exactly the shipped
+    // gate + prompt bodies with ${port} already interpolated.
+    //
+    // This must lint the canonical SOURCE: the .md templates are generated
+    // from it, so a regen could otherwise reintroduce the 401 bug and
+    // silently revert the fix.
+    const jobs = getDefaultJobs(4042) as Array<{
+      slug?: string;
+      gate?: string;
+      execute?: { type?: string; value?: string };
+    }>;
+
+    expect(jobs.length, 'getDefaultJobs returned nothing — the lint would pass vacuously').toBeGreaterThan(10);
+
+    const violations: AuthViolation[] = [];
+    for (const job of jobs) {
+      const surfaces = [job.gate ?? '', job.execute?.value ?? ''];
+      for (const surface of surfaces) {
+        violations.push(...findUnauthenticatedCalls(surface, job.slug ?? '<unslugged>'));
+      }
+    }
+
+    const report = violations.map(v => `  ${v.file} → ${v.endpoint}\n    ${v.snippet}`).join('\n');
+    expect(violations, `Unauthenticated calls in canonical job definitions:\n${report}`).toEqual([]);
+  });
+
+  it('no job body in init.ts reads the auth token from config.json alone', () => {
+    // A config.json-only read is a live defect, not a style nit: on an agent
+    // whose stored token has drifted from the running server's token, that
+    // read returns a value the server rejects (observed 2026-07-25 — 16-char
+    // config value rejected, 36-char $INSTAR_AUTH_TOKEN accepted). The
+    // environment value must come first.
+    const content = fs.readFileSync(INIT_PATH, 'utf-8');
+    const configOnly = content
+      .split('\n')
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => /AUTH=\$\(python3/.test(line) && !line.includes('INSTAR_AUTH_TOKEN'));
+
+    const report = configOnly.map(({ n }) => `  init.ts:${n}`).join('\n');
+    expect(configOnly, `Job bodies reading authToken from config.json only:\n${report}`).toEqual([]);
   });
 
   it('drift guard: every exempted path is still public in middleware.ts', () => {
