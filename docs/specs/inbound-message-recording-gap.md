@@ -320,14 +320,13 @@ catch { /* never block the injection */ }
 - A failure is caught and counted (`inbound-log-failed`). **No retry** — a retry
   is a loop, a loop needs brakes, brakes need a breaker, and that is exactly the
   subsystem this paragraph deleted twice. A best-effort log does not earn it.
-- **No *application-level* queue, worker, cap or drop policy — and the precision
-  matters (round-16, codex).** `setImmediate` callbacks *are* queued work; they sit
-  in Node's event loop rather than in a subsystem this design owns. Saying "no
-  queue" flatly would mislead an implementer. What is true: **no persistent or
-  application-level queue**, and the event-loop callback backlog is **intentionally
-  unbounded** unless the loop-delay threshold fires, at which point the remediation
-  below is triggered. Inbound messages normally arrive at human typing speed, so
-  there is normally no burst to absorb.
+- **No *application-level* queue, worker or retry — and the precision matters
+  (round-16, codex).** `setImmediate` callbacks *are* queued work; they sit in
+  Node's event loop rather than in a subsystem this design owns. Saying "no queue"
+  flatly would mislead an implementer. What is true: **no persistent queue, no
+  worker, no retry** — and, since round 17, the backlog is **bounded at 64** by
+  the drop rule below rather than left to grow. Inbound messages normally arrive
+  at human typing speed, so there is normally nothing to bound at all.
 - **That assumption is tested, not asserted (round-9, codex — Telegram genuinely
   bursts after a reconnect, a restart, a polling backlog or a forwarded batch).**
   A stress test drives 200 inbound messages and asserts **event-loop delay**
@@ -339,18 +338,42 @@ catch { /* never block the injection */ }
   harm. If it ever fails, the assumption is wrong and the design is
   revisited — rather than pre-building a queue against a burst that may never
   happen.
-- **What that test does NOT prove, stated because v12 overclaimed it (round-13,
-  codex).** 200 scheduled writes can still run back-to-back on the next tick, so
-  the burst is **observable but not mitigated**: the pending-callback counter
-  reports the pile-up after it exists, it does not bound it. The earlier phrase
-  "no unbounded synchronous work occurs" was wrong and is removed. The honest
-  position is that a large burst trades a loop stall for message delivery, the
-  stall is measured, and the mitigation — batching, yielding, or the queue this
-  design deleted twice — is deliberately not built until the counter says it is
-  needed.
-- **One guardrail, not a subsystem (round-7, codex):** a counter tracks pending
-  log callbacks, and crossing a small threshold (32) raises ONE deduped Attention
-  item. It measures the assumption; it does not work around it.
+- **The backlog IS bounded — three lines, not a subsystem (rounds 13–17, codex
+  three times and gemini independently; two reviewers converging on one residual
+  is the strongest signal available, and "measure then fix" was the wrong answer
+  to it).** A counter tracks scheduled-but-unwritten entries. Above **64**, the
+  entry is **dropped and counted** (`inbound-log-dropped`) instead of scheduled.
+
+  That is a bound, not a queue: no worker, no retry, no ordering guarantee, no
+  lifecycle — one comparison and an increment.
+
+  **On deliberately dropping observations (the standards gate flagged this against
+  *Observation Needs Structure*, and it is the right question to ask a spec whose
+  entire purpose is reliable recording).** The standard asks for structure around
+  observation, not for perfection: a dropped entry here is **bounded, counted
+  (`inbound-log-dropped`) and surfaced**, so the corpus knows exactly how much it
+  is missing and when. Compare the alternative this replaced — an unbounded
+  backlog that keeps every entry and risks stalling the agent's responsiveness
+  for everything behind it. **An observation system that takes down the thing it
+  observes has not preserved observation.** A known, counted gap during a burst is
+  the more honest failure, and it is the same reasoning that made §3.2 refuse to
+  let recording block delivery. And dropping is the *right*
+  failure here, which is what makes it small: this is an explicitly best-effort
+  received log, so shedding entries during a burst is strictly better than
+  stalling delivery for everything behind it. The alternative I kept defending —
+  observe the pile-up, fix later — left the worst case unbounded in exchange for
+  nothing.
+- **What the test still does not prove.** Up to 64 scheduled writes can run
+  back-to-back on the next tick, so a burst still costs *some* loop delay — it is
+  bounded now, not eliminated. The earlier phrase "no unbounded synchronous work
+  occurs" was wrong and is removed; so is v16's "observable but not mitigated",
+  which stopped being true when the bound landed. The honest position: a burst
+  costs at most 64 writes of loop time and sheds the rest, and the measured delay
+  figure tells us whether 64 is the right number.
+- **Two counters, still not a subsystem:** pending callbacks (Attention above 32,
+  the early warning) and `inbound-log-dropped` (the bound actually firing). The
+  first measures the assumption; the second records what it cost when the
+  assumption was wrong.
 - **And the alert names its own remediation (round-14, codex — an alert with no
   stated response is a notification, not a control).** The Attention item says
   exactly what to do: if pending callbacks or event-loop delay stay above
