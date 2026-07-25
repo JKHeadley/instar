@@ -441,7 +441,7 @@ export class CartographerSweepEngine {
       counts: { nodeCount: 0, authoredCount: 0, neverAuthored: 0, stale: 0, pathGone: 0, generatedAt: null, headSha: null },
       freshness: {
         nodeCount: 0, authorableCount: 0, freshCount: 0, staleCount: 0, neverAuthoredCount: 0,
-        neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0, authorFailedCount: 0, freshRatio: 1, generatedAt: null,
+        neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0, authorFailedCount: 0, freshRatio: null, generatedAt: null,
       },
       revalidationSample: [], staleSample: [], staleTotal: 0, durationMs,
     };
