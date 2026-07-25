@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { readDoorwayRegistry, scanStatePath } from './DoorwayRegistryReader.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 export const CAPABILITY_REGISTRY_SCHEMA_VERSION = 1;
 export const MAX_ENTRIES_PER_MACHINE = 200;
@@ -120,7 +121,12 @@ export function readDoorwaySources(projectDir: string, stateDir: string, now = n
   const scanPath = scanStatePath(stateDir);
   const scanExists = fs.existsSync(scanPath);
   let scanReadable = false;
-  if (scanExists) { try { JSON.parse(fs.readFileSync(scanPath, 'utf8')); scanReadable = true; } catch { /* classified below */ } }
+  if (scanExists) {
+    try { JSON.parse(fs.readFileSync(scanPath, 'utf8')); scanReadable = true; }
+    catch (error) {
+      DegradationReporter.getInstance().report({ feature: 'CapabilityRegistry.scanState', primary: 'Readable doorway scan-state', fallback: 'Source-unavailable projection state', reason: `scan-state parse failed: ${error instanceof Error ? error.message : String(error)}`, impact: 'Local doorway freshness is unavailable until the next successful scan.' });
+    }
+  }
   const result = readDoorwayRegistry({ projectDir, stateDir });
   if (result.status !== 'ok') throw new Error(`doorway-registry-${result.status}`);
   const { body } = result;
@@ -165,5 +171,12 @@ export class CapabilityRegistryWriter {
     const dir = path.dirname(this.filePath); fs.mkdirSync(dir, { recursive: true }); const tmp = `${this.filePath}.tmp-${process.pid}`;
     fs.writeFileSync(tmp, JSON.stringify(projection, null, 2)); fs.renameSync(tmp, this.filePath); return projection;
   }
-  read(): CapabilityProjection | null { try { return validateProjection(JSON.parse(fs.readFileSync(this.filePath, 'utf8'))); } catch { return null; } }
+  read(): CapabilityProjection | null {
+    if (!fs.existsSync(this.filePath)) return null;
+    try { return validateProjection(JSON.parse(fs.readFileSync(this.filePath, 'utf8'))); }
+    catch (error) {
+      DegradationReporter.getInstance().report({ feature: 'CapabilityRegistry.projection', primary: 'Valid local capability projection', fallback: 'Fresh projection rebuild', reason: `projection read failed: ${error instanceof Error ? error.message : String(error)}`, impact: 'The registry will rebuild from current local doorway sources.' });
+      return null;
+    }
+  }
 }
