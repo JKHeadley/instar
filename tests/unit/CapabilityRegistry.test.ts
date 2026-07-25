@@ -59,14 +59,23 @@ describe('CapabilityRegistry adapter reality', () => {
     fs.mkdirSync(path.join(stateDir, 'state'));
     fs.writeFileSync(path.join(stateDir, 'state/doorway-scan.json'), JSON.stringify({ lastScanAt: '2026-07-25T00:00:00Z', doorways: [{ id: 'claude-code', probeStatus: 'ok', lastScannedAt: '2026-07-25T00:00:00Z' }] }));
     const result = readDoorwaySources(projectDir, stateDir, '2026-07-25T00:00:01Z');
+    expect(() => validateProjection({ schemaVersion: 1, machineId: 'local', machineEpoch: 1, projectionSeq: 1, scanStampSecs: result.scanStampSecs, scanState: result.scanState, truncated: false, entries: result.entries })).not.toThrow();
     expect(result.scanStampSecs).toBe(Math.floor(Date.parse('2026-07-25T00:00:00Z') / 1000));
     expect(result.scanState).toBe('observed');
     expect(result.entries.length).toBeGreaterThan(2);
     expect(result.entries.map(e => e.sourceDetail)).toEqual(expect.arrayContaining(['doorway-scan', 'doorway-manifest']));
-    expect(result.entries.find(e => e.sourceDetail === 'doorway-scan')).toMatchObject({ capabilityId: 'models:claude-code/claude-opus-4-8', probeOutcome: 'positive' });
+    expect(result.entries.find(e => e.sourceDetail === 'doorway-manifest')?.evidence.manifestVerifiedAt).toBeTruthy();
+    expect(result.entries.find(e => e.sourceDetail === 'doorway-scan')).toMatchObject({ capabilityId: expect.stringMatching(/^models:claude-code\//), probeOutcome: 'positive' });
     fs.writeFileSync(path.join(stateDir, 'state/doorway-scan.json'), JSON.stringify({ lastScanAt: null, doorways: [] }));
     expect(readDoorwaySources(projectDir, stateDir).scanState).toBe('never-observed');
     fs.writeFileSync(path.join(stateDir, 'state/doorway-scan.json'), '{not-json');
     expect(readDoorwaySources(projectDir, stateDir).scanState).toBe('source-unavailable');
+  });
+});
+
+describe('CapabilityRegistry manifest freshness', () => {
+  it('marks a fresh scan row stale when manifest verification is old', () => {
+    const scan = entry({ observedAt: '2026-07-25T00:00:00Z', evidenceClass: 'probe-answered', evidence: { doorwayScanAt: '2026-07-25T00:00:00Z', manifestVerifiedAt: '2026-06-01T00:00:00Z' } });
+    expect(deriveStatus([scan], Date.parse('2026-07-25T01:00:00Z'))).toBe('stale');
   });
 });

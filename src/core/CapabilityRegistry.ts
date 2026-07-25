@@ -46,6 +46,7 @@ const str = (v: unknown, name: string): string => {
 const iso = (v: unknown, name: string): string => {
   const s = str(v, name); if (Number.isNaN(Date.parse(s))) throw new Error(`${name}-timestamp`); return s;
 };
+const isoOrAbsent = (v: unknown): string | undefined => typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? v : undefined;
 const oneOf = <T extends readonly string[]>(v: unknown, values: T, name: string): T[number] => {
   if (!values.includes(v as string)) throw new Error(`${name}-enum`); return v as T[number];
 };
@@ -105,15 +106,16 @@ export function canonicalDigest(projection: CapabilityProjection): string {
   if (Buffer.byteLength(digest) > 64) throw new Error('digest-width'); return digest;
 }
 
-export function deriveStatus(entries: CapabilityEntry[], now = Date.now(), opts: { localStaleAfterMs?: number; remoteTtlCeilingMs?: number; lastConfirmedAt?: number } = {}): CapabilityStatus {
+export function deriveStatus(entries: CapabilityEntry[], now = Date.now(), opts: { localStaleAfterMs?: number; manifestStaleAfterMs?: number; remoteTtlCeilingMs?: number; lastConfirmedAt?: number } = {}): CapabilityStatus {
   if (!entries.length) return 'unknown';
   const byOutcome = new Set(entries.map(e => e.probeOutcome));
   if (byOutcome.size > 1) return 'conflict';
   if (entries.every(e => e.evidenceClass === 'manifest-only')) return 'unknown';
   if (entries.some(e => e.probeOutcome === 'unknown')) return 'unknown';
   const observedStale = entries.some(e => now - Date.parse(e.observedAt) > (opts.localStaleAfterMs ?? 86_400_000));
+  const manifestStale = entries.some(e => e.evidence.manifestVerifiedAt !== undefined && now - Date.parse(e.evidence.manifestVerifiedAt) > (opts.manifestStaleAfterMs ?? 45 * 86_400_000));
   const transportStale = opts.lastConfirmedAt !== undefined && now - opts.lastConfirmedAt > (opts.remoteTtlCeilingMs ?? 600_000);
-  if (transportStale || observedStale) return 'stale';
+  if (transportStale || observedStale || manifestStale) return 'stale';
   return entries[0].probeOutcome === 'positive' ? 'available' : 'unavailable';
 }
 
@@ -132,6 +134,8 @@ export function readDoorwaySources(projectDir: string, stateDir: string, now = n
   const { body } = result;
   const scanState: ScanState = !scanReadable && scanExists ? 'source-unavailable' : body.scanState === 'scanned' ? 'observed' : 'never-observed';
   const scanStampSecs = body.lastScanAt ? Math.floor(Date.parse(body.lastScanAt) / 1000) : 0;
+  let manifestReviewedAt: string | undefined;
+  try { manifestReviewedAt = isoOrAbsent((JSON.parse(fs.readFileSync(path.join(projectDir, 'scripts/model-registry-freshness.manifest.json'), 'utf8')) as Record<string, unknown>).lastReviewedAt); } catch { /* canonical reader owns manifest failure classification */ }
   const entries: CapabilityEntry[] = [];
   for (const door of body.doorways) {
     const d = door.probeStatus === 'never-scanned' ? null : door;
@@ -140,8 +144,9 @@ export function readDoorwaySources(projectDir: string, stateDir: string, now = n
       const doorwayId = door.doorId;
       const scannedAt = d?.lastScannedAt ?? now;
       const capabilityId = canonicalCapabilityId(doorwayId, model.id);
-      const common = { capabilityId, capabilityKind: 'model' as const, doorwayId, machineId, endpointRef: `mesh://${machineId}/doorways`, receivedAt: now, source: 'local-doorways' as const, evidence: { ...(d?.lastScannedAt ? { doorwayScanAt: d.lastScannedAt } : {}) } };
-      entries.push({ ...common, probeOutcome: 'positive', observedAt: model.verifiedAt ?? now, sourceDetail: 'doorway-manifest', evidenceClass: 'manifest-only' });
+      const manifestVerifiedAt = isoOrAbsent(model.verifiedAt) ?? manifestReviewedAt;
+      const common = { capabilityId, capabilityKind: 'model' as const, doorwayId, machineId, endpointRef: `mesh://${machineId}/doorways`, receivedAt: now, source: 'local-doorways' as const, evidence: { ...(d?.lastScannedAt ? { doorwayScanAt: d.lastScannedAt } : {}), ...(manifestVerifiedAt ? { manifestVerifiedAt } : {}) } };
+      entries.push({ ...common, probeOutcome: 'positive', observedAt: manifestVerifiedAt ?? now, sourceDetail: 'doorway-manifest', evidenceClass: 'manifest-only' });
       if (d) entries.push({ ...common, probeOutcome: d.probeStatus === 'ok' ? 'positive' : ['not-installed', 'http-4xx'].includes(d.probeStatus) ? 'negative' : 'unknown', observedAt: scannedAt, sourceDetail: 'doorway-scan', evidenceClass: d.probeStatus === 'ok' ? 'probe-answered' : 'cli-present' });
     }
   }
