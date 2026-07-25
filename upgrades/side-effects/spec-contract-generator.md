@@ -271,3 +271,43 @@ without the generator).
 **Not required.** The change touches no block/allow decision, no session
 lifecycle, no coherence gate, and nothing named sentinel/guard/gate/watchdog. It
 is a standalone document transform.
+
+---
+
+## Addendum (2026-07-25 15:5xZ) — hierarchical capture for sub-headings
+
+**What changed.** `splitStrictContract` reset `keeping` on *every* H1–H3, so an
+allowlisted `## 3. Design` was closed by its own first child `### 3.1`. Capture
+is now hierarchical: a NON-allowlisted heading DEEPER than the open section
+rides along; a sibling or an allowlisted heading still closes it. `Design` was
+also added to the heading allowlist (`## 3. Design` previously matched nothing).
+
+**Why it matters.** Measured on the outbound-gate spec: the design section
+shipped as **14 bytes of 86,314**. The section COUNT was correct, so the
+contract looked complete. Reviews run against it produced four objections the
+missing text already answered, and I relayed them to the operator as reasons to
+withhold approval; all four were later withdrawn.
+
+1. **Over-block** — none. The change only ADDS content that was being dropped.
+   Verified: outbound-gate +1212 lines / −1; inbound +2 / −0. No section lost.
+2. **Under-block** — a spec whose normative heading is neither allowlisted nor a
+   child of an allowlisted section is still dropped. The existing ratio warning
+   plus the under-capture guard remain the detection for that.
+3. **Level-of-abstraction fit** — right layer. The defect was in the capture
+   loop; nothing downstream could have recovered the missing bytes.
+4. **Signal vs authority** — unchanged. The generator emits an artifact and
+   warnings; it blocks nothing.
+5. **Interactions** — the pre-pass source-sizing loop is untouched, so the
+   under-capture guard still measures against the same baseline and correctly
+   went quiet for §3 once the capture was fixed.
+6. **External surfaces** — regenerated contracts are committed alongside, so no
+   consumer sees a stale artifact.
+7. **Multi-machine posture** — machine-local BY DESIGN: a build-time script over
+   files in the repo checkout. No runtime state, no replication surface.
+8. **Rollback cost** — revert the commit and regenerate; contracts return to
+   their prior bytes. No migration, no persisted state.
+
+**Tests.** `tests/unit/generate-spec-contract-nesting.test.ts` — the first
+coverage this tool has had. Verified failing against the pre-fix code (2 of 3)
+and passing after, so it is a real regression guard rather than a restatement
+of current behaviour.

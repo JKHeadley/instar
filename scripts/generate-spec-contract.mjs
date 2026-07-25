@@ -91,7 +91,7 @@ const NARRATIVE_HISTORY_RE = /\b(?:round|rounds)[- ]\d+\b/gi;
  * which is where a reader goes for judgment.
  */
 const STRICT_CONTRACT_HEADING_RE =
-  /^#{2,3}\s+(?:\d+(?:\.\d+)*\.?\s+)?(?:Final contract|What an implementer builds|Current design overview|Glossary|Normative outcome table|Rollout|Honest limits|Privacy posture|Decision points touched|Open questions|Frontloaded Decisions|Dependencies|Multi-machine posture|Test plan|Fail directions|What this does not do)/i;
+  /^#{2,3}\s+(?:\d+(?:\.\d+)*\.?\s+)?(?:Final contract|What an implementer builds|Current design overview|Design\b|Glossary|Normative outcome table|Rollout|Honest limits|Privacy posture|Decision points touched|Open questions|Frontloaded Decisions|Dependencies|Multi-machine posture|Test plan|Fail directions|What this does not do)/i;
 
 export function splitStrictContract(markdown) {
   const lines = markdown.split('\n');
@@ -132,6 +132,7 @@ export function splitStrictContract(markdown) {
   }
   const kept = [];
   let keeping = false;
+  let openLevel = 0;
   let keptSections = 0;
   const sectionSizes = [];
   // Front matter always rides along — it carries the approval + convergence tags.
@@ -144,10 +145,23 @@ export function splitStrictContract(markdown) {
       continue;
     }
     if (/^#{1,3}\s/.test(line)) {
-      keeping = STRICT_CONTRACT_HEADING_RE.test(line);
-      if (keeping) {
+      const level = (line.match(/^#+/) || ['##'])[0].length;
+      if (STRICT_CONTRACT_HEADING_RE.test(line)) {
+        keeping = true;
+        openLevel = level;
         keptSections++;
         sectionSizes.push({ heading: line.trim(), bytes: 0, sourceBytes: sourceSizes.get(line.trim()) || 0 });
+      } else if (keeping && level > openLevel) {
+        // A NON-allowlisted sub-heading DEEPER than the open section is that
+        // section's own child — "### 3.2 The credential arm" under "## 3.
+        // Design". Closing on it silently emptied the section while the section
+        // COUNT stayed the same, so the contract looked complete and was not:
+        // the outbound-gate design (86 KB) shipped as 14 bytes, and the reviews
+        // run against it produced four objections the missing text already
+        // answered. Children ride along; a sibling or an allowlisted heading
+        // still closes it.
+      } else {
+        keeping = false;
       }
       // An H1 (the title) is kept as an anchor but does not open a section.
       if (/^#\s/.test(line)) {

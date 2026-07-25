@@ -22,6 +22,8 @@ single-run-completable: false
 eli16-overview: "docs/specs/inbound-message-recording-gap.eli16.md"
 ---
 # Record inbound messages at the injection seam
+## 3. Design
+
 ### 3.0 Final contract
 
 #### Normative checklist (build from this; everything after it is elaboration)

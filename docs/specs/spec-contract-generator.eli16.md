@@ -197,3 +197,27 @@ Those stay.
 Close to none. It's a build-time script that reads one file and writes another.
 Nothing at runtime reads a design document, no agent behaviour depends on it, and
 backing it out means deleting two files.
+
+## Update (2026-07-25): the tool was quietly throwing away the design
+
+The generator's job is to strip a spec's review history and leave the parts a
+builder actually needs. It did that by walking headings and keeping the ones on
+an approved list.
+
+The bug: it decided fresh at *every* heading. So when it opened a kept section
+called "3. Design", the very next line — "3.1", a heading *inside* that section —
+made it decide again, saw "3.1" wasn't on the approved list, and stopped. The
+whole design was dropped, but the section heading was still there, so the
+document looked complete.
+
+On the outbound-gate spec that meant 14 bytes survived out of 86,000. Reviewers
+reading it raised four objections about things the spec answered at length — the
+answers had simply been cut out before they saw it.
+
+Now the tool understands nesting: a heading *inside* a kept section stays with
+it. A heading at the same level, or one that starts its own kept section, still
+ends it. Nothing that used to be kept is dropped — both affected documents grew.
+
+There is also now a test for this, the first this tool has had. It was checked
+against the old code first to confirm it actually catches the bug rather than
+just agreeing with whatever the code does today.
