@@ -5302,14 +5302,16 @@ export class AgentServer {
     const configPath = path.join(stateDir, 'config.json');
 
     // L0 zombie-free delivery invariant (drive12 UX-first spec, Increment 1):
-    // per-install arm flag (top-level `outboundQueueExpiry.enabled`, DARK by
-    // default — test agent enables first) + the per-queue-class max age from
-    // the shipped data file (0 ⇒ no expiry, the data-edit rollback sentinel).
-    // Resolution failures fail SAFE: guard stays dark, sentinel unaffected.
+    // fleet DEFAULT-ON since v1.3.953 (operator go-fleet 2026-07-24 after
+    // test+dev soak) — absence of the top-level `outboundQueueExpiry` block
+    // arms the guard; an explicit `enabled: false` keeps an install dark.
+    // Per-queue-class max age comes from the shipped data file (0 ⇒ no expiry,
+    // the data-edit rollback sentinel). Resolution failures fail SAFE: guard
+    // stays dark, sentinel unaffected.
     let l0AgeGuard: { enabled: boolean; maxAgeMs: number } | undefined;
     try {
       const armed =
-        (this.config as unknown as { outboundQueueExpiry?: { enabled?: boolean } }).outboundQueueExpiry?.enabled === true;
+        (this.config as unknown as { outboundQueueExpiry?: { enabled?: boolean } }).outboundQueueExpiry?.enabled !== false;
       if (armed) {
         // Packaging convention for runtime-read shipped JSON is <pkg>/src/data/
         // (cf. DEFAULT_MIRROR_PATH) — plain tsc emits no JSON into dist/, so a

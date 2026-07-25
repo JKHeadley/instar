@@ -39,6 +39,14 @@ describe('outbound-queue-expiry policy wiring', () => {
     expect(source).toContain(`new URL('${REL}', import.meta.url)`);
   });
 
+  it('the arm gate is fleet default-ON: absence arms, only an explicit false keeps an install dark', () => {
+    const source = fs.readFileSync(path.join(repoRoot, 'src/server/AgentServer.ts'), 'utf-8');
+    // Default-ON semantics (operator go-fleet 2026-07-24): the gate must read
+    // `enabled !== false`, never `enabled === true` (which made absence dark).
+    expect(source).toContain('outboundQueueExpiry?.enabled !== false');
+    expect(source).not.toContain('outboundQueueExpiry?.enabled === true');
+  });
+
   it('the shipped policy parses and carries the delivery-recovery class with a numeric maxAgeHours', () => {
     const parsed = JSON.parse(
       fs.readFileSync(path.join(repoRoot, 'src/data/outbound-queue-expiry.json'), 'utf-8'),
