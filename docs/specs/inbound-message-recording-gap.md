@@ -174,8 +174,8 @@ operator alert queue. **Armed**: enabled *and* the store opened writable.
 | **Degraded state** | **Counters alone are how this bug survived 24 days (round-56).** Relying on someone noticing a metric is monitoring discipline, and monitoring discipline is what failed. So sustained failure is a **state, not a count**: after **10 consecutive** failed inserts, or any failure persisting **5 minutes**, the feature enters `degraded` — reported on `/health` as a **first-class field** (`recording: 'ok' \| 'degraded' \| 'off'`), which the out-of-process watchdog already polls and can act on **without Attention delivery working at all**. An Attention item is raised too, but it is the *second* line of defence, not the only one. Recovery clears the state automatically. |
 | **Why `/health` and not Attention** | Every other mitigation here leans on the Attention queue, whose reliability and persistence this spec does not own and cannot assert (round-56). `/health` is a synchronous read of local state by an external poller — no queue, no delivery, no dedupe window. **Anything load-bearing is expressed there**; Attention carries the human-readable version. |
 | **Counters** | `inbound-log-failed` (the authoritative insert failed), `inbound-search-index-dropped` (shed by the backlog cap), `inbound-search-index-failed` (attempted and threw), `inbound-log-arm-failed` (once per process), `inbound-messages-skipped-unarmed` (per message), insert-latency histogram. All monotonic within a process; `topic_id` is the only label. |
-| **Latency** | Attention on p99 > 50 ms **and** on any single insert > 1 s. A wedged device can still block the event loop; that residual is named below and detected **out-of-process** via the loop-tick counter on `/health`. |
-| **Health** | `recording` (`ok`/`degraded`/`off`), `enabled`, `armed` (+ reason), `lastArmAttemptAt` / `lastArmResult`, row count, insert failures, max latency, the startup synthetic self-check result, a monotonic loop-tick counter, and the one-sided-conversation check (recent outbound with zero inbound). |
+| **Latency** | Attention on p99 > 50 ms **and** on any single insert > 1 s. **Operational bound with an ACTION, not just an alarm (round-57): if the out-of-process watchdog sees the loop-tick counter frozen for > 30 s while the process still answers, it treats the agent as wedged and escalates through its existing path** — the same treatment any hung server gets. This design does not add a new recovery mechanism; it makes sure the existing one can see this failure. A wedged device can still block the event loop; that residual is named below and detected **out-of-process** via the loop-tick counter on `/health`. |
+| **Health** | `recording` (`ok`/`degraded`/`off`), `enabled`, `armed` (+ reason, naming any schema-validation mismatch), `lastArmAttemptAt` / `lastArmResult`, **`rowCountTotal` AND `rowCountUserVisible`** — both, because synthetic rows count toward retention but not toward the user-visible count, and reporting one number would make the store look smaller than the pressure on it (round-57) — insert failures, max latency, the startup synthetic self-check result, a monotonic loop-tick counter, and the one-sided-conversation check (recent outbound with zero inbound). |
 | **Synthetic rows** | `synthetic = 1`. Excluded from history reads, row counts, and the one-sided check. |
 | **Privacy** | Message text stored **unencrypted** in the agent's database, file mode 0600. Deleting rows removes them from this store only; TopicMemory and any backups are separate. No redaction — a credential pasted into chat is stored verbatim. |
 | **Disclosure** | **Blocking gate before the first enablement on any machine**: a release-note entry and an operator-visible config description, both stating what is stored, where, that it is unencrypted, the retention bound, and that deletion covers this store only. Owner: the implementing agent; both texts linked from the acceptance record. End-user notice beyond the operator is **not enforced by this feature** — which is a statement about what the code does, **not** a claim that none is required (round-53: "not required" asserted a policy position this spec has no standing to assert; the operator is not necessarily the principal data subject when third parties message the agent). The config description therefore carries an explicit operator warning: **inbound third-party messages are stored verbatim, and any notice or legal obligation toward those people is external to this software and yours to meet.** |
@@ -1117,6 +1117,19 @@ reports `armed: true` with a non-zero row count.
    reintroduce the defect while fixing it. The stall is named as a residual,
    detected out-of-process, and if the hostile benchmark shows it dominates, the
    queue is the documented fallback chosen on those numbers.
+
+   **That comparison strawmanned the alternative, and the correction matters
+   (round-57).** "Durable queue" was weighed as *in-memory* enqueue, which does
+   lose data on crash. The real industry pattern is a **durable outbox** — a
+   synchronous write to durable storage, drained asynchronously by a worker.
+   Weighed honestly: **that pattern is what this design already is.** The
+   synchronous `INSERT` *is* the durable outbox write; `scheduleInboundTopicMemory`
+   *is* the async drain. A separate outbox subsystem would add a second table, a
+   worker and drain-state bookkeeping **without removing the stall, because the
+   durable write is synchronous in both designs.** That is the whole answer: the
+   stall lives in "make it durable before proceeding" — the requirement, not the
+   implementation. A design that removes the stall removes the durability, which
+   is where this started.
 
 1. **Log at the seam, not at each caller** — **four** callers today (§2), three of
    which pass no `messageId`. Logging per-caller would mean four correct
