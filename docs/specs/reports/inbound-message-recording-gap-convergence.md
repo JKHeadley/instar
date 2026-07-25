@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **43 rounds run, none clean.** Every round has returned findings.
+- **44 rounds run, none clean.** Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -81,6 +81,10 @@ review runs against the generated contract.
 | 40 | Fleet default-on evidence measured on one machine | Gates re-scoped to the affected machine; fleet default requires staged per-host health |
 | 41 | The state field name had been wrong **three times**, each by one notch of overclaim | `received` → `sessionReceived` → `injection_seam_received`: only the last states what the row can prove |
 | 41 | ACT-1218 was vague future debt | Given four observable migration triggers; if none fires, JSONL was the right call |
+| 42 | The contract specified `(timestamp, rowid)` for JSONL — **a store with no rowid** | JSONL ordering key defined as `(seamReceivedAt, fileSequence, lineNumber)` |
+| 43 | The whole design rests on a file lock; "valid lock" was never defined | Stale-lock semantics pinned (pid + boot-id + host); network paths unsupported |
+| 44 | **The round-43 lock fix recreated the outage** — a dead-pid lock after an ordinary crash meant never arming again | Same-host dead-pid locks reclaimed automatically; ambiguity narrowed to foreign host / bad boot-id / unreadable |
+| 44 | Plaintext retention justified only on latency grounds | Encryption/field-capture made a **precondition of fleet default-on**, not a permanent stance |
 
 ## Tracked follow-ups
 
@@ -118,6 +122,18 @@ A round that returns nothing new. That has not happened, and the self-inflicted
 finding rate suggests it may not while the design is maintained as prose in two
 places. The structural answer already identified — generation over restatement —
 landed at round 35/36 and rounds 37+ are the test of whether it works.
+
+## The self-inflicted rate, measured rather than asserted
+
+Of 19 rounds folded tonight (26-44), **at least one finding in 6 of them was a
+defect the previous fold introduced** — the retention-in-the-wrong-section
+(34), the rotation scheme that deleted the newest file (38), the contract/prose
+contradictions (30, 31, 32), and the lock rule that recreated the outage (44).
+
+That is the honest reason this has not converged: the fold rate and the
+introduction rate have not separated. It is also the strongest argument for the
+split (ACT-1219) — a smaller surface has fewer places for a fold to break
+something else.
 
 **Nothing here should be read as approval-ready.** The design is sound enough
 that no reviewer contests it; the *document* has repeatedly been the defect.
