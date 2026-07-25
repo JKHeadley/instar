@@ -24,7 +24,7 @@ currently-known delivery path.
 
 ## Headline honesty
 
-- **76 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
+- **78 rounds run, none clean.** Verdicts: SERIOUS at rounds 34, 45-56; MINOR before and after. The return to MINOR at round 57 is the first since 44. Every round has returned findings.
 - **The verdict escalated once**, at round 34 (MINOR → SERIOUS), because the fold
   that added a normative boundary immediately violated it.
 - **Roughly one finding per round is self-inflicted** — a contradiction created
@@ -359,6 +359,32 @@ Worth marking because it is the exception. **Seventy-four other rounds resolved
 contradictions by adding a qualification.** This one resolved a contradiction by
 picking the option that made a concept unnecessary — which is available more often
 than it gets taken, and is invisible unless you look for it.
+
+## The flattering-framing habit
+
+Distinct from the search/replace failure, and harder to catch because nothing in
+it is false.
+
+- **Round 78:** a residual was written as "a crash in the instant between the
+  failed insert and the durable write". True, and the narrowest possible case.
+  The real one is ordinary: the failure record lives in the *same* database, so
+  disk-full and read-only — the conditions causing the failure — are what stop it
+  being recorded, and a normal restart later comes up clean.
+- **Round 73:** "~370 ms worst case" was quoted operationally as a latency bound.
+  It bounds lock waits only; the event-loop stall is unbounded.
+- **Rounds 54-59:** three successive justifications for main-thread SQLite, each
+  more satisfying than the last, the first two wrong in the direction that made
+  the design look better.
+
+**The common shape: when I describe a risk I have already accepted, I reach for
+the version that is true and smallest.** No individual statement is a lie, and
+that is what makes it survive review — a reader checking accuracy finds nothing
+wrong. It took an outside reviewer asking "is that the whole case?" three
+separate times.
+
+Checkable version: **for any residual, state the MOST likely path to it, not the
+narrowest.** If the narrow case is what got written, ask what the ordinary case
+is.
 
 ## Two rules this review produced
 
