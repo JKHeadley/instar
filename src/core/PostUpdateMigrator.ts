@@ -8996,6 +8996,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // the reviewer erred" trigger + the honest 501-when-off phrasing.
       '### Context-Aware Outbound Review',
       '### Self-Discovery',
+      '**Registry First — capability registry:',
       '**Publishing**',
       '**Private Viewing**',
       '**Secret Drop**',

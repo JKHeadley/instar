@@ -2008,11 +2008,21 @@ export function createRoutes(ctx: RouteContext): Router {
     const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
     if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
     if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
-    let projection: CapabilityProjection | null = null;
     const projectionFile = path.join(ctx.config.stateDir, 'capability-registry.json');
-    try { projection = new CapabilityRegistryWriter(projectionFile, 'local').read(); } catch { projection = null; }
+    let projection: CapabilityProjection | null = new CapabilityRegistryWriter(projectionFile, 'local').read();
     if (!projection) {
-      try { const local = readDoorwaySources(ctx.config.projectDir, ctx.config.stateDir, new Date().toISOString(), 'local'); projection = { schemaVersion: 1, machineId: 'local', machineEpoch: 0, projectionSeq: 0, ...local, truncated: false, entries: local.entries } as CapabilityProjection; } catch { projection = null; }
+      try {
+        const local = readDoorwaySources(ctx.config.projectDir, ctx.config.stateDir, new Date().toISOString(), 'local');
+        projection = { schemaVersion: 1, machineId: 'local', machineEpoch: 0, projectionSeq: 0, ...local, truncated: false, entries: local.entries } as CapabilityProjection;
+      } catch (error) {
+        DegradationReporter.getInstance().report({
+          feature: 'CapabilityRegistry.routeProjection',
+          primary: 'Durable or freshly rebuilt local capability projection',
+          fallback: 'Receiver snapshot or truthful never-observed response',
+          reason: `local doorway projection unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          impact: 'The read route omits local doorway evidence until a projection or receiver snapshot is available.',
+        });
+      }
     }
     const fallbackRows = ctx.capabilityRegistry.snapshot();
     const scanState = projection?.scanState ?? (fallbackRows.length ? 'observed' : 'never-observed');
