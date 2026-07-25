@@ -116,9 +116,17 @@ It works because:
  records. What they jointly provide is: the known paths are covered, and a new
  one cannot be added silently. The residual — a dynamically-dispatched or
  future non-session intake path — is real and named rather than papered over.
-- **De-duplication already exists.** The existing key is
- `in:<topicId>:<messageId>`, so a message that reaches both the forward route
- and the seam is written once. The forward route's call is left in place —
+- **De-duplication already exists, and it is atomic within the process.** Grounded in the implementation: `appendToLog` checks an
+ **in-memory `Set`** and appends **synchronously**, with no `await` between the
+ check and the write. Node is single-threaded, so two calls in one process
+ cannot interleave — the forward route and the seam are serialized by the
+ runtime, not by luck. The guarantee therefore holds **within a process**, which
+ is the whole story here because the advisory design's single-instance lock means
+ one server per agent home (§6). Across processes it would be best-effort, and a
+ race-shaped test — both writers invoked in the same tick — pins the in-process
+ case rather than only testing sequential delivery.
+ The existing key is `in:<topicId>:<messageId>`, so a message that reaches both
+ the forward route and the seam is written once. The forward route's call is left in place —
  removing it would be a second change for no benefit.
 - **The logged `text` is the operator's message, not the wrapper.** Verified against the seam: `injectTelegramMessage` receives
  the raw `text`, then *builds* the tagged form and, only when that exceeds the
@@ -141,6 +149,11 @@ It works because:
  a number, so a string id left implicit is a `NaN` collision waiting to
  happen.)*
  - the entry is marked `idSource: 'platform' | 'derived'`.
+ - the entry carries **`deliveryState: 'received'`** — a single-valued enum
+ today, and deliberately an enum rather than a boolean or an absence. It gives a later `'injected'` or `'delivered'` somewhere
+ safe to live, so evolving this record never requires *reinterpreting* an
+ existing field. The alternative — adding meaning to `sessionReceivedAt` later
+ — is precisely the reinterpretation that makes old rows lie.
 
  **Storage contract, grounded in the real schema.** `topic-memory.db`'s `messages` table declares
  `message_id INTEGER NOT NULL`. A `messageId: null` entry therefore **cannot be
@@ -167,7 +180,11 @@ It works because:
  `message_id`** — a negative id sorts before every real Telegram id, so any
  reader ordering by `message_id` would place id-less messages at the start of
  history. A test asserts the readers this spec cares about (the session-start
- history read) order by `timestamp`. Flagged rather than assumed, because the
+ history read) order by `timestamp`. **And `timestamp` alone is not a total
+ order: burst messages can share one, and a negative
+ synthetic id is exactly the wrong tiebreaker.** So history reads order by
+ **`(timestamp, rowid)`** in TopicMemory and by **file order** in JSONL — both
+ of which are insertion order, which is the arrival order this log is *about*. Flagged rather than assumed, because the
  failure would look like scrambled history rather than an error.
  - **No existing reader is affected:** no column changed type, nothing became
  nullable, and no reader sees a field it did not see before.
@@ -268,8 +285,14 @@ catch { /* never block the injection */ }
 - A failure is caught and counted (`inbound-log-failed`). **No retry** — a retry
  is a loop, a loop needs brakes, brakes need a breaker, and that is exactly the
  subsystem this paragraph deleted twice. A best-effort log does not earn it.
-- **No queue, no worker, no cap, no drop policy.** Inbound messages normally
- arrive at human typing speed, so there is no burst to absorb.
+- **No *application-level* queue, worker, cap or drop policy — and the precision
+ matters.** `setImmediate` callbacks *are* queued work; they sit
+ in Node's event loop rather than in a subsystem this design owns. Saying "no
+ queue" flatly would mislead an implementer. What is true: **no persistent or
+ application-level queue**, and the event-loop callback backlog is **intentionally
+ unbounded** unless the loop-delay threshold fires, at which point the remediation
+ below is triggered. Inbound messages normally arrive at human typing speed, so
+ there is normally no burst to absorb.
 - **That assumption is tested, not asserted.**
  A stress test drives 200 inbound messages and asserts **event-loop delay**
  during and after the burst — not merely injection latency. The Attention
