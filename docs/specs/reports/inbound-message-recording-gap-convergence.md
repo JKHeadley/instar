@@ -7,6 +7,35 @@ including the parts that reflect badly on the author.
 
 ---
 
+## Six measurements in ninety minutes, after eighty rounds of reasoning
+
+Once the review loop stopped, grounding the spec against the running system
+produced more decision-relevant findings than the preceding eighty rounds. Every
+one of these was available at any point during the day.
+
+| # | Measured | Found |
+|---|---|---|
+| 1 | `GET /health`, `GET /pool` | This machine is a session-pool **worker**, not the router. Messages arrive at the peer, which logs them, then forwards across the mesh into a call site that never logs. **Answers ACT-1217**, the unknown that blocked fleet default-on. |
+| 2 | `hostname` | **The two machines were named backwards** throughout the evidence section — through 80 rounds and two reviewers reading it. |
+| 3 | Live SQLite `sqlite_master` | The existing `messages` table has an **FTS index maintained by three triggers**. Writing there would run tokenisation on the delivery path — **resolves §3.0b**: the separate table is necessary, for a measured reason. |
+| 4 | `/health` → `eventLoop` | The loop is **already starved past 1 s, 91 times a day**, before this feature exists. A rollout gate written as one the design would pass is one the machine fails **today**. Also: the loop-tick counter this spec proposed **already exists and is better**. |
+| 5 | Benchmark on a DB copy | Uncontended insert **0.078 ms** (the per-message cost was never the problem). Contended **p99 291 ms** — **the 250 ms rollout gate FAILS**, with 1% hard failures at a 100 ms timeout. |
+| 6 | Store statistics | **Both retention numbers are no-ops.** 200 000 rows = **7.4 years** at the real rate of ~74/day — and I had built the privacy argument on that bound. The 64 KB text cap is unreachable: Telegram's limit is 4 096 chars and the largest row ever stored is 4 094 bytes. |
+
+**Two independent measurements (4 and 5) now indicate the worker-owned writer**
+by the spec's own normative rule that a failed gate forces it — a decision eighty
+rounds of first-principles argument circled without settling, because nobody
+measured the floor.
+
+**A seventh was refused and correctly so.** Measuring the retention batch size
+required a `DELETE`; the dangerous-command guard blocked it on a scratch copy.
+"But it is only a copy" is exactly the reasoning such a guard exists to refuse,
+so the number is labelled **unvalidated** rather than worked around.
+
+**The pattern:** everything found by reading was found by reading *carefully*.
+Nothing found by measuring was reachable from the text at all. Review tests a
+document against itself; only grounding tests it against the world.
+
 ## What review could not do, and what ten minutes of looking did
 
 After the loop stopped, two grounding checks produced findings **eighty rounds of
