@@ -14302,6 +14302,14 @@ process.stdin.on('end', async () => {
    */
   // eslint-disable-next-line @typescript-eslint/naming-convention
   public static readonly TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS: ReadonlySet<string> = new Set([
+    // Pre-advisory-flag-position version: the tone-advisory remediation named
+    // only the FLAGS, and the script's parse loop breaks at the first
+    // positional — so `telegram-reply.sh TOPIC --tone-complied RULE` swallowed
+    // the flags as MESSAGE TEXT (ignoring stdin) and drew a second, nonsensical
+    // advisory. Adding this SHA so the guard + full-command advisory reach
+    // already-deployed copies instead of producing a `.new` candidate.
+    // Shipped through 2026-07-25.
+    'a2cf02154a6023725f15480a575f54a5231278c70396cd12051b7d7055b72d98',
     // Tier-1 initial-init shipped version. Shipped at 362ff59d.
     '98f70b86856e37f2719c39ecec152adf07ec30ce73c8134ab831b35c5b1c25b3',
     // Rebrand to Instar (no behavioral change). Shipped at 686f5758.
