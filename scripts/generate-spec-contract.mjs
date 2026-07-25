@@ -91,7 +91,7 @@ const NARRATIVE_HISTORY_RE = /\b(?:round|rounds)[- ]\d+\b/gi;
  * which is where a reader goes for judgment.
  */
 const STRICT_CONTRACT_HEADING_RE =
-  /^#{2,3}\s+(?:\d+(?:\.\d+)?\.?\s+)?(?:Final contract|Rollout|Honest limits|Privacy posture|Decision points touched|Open questions|Frontloaded Decisions|Dependencies|Multi-machine posture|Test plan|What this does not do)/i;
+  /^#{2,3}\s+(?:\d+(?:\.\d+)*\.?\s+)?(?:Final contract|What an implementer builds|Current design overview|Glossary|Normative outcome table|Rollout|Honest limits|Privacy posture|Decision points touched|Open questions|Frontloaded Decisions|Dependencies|Multi-machine posture|Test plan|Fail directions|What this does not do)/i;
 
 export function splitStrictContract(markdown) {
   const lines = markdown.split('\n');

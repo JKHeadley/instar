@@ -164,6 +164,30 @@ one, because the reader stops looking.
 **Also fixed before merge:** a nonexistent `--spec` path threw a raw Node stack
 trace; it now exits 2 with a one-line error.
 
+### The allowlist was too narrow to be useful on a second spec
+
+Pointed at `outbound-gate-advisory-override`, strict mode produced a contract
+**that began at the test plan** — no design section, no schema, no outcome table.
+That is why an external reviewer reading it said *"normative behavior is missing
+from the strict contract"*: it genuinely was. The capture-ratio warning fired
+(8/66 sections, 12%) and was noted at the time **and not acted on**, so a
+contract that could not be built from sat in the repo for three hours looking
+like an artifact.
+
+Cause: the allowlist held one spec's section names. The other spec's
+contract-bearing sections are called `0.0 What an implementer builds`,
+`0.2 Current design overview`, `0. Glossary` and `3.8.1 Normative outcome table`
+— all genuinely normative, none matched.
+
+Widened by those four plus `Fail directions`, and the numbering pattern relaxed
+to multi-level (`3.8.1`). Capture went 8→13 sections and the contract now opens
+with what an implementer builds. Verified no change to the other spec (10
+sections, byte-identical behaviour) and the child-heading regression still warns.
+
+**The warning was working and I treated it as information rather than a defect.**
+A guard that fires and gets noted is only half a guard; the other half is
+someone acting on it.
+
 **Under-block:** unchanged. A rule narrated inside an allowlisted section still
 carries its own history; strict mode reduces the surface, it does not clean prose.
 

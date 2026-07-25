@@ -7,7 +7,7 @@
      rationale. This file says WHAT to build, never why. Read the source
      spec for the reasoning, the alternatives, and the accepted residuals
      in their full form.
-     (15 residual "round-N" reference(s) remain inline.)
+     (20 residual "round-N" reference(s) remain inline.)
 -->
 ---
 title: "Outbound gate advisory override — judgment rules become nudges, credentials stay a wall"
@@ -22,6 +22,237 @@ single-run-completable: false
 eli16-overview: "docs/specs/outbound-gate-advisory-override.eli16.md"
 ---
 # Outbound gate advisory override
+## 0.0 What an implementer builds (executive summary)
+
+Two pull requests against one spec.
+
+**PR-A — the wall and the data path.** (1) `B22_HELD_CREDENTIAL`: a
+process-lifetime in-memory index of the credential values this install holds
+(allowlisted classes only), matched by substring over three normalized forms;
+a match refuses the message terminally, at the outbound seam and again at the
+adapter send primitive. (2) `B23_CREDENTIAL_SHAPED`: every credential-*shaped*
+pattern from `DURABLE_SECRET_PATTERNS`; it holds a message only where the author
+can answer the hold, and observes everywhere else. (3) **Dissent**: any verdict
+that concluded something can be disagreed with in writing while the message
+stays held, recorded through the existing decision-quality chokepoint.
+(4) **Judgeable capture**: the candidate body, the conversation slice the model
+was actually shown, agent state and a truncation-honest copy of the model's
+reasoning, behind its own consent flag, written to a machine-local store no
+route reads. (5) The posture surface that reports all of the above whether or
+not anything fired.
+
+**PR-B — the widening.** Every LLM rule becomes advisory; a held message returns
+an opaque single-use token; the author resends with the token, an
+acknowledgement and a mandatory written reason; the seam skips only the LLM
+review, re-runs the deterministic checks, delivers, and records the disagreement
+once. One shared protocol helper that every relay script delegates to. Ships
+dark, then dry-run, then live on the development agent.
+
+**The contract both are tested against is §3.8.1.** If the code and that table
+disagree, the table is right.
+
+## 0.2 Current design overview (no history — read this first)
+
+*Everything in this section is the design as it stands. Nothing here explains how
+it got here; §§12+ do that, and §3's prose carries the reasoning inline for
+readers who want it. Both external reviewers asked for exactly this section.*
+
+**Four producers can stop an outbound message.**
+
+1. **B22 — held credential.** The message contains a credential value this
+ install actually holds, proven by exact comparison against an in-memory index
+ built from an allowlisted set of credential classes. **Refuses terminally; no
+ override, ever.** Runs at the outbound seam and again at the adapter send
+ primitive, so a path that bypasses the seam is still covered. A dissent may be
+ filed against it (recorded, message stays held).
+2. **B23 — credential-shaped.** The message matches one of the shared credential
+ *patterns*. **Advisory wherever the author can answer it**: the message is
+ held and delivered on an override carrying a written reason. Where the author
+ structurally cannot answer — a relay, a system template, a job, the lifeline
+ path — the sender class's policy applies, and **every class defaults to
+ observe** (recorded, nothing blocked). Where recourse is only *temporarily*
+ absent (early rollout stages, recording dark) it is observe-only.
+3. **LLM rules B1–B21.** Every judgment and representation rule becomes
+ **advisory**: held, returned to the author, delivered on an override with a
+ recorded reason. Pre-existing behaviour (a terminal block) is what they
+ degrade to for callers that cannot acknowledge.
+4. **Availability holds and the degraded floor.** An availability hold concluded
+ nothing and stays terminal. The degraded deterministic floor *did* conclude
+ something, so it **returns the message to the author** with the situation
+ named — re-send later for a full review, or override now with a reason.
+
+**Every stop that concluded something can be disagreed with**, in writing, while
+the message stays held. That is the dissent path, it transfers no authority, and
+it is what fills the evidence corpus from day one.
+
+**What gets recorded.** Each decision produces a `judgeable-decision-record`:
+the candidate (and its body), the conversation slice the model was actually
+shown, agent state, the prompt version, the model, the gate's verdict and its own
+reasoning, the author's action and written reason. Reason text and captured
+conversation are machine-local, never served, never replicated, retention-swept,
+and deletable. An override is only granted once a joinable stub of that record is
+durably written.
+
+**How it ships.** PR-A: the wall, B23, dissent, the capture, the posture surface.
+PR-B: the advisory widening, the override protocol, the shared relay helper.
+Stages: 0 dark, 1 dry-run, 2 live on the development agent, 3 fleet — the
+operator's decision, gated on evidence and on a real grading rung existing.
+
+**The contract is §3.8.1.** Where any prose disagrees with that table, the table
+is right.
+
+## 0. Glossary (for a reader outside this codebase)
+
+| Term | Meaning here |
+|---|---|
+| **seam** | The one function every outbound message passes through (`evaluateOutbound`) — the single place a delivery decision can be made. |
+| **chokepoint** | Same idea for writes: the one function through which a kind of record may be written (`annotateDecisionOutcome` for decision outcomes). |
+| **ratchet** | A unit test that fails the build if an invariant regresses — e.g. "every rule id has a disposition". Enforcement by CI, not by memory. |
+| **rung** | A tier in the closed evidence-strength ladder (`self-report` … `llm-interpreter` …). Higher rungs outrank lower ones when grading. |
+| **disposition** | Whether a cited rule *blocks* the message or merely *advises* the author. |
+| **advisory / nudge** | A rule citation the author may override; the message is held until the author decides. |
+| **dissent** | A recorded disagreement filed against a citation while the message **stays held** — data without authority transfer. |
+| **ACT-1198** | The tracked work item carrying the preconditions for a bulk LLM judge (`GET /evolution/actions`). |
+| **B1…B22** | Rule ids in the outbound gate's rule set. |
+
+### 3.8.1 Normative outcome table
+
+The accumulated mechanisms — advisory rules, dissent, B22/B23, availability
+holds, the degraded floor, adapter-only B22, capability, token validity,
+recording state — compose into a state machine large enough that implementation
+drift is the realistic failure. This table is **normative**: each row is a test
+case, and a behaviour not derivable from it is a defect in one or the other.
+
+**In conventional terms first.** Every outcome below is one of five states:
+
+| Plain term | What it means here | Spec vocabulary |
+|---|---|---|
+| **Hard deny** | Refused; no path forward for this text | B22 only |
+| **Soft hold** | Not sent; the author may send it by recording a reason | B23 where recourse exists, advisory rules, degraded-floor citations |
+| **Blocked** | Not sent; no override path *for this caller* | blocking rule, or an advisory rule from a caller that cannot acknowledge |
+| **Degraded / unavailable** | The check could not run; nothing was concluded | availability hold, `detectorIncomplete` |
+| **Observed** | Recorded, nothing changed | dry-run, observe-only, would-hold — including B23 and degraded-floor citations where recourse does not exist |
+
+An **approval token** is the receipt the server hands back with a hold, which
+the author returns to prove which decision they are answering. An **audit event**
+is a local log line, never a message to anyone.
+
+**The precedence rule is now MECHANICALLY CHECKED, not merely declared.** A spec lint ships with PR-A and runs in
+CI. It is **critical infrastructure and specified as such**,
+not a promise: it parses §3.8.1 into `{rowId, producer, capability, token,
+recording, outcome}`, extracts every Frontloaded Decision and test-plan assertion
+naming a row id or an outcome token (`observe`, `hold`, `refuse`, `deliver`,
+`advisory`, `fail-closed`), resolves each against its row, and **fails the build
+on a mismatch**. Its own tests use three fixtures that must fail it: a decision
+naming an outcome its row does not have; a PR ownership list that is not a
+partition; and a table row with the wrong cell count. All three are real defects
+this review found by hand. Prose that contradicts
+the table stops being a thing a reviewer has to notice. Until that lint exists,
+the same comparison is done by hand at every fold and recorded in the round log
+— which is how rounds 15, 17 and 18's drift was found, and an honest admission
+that hand-checking is what a lint is for.
+
+**§3.8.1 IS THE SINGLE SOURCE OF OUTCOME TRUTH.** Every other
+section — §3.1, §3.5, §3.8, §3.11, the frontloaded decisions — is *explanatory*.
+Where prose and this table disagree, **the table wins and the prose is a defect
+to fix**, and three rounds of this review found exactly that class of drift. The
+tests derive from the table, so a behaviour not derivable here does not exist.
+
+**Stage matrix** (the rollout dimension, pulled out of the prose so it cannot
+drift again):
+
+| | B22 (possession) | B23 (pattern) | LLM advisory rules | Dissent |
+|---|---|---|---|---|
+| **Stage 0** (PR-A) | enforcing, terminal | **observe-only** — would-hold recorded, nothing blocked | unchanged — blocking | **live on every verdict** |
+| **Stage 1** (PR-B, dark — `dryRun: true`, so recording is not live) | enforcing | **observe-only** — recording is dry-run, so a hold could not be answered honestly (the B23 rule) | `would-advise` logged, still blocking | live |
+| **Stage 2** (dev agent) | enforcing | **overridable with a recorded reason** | **overridable with a recorded reason** | live |
+| **Stage 3** (fleet — operator's call, gated on §8.1) | enforcing | overridable | overridable | live |
+
+**Evaluation is PHASED; within a phase the first matching row wins.**
+
+- **Phase A — deterministic wall.** B22 and detector-incomplete, on every
+ request including every resend. Nothing downstream can waive these.
+- **Phase B — override resolution.** If a valid token is presented: the
+ acknowledged citation (and only that citation, on unedited text) is treated as
+ answered and is NOT re-issued. A deterministic finding *different* from the
+ acknowledged one — a B23 kind that did not fire before, e.g. because the index
+ finished rebuilding between the two passes — is a **fresh hold** with its own
+ token, never suppressed by the earlier ack.
+- **Phase C — review.** Reached only when Phase B did not resolve the request:
+ the LLM review and its dispositions.
+
+| # | Producer / condition | `advisoryCapable` | Token | `recordingLive` | Outcome |
+|---|---|---|---|---|---|
+| 1a | **B22** (proven possession — the value arm is the whole wall), **seam** | any | any | any | **Refuse, terminal.** Never overridable. Returns a **dissent-only** token (§3.3). |
+| 1d | **B22, ADAPTER layer** | n/a | n/a | n/a | **Refuse at egress**, local audit event only — **no token, no agent-facing protocol**. The adapter's callers are system templates, relays and the lifeline fallback; there is nobody to hand a token to (§3.2). Counted `b22-adapter-caught-post-seam`. |
+| 2 | **B22 matcher threw** on a built index | any | any | any | **Hold**, `detectorIncomplete`. |
+| 2a | **No index exists** (never built at startup) or a **refresh failed** while a previous index is served | any | any | any | **Degraded, NEVER a hold** — the wall's reach narrows (to nothing, or to the previous index), `valueArmScope` + `b22-index-degraded` surfaced unconditionally (§3.2.2). Holding every message because a vault cannot be read is worse than the exposure it would prevent, and that trade is stated rather than implied. |
+| 3 | Deterministic **B23**, seam, **Stage 0** | any | — | any | **Observe-only** — `b23-would-hold` recorded with the kind; nothing blocked (§3.8). |
+| 3a | Deterministic **B23**, seam, **Stage ≥1** | true | — | true | 422 advisory + token; override with reason ⇒ deliver + annotate. |
+| 4 | Deterministic **B23**, seam | true | — | **false** | **Observe-only** — recording is not live, so an override could not be recorded and a hold could not be answered honestly; records `b23-would-hold` locally, blocks nothing (the B23 rule). |
+| 5 | Deterministic **B23**, seam, caller **cannot acknowledge** | **false** | — | any | **Per the sender class's policy** (§3.8): `observe` by default — `b23-would-hold` recorded, nothing blocked. |
+| 6 | Deterministic **B23**, adapter layer | n/a | n/a | n/a | **Not evaluated** — the adapter runs possession-only, and terminally (row 1d). |
+| 7 | Availability hold (`CAPACITY_UNAVAILABLE` / `GATE_UNAVAILABLE`) | any | any | any | Terminal, labelled `availability`, never ackable, no token. |
+| 8 | Degraded deterministic floor citation | true | — | true | **422 advisory + token**, exactly like any advisory citation — plus `source: 'degraded-floor'` and the situation named: re-send later for a full review, or override now with a recorded reason. It is a soft hold with a normal token, not a special shape. |
+| 8c | Resend against a degraded-floor citation, ack + reason + valid token | true | valid | true | Deliver + annotate once, `dispositionAtDecision: 'degraded-floor'` recorded so the corpus can tell an outage-window override from an ordinary one. |
+| 8a | Degraded floor, `recordingLive` **false** | true | — | false | **422, no token** — an override cannot be recorded, so none is offered. The response says the full reviewer is unavailable and re-sending later is the path. |
+| 8b | Degraded floor, caller **cannot acknowledge** | **false** | — | any | **Always observe-only** — recorded, nothing blocked. The sender-class `fail-closed` opt-in does **not** apply to this producer. |
+| 9 | LLM **blocking** rule | any | — | any | 422 blocked + token; a resend may file a **dissent** ⇒ message stays held, annotation written. |
+| 10 | LLM **advisory** rule | true | — | true | 422 advisory + token. |
+| 11 | LLM **advisory** rule | true | — | **false** | Blocking (coupling), counted. |
+| 12 | LLM **advisory** rule | **false** | — | any | Terminal `tone-gate-blocked`, counted `advisory-degraded-to-block`. |
+| 13 | Resend, ack + reason + **valid** token, hash matches | true | valid | true | **Phase A** runs (rows 1–2 still apply); the acked citation is treated as answered; **Phase C is skipped**; deliver; annotate once. |
+| 13a | Resend as above, but a **different** deterministic rule now fires | true | valid | true | Fresh hold on the new citation with a new token — an ack for one rule never answers another. |
+| 14 | Resend, token valid, **hash mismatch** (edited message) | true | valid | true | Full fresh review (the edit is a new message). |
+| 15 | Resend, token **absent/expired/consumed** | true | invalid | true | Fresh review; response carries `tokenExpiredFreshReview: true`; counted separately; never a join on text. |
+| 16 | Resend, ack present, **reason missing/short after scrub** | true | valid | true | 422 with `reasonRequired: true`, `refusedField: 'reason'`; nothing delivered, nothing annotated. |
+| 17 | Resend, **reason itself trips B22** | true | valid | true | 422 `reasonRejected: true`, `refusedField: 'reason'`; nothing delivered, nothing annotated. |
+| 18 | Valid override, the **`authorized` event cannot be appended** | true | valid | true | **Refuse the override** (`overrideUnrecordable: true`) — nothing delivered. Authority is granted only against durable evidence (§3.8). |
+| 18b | *(Merged into row 18 in round 32.)* The reason text rides the `authorized` event, so "the reason cannot be written" and "the event cannot be appended" are **one failure**, not two. Retained as a row id so change-log references resolve. |
+| 18a | Valid override, `authorized` appended, **rich annotate call fails afterwards** | true | valid | true | **Deliver** + count `override-unrecorded`. The fact is durable; only the derived detail was lost, and observability is never a delivery gate. |
+| 18c | Valid override, `authorized` appended, **adapter B22 refuses at egress** | true | valid | true | Nothing delivered; `egress-refused` appended. The corpus records an override that was granted and correctly stopped — never a delivery. |
+| 18d | Valid override, `authorized` appended, **send throws or times out** | true | valid | true | `send-failed` appended. Same distinction: authorized ≠ delivered. |
+| 19 | Plain resend, no ack, text hash matches a live record | true | — | any | Fresh review; counted `advisory-evaded-by-resend` (exact-text lower bound). |
+| 20 | Resend carrying `agentDissentReason` + a **dissent-only** token (B22 / terminal) | any | valid | true | Message **stays held**; dissent annotated (`self-report`). Authority unchanged — the zero-risk evidence path (§3.3). |
+| 20a | Resend presenting a **dissent-only** token with an override ack | any | valid | any | Refused `dissentOnlyToken: true`; nothing delivered, nothing overridden. |
+| 21 | Resend carrying `agentDissentReason` against an **availability hold** or `detectorIncomplete` | any | any | any | Refused with `notAJudgment: true`; nothing annotated — there is no verdict to dissent from. |
+| 23 | Send where `isProxy` / `isSystemTemplate` / `willRelay` (review short-circuited) — **B22** | n/a | n/a | any | **Evaluates and refuses.** Hoisted above the early return; possession needs no protocol to be answerable (dissent is available wherever the caller can carry it, and the refusal is audited regardless). |
+| 23a | Same paths — **B23** | n/a | n/a | any | **Per the sender class's policy** (§3.8). These callers have no advisory protocol, so a hold can never be *answered* — but round 22 established that the operator, not the rule, decides whether an unanswerable hold is preferable to delivery for a given sender: **every class defaults to `observe`**; `fail-closed` exists only where an operator has explicitly opted that class in. Records `b23-would-hold` either way. |
+| 22 | Resend with ack + reason but an **expired/absent** token | true | invalid | true | Fresh review (row 15) **and** `expired-token-override-attempt` recorded machine-local, explicitly marked unjoined + unjudgeable, so the corpus does not silently over-represent overrides whose token happened to survive. |
+
+### 3.9 Fail directions
+
+| Condition | Behavior |
+|---|---|
+| B22 index **build/refresh** fails or times out (rows 2/2a) | **Degraded** — the wall's reach narrows to nothing while degraded; B23 still runs and behaves **exactly as §3.8.1 says for the current stage and caller** (observe-only at Stage 0, at Stage 1 while recording is dry-run, and on protocol-skipped paths; a hold with recourse from **Stage 2**, when recording is live and the caller is advisory-capable) — never an unanswerable hold, whatever this row once implied, `valueArmScope: 'unavailable'` on the payload + on the §3.2.2 posture surface, `b22-index-degraded` counted. **Never a hold.** (An agent with a decrypt-failed vault must not have every outbound message held forever — and after round 11's narrowing this is the one condition under which the wall is *absent*, which is exactly why the posture surface reports it unconditionally.) |
+| B22 **match evaluation** throws on a built index (row 2) | **Fail closed** — hold, `detectorIncomplete` (§3.9.1 for the remediation contract). One term throughout — `detectorError` was a second name for the same state. Round 16 deleted the verification cap with the fingerprint scheme, so exact substring matching has no hit-amplification path left to bound. |
+| Secret backend is `bitwarden`/`manual` | **Config-held credentials are still indexed and still walled** — they do not come from the vault. Only vault-derived values are unavailable, and the scope reports `vault-unavailable` on the posture route rather than only on a refusal. |
+| The **`authorized` event** cannot be appended (row 18) | **Override refused** — `overrideUnrecordable`. Authority is granted only against durable evidence. |
+| **Rich provenance annotation** fails after `authorized` (row 18a) | Message still delivers; counted `override-unrecorded`. The fact is durable; only the derived detail was lost — recording detail is observability, never a delivery gate. |
+| Process crashes between `authorized` and any terminal event | The record is **incomplete, not delivered**. Startup reconciliation marks it `send-outcome-unknown`; the judgeable corpus counts only records with a terminal event, so a crash can never inflate the delivered-override count. |
+| Annotate seam **dark/dry-run** | Advisory widening resolves **false**. Pre-existing **LLM** rules revert to blocking (their prior behaviour); **B23 and degraded-floor citations go observe-only** (rows 4, 5, 8a, 8b) — they are new, with no prior block to revert to. Recording and authority are coupled. |
+| Token absent/expired/mismatched | `override-uncorrelated`, counted; no join. |
+| Gate provider unavailable | Availability hold (§3.1) — terminal, non-ackable, labelled as availability. |
+
+#### 3.9.1 `detectorIncomplete` remediation contract
+
+**.**
+
+- **The agent-facing message says what to do**: the credential check could not
+ complete on this message; edit it (removing large repeated key-like fragments
+ is the usual cause) and re-send. It is not a verdict about the content, and it
+ says so.
+- **It is not dissentable** — nothing concluded anything (§3.3) — but it **is
+ counted** (`b22-detector-incomplete`, with the cause: cap vs throw), and a
+ sustained rate crosses a band into ONE deduped Attention item. A matcher bug
+ therefore surfaces as an operator alert rather than as an unexplained silence.
+- **`emergencyDisable` covers it.** The lever disables the whole detector, so it
+ disables `detectorIncomplete` with it — stated explicitly, because a
+ kill-switch that leaves the fail-closed arm running would not be a
+ kill-switch.
+- **The blast radius is one message**, not the channel: the hold is per-candidate
+ and stateless, so an edited resend is evaluated fresh.
+
 ### 3.10 Test plan
 
 **Unit** — disposition/class parity ratchets incl. B22/B23 *exclusion* from

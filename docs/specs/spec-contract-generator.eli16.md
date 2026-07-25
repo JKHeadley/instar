@@ -166,6 +166,22 @@ always fires isn't a careful warning, it's a switched-off one, because people
 stop reading it. I'd written that exact sentence in the design notes a couple of
 hours earlier — while the check was already doing it.
 
+## The list was too short to work on anything but the first document
+
+Run against the second design document, the strict mode produced something that
+started at the test plan — no design, no data layout, no behaviour table. A
+reviewer reading it said "the actual behaviour is missing", and it was.
+
+The reason is dull: the list of section names to keep was written from one
+document, and the other one calls its sections different things. Perfectly good
+names — "what an implementer builds", "current design overview", "normative
+outcome table" — just not on the list.
+
+The uncomfortable part is that the tool's own warning fired at the time, said
+only 12% of sections matched, and I read it, noted it, and carried on. A warning
+that gets acknowledged but not acted on is only half a guard. That document sat
+in the repo for three hours looking like something you could build from.
+
 ## What it doesn't do
 
 It doesn't check whether the design is any *good*, or even whether it's
