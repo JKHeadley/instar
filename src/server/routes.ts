@@ -66,7 +66,7 @@ import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
-import { CapabilityRegistryReceiver } from '../core/CapabilityRegistry.js';
+import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjection, readDoorwaySources, type CapabilityProjection } from '../core/CapabilityRegistry.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
@@ -2008,8 +2008,16 @@ export function createRoutes(ctx: RouteContext): Router {
     const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
     if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
     if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
-    const rows = ctx.capabilityRegistry.snapshot();
-    return res.status(200).json({ advisory: true, scanState: rows.length ? 'observed' : 'never-observed', capabilities: rows });
+    let projection: CapabilityProjection | null = null;
+    const projectionFile = path.join(ctx.config.stateDir, 'capability-registry.json');
+    try { projection = new CapabilityRegistryWriter(projectionFile, 'local').read(); } catch { projection = null; }
+    if (!projection) {
+      try { const local = readDoorwaySources(ctx.config.projectDir, ctx.config.stateDir, new Date().toISOString(), 'local'); projection = { schemaVersion: 1, machineId: 'local', machineEpoch: 0, projectionSeq: 0, ...local, truncated: false, entries: local.entries } as CapabilityProjection; } catch { projection = null; }
+    }
+    const fallbackRows = ctx.capabilityRegistry.snapshot();
+    const scanState = projection?.scanState ?? (fallbackRows.length ? 'observed' : 'never-observed');
+    const capabilities = projection ? classifyProjection(projection) : fallbackRows;
+    return res.status(200).json({ advisory: true, scanState, capabilities });
   });
   router.get('/capability-registry/health', (_req, res) => {
     const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;

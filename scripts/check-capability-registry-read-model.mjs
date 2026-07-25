@@ -10,9 +10,11 @@ function walk(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const file = path.join(dir, entry.name);
     if (entry.isDirectory()) walk(file);
-    else if (/\.(ts|js|mjs)$/.test(entry.name) && !file.endsWith('server/routes.ts')) {
+    else if (/\.(ts|js|mjs)$/.test(entry.name)) {
       const text = fs.readFileSync(file, 'utf8');
-      if (/fetch\([^\n]*\/capability-registry|axios[^\n]*\/capability-registry|capabilityRegistry\.(admit|route|place)/.test(text)) offenders.push(file);
+      const authorityUse = /fetch\([^\n]*\/capability-registry|axios[^\n]*\/capability-registry|capabilityRegistry\.(admit|route|place)|capabilityRegistry\.(snapshot|classifyMachine)\s*\(/.test(text);
+      const producer = file.endsWith('server/routes.ts') && /router\.get\('\/capability-registry/.test(text);
+      if (authorityUse && !producer && !file.endsWith('core/CapabilityRegistry.ts')) offenders.push(file);
     }
   }
 }

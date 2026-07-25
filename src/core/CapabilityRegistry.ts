@@ -168,6 +168,12 @@ export type CapabilityRegistryPoolRow =
   | { kind: 'failure'; machineId: string; reason: CapabilityRegistryFailureReason }
   | { kind: 'capability'; machineId: string; entry: CapabilityEntry; status: CapabilityStatus };
 
+export function classifyProjection(projection: CapabilityProjection, now = Date.now(), opts: Parameters<typeof deriveStatus>[2] = {}): CapabilityRegistryPoolRow[] {
+  if (projection.scanState === 'source-unavailable') return [{ kind: 'failure', machineId: projection.machineId, reason: 'source-unavailable' }];
+  if (projection.scanState === 'never-observed') return [{ kind: 'failure', machineId: projection.machineId, reason: 'no-data-yet' }];
+  return projection.entries.map(entry => ({ kind: 'capability' as const, machineId: projection.machineId, entry, status: deriveStatus([entry], now, opts) }));
+}
+
 interface CapabilityReceiverOriginState {
   projection?: CapabilityProjection;
   digest?: string;
