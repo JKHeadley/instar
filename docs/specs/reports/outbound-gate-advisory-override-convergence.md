@@ -253,3 +253,50 @@ Consequence for reading any round after 35: **there was no second family.**
 Findings from those rounds come from `codex-cli:gpt-5.5` alone. Where this report
 says "both families independently", that claim applies only to rounds 34-35 and
 earlier, and was checked before being written.
+
+
+---
+
+## Addendum 2 — 2026-07-25T14:2xZ: grounded against the codebase
+
+The round-33 review flagged two things about the credential wall: that it
+hand-rolls detection when mature tools exist, and that a **live plaintext index
+of the agent's real secrets** is the highest-risk element. Both were judged from
+the spec. Checking the codebase makes both sharper — and changes the
+recommendation.
+
+**1. This codebase already has secret detection. Twice.**
+
+- `src/core/durableSecretScrub.ts` → `DURABLE_SECRET_PATTERNS`: **16 patterns**,
+  covering `anthropic-key`, `openai-key`, `stripe-key`, `github-token`,
+  `google-api-key`, `slack-token`, `aws-access-key`, `telegram-bot-token`,
+  `pem-private-key`, `jwt`, `bearer-token`, `url-embedded-credential`,
+  `labeled-secret` and more.
+- `src/core/SecretRedactor.ts` → **two-layer detection: pattern matching *and*
+  entropy scanning**, with indexed replacement for provenance-aware restoration.
+
+The spec's B22 design is a **third** implementation of the same idea, with a
+narrower pattern list, and it **deliberately excluded entropy scanning** — which
+`SecretRedactor` already implements.
+
+**2. The flagged risk is one this codebase has so far specifically avoided.**
+
+`SecretRedactor` **does not read the SecretStore or the vault at all** — zero
+references. It detects by shape and entropy, never by comparison against real
+secret values. So the "known-live-value match against the agent's own secret
+store" that B22 proposes is not an incremental risk on an existing posture: **it
+would introduce a class of exposure this codebase does not currently have**,
+which is exactly why the reviewer put it first.
+
+**Revised recommendation.** The wall does not need a live secret index. Build it
+on `DURABLE_SECRET_PATTERNS` — already reviewed, already maintained, already
+covering the providers B22 enumerates — and take `SecretRedactor`'s entropy layer
+if the false-positive posture allows. That removes the highest-risk element
+entirely rather than mitigating it, and deletes the third pattern list before it
+exists.
+
+**Method note.** This took ten minutes of `grep` and is the same lesson the
+companion spec learned the hard way today: review checks a document against
+itself, and neither reviewer nor author had looked at what the codebase already
+contained. The design was argued for 33 rounds on the assumption it needed
+building.
