@@ -383,3 +383,29 @@ that reader consults fails here rather than in production five days later.
 - It does not merge or replicate histories across machines (§4, §8.1).
 - It does not backfill what was lost.
 - It does not change delivery, routing, or any gate.
+
+## Review record (rounds 1–12)
+
+Eleven review rounds plus a twelfth attempted. Kept short deliberately — the
+change logs that swallowed the companion spec are exactly what this document is
+scoped to avoid.
+
+| Reviewer | Outcome |
+|---|---|
+| Standards-Conformance Gate | **0 findings**, stable across repeated runs; `fit: fit` against *Structure beats Willpower*. Caught three real defects along the way — an orphaned deferral, an unbounded retry loop introduced by a fix, and a test plan asserting behaviour the design had already replaced. |
+| `gemini-cli:gemini-3.1-pro-preview` | **CLEAN four times** (rounds 3, 7, 9, 11). Its findings when not clean were maintainability points, each folded. |
+| `codex-cli:gpt-5.5` | Drove every structural simplification. Last completed round (10) produced three findings, all folded and verified present. **Rounds 11–12 could not run: the provider returned HTTP 503 (`biscuit_baker_service_me_circuit_open`) on five consecutive reconnect attempts — an outage on their side, at 60% quota.** |
+
+**No `review-convergence` tag is written.** The strongest reviewer's last
+*completed* round found material issues; those were folded, but a fold is not a
+verified round, and the reviewer that would verify it is unavailable. Recording
+the outage rather than treating one reviewer's silence as agreement — a check
+that *cannot run* is not a check that passed, which is the failure this entire
+spec exists to fix.
+
+What the reviews actually produced, since the count matters less than the shape:
+three designs were **deleted** rather than refined (a timeout budget that bounded
+the wait but not the work; a queue subsystem in a document insisting it had no
+queue; a content-derived id that would have collapsed distinct messages), and one
+finding — checking `message_id INTEGER NOT NULL` against the real database rather
+than reasoning about it — caught a blocker that would have failed at build time.
