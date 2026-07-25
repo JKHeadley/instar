@@ -106,7 +106,13 @@ It works because:
  cannot see genuinely dynamic dispatch, so a **runtime counter** records raw
  primitive use from outside the approved call sites — the static test catches
  what is knowable at build time, the counter reports what is only knowable at
- run time, and neither pretends to be the other.
+ run time, and neither pretends to be the other. **The guarantee is therefore
+ "static enforcement plus runtime anomaly counting", not "runtime enforcement".** Attributing a call to an approved site at runtime would
+ need stack inspection, which is expensive and fragile; the counter instead
+ records *total* primitive invocations and compares against the count the
+ approved sites report making. A divergence says "something else called this"
+ without saying who — an anomaly signal, not an attribution mechanism, and
+ described as such.
  The fixture is the list of functions permitted to call them; any new
  caller fails it until the allowlist is updated deliberately, at which point a
  human has to decide whether that path also needs to log. **Each entry carries a
@@ -314,7 +320,24 @@ catch { /* never block the injection */ }
  fails after five seconds rather than waiting indefinitely, and WAL means readers
  never block it in the first place.
 
- **Five seconds is far too long for THIS path, and 64 × 5s is the real ceiling.** A log write that waits five seconds has already failed at its
+ **The two writes are split, because only one of them matters for this bug.**
+ They were being treated as one write and bounded as one. They are not alike:
+
+ - **JSONL is the essential record** — it is what the session-start history
+ reader consults, so it is the write that fixes this bug. It is a single
+ `fs.appendFileSync` to an append-only file: no lock negotiation, no
+ transaction, microseconds. It is **never dropped** by the backlog guard.
+ - **TopicMemory is secondary** — it backs search and summaries. It is the write
+ that can contend, wait and stall. It is the one the guard drops, and the one
+ that may lag.
+
+ That change alone removes most of the ceiling: the unbounded-ish cost lived
+ entirely in the SQLite write, and the record this spec exists to create was
+ never the slow one. Splitting them also makes the drop rule honest — under
+ burst you lose *searchability* for some messages, not the messages.
+
+ **Five seconds is far too long for the TopicMemory write, and 64 × 5s was the
+ real ceiling.** A log write that waits five seconds has already failed at its
  job. This path therefore sets its own **`busy_timeout = 100 ms`** before
  writing, bounding the worst case to ~6.4 seconds of accumulated delay rather
  than ~320, and a contended store sheds entries quickly instead of holding the
@@ -344,8 +367,15 @@ catch { /* never block the injection */ }
 - **The backlog IS bounded — three lines, not a subsystem.** A counter tracks scheduled-but-unwritten entries. Above **64**, the
  entry is **dropped and counted** (`inbound-log-dropped`) instead of scheduled.
 
- That is a bound, not a queue: no worker, no retry, no ordering guarantee, no
- lifecycle — one comparison and an increment.
+ **And it is a bounded best-effort in-memory buffer. Calling it "not a queue"
+ obscured the model.** `setImmediate`
+ plus a pending counter plus a drop threshold plus alerting *is* queue-shaped,
+ whatever it is named. What the earlier phrasing was reaching for is still true
+ and is what should have been said: **no worker, no retry, no persistence, no
+ ordering guarantee, no lifecycle** — one comparison and an increment, riding
+ Node's own scheduler rather than a subsystem this design owns and must maintain.
+ That is a real distinction from what rounds 5 and 6 deleted. "It is not a queue"
+ was not.
 
  **On deliberately dropping observations (the standards gate flagged this against
  *Observation Needs Structure*, and it is the right question to ask a spec whose
@@ -396,10 +426,18 @@ twice in this section's own history.
 
 `messaging.inboundSeamLogging.enabled`, with an emergency disable.
 
-**Default-on is EARNED by the burst numbers, not assumed.** The
-flag ships **default-off for exactly one release**, during which the burst test
-reports concrete loop-delay figures on real hardware; it flips to default-on only
-once those numbers are acceptable and recorded here. The reasoning that made
+**Default-on is EARNED by explicit thresholds, not by a release count.** The flag ships **default-off**, and
+flips to default-on when **all three** of these hold, measured on real hardware
+and recorded here:
+
+| Gate | Threshold |
+|---|---|
+| Loop delay added by a 200-message burst, healthy store | **< 250 ms** total |
+| Loop delay, contended/wedged store | **< 2 s** total |
+| `inbound-log-dropped` during the burst | **0** on a healthy store |
+
+If any gate fails, the flip does not happen and the design is revisited — the
+gate is the decision, not the calendar. The reasoning that made
 default-on attractive still stands — every day off is unrecoverable
 conversation — but "probably fine at human typing speed" is an assumption about
 the same class of thing this spec keeps catching, and a synchronous write with a
