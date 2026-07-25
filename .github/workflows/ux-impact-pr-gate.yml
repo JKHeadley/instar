@@ -46,11 +46,13 @@ jobs:
         env:
           # Literal, protected kill switch. Do not source this from vars/secrets.
           INSTAR_UX_LINT: "on"
+          # Literal configured author scope; pusher is accepted only when it matches this list.
+          INSTAR_UX_SCOPE: "jkheadley"
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           : > ux-lint-result.json
           set +e
-          node scripts/ux-impact-lint.mjs --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}" --scope "${{ github.actor }}" --pusher "${{ github.actor }}" --report ux-lint-result.json --body "$PR_BODY"
+          node scripts/ux-impact-lint.mjs --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}" --scope "$INSTAR_UX_SCOPE" --pusher "${{ github.actor }}" --report ux-lint-result.json --body "$PR_BODY"
           rc=$?
           if [ "$rc" -eq 2 ]; then
             echo "::error::UX lint internal error; fail-open for merge but mark auto-merge ineligible"

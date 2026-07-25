@@ -16,7 +16,9 @@ if (!base) { console.error('::error::UX lint requires a base ref'); process.exit
 try {
   const names = execFileSync('git', ['diff', '--name-only', `${base}...${head}`], { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
   const commits = execFileSync('git', ['log', '--format=%an <%ae>%n%cn <%ce>', `${base}..${head}`], { encoding: 'utf8' }).toLowerCase();
-  const authorInScope = scope.length === 0 || Boolean(pusher) || scope.some((token) => commits.includes(token));
+  const authorInScope = scope.length === 0
+    || (Boolean(pusher) && scope.includes(pusher))
+    || scope.some((token) => commits.includes(token));
   const report = { version: 1, base, head, authorInScope, scope, allowlistedPaths: [], exempt: false, internalError: false };
   const writeReport = () => { if (reportPath) writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`); };
   if (!authorInScope) { report.outOfScopeAuthor = true; await writeReport(); console.log('UX lint: out-of-scope author'); process.exit(0); }

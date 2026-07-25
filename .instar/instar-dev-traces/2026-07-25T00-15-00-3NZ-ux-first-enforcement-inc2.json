@@ -3,7 +3,7 @@
   "sessionId": "ux-first-inc2",
   "timestamp": "2026-07-25T00:15:00.000Z",
   "artifactPath": "upgrades/side-effects/ux-first-enforcement-inc2.md",
-  "artifactSha256": "6f743c96ce8264d1e6e6a446fc0ede4969ddbcc0326bcc5b8cea7d04da98691d",
+  "artifactSha256": "7fb88a593696bcf6f9b9b13b2d199fd1c0797d743d2414c21ea193639e443691",
   "specPath": "docs/specs/ux-first-enforcement-inc1.eli16.md",
   "coveredFiles": ["scripts/eli16-overview-check.mjs", "scripts/ux-impact-lint.mjs"],
   "phase": "complete",
