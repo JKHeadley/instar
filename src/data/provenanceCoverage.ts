@@ -237,6 +237,9 @@ export const DP_COMPLETION_CLAIM_VERIFY = 'completion-claim-verify';
 /** Feedback cluster evidence → owned-work readiness judgment. */
 export const DP_FEEDBACK_READINESS = 'feedback-readiness';
 
+/** The stop-justified authority (src/core/UnjustifiedStopGate.ts). */
+export const DP_UNJUSTIFIED_STOP_GATE = 'unjustified-stop-gate';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -462,12 +465,36 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Should-I-reply verdict over an inbound message; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'unjustified-stop-gate',
+    decisionPoint: DP_UNJUSTIFIED_STOP_GATE,
     component: 'UnjustifiedStopGate',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    // The highest-volume UNENROLLED decision point in the census: ~1343 calls
+    // in the last 7 days (GET /metrics/features), second only to the tone gate
+    // among gates. A per-UTC-day COUNT budget rather than `full`: this fires on
+    // every stop attempt across every session, and an always-on gate must not
+    // grow the provenance archive without a hard ceiling. The ~250-byte
+    // decision_quality row is written for every settlement regardless, so the
+    // COUNTS stay complete even when the archive is valved.
+    volumeClass: 'budget:300',
+    // Content-bearing: the gate judges a session's stop rationale. It enters the
+    // row as IDENTITY ONLY — hashes, bounds, and code-derived features — never
+    // the rationale text or any transcript slice.
     contentClass: 'content-bearing',
+    // ── Grading posture ──────────────────────────────────────────────────
+    // MEASUREMENT-ONLY, declared rather than left as a silent gap.
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'No honest outcome rule exists YET. Grading "was this stop justified?" needs a ' +
+      'downstream fact — did the run resume and do real work after the gate allowed a ' +
+      'stop, or did the agent genuinely have nothing left after the gate held one? Those ' +
+      'signals exist (the resume queue, the autonomous liveness reconciler) but joining ' +
+      'them to a decision row is real plumbing, not a predicate. Enrolling the DECISION ' +
+      'side first is deliberate and is what this posture is for: the rows accumulate now, ' +
+      'so when the outcome join lands there is history to grade instead of a cold start. ' +
+      'Recording without grading is stated here so the census shows it rather than ' +
+      'implying this point is measured when only half of it is.',
     reason:
-      'Stop-justified verdict over session state; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'The stop-justified authority — the highest-volume unenrolled point in the census.',
   },
   {
     decisionPoint: 'coherence-review',

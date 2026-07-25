@@ -122,7 +122,6 @@ const PENDING_BASELINE = [
   'topic-summarize::TopicSummarizer::backlog:decision-quality-enrolment',
   'tree-synthesize::TreeSynthesis::backlog:decision-quality-enrolment',
   'tree-triage::TreeTriage::backlog:decision-quality-enrolment',
-  'unjustified-stop-gate::UnjustifiedStopGate::backlog:decision-quality-enrolment',
   'usher-topic-route::Usher::backlog:decision-quality-enrolment',
   'warrants-reply-gate::WarrantsReplyGate::backlog:decision-quality-enrolment',
   'watchdog-stuck-judge::SessionWatchdog::backlog:decision-quality-enrolment',
