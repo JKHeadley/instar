@@ -8019,6 +8019,39 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.skipped.push('CLAUDE.md: Commitments & Follow-Through section already present');
     }
 
+    // Dated check-in reminders (ACT-724 step 1). SEPARATE from the block above:
+    // an agent that already HAS the Commitments section never re-enters that
+    // branch, so appending to it would reach only fresh installs — the exact
+    // Migration Parity failure mode. A dated promise the agent does not know it
+    // can register is a promise nothing will remind anyone about.
+    if (
+      content.includes('**Commitments & Follow-Through**') &&
+      !content.includes('/commitments/check-in-reminder')
+    ) {
+      const marker = '- **When to use** (PROACTIVE — this is the trigger): the moment you promise the user a future action, open a commitment.';
+      const datedSection = `- **A promise with a DATE produces a real reminder (ACT-724 step 1, ships dark).** When you say "I'll check in on this by Friday", set \`checkInAt\` (an absolute ISO instant — resolve "Friday" to a real moment at creation time; never store a bare date) on the commitment. A recurring reconciler then posts EXACTLY ONE fixed-template reminder into that commitment's own topic when the instant arrives, and stops. Delivering or withdrawing the commitment first means no reminder ever fires — teardown is a status check, nothing to cancel.
+  - Read the dated backlog: \`curl -H "Authorization: Bearer $AUTH" http://localhost:\${port}/commitments/check-in-reminder\` → \`{ enabled, dryRun, datedCount, pending, undelivered }\`. **\`undelivered\` is the one to look at**: those are promises the user did NOT receive after retries were exhausted.
+  - Run one pass now: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:\${port}/commitments/check-in-reminder/pass\` (idempotent — a re-run sends nothing).
+  - The guarantee is **at-least-once, deduped at the delivery layer** — not exactly-once. A reminder is marked sent ONLY after it actually sent, so a failed send retries (bounded) instead of being recorded as delivered.
+  - Ships dark (\`commitments.checkInReminder\`, dryRun defaulting TRUE). **Honest scope:** while the reconciler runs, no dated commitment can slip past it — but nothing yet guarantees the reconciler runs, so "structurally impossible to have a dated promise without a reminder" is NOT true yet.
+`;
+      const at = content.indexOf(marker);
+      if (at >= 0) {
+        content = content.slice(0, at) + datedSection + content.slice(at);
+      } else {
+        // The section exists but has drifted from the shipped wording. Append
+        // rather than skip: a missing capability is worse than a misplaced one.
+        const idx = content.indexOf('**Commitments & Follow-Through**');
+        const endOfBlock = content.indexOf('\n\n', idx);
+        const insertAt = endOfBlock >= 0 ? endOfBlock : idx;
+        content = content.slice(0, insertAt) + '\n' + datedSection + content.slice(insertAt);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added dated check-in reminder to Commitments section');
+    } else if (content.includes('/commitments/check-in-reminder')) {
+      result.skipped.push('CLAUDE.md: dated check-in reminder already present');
+    }
+
     // Publishing (Telegraph public pages). Awareness-parity pass: add the
     // agent-facing section if absent so it reaches Codex/Gemini shadows via
     // the markers list. Inserted before Private Viewing (template doc order).
