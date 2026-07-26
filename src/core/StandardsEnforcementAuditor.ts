@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { loadStandardsRegistry, type StandardArticle } from './StandardsRegistryParser.js';
+import { parseStandardsRegistryDetailed, runRegistryCanary } from './StandardsRegistryParser.js';
 import { extractEnforcementRefs, flattenRefs, type EnforcementRef } from './StandardEnforcementExtractor.js';
 
 export type EnforcementKind = 'ratchet' | 'gate' | 'lint' | 'spec-only' | 'documented-only';
@@ -51,15 +51,57 @@ export interface StandardCoverage {
   classifiedAt: string;
 }
 
+/**
+ * What the audit's own inputs looked like, so a reader can tell an assessment
+ * over the WHOLE constitution apart from one over a fragment of it.
+ *
+ * Born from honest-denominators instance 4 (2026-07-25): this auditor reported
+ * `enforcedRatio: 0.0455` over 22 standards while the registry on disk carried
+ * 81. Reading the same registry in full gives 0.5375. The ratio was not wrong
+ * arithmetic — it was arithmetic over a denominator nobody could see, and the
+ * result was a figure 12× more alarming than reality, quoted onward as fact.
+ */
+export interface RegistryProvenance {
+  /** Absolute path of the registry file this pass actually read. */
+  path: string;
+  /** Bytes read — a 46KB copy where the source carries 248KB is a staleness tell. */
+  bytes: number;
+  /** Article headings found inside detected standards families — the parse denominator. */
+  articleHeadings: number;
+  /** Headings that parsed into an article. */
+  parsed: number;
+  /** Headings inside a family that carried no `**Rule.**` and were dropped. */
+  droppedHeadings: string[];
+  /** Families detected structurally. */
+  families: string[];
+  /** Registry-parse canary verdict — false means the numbers below are NOT trustworthy. */
+  canaryOk: boolean;
+  canaryFailures: string[];
+}
+
 export interface CoverageSummary {
   total: number;
   byKind: Record<EnforcementKind, number>;
-  /** (ratchet + gate + lint) / total — the fraction of standards with a verified structural guard. */
-  enforcedRatio: number;
+  /**
+   * (ratchet + gate + lint) / total — the fraction of standards with a verified
+   * structural guard. **`null` when `total` is 0**: with nothing to divide by
+   * there is no ratio, and reporting one (either the flattering 1 or the
+   * damning 0) states a measurement that was never taken. Callers must render
+   * null as "not assessed", never coerce it to a number.
+   */
+  enforcedRatio: number | null;
   /** Names of `documented-only` standards (the gaps). */
   gaps: string[];
   /** Total dangling refs across all standards. */
   danglingCount: number;
+  /**
+   * True only when the pass read a registry its own canary vouches for. False
+   * means every figure in this summary describes a fragment or a drifted parse
+   * — surface it beside the numbers rather than presenting them bare.
+   */
+  assessmentTrustworthy: boolean;
+  /** Provenance of the registry this pass read. */
+  registry: RegistryProvenance;
 }
 
 export interface CoverageReport {
@@ -292,9 +334,18 @@ function repoStructureSignal(projectDir: string): string {
 
 /** Compute the input hash that drives the recompute short-circuit. */
 export function computeInputHash(opts: AuditorOptions): string {
-  let registry = '';
-  try { registry = fs.readFileSync(opts.registryPath, 'utf-8'); } catch { registry = ''; }
-  const regHash = crypto.createHash('sha256').update(registry).digest('hex').slice(0, 16);
+  // An UNREADABLE registry must not hash identically to an empty-but-present one:
+  // that conflation is the honest-denominators shape at the cache layer, where a
+  // missing constitution would share a cache slot with a genuinely blank one.
+  // `computeCoverage` throws on an unreadable registry (the correct loud failure);
+  // this marker only keeps the short-circuit from confusing the two states.
+  let registryDigestInput: string;
+  try {
+    registryDigestInput = fs.readFileSync(opts.registryPath, 'utf-8');
+  } catch (err) {
+    registryDigestInput = ` unreadable:${opts.registryPath}:${err instanceof Error ? err.message : String(err)}`;
+  }
+  const regHash = crypto.createHash('sha256').update(registryDigestInput).digest('hex').slice(0, 16);
   return `${regHash}.${repoStructureSignal(opts.projectDir)}`;
 }
 
@@ -315,7 +366,21 @@ export function computeCoverage(
     return prior;
   }
 
-  const articles: StandardArticle[] = loadStandardsRegistry(opts.registryPath);
+  // Read ONCE and keep what the parse saw: the audit must be able to state the
+  // denominator it computed over (honest-denominators instance 4).
+  const registryMarkdown = fs.readFileSync(opts.registryPath, 'utf-8');
+  const { articles, diagnostics } = parseStandardsRegistryDetailed(registryMarkdown);
+  const canary = runRegistryCanary(articles, diagnostics);
+  const registry: RegistryProvenance = {
+    path: opts.registryPath,
+    bytes: Buffer.byteLength(registryMarkdown, 'utf-8'),
+    articleHeadings: diagnostics.articleHeadings,
+    parsed: diagnostics.parsed,
+    droppedHeadings: diagnostics.droppedHeadings,
+    families: diagnostics.families,
+    canaryOk: canary.ok,
+    canaryFailures: canary.failures,
+  };
   const routeTable = loadRouteTable(opts.projectDir);
 
   // Collect every wanted marker across all articles → ONE bounded src walk.
@@ -339,7 +404,10 @@ export function computeCoverage(
   for (const s of standards) byKind[s.enforcementKind] += 1;
   const total = standards.length;
   const enforced = byKind.ratchet + byKind.gate + byKind.lint;
-  const enforcedRatio = total === 0 ? 0 : Number((enforced / total).toFixed(4));
+  // No denominator → no ratio. Returning 0 here (the previous behaviour) reads on
+  // a dashboard as "0% of our standards are enforced" — a measurement, and an
+  // alarming one — when the truth is that nothing was measured at all.
+  const enforcedRatio = total === 0 ? null : Number((enforced / total).toFixed(4));
   const gaps = standards.filter((s) => s.enforcementKind === 'documented-only').map((s) => s.standard);
   const danglingCount = standards.reduce((n, s) => n + s.danglingRefs.length, 0);
 
@@ -347,7 +415,15 @@ export function computeCoverage(
     generatedAt: classifiedAt,
     inputHash,
     standards,
-    summary: { total, byKind, enforcedRatio, gaps, danglingCount },
+    summary: {
+      total,
+      byKind,
+      enforcedRatio,
+      gaps,
+      danglingCount,
+      assessmentTrustworthy: total > 0 && registry.canaryOk,
+      registry,
+    },
   };
 }
 

@@ -198,4 +198,53 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
     expect(osq!.danglingRefs).toEqual([]); // every named guard resolves
     expect(osq!.guards.some((g) => g.ref === 'scripts/instar-dev-precommit.js' && g.verified)).toBe(true);
   });
+
+  it('refuses a ratio when there is nothing to divide by, and carries its denominator', () => {
+    // honest-denominators instance 4/6 (2026-07-25): `total === 0 ? 0 : ...` reported
+    // "0% of standards enforced" for a registry that contributed NO standards at all.
+    // Zero problems and zero data produced the same number, and the number was a
+    // measurement nobody had taken. Nothing-measured must read as null, not as 0.
+    write('docs/EMPTY-REGISTRY.md', '## Why this exists\n\nProse only. No articles.\n');
+    const emptyRegistry = path.join(repo, 'docs/EMPTY-REGISTRY.md');
+    const report = computeCoverage({ registryPath: emptyRegistry, projectDir: repo });
+
+    expect(report.summary.total).toBe(0);
+    expect(report.summary.enforcedRatio).toBeNull();
+    expect(report.summary.assessmentTrustworthy).toBe(false);
+    expect(report.summary.registry.articleHeadings).toBe(0);
+    expect(report.summary.registry.parsed).toBe(0);
+    expect(report.summary.registry.path).toBe(emptyRegistry);
+    expect(report.summary.registry.bytes).toBeGreaterThan(0);
+  });
+
+  it('states the denominator + trustworthiness on a REAL pass, so a fragment cannot pose as the whole', () => {
+    // The live defect this closes: the audit read a 22-article COPY of the registry
+    // while the source carried 81, and reported 0.0455 with nothing beside it saying
+    // what it had divided by. Both figures are now inseparable from the ratio.
+    const full = computeCoverage({ registryPath: REAL_REGISTRY, projectDir: process.cwd() });
+    expect(full.summary.assessmentTrustworthy).toBe(true);
+    expect(full.summary.registry.parsed).toBe(full.summary.total);
+    expect(full.summary.registry.articleHeadings).toBe(full.summary.total);
+    expect(full.summary.registry.droppedHeadings).toEqual([]);
+    expect(full.summary.registry.canaryOk).toBe(true);
+    expect(full.summary.registry.families.length).toBeGreaterThanOrEqual(6);
+
+    // A FRAGMENT of the same constitution: a ratio is still computed (it is real
+    // arithmetic over what was read) but the denominator makes the fragment visible.
+    const fragment = fs.readFileSync(REAL_REGISTRY, 'utf-8').split('\n').slice(0, 400).join('\n');
+    write('docs/FRAGMENT-REGISTRY.md', fragment);
+    const partial = computeCoverage({ registryPath: path.join(repo, 'docs/FRAGMENT-REGISTRY.md'), projectDir: process.cwd() });
+    expect(partial.summary.total).toBeLessThan(full.summary.total);
+    expect(partial.summary.registry.parsed).toBe(partial.summary.total);
+    // The canary's anchor + floor checks catch the truncation → not trustworthy.
+    expect(partial.summary.assessmentTrustworthy).toBe(false);
+    expect(partial.summary.registry.canaryFailures.length).toBeGreaterThan(0);
+  });
+
+  it('does not hash an unreadable registry identically to an empty one', () => {
+    write('docs/BLANK.md', '');
+    const blank = computeInputHash({ registryPath: path.join(repo, 'docs/BLANK.md'), projectDir: repo });
+    const missing = computeInputHash({ registryPath: path.join(repo, 'docs/DOES-NOT-EXIST.md'), projectDir: repo });
+    expect(missing).not.toBe(blank);
+  });
 });

@@ -7240,12 +7240,18 @@ export function createRoutes(ctx: RouteContext): Router {
     let report: StandardsCoverageReport;
     try { report = conformanceReport(); }
     catch (err) { res.status(500).json({ error: 'coverage compute failed', detail: err instanceof Error ? err.message : String(err) }); return; }
+    // `converged` means ONLY "the deterministic pass is stable" — re-running on
+    // unchanged inputs is byte-identical. It has never meant "the standards are
+    // healthy", but sitting bare beside `enforcedRatio` it read that way: on
+    // 2026-07-25 this response reported `converged: true` next to `0.0455` over a
+    // registry fragment, and the agent reading it drew the wrong conclusion twice
+    // in one day, then quoted it to the operator. The meaning now travels with the
+    // field, and the trustworthiness of the ratio travels beside it.
     res.json({
       enabled: true,
       generatedAt: report.generatedAt,
-      // The deterministic pass always converges — re-running on unchanged inputs is
-      // byte-identical, so `converged` is structurally true.
       converged: true,
+      convergedMeans: 'the deterministic pass is stable on unchanged inputs; NOT that standards are healthy',
       ...report.summary,
     });
   });
