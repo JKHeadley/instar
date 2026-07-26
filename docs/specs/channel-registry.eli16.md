@@ -81,3 +81,19 @@ is precisely the stale-but-confident label that started this.
 **Being switched on is not the same as reaching anybody.** One entry reports that its machinery started
 correctly, and says so in those words rather than claiming a message got through. That distinction cost
 me a wrong claim earlier tonight and the wording exists to stop me repeating it.
+
+## A postscript worth more than the feature
+
+I wanted agents to actually know this exists, so I updated the two places I knew about: the template new
+agents get, and the migration that reaches existing ones. I believed that was the job done.
+
+Then the build checks found **three more places I did not know existed.** One tracks whether the template
+and the migration actually say the same thing. One insists that any new address either shows up in the
+list of things an agent can do, or is explicitly marked as deliberately hidden — it will not let you
+leave that unstated. And the third carries the knowledge to agents built on other systems entirely; had
+I missed it, those agents would never have learned this existed and would have improvised their own
+weaker workaround. Which is precisely the failure the whole feature exists to prevent.
+
+I was being deliberate and I still missed three. That is the argument for building the check rather than
+trying harder, restated by accident: careful work plus the checks beat careful work alone, and it was not
+close.

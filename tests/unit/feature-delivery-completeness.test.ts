@@ -128,6 +128,8 @@ describe('Feature Delivery Completeness', () => {
       '### Outbound Message Gate',
       'Self-Discovery',
       'Registry First — capability registry:',
+      // channel-registry: which peer channels work right now (templates.ts + migrator parity).
+      'Registry First — channel registry:',
       'Publishing',
       'Private Viewing',
       'Secret Drop',

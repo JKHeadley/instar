@@ -178,3 +178,22 @@ telling the operator a fallback existed, because the row says it cannot send.
 **Weakest point:** the asserted `half-built` entry. It is guarded, but a guard scoped to `src/` is
 narrower than the claim it protects, and the entry is the single place where this registry could
 become the confident-but-stale label it exists to prevent.
+
+## Post-CI addendum — three awareness registries I did not know existed
+
+I updated `templates.ts` + `PostUpdateMigrator` by hand and believed the Agent Awareness Standard was
+satisfied. CI disagreed, three times:
+
+1. **`feature-delivery-completeness`** — the CLAUDE.md section must be listed in `featureSections`, or
+   the template↔migrator parity assertion cannot see it at all.
+2. **`capabilities-discoverability`** — a new route prefix must be classified in `CapabilityIndex`:
+   surfaced in `/capabilities` or explicitly `INTERNAL_PREFIXES`. Its message is exactly right —
+   *"The lint refuses to assume; the author makes the call."* Surfaced, since agents need it.
+3. **`migrateFrameworkShadowCapabilities`** — without a marker, a Codex/Gemini agent never learns the
+   capability and "will improvise a weaker workaround". That is this feature's own failure mode
+   reproduced one layer out, and I would have shipped it.
+
+**This is the Structure-over-Willpower case restated by accident.** I was deliberately doing the
+awareness work and still missed three of five required registries. No amount of care would have closed
+that gap; only the gates did. Recorded here rather than quietly fixed, because the ratio (2 found by
+intent, 3 by machinery) is the useful number.

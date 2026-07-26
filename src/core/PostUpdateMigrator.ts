@@ -9076,6 +9076,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       '### Context-Aware Outbound Review',
       '### Self-Discovery',
       '**Registry First — capability registry:',
+      // channel-registry: a Codex/Gemini agent must also learn to consult /channels
+      // before reporting a peer unreachable, or it will improvise the same weaker
+      // workaround I did — stop, and tell the operator the peer cannot be reached.
+      '**Registry First — channel registry:',
       '**Publishing**',
       '**Private Viewing**',
       '**Secret Drop**',

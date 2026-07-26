@@ -57,6 +57,12 @@ export interface CapabilityEntry {
 
 export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
+    key: 'channelRegistry',
+    prefixes: ['/channels'],
+    description: 'Which peer-to-peer channels exist and which are usable right now, with the evidence for each verdict.',
+    build: () => ({ configured: true, endpoints: ['GET /channels'] }),
+  },
+  {
     key: 'capabilityRegistry',
     prefixes: ['/capability-registry'],
     description: 'Local capability registry read surface; dark until explicitly enabled.',
