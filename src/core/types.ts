@@ -2298,9 +2298,8 @@ export interface MachineCapacity {
 }
 
 /** The compact posture block that rides the capacity heartbeat
- *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Counts plus per-key detail for ONLY
- *  the two sharpest signals (offDeviantKeys, offRuntimeDivergentKeys) —
- *  bounded by the manifest size. */
+ *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Counts plus bounded per-key detail for
+ *  the read surfaces that must not collapse an absent class into all-clear. */
 export interface GuardPostureSummary {
   onConfirmed: number;
   onUnverified: number;
@@ -2317,6 +2316,11 @@ export interface GuardPostureSummary {
    *  heartbeat so a peer gap is visible fleet-wide. Optional for wire back-compat —
    *  an un-upgraded peer omits them and the probe Array.isArray-guards the read. */
   loadBearingGapKeys?: string[];
+  /** Full count plus at most 16 deterministic keys. Read-surface context only:
+   *  probes and pool notifications deliberately ignore these fields because
+   *  the underlying missing/errored/stale/divergent classes already alarm. */
+  loadBearingUninspectable?: number;
+  loadBearingUninspectableKeys?: string[];
   loadBearingSoakingKeys?: string[];
   loadBearingAcceptedKeys?: string[];
   generatedAt: string;

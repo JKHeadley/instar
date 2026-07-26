@@ -967,6 +967,22 @@ export function machineRecordNode(doc, m, opts = {}) {
     rows.push(['Safety checks on', String(on)]);
     const problems = guardPostureProblems(p);
     if (problems > 0) rows.push(['Safety checks needing a look', String(problems)]);
+    const uninspectableKeys = Array.isArray(p.loadBearingUninspectableKeys)
+      ? p.loadBearingUninspectableKeys.filter((key) => typeof key === 'string')
+      : [];
+    const uninspectableCount = Number.isFinite(p.loadBearingUninspectable)
+      ? Math.max(uninspectableKeys.length, Math.floor(p.loadBearingUninspectable))
+      : uninspectableKeys.length;
+    if (uninspectableCount > 0 || uninspectableKeys.length > 0) {
+      const shown = uninspectableKeys.join(', ');
+      const truncated = uninspectableCount > uninspectableKeys.length
+        ? ` (${uninspectableKeys.length} shown)`
+        : '';
+      rows.push([
+        'Load-bearing protection unproven',
+        `${uninspectableCount}${shown ? ` — ${shown}${truncated}` : ''}`,
+      ]);
+    }
   } else {
     rows.push(['Safety checks', 'not reported yet']);
   }

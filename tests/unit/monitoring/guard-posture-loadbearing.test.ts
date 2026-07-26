@@ -12,6 +12,7 @@ import {
   buildGuardInventory,
   buildHeartbeatPostureBlock,
   deriveGuardRow,
+  HEARTBEAT_LOAD_BEARING_UNINSPECTABLE_KEY_CAP,
   ROW_FIELD_ALLOWLIST,
 } from '../../../src/monitoring/guardPostureView.js';
 import { GuardRegistry } from '../../../src/monitoring/GuardRegistry.js';
@@ -331,11 +332,47 @@ describe('buildGuardInventory + buildHeartbeatPostureBlock — load-bearing key-
     expect(inv.summary.loadBearingAcceptedKeys).toContain(LB_KEY);
   });
 
-  it('the heartbeat block carries the three key-lists', () => {
+  it('the heartbeat block carries a counted, capped uninspectable list alongside the existing three lists', () => {
     const hb = buildHeartbeatPostureBlock(invWith(), '2026-07-01T00:00:00.000Z');
     expect(hb.loadBearingGapKeys).toContain(LB_KEY);
+    expect(hb.loadBearingUninspectable).toBe(invWith().summary.loadBearingUninspectableKeys.length);
+    expect(hb.loadBearingUninspectableKeys).toEqual(
+      [...invWith().summary.loadBearingUninspectableKeys].sort((a, b) => a.localeCompare(b)),
+    );
     expect(hb.loadBearingSoakingKeys).toEqual([]);
     expect(hb.loadBearingAcceptedKeys).toEqual([]);
+  });
+
+  it('refuses the heartbeat false all-clear for an errored load-bearing guard and caps per-tick keys', () => {
+    const registry = new GuardRegistry();
+    registry.register(LB_KEY, () => {
+      throw new Error('status getter failed');
+    });
+    const snapshot: ResolvedGuardConfigSnapshot = {
+      resolved: { multiMachine: { sessionPool: { inboundQueue: { enabled: true } } } },
+      defaults: { multiMachine: { sessionPool: { inboundQueue: { enabled: false } } } },
+      fileAbsent: false,
+    };
+    const inv = buildGuardInventory({
+      snapshot,
+      bootSnapshot: {
+        ts: new Date(DECLARED).toISOString(),
+        posture: { [LB_KEY]: true },
+      },
+      registry,
+      now: DECLARED,
+    });
+    const extraKeys = Array.from(
+      { length: HEARTBEAT_LOAD_BEARING_UNINSPECTABLE_KEY_CAP + 3 },
+      (_, i) => `synthetic.loadBearing.${String(i).padStart(2, '0')}`,
+    );
+    inv.summary.loadBearingUninspectableKeys = [LB_KEY, ...extraKeys];
+
+    const hb = buildHeartbeatPostureBlock(inv, '2026-07-01T00:00:00.000Z');
+    expect(hb.loadBearingGapKeys).not.toContain(LB_KEY);
+    expect(hb.loadBearingUninspectable).toBe(1 + extraKeys.length);
+    expect(hb.loadBearingUninspectableKeys).toContain(LB_KEY);
+    expect(hb.loadBearingUninspectableKeys).toHaveLength(HEARTBEAT_LOAD_BEARING_UNINSPECTABLE_KEY_CAP);
   });
 });
 
