@@ -1,0 +1,106 @@
+<!-- bump: patch -->
+
+## What Changed
+
+**A flag placed after the topic id was sent to the user as literal message text, and the
+setting it carried was silently dropped.**
+
+`telegram-reply.sh` parses flags in a loop that breaks at the first non-flag argument — the
+topic id. Everything after that becomes the message via `MSG="$*"`. So
+`telegram-reply.sh 29723 --tone-ack B15 --tone-reason "why"` sent the user the literal text
+`--tone-ack B15 --tone-reason why`, while the tone-advisory override never reached the
+server. Both failures were silent; the script exited 0.
+
+This is measured, not inferred. The pre-fix template is captured verbatim as a test fixture
+(at the same SHA now registered in the migrator's shipped-SHA allowlist) and run against a
+stub of the reply route: exit 0, received text containing `--tone-ack`, and no
+`toneAdvisoryAck` in the metadata.
+
+**The cost was a corrupted measurement.** Because the override never applied, the tone gate
+re-reviewed the send as an ordinary message whose text now began with option noise. The
+verdict looked absurd, was read as a malfunction, and a **correct** check was graded `wrong`
+in the decision-quality data — the data used to decide which checks to trust. That record is
+durable and is not retracted by this change.
+
+**The root cause was not the script.** These flags were documented nowhere agent-facing:
+not in the script's own usage header (which covers `--format` and `--stdin-base64`), and not
+in the agent instructions, which document the HTTP `metadata.*` fields while simultaneously
+mandating "ALWAYS the relay script, never a hand-rolled curl". The bridge between the two
+did not exist, so the invocation had to be guessed — and the script accepted the guess
+without complaint. A capability shipped without instructions, plus a tool that stayed silent
+on the only usage an uninstructed caller would try.
+
+An inconsistency underneath made the fix obvious once seen: the script **already** treated an
+unrecognised flag-shaped token as fatal when it appeared *before* the topic id. It was strict
+about nonsense in one position and fully permissive about a real flag in the other. Both
+positions are now treated the same.
+
+Three parts, because the chain had three links:
+
+1. **The script refuses** a `--*` argument after the topic id, printing the correct ordering
+   and the corrected command. Nothing is sent.
+2. **A typo'd flag is caught too** (`--tone-akc`) — the realistic mistake, and equally silent
+   before. The guard matches the *shape*, not a list of known names, which is what makes it
+   useful rather than decorative.
+3. **The flags are documented** — in the script's usage header and in the agent instructions,
+   with a worked example showing flags before the topic id.
+
+**What this does not do:** it does not retract the false grade from 2026-07-26. Whether a
+mistaken grade can be corrected at all — and whether correcting one erases the evidence that
+it was ever made, which would be the opposite defect — is a separate open question, and is
+deliberately not answered here. It also fixes only this script; `slack-reply.sh` and
+`whatsapp-reply.sh` share the parse-then-break shape but carry no tone flags today, so they
+are named rather than swept in.
+
+## What to Tell Your User
+
+If a stray double-dash option ever appeared in the middle of one of my messages to you, that
+was this: a setting that belonged in the plumbing ended up in the text, and whatever it was
+supposed to do quietly didn't happen. It can't reach you as text any more — the send is
+refused and corrected instead.
+
+The part worth knowing: one of those settings is how I record that I disagree with one of my
+own safety checks. When it silently failed to apply, I misread the result and marked a check
+as faulty when it had actually been right. So this wasn't only cosmetic — it put a wrong
+entry in the records used to judge whether those checks are any good. That entry is still
+there; this stops more from being created.
+
+## Summary of New Capabilities
+
+- A flag placed after the topic id is refused with an actionable message naming the correct
+  ordering, instead of being sent to the user as literal text with its effect dropped.
+- A misspelled flag after the topic id is caught by the same guard.
+- The tone-advisory reaction flags (`--tone-ack`, `--tone-reason`, `--tone-complied`,
+  `--tone-decision-ref`) are documented in the script's usage header and in the agent
+  instructions, with a worked example.
+- Existing agents receive both the new script and the new documentation — the doc block is
+  sniffed on its own marker so an agent that already carries the surrounding section is not
+  skipped.
+
+## Evidence
+
+**Reproduction (before),** the pre-fix template against a stub reply route:
+
+| invocation | exit | text received by the user | override applied |
+|---|---|---|---|
+| `… 4242 --tone-ack B15 --tone-reason because` | `0` | `--tone-ack B15 --tone-reason because` | no |
+
+**Observed after,** same stub:
+
+| invocation | before | after |
+|---|---|---|
+| flag after the topic id | sent as message text, exit 0 | refused, exit 1, **zero requests sent** |
+| typo'd flag after the topic id | sent as message text, exit 0 | refused, exit 1, zero requests |
+| flags before the topic id | worked | works — text clean, `toneAdvisoryAck` + reason present |
+| message on stdin containing a flag-shaped token | sent verbatim | sent verbatim (stdin is not inspected) |
+| unknown flag before the topic id | `Unknown flag`, exit 1 | unchanged |
+
+**Tests:** `tests/integration/telegram-reply-misplaced-flag.test.ts` (6) runs the real
+template — and the pre-fix fixture — against a stub route, so "was it sent as text?" is
+answered by the received payload rather than by reading the script.
+`tests/unit/PostUpdateMigrator-toneAdvisoryFlagPosition.test.ts` (3) covers migration parity,
+including the load-bearing case: an agent that already carries the tone-advisory section must
+still receive the invocation guidance. That test was verified to FAIL when the second
+migration block is disabled, so it cannot pass whether or not the migration exists. The full
+telegram-reply and template-SHA surface (10 files, 51 tests) passes unchanged;
+`npx tsc --noEmit` clean.

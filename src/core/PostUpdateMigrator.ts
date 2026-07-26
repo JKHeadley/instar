@@ -143,13 +143,37 @@ Claude Code's ultracode mode is xhigh effort plus dynamic workflow orchestration
  *
  * Unique content-sniff marker: 'Most checks are NUDGES you may override'.
  */
+/**
+ * How to actually SEND a tone-advisory reaction — the missing bridge.
+ *
+ * The section above documents `metadata.*` fields: the HTTP shape. But the
+ * agent template mandates the relay SCRIPT ("ALWAYS the relay script, never a
+ * hand-rolled curl"), and the script's flags for these reactions were
+ * documented NOWHERE agent-facing. So an agent handed a `decisionRef` had to
+ * invent an invocation — and a flag placed after the topic id was silently
+ * swallowed into the message body and sent to the user as literal text, while
+ * the override never applied. That is how a CORRECT check was graded `wrong`
+ * on 2026-07-26. The script now refuses a misplaced flag; this documents the
+ * right form so the refusal is rarely needed.
+ *
+ * Unique content-sniff marker: 'EVERY FLAG GOES BEFORE THE TOPIC ID'.
+ */
+export const TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION = `- **How to send the reaction (the relay script, not a curl).** Pass the reaction as FLAGS — and **EVERY FLAG GOES BEFORE THE TOPIC ID**, because flag parsing stops at the topic id and anything after it is message text:
+  \`\`\`
+  cat <<'EOF' | .instar/scripts/telegram-reply.sh --tone-ack B2_FILE_PATH --tone-reason "the operator asked for the path explicitly" --tone-decision-ref <decisionRef> TOPIC_ID
+  your message, unchanged
+  EOF
+  \`\`\`
+  Use \`--tone-complied <RULE>\` instead of \`--tone-ack\`/\`--tone-reason\` when you agreed and revised. A flag in the wrong position is now REFUSED (it used to be sent to the user as literal text with its effect silently dropped, which is exactly how a correct check once got graded \`wrong\`). If such a token is genuinely part of your message, pipe the text on stdin — the check only inspects arguments.`;
+
 export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**Most checks are NUDGES you may override — two things are walls.** Under the advisory migration (operator approval 2026-07-19; \`toneGate.advisoryMigration\`, dev-gated live / fleet-dark) a cited judgment rule returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded**:
 - **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
 - **You disagree** → re-send unchanged with \`metadata.toneAdvisoryAck: "<RULE>"\` **and** \`metadata.toneAdvisoryAckReason: "<why the nudge is wrong here>"\` → the check is graded \`wrong\`. **The reason is required** — a reasonless ack is refused (\`tone-gate-advisory-reason-required\`) and nothing sends. That reason IS the evidence that tunes this gate; without it every tone decision grades \`unknown\` forever.
 - **Wall 1 — a LIVE credential** in outbound text → \`422\` with \`blockedBy: credential-exposure-guard\`, \`overridable: false\`. Deterministic, runs before the LLM authority, holds during an outage, and **no metadata reaches it**. Remove the value, refer to the secret by NAME, and route it through Secret Drop if the recipient genuinely needs it.
 - **Wall 2 — the self-stop family** (B15–B19: quitting for a context/fatigue reason, declaring an unverified wall, handing a doable task back to the user). These stay hard blocks. They exist to constrain YOU, so an override reason written by you is produced by exactly the reasoning the rule distrusts — and the harm (work abandoned) lands the moment the message sends, which no later review can undo.
 - **How to tell whether this is live here**: read the RESPONSE, never assume. \`error: tone-gate-advisory\` = nudges are on. \`error: tone-gate-blocked\` = this install blocks (either the migration is dark, or you hit a wall). A \`tone-gate-blocked\` carrying \`advisoryUnavailable\` means the nudge was withdrawn because the override could not have been RECORDED — the check keeps its authority rather than loosen for nothing.
-- **When to use** (PROACTIVE — this is the trigger): the moment you get a \`tone-gate-advisory\`, decide and declare it — comply or override-with-reason. Never silently drop the message, and never re-send in a loop hoping the verdict changes. Your override is a SIGNAL recorded at the self-report rung, never authority.`;
+- **When to use** (PROACTIVE — this is the trigger): the moment you get a \`tone-gate-advisory\`, decide and declare it — comply or override-with-reason. Never silently drop the message, and never re-send in a loop hoping the verdict changes. Your override is a SIGNAL recorded at the self-report rung, never authority.
+${TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION}`;
 
 export function EXTERNAL_HOG_CLAUDEMD_SECTION(port: number): string {
   return `\n### External-Hog Zombie Auto-Kill Sentinel (⚗️ dev-gated dark, watch-only) — the runaway-editor-zombie killer
@@ -5320,6 +5344,22 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n${TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION}\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added tone-gate advisory migration (nudge/override/credential-wall) section');
+    }
+
+    // Tone-advisory reaction INVOCATION (spec: misplaced-flag-sent-as-message-text)
+    // — Agent Awareness Standard + Migration Parity. The section above documents
+    // `metadata.*` (the HTTP shape) while the template mandates the relay SCRIPT;
+    // the flags that bridge them, and the fact that they must precede the topic
+    // id, were documented nowhere. An agent therefore had to invent the
+    // invocation, and a misplaced flag was silently sent to the user as message
+    // text with its override dropped — grading a correct check `wrong`.
+    // Sniffed on its OWN marker, because an agent that already carries the
+    // section above would otherwise never receive this (the block above is
+    // content-sniffed on a marker that has not changed).
+    if (!content.includes('EVERY FLAG GOES BEFORE THE TOPIC ID')) {
+      content += `\n${TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added tone-advisory reaction invocation (flags precede the topic id)');
     }
 
     if (!content.includes('External-Hog Zombie Auto-Kill Sentinel')) {
@@ -14434,6 +14474,15 @@ process.stdin.on('end', async () => {
     // reachable only through a hand-rolled curl — i.e. inert on the one send
     // path the agent template mandates.
     '1182b2c7e3779a9c37355e7317962ea48122a5f4a42425d7f3f9973e8127aa19',
+    // The tone-advisory version, shipped immediately BEFORE the flag-position
+    // guard. In this version a flag placed AFTER the topic id was swallowed
+    // into `MSG="$*"` and SENT TO THE USER as literal message text, while the
+    // override it carried never reached the server — silently, on the very
+    // flags the entry above was added to deliver. Registering this SHA is what
+    // lets a deployed agent receive the guard; without it the migrator leaves
+    // the swallowing version in place with a `.new` beside it, and every agent
+    // keeps mis-sending a misplaced (or typo'd) flag as message body.
+    'a2cf02154a6023725f15480a575f54a5231278c70396cd12051b7d7055b72d98',
   ]);
 
   /**
