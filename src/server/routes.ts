@@ -9922,13 +9922,62 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
       } catch { /* skip unreadable source */ }
-      // (2) Evolution actions — a JSON array under .actions (each with top-level
-      // createdAt), NOT a logs/*.jsonl stream.
+      // (2) Evolution actions — COUNTED ON COMPLETION, NOT ON FILING.
+      //
+      // The metric's own inversion (ACT-1244, verified 2026-07-25). The old line
+      // counted EVERY action at its `createdAt`, so 739 of 771 "learning events" —
+      // 96% — were items merely FILED. Measured the same day on this agent's real
+      // queue: of 1,285 actions, 740 were still pending, 523 cancelled (494 of those
+      // carrying the resolution "Abandoned without active tracking since creation
+      // date"), 20 completed, 2 in progress.
+      //
+      // So the metric answering "are we learning?" was almost purely a measure of
+      // filing RATE — and filing is precisely what we do INSTEAD of finishing: the
+      // faster work was abandoned, the higher the adaptability score climbed. It read
+      // 88/100 "accelerating" on the morning the operator halted all work because the
+      // opposite was visibly true.
+      //
+      // A learning event is a piece of work that FINISHED. An action contributes one
+      // only when it reached `completed`, stamped at `completedAt` (when the learning
+      // actually happened) rather than `createdAt` (when the intention was recorded).
+      // Pending, in_progress, cancelled and auto-abandoned contribute nothing and are
+      // accounted for by exclusion reason, so a low score is legible as "little has
+      // finished" rather than mistaken for "we stopped learning".
+      const actionAccounting = {
+        considered: 0,
+        counted: 0,
+        excluded: {} as Record<string, number>,
+      };
+      const excludeAction = (reason: string): void => {
+        actionAccounting.excluded[reason] = (actionAccounting.excluded[reason] ?? 0) + 1;
+      };
       try {
         const p = path.join(ctx.config.stateDir, 'state', 'evolution', 'action-queue.json');
         if (fs.existsSync(p)) {
           const aq = JSON.parse(fs.readFileSync(p, 'utf-8'));
-          for (const a of (aq.actions ?? [])) push(tsField(a), 'evolution');
+          for (const a of (aq.actions ?? [])) {
+            actionAccounting.considered += 1;
+            const rec = (a ?? {}) as Record<string, unknown>;
+            const status = typeof rec.status === 'string' ? rec.status : 'unknown';
+            if (status !== 'completed') {
+              // Name the auto-abandoned class specifically: it is the single largest
+              // bucket and the one the old metric scored as learning.
+              const resolution = typeof rec.resolution === 'string' ? rec.resolution : '';
+              excludeAction(status === 'cancelled' && /abandoned without active tracking/i.test(resolution)
+                ? 'auto-abandoned'
+                : `not-completed:${status}`);
+              continue;
+            }
+            // A completion with no completion timestamp cannot be placed in the
+            // window; counting it at createdAt would re-import the filing bias.
+            const completedAt = rec.completedAt ?? rec.updatedAt;
+            if (completedAt === undefined || completedAt === null || completedAt === '') {
+              excludeAction('completed-without-timestamp');
+              continue;
+            }
+            push(completedAt, 'evolution');
+            actionAccounting.counted += 1;
+          }
         }
       } catch { /* skip unreadable source */ }
       // (3) Corrections — persisted in the SQLite CorrectionLedger, not a JSONL file.
@@ -9940,7 +9989,15 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         } catch { /* skip ledger error */ }
       }
-      res.json(computeLearningVelocity(events, new Date().toISOString(), windowDays));
+      // The score never travels without what it was computed over (the
+      // honest-denominator rule applied to this metric): `counting` states the rule in
+      // one line, and `evolutionActions` shows how much was excluded and why — so a
+      // reader can tell "we are not learning" from "almost nothing has finished yet".
+      res.json({
+        ...computeLearningVelocity(events, new Date().toISOString(), windowDays),
+        counting: 'evolution actions count on completion (completedAt), never on filing (createdAt)',
+        evolutionActions: actionAccounting,
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to compute learning velocity' });
     }
