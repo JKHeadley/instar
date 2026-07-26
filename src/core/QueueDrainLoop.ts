@@ -232,7 +232,7 @@ export class QueueDrainLoop {
     if (this.d.handoffInProgress?.()) return { result: 'refused', reason: 'handoff-in-progress' };
 
     // Refusal negative cache (§1) — canonical-id keyed.
-    const cacheKey = `${msg.sessionKey} ${msg.messageId}`;
+    const cacheKey = `${msg.sessionKey}\u0000${msg.messageId}`;
     const cachedUntil = this.refusalCache.get(cacheKey);
     const nowMs = this.d.now();
     if (cachedUntil !== undefined && cachedUntil > nowMs) {

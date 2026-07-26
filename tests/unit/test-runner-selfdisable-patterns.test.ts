@@ -292,7 +292,7 @@ describe('tolerance + missing-ledger semantics (§2.6)', () => {
       '{"no":"kind field"}',
       evt('skip', { reason: 'off', loud: true }),
       evt('skip', { reason: 'off', loud: true }),
-      ' garbage',
+      '\u0000garbage',
       evt('skip', { reason: 'off', loud: true }),
     ]);
     const result = check(dir);
@@ -454,7 +454,7 @@ describe('pre-push script is structurally WARN-only (§2.6(b), §5)', () => {
 
   it('exits 0 on a fully-corrupt ledger (torn lines tolerated, never an error)', () => {
     const dir = mkFixtureDir();
-    writeLedger(dir, ['%%% not json', '{torn', ' binary']);
+    writeLedger(dir, ['%%% not json', '{torn', '\u0000binary']);
     const res = spawnScript(dir);
     expect(res.status).toBe(0);
   });

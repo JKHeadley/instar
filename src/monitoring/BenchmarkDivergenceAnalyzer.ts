@@ -357,7 +357,7 @@ export class BenchmarkDivergenceAnalyzer {
             missingByPoint.set(r.decisionPointId, (missingByPoint.get(r.decisionPointId) ?? 0) + r.decidedTotal);
             continue;
           }
-          const key = `${r.decisionPointId} ${r.model}`;
+          const key = `${r.decisionPointId}\u0000${r.model}`;
           const b = merged.get(key) ?? {
             rightN: 0, wrongN: 0, unknownN: 0, decidedTotal: 0,
             promptIds: new Set<string>(), byMachine: new Map<string, number>(),
@@ -387,8 +387,8 @@ export class BenchmarkDivergenceAnalyzer {
       const localFindings = this.readLocalFindingViews(todayDay, s);
       const seedView = mergeFindingsByKey([...localFindings, ...collect.peerFindings]);
       const seedStreaks = new Map<string, number>();
-      for (const f of seedView) seedStreaks.set(`${f.taskId} ${f.decisionPointId} ${f.model}`, f.chronicStreak);
-      const existingKeys = new Set(localFindings.map((f) => `${f.taskId} ${f.decisionPointId} ${f.model}`));
+      for (const f of seedView) seedStreaks.set(`${f.taskId}\u0000${f.decisionPointId}\u0000${f.model}`, f.chronicStreak);
+      const existingKeys = new Set(localFindings.map((f) => `${f.taskId}\u0000${f.decisionPointId}\u0000${f.model}`));
 
       // Enumerate findings per enrolled pair × observed model (FD2).
       const computed: Array<{
@@ -424,7 +424,7 @@ export class BenchmarkDivergenceAnalyzer {
           !!registryEntry && typeof task?.benchedPromptSource === 'string' && task.benchedPromptSource === registryEntry.source;
 
         for (const [key, bucket] of merged) {
-          const [dp, model] = key.split(' ');
+          const [dp, model] = key.split('\u0000');
           if (dp !== decisionPointId) continue;
           const normalizedModel = normalizeModelId(model);
           const bench = normalizedModel !== null ? task?.perModel[normalizedModel] ?? null : null;
@@ -451,7 +451,7 @@ export class BenchmarkDivergenceAnalyzer {
             },
           });
 
-          const seed = seedStreaks.get(`${taskId} ${decisionPointId} ${model}`) ?? 0;
+          const seed = seedStreaks.get(`${taskId}\u0000${decisionPointId}\u0000${model}`) ?? 0;
           const streak = nextChronicStreak(seed, v.verdict);
           const chronic = streak >= s.chronicCycles;
           const chronicReason = chronic ? this.chronicReasonFor(v.verdict, v.preconditionReason, coverageComplete) : null;
@@ -490,7 +490,7 @@ export class BenchmarkDivergenceAnalyzer {
 
       // FD9 unmapped-flood ceiling: keys NEW this pass beyond the cap collapse
       // into ONE deduped flood finding — never a wall of new rows.
-      const newKeys = computed.filter((c) => !existingKeys.has(`${c.taskId} ${c.decisionPointId} ${c.model}`));
+      const newKeys = computed.filter((c) => !existingKeys.has(`${c.taskId}\u0000${c.decisionPointId}\u0000${c.model}`));
       let floodCollapsed = 0;
       let toWrite = computed;
       if (newKeys.length > s.maxNewFindingKeysPerPass) {
@@ -499,10 +499,10 @@ export class BenchmarkDivergenceAnalyzer {
             .slice()
             .sort((a, b) => (a.taskId + a.decisionPointId + a.model < b.taskId + b.decisionPointId + b.model ? -1 : 1))
             .slice(0, s.maxNewFindingKeysPerPass)
-            .map((c) => `${c.taskId} ${c.decisionPointId} ${c.model}`),
+            .map((c) => `${c.taskId}\u0000${c.decisionPointId}\u0000${c.model}`),
         );
         toWrite = computed.filter((c) => {
-          const k = `${c.taskId} ${c.decisionPointId} ${c.model}`;
+          const k = `${c.taskId}\u0000${c.decisionPointId}\u0000${c.model}`;
           const keep = existingKeys.has(k) || admitNew.has(k);
           if (!keep) floodCollapsed++;
           return keep;
@@ -600,9 +600,9 @@ export class BenchmarkDivergenceAnalyzer {
       // first-seen seed prevents the false-loss drip).
       const seedDay = addDays(todayDay, -s.maxDaysPerAnalysis);
       const localPairs = new Set<string>();
-      for (const r of localRows) localPairs.add(`${r.decisionPointId} ${r.model}`);
+      for (const r of localRows) localPairs.add(`${r.decisionPointId}\u0000${r.model}`);
       for (const key of localPairs) {
-        const [dp, model] = key.split(' ');
+        const [dp, model] = key.split('\u0000');
         this.ledger.advanceBenchmarkWatermark(this.machineId, dp, model, toDay, seedDay);
       }
 
