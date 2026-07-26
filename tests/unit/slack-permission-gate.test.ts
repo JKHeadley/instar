@@ -354,7 +354,7 @@ describe('PermissionDecisionLedger', () => {
   });
 
   it('never throws on a bad state dir (observe-only must not break the message path)', () => {
-    const ledger = new PermissionDecisionLedger('/nonexistent/ /bad');
+    const ledger = new PermissionDecisionLedger('/nonexistent/\u0000/bad');
     const fakeVerdict = {
       decision: 'allow',
       basis: 'within-authority',

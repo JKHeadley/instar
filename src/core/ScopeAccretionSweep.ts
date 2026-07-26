@@ -261,7 +261,7 @@ export function runAccretionSweep(record: AutonomousRunRecord, deps: SweepDeps):
       truncated = true;
       return;
     }
-    const key = `${path.resolve(root)} ${relPath}`;
+    const key = `${path.resolve(root)}\u0000${relPath}`;
     const existing = seen.get(key);
     const abs = path.join(root, relPath);
     const onDisk = fs.existsSync(abs);

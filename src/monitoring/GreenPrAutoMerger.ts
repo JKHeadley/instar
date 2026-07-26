@@ -890,7 +890,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       const firstFailAt = Math.min(...stuck.map((c) => c.completedAt));
       const hours = Math.max(1, Math.round((now - firstFailAt) / 3_600_000));
       const prior = raised[pr.number];
-      const checksChanged = !prior || prior.checks.join(' ') !== checkNames.join(' ');
+      const checksChanged = !prior || prior.checks.join('\u0000') !== checkNames.join('\u0000');
       const aged = !!prior && hours > prior.hours;
       if (!prior || aged || checksChanged) {
         raised[pr.number] = { at: now, firstFailAt, hours, checks: checkNames };

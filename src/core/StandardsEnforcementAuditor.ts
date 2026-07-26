@@ -379,7 +379,7 @@ export function computeInputHash(opts: AuditorOptions): string {
   try {
     registryDigestInput = fs.readFileSync(opts.registryPath, 'utf-8');
   } catch (err) {
-    registryDigestInput = ` unreadable:${opts.registryPath}:${err instanceof Error ? err.message : String(err)}`;
+    registryDigestInput = `\u0000unreadable:${opts.registryPath}:${err instanceof Error ? err.message : String(err)}`;
   }
   const regHash = crypto.createHash('sha256').update(registryDigestInput).digest('hex').slice(0, 16);
   return `${regHash}.${repoStructureSignal(opts.projectDir)}`;

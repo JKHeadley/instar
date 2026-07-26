@@ -1089,7 +1089,7 @@ export class FeatureMetricsLedger {
     // totals.byModel — aggregate the same partition by model×framework.
     const modelAgg = new Map<string, ModelRollup>();
     for (const row of partition) {
-      const key = `${row.model} ${row.framework}`;
+      const key = `${row.model}\u0000${row.framework}`;
       const acc =
         modelAgg.get(key) ??
         ({

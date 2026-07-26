@@ -385,7 +385,7 @@ interface Layer3Entry {
   terminalRaised: boolean;
 }
 
-const KEY_SEP = ' ';
+const KEY_SEP = '\u0000';
 
 // ─── The driver ──────────────────────────────────────────────────────────────────
 

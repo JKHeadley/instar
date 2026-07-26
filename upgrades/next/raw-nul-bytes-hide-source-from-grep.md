@@ -1,0 +1,113 @@
+<!-- bump: patch -->
+
+## What Changed
+
+**Thirty source files were invisible to `grep`. A search across them returned nothing,
+and nothing read as "there is nothing there."**
+
+`grep` classifies a file as binary if it contains a NUL (0x00) byte, and on a binary file
+it emits **nothing at all** — not a match, not a `Binary file X matches` line, not even a
+`0` under `-c`. Thirty tracked text files each carried one, so every grep-based audit over
+`src/` silently skipped them. A search that examined two-thirds of the tree was
+byte-for-byte indistinguishable from one that examined all of it and found nothing wrong.
+
+Twenty-two were live source. Among them: `blockerSettleAuthority.ts` (the gate that
+decides whether a blocker is genuinely unresolvable), `SessionOwnership.ts`,
+`GreenPrAutoMerger.ts`, `PermissionPromptAutoResolver.ts` (an always-on safety floor), all
+three `ExternalHog*` modules — and `StandardsEnforcementAuditor.ts`, the module that
+audits whether our standards carry structural guards. The auditor of guarantees was itself
+invisible to the standard search instrument.
+
+**A second consequence, worse in kind.** Git applies the same rule but only sniffs the
+first 8000 bytes. For the **11 files** whose NUL fell inside that window, `git diff`
+rendered `Bin 5407 -> 5412 bytes` instead of a line diff — so pull requests touching
+safety-critical authority code were reviewed **without the reviewer being shown the
+changed lines**. For the other 19, git saw text while `grep` did not. The two instruments
+disagreed on the same tree, which is exactly why this survived so long: whichever one you
+happened to reach for decided what you believed.
+
+**None of it was corruption.** Every byte was a deliberate composite-key or hash
+separator — the classic collision-proof choice, since a NUL cannot occur inside a model
+name or a framework name:
+
+```ts
+const key = `${row.model}<a literal 0x00 byte>${row.framework}`;
+```
+
+The delimiter is correct. Writing it as the byte rather than its escape is the entire
+defect. All thirty now use the six-character escape, which denotes the identical
+character — so runtime behaviour is unchanged, and every hash derived from these
+separators is byte-identical. Four sites feed them into digests
+(`relayContentDedup`, `blockerSettleAuthority`, `UnionReader`, `ExternalHogArmMarker`);
+this was the primary risk and it was verified rather than assumed. No migration, no cache
+invalidation, no re-keying.
+
+A new ratchet, `tests/unit/no-raw-nul-bytes-in-source.test.ts`, fails the build if one
+returns. It reads bytes via `readFileSync` and never shells out to a search tool, so it
+cannot be blinded by the defect it detects. It carries no exemption list, because no case
+needs one: any runtime NUL a program wants is expressible as an escape.
+
+**What this does not do:** it fixes one silent instrument, not the class. Other raw
+control bytes (ESC, BEL) remain in a few hostile-input test fixtures — deliberately, after
+verifying empirically that they do **not** cause the grep skip. Only 0x00 does. A lint
+should enforce exactly the failure it is named for, and widening this one for tidiness
+would have added churn while claiming safety it does not provide.
+
+## What to Tell Your User
+
+Nothing changes in how the agent behaves — this is a source-text and build-time fix with
+no route, setting, or visible surface.
+
+What it does change is trustworthiness of process: for months, searching the codebase for
+a given pattern could quietly skip thirty files and report a clean result, and for eleven
+of those files a code review showed "binary file changed" instead of the actual lines. Any
+past conclusion of the form "we don't do X anywhere" may have been drawn from an
+instrument that wasn't looking. Those files are readable again, and a check now fails the
+build if it recurs.
+
+## Summary of New Capabilities
+
+- Thirty text files that were invisible to `grep` — twenty-two of them live source,
+  including several safety-critical authority modules — are searchable again.
+- Eleven files that rendered as binary diffs in code review now show reviewable lines.
+- A build-time ratchet refuses any text file containing a raw NUL byte, naming the file
+  and the consequence rather than emitting a bare assertion failure.
+- The ratchet proves its own detector on every run, so a check that has gone dead is
+  distinguishable from one that has nothing to report.
+
+## Evidence
+
+**Reproduction (before):** `grep -c export src/monitoring/blockerSettleAuthority.ts`
+printed nothing — no count, no error, exit status indistinguishable from a clean miss.
+`file` reported the same TypeScript source as `data`, not text. Three one-line fixtures
+isolate the cause: a clean file and a file containing ESC + BEL both return 1 match; a
+file differing only by one NUL byte returns nothing at all.
+
+**Observed after,** same scenarios against the fixed tree:
+
+| scenario | before | after |
+|---|---|---|
+| `grep -c export` on `blockerSettleAuthority.ts` | *(silent)* | `1` |
+| `grep -c export` on `StandardsEnforcementAuditor.ts` | *(silent)* | `13` |
+| `grep -c export` on `FeatureMetricsLedger.ts` | *(silent)* | `20` |
+| `file` on those sources | `data` | `ASCII text` |
+| `git diff` on the 11 early-NUL files | `Bin NNNN -> NNNN bytes` | reviewable line diff |
+| runtime value of the separator | U+0000 | U+0000 (unchanged) |
+| digests derived from the separator | — | byte-identical, verified |
+| ratchet against a reintroduced NUL | *(no check existed)* | fails, names the file |
+
+**Tests:** `tests/unit/no-raw-nul-bytes-in-source.test.ts` (4 new). One asserts the
+detector flags a raw-byte file and clears an escaped one — a dead-check guard, since a
+lint that has never objected is output-identical to a lint that cannot object. One asserts
+the escape decodes to exactly the raw byte, so the behaviour-preserving claim is checked
+rather than stated. One scans the tree. One asserts the scan examined more than 500 files,
+so a scan that walked the wrong roots cannot pass forever by finding nothing.
+
+Verified by reintroducing a raw NUL into `FeatureMetricsLedger.ts`: the lint exits 1,
+names the file, and states the consequence. `npx tsc --noEmit` clean; the full unit suite
+runs 39,046 tests with no failure attributable to this change.
+
+**Provenance note.** This was found only because a *different* investigation produced a
+suspiciously empty search result that was about to be written up as "no such mechanism
+exists in the codebase." That search had skipped twenty-two files. The finding was
+manufactured by the defect, and has been retracted and superseded rather than deleted.
