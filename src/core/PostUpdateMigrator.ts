@@ -5281,6 +5281,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added capability registry Registry First awareness');
     }
 
+    if (!content.includes('Registry First — channel registry:')) {
+      content += '\n- **Registry First — channel registry:** before reporting that a peer agent is unreachable, consult `GET /channels`; it lists every peer channel with purpose, when-preferred, cost and a live verdict. A channel that failed to start still gets a row, and `unknown` means undetermined — never healthy.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added channel registry Registry First awareness');
+    }
+
     if (!content.includes('Codex quota is first-class in the pool:')) {
       content += '\n- **Codex quota is first-class in the pool:** Codex accounts read the real 5-hour + weekly windows from their latest rollout instead of appearing permanently empty. Placement and every reactive/proactive swap are framework-safe: a Codex session can use only Codex accounts, and a Claude session only Claude accounts.\n';
       patched = true;
@@ -9070,6 +9076,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       '### Context-Aware Outbound Review',
       '### Self-Discovery',
       '**Registry First — capability registry:',
+      // channel-registry: a Codex/Gemini agent must also learn to consult /channels
+      // before reporting a peer unreachable, or it will improvise the same weaker
+      // workaround I did — stop, and tell the operator the peer cannot be reached.
+      '**Registry First — channel registry:',
       '**Publishing**',
       '**Private Viewing**',
       '**Secret Drop**',
