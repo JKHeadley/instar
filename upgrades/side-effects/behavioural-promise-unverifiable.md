@@ -100,8 +100,23 @@ explicit in code: absence of a verdict is reported as absence, never as either o
   between them causes no change in expiry behaviour — checked before editing.
 - **PromiseBeacon / overdue surfacing** operate on open commitments; `pending` keeps them
   visible, which is the stated intent of the precedent ("should NAG, not vanish").
-- No persistence change, no migration, no config key. Existing rows re-evaluate to
-  `pending` on the next sweep without a data rewrite.
+- No persistence change, no migration, no config key.
+- ~~Existing rows re-evaluate to `pending` on the next sweep without a data rewrite.~~
+  **CORRECTED 2026-07-26 — this was FALSE and is struck rather than deleted.** The
+  behavioural branch returns BEFORE the `switch` in `verifyOne`, so `mutateSync` never runs
+  and a pre-existing row is never touched. **The change is FORWARD-ONLY.**
+  Verified on the live store after deploy: 98 behavioural rows still read **74 `verified` /
+  24 `violated`**, unchanged. What the change DID do, measured over two reads 75s apart:
+  tick accumulation stopped dead (one row frozen at 163,135 where it had been climbing every
+  minute). What it did NOT do: clear the 98 stale verdicts — so the false comfort this change
+  set out to remove is still displayed for every row that predates it, and `getHealth`, which
+  now counts actual `verified` rows, will report those 74 stale stamps as verified.
+  Remedy is an open operator decision, not a reflex: either a migration resetting behavioural
+  rows to `pending` (a data rewrite this very section claimed was unnecessary) or a read
+  surface that refuses a verdict for a never-verifiable row whatever is stored.
+  **Found by reading the live surface for the exact case the change fixed** — no test caught
+  it, and the suite was green. An artifact that over-claims is the same defect class as the
+  bug it documents, which is why the wrong sentence stays visible above.
 
 ## 6. External surfaces
 

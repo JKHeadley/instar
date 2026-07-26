@@ -32,6 +32,15 @@ whether I sent you every summary or none of them.
 
 ## What this changes
 
+> **Correction added 2026-07-26, after this shipped.** What follows is true of promises
+> recorded **from now on**. It is not true of promises that already existed — and I originally
+> wrote it as though it were. The fix works by *declining to reach a verdict*, so it never goes
+> back and revisits a verdict already stamped. Checked on a live install: ninety-eight existing
+> records still showed their old readings, seventy-four "kept" and twenty-four "broken". The
+> runaway tally did stop for all of them. The stale verdicts did not clear, and clearing them is
+> a separate decision that hasn't been made. Left visible rather than edited away, because a
+> description that over-claims is the same fault as the one this page is about.
+
 A promise about behaviour is now left **open** rather than being declared kept or broken.
 Nothing here can watch what I actually do, so the honest answer is "not determined yet" —
 which is precisely what this same file already does for another kind of promise it cannot
