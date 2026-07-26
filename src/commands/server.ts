@@ -8392,9 +8392,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (alive) {
               console.log(`[slack→session] Injecting into ${existingSession}: "${message.content.slice(0, 80)}"`);
               // Wait for Claude to be ready (handles race with recently spawned sessions)
-              const ready = await sessionManager.waitForClaudeReady(existingSession, 15000);
+              let ready = await sessionManager.waitForClaudeReady(existingSession, 15000);
+              // A pane sitting on a selection menu is NOT stuck — something is waiting
+              // on an answer, and the always-on auto-resolver clears those within
+              // seconds. Two things must not happen here: killing a live conversation
+              // for being polite, and injecting INTO the menu (Enter would select an
+              // option — the message would answer the question). So give the resolver
+              // a bounded window, then re-evaluate; a menu that never clears falls
+              // through to the pre-existing stuck path rather than losing the message.
+              if (!ready && sessionManager.classifyPaneState(existingSession) === 'menu') {
+                console.warn(`[slack→session] Session ${existingSession} is on a selection menu — waiting for it to clear, not killing`);
+                ready = await sessionManager.waitForClaudeReady(existingSession, 15000);
+              }
               if (!ready) {
-                // Session is stuck (permissions prompt, tool hang, etc.)
+                // Session is stuck (tool hang, wedged TUI, etc.)
                 // Kill it and fall through to spawn a fresh session — never silently lose messages
                 console.warn(`[slack→session] Session ${existingSession} not ready after 15s — killing and respawning`);
                 try {

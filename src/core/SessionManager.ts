@@ -20,6 +20,7 @@ import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
+import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
@@ -5781,6 +5782,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Classify what a live session's pane is showing: `ready`, `menu`, or
+   * `not-ready`.
+   *
+   * Exists for callers whose not-ready branch is DESTRUCTIVE. `waitForClaudeReady`
+   * collapses to a boolean, and the Slack stuck-session path in `server.ts` KILLS
+   * a live session on `false` — so a pane merely sitting on a startup question
+   * (`menu`) would be destroyed for politely waiting on an answer. Those callers
+   * ask this instead and leave a `menu` alone.
+   *
+   * Returns `null` when the pane cannot be captured — an unreadable pane is not
+   * evidence of anything, and must not be read as a reason to act.
+   */
+  classifyPaneState(tmuxSession: string): PaneReadiness | null {
+    const output = this.captureOutput(tmuxSession, 20);
+    if (!output) return null;
+    const lines = output.split('\n').filter(l => l.trim());
+    if (lines.length === 0) return null;
+    return classifyPaneReadiness(lines.slice(-6).join('\n'));
+  }
+
+  /**
    * Detect whether Claude Code's prompt is visible in a tmux session.
    * Also auto-accepts consent dialogs that block startup.
    *
@@ -5822,21 +5844,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // blank lines or separators push them around.
     const tail = lines.slice(-6).join('\n');
 
-    // Primary: framework prompt characters. Codex uses ›; keeping this probe
-    // Claude-only delayed its continuation bootstrap until the 105s timeout.
-    if (tail.includes('❯') || tail.includes('›')) return true;
-
-    // Secondary: permission mode indicators (visible in status bar)
-    if (tail.includes('bypass permissions')) return true;
-
-    // Tertiary: model/effort indicators in the status bar
-    // These appear when Claude Code has fully loaded and is ready for input.
-    if (/\/(effort|model|fast)/.test(tail)) return true;
-
-    // Quaternary: the "medium · /effort" or "high · /effort" pattern
-    if (/(?:low|medium|high)\s*·\s*\/effort/.test(tail)) return true;
-
-    return false;
+    // Classification lives in claudeReadinessProbe.ts — pure, so the 2026-07-26
+    // banner that fooled the old probe is a literal regression fixture there.
+    return isReadyPromptTail(tail);
   }
 
   /**
