@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { computeCoverage } from '../../src/core/StandardsEnforcementAuditor.js';
+import { parseStandardsRegistryDetailed } from '../../src/core/StandardsRegistryParser.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { CartographerTree } from '../../src/core/CartographerTree.js';
@@ -118,5 +119,39 @@ describe('Standards Enforcement-Coverage Audit — feature is alive (Tier 3 E2E)
     expect(res.body.converged).toBe(true);
     expect(res.body.total).toBeGreaterThanOrEqual(15);
     expect(typeof res.body.enforcedRatio).toBe('number');
+  });
+
+  it('PART C: the live route assesses the WHOLE constitution and states its denominator', () => {
+    // honest-denominators instance 4 (2026-07-25): on the running server this route
+    // reported enforcedRatio 0.0455 over `total: 22` while the registry on disk
+    // carried 81 articles — a fragment posing as the whole, with nothing beside the
+    // number to reveal it. The fixture here mirrors the REAL registry, so the
+    // denominator the route reports must match the whole document.
+    const parsed = parseStandardsRegistryDetailed(fs.readFileSync(REAL_REGISTRY, 'utf-8'));
+    const report = computeCoverage({ registryPath: path.join(repo, 'docs/STANDARDS-REGISTRY.md'), projectDir: repo });
+
+    expect(report.summary.total).toBe(parsed.articles.length);
+    expect(report.summary.registry.articleHeadings).toBe(parsed.diagnostics.articleHeadings);
+    expect(report.summary.registry.droppedHeadings).toEqual([]);
+    // Every family in the document is assessed — including one no code names.
+    expect(report.summary.registry.families).toEqual(parsed.diagnostics.families);
+    expect(report.summary.registry.families).toContain('The Fractal');
+  });
+
+  it('PART C: a TRUNCATED registry cannot present itself as a trustworthy assessment', async () => {
+    // The live shape of the defect: the audit read a stale, much shorter copy. Any
+    // such fragment must come back flagged, with the denominator visible, rather
+    // than as a confident low ratio.
+    const full = fs.readFileSync(REAL_REGISTRY, 'utf-8');
+    fs.writeFileSync(path.join(repo, 'docs/STANDARDS-REGISTRY.md'), full.split('\n').slice(0, 300).join('\n'));
+
+    const res = await bearer(request(app()).get('/conformance/coverage/health')).set('X-Instar-Request', '1');
+    expect(res.status).toBe(200);
+    expect(res.body.assessmentTrustworthy).toBe(false);
+    expect(res.body.registry.canaryOk).toBe(false);
+    expect(res.body.registry.canaryFailures.length).toBeGreaterThan(0);
+    // The denominator is present so a reader can SEE it is a fragment.
+    expect(res.body.registry.parsed).toBe(res.body.total);
+    expect(res.body.convergedMeans).toMatch(/NOT that standards are healthy/i);
   });
 });

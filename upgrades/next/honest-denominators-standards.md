@@ -1,0 +1,71 @@
+<!-- bump: patch -->
+
+## What Changed
+
+**The standards enforcement-coverage audit no longer reports a figure it cannot stand behind.**
+Five honesty defects in one instrument, found while auditing the tool that audits our constitution
+(2026-07-25). Live evidence on the dev machine: the audit reported `enforcedRatio: 0.0455` over
+`total: 22` while the source registry carries **81** article headings — re-run over the whole
+document the real figure is **0.5375**. The arithmetic was fine; the denominator was invisible, and
+the visible number was 12× more alarming than reality.
+
+- **`enforcedRatio` is now `number | null`.** With nothing to divide by it returns `null`, not `0`
+  ("0% enforced" is a measurement nobody took — and an *alarming* fabrication is worse than a
+  flattering one, because a frightening number is the least likely to be questioned).
+- **Family detection is structural, not a name allowlist.** A `##` section is a standards family
+  iff at least one `###` under it carries a `**Rule.**`. The old hardcoded five-name list silently
+  dropped every article under a sixth family (`## The Fractal`) — currently the Self-Hosting
+  standard. Prose sections are still excluded automatically, and the next family added needs no
+  code change to be seen.
+- **The parse canary compares against the document's own denominator.** `MIN_EXPECTED_ARTICLES = 15`
+  (written when the real count was ~21) never moved as the registry grew to 81, so it would have
+  passed while 65 of 81 articles vanished. It now fails — naming each lost heading — whenever a
+  heading inside a family parses with no rule. The floor is retained as a coarse backstop only.
+- **`converged` carries its meaning.** `GET /conformance/coverage/health` adds `convergedMeans`:
+  the field has only ever meant "the deterministic pass is stable", never "the standards are
+  healthy" — but sitting bare beside the ratio it read as the second thing.
+- **An unreadable registry no longer hashes identically to an empty one** in the recompute cache.
+
+`CoverageSummary` gains `assessmentTrustworthy` plus a `registry` provenance block (path, bytes,
+article headings found, parsed, dropped headings, families, canary verdict), so a fragment can be
+measured but can never pose as the whole.
+
+## What to Tell Your User
+
+Nothing to configure; this is an internal observability instrument (dev-agent-gated, read-only, and
+it gates nothing). If you had ever read a standards-enforcement percentage off this endpoint, read
+it again — the old figure may have been computed over a fraction of your constitution, and the
+response now tells you exactly what it counted.
+
+## Summary of New Capabilities
+
+- `parseStandardsRegistryDetailed` / `loadStandardsRegistryDetailed` return
+  `RegistryParseDiagnostics` (families, article headings, parsed, dropped headings, non-family
+  sections).
+- `runRegistryCanary(articles, diagnostics?)` reports `articleHeadings` + `completenessAssessed`,
+  and says so when it could NOT assess completeness rather than implying a clean bill of health.
+- `GET /conformance/coverage` + `/conformance/coverage/health` carry `assessmentTrustworthy`,
+  `registry`, and `convergedMeans`.
+
+## Known Gap (tracked, not deferred)
+
+This does **not** change which registry copy the server reads. The audit reads the agent-home
+snapshot, and `PostUpdateMigrator` classifies a drifted snapshot as "customized — left untouched",
+so it stays frozen. What changes today is that the stale read is no longer *silent*: it comes back
+`assessmentTrustworthy: false` with the counts attached instead of a confident low ratio. The
+migration is the next item on the same project tier. <!-- tracked: CMT-1035 -->
+
+## Evidence
+
+- `tests/unit/standards-conformance-gate.test.ts` — structural family detection (incl. an invented
+  family and `The Fractal`); the canary reports its denominator and admits when it could not check;
+  the silent-drop case the old floor passed and the completeness check now names.
+- `tests/unit/standards-enforcement-auditor.test.ts` — `enforcedRatio` null over an empty registry;
+  provenance + trustworthiness on a real pass vs a truncated fragment; unreadable ≠ empty in
+  `computeInputHash`.
+- `tests/integration/conformance-dev-gate-route.test.ts` — the HTTP response returns `null` not `0`,
+  carries provenance, never presents `converged` bare, and gives a real ratio over a visible
+  denominator when populated.
+- `tests/e2e/standards-coverage-lifecycle.test.ts` — the live route assesses the WHOLE constitution
+  (denominator equals the document's own heading count; families include `The Fractal`), and a
+  truncated registry cannot present itself as trustworthy.

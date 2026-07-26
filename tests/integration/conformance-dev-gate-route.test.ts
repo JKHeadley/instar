@@ -113,3 +113,62 @@ describe('GET /conformance/coverage — dev-agent dark-gate (Tier 2 integration)
     expect(res.status).toBe(403);
   });
 });
+
+describe('GET /conformance/coverage/health — honest denominators (Tier 2 integration)', () => {
+  const health = (app: express.Express) =>
+    request(app).get('/conformance/coverage/health')
+      .set('Authorization', `Bearer ${AUTH}`)
+      .set('X-Instar-Request', '1');
+
+  const devApp = () => appWith({ developmentAgent: true, cartographer: { conformanceAudit: {} } });
+
+  it('reports enforcedRatio: null (not 0) over a registry that contributed no standards', async () => {
+    // The fixture registry has no articles. Before honest-denominators this route
+    // answered `enforcedRatio: 0` — read on a dashboard as "0% of our standards are
+    // enforced", a measurement that had never been taken. Nothing measured → null.
+    const res = await health(devApp());
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(0);
+    expect(res.body.enforcedRatio).toBeNull();
+    expect(res.body.assessmentTrustworthy).toBe(false);
+  });
+
+  it('carries the registry provenance the ratio was computed over', async () => {
+    const res = await health(devApp());
+    expect(res.status).toBe(200);
+    expect(res.body.registry).toBeDefined();
+    expect(res.body.registry.path).toBe(path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'));
+    expect(res.body.registry.articleHeadings).toBe(0);
+    expect(res.body.registry.parsed).toBe(0);
+    expect(res.body.registry.bytes).toBeGreaterThan(0);
+    expect(Array.isArray(res.body.registry.canaryFailures)).toBe(true);
+  });
+
+  it('never presents `converged` bare — the field carries what it actually means', async () => {
+    // `converged: true` sitting alone beside enforcedRatio was read as "standards are
+    // healthy" twice in one day (2026-07-25). It only ever meant "the pass is stable".
+    const res = await health(devApp());
+    expect(res.body.converged).toBe(true);
+    expect(res.body.convergedMeans).toMatch(/deterministic pass is stable/i);
+    expect(res.body.convergedMeans).toMatch(/NOT that standards are healthy/i);
+  });
+
+  it('a real (non-empty) registry yields a real ratio, marked trustworthy, over a visible denominator', async () => {
+    // Same route, populated registry → the ratio IS computed, and its denominator +
+    // trustworthiness travel with it so a fragment can never pose as the whole.
+    let md = '## Building — engineering discipline\n\n';
+    for (let i = 0; i < 20; i++) {
+      md += `### Standard ${i}\n**Rule.** r${i}.\n**Applied through.** src/index.ts\n\n`;
+    }
+    fs.writeFileSync(path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'), md);
+
+    const res = await health(devApp());
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(20);
+    expect(res.body.registry.articleHeadings).toBe(20);
+    expect(res.body.registry.parsed).toBe(20);
+    expect(res.body.registry.droppedHeadings).toEqual([]);
+    expect(res.body.registry.families).toEqual(['Building']);
+    expect(typeof res.body.enforcedRatio).toBe('number');
+  });
+});
