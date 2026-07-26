@@ -473,25 +473,83 @@ function defaultVerifyMergedItems(targetRepoPath: string): (childIds: string[]) 
   };
 }
 
-/** Helper exported so callers can wire a SafeGit-backed verifier. */
+/**
+ * Three-state outcome. `unverifiable` is NOT a soft `regressed`: it means the
+ * check could not be run at all, and collapsing the two is how a refusal becomes
+ * a fabricated factual claim (the defect `/projects/:id/advance` had fixed for
+ * itself in #1643 while this sibling kept it).
+ */
+export interface MergedVerificationResult {
+  /** Proven reachable from the canonical-main ref. */
+  verified: Set<string>;
+  /** git exited 1 — the documented, genuine "not an ancestor". */
+  regressed: Set<string>;
+  /** The question could not be answered; the caller must NOT infer either way. */
+  unverifiable: Map<string, string>;
+}
+
+/**
+ * Helper exported so callers can wire a SafeGit-backed verifier.
+ *
+ * This function was dead code in practice until 2026-07-26: it selects on
+ * `child.mergeCommitOid`, and the only path that could have written that field
+ * (`/projects/:id/advance`) validated the merge commit and then discarded it. So
+ * every child hit the `continue` and the caller saw an empty set — a regression
+ * detector that scanned nothing and reported nothing, which reads exactly like a
+ * clean bill of health. Three defects therefore sat here unexercised, all three
+ * already fixed in the advance path a few hundred lines away:
+ *
+ *   1. no `sourceTreeReadOk`, so SourceTreeGuard REFUSES this read against an
+ *      instar source tree (the #1641 defect);
+ *   2. a hardcoded `origin/main`, which on a dev-agent home is the agent's FORK,
+ *      not where merges land — so the correct answer is "unreachable";
+ *   3. `catch {}` → not verified → the caller marks the item `regressed`, i.e.
+ *      "I could not check" rendered as "it was reverted".
+ *
+ * Any one of those would have turned healthy merged items into false regressions
+ * the moment the evidence started being written. Fixed together, because writing
+ * the evidence is what arms this code path.
+ */
 export async function verifyMergedItemsViaGit(
   targetRepoPath: string,
   childIds: string[],
-  tracker: InitiativeTracker
-): Promise<Set<string>> {
+  tracker: InitiativeTracker,
+  /** Canonical-main ref. Callers on a fork-origin install MUST resolve and pass
+   *  the real one; the default preserves behaviour for canonical-origin installs. */
+  mergeBaseBranch: string = 'origin/main'
+): Promise<MergedVerificationResult> {
   const verified = new Set<string>();
+  const regressed = new Set<string>();
+  const unverifiable = new Map<string, string>();
   for (const id of childIds) {
     const child = tracker.get(id);
-    if (!child || !child.mergeCommitOid) continue;
+    if (!child) continue;
+    if (!child.mergeCommitOid) {
+      // No evidence on the record — that is not a regression, it is an item we
+      // cannot speak about. Naming it keeps the gap visible instead of silently
+      // folding it into a clean result.
+      unverifiable.set(id, 'no mergeCommitOid recorded on the item');
+      continue;
+    }
     try {
-      SafeGitExecutor.run(
-        ['merge-base', '--is-ancestor', child.mergeCommitOid, 'origin/main'],
-        { cwd: targetRepoPath, operation: 'ProjectRoundExecution.verifyMergedItemsViaGit' }
+      SafeGitExecutor.readSync(
+        ['merge-base', '--is-ancestor', child.mergeCommitOid, mergeBaseBranch],
+        {
+          cwd: targetRepoPath,
+          operation: 'ProjectRoundExecution.verifyMergedItemsViaGit',
+          stdio: ['ignore', 'ignore', 'ignore'],
+          sourceTreeReadOk: true,
+        }
       );
       verified.add(id);
-    } catch {
-      // Not an ancestor of origin/main — not verified.
+    } catch (err) {
+      const status = (err as { status?: unknown }).status;
+      if (status === 1) {
+        regressed.add(id); // git's documented exit 1 — the ONLY genuine negative
+      } else {
+        unverifiable.set(id, err instanceof Error ? err.message : String(err));
+      }
     }
   }
-  return verified;
+  return { verified, regressed, unverifiable };
 }
