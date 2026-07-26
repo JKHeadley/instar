@@ -133,4 +133,76 @@ describe('intent drift', () => {
     expect(output).toContain('7');
     expect(output).toContain('days');
   });
+
+  // ── Alignment rendering: the surface where absence was invisible ──────
+  //
+  // WHY THESE EXIST. `alignmentScore()` returning 'N/A' + assessable:false is
+  // worth nothing if the command that renders it ignores those fields. I broke
+  // the CLI's honest branch on purpose and all 28 module/route tests still
+  // passed — the third time in one night that logic was guarded while the
+  // wiring to a human-facing surface was not. These assert the RENDERING.
+
+  it('REGRESSION: a STALE journal prints "not assessed", never a red F', async () => {
+    // The genuinely reachable case, and much narrower than I first assumed.
+    // Two claims of mine were wrong and are corrected here:
+    //   1. `intentDrift` short-circuits when the journal has no entries in the
+    //      last `window` days, so the fabricated F was NEVER shown for an
+    //      empty journal.
+    //   2. At the DEFAULT window (14) it is unreachable outright, because
+    //      14 ⊂ 30 — anything passing the early return is inside the
+    //      alignment window too.
+    // It becomes reachable only when the operator widens the window past 30
+    // (`--window 60` here): a 40-day-old decision clears the early return but
+    // falls outside the fixed 30-day alignment window, so the command reported
+    // "0/100 (F)" — alignment collapsed — when the truth was "nothing logged
+    // in the last 30 days". Narrow, but real, and reachable from the CLI.
+    const stale = Array.from({ length: 5 }, (_, i) => ({
+      timestamp: new Date(Date.now() - (40 + i) * 86400000).toISOString(),
+      sessionId: `old${i}`,
+      decision: `Old decision ${i}`,
+      principle: 'safety',
+      confidence: 0.9,
+      conflict: false,
+    }));
+    fs.writeFileSync(
+      path.join(stateDir, 'decision-journal.jsonl'),
+      stale.map(e => JSON.stringify(e)).join('\n') + '\n',
+    );
+
+    const { intentDrift } = await import('../../src/commands/intent.js');
+    // --window 60 is what makes this reachable: the early return checks the
+    // last `window` days (60), while alignmentScore() is fixed at 30. A
+    // 40-day-old decision passes the first check and falls outside the second.
+    await intentDrift({ dir: tmpDir, window: 60 });
+
+    const output = consoleLogs.join('\n');
+    expect(output).toContain('not assessed');
+    expect(output).toContain('cannot be assessed');
+    expect(output).not.toContain('0/100 (F)');
+  });
+
+  it('REGRESSION: a populated journal still prints a real graded score', async () => {
+    const entries = Array.from({ length: 12 }, (_, i) => ({
+      timestamp: new Date(Date.now() - (i + 1) * 86400000).toISOString(),
+      sessionId: `s${i}`,
+      decision: `Decision ${i}`,
+      principle: 'safety',
+      confidence: 0.85,
+      conflict: false,
+    }));
+    fs.writeFileSync(
+      path.join(stateDir, 'decision-journal.jsonl'),
+      entries.map(e => JSON.stringify(e)).join('\n') + '\n',
+    );
+
+    const { intentDrift } = await import('../../src/commands/intent.js');
+    await intentDrift({ dir: tmpDir });
+
+    const output = consoleLogs.join('\n');
+    // The honest-empty branch must not swallow a real assessment — the mirror
+    // failure of the bug being fixed.
+    expect(output).toContain('/100');
+    expect(output).toContain('Conflict Freedom');
+    expect(output).not.toContain('not assessed');
+  });
 });
