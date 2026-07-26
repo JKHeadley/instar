@@ -271,6 +271,60 @@ describe('buildGuardInventory + buildHeartbeatPostureBlock — load-bearing key-
     expect(inv.summary.loadBearingAcceptedKeys).toEqual([]);
   });
 
+  it('summary.loadBearingUninspectableKeys lists every loud-but-not-gap posture class', () => {
+    const peerExecutionKey = 'multiMachine.peerExecution.enabled';
+    const strandedKey = 'monitoring.strandedTopicSentinel.enabled';
+    const testRunnerCapKey = 'intelligence.testRunnerCap';
+    const snapshot: ResolvedGuardConfigSnapshot = {
+      resolved: {
+        multiMachine: {
+          peerExecution: { enabled: true },
+          sessionPool: { inboundQueue: { enabled: true } },
+        },
+        monitoring: { strandedTopicSentinel: { enabled: true } },
+        scheduler: { enabled: true },
+      },
+      defaults: {
+        multiMachine: {
+          peerExecution: { enabled: false },
+          sessionPool: { inboundQueue: { enabled: false } },
+        },
+        monitoring: { strandedTopicSentinel: { enabled: false } },
+        scheduler: { enabled: true },
+      },
+      fileAbsent: false,
+    };
+    const registry = new GuardRegistry();
+    registry.register(LB_KEY, () => {
+      throw new Error('status getter failed');
+    });
+    registry.register(strandedKey, () => ({ enabled: true, lastTickAt: 0 }));
+    registry.register(testRunnerCapKey, () => ({ enabled: false }));
+    const inv = buildGuardInventory({
+      snapshot,
+      bootSnapshot: {
+        ts: new Date(DECLARED).toISOString(),
+        posture: {
+          [peerExecutionKey]: true,
+          [LB_KEY]: true,
+          [strandedKey]: true,
+          [testRunnerCapKey]: true,
+        },
+      },
+      registry,
+      now: DECLARED,
+    });
+
+    expect(inv.guards.find((guard) => guard.key === peerExecutionKey)?.effective).toBe('missing');
+    expect(inv.guards.find((guard) => guard.key === LB_KEY)?.effective).toBe('errored');
+    expect(inv.guards.find((guard) => guard.key === strandedKey)?.effective).toBe('on-stale');
+    expect(inv.guards.find((guard) => guard.key === testRunnerCapKey)?.effective).toBe('off-runtime-divergent');
+    for (const key of [peerExecutionKey, LB_KEY, strandedKey, testRunnerCapKey]) {
+      expect(inv.summary.loadBearingGapKeys).not.toContain(key);
+      expect(inv.summary.loadBearingUninspectableKeys).toContain(key);
+    }
+  });
+
   it('an accepted guard moves from Gap-keys to Accepted-keys', () => {
     const inv = invWith({ [LB_KEY]: { reason: 'owned', owner: 'justin', acceptedAt: '2026-07-01T00:00:00.000Z' } });
     expect(inv.summary.loadBearingGapKeys).not.toContain(LB_KEY);

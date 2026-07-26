@@ -94,8 +94,12 @@ export interface GuardsSummary {
   missing: number;
   offRuntimeDivergent: number;
   runtimeEnriched: string; // "n/total"
-  // ── G3: load-bearing key-lists (the loud gap subset + the two quiet subsets) ──
+  // ── G3: load-bearing key-lists (gap, inspectability, and rollout posture) ──
   loadBearingGapKeys: string[];
+  /** Load-bearing guards whose posture cannot currently prove protection.
+   *  These retain their existing anomaly class; this list is read-surface
+   *  completeness, not a second probe alarm. */
+  loadBearingUninspectableKeys: string[];
   loadBearingSoakingKeys: string[];
   loadBearingAcceptedKeys: string[];
 }
@@ -116,6 +120,12 @@ const ROW_FIELD_ALLOWLIST: ReadonlySet<string> = new Set([
 ]);
 const RUNTIME_FIELD_ALLOWLIST: ReadonlySet<string> = new Set([
   'enabled', 'dryRun', 'lastTickAt', 'tickAgeMs', 'stale', 'jobCount', 'pausedJobCount',
+]);
+const LOAD_BEARING_UNINSPECTABLE_STATES: ReadonlySet<GuardEffectiveState> = new Set([
+  'missing',
+  'errored',
+  'on-stale',
+  'off-runtime-divergent',
 ]);
 export { ROW_FIELD_ALLOWLIST, RUNTIME_FIELD_ALLOWLIST };
 
@@ -390,12 +400,16 @@ export function buildGuardInventory(opts: {
     off: 0, offDeviant: 0, offDarkDefault: 0,
     divergedPendingRestart: 0, errored: 0, missing: 0, offRuntimeDivergent: 0,
     runtimeEnriched: '',
-    loadBearingGapKeys: [], loadBearingSoakingKeys: [], loadBearingAcceptedKeys: [],
+    loadBearingGapKeys: [], loadBearingUninspectableKeys: [],
+    loadBearingSoakingKeys: [], loadBearingAcceptedKeys: [],
   };
   let enriched = 0;
   for (const g of guards) {
     if (g.runtime) enriched++;
     if (g.loadBearingGap) summary.loadBearingGapKeys.push(g.key);
+    if (g.loadBearing && LOAD_BEARING_UNINSPECTABLE_STATES.has(g.effective)) {
+      summary.loadBearingUninspectableKeys.push(g.key);
+    }
     if (g.loadBearingSoaking) summary.loadBearingSoakingKeys.push(g.key);
     if (g.loadBearingAccepted) summary.loadBearingAcceptedKeys.push(g.key);
     switch (g.effective) {
