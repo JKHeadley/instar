@@ -50,7 +50,7 @@ describe('GET /guards + accept-fallback — G3 E2E (feature alive over real HTTP
     SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/guards-loadbearing-lifecycle.test.ts:cleanup' });
   });
 
-  async function boot(): Promise<TestServer> {
+  async function boot(registry = new GuardRegistry()): Promise<TestServer> {
     const ctx = {
       config: {
         projectName: 'g3-e2e', projectDir: dir, stateDir, port: 0,
@@ -59,7 +59,7 @@ describe('GET /guards + accept-fallback — G3 E2E (feature alive over real HTTP
       sessionManager: { listRunningSessions: () => [] },
       state: { getJobState: () => null, getSession: () => null },
       startTime: new Date(),
-      guardRegistry: new GuardRegistry(),
+      guardRegistry: registry,
       meshSelfId: 'm-e2e',
     } as unknown as RouteContext;
     const app = express();
@@ -86,6 +86,30 @@ describe('GET /guards + accept-fallback — G3 E2E (feature alive over real HTTP
     // The summary carries the key-lists too.
     const summary = r.body.summary as Record<string, unknown>;
     expect(summary.loadBearingGapKeys as string[]).toContain(LB_KEY);
+  });
+
+  it('errored load-bearing posture remains distinct from a gap over the real GET /guards lifecycle', async () => {
+    fs.writeFileSync(
+      path.join(stateDir, 'config.json'),
+      JSON.stringify({
+        multiMachine: { sessionPool: { inboundQueue: { enabled: true } } },
+        scheduler: { enabled: true },
+      }),
+    );
+    const registry = new GuardRegistry();
+    registry.register(LB_KEY, () => {
+      throw new Error('status getter failed');
+    });
+    server = await boot(registry);
+
+    const r = await getGuards();
+
+    expect(r.status).toBe(200);
+    const row = (r.body.guards as Array<Record<string, unknown>>).find((guard) => guard.key === LB_KEY)!;
+    expect(row.effective).toBe('errored');
+    const summary = r.body.summary as Record<string, unknown>;
+    expect(summary.loadBearingGapKeys as string[]).not.toContain(LB_KEY);
+    expect(summary.loadBearingUninspectableKeys as string[]).toContain(LB_KEY);
   });
 
   it('the accept-fallback route is MOUNTED (not 404/503) and clears the gap end-to-end', async () => {

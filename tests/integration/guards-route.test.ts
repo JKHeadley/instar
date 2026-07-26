@@ -123,6 +123,30 @@ describe('GET /guards (integration)', () => {
     expect(n).toBeGreaterThanOrEqual(2);
   });
 
+  it('surfaces an errored load-bearing guard as uninspectable without calling it a load-bearing gap', async () => {
+    fs.writeFileSync(
+      path.join(stateDir, 'config.json'),
+      JSON.stringify({
+        multiMachine: { sessionPool: { inboundQueue: { enabled: true } } },
+        scheduler: { enabled: true },
+      }),
+    );
+    const registry = new GuardRegistry();
+    registry.register('multiMachine.sessionPool.inboundQueue.enabled', () => {
+      throw new Error('status getter failed');
+    });
+
+    const res = await request(appWith(ctxFor({ guardRegistry: registry as never })))
+      .get('/guards')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    const key = 'multiMachine.sessionPool.inboundQueue.enabled';
+    expect(res.body.guards.find((guard: { key: string }) => guard.key === key).effective).toBe('errored');
+    expect(res.body.summary.loadBearingGapKeys).not.toContain(key);
+    expect(res.body.summary.loadBearingUninspectableKeys).toContain(key);
+  });
+
   it('config-read failure → top-level 500 error, never an empty-truthful inventory', async () => {
     fs.writeFileSync(path.join(stateDir, 'config.json'), '{corrupt');
     const res = await request(appWith(ctxFor())).get('/guards').set(auth());
