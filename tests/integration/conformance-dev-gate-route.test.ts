@@ -131,6 +131,7 @@ describe('GET /conformance/coverage/health — honest denominators (Tier 2 integ
     expect(res.body.total).toBe(0);
     expect(res.body.enforcedRatio).toBeNull();
     expect(res.body.assessmentTrustworthy).toBe(false);
+    expect(res.body.assessmentConfidence).toBe('untrustworthy');
   });
 
   it('carries the registry provenance the ratio was computed over', async () => {

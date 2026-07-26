@@ -7252,6 +7252,11 @@ export function createRoutes(ctx: RouteContext): Router {
       generatedAt: report.generatedAt,
       converged: true,
       convergedMeans: 'the deterministic pass is stable on unchanged inputs; NOT that standards are healthy',
+      // `assessmentConfidence` + `confidenceReason` arrive via the summary spread and are
+      // the fields to read. `assessmentTrustworthy` is retained (deprecated) for one
+      // release: it is TRUE only on a 'verified' verdict, which requires an external
+      // expectation that does not exist yet — so a stale-but-coherent registry now reads
+      // 'unverified' with the reason attached instead of asserting trust it never earned.
       ...report.summary,
     });
   });

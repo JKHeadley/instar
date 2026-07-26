@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-26T02:51:13.410Z",
+  "slug": "assessment-confidence-unverified",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 115,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

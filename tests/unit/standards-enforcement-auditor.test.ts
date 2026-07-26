@@ -12,6 +12,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {
   computeCoverage,
+  deriveAssessmentConfidence,
   computeInputHash,
   stableView,
   type CoverageReport,
@@ -211,6 +212,8 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
     expect(report.summary.total).toBe(0);
     expect(report.summary.enforcedRatio).toBeNull();
     expect(report.summary.assessmentTrustworthy).toBe(false);
+    expect(report.summary.assessmentConfidence).toBe('untrustworthy');
+    expect(report.summary.confidenceReason).toMatch(/nothing was measured/i);
     expect(report.summary.registry.articleHeadings).toBe(0);
     expect(report.summary.registry.parsed).toBe(0);
     expect(report.summary.registry.path).toBe(emptyRegistry);
@@ -222,7 +225,17 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
     // while the source carried 81, and reported 0.0455 with nothing beside it saying
     // what it had divided by. Both figures are now inseparable from the ratio.
     const full = computeCoverage({ registryPath: REAL_REGISTRY, projectDir: process.cwd() });
-    expect(full.summary.assessmentTrustworthy).toBe(true);
+    // 2026-07-25, two hours after shipping the boolean: `true` here was the defect.
+    // The LIVE agent-home registry carries 22 of 81 articles and passes EVERY internal
+    // check — 22 headings, 22 parsed, nothing dropped, anchors present, above the floor —
+    // because it is a perfectly self-consistent document that is a quarter of the real
+    // one. So the boolean asserted trust over exactly what it was added to expose.
+    // Nothing INSIDE a 22-rule document says it should have 81: trustworthiness needs an
+    // outside expectation, and none exists yet. 'unverified' is the honest verdict even
+    // for the FULL registry, and the deprecated boolean is false until one ships.
+    expect(full.summary.assessmentConfidence).toBe('unverified');
+    expect(full.summary.assessmentTrustworthy).toBe(false);
+    expect(full.summary.confidenceReason).toMatch(/no external expectation/i);
     expect(full.summary.registry.parsed).toBe(full.summary.total);
     expect(full.summary.registry.articleHeadings).toBe(full.summary.total);
     expect(full.summary.registry.droppedHeadings).toEqual([]);
@@ -238,6 +251,7 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
     expect(partial.summary.registry.parsed).toBe(partial.summary.total);
     // The canary's anchor + floor checks catch the truncation → not trustworthy.
     expect(partial.summary.assessmentTrustworthy).toBe(false);
+    expect(partial.summary.assessmentConfidence).toBe('untrustworthy');
     expect(partial.summary.registry.canaryFailures.length).toBeGreaterThan(0);
   });
 
@@ -246,5 +260,57 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
     const blank = computeInputHash({ registryPath: path.join(repo, 'docs/BLANK.md'), projectDir: repo });
     const missing = computeInputHash({ registryPath: path.join(repo, 'docs/DOES-NOT-EXIST.md'), projectDir: repo });
     expect(missing).not.toBe(blank);
+  });
+
+  it('a COHERENT-BUT-STALE registry reads "unverified", never trustworthy (the live 22-of-81 case)', () => {
+    // The defect this tri-state exists for, found 2026-07-25 two hours after shipping the
+    // boolean. A stale registry is not malformed — it is a perfectly self-consistent
+    // document that happens to be a fraction of the real one, so it passes EVERY internal
+    // check: all headings parse, none dropped, anchors present, count above the floor.
+    // The old boolean therefore said `true` over exactly the defect it was added to expose.
+    const full = fs.readFileSync(REAL_REGISTRY, 'utf-8');
+    // Take a genuinely coherent SUBSET: whole families, every rule intact.
+    const cut = full.indexOf('## Building');
+    write('docs/STALE.md', full.slice(0, cut > 0 ? cut : 20000));
+    const report = computeCoverage({ registryPath: path.join(repo, 'docs/STALE.md'), projectDir: process.cwd() });
+
+    // Internally consistent: nothing dropped, so no internal check can object.
+    expect(report.summary.registry.droppedHeadings).toEqual([]);
+    expect(report.summary.registry.parsed).toBe(report.summary.registry.articleHeadings);
+    // And yet it is a fragment — so the verdict must NOT claim trust.
+    expect(report.summary.assessmentTrustworthy).toBe(false);
+    expect(report.summary.assessmentConfidence).not.toBe('verified');
+    expect(report.summary.confidenceReason).toBeTruthy();
+  });
+
+  it('deriveAssessmentConfidence: all four verdicts, in both directions', () => {
+    const okRegistry = computeCoverage({ registryPath: REAL_REGISTRY, projectDir: process.cwd() }).summary.registry;
+
+    // nothing measured
+    expect(deriveAssessmentConfidence(0, okRegistry).confidence).toBe('untrustworthy');
+
+    // an objecting canary
+    const badCanary = { ...okRegistry, canaryOk: false, canaryFailures: ['a heading lost its rule'] };
+    const bad = deriveAssessmentConfidence(81, badCanary);
+    expect(bad.confidence).toBe('untrustworthy');
+    expect(bad.reason).toMatch(/canary objected/i);
+
+    // internal checks pass, NO expectation → unverified (today's only non-failing state)
+    const un = deriveAssessmentConfidence(81, okRegistry);
+    expect(un.confidence).toBe('unverified');
+    expect(un.reason).toMatch(/no external expectation/i);
+    expect(un.reason).toMatch(/coherent older copy/i);
+
+    // a MATCHING expectation is the only route to verified
+    expect(deriveAssessmentConfidence(81, okRegistry, {
+      articleCount: 81, sha256: 'aaaaaaaaaaaa0000', observedSha256: 'aaaaaaaaaaaa0000',
+    }).confidence).toBe('verified');
+
+    // a MISMATCHED expectation is untrustworthy, not merely unverified
+    const mism = deriveAssessmentConfidence(22, okRegistry, {
+      articleCount: 81, sha256: 'aaaaaaaaaaaa0000', observedSha256: 'bbbbbbbbbbbb1111',
+    });
+    expect(mism.confidence).toBe('untrustworthy');
+    expect(mism.reason).toMatch(/does not match the expectation/i);
   });
 });
