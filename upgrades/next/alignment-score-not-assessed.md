@@ -1,0 +1,56 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+`IntentDriftDetector.alignmentScore()` reported `score: 0, grade: 'F'` when its analysis window held
+no decisions. The `summary` field said "alignment cannot be assessed", but `score` and `grade` are
+what consumers read — so "no data" and "assessed, catastrophically bad" were identical on every field
+in use.
+
+The grade union is now `'A'|'B'|'C'|'D'|'F'|'N/A'`, and the result carries `assessable: boolean`.
+`GET /intent/alignment` returns both. `instar intent drift` prints the reason instead of a fabricated
+grade when nothing was assessed.
+
+Root cause was vocabulary: with no grade meaning *no verdict*, absence had to borrow the worst real
+grade — the same shape as a status set with no way to say "undetermined".
+
+## What to Tell Your User
+
+If you look at the alignment score, a flat zero with an F used to mean one of two very different
+things: that your decisions genuinely scored badly, or that there was nothing to score. You could not
+tell which from the number.
+
+Now an unassessed period says so plainly, and the score carries a flag saying whether anything was
+actually measured.
+
+The honest scope: this changes what you are told, not how aligned anything is. It also does not
+change the default command view, where the unassessable case was already handled well — that path
+stops early with a helpful message and never reached the bad grade. The fabricated F is visible to
+anything reading the score programmatically, and on the command line only if you widen the window
+past thirty days by hand.
+
+## Summary of New Capabilities
+
+No new endpoint or command. An existing score gained an honest "not assessed" state and a flag
+distinguishing a placeholder from a measurement.
+
+## Evidence
+
+- Restoring the fabricated `'F'`: 3 failed | 25 passed. Making `assessable` constant: 5 failed.
+- Disabling the renderer's honest branch left all 28 module and route tests green — the wiring was
+  unguarded until a test was added that drives the real command and reads its output. With it, that
+  same change fails immediately.
+- Restored: 42 passed across the five affected files; `tsc --noEmit` exit 0.
+- Two existing tests asserted `grade === 'F'` on the empty case — they encoded the defect rather than
+  merely lagging it. Both updated, with the reason recorded in place.
+
+## Known limits
+
+The early-return window and the scoring window differ (the command's `--window`, default 14, versus a
+fixed 30), which is what makes the command-line case reachable at all; reconciling them changes what
+every user sees and is deliberately not bundled. `score` stays `0` on the unassessable case rather
+than becoming `null`, to avoid a breaking type change — `assessable` is the additive signal. Nothing
+here improves alignment or judges whether a cited principle was genuinely consulted.
+<!-- tracked: CMT-1044 -->

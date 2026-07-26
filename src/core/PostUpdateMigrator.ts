@@ -5293,6 +5293,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added decision-journal principle requirement awareness');
     }
 
+    if (!content.includes('Alignment score — N/A means not assessed:')) {
+      content += '\n- **Alignment score — N/A means not assessed:** `GET /intent/alignment` returns `grade: \'N/A\'` and `assessable: false` when the analysis window held no decisions. Do NOT read that as a failing grade — `score: 0` is a placeholder, not a measurement. Branch on `assessable` (or `sampleSize > 0`) before treating the score as a verdict.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added alignment-score not-assessed awareness');
+    }
+
     if (!content.includes('Codex quota is first-class in the pool:')) {
       content += '\n- **Codex quota is first-class in the pool:** Codex accounts read the real 5-hour + weekly windows from their latest rollout instead of appearing permanently empty. Placement and every reactive/proactive swap are framework-safe: a Codex session can use only Codex accounts, and a Claude session only Claude accounts.\n';
       patched = true;
@@ -9091,6 +9097,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // and fall back to recording decisions somewhere nothing reads — which is
       // the exact failure this refusal exists to prevent.
       '**Decision journal — principle is required:',
+      '**Alignment score — N/A means not assessed:',
       '**Publishing**',
       '**Private Viewing**',
       '**Secret Drop**',

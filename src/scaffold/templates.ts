@@ -1594,6 +1594,8 @@ curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/jo
 
 **Reading the stats honestly:** \`principledCount\` / \`unprincipledCount\` sit beside \`count\`. \`topPrinciples: []\` alone cannot tell you whether nobody has decided anything yet or whether many decisions were recorded and not one said why — these two counters are what separates those cases. The machine-generated dispatch path is deliberately exempt; an auto-applied dispatch has no principle to cite and is never blocked.
 
+**Alignment score — N/A means not assessed:** \`GET /intent/alignment\` returns \`grade: 'N/A'\` and \`assessable: false\` when the analysis window held no decisions. Do NOT read that as a failing grade — \`score: 0\` is a placeholder, not a measurement. Branch on \`assessable\` (or \`sampleSize > 0\`) before treating the score as a verdict, and never report an unassessed period to the user as poor alignment.
+
 ### Playbook — Adaptive Context Engineering
 
 The Playbook system gives you a living knowledge base that makes every session smarter than the last. Instead of loading the same static context every time, Playbook curates a manifest of context items — facts, lessons, patterns, safety rules — and selects exactly what's relevant for each session based on triggers, token budgets, and usefulness scores.

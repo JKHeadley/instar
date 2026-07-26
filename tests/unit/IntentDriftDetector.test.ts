@@ -361,11 +361,17 @@ describe('IntentDriftDetector', () => {
       expect(score.score).toBeGreaterThanOrEqual(85);
     });
 
-    it('handles empty journal — score 0, grade F', () => {
+    it('handles empty journal — not assessable, grade N/A', () => {
+      // This test previously asserted `grade === 'F'` on an empty journal,
+      // which LOCKED IN the defect: "no data" was indistinguishable from
+      // "assessed and failing", and `instar intent reflect` rendered it as a
+      // red F. The empty case now reports 'N/A' + assessable:false.
+      // See tests/unit/alignment-score-not-assessed.test.ts.
       const score = detector.alignmentScore();
 
       expect(score.score).toBe(0);
-      expect(score.grade).toBe('F');
+      expect(score.grade).toBe('N/A');
+      expect(score.assessable).toBe(false);
       expect(score.sampleSize).toBe(0);
       expect(score.components.conflictFreedom).toBe(0);
       expect(score.components.confidenceLevel).toBe(0);

@@ -131,6 +131,7 @@ describe('Feature Delivery Completeness', () => {
       // channel-registry: which peer channels work right now (templates.ts + migrator parity).
       'Registry First — channel registry:',
       'Decision journal — principle is required:',
+      'Alignment score — N/A means not assessed:',
       'Publishing',
       'Private Viewing',
       'Secret Drop',
