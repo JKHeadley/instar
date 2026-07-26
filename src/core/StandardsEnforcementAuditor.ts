@@ -95,9 +95,45 @@ export interface CoverageSummary {
   /** Total dangling refs across all standards. */
   danglingCount: number;
   /**
-   * True only when the pass read a registry its own canary vouches for. False
-   * means every figure in this summary describes a fragment or a drifted parse
-   * — surface it beside the numbers rather than presenting them bare.
+   * How much this assessment has actually EARNED, in three states rather than a
+   * boolean that overclaims.
+   *
+   *   'untrustworthy' — a check actively failed (nothing parsed, or the canary
+   *                     objected). Every figure here describes a fragment or a
+   *                     drifted parse.
+   *   'unverified'    — the internal checks passed, but there was NO EXTERNAL
+   *                     EXPECTATION to check the registry against, so this pass
+   *                     cannot tell whether it read the CURRENT constitution or a
+   *                     coherent old copy of it. The figures are arithmetic over
+   *                     whatever was on disk.
+   *   'verified'      — internal checks passed AND an external expectation
+   *                     confirmed the registry is the one this build ships.
+   *
+   * WHY THE TRI-STATE EXISTS (found 2026-07-25, two hours after shipping the
+   * boolean): the live agent-home registry carries 22 articles where the source
+   * carries 81 — and it passes every internal check, because it is a perfectly
+   * self-consistent document that merely happens to be a quarter of the real one.
+   * 22 headings, 22 parsed, nothing dropped, anchors present, above the floor. So
+   * `assessmentTrustworthy: true` was asserting trust over exactly the defect the
+   * field was added to expose.
+   *
+   * The lesson, which the spec review had already given me and I applied only to
+   * the spec: nothing INSIDE a 22-rule document says it should have 81.
+   * Trustworthiness is not obtainable by looking harder at the file; it requires an
+   * outside expectation. Until one exists, the honest verdict is 'unverified' —
+   * NOT 'true', because "my internal checks passed" and "this assessment is
+   * trustworthy" are different claims, and conflating them is the failure this
+   * whole instrument was fixed to stop.
+   */
+  assessmentConfidence: 'verified' | 'unverified' | 'untrustworthy';
+  /** Plain-English reason for the confidence verdict — always populated. */
+  confidenceReason: string;
+  /**
+   * @deprecated Reads as a claim of trust the audit has not earned. Retained for
+   * one release so no consumer breaks; TRUE only when
+   * `assessmentConfidence === 'verified'`, which today means never — there is no
+   * expectation mechanism yet (it is the blocked
+   * `standards-registry-snapshot-refresh` spec). Prefer `assessmentConfidence`.
    */
   assessmentTrustworthy: boolean;
   /** Provenance of the registry this pass read. */
@@ -350,6 +386,66 @@ export function computeInputHash(opts: AuditorOptions): string {
 }
 
 /**
+ * Derive how much the assessment has EARNED. Extracted as a function on purpose:
+ * inline, TypeScript's flow analysis proved `'verified'` unreachable and rejected the
+ * comparison that derives the deprecated boolean — which is TRUE today and is exactly
+ * the point. Keeping the return type as the full union documents that `'verified'`
+ * becomes reachable the moment a same-build expectation ships beside the registry,
+ * without pretending it is reachable now.
+ *
+ * Order matters and mirrors how a reader asks it: did anything FAIL, and if not, did we
+ * have anything to CHECK AGAINST?
+ */
+export function deriveAssessmentConfidence(
+  total: number,
+  registry: RegistryProvenance,
+  /**
+   * A same-build expectation (article count + sha256) to check the registry against.
+   * Absent today — the mechanism is the `standards-registry-snapshot-refresh` spec.
+   * Passing one that MATCHES is the only route to `'verified'`.
+   */
+  expectation?: { articleCount: number; sha256: string; observedSha256: string },
+): { confidence: CoverageSummary['assessmentConfidence']; reason: string } {
+  if (total === 0) {
+    return {
+      confidence: 'untrustworthy',
+      reason: 'no standards parsed from the registry — nothing was measured',
+    };
+  }
+  if (!registry.canaryOk) {
+    return {
+      confidence: 'untrustworthy',
+      reason: `the registry-parse canary objected: ${registry.canaryFailures.join('; ')}`,
+    };
+  }
+  if (expectation) {
+    if (expectation.sha256 !== expectation.observedSha256) {
+      return {
+        confidence: 'untrustworthy',
+        reason:
+          `the registry does not match the expectation shipped beside it ` +
+          `(expected sha ${expectation.sha256.slice(0, 12)}, read ${expectation.observedSha256.slice(0, 12)})`,
+      };
+    }
+    return {
+      confidence: 'verified',
+      reason:
+        `${total} standards parsed from ${registry.path}, confirmed against the expectation ` +
+        `shipped in the same build (sha ${expectation.sha256.slice(0, 12)}, ` +
+        `${expectation.articleCount} articles)`,
+    };
+  }
+  return {
+    confidence: 'unverified',
+    reason:
+      `internal checks passed over ${total} standards parsed from ${registry.path} ` +
+      `(${registry.bytes} bytes), but NO external expectation exists to confirm this is the ` +
+      `CURRENT constitution rather than a coherent older copy — a stale registry passes every ` +
+      `internal check by construction`,
+  };
+}
+
+/**
  * Compute the full enforcement-coverage report. Deterministic: the per-standard order
  * follows the registry parse order; refs within a standard are sorted; the only
  * non-deterministic field is `generatedAt`/`classifiedAt` (a timestamp, excluded from
@@ -411,6 +507,9 @@ export function computeCoverage(
   const gaps = standards.filter((s) => s.enforcementKind === 'documented-only').map((s) => s.standard);
   const danglingCount = standards.reduce((n, s) => n + s.danglingRefs.length, 0);
 
+  const { confidence: assessmentConfidence, reason: confidenceReason } =
+    deriveAssessmentConfidence(total, registry);
+
   return {
     generatedAt: classifiedAt,
     inputHash,
@@ -421,7 +520,10 @@ export function computeCoverage(
       enforcedRatio,
       gaps,
       danglingCount,
-      assessmentTrustworthy: total > 0 && registry.canaryOk,
+      assessmentConfidence,
+      confidenceReason,
+      // Deprecated boolean: only a 'verified' verdict may present as trustworthy.
+      assessmentTrustworthy: assessmentConfidence === 'verified',
       registry,
     },
   };

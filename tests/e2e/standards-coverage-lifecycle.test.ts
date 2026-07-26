@@ -148,6 +148,8 @@ describe('Standards Enforcement-Coverage Audit — feature is alive (Tier 3 E2E)
     const res = await bearer(request(app()).get('/conformance/coverage/health')).set('X-Instar-Request', '1');
     expect(res.status).toBe(200);
     expect(res.body.assessmentTrustworthy).toBe(false);
+    expect(res.body.assessmentConfidence).toBe('untrustworthy');
+    expect(res.body.confidenceReason).toBeTruthy();
     expect(res.body.registry.canaryOk).toBe(false);
     expect(res.body.registry.canaryFailures.length).toBeGreaterThan(0);
     // The denominator is present so a reader can SEE it is a fragment.
