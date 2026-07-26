@@ -1,5 +1,7 @@
 import fs from 'node:fs';
-import { Client, utils } from 'ssh2';
+import ssh2 from 'ssh2';
+// `ssh2` is CommonJS — named esm imports throw at load. Destructure at runtime.
+const { Client, utils } = ssh2;
 
 export interface StandingSshTarget {
   host: string;
