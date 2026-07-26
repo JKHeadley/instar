@@ -15908,17 +15908,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const candidateIds = candidates.map((c) => c.id);
       if (candidateIds.length > 0) {
         let verified: Set<string> = new Set();
+        let regressedIds: Set<string> = new Set();
         try {
-          verified = await verifyMergedItemsViaGit(project.targetRepoPath, candidateIds, ctx.initiativeTracker);
+          const outcome = await verifyMergedItemsViaGit(
+            project.targetRepoPath,
+            candidateIds,
+            ctx.initiativeTracker,
+            // The fork-origin fix the advance path already applies. Without it a
+            // dev-agent home checks the agent's FORK, where the merge commit is
+            // genuinely absent, and every healthy item reads as regressed.
+            resolveCanonicalMainRef(project.targetRepoPath),
+          );
+          verified = outcome.verified;
+          regressedIds = outcome.regressed;
         } catch {
-          // git not available, no network, etc. — leave verified empty so we
-          // still update ciCheckedAt to back off; better than a hot loop.
+          // Whole-call failure — leave BOTH sets empty so every candidate falls
+          // into the unverifiable branch below. We still bump ciCheckedAt to back
+          // off rather than spin, but we do not invent a verdict.
         }
         let touched = false;
         for (const cand of candidates) {
           const child = ctx.initiativeTracker.get(cand.id);
           if (!child) continue;
           const isMerged = verified.has(cand.id);
+          const isRegressed = regressedIds.has(cand.id);
+          // "I could not check" is not a verdict. Previously anything not in
+          // `verified` was marked `regressed`, so a guard refusal, a missing
+          // binary or a bad ref demoted a healthy item and cleared its round's
+          // schedule. Only git's documented exit 1 demotes now; an unverifiable
+          // item keeps its stage and only takes the ciCheckedAt backoff, so the
+          // question is asked again later instead of being answered wrongly now.
+          if (!isMerged && !isRegressed) {
+            try {
+              await ctx.initiativeTracker.update(cand.id, {
+                ciCheckedAt: new Date(nowMs).toISOString(),
+                ifMatch: child.version,
+              });
+              touched = true;
+            } catch { /* @silent-fallback-ok — backoff only; stage untouched */ }
+            continue;
+          }
           try {
             await ctx.initiativeTracker.update(cand.id, {
               pipelineStage: isMerged ? 'merged' : 'regressed',
@@ -16258,8 +16287,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     try {
+      // Persist the evidence the gate just established, in the SAME write that
+      // records the stage. Before 2026-07-26 the validated artifact built the
+      // validation context and was then discarded, so an item read `merged`
+      // while carrying no prNumber, no merge commit and no check timestamp —
+      // strictness at the gate, amnesia in the record. Two merged-state
+      // reconcilers select on `mergeCommitOid`, so nothing being written meant
+      // they matched nothing and reported nothing, which reads exactly like
+      // "no regressions found".
       const updated = await ctx.initiativeTracker.update(itemId, {
         pipelineStage: targetStage,
+        ...(result.evidence
+          ? {
+              prNumber: result.evidence.prNumber,
+              mergeCommitOid: result.evidence.mergeCommitOid,
+              ciCheckedAt: result.evidence.verifiedAt,
+            }
+          : {}),
         ifMatch: child.version,
       });
       // Bump the project version too so concurrent advance calls don't
@@ -16271,8 +16315,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ifMatch: project.version,
       });
       res.json({
-        item: { id: updated.id, pipelineStage: updated.pipelineStage, version: updated.version },
+        item: {
+          id: updated.id,
+          pipelineStage: updated.pipelineStage,
+          version: updated.version,
+          // Echo back what the record now holds, so a caller can confirm the
+          // evidence landed instead of trusting that it did.
+          prNumber: updated.prNumber,
+          mergeCommitOid: updated.mergeCommitOid,
+          ciCheckedAt: updated.ciCheckedAt,
+        },
         project: { id: refreshed.id, version: refreshed.version },
+        ...(result.evidence ? { evidence: result.evidence } : {}),
       });
     } catch (err) {
       if (err instanceof Error && err.name === 'OccVersionMismatchError') {

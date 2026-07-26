@@ -268,6 +268,53 @@ describe('StageTransitionValidator', () => {
     expect(r.ok).toBe(true);
   });
 
+  // A PASSING verdict must say what it proved. Until 2026-07-26 it returned a
+  // bare `{ ok: true }`, so the caller could not persist the evidence and the
+  // record asserted `merged` while unable to name what merged it. The refusal
+  // branches were richly informative the whole time — the asymmetry WAS the bug.
+  it('building → merged: a PASSING verdict carries the evidence it established', async () => {
+    const ctx: ValidationContext = {
+      targetRepoPath: tmpRepo,
+      prNumber: 1650,
+      ghPrView: async () => ({
+        state: 'MERGED',
+        mergeCommit: { oid: '5ff7559942d6aabbccdd' },
+        statusCheckRollup: [{ conclusion: 'SUCCESS' }],
+      }),
+      gitMergeBaseIsAncestor: () => true,
+      mergeBaseBranch: 'upstream/main',
+    };
+    const before = Date.now();
+    const r = await validateStageTransition('building', 'merged', ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return; // narrow
+    expect(r.evidence).toBeDefined();
+    expect(r.evidence?.prNumber).toBe(1650);
+    expect(r.evidence?.mergeCommitOid).toBe('5ff7559942d6aabbccdd');
+    // The ref it was ACTUALLY proven against, not an assumed origin/main. A
+    // later re-check that used a different ref would contradict this verdict.
+    expect(r.evidence?.mergeBaseBranch).toBe('upstream/main');
+    const ts = Date.parse(String(r.evidence?.verifiedAt));
+    expect(Number.isFinite(ts)).toBe(true);
+    expect(ts).toBeGreaterThanOrEqual(before - 1000);
+  });
+
+  it('building → merged: a REFUSED verdict carries no evidence (nothing was established)', async () => {
+    const ctx: ValidationContext = {
+      targetRepoPath: tmpRepo,
+      prNumber: 42,
+      ghPrView: async () => ({
+        state: 'MERGED',
+        mergeCommit: { oid: 'aaaaaaa' },
+        statusCheckRollup: [{ conclusion: 'FAILURE' }],
+      }),
+      gitMergeBaseIsAncestor: () => true,
+    };
+    const r = await validateStageTransition('building', 'merged', ctx);
+    expect(r.ok).toBe(false);
+    expect((r as unknown as { evidence?: unknown }).evidence).toBeUndefined();
+  });
+
   it('building → merged: rejects when mergeCommit not reachable from origin/main', async () => {
     const ctx: ValidationContext = {
       targetRepoPath: tmpRepo,

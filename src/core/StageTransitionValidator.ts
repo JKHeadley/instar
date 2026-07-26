@@ -27,8 +27,34 @@ import path from 'node:path';
 import type { PipelineStage } from './InitiativeTracker.js';
 import { extractFrontmatter } from './SafeYaml.js';
 
+/**
+ * What a PASSING `building → merged` verdict established. The validator proves
+ * these four things (PR merged, a real merge-commit sha, that sha reachable from
+ * canonical main, CI rollup green) and until 2026-07-26 returned a bare
+ * `{ ok: true }` — one bit. So the caller could not persist what had just been
+ * checked, and the record ended up asserting `merged` while unable to say what
+ * merged it.
+ *
+ * The asymmetry is the point: a REFUSAL already carried `reason` + `code`, so the
+ * validator explained itself when it said no and said nothing when it said yes.
+ * Evidence on the success path restores the symmetry — and it is what the
+ * merged-state reconcilers consume, so without it they select nothing and their
+ * silence is indistinguishable from "no regressions found".
+ */
+export interface MergedEvidence {
+  prNumber: number;
+  /** GitHub-reported merge commit sha, format-validated above. */
+  mergeCommitOid: string;
+  /** The canonical-main ref the sha was proven reachable from — NOT assumed to
+   *  be `origin/main`, which is the agent's FORK on a dev-agent home. A later
+   *  re-check must use the SAME ref or it will contradict this verdict. */
+  mergeBaseBranch: string;
+  /** ISO instant this evidence was established. */
+  verifiedAt: string;
+}
+
 export type StageTransitionResult =
-  | { ok: true }
+  | { ok: true; evidence?: MergedEvidence }
   | { ok: false; reason: string; code: string };
 
 /**
@@ -322,7 +348,17 @@ export async function validateStageTransition(
     if (!ciIsGreen(view.statusCheckRollup)) {
       return { ok: false, reason: 'CI rollup is not green', code: 'CI_NOT_GREEN' };
     }
-    return { ok: true };
+    // Hand back WHAT was proven, not just THAT something was. The caller
+    // persists this onto the item so the record can name its own evidence.
+    return {
+      ok: true,
+      evidence: {
+        prNumber: ctx.prNumber,
+        mergeCommitOid: oid,
+        mergeBaseBranch,
+        verifiedAt: new Date().toISOString(),
+      },
+    };
   }
 
   // ── outline (creation default) ───────────────────────────────────
