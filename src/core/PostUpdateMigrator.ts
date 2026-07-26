@@ -5281,6 +5281,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added capability registry Registry First awareness');
     }
 
+    if (!content.includes('Registry First — channel registry:')) {
+      content += '\n- **Registry First — channel registry:** before reporting that a peer agent is unreachable, consult `GET /channels`; it lists every peer channel with purpose, when-preferred, cost and a live verdict. A channel that failed to start still gets a row, and `unknown` means undetermined — never healthy.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added channel registry Registry First awareness');
+    }
+
     if (!content.includes('Codex quota is first-class in the pool:')) {
       content += '\n- **Codex quota is first-class in the pool:** Codex accounts read the real 5-hour + weekly windows from their latest rollout instead of appearing permanently empty. Placement and every reactive/proactive swap are framework-safe: a Codex session can use only Codex accounts, and a Claude session only Claude accounts.\n';
       patched = true;

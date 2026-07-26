@@ -335,6 +335,8 @@ import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
+import { resolveChannels } from '../core/channelRegistry.js';
+import { buildChannelDefinitions } from '../core/instarChannels.js';
 import { evaluateSendGate, negotiatorLogDir } from '../threadline/NegotiatorGate.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { recordThreadMessage } from '../threadline/recordThreadMessage.js';
@@ -30134,6 +30136,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       console.error(`MoltBridge routes failed to mount: ${err instanceof Error ? err.message : err}`);
     });
   }
+
+  // ── Channel Registry (auth-gated read) ──────────────────────────────
+  // "Which ways of reaching a peer exist, and which work right now?" The channel SET is code-defined,
+  // so a channel that failed to construct still gets a row saying so — see src/core/channelRegistry.ts
+  // for why that invariant is the whole point.
+  router.get('/channels', async (_req, res) => {
+    try {
+      const relayClient = ctx.threadlineRelayClient;
+      const defs = buildChannelDefinitions({
+        relayStatus: () => {
+          if (!relayClient) return null;
+          const connected = relayClient.connectionState === 'connected';
+          return { ready: connected, connected };
+        },
+        mutualSshConstructed: () =>
+          Boolean((globalThis as { __instarMutualSshRuntime?: unknown }).__instarMutualSshRuntime),
+        mutualSshEnabled: () => ctx.config.multiMachine?.mutualSsh?.enabled === true,
+        // Peer HTTP needs a configured peer AND a credential for its authenticated routes. We hold
+        // neither by default, and saying so plainly beats probing something we could not use anyway.
+        peerHttp: async () => ({
+          reachable: false,
+          haveCredential: false,
+          detail: 'no peer HTTP endpoint configured for this agent',
+        }),
+      });
+      const report = await resolveChannels(defs);
+      return res.status(200).json({ advisory: true, ...report });
+    } catch (error) {
+      // A registry that 500s teaches nothing. Report the failure as the registry's own verdict.
+      return res.status(200).json({
+        advisory: true,
+        channels: [],
+        summary: { total: 0, working: 0, unusable: 0, unknown: 0 },
+        error: `channel registry could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+        generatedAt: new Date().toISOString(),
+      });
+    }
+  });
 
   // ── Threadline Status (auth-gated) ──────────────────────────────────
   router.get('/threadline/status', (_req, res) => {
