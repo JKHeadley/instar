@@ -1,0 +1,97 @@
+<!-- bump: patch -->
+
+## What Changed
+
+**When the agent-to-agent relay connection dropped, nothing recorded it — so the startup line
+saying it had connected stayed the last word forever, whatever happened afterwards.**
+
+`RelayClient` emits two connection-loss events: `disconnected` (socket close; the client retries
+with exponential backoff) and `displaced` (another connection claimed this identity — **terminal**,
+because `case 'displaced': shouldReconnect = false` disarms retry for the life of the process).
+`ThreadlineBootstrap` subscribed to `message`, `unknown-sender` and `auto-discovered` — and to
+**neither** loss event. Only `listener-daemon.ts` handled them.
+
+**Observed (2026-07-26).** The agent could not send to a peer; two send paths refused with
+`Relay not connected and local delivery unavailable`. The peer's own server reported
+`ready: true, relay.connected: true` and had been listening since the previous day — the peer was
+healthy. This agent reported `ready: false, relay.connected: false`, while its last written word on
+the subject was `Threadline: relay connected` at `18:21:27Z`, with no disconnect line anywhere.
+
+**The property that made this worth fixing rather than noting: the defect concealed its own cause.**
+A `displaced` frame would fully explain why backoff never recovered the connection, and
+`ThreadlineBootstrap` documents a known displacement race between the server's client and the
+standalone listener daemon. Whether that is what fired is **unknowable**, because nothing recorded
+it — the absence of evidence was produced by the defect itself.
+
+The server now subscribes to both and records each transition, appending to
+`logs/threadline-relay-events.jsonl` and exposing the latest event on the bootstrap result.
+
+**Ordering note.** This ships observability and *not* reconnection, reversing the author's first
+plan. A reconnect fix built first would have been unverifiable — there would have been no way to
+observe whether it held.
+
+## What to Tell Your User
+
+If I have ever been unable to reach another agent and could not tell you why, this is one reason.
+My link to the shared relay could go down and leave behind a note saying it was up — not merely
+silent, but actively misleading, because that startup note was the only note that could ever exist.
+
+Two things can end that connection. An ordinary drop, which retries by itself and usually recovers.
+And being displaced, where another process takes the same identity — in which case retrying is
+switched off deliberately and permanently, so the link is gone until a restart. Those demand
+opposite reactions from anyone reading, and both were equally invisible.
+
+Now a drop is reported calmly and says a retry is coming, and a displacement is reported as an error
+that says plainly the agent cannot send or receive until it restarts.
+
+Two honest limits. This does not reconnect anything — a restart still fixes it, as before, and
+recovery is separate work. And it cannot explain the outage that prompted it, because that evidence
+was never created; what changes is that the next one is diagnosable.
+
+## Summary of New Capabilities
+
+- A relay disconnection is recorded durably instead of passing silently.
+- A relay *displacement* is recorded, flagged terminal, and reported at error level with its
+  consequence stated — that retry is disarmed and the agent cannot send or receive until restart.
+- The two are distinguishable, so a reader can tell "wait for the retry" from "this is over".
+- Every occurrence is appended rather than overwriting the last, so a flapping connection is
+  visible — the shape a reconnection bug actually takes.
+- The most recent loss event is exposed on the bootstrap result, so a status surface can report
+  *why* the relay is down rather than only that it is.
+- A connection that has never dropped records nothing and reports no last event, keeping
+  "never dropped" distinct from "dropped, cause unknown".
+
+## Evidence
+
+**Before**, on the affected agent:
+
+| surface | reading |
+|---|---|
+| peer's own server | `ready: true`, `relay.connected: true`, listening since 2026-07-25 |
+| this agent | `ready: false`, `relay.connected: false` |
+| this agent's log, last relay line | `Threadline: relay connected` @ `18:21:27Z` |
+| disconnect / displacement lines | none — no handler existed |
+
+**After** — every row asserted by a test:
+
+| event | recorded | terminal | reported as | says |
+|---|---|---|---|---|
+| `disconnected` | yes | `false` | log | will retry with backoff |
+| `displaced` | yes | `true` | **error** | retry disarmed; cannot send/receive until restart |
+| never dropped | nothing written | — | — | last event is `null`, not a falsy "unknown" |
+| 5 consecutive drops | 5 rows appended | — | — | flapping stays visible |
+| unwritable log dir | handler does not throw | — | error | console + in-memory state still correct |
+| 5,000-char reason | clamped below 400 | — | — | untrusted text is not written whole |
+| null fingerprint | `"unknown"` | — | — | recorded honestly, not as empty string |
+
+**Three guards refuse.** Each regression was introduced deliberately and the suite re-run:
+
+```
+remove the 'displaced' subscription        → 4 failed | 6 passed (10)
+remove the 'disconnected' subscription     → 7 failed | 3 passed (10)
+collapse terminal into one verdict (false) → 4 failed | 6 passed (10)
+restored                                   → 10 passed (10)
+```
+
+**Scope run:** `npx tsc --noEmit` clean; tree-scanning tests plus every threadline test — counts in
+the PR body.
