@@ -68,7 +68,20 @@ export interface ValidationContext {
 export interface GhPrView {
   state: string;
   mergeCommit: { oid: string } | null;
-  statusCheckRollup: Array<{ conclusion?: string | null; status?: string | null; state?: string | null }>;
+  /**
+   * GitHub returns EVERY check run, including SUPERSEDED ones — a check that failed
+   * and was then re-run appears TWICE. `name`/`context` and the timestamps are needed
+   * to tell the current run from the stale one (see `ciIsGreen`).
+   */
+  statusCheckRollup: Array<{
+    conclusion?: string | null;
+    status?: string | null;
+    state?: string | null;
+    name?: string | null;
+    context?: string | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
+  }>;
 }
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -425,13 +438,64 @@ async function loadFrontmatter(
   }
 }
 
-function ciIsGreen(rollup: GhPrView['statusCheckRollup']): boolean {
-  if (!Array.isArray(rollup) || rollup.length === 0) {
+type RollupEntry = GhPrView['statusCheckRollup'][number];
+
+/** Completion time of a check run, for ordering. 0 when unknown. */
+function runTime(c: RollupEntry): number {
+  const t = Date.parse(c.completedAt ?? c.startedAt ?? '');
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/**
+ * Collapse the rollup to the LATEST run per check name.
+ *
+ * GitHub's `statusCheckRollup` returns every run of every check, INCLUDING superseded
+ * ones. A check that failed and was then re-run to green appears twice, and the failed
+ * entry never goes away. Found 2026-07-25: PR #1641 merged legitimately (branch
+ * protection saw the passing `eli16` run) yet its rollup still carried
+ * `eli16: FAILURE` from 01:43:52 alongside `eli16: SUCCESS` from 01:45:22 — four check
+ * names were duplicated. The old `ciIsGreen` iterated every entry and refused on the
+ * stale failure, so the tracker could never record a correct merge whose CI had ever
+ * been red. A superseded check-run is a stale SYMBOL; the check's current state is the
+ * latest run, which is exactly what GitHub's own merge gate uses.
+ *
+ * Two deliberate safety choices, because a dedupe must never become a way to HIDE a
+ * real failure:
+ *  - Unnamed entries (bare status contexts with neither `name` nor `context`) are keyed
+ *    individually, so none is silently collapsed into another.
+ *  - When two runs of the same name cannot be ORDERED (equal or missing timestamps),
+ *    the FAILING one wins. Unorderable runs fail closed rather than letting an
+ *    undatable success mask a red.
+ */
+function latestRunPerCheck(rollup: GhPrView['statusCheckRollup']): RollupEntry[] {
+  const byKey = new Map<string, RollupEntry>();
+  let unnamed = 0;
+  const isBad = (c: RollupEntry): boolean => {
+    const concl = (c.conclusion ?? c.state ?? '').toUpperCase();
+    const status = (c.status ?? '').toUpperCase();
+    if (status && status !== 'COMPLETED' && status !== 'SUCCESS' && status !== 'NEUTRAL') return true;
+    return Boolean(concl) && concl !== 'SUCCESS' && concl !== 'SKIPPED' && concl !== 'NEUTRAL';
+  };
+  for (const c of rollup) {
+    const name = (c.name ?? c.context ?? '').trim();
+    const key = name || `\u0000unnamed-${unnamed++}`;
+    const prev = byKey.get(key);
+    if (!prev) { byKey.set(key, c); continue; }
+    const dt = runTime(c) - runTime(prev);
+    if (dt > 0) byKey.set(key, c);
+    else if (dt === 0 && isBad(c)) byKey.set(key, c); // unorderable → the failure wins
+  }
+  return [...byKey.values()];
+}
+
+function ciIsGreen(rollupRaw: GhPrView['statusCheckRollup']): boolean {
+  if (!Array.isArray(rollupRaw) || rollupRaw.length === 0) {
     // Empty rollup = no checks defined. Per spec we treat green as
     // "no failing checks" — an empty rollup is acceptable (small repos
     // without CI). This matches `gh pr merge --auto` semantics.
     return true;
   }
+  const rollup = latestRunPerCheck(rollupRaw);
   for (const check of rollup) {
     const concl = (check.conclusion ?? check.state ?? '').toUpperCase();
     const status = (check.status ?? '').toUpperCase();
