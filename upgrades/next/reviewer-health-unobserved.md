@@ -1,0 +1,82 @@
+<!-- bump: patch -->
+
+## What Changed
+
+**A response reviewer that had never run once reported a PERFECT pass rate and a status of
+`healthy` — so "this has never executed" was indistinguishable from "this is working perfectly."**
+
+`CoherenceGate.getReviewerHealth` computed `passRate = total > 0 ? passCount / total : 1` and
+defaulted `status` to `'healthy'`. With zero observations the absent case defaulted **optimistic**:
+a reviewer that had done nothing scored 100%, and `overallStatus` aggregated it as healthy.
+
+`getReviewerStats` carried the same defect pointing both directions at once — `passRate: 0`
+(pessimistic) for the SAME quantity about 110 lines away, plus `jsonValidityRate: 1`, claiming
+perfect JSON validity from a reviewer that had never parsed a response. Two opposite defaults for one
+quantity in one file is the tell that neither was reasoned about, so both sites are fixed together.
+
+Now: rates are `null` when there are no observations (a rate over zero calls is not a rate), the
+denominator always travels beside them, and a new `observationsRequired` / `insufficientEvidence`
+pair states what a verdict needs. `status` gains a fourth value, `'unobserved'`, and `overallStatus`
+uses the precedence `failing > degraded > unobserved > healthy` so an unknown reviewer can never
+aggregate up as healthy.
+
+**The floor gates only the optimistic conclusion.** A reviewer that errored on both of its only two
+calls is still reported `'failing'`; thin evidence must never suppress bad news, only good news.
+Verified before/after: never-ran went from `passRate 1, healthy` to `passRate null, unobserved`; one
+passing call reports its honest rate of 1 with the verdict withheld; two-of-two errors stays
+`failing`; twenty passes stays `healthy`.
+
+This adopts a precedent the codebase already keeps rather than inventing one.
+`SelfActionGovernor.checkObserveLimbo` computes the identical shape of rate and gates its criterion
+on `total >= 100`, which is exactly why that expression is harmless there and was a defect here.
+
+Two existing tests changed because they were holding the defect in place. One asserted
+`overallStatus === 'healthy'` when no reviews had run, pinning it as correct behaviour. The other,
+named `detects degraded status when error rate is high`, carried a comment promising to "simulate
+high error rate by directly manipulating metrics" and manipulated nothing — it created a fresh gate
+and asserted `'healthy'`, so despite its name it exercised the never-ran path and left the
+`degraded` and `failing` branches with zero coverage while sitting green in the suite. It now
+performs the simulation its own comment described, and both branches are covered.
+
+## What to Tell Your User
+
+Nothing to do, and on most installs nothing visible: the response-review pipeline is off by default,
+so its health endpoints already answer "not enabled."
+
+Where it does run, the health view is now honest about what it does not know. A reviewer that has not
+been exercised yet shows as **unobserved** with its observation count, rather than as a flawless
+100%. Read that as "nothing is wrong and nothing is known yet" — it is deliberately not an alarm.
+Genuine problems are still reported as promptly as before, including on very few observations.
+
+## Summary of New Capabilities
+
+- Reviewer health distinguishes "no observations yet" from "healthy": rates report `null` rather than
+  an invented default, the denominator travels beside every rate, and `unobserved` is a first-class
+  status that can never aggregate up as healthy.
+- The observation floor gates only the optimistic verdict, so a failing reviewer is still reported as
+  failing on as few as two observations.
+
+## Evidence
+
+**Reproduction (before):** construct the gate with reviewers registered and call
+`getReviewerHealth()` without running a single review. Observed: `passRate: 1`, `status: 'healthy'`,
+`overallStatus: 'healthy'` — a perfect score from zero observations. `getReviewerStats()` on the same
+gate: `passRate: 0`, `jsonValidityRate: 1` (the same quantity defaulting the opposite way, and
+perfect JSON validity from a reviewer that had never parsed a response).
+
+**Observed after,** same four scenarios run against the built code:
+
+| scenario | before | after |
+|---|---|---|
+| never ran (0 obs) | `passRate 1`, `healthy` | `passRate null`, `errorRate null`, `unobserved`, `insufficientEvidence true` |
+| one passing call | `passRate 1`, `healthy` | `passRate 1` (honest), verdict withheld → `unobserved` |
+| errored on both of 2 calls | `failing` | `failing` — unchanged, bad news not suppressed |
+| 20 passes | `healthy` | `healthy` — unchanged, no false alarm |
+| `getReviewerStats`, 0 obs | `passRate 0`, `jsonValidityRate 1` | every rate `null`, `insufficientEvidence true` |
+
+**Tests:** `tests/unit/CoherenceGateCanary.test.ts` — never-ran refused a healthy verdict and reports
+no rate; thin evidence reports its real rate but withholds the verdict; thin evidence still reports
+`failing`; sufficient evidence reports `healthy` unchanged; `overallStatus` never aggregates an
+unobserved reviewer as healthy; `degraded` and `failing` thresholds now genuinely exercised (they had
+**zero** coverage before — the test named for them manipulated no metrics); `getReviewerStats`
+reports null rates rather than zeros or a perfect score. 37 tests pass across the two affected files.
