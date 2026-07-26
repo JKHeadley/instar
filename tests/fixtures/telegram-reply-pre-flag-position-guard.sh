@@ -4,12 +4,6 @@
 # Usage:
 #   ./telegram-reply.sh TOPIC_ID "message text"
 #   ./telegram-reply.sh --format markdown TOPIC_ID "**bold**"
-#
-#   EVERY FLAG GOES BEFORE THE TOPIC ID. Flag parsing stops at the topic id, so
-#   anything after it is message text. A flag in the wrong position used to be
-#   sent to the user as literal text with its effect silently dropped; it is now
-#   refused. Correct:
-#     ./telegram-reply.sh --tone-ack B2_FILE_PATH --tone-reason "why" TOPIC_ID "msg"
 #   echo "message text" | ./telegram-reply.sh TOPIC_ID
 #   cat <<'EOF' | ./telegram-reply.sh TOPIC_ID
 #   Multi-line message here
@@ -30,24 +24,6 @@
 #                     deliberately no env form (a standing env export would be
 #                     a blanket pre-ack that silently disables the inform
 #                     layer; spec outbound-jargon-filepath-gap §2.4(4)).
-#
-#   Tone-gate advisory reactions (answering a 422 `tone-gate-advisory`). BOTH
-#   forms are recorded as evidence that tunes the gate; neither is optional
-#   once you have been handed a decisionRef.
-#   --tone-complied <RULE>     You agreed with the nudge and revised the text.
-#                              Grades the check `right`.
-#   --tone-ack <RULE>          You disagree and are sending unchanged. Grades
-#                              the check `wrong`. REQUIRES --tone-reason: a
-#                              reasonless ack is refused and nothing sends,
-#                              because that reason IS the tuning evidence.
-#   --tone-reason "<why>"      Why the nudge is wrong in this case.
-#   --tone-decision-ref <REF>  The decisionRef from the 422, so the reaction
-#                              joins the verdict it answers.
-#
-#   Example (note the ordering — flags first, topic id last):
-#     ./telegram-reply.sh --tone-ack B2_FILE_PATH \
-#       --tone-reason "the operator asked for the path explicitly" \
-#       --tone-decision-ref DQ-1234 29723 "the message"
 #
 # Outbound advisory preflight (inform-only — spec outbound-jargon-filepath-gap §2.4):
 #   When this send comes from an automated LLM job session (the scheduler
@@ -156,43 +132,6 @@ if [ -z "$TOPIC_ID" ]; then
   echo "Usage: telegram-reply.sh [--format MODE] TOPIC_ID [message]" >&2
   exit 1
 fi
-
-# A flag placed AFTER the topic id was silently swallowed into the message.
-#
-# The parse loop above stops at the first non-flag argument (the topic id), so
-# everything from there on becomes message text via `MSG="$*"` below. A
-# misplaced `--tone-ack` was therefore SENT TO THE USER as visible message body
-# while the override it was meant to carry never reached the server — and,
-# because the flags never applied, the tone gate re-reviewed the send and its
-# verdict was then misread as absurd. That is how a CORRECT check came to be
-# graded `wrong` in the decision-quality data on 2026-07-26. The record is
-# durable; the cause was two characters of argument order.
-#
-# The asymmetry is the defect: a flag-shaped token BEFORE the topic id is fatal
-# ("Unknown flag", above), but after it the script was maximally permissive.
-# Refuse flag-shaped tokens in both positions. This also catches a TYPO'd flag
-# (`--tone-akc`), which is the realistic case and was equally silent.
-#
-# Deliberately strict: any `--*` argument. A message that genuinely needs such a
-# token as literal text goes through stdin, which is the documented primary path
-# and is unaffected by this check ($# is 0 there).
-for _arg in "$@"; do
-  case "$_arg" in
-    --*)
-      echo "Refused: '$_arg' appears AFTER the topic id." >&2
-      echo "" >&2
-      echo "Flags are only parsed BEFORE the topic id. Placed here it would have been" >&2
-      echo "sent to the user as literal message text, and its effect silently dropped." >&2
-      echo "" >&2
-      echo "  Correct:  telegram-reply.sh --tone-ack RULE --tone-reason \"why\" $TOPIC_ID \"message\"" >&2
-      echo "  You ran:  telegram-reply.sh $TOPIC_ID ... $_arg ..." >&2
-      echo "" >&2
-      echo "If '$_arg' is genuinely part of the message text, pipe the message on stdin:" >&2
-      echo "  cat <<'EOF' | telegram-reply.sh $TOPIC_ID" >&2
-      exit 1
-      ;;
-  esac
-done
 
 # Read message from args or stdin
 if [ $# -gt 0 ]; then
