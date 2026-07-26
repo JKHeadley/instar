@@ -503,8 +503,13 @@ export interface MergedVerificationResult {
  *      instar source tree (the #1641 defect);
  *   2. a hardcoded `origin/main`, which on a dev-agent home is the agent's FORK,
  *      not where merges land — so the correct answer is "unreachable";
- *   3. `catch {}` → not verified → the caller marks the item `regressed`, i.e.
- *      "I could not check" rendered as "it was reverted".
+ *   3. a bodyless catch swallowing every error → not verified → the caller marks
+ *      the item `regressed`, i.e. "I could not check" rendered as "it was
+ *      reverted". (Described in words rather than shown as a literal: the
+ *      empty-catch ratchet counts occurrences in comments too, so quoting the
+ *      forbidden shape here fails the lint — a text matcher fooled by prose
+ *      describing the thing it forbids. Same trap is documented in
+ *      tests/unit/projects-advance-mergebase-wiring.test.ts.)
  *
  * Any one of those would have turned healthy merged items into false regressions
  * the moment the evidence started being written. Fixed together, because writing

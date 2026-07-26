@@ -93,3 +93,22 @@ window of text around the code I wanted to inspect, and it ran past the end into
 next block, so the check was reading the wrong lines. That is the same error this file
 is about — measuring something adjacent to what you meant and believing the answer.
 Found by running it, which is the cheapest possible place to find it.
+
+## And one more, which is almost too neat
+
+The first attempt to land this change was **refused** by a rule that scans the whole
+codebase counting error-handlers which swallow failures silently. It reported that I
+had added one.
+
+I hadn't. It had found the phrase inside my own *comment* — the paragraph above, where
+I describe the forbidden pattern in order to explain why I removed it. The rule counts
+text, and text cannot tell an example from an instance.
+
+So a checker built to catch "errors turning into nothing" was fooled by a sentence
+about errors turning into nothing. That is the third time in one evening a checker has
+been tripped by a message *about* its own subject.
+
+I reworded the comment rather than change the rule. Weakening a safety check to
+unblock your own work is the wrong instinct even when the check is imprecise — and the
+rule is right far more often than it is wrong. The comment now names the shape in
+words and points at a sibling test that documents the same trap.

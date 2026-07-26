@@ -198,3 +198,33 @@ What author-applied review caught and changed:
    ran past the branch it meant to inspect and matched the next block's
    `pipelineStage`. Now bounded at the branch's own `continue`. A test measuring
    adjacent text is the same defect class as the subject of this change.
+
+## Phase 6 — What CI refused, and why the fix went in the prose
+
+The first push was refused by the empty-catch ratchet
+(`tests/unit/no-empty-catch-blocks.test.ts`): count 1 against a baseline of 0. The
+offending occurrence was at `ProjectRoundExecution.ts:506` — **inside this change's own
+doc comment**, on the line quoting the forbidden bodyless-catch shape while explaining
+that it had been removed. The lint scans `src/` as text and does not strip comments, so
+it cannot distinguish an example from an instance.
+
+Noted rather than glossed, because it is the same failure mode this change is about,
+one layer out: a checker built to catch "errors turning into nothing" was tripped by a
+sentence *about* errors turning into nothing. It is also the third occurrence of that
+shape in a single session (twice in the outbound-message checker, once here), and the
+sibling test `tests/unit/projects-advance-mergebase-wiring.test.ts` already documents
+the identical trap for its own assertions — it strips comments before asserting,
+precisely because an earlier version of it matched the helper's own explanatory prose.
+
+**The prose was reworded; the lint was NOT touched.** Weakening a safety check to
+unblock one's own change is the wrong instinct even when the check is imprecise, and
+this lint's stated history (a bare catch in a 5-second loop causing a real cost
+incident) earns it the benefit of the doubt. Making the lint comment-aware is a
+legitimate improvement, but it belongs in its own change with its own review — not
+smuggled in as a side-effect of needing this PR to go green.
+
+**Re-verification scope, corrected.** The refusal proved my local scope was wrong: I
+had run the tests covering the changed module, but this failure came from a test that
+scans the whole source tree and whose subject my change never touched. The right scope
+for a source change is therefore *every tree-scanning test*, located by grep rather
+than guessed: 99 files, 8,370 tests, exit 0, `tsc --noEmit` clean.
