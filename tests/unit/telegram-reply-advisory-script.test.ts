@@ -35,6 +35,7 @@ function writeFakeCurl(opts: {
   preflightBody?: string;
   preflightExit?: number;
   sendHttpCode?: string;
+  sendBody?: string;
   sendExit?: number;
 }) {
   const shimDir = path.join(dir, 'bin');
@@ -51,7 +52,7 @@ case "$url" in
     ${opts.preflightExit ? `exit ${opts.preflightExit}` : `printf '%s' '${(opts.preflightBody ?? '{"advisories":[]}').replace(/'/g, "'\\''")}'`}
     ;;
   */telegram/reply/*)
-    ${opts.sendExit ? `printf '\\n000'; exit ${opts.sendExit}` : `printf '{"ok":true,"messageId":7}\\n${opts.sendHttpCode ?? '200'}'`}
+    ${opts.sendExit ? `printf '\\n000'; exit ${opts.sendExit}` : `printf '%s' '${(opts.sendBody ?? '{"ok":true,"messageId":7}').replace(/'/g, "'\\''")}'; printf '\\n${opts.sendHttpCode ?? '200'}'`}
     ;;
   *)
     printf ''
@@ -357,5 +358,62 @@ describe('send failure outcome contract', () => {
     expect(stderr).toContain('AMBIGUOUS: Telegram relay transport ended without an HTTP outcome (curl 7).');
     const dbPath = path.join(dir, '.instar', 'state', 'pending-relay.echo.sqlite');
     expect(fs.existsSync(dbPath)).toBe(false);
+  });
+});
+
+describe('flag position (advisory remediation must not become the message)', () => {
+  it('a --tone-* flag AFTER the topic id is refused loudly, not swallowed as message text', async () => {
+    // The parse loop breaks at the first positional, so anything after the
+    // topic id would land in the message body (and stdin would be ignored).
+    // That silently sent control text as the reply and drew a SECOND advisory.
+    await expect(
+      execFileAsync('bash', [SCRIPT, '12476', '--tone-complied', 'B11_STYLE_MISMATCH'], {
+        cwd: dir,
+        env: { ...process.env, INSTAR_PORT: '4099', INSTAR_AUTH_TOKEN: 'tok' },
+      }),
+    ).rejects.toMatchObject({ code: 2 });
+  });
+
+  it('the refusal names the flag and shows the corrected order', async () => {
+    let stderr = '';
+    try {
+      await execFileAsync('bash', [SCRIPT, '12476', '--ack-advisory'], {
+        cwd: dir,
+        env: { ...process.env, INSTAR_PORT: '4099', INSTAR_AUTH_TOKEN: 'tok' },
+      });
+    } catch (err) {
+      stderr = (err as { stderr?: string }).stderr ?? '';
+    }
+    expect(stderr).toContain("Flag '--ack-advisory' appeared AFTER the topic id");
+    expect(stderr).toContain('Flags must come BEFORE the topic id');
+    expect(stderr).toContain('--ack-advisory');
+    expect(stderr).toContain('12476');
+  });
+
+  it('a tone advisory prints the FULL re-run command with flags before the topic id', async () => {
+    let stderr = '';
+    try {
+      await runScript({
+        env: AUTOMATED_ENV,
+        text: 'A dense stylized report with SHOUTY headers.',
+        curl: {
+          preflightBody: '{"advisories":[]}',
+          sendHttpCode: '422',
+          sendBody: JSON.stringify({
+            error: 'tone-gate-advisory',
+            rule: 'B11_STYLE_MISMATCH',
+            issue: 'too dense',
+            suggestion: 'plainer',
+            decisionRef: 'd-abc123',
+          }),
+        },
+      });
+    } catch (err) {
+      stderr = (err as { stderr?: string }).stderr ?? '';
+    }
+    // The remediation must be a runnable command whose flags PRECEDE 12476 —
+    // naming only the flags is what invited them to be appended after it.
+    expect(stderr).toMatch(/--tone-complied B11_STYLE_MISMATCH --tone-decision-ref d-abc123 12476/);
+    expect(stderr).toMatch(/--tone-ack B11_STYLE_MISMATCH[\s\S]*12476/);
   });
 });

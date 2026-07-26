@@ -133,6 +133,22 @@ if [ -z "$TOPIC_ID" ]; then
   exit 1
 fi
 
+# Flags must PRECEDE the topic id (the parse loop above breaks at the first
+# positional). A flag appearing here would otherwise be swallowed as MESSAGE
+# TEXT — and stdin would be ignored — so an advisory remediation typed as
+# `telegram-reply.sh TOPIC --tone-complied RULE` silently sent the control text
+# as the message and drew a second, nonsensical advisory. Refuse loudly instead.
+for _arg in "$@"; do
+  case "$_arg" in
+    --tone-ack|--tone-reason|--tone-complied|--tone-decision-ref|--ack-advisory|--format|--format=*|--stdin-base64|--base64-stdin)
+      echo "Flag '$_arg' appeared AFTER the topic id, where it would be treated as message text." >&2
+      echo "Flags must come BEFORE the topic id. Correct form:" >&2
+      echo "  cat <<'EOF' | telegram-reply.sh $_arg [value] $TOPIC_ID" >&2
+      exit 2
+      ;;
+  esac
+done
+
 # Read message from args or stdin
 if [ $# -gt 0 ]; then
   MSG="$*"
@@ -500,8 +516,12 @@ elif [ "$HTTP_CODE" = "422" ]; then
     echo "  Issue: $ISSUE" >&2
     [ -n "$SUGGESTION" ] && echo "  Suggestion: $SUGGESTION" >&2
     [ -n "$TONE_REF" ] && echo "  decisionRef: $TONE_REF" >&2
-    echo "  AGREE  → revise, then re-run with: --tone-complied ${TONE_RULE:-RULE}${TONE_REF:+ --tone-decision-ref $TONE_REF}" >&2
-    echo "  DISAGREE → re-run unchanged with: --tone-ack ${TONE_RULE:-RULE} --tone-reason \"why the nudge is wrong here\"${TONE_REF:+ --tone-decision-ref $TONE_REF}" >&2
+    # Print the FULL command with the flags BEFORE the topic id. Naming only the
+    # flags invited them to be appended after it, where they become message text.
+    echo "  AGREE  → revise, then re-run (flags BEFORE the topic id):" >&2
+    echo "      cat <<'EOF' | $0 --tone-complied ${TONE_RULE:-RULE}${TONE_REF:+ --tone-decision-ref $TONE_REF} $TOPIC_ID" >&2
+    echo "  DISAGREE → re-run unchanged (flags BEFORE the topic id):" >&2
+    echo "      cat <<'EOF' | $0 --tone-ack ${TONE_RULE:-RULE} --tone-reason \"why the nudge is wrong here\"${TONE_REF:+ --tone-decision-ref $TONE_REF} $TOPIC_ID" >&2
     [ -n "$HOW_TO" ] && echo "  $HOW_TO" >&2
     # exit 1 (not 0): the message genuinely did NOT send, and a caller that
     # treats 0 as delivered would drop it silently. The wording above is what
