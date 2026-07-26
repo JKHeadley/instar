@@ -95,9 +95,24 @@ decision made during operations without checking the stated goals is precisely w
 eliminating. The failure is loud, names the missing field, and is fixed by adding one string.
 
 Unknown-field rejection is a strict-schema change and could in principle break an existing caller.
-Measured evidence that it does not: **the journal had `count: 0` on this agent — no caller has ever
-successfully written to it.** The refusal also names the offending keys and the correct destination,
-so a broken caller is told exactly what to change rather than failing opaquely.
+The refusal names the offending keys and the correct destination, so a broken caller is told exactly
+what to change rather than failing opaquely.
+
+**CORRECTION — my first version of this section was too confident, and CI proved it.** I wrote that
+"the journal had `count: 0` on this agent, so no caller has ever successfully written to it" and
+treated that as evidence the back-compat risk was near-nil. That measurement was about the *live
+agent's data file*; it says nothing about *callers in the codebase*. There was one:
+`tests/integration/intent-routes.test.ts` POSTed three decisions with no `principle`, and my change
+refused all three, so the journal file was never created and a later read failed `ENOENT`.
+
+I did not catch it locally because I ran a targeted file set that did not include that test. CI did.
+Two failures, both mine, neither a flake. Resolution: the tests now supply a `principle` — which is
+the *correct* fix, since they were writing exactly the unreasoned decisions this gate exists to
+refuse, and their failure is the refusal working on a real caller rather than a synthetic one.
+
+The honest generalisation: "no rows in the data file" is not evidence of "no callers in the code".
+Those are different questions and I conflated them. A repo-wide sweep afterwards found three files
+POSTing to the route and six asserting on `stats()` shape; two needed changes, and both are fixed.
 
 ## 2. Under-block
 
