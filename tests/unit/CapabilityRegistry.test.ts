@@ -198,8 +198,25 @@ describe('CapabilityRegistry Increment 1 synthetic receiver fixtures', () => {
   });
 
   it('partial pool failures preserve good rows beside participating-peer failures', () => {
+    // The m1 row must be FRESH for this assertion to mean anything — the point is
+    // that a good row survives beside failing peers, not that a stale one does.
+    // The shared `entry()` fixture hardcodes observedAt 2026-07-25T00:00:00Z, and
+    // deriveStatus calls anything older than 24h `stale`, so this test passed on the
+    // day it was written and began failing at 2026-07-26T00:00Z purely because the
+    // wall clock moved. Stamp freshness explicitly rather than inheriting a literal
+    // whose meaning changes with the date.
+    const freshNow = new Date();
+    const fresh = peerProjection('m1', {
+      entries: [entry({
+        machineId: 'm1',
+        endpointRef: 'mesh://m1/doorways',
+        observedAt: freshNow.toISOString(),
+        receivedAt: freshNow.toISOString(),
+        evidence: { doorwayScanAt: freshNow.toISOString() },
+      })],
+    });
     const r = new CapabilityRegistryReceiver();
-    r.ingestProjection('m1', peerProjection('m1'));
+    r.ingestProjection('m1', fresh);
     r.ingestHeartbeat('m2', undefined);
     const rows = r.classifyPool(['m1', 'm2', 'm3']);
     expect(rows).toEqual(expect.arrayContaining([
