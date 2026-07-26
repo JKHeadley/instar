@@ -284,7 +284,21 @@ export async function validateStageTransition(
     // and passes it as `mergeBaseBranch`; this default preserves prior behavior
     // for canonical-origin installs.
     const mergeBaseBranch = ctx.mergeBaseBranch ?? 'origin/main';
-    const ancestor = ctx.gitMergeBaseIsAncestor(oid, mergeBaseBranch);
+    // "I could not check" is NOT "it is not there" (found 2026-07-25: the route's
+    // helper swallowed a SourceTreeGuard REFUSAL and returned false, so a merge that
+    // was demonstrably on main reported as unreachable — a refusal rendered as a
+    // fact). A helper that cannot complete the check must throw; that becomes a
+    // DISTINCT verdict the caller can act on, never a fabricated negative.
+    let ancestor: boolean;
+    try {
+      ancestor = ctx.gitMergeBaseIsAncestor(oid, mergeBaseBranch);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `could not verify whether mergeCommit.oid ${oid} is reachable from ${mergeBaseBranch}: ${err instanceof Error ? err.message : String(err)}`,
+        code: 'MERGE_BASE_UNVERIFIABLE',
+      };
+    }
     if (!ancestor) {
       return {
         ok: false,
