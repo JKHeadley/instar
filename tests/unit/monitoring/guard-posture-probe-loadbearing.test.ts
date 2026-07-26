@@ -261,6 +261,34 @@ describe('GuardPostureProbe — G3 separate episode track (real createAttentionI
     expect(adapter.getAttentionItems().filter((i) => i.category === 'guard-posture')).toEqual([]);
   });
 
+  it('a peer uninspectable list is read-only context: errored still emits exactly one existing anomaly and no notification track', async () => {
+    const peerPosture: GuardPostureSummary = {
+      onConfirmed: 0, onUnverified: 0, onStale: 0, onDryRun: 0,
+      offDeviant: 0, offDeviantKeys: [], offRuntimeDivergent: 0, offRuntimeDivergentKeys: [],
+      divergedPendingRestart: 0, errored: 1, missing: 0,
+      loadBearingGapKeys: [],
+      loadBearingUninspectable: 1,
+      loadBearingUninspectableKeys: [LB_KEY],
+      generatedAt: new Date().toISOString(),
+    };
+    const peers: PeerPostureRead[] = [{
+      machineId: 'm-peer',
+      nickname: 'peer',
+      online: true,
+      posture: peerPosture,
+      postureAgeMs: 1_000,
+    }];
+    const probe = makeProbe(() => inventory([]), peers);
+    await probe.run();
+    await probe.run();
+
+    const attention = adapter.getAttentionItems().filter((item) => item.category === 'guard-posture');
+    expect(attention).toHaveLength(1);
+    expect(attention[0].id).toBe('guard-posture:ep-1');
+    expect(attention[0].summary).toContain('errored');
+    expect(adapter.getAttentionItem('guard-posture-loadbearing:ep-1')).toBeUndefined();
+  });
+
   it('operator-accept on THIS machine does NOT silence a peer gap (per-machine independence)', async () => {
     // Local guard is ACCEPTED (loadBearingAccepted, no gap) — but the peer's
     // heartbeat still reports it as a gap → the peer gap surfaces.

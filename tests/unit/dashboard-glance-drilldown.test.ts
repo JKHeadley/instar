@@ -389,6 +389,25 @@ describe('F11 walk-every-tile — the Machines glance (Phase 3) + issue #1429', 
     expect(handle.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/In plain words/);
   });
 
+  it('a machine record displays unproven load-bearing protection without making that read-only field a health classifier', () => {
+    const unprovenPool = { enabled: true, machines: [
+      mkMachine({
+        guardPosture: {
+          onConfirmed: 16,
+          loadBearingUninspectable: 1,
+          loadBearingUninspectableKeys: ['multiMachine.sessionPool.inboundQueue.enabled'],
+        },
+      }),
+    ] };
+    const handle = renderGlance(doc, root, machinesGlanceSpec(doc, unprovenPool, null, {}));
+    expect(handle.headline.textContent).toContain('online and healthy');
+    activate(handle, 'online');
+    handle.drilldown.querySelector('.glance-list-row')!.dispatchEvent(new dom.window.Event('click'));
+    const recordText = handle.drilldown.querySelector('[data-glance-record]')!.textContent!;
+    expect(recordText).toContain('Load-bearing protection unproven');
+    expect(recordText).toContain('multiMachine.sessionPool.inboundQueue.enabled');
+  });
+
   it('#1429: the nickname edits commit ONLY on Enter/blur, with optimistic echo', () => {
     let saved: any = null;
     const handle = renderGlance(doc, root, machinesGlanceSpec(doc, pool, guards, {

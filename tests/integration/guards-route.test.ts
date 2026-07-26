@@ -290,6 +290,8 @@ describe('heartbeat posture ingestion (MachinePoolRegistry + GuardPostureStore)'
     offDeviant: 1, offDeviantKeys: ['monitoring.sessionReaper.enabled'],
     offRuntimeDivergent: 0, offRuntimeDivergentKeys: [],
     divergedPendingRestart: 0, errored: 0, missing: 0,
+    loadBearingUninspectable: 1,
+    loadBearingUninspectableKeys: ['multiMachine.sessionPool.inboundQueue.enabled'],
     generatedAt: '2026-06-12T00:00:00.000Z',
   };
 
@@ -310,6 +312,8 @@ describe('heartbeat posture ingestion (MachinePoolRegistry + GuardPostureStore)'
     });
     const cap = pool.getCapacity('m-peer')!;
     expect(cap.guardPosture?.offDeviantKeys).toEqual(['monitoring.sessionReaper.enabled']);
+    expect(cap.guardPosture?.loadBearingUninspectable).toBe(1);
+    expect(cap.guardPosture?.loadBearingUninspectableKeys).toEqual(['multiMachine.sessionPool.inboundQueue.enabled']);
     expect(cap.guardPostureReceivedAt).toBe(new Date(now).toISOString());
 
     // "Restart": a FRESH registry + fresh store reload the durable last-known
@@ -325,7 +329,39 @@ describe('heartbeat posture ingestion (MachinePoolRegistry + GuardPostureStore)'
     const cap2 = pool2.getCapacity('m-peer')!;
     expect(cap2.online).toBe(false); // dark — but posture still renders
     expect(cap2.guardPosture?.onConfirmed).toBe(3);
+    expect(cap2.guardPosture?.loadBearingUninspectableKeys).toEqual(['multiMachine.sessionPool.inboundQueue.enabled']);
     expect(cap2.guardPostureReceivedAt).toBe(new Date(now).toISOString());
+  });
+
+  it('persists a changed uninspectable key list even when every existing posture count stays equal', () => {
+    let now = 1_781_300_000_000;
+    const store = new GuardPostureStore(stateDir);
+    const pool = new MachinePoolRegistry({
+      listMachines: () => [{ machineId: 'm-peer', nickname: 'mini' }],
+      clockSkewToleranceMs: 300_000,
+      failoverThresholdMs: 60_000,
+      now: () => now,
+      postureStore: store,
+    });
+    pool.recordHeartbeat({
+      machineId: 'm-peer',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      guardPosture: POSTURE,
+    });
+    now += 30_000;
+    pool.recordHeartbeat({
+      machineId: 'm-peer',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      guardPosture: {
+        ...POSTURE,
+        loadBearingUninspectableKeys: ['monitoring.strandedTopicSentinel.enabled'],
+        generatedAt: new Date(now).toISOString(),
+      },
+    });
+
+    const reloaded = new GuardPostureStore(stateDir);
+    expect(reloaded.get('m-peer')?.posture.loadBearingUninspectableKeys)
+      .toEqual(['monitoring.strandedTopicSentinel.enabled']);
   });
 
   it('a posture-less beat carries the previous block forward WITHOUT refreshing its age', () => {
