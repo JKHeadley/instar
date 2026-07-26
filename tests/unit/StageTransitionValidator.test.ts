@@ -284,6 +284,53 @@ describe('StageTransitionValidator', () => {
     if (!r.ok) expect(r.code).toBe('MERGE_COMMIT_UNREACHABLE');
   });
 
+  it('building → merged: a helper that CANNOT CHECK yields MERGE_BASE_UNVERIFIABLE, never a fabricated "not reachable"', async () => {
+    // Live defect, 2026-07-25, recording PR #1641 as merged: the route's helper
+    // swallowed a SourceTreeGuard REFUSAL in a bare `catch { return false }`, so a
+    // merge commit that was demonstrably an ancestor of main reported as
+    // MERGE_COMMIT_UNREACHABLE. A refusal is not an answer — "I could not check" and
+    // "it is not there" must be distinguishable, because they call for opposite actions.
+    const ctx: ValidationContext = {
+      targetRepoPath: tmpRepo,
+      prNumber: 42,
+      ghPrView: async () => ({
+        state: 'MERGED',
+        mergeCommit: { oid: 'a1b2c3d4e5f60708' },
+        statusCheckRollup: [{ conclusion: 'SUCCESS' }],
+      }),
+      gitMergeBaseIsAncestor: () => {
+        throw new Error('Refusing to run projects.advance.mergeBaseIsAncestor against the instar source tree');
+      },
+    };
+    const r = await validateStageTransition('building', 'merged', ctx);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('MERGE_BASE_UNVERIFIABLE');
+      expect(r.code).not.toBe('MERGE_COMMIT_UNREACHABLE');
+      // The reason must say it could not verify, and carry the underlying cause.
+      expect(r.reason).toMatch(/could not verify/i);
+      expect(r.reason).toMatch(/source tree/i);
+    }
+  });
+
+  it('building → merged: a GENUINE negative is still MERGE_COMMIT_UNREACHABLE (the boundary is not blurred)', async () => {
+    // The other side of the same boundary: making refusals honest must NOT turn a real
+    // "not an ancestor" into an unverifiable, or the check would stop refusing anything.
+    const ctx: ValidationContext = {
+      targetRepoPath: tmpRepo,
+      prNumber: 42,
+      ghPrView: async () => ({
+        state: 'MERGED',
+        mergeCommit: { oid: 'a1b2c3d4e5f60708' },
+        statusCheckRollup: [{ conclusion: 'SUCCESS' }],
+      }),
+      gitMergeBaseIsAncestor: () => false,
+    };
+    const r = await validateStageTransition('building', 'merged', ctx);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('MERGE_COMMIT_UNREACHABLE');
+  });
+
   it('building → merged: uses ctx.mergeBaseBranch when provided (fork-origin agent home) [#866 sibling]', async () => {
     // On a dev-agent home, origin = the fork; merges land on upstream. The
     // route resolves the upstream remote and passes mergeBaseBranch; the

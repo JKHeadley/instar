@@ -16142,19 +16142,38 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return JSON.parse(out) as import('../core/StageTransitionValidator.js').GhPrView;
       },
       gitMergeBaseIsAncestor: (sha: string, branch: string) => {
-        // `merge-base --is-ancestor` is a READ-ONLY verb (in SafeGitExecutor's
-        // READONLY_GIT_VERBS) — routed through readSync (the sanctioned read
-        // path), not raw execFileSync, per the destructive-tool funnel. It
-        // exits 0 (ancestor → readSync returns) or 1 (not → readSync throws).
+        // `merge-base --is-ancestor` is a READ-ONLY verb — routed through readSync
+        // (the sanctioned read path), not raw execFileSync, per the destructive-tool
+        // funnel. It exits 0 (ancestor) or 1 (not an ancestor).
+        //
+        // `sourceTreeReadOk` is REQUIRED here and its absence was a live defect
+        // (found 2026-07-25 recording PR #1641 as merged). readSync runs the
+        // SourceTreeGuard unless the caller declares a read, and a project's
+        // targetRepoPath IS an instar source tree — so the guard refused this query
+        // every time. `merge-base` is already in SOURCE_TREE_READ_TIER_VERBS, i.e.
+        // the permission for exactly this read exists; it simply was never asked for.
+        //
+        // The far worse half was below: the old `catch { return false }` converted
+        // that REFUSAL into "the merge commit is not on main" — a fabricated factual
+        // claim, and the reason this step's failure was indistinguishable from a real
+        // negative for as long as it existed. A refusal is not an answer. Only git's
+        // documented exit status 1 means "not an ancestor"; every other failure
+        // (guard refusal, missing binary, bad revision → 128, timeout) is UNVERIFIABLE
+        // and is rethrown so the validator can say so instead of guessing.
         try {
           SafeGitExecutor.readSync(['merge-base', '--is-ancestor', sha, branch], {
             cwd: project.targetRepoPath,
             operation: 'projects.advance.mergeBaseIsAncestor',
             stdio: ['ignore', 'ignore', 'ignore'],
+            sourceTreeReadOk: true,
           });
-          return true; // exit 0 = sha is an ancestor of branch
-        } catch { /* @silent-fallback-ok: merge-base --is-ancestor signals via exit code (0 ancestor / 1 not); a non-zero exit IS the negative answer, not a degradation — returning false is the correct, complete result, and the validator surfaces MERGE_COMMIT_UNREACHABLE to the caller. */
-          return false; // exit 1 = not an ancestor; any other failure = treat as not-ancestor (validator re-checks)
+          return true; // exit 0 = sha IS an ancestor of branch
+        } catch (err) {
+          const status = (err as { status?: unknown }).status;
+          if (status === 1) return false; // the ONLY genuine "not an ancestor"
+          throw new Error(
+            `merge-base --is-ancestor could not be verified (${err instanceof Error ? err.message : String(err)})`,
+          );
         }
       },
       // Resolve the canonical-main ref the merge commit must be reachable from.
