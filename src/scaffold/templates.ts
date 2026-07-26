@@ -1584,6 +1584,16 @@ Your agent has intent engineering infrastructure for tracking how decisions alig
 
 **When to log a decision:** When you face a genuine tradeoff — speed vs. thoroughness, user request vs. stated boundary, cost vs. quality. Not every action, just the ones where intent guidance matters.
 
+**Decision journal — principle is required:** invented field names are REFUSED (400) too. A decision recorded without naming what guided it preserves THAT you chose and not WHY — the one thing this journal exists to preserve. Writable fields: \`sessionId\`, \`decision\`, \`principle\`, \`topicId\`, \`jobSlug\`, \`alternatives\`, \`confidence\`, \`context\`, \`conflict\`, \`tags\`, \`evidence\`. Anything else is rejected by name rather than stored, because a field no reader consumes makes a submission look recorded without being recorded. Put your reasoning in \`context\` and the guiding intent in \`principle\`:
+
+\`\`\`bash
+curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/journal \\
+  -H 'Content-Type: application/json' \\
+  -d '{"sessionId":"<session>","decision":"<what you chose>","principle":"<what guided it>","context":"<why, and what you checked it against>"}'
+\`\`\`
+
+**Reading the stats honestly:** \`principledCount\` / \`unprincipledCount\` sit beside \`count\`. \`topPrinciples: []\` alone cannot tell you whether nobody has decided anything yet or whether many decisions were recorded and not one said why — these two counters are what separates those cases. The machine-generated dispatch path is deliberately exempt; an auto-applied dispatch has no principle to cite and is never blocked.
+
 ### Playbook — Adaptive Context Engineering
 
 The Playbook system gives you a living knowledge base that makes every session smarter than the last. Instead of loading the same static context every time, Playbook curates a manifest of context items — facts, lessons, patterns, safety rules — and selects exactly what's relevant for each session based on triggers, token budgets, and usefulness scores.

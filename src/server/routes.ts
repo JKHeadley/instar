@@ -22367,16 +22367,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.post('/intent/journal', async (req, res) => {
     try {
-      const { DecisionJournal } = await import('../core/DecisionJournal.js');
+      const { DecisionJournal, validateDecisionSubmission } = await import(
+        '../core/DecisionJournal.js'
+      );
       const { EvidencePolicyError } = await import('../memory/SemanticMemory.js');
       const journal = new DecisionJournal(ctx.config.stateDir);
 
-      const { sessionId, decision, evidence, ...rest } = req.body || {};
-
-      if (!sessionId || !decision) {
-        res.status(400).json({ error: 'sessionId and decision are required' });
+      // Refuse before recording. A submission that names no guiding principle,
+      // or that carries a field no reader consumes, would otherwise succeed and
+      // look recorded without being recorded.
+      const verdict = validateDecisionSubmission(req.body);
+      if (!verdict.ok) {
+        res.status(400).json({
+          error: verdict.message,
+          reason: verdict.reason,
+          unknownFields: verdict.unknownFields,
+          missingFields: verdict.missingFields,
+        });
         return;
       }
+
+      const { sessionId, decision, evidence, ...rest } = req.body || {};
 
       // WikiClaim Phase 3 (spec § Producers line 258): every decision must
       // cite at least one evidence row. The route accepts an explicit
