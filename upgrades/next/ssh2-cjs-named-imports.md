@@ -1,0 +1,52 @@
+# Mutual-SSH modules no longer throw at load
+
+## What Changed
+
+Five `src/core/` modules took named value imports from `ssh2`, which is CommonJS.
+Node's ESM loader cannot statically detect CJS named exports, so each threw at load
+and `mutual-ssh` / `peer-execution` failed to initialise at every server boot —
+warning-level, surfaced nowhere. Fixed by default-importing the namespace and
+destructuring at runtime; type-only imports are unchanged.
+
+A regression guard scans `src/` for named value imports from a CJS allowlist. It is
+a source scan rather than an import assertion because an import assertion cannot
+observe this bug class: vitest transforms through Vite, which rewrites CJS interop,
+so the broken source passes in-process. `tsc` is likewise blind — the types are real.
+
+## Evidence
+
+- Built output loaded under Node's real ESM loader: all five modules load; all five
+  previously threw.
+- Guard refuses a reverted import, naming file and statement:
+  `× core/MutualSshVerifier.ts: import { Client, utils } from 'ssh2'`.
+- First-attempt import-assertion guard passed 8/8 against broken source; `tsc` exit 0.
+  Both recorded in the side-effects artifact.
+
+## Known limits
+
+Loading is not functioning: whether the runtime then binds, finds keys and reaches a
+peer is untested here and not claimed. `multiMachine.mutualSsh.enabled` registers with
+`guardRegistry` inside the failing try block, so the failure is absent from the guard
+inventory (88 rows, no mutualSsh row) — tracked, not fixed here. <!-- tracked: CMT-1044 -->
+
+## What to Tell Your User
+
+If you run instar on more than one machine, one of the ways those machines can talk
+to each other — the direct SSH channel — has been failing at every server start, in a
+way that only ever showed up as a warning line in a boot log. It could not have worked.
+That specific failure is now gone.
+
+Be honest about the size of this: the channel now *starts*. Whether it then connects
+to another machine end to end has not been demonstrated here, and should not be
+claimed. If you were relying on mutual-SSH and it was silently doing nothing, this
+removes the first reason why. If you run on a single machine, nothing changes for you.
+
+There is a related gap deliberately left open: this subsystem does not appear on the
+guard inventory at all when it fails, because it registers itself
+after the point where it was crashing. So "it's not listed" did not mean "it's fine".
+That is tracked separately.
+
+## Summary of New Capabilities
+
+None. This is a repair, not a new capability. Five modules that could never load now
+load; no route, config key, or user-visible surface is added or changed.

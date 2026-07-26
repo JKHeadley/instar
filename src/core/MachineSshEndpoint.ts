@@ -1,7 +1,12 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import { verify } from 'node:crypto';
-import { Server, utils, type Connection } from 'ssh2';
+import ssh2 from 'ssh2';
+import type { Connection, Server as SshServerType } from 'ssh2';
+// `ssh2` is CommonJS: a NAMED esm import throws at load
+// ("does not provide an export named 'Server'"). Types are erased at compile time
+// so `import type` is safe; VALUES must come off the default namespace.
+const { Server, utils } = ssh2;
 import type { SshPeerAdmission, SshPeerAdmissionStore } from './SshPeerAdmissionStore.js';
 
 export interface SshRpcChallenge {
@@ -32,7 +37,7 @@ export interface MachineSshEndpointOptions {
 
 /** Restricted SSH server: public-key auth plus the `instar-rpc` subsystem only. */
 export class MachineSshEndpoint {
-  private server: Server | null = null;
+  private server: SshServerType | null = null;
   private sockets = new Set<Connection>();
   private socketsByMachine = new Map<string, Set<Connection>>();
   private handshakesBySource = new Map<string, number>();
