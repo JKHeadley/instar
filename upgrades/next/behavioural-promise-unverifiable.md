@@ -1,0 +1,81 @@
+<!-- bump: patch -->
+
+## What Changed
+
+**A behavioural commitment was marked `verified` or `violated` according to whether its
+optional `behavioralRule` field was populated — 98 of 98 rows, no exceptions.**
+
+`CommitmentTracker.verifyBehavioral` decided the verdict with
+`content.includes(commitment.id)` against the behavioural rules file. That file is written
+**by the same class** from its own active list, and nothing else on the machine reads it, so
+the check verified that the system had written its own file and reported the result as a
+verdict on the promise.
+
+Measured on the live store: **74 behavioural commitments with `behavioralRule` set all read
+`verified`; 24 without it all read `violated`.** Because the sweep runs about once a minute,
+each accumulated a tick per pass — CMT-068 reached **162,344 violations**, and four
+commitments created in the same minute held **identical** counts (80,425), which individual
+conduct cannot produce.
+
+Behavioural commitments now take the path this file already gives an unverifiable
+`one-time-action`: **the sweep is a no-op**, the promise stays `pending`, and closure remains
+explicit (`deliver()` / `markDelivered()` / `expiresAt`), with the overdue surfacing keeping
+it visible. Both wrong answers are removed, not just one — `verified` was false comfort and
+`violated` a false accusation, since a blank optional field is not a broken promise.
+
+`getHealth` changed with it. It previously reported `"N commitment(s) tracked, all verified"`
+whenever nothing was marked broken, inferring compliance from the absence of violations —
+which would have become a *new* false claim once these rows moved to `pending`. It now names
+how many are genuinely verified and how many are not automatically verifiable. It also stops
+reporting the component `degraded`, which those 24 false violations had made permanent.
+
+The rules file still self-heals when missing (now `ensureBehavioralRulesFile`, which returns
+nothing) — repairing bookkeeping is worth doing but is not evidence about a promise.
+
+**What this does not do:** behavioural compliance remains unverified by anything. This stops
+the system claiming otherwise; it does not build real verification, which would require
+observing conduct against each rule. `config-change` verification is untouched and still
+genuinely reads live state.
+
+## What to Tell Your User
+
+If you track commitments, promises about behaviour now show as **pending** rather than
+verified or violated, with both counters at zero. That is more honest, not a regression:
+nothing was ever watching whether those promises were kept, so "verified" was reassurance
+nobody had earned and "violated" was usually just a blank optional field.
+
+You may also notice the commitment health line stops saying "all verified" and stops
+reporting itself degraded. Both were consequences of the same defect.
+
+## Summary of New Capabilities
+
+- A promise that cannot be automatically checked reports as open instead of being declared
+  kept or broken, matching the treatment this module already gave unverifiable one-time
+  actions.
+- Commitment counters no longer accumulate a tick per sweep for behavioural promises.
+- The commitment health line distinguishes "verified" from "not automatically verifiable"
+  rather than inferring compliance from an absence of violations.
+
+## Evidence
+
+**Reproduction (before):** record a behavioural commitment and run the verify sweep 25
+times. With `behavioralRule` set: `status: 'verified'`, `verificationCount: 25`. Without it:
+`status: 'violated'`, `violationCount: 25`, detail `"Missing behavioralRule on behavioral
+commitment"`. Live store corroboration: 74/74 with the field `verified`, 24/24 without it
+`violated`; CMT-068 at 162,344; CMT-555/556/557/558 identical at 80,425.
+
+**Observed after,** same scenarios against the built code:
+
+| scenario | before | after (25 sweeps) |
+|---|---|---|
+| behavioural, `behavioralRule` set | `verified`, +1 tick per sweep | `pending`, verifications 0, violations 0 |
+| behavioural, field absent | `violated`, +1 tick per sweep | `pending`, verifications 0, violations 0 |
+| rules file deleted | produced a verdict | no verdict; file self-heals; status unchanged |
+| health, 1 behavioural row | `"1 commitment(s) tracked, all verified"` | `"1 commitment(s) tracked — 0 verified, 1 not automatically verifiable (no violations)"`, status `healthy` |
+
+**Tests:** `tests/unit/CommitmentTracker.test.ts` — three tests rewritten because they
+asserted the removed behaviour (one of them asserting that a *missing* optional field is a
+broken promise; another named `"detects violation when rules file is deleted"` whose body
+asserted the opposite, with a comment conceding it). Two regression guards added: 25 sweeps
+accumulate zero ticks on either shape of behavioural promise, and health never claims "all
+verified" over promises it has not observed. **79 tests pass**; `npx tsc --noEmit` clean.
