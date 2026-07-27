@@ -139,6 +139,30 @@ describe('runMentorTick — gate order + structural guarantees', () => {
     expect(deliver).toHaveBeenCalledWith('codex-cli', 'next task: ship the X primitive');
   });
 
+  it('awaits the delivery decision and surfaces a retry-breaker refusal distinctly', async () => {
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const deliver = vi.fn(async () => {
+      await wait;
+      return { delivered: false, reason: 'identical-content-retry-exhausted' as const };
+    });
+    const { deps } = makeDeps({
+      canaryCheck: () => true,
+      mode: 'live',
+      deliverToMentee: deliver,
+    });
+
+    const pending = runMentorTick(deps);
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    release();
+    const r = await pending;
+    expect(r.delivered).toBe(false);
+    expect(r.deliveryReason).toBe('identical-content-retry-exhausted');
+  });
+
   it('does not deliver when there is no deliverToMentee wired (safe default)', async () => {
     const { deps } = makeDeps({ canaryCheck: () => true, mode: 'live', deliverToMentee: undefined });
     const r = await runMentorTick(deps);
