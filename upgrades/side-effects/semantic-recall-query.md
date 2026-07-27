@@ -40,11 +40,27 @@ exactly the previous semantics rather than throwing or matching everything. Pinn
 
 ## 2. Under-block — what does this still miss?
 
-- **No semantic/vector matching.** A query using different words than the stored entity
-  ("can't message the other agent" vs "bot visibility") still misses. The vector path exists
-  (`searchHybrid`) but `vec0` is not loadable on this machine, so lexical matching is what
-  actually runs. Widening lexically is the honest available fix, not a substitute for
-  embeddings. <!-- tracked: ACT-1384 -->
+- **This fixes the fallback path, NOT the primary one — and the primary one is the real bug.**
+  A fully-populated vector index already exists: `GET /semantic/stats` reports
+  `vectorSearchAvailable: true, embeddingCount: 2852` against 2,852 entities, i.e. 100%
+  coverage. `searchHybrid()` performs real vector KNN. But `PromptBuildRecall.ts:138` calls
+  the synchronous `search()` — FTS5 keyword-only — because `recall()` is synchronous
+  (`PromptBuildRecall.ts:113`) and `searchHybrid` is async. So recall runs on keyword
+  matching while the embeddings sit unused, and a query worded differently from the stored
+  entity misses regardless of this change.
+
+  This change is therefore a **floor-raiser for the lexical path**, which still matters —
+  `searchHybrid()` degrades to `search()` whenever vectors are unavailable, and
+  `/semantic/search` uses it directly — but it is explicitly not the answer to
+  "why didn't recall find this". Keyword search should be supplementary, not primary.
+  <!-- tracked: ACT-1386 -->
+
+  *Correction of record:* an earlier draft of this artifact claimed `vec0` was unloadable and
+  recall was lexical-only by necessity. That was wrong. It came from probing `semantic.db`
+  with python's `sqlite3`, which does not load the extension; the Node process loads it
+  successfully. The false claim is recorded here rather than quietly deleted, because
+  "I verified with the wrong tool and concluded a capability was missing" is the same failure
+  class this whole change exists to address.
 - **Stopword list is English-only and fixed.** A domain word that is genuinely a stopword
   here (e.g. "session") is not covered, and shouldn't be — over-stripping would blunt
   precision.
