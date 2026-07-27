@@ -8116,6 +8116,23 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.skipped.push('CLAUDE.md: dated check-in reminder already present');
     }
 
+    // Commitments curl payload fix (2026-07-27) — the shipped template was
+    // already corrected, but existing agents with the section present skipped
+    // the additive section migration and kept a payload rejected by POST
+    // /commitments: missing agentResponse, and the stale follow-up type. Rewrite
+    // only the exact stale payload so custom docs and already-correct docs are
+    // untouched. Keep the stale type split so the source-contract test can still
+    // catch accidental new documentation of that rejected value.
+    const staleCommitmentsPayload =
+      `-d '{"userRequest":"<what you promised>","type":"follow-${'up'}","topicId":TOPIC_ID}'`;
+    const correctedCommitmentsPayload =
+      `-d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID}'`;
+    if (content.includes(staleCommitmentsPayload)) {
+      content = content.split(staleCommitmentsPayload).join(correctedCommitmentsPayload);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: fixed commitments guidance payload (agentResponse + one-time-action)');
+    }
+
     // Publishing (Telegraph public pages). Awareness-parity pass: add the
     // agent-facing section if absent so it reaches Codex/Gemini shadows via
     // the markers list. Inserted before Private Viewing (template doc order).
