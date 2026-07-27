@@ -75,6 +75,26 @@ It also can't invent relevance. Asking about something genuinely not in memory s
 nothing, and that is pinned by a test so a future change can't quietly turn this into a
 system that always finds something whether or not it's there.
 
+## The looser search now says when it ran
+
+There's a trap in the fix itself, and I walked into it before catching it.
+
+The looser retry is a *weaker* search. If it quietly substitutes itself whenever the precise
+one comes up empty, then the system starts serving cheaper results while looking exactly as
+healthy as before — which is the same shape as the original bug. A weaker strategy running
+silently is how you end up with a system that reports fine for months while doing something
+worse than you think.
+
+So the search now records which of the two actually served each query: the precise one, the
+looser fallback, or neither. It's a read-only note — nothing blocks, nothing changes about
+the results — but the cheap path can no longer run without saying so.
+
+That mattered more than it sounds. The reason recall was running on keyword matching at all
+is that a *much* better search exists in this codebase, fully built, with every one of the
+2,852 memories indexed for it — and the recall path simply calls the keyword one instead.
+Nothing anywhere reported that. Had the cheap path been announcing itself, that would have
+been obvious years earlier instead of found by accident this week.
+
 ## How I know it works
 
 I wrote the tests, removed the fix, and ran them against the original code. Nine failed —

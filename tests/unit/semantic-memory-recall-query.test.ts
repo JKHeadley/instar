@@ -157,4 +157,27 @@ describe('SemanticMemory.search — natural-language recall', () => {
     });
     expect(results).toEqual([]);
   });
+
+  it('REPORTS which strategy served — strict, when the precise query matches', () => {
+    memory.search('telegram bot');
+    expect(memory.lastSearchStrategy).toBe('fts-strict');
+  });
+
+  it('REPORTS the fallback when the precise query found nothing and OR was used', () => {
+    // Falling back to a weaker strategy must be an observable event, not a detail.
+    // 'kubernetes' appears in no entity, so the strict implicit-AND finds nothing
+    // and the OR widening is what actually serves the telegram/bot terms.
+    const results = memory.search('why can a telegram bot reach kubernetes');
+    expect(results.length).toBeGreaterThan(0);
+    expect(memory.lastSearchStrategy).toBe('fts-loose-fallback');
+  });
+
+  it('resets the reported strategy for a query that never ran', () => {
+    memory.search('telegram bot');
+    expect(memory.lastSearchStrategy).toBe('fts-strict');
+    memory.search('*()');
+    // Must not still read "strict" — a stale healthy-looking signal on a query
+    // that never executed is the failure mode this field exists to prevent.
+    expect(memory.lastSearchStrategy).toBe('none');
+  });
 });

@@ -516,6 +516,24 @@ export class SemanticMemory {
   private embeddingProvider: EmbeddingProvider | null = null;
   private vectorSearch: VectorSearch | null = null;
   private _vectorAvailable = false;
+
+  /**
+   * Which retrieval strategy actually served the most recent `search()` call.
+   *
+   * `fts-strict` is the precise implicit-AND query; `fts-loose-fallback` means the
+   * strict query found NOTHING and the weaker OR query was used instead. Exposed
+   * because "No Silent Degradation to Brittle Fallback" requires a drop to a weaker
+   * strategy to be an observable event rather than a detail — a retrieval path that
+   * silently serves from the cheap strategy reports healthy while being fake-healthy.
+   * That is not hypothetical here: recall ran on keyword-only search for its entire
+   * life while a fully-populated vector index went uncalled, and nothing said so.
+   */
+  private _lastSearchStrategy: 'fts-strict' | 'fts-loose-fallback' | 'none' = 'none';
+
+  /** Which strategy served the last `search()` — see `_lastSearchStrategy`. */
+  get lastSearchStrategy(): 'fts-strict' | 'fts-loose-fallback' | 'none' {
+    return this._lastSearchStrategy;
+  }
   private jsonlPath: string;
   /** Set after corruption auto-recovery — caller should reimport from JSONL */
   private _needsRebuild = false;
@@ -1538,7 +1556,13 @@ export class SemanticMemory {
     const db = this.ensureOpen();
 
     const variants = buildFtsQueryVariants(query);
-    if (!variants) return [];
+    if (!variants) {
+      // Reset rather than leaving the previous call's strategy readable — a stale
+      // "served by strict" on a query that never ran is exactly the kind of
+      // falsely-healthy signal this field exists to prevent.
+      this._lastSearchStrategy = 'none';
+      return [];
+    }
 
     const limit = options?.limit ?? 20;
 
@@ -1583,16 +1607,24 @@ export class SemanticMemory {
 
     const statement = db.prepare(sql);
     let rows = statement.all(...params) as (EntityRow & { fts_rank: number })[];
+    this._lastSearchStrategy = 'fts-strict';
 
     // Strict (implicit-AND over content words) is the precise query and stays
     // authoritative whenever it finds anything. Only when it finds NOTHING do we
     // widen to OR — an empty result is what made stored lessons unreachable, and
     // a loosely-relevant hit is strictly better than silence. Every other filter
     // (type, domain, confidence, privacy) is unchanged and still applies.
+    //
+    // The widening is RECORDED, not silent. Per the "No Silent Degradation to
+    // Brittle Fallback" standard, falling back to a weaker strategy is an event:
+    // a retrieval path that quietly serves from the cheap strategy looks healthy
+    // while being fake-healthy, which is the exact defect this whole change exists
+    // to fix. Reading `lastSearchStrategy` tells a caller what actually served.
     if (rows.length === 0 && variants.loose !== variants.strict) {
       const looseParams = [...params];
       looseParams[0] = variants.loose;
       rows = statement.all(...looseParams) as (EntityRow & { fts_rank: number })[];
+      this._lastSearchStrategy = 'fts-loose-fallback';
     }
 
     // ─── Vector results (if available) ────────────────────────

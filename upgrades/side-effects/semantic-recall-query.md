@@ -69,6 +69,31 @@ exactly the previous semantics rather than throwing or matching everything. Pinn
   memories beat the empty set that made every stored lesson unreachable. It cannot fabricate
   a hit — a query about something genuinely not stored still returns empty (pinned by test).
 
+## 2b. The fallback announces itself (self-caught during review)
+
+The first revision of this change introduced a **silent** degradation — the OR widening
+substituted a weaker strategy and reported nothing. That is the same defect class the change
+exists to fix, added by the fix. Caught before merge and corrected.
+
+`search()` now records `lastSearchStrategy`:
+
+- `fts-strict` — the precise implicit-AND query served
+- `fts-loose-fallback` — strict found nothing; the weaker OR query served instead
+- `none` — no query ran (reset on the early-return path, so a stale "served by strict" can
+  never be read for a query that never executed)
+
+Read-only. It gates nothing and does not change what `search()` returns. This is
+*No Silent Degradation to Brittle Fallback* (`docs/STANDARDS-REGISTRY.md:125`) applied to a
+retrieval path: "silent degradation to a weak check is worse than no check, because it looks
+protected while being fake-protected." The standard's own scope is LLM calls that *gate* an
+action, so it did not formally bind here — but its reasoning is exactly on point, and
+honouring it cost three tests.
+
+The concrete argument for it: recall ran on keyword-only search for its entire life while a
+fully-populated vector index (2,852/2,852 embeddings) went uncalled, and nothing anywhere
+reported that. A cheap path that announces itself is the difference between that being
+discoverable and being invisible for months.
+
 ## 3. Level-of-abstraction fit
 
 Correct layer. `search()` is the single funnel every recall caller uses — the
