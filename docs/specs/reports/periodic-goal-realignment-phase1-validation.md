@@ -55,19 +55,22 @@ refusal.
 |---|---|
 | Goal-realignment unit suite | PASS — 19 tests |
 | Forwarded-provenance unit suite | PASS — 2 tests |
-| Focused feature + structural ratchets | PASS — 152 tests across 15 files |
+| Focused feature + structural ratchets | PASS — 315 tests across 14 files |
 | Goal-realignment route integration | PASS — 3 tests |
 | TypeScript no-emit | PASS |
 | Full lint chain | PASS |
 | State registry lint | PASS — 100 categories |
 | Store retention lint | PASS — 25 retentioned, 75 grandfathered |
-| Full unit suite | Pending |
-| Full integration suite | Pending |
-| Full end-to-end suite | Pending |
-| Production build | Pending |
+| Full repository unit/integration/end-to-end suite | PASS — 2,971 files and 46,236 tests; 4 files/30 tests skipped, 3 todo |
+| Dev preflight | PASS — lint, 172 discoverability tests, self-disable ledger, and route heuristic |
+| Production build | PASS |
 
-The pending rows are updated to exact counts after the complete repository gates
-finish; this artifact is not complete until every row is terminal.
+The terminal repository run used the final integrated tree after merging current
+`main`. It completed in 2,489.52 seconds. The run also exposed and permanently
+hardened three pre-existing harness assumptions: `vite-node` is now an explicit
+development dependency, the host-wide spawn-cap test asserts saturation rather
+than an exact global holder count, and nested preflight/route tests are isolated
+from repository-wide fixture traffic and loopback-socket load.
 
 ## Design conclusion
 

@@ -111,6 +111,9 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      vite-node:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@20.19.33)
       vitest:
         specifier: ^2.1.9
         version: 2.1.9(@types/node@20.19.33)(jsdom@29.1.1(@noble/hashes@2.0.1))
