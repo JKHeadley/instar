@@ -23382,6 +23382,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       evidenceAvailable: !evidence.unavailable, canaryOk: evidence.canaryOk, reason: admission.reason });
   });
 
+  /**
+   * Read-only counters for the completion-claim verifier.
+   *
+   * `CompletionClaimVerifier.stats()` has existed since the verifier shipped and was
+   * called by no route, so the feature ran (and still runs) in dryRun with its own
+   * declared graduation evidence unobservable — `docs/specs/claim-verification-sentinel.md`
+   * names `rollout-evidence-type: endpoint` with a `classified-completion-claims >= 1`
+   * criterion, which nothing could evaluate. A dark feature whose rollout criterion
+   * cannot be read is a feature that stays dark forever, which is the failure this
+   * exposes rather than a new capability.
+   *
+   * Local-scope only and deliberately so: the audit route already owns the pool
+   * projection, and duplicating a fan-out here would add a second cross-machine
+   * surface for the same data. Gates nothing, mutates nothing.
+   */
+  router.get('/completion-claim/stats', (_req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    const stats = ctx.completionClaimVerifier.stats();
+    res.json({
+      stats,
+      // The spec's graduation metric, surfaced by the name the spec uses so the
+      // rollout check does not have to know the internal counter's field name.
+      'classified-completion-claims': stats.classifiedTurns,
+      scope: 'local',
+    });
+  });
+
   router.get('/completion-claim/audit', async (req, res) => {
     if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
