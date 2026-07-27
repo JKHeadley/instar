@@ -17,10 +17,15 @@ Identical effect in both cases: rollout marked active, graduation criterion unev
 parked indefinitely — with no error, no alarm, and nothing distinguishing "stuck" from "being
 careful".
 
-Ships with a two-entry accepted-findings baseline so it passes today. **The baseline can only
-shrink**: an entry whose ref starts resolving is an error, forcing deletion, so a stale exemption
-cannot mask a later regression at the same path. The claim-verification entry is deliberately
-self-expiring — when #1682 merges, the build demands its removal.
+Ships with an accepted-findings baseline so it passes today. **The baseline can only shrink**: an
+entry whose ref starts resolving is an error, forcing deletion, so a stale exemption cannot mask a
+later regression at the same path.
+
+**That property was exercised for real before this even landed.** The baseline started with two
+entries. #1682 merged an hour later; rebasing onto that main made the lint fail *itself*, naming the
+now-resolving `claim-verification-sentinel` entry and refusing to pass until it was deleted. It was
+deleted. One entry remains (`mutual-ssh-autobootstrap`), 4 of 5 rollout-active specs resolving. The
+self-destruct is not a claim about the future — it has already fired once, on its own author.
 
 ## Evidence
 
@@ -31,7 +36,7 @@ proves nothing:
 |---|---|
 | drop the mutual-ssh baseline entry | **FAIL**, names spec + ref + remedies, **exit 1** |
 | allowlist a slug that DOES resolve | **FAIL**, "now RESOLVES … delete that entry", **exit 1** |
-| clean repo | `5 rollout-active endpoint spec(s), 3 resolving, 2 accepted`, **exit 0** |
+| clean repo | `5 rollout-active endpoint spec(s), 4 resolving, 1 accepted`, **exit 0** |
 
 Exit codes checked directly rather than through a pipe — a lint that prints FAIL and exits 0 is one
 CI ignores.
