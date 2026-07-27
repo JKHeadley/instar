@@ -71,8 +71,8 @@ describe('GET /channels (integration — the wiring, not just the resolver)', ()
 
     expect(res.status).toBe(200);
     expect(res.body.channels.map((c: { id: string }) => c.id).sort())
-      .toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'threadline-relay', 'user-slack', 'user-telegram']);
-    expect(res.body.summary.total).toBe(6);
+      .toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'threadline-relay', 'user-imessage', 'user-slack', 'user-telegram', 'user-whatsapp']);
+    expect(res.body.summary.total).toBe(8);
   });
 
   /**
@@ -91,7 +91,7 @@ describe('GET /channels (integration — the wiring, not just the resolver)', ()
         .map((c: { id: string }) => c.id).sort();
 
     expect(byAudience('peer')).toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'threadline-relay']);
-    expect(byAudience('user')).toEqual(['user-slack', 'user-telegram']);
+    expect(byAudience('user')).toEqual(['user-imessage', 'user-slack', 'user-telegram', 'user-whatsapp']);
     // Every row must declare one; an untagged channel is not a third state, it is a bug.
     for (const c of res.body.channels) expect(['peer', 'user']).toContain(c.audience);
   });

@@ -29,6 +29,40 @@ const healthy: TelegramLiveStatus = {
   stoppedAt: null,
 };
 
+/**
+ * REGRESSION (2026-07-27, found by live-checking the shipped feature on the running agent).
+ *
+ * The `unknown` verdict said "the Telegram poll loop is not running" without naming WHOSE poll loop.
+ * What it measures is the SERVER process's adapter. On a lifeline deployment inbound Telegram never
+ * goes through that adapter — a separate lifeline process polls and forwards, and the server logs
+ * "Telegram relay wired (via lifeline callback forwarding)". There a stopped server poller is NORMAL.
+ *
+ * Observed live: this row read `unknown` while inbound was healthy. Same scope error the
+ * threadline-relay row was fixed for hours earlier — a true statement whose subject is unstated, so
+ * the reader concludes something about a path that was never measured.
+ */
+describe('the unknown verdict names its subject', () => {
+  it('says it measured the SERVER adapter, not inbound generally', () => {
+    const r = telegramStateFrom({
+      started: false, fatalReason: null, consecutivePollErrors: 0, lastError: null, stoppedAt: null,
+    });
+    expect(r.state).toBe('unknown');
+    expect(r.detail).toMatch(/server adapter/i);
+    // And it must say what that does NOT establish — the part a reader would otherwise infer.
+    expect(r.detail).toMatch(/lifeline/i);
+    expect(r.detail).toMatch(/does not|not mean/i);
+  });
+
+  it('still refuses to call it healthy — naming the subject must not soften the verdict', () => {
+    // The failure direction that matters: an unnamed subject was bad, but a reassuring one is worse.
+    const r = telegramStateFrom({
+      started: false, fatalReason: null, consecutivePollErrors: 0, lastError: null, stoppedAt: null,
+    });
+    expect(r.state).not.toBe('working');
+    expect(r.direction).toBe('none');
+  });
+});
+
 describe('user channel liveness — the refusals', () => {
   it('THE FIX: a configured-but-DEAD Telegram is never reported as working', () => {
     // This is the whole point. Config still says the bot is set up; the loop is dead.

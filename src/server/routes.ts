@@ -30176,6 +30176,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         slackConnected: () =>
           slackAdapter && typeof slackAdapter.isConnected === 'function' ? slackAdapter.isConnected() : null,
         slackEnabled: () => Boolean(slackAdapter),
+        // `getStatus().state` is a real state machine, so `qr-pending` (waiting on a human to
+        // scan) stays distinguishable from `disconnected` (the link dropped).
+        whatsappState: () =>
+          ctx.whatsapp && typeof ctx.whatsapp.getStatus === 'function'
+            ? ctx.whatsapp.getStatus().state
+            : null,
+        // `getConnectionInfo().state`, NOT the sibling `connectedAt` — that field is computed as
+        // `started ? new Date().toISOString() : undefined`, so it reports the moment you asked
+        // rather than the moment it connected.
+        imessageState: () =>
+          ctx.imessage && typeof ctx.imessage.getConnectionInfo === 'function'
+            ? ctx.imessage.getConnectionInfo().state
+            : null,
       });
       const report = await resolveChannels([...defs, ...userDefs]);
       return res.status(200).json({ advisory: true, ...report });

@@ -62,7 +62,33 @@ export interface UserChannelProbeContext {
   slackConnected: () => boolean | null;
   /** Whether Slack is switched on for this agent at all. Off is not broken. */
   slackEnabled: () => boolean;
+  /**
+   * WhatsApp's live connection state, or null when no adapter was constructed here.
+   *
+   * Read from `getStatus().state`, which is a real state machine
+   * (`disconnected | connecting | qr-pending | connected | reconnecting | closed`) rather
+   * than a boolean — so the row can distinguish "waiting for the operator to scan a QR"
+   * from "the link dropped", which a boolean would flatten into one indistinguishable
+   * "not working".
+   */
+  whatsappState: () => WhatsAppLiveState | null;
+  /**
+   * iMessage's live backend state, or null when no adapter was constructed here.
+   *
+   * Read from `getConnectionInfo().state`. Deliberately NOT `connectedAt` from the same
+   * object: that field is computed as `started ? new Date().toISOString() : undefined`, so
+   * it reports the moment you ASKED rather than the moment it connected. A row built on it
+   * would look precise and be fiction.
+   */
+  imessageState: () => IMessageLiveState | null;
 }
+
+/** The WhatsApp connection states this module distinguishes. Mirrors the adapter's own union. */
+export type WhatsAppLiveState =
+  | 'disconnected' | 'connecting' | 'qr-pending' | 'connected' | 'reconnecting' | 'closed';
+
+/** The iMessage backend states this module distinguishes. */
+export type IMessageLiveState = 'disconnected' | 'connecting' | 'connected' | string;
 
 /**
  * Map live Telegram state onto the registry's vocabulary.
@@ -115,13 +141,27 @@ export function telegramStateFrom(status: TelegramLiveStatus | null): ChannelPro
   // Stopped, with no reason the adapter could classify. That is genuinely undetermined: it may have
   // been stopped deliberately or have died silently, and this cannot tell which. `unknown` is the
   // honest verdict and is NEVER a synonym for healthy.
+  //
+  // THE SUBJECT MUST BE NAMED, and this row originally failed to name it. What is measured is the
+  // SERVER process's adapter. On a lifeline deployment inbound Telegram does not arrive through that
+  // adapter at all — a separate lifeline process polls and forwards to the server, which logs
+  // "Telegram relay wired (via lifeline callback forwarding)". There, a stopped server poll loop is
+  // NORMAL and says nothing about whether messages are arriving.
+  //
+  // Observed live on 2026-07-27: this row read `unknown` while inbound was perfectly healthy via the
+  // lifeline. That is the SAME scope error the threadline-relay row was fixed for hours earlier — a
+  // true statement whose subject is unstated, so the reader draws a conclusion about a path that was
+  // never measured. Naming the subject is the whole fix; the verdict itself stays `unknown`, because
+  // what this CAN see is genuinely undetermined.
   return {
     state: 'unknown',
     direction: 'none',
     detail:
-      'the Telegram poll loop is not running and the adapter recorded no reason' +
+      'the SERVER adapter\'s Telegram poll loop is not running and it recorded no reason' +
       (status.stoppedAt ? ` (stopped at ${status.stoppedAt})` : '') +
-      '; cannot tell a deliberate stop from a silent death',
+      '; cannot tell a deliberate stop from a silent death. NOTE this measures the server adapter only'
+      + ' — on a lifeline deployment inbound arrives via the lifeline process, so this alone does not'
+      + ' mean messages are not being received',
   };
 }
 
@@ -153,6 +193,94 @@ export function slackStateFrom(enabled: boolean, connected: boolean | null): Cha
   };
 }
 
+/**
+ * WhatsApp's state machine → an honest channel verdict.
+ *
+ * The interesting case is `qr-pending`: the link is alive and waiting for the operator to
+ * scan a code. That is neither working nor broken — it is *reachable, no credential yet*,
+ * and it needs a HUMAN action rather than a restart. Reporting it as `broken` would send
+ * someone to debug a connection that is behaving exactly as designed.
+ *
+ * `connecting` / `reconnecting` are genuinely in-flight, so they report `unknown` with the
+ * phase named rather than being guessed either way — an answer that will be different in
+ * five seconds must not be frozen into a verdict.
+ */
+export function whatsappStateFrom(state: WhatsAppLiveState | null): ChannelProbeResult {
+  if (state === null) {
+    return {
+      state: 'not-configured', direction: 'none',
+      detail: 'no WhatsApp adapter was constructed on this agent',
+    };
+  }
+  switch (state) {
+    case 'connected':
+      return {
+        state: 'working', direction: 'bidirectional',
+        detail: 'adapter reports connected; NOTE this is the link state, not proof a send to a particular chat would land',
+      };
+    case 'qr-pending':
+      return {
+        state: 'reachable-no-credential', direction: 'none',
+        detail: 'waiting for the operator to scan the pairing QR — the link is alive but unauthenticated; restarting will not help, a human must scan',
+      };
+    case 'connecting':
+    case 'reconnecting':
+      return {
+        state: 'unknown', direction: 'none',
+        detail: `link is ${state} — in flight, so neither working nor broken can be asserted yet`,
+      };
+    case 'disconnected':
+    case 'closed':
+      return {
+        state: 'broken', direction: 'none',
+        detail: `adapter reports ${state}; a send would be refused`,
+      };
+    default:
+      // An unrecognised state is NOT healthy and NOT a confident broken.
+      return {
+        state: 'unknown', direction: 'none',
+        detail: `adapter reported an unrecognised state (${String(state)})`,
+      };
+  }
+}
+
+/**
+ * iMessage's backend state → an honest channel verdict.
+ *
+ * Narrower than WhatsApp because the backend exposes less. Deliberately built on `state`
+ * and NOT on the sibling `connectedAt`, which is computed as
+ * `started ? new Date().toISOString() : undefined` — i.e. it always reports the moment you
+ * asked, never the moment it connected. A row built on that would look precise and be
+ * fiction, which is the exact failure this registry exists to prevent.
+ */
+export function imessageStateFrom(state: IMessageLiveState | null): ChannelProbeResult {
+  if (state === null) {
+    return {
+      state: 'not-configured', direction: 'none',
+      detail: 'no iMessage adapter was constructed on this agent',
+    };
+  }
+  if (state === 'connected') {
+    return {
+      state: 'working', direction: 'bidirectional',
+      detail: 'backend reports connected; NOTE this is the backend link, not proof a send to a particular contact would land',
+    };
+  }
+  if (state === 'connecting') {
+    return {
+      state: 'unknown', direction: 'none',
+      detail: 'backend is connecting — in flight, so neither working nor broken can be asserted yet',
+    };
+  }
+  if (state === 'disconnected') {
+    return { state: 'broken', direction: 'none', detail: 'backend reports disconnected; a send would be refused' };
+  }
+  return {
+    state: 'unknown', direction: 'none',
+    detail: `backend reported an unrecognised state (${String(state)})`,
+  };
+}
+
 export function buildUserChannelDefinitions(ctx: UserChannelProbeContext): ChannelDefinition[] {
   return [
     {
@@ -180,6 +308,30 @@ export function buildUserChannelDefinitions(ctx: UserChannelProbeContext): Chann
         'the wrong surface for anything they would not want their workspace to see.',
       probe: async (): Promise<ChannelProbeResult> =>
         slackStateFrom(ctx.slackEnabled(), ctx.slackConnected()),
+    },
+    {
+      id: 'user-whatsapp',
+      audience: 'user',
+      purpose: "A WhatsApp line the operator reads, paired to their own phone.",
+      whenPreferred:
+        'When the operator is away from a desk — it reaches a phone people actually carry. Same '
+        + 'user-experience-proof property as Telegram: it shows what they genuinely receive.',
+      cost:
+        "Spends the operator's attention on their most personal channel, so the bar for using it is "
+        + 'higher than for Telegram. Pairing is human-gated: a dropped link needs a QR scan, not a restart.',
+      probe: async (): Promise<ChannelProbeResult> => whatsappStateFrom(ctx.whatsappState()),
+    },
+    {
+      id: 'user-imessage',
+      audience: 'user',
+      purpose: "iMessage to the operator, through a backend on this machine.",
+      whenPreferred:
+        'When the operator is on Apple devices and wants messages where they already read them. '
+        + 'Like the others, it is a real user surface rather than a proxy for one.',
+      cost:
+        "Spends the operator's attention, and is machine-bound: it works only from the host holding "
+        + 'the backend, so it is the wrong choice for anything that must survive this machine going away.',
+      probe: async (): Promise<ChannelProbeResult> => imessageStateFrom(ctx.imessageState()),
     },
   ];
 }
