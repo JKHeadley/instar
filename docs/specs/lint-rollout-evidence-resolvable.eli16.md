@@ -29,7 +29,7 @@ That turns "somebody should notice this" into "nobody can ship past it."
 
 ## The part that stops it rotting
 
-The two known-broken cases are listed explicitly, so the check passes today rather than blocking
+The known-broken cases are listed explicitly, so the check passes today rather than blocking
 everyone on someone else's old problem. That list is the obvious weak point — allowlists have a way
 of becoming permanent parking.
 
@@ -37,8 +37,10 @@ So the list can only shrink. If a listed feature's readout starts existing, the 
 until the entry is deleted. You can't leave a stale exemption sitting there, and more importantly a
 forgotten exemption can't hide the same problem happening again later at the same address.
 
-One of the two entries is already written to self-destruct: its fix is in a pull request right now,
-and the moment that merges, the build will demand the exemption be removed.
+**That already happened once, before this even shipped.** The list started with two entries. The
+fix for one of them merged an hour later, and the very next run of the check failed — naming the
+now-resolving entry and refusing to pass until it was deleted. It was deleted. One entry remains.
+The self-destruct isn't a claim about the future; it has already fired once, on its own author.
 
 ## How I know it works
 
