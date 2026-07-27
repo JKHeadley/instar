@@ -1,0 +1,85 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+`CapabilityMapper.loadBuiltinManifest()` resolved the builtin manifest as
+`__dirname/../data/builtin-manifest.json`. In a source checkout that is `src/core → src/data`, which
+exists. In a compiled install it is `dist/core → dist/data`, which does not — tsc does not copy JSON
+and nothing else writes it, while the manifest actually ships at `src/data/` via package.json
+`files`.
+
+Verified on a real install: `dist/data/builtin-manifest.json` **absent**,
+`src/data/builtin-manifest.json` **present (62,717 bytes)**.
+
+The failure was then silent twice over: a missing file fell through to `return {}`, and a parse error
+was caught and also returned `{}`. An empty map is indistinguishable from "this agent has no builtin
+capabilities", so every deployed agent reported zero builtins with nothing saying why.
+
+Resolution now enumerates both layouts, and the loader reports `loaded` / `not-found` / `unreadable`.
+That state is surfaced as `summary.builtinManifest` on the capability map, so a low builtin count can
+be told apart from unreadable provenance data. It remains a signal: a missing manifest still yields an
+empty entry set, the map still builds, and nothing throws.
+
+## Evidence
+
+Falsified by restoring each half of the defect in production and confirming the tests fail.
+
+Collapsing the candidate list back to the single original path:
+
+```
+× THE BUG: resolves in an INSTALLED layout, where the manifest ships at src/data
+  → expected 'not-found' to be 'loaded'
+× a genuinely EMPTY manifest reports loaded — the other side of the boundary
+× an UNPARSEABLE manifest reports unreadable, with the path and the parse error
+× enumerates both layouts, in order
+  Tests  4 failed | 4 passed (8)
+```
+
+Conflating a missing manifest with a loaded one:
+
+```
+× a MISSING manifest reports not-found — never confused with loaded-and-empty
+  → expected 'loaded' to be 'not-found'
+  Tests  2 failed | 6 passed (8)
+```
+
+Both restored byte-identical. Green across every suite touching the changed file:
+`Test Files 4 passed (4) · Tests 181 passed (181)` (`builtin-manifest-resolution`,
+`capability-mapper`, `capability-mapper-advanced`, `builtin-manifest`); `tsc --noEmit` exit 0.
+
+The tests were rewritten before landing: the first draft reimplemented the resolution inside the test
+and asserted against that copy, which cannot fail when production changes — the same blindness the
+bug is made of. Production now exports the resolution parameterised by a module directory, and the
+tests call it directly.
+
+## Known limits
+
+The load state is reported but not acted on — nothing raises an alert when it is `not-found` on a
+deployed agent, so a broken install still looks normal to anyone not reading the field. And this does
+not settle *why* `dist/data` was expected: if a build step was meant to copy the manifest there, that
+step still does not exist. Reading from both locations is the safer direction, not an answer to that
+question.
+
+## What to Tell Your User
+
+Your agent can now correctly tell which of its abilities came built in.
+
+It ships with a list of everything it has out of the box, and it was looking for that list in a
+folder that only exists while the code is being developed, not in the version you actually install.
+So on every installed agent the list came back empty, and your agent quietly reported that it had no
+built-in abilities at all — with nothing to indicate the information had simply failed to load.
+
+It now looks in the right place. And if that information is ever genuinely missing or damaged, it
+says so plainly instead of reporting an empty answer as though it were the truth, because a confident
+wrong answer is worse than an honest gap.
+
+One thing you may notice: on your next update, the breakdown of where your agent's abilities came
+from will shift, with more of them correctly attributed as built in. That is the fix working, not a
+change in what your agent can do.
+
+## Summary of New Capabilities
+
+No new endpoint, command, or configuration. The capability map summary gains a field reporting
+whether the builtin manifest loaded, was not found, or was unreadable.
