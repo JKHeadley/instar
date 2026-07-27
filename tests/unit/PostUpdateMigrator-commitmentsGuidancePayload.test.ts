@@ -9,6 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { generateClaudeMd } from '../../src/scaffold/templates.js';
 
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
 
@@ -70,5 +71,29 @@ describe('PostUpdateMigrator — commitments guidance payload migration', () => 
 
     expect(afterSecond).toBe(afterFirst);
     expect(result2.upgraded.some((u) => u.includes('commitments guidance payload'))).toBe(false);
+  });
+
+  it('leaves customized commitments guidance untouched when the exact stale payload is absent', () => {
+    const shippedPayload =
+      `-d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID}'`;
+    const customizedPayload =
+      `-d '{"userRequest":"<operator wording>","agentResponse":"<agent wording>","type":"one-time-action","topicId":TOPIC_ID,"source":"local-playbook"}'`;
+    const baseline = generateClaudeMd('test', 'TestAgent', 4042, false);
+    expect(baseline).toContain(shippedPayload);
+
+    const customized = baseline.replace(shippedPayload, customizedPayload);
+    fs.writeFileSync(claudeMdPath, customized);
+
+    const unrelatedMigrationResult = runClaudeMdMigration(newMigrator());
+    const otherwiseCurrentCustomizedDoc = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(otherwiseCurrentCustomizedDoc).toContain(customizedPayload);
+    expect(unrelatedMigrationResult.upgraded.some((u) => u.includes('commitments guidance payload'))).toBe(false);
+
+    const result = runClaudeMdMigration(newMigrator());
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+
+    expect(after).toBe(otherwiseCurrentCustomizedDoc);
+    expect(result.errors).toEqual([]);
+    expect(result.upgraded.some((u) => u.includes('commitments guidance payload'))).toBe(false);
   });
 });

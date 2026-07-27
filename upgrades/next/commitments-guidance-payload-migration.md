@@ -21,4 +21,6 @@ failed the new migration test before the migration existed. The rejected body om
 
 After the migration was added, the same test passed and asserted the rewritten payload contains
 `agentResponse` and `one-time-action`. The test also runs the migration twice and confirms the
-second pass makes no change.
+second pass makes no change. A negative control feeds a locally customized commitments curl that
+does not contain the exact stale payload and asserts the file is byte-identical afterward with no
+commitments-guidance upgrade recorded.

@@ -20,7 +20,7 @@ That payload is rejected by `POST /commitments` because `agentResponse` is requi
 ## What changed
 
 - `src/core/PostUpdateMigrator.ts` now rewrites only the exact stale commitments payload to the accepted `agentResponse` + `one-time-action` payload.
-- `tests/unit/PostUpdateMigrator-commitmentsGuidancePayload.test.ts` covers an already-installed Commitments section with the old payload and proves the migration is idempotent.
+- `tests/unit/PostUpdateMigrator-commitmentsGuidancePayload.test.ts` covers an already-installed Commitments section with the old payload, proves the migration is idempotent, and includes a negative control proving customized guidance without the exact stale payload is byte-preserved with no upgrade recorded.
 - The existing `tests/unit/commitments-agent-guidance-contract.test.ts` remains the source-string guard against re-documenting the rejected type in shipped guidance.
 
 ## Decision-point inventory
@@ -80,6 +80,7 @@ Trivial. Remove the migration block and the regression test. Docs already correc
 - New agents: already receive the accepted payload from `src/scaffold/templates.ts`.
 - Existing agents: now receive an in-place rewrite on update when their installed `CLAUDE.md` contains the stale payload.
 - Idempotency: proved by running the migration twice and asserting the second pass changes nothing.
+- Customization preservation: proved by feeding a locally customized commitments curl that does not contain the exact stale payload and asserting byte-identical output plus no commitments-guidance upgrade record.
 
 ## Drift grep
 
@@ -87,7 +88,7 @@ I grepped the installed agent docs, the fresh template, and the migrator source 
 
 ## Tests
 
-- Failing-before proof: `npx vitest run tests/unit/PostUpdateMigrator-commitmentsGuidancePayload.test.ts` failed before the migration existed.
+- Failing-before proof: `npx vitest run tests/unit/PostUpdateMigrator-commitmentsGuidancePayload.test.ts` failed against `origin/main` plus this test file and without the migrator change.
 - Passing after fix: `npx vitest run tests/unit/PostUpdateMigrator-commitmentsGuidancePayload.test.ts tests/unit/commitments-agent-guidance-contract.test.ts`.
 - Touched suite: `npx vitest run tests/unit/PostUpdateMigrator-commitmentsGuidancePayload.test.ts tests/unit/commitments-agent-guidance-contract.test.ts tests/unit/commitment-routes.test.ts`.
 - Lint: `npm run lint`.
