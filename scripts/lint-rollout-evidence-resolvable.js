@@ -71,13 +71,6 @@ const KNOWN_UNRESOLVED = [
       'endpoint its spec names as rollout evidence; the rollout has been active and ' +
       'unmeasurable since. Tracked as ACT-1398.',
   },
-  {
-    slug: 'claim-verification-sentinel',
-    reason:
-      'Named /completion-claim-verification/stats, a prefix that never existed, while ' +
-      'CompletionClaimVerifier.stats() was called by no route. Fixed in PR #1682 — ' +
-      'delete this entry once that merges; assertion C will demand it.',
-  },
 ];
 
 function specFiles() {

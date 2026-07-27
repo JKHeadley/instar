@@ -103,3 +103,17 @@ Tests: 6 passing, and the load-bearing one asserts the lint **is wired into the 
 chain**. A guard not in the chain never runs, which is the same defect class the guard detects.
 The tests also assert the lint reports a non-zero denominator — a scan of nothing must not read as
 a pass.
+
+## Post-rebase: assertion C fired on its own author
+
+PR #1682 (the `/completion-claim/stats` route) merged while this branch was open. Rebasing onto
+that main and re-running the lint produced:
+
+```
+FAIL — claim-verification-sentinel: rollout-evidence-ref "/completion-claim/stats" now RESOLVES,
+       but the slug is still listed in KNOWN_UNRESOLVED. Delete that entry.        exit 1
+```
+
+The entry was deleted. Baseline is now **1 accepted-unresolved** (`mutual-ssh-autobootstrap`,
+ACT-1398), 4 of 5 resolving. Nothing about the guard changed — the shrink-only property was
+exercised for real rather than only in a test, before the guard had even landed.
