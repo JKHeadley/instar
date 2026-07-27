@@ -4483,6 +4483,40 @@ export class AgentServer {
     const lastResultPath = options.config.stateDir
       ? path.join(options.config.stateDir, 'mentor-last-result.json')
       : null;
+    const sweepMentorOrphans = (): void => {
+      const outstanding = self.getOrCreateMentorOutstanding();
+      const orphans = outstanding.sweepExpired();
+      for (const orphan of orphans) {
+        if (!outstanding.recordOrphanNotified(orphan.corr)) continue;
+        console.warn(`[mentor] orphaned prompt — no reply within ${orphan.ageMs}ms (corr=${orphan.corr}, mentee=${orphan.mentee})`);
+        try {
+          DegradationReporter.getInstance().report({
+            feature: 'mentor.reply-orphaned',
+            primary: 'mentor receives a correlated mentee reply within replyTimeoutMs',
+            fallback: 'the content-key retry brake accounts for the attempt before any later send',
+            reason: `outstanding prompt corr=${orphan.corr} aged ${orphan.ageMs}ms without a mentor-reply`,
+            impact: 'the attempt is classified as unconfirmed delivery; identical content remains subject to its bounded retry budget',
+          });
+        } catch { /* best-effort */ }
+      }
+    };
+    const escalateMentorDeliveryExhaustion = (
+      contentKey: string,
+      attempts: number,
+      reason: string,
+    ): void => {
+      const outstanding = self.getOrCreateMentorOutstanding();
+      if (!outstanding.recordRetryExhaustionEscalated(contentKey)) return;
+      try {
+        DegradationReporter.getInstance().report({
+          feature: 'mentor.delivery-unconfirmed-retry-exhausted',
+          primary: 'a mentor prompt produces a correlated mentee reply',
+          fallback: 'the durable content-key breaker suppresses further identical sends',
+          reason,
+          impact: `that agenda item is paused as a transport/delivery failure after ${attempts} attempts; a genuinely new agenda item remains eligible`,
+        });
+      } catch { /* best-effort */ }
+    };
     return new MentorOnboardingRunner(
       {
         capture: (input) => ledger.captureRun(input),
@@ -4658,6 +4692,11 @@ export class AgentServer {
         isMenteeBusy: () => {
           const cfg = getConfig();
           const menteeAgent = cfg.menteeAgentName || `instar-${cfg.menteeFramework}`;
+          // Sweep + classify expired correlations BEFORE asking the busy gate.
+          // canSendTo also sweeps defensively, but doing it here preserves the
+          // orphan evidence instead of deleting it before the distinct delivery
+          // signal can be emitted.
+          sweepMentorOrphans();
           return !self.getOrCreateMentorOutstanding().canSendTo(menteeAgent).ok;
         },
         minIntervalElapsed: () => {
@@ -4702,29 +4741,28 @@ export class AgentServer {
           const menteeAgent = cfg.menteeAgentName || `instar-${framework}`;
           const corr = `mp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-          // Anti-ping-pong (spec §Fix 2b item 4 + Justin's original concern). Same
-          // logic regardless of transport. Refuse to send a new prompt while a
-          // prior one is unanswered within replyTimeoutMs.
+          // Anti-ping-pong + content-key retry breaker. Reserve the attempt in
+          // durable state BEFORE calling any transport. A failed reservation is
+          // a hard refusal: acting without the restart-proof ledger would turn a
+          // storage problem back into an unbounded self-action loop.
           const outstanding = self.getOrCreateMentorOutstanding();
-          const orphans = outstanding.sweepExpired();
-          for (const orphan of orphans) {
-            if (outstanding.recordOrphanNotified(orphan.corr)) {
-              console.warn(`[mentor] orphaned prompt — no reply within ${orphan.ageMs}ms (corr=${orphan.corr}, mentee=${orphan.mentee})`);
-              try {
-                DegradationReporter.getInstance().report({
-                  feature: 'mentor.reply-orphaned',
-                  primary: 'mentor receives Codey reply within replyTimeoutMs',
-                  fallback: 'tick continues; no auto-resend; Stage-B sees the routed-sent row + no matching reply row',
-                  reason: `outstanding prompt corr=${orphan.corr} aged ${orphan.ageMs}ms without a mentor-reply`,
-                  impact: 'mentor cycle silently lost a reply; next tick allowed to retry',
-                });
-              } catch { /* best-effort */ }
+          const reservation = outstanding.reserveSend(corr, menteeAgent, message);
+          if (!reservation.ok) {
+            if (reservation.reason === 'prior-prompt-in-flight') {
+              console.warn(`[mentor] deliverToMentee deferred — prior-prompt-in-flight (corr=${reservation.outstandingCorr}, sentAt=${reservation.sentAt})`);
+              return { delivered: false, reason: reservation.reason };
             }
-          }
-          const check = outstanding.canSendTo(menteeAgent);
-          if (!check.ok) {
-            console.warn(`[mentor] deliverToMentee deferred — prior-prompt-in-flight (corr=${check.outstandingCorr}, sentAt=${check.sentAt})`);
-            return;
+            if (reservation.reason === 'identical-content-retry-exhausted') {
+              console.warn(`[mentor] deliverToMentee suppressed — identical-content-retry-exhausted (attempts=${reservation.attempts}, key=${reservation.contentKey.slice(0, 12)})`);
+              escalateMentorDeliveryExhaustion(
+                reservation.contentKey,
+                reservation.attempts,
+                `${reservation.attempts} attempts for the same normalized mentor content ended without a confirmed reply`,
+              );
+              return { delivered: false, reason: reservation.reason };
+            }
+            console.warn(`[mentor] deliverToMentee refused — ${reservation.reason}`);
+            return { delivered: false, reason: reservation.reason };
           }
 
           // Deliver via the unified a2a transport: same-machine /a2a/inbox
@@ -4735,47 +4773,55 @@ export class AgentServer {
             cfg.botToken && cfg.menteeChatId
               ? self.getOrCreateMentorBot(cfg.botToken, cfg.menteeChatId) ?? undefined
               : undefined;
-          const delivered = await self.deliverA2aMessage({
-            fromAgent: 'echo',
-            toAgent: menteeAgent,
-            role: 'mentor',
-            corr,
-            body: message,
-            allowedRoles: new Set(['mentor']),
-            // Route the mentor exchange to a DEDICATED mentor topic when one is
-            // configured, so the mentor's a2a check-ins don't interleave with
-            // the human↔mentee conversation topic (menteeTopicId). This one id
-            // drives both the /a2a/inbox body (where the mentee binds its
-            // session) and the Telegram fallback, so the whole exchange moves
-            // together. Falls back to menteeTopicId (backward-compatible).
-            telegramTopicId: resolveMentorDeliveryTopic(cfg),
-            targetMachineId: cfg.menteeMachineId,
-            // fromBotId = echo's mentor-bot id, so the mentee's allowlist
-            // (knownMentors[echo].botId === senderBotId) passes.
-            fromBotId: cfg.botToken ? cfg.botToken.split(':')[0] : undefined,
-            toBotId: cfg.menteeBotId,
-            telegramBot: telegramBot
-              ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
-              : undefined,
-            botToken: cfg.botToken,
-            visibleEcho: {
-              enabled: cfg.visibleEcho !== false,
-              bot: telegramBot
+          let delivered = false;
+          try {
+            delivered = await self.deliverA2aMessage({
+              fromAgent: 'echo',
+              toAgent: menteeAgent,
+              role: 'mentor',
+              corr,
+              body: message,
+              allowedRoles: new Set(['mentor']),
+              // Route the mentor exchange to a DEDICATED mentor topic when one is
+              // configured, so mentor a2a stays off the human conversation.
+              telegramTopicId: resolveMentorDeliveryTopic(cfg),
+              targetMachineId: cfg.menteeMachineId,
+              fromBotId: cfg.botToken ? cfg.botToken.split(':')[0] : undefined,
+              toBotId: cfg.menteeBotId,
+              telegramBot: telegramBot
                 ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
                 : undefined,
-              topicId: resolveMentorDeliveryTopic(cfg),
-              roleTag: '[mentor]',
-              reportFailure: (reason) => {
-                DegradationReporter.getInstance().report({
-                  feature: 'mentor.visible-echo',
-                  primary: 'successful inbox-local mentor delivery is mirrored visibly in Telegram',
-                  fallback: 'canonical /a2a/inbox delivery remains successful; operator may see a phantom prompt',
-                  reason,
-                  impact: 'mentor exchange was delivered but its visible chat mirror is partial or absent',
-                });
+              botToken: cfg.botToken,
+              visibleEcho: {
+                enabled: cfg.visibleEcho !== false,
+                bot: telegramBot
+                  ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
+                  : undefined,
+                topicId: resolveMentorDeliveryTopic(cfg),
+                roleTag: '[mentor]',
+                reportFailure: (reason) => {
+                  DegradationReporter.getInstance().report({
+                    feature: 'mentor.visible-echo',
+                    primary: 'successful inbox-local mentor delivery is mirrored visibly in Telegram',
+                    fallback: 'canonical /a2a/inbox delivery remains successful; operator may see a phantom prompt',
+                    reason,
+                    impact: 'mentor exchange was delivered but its visible chat mirror is partial or absent',
+                  });
+                },
               },
-            },
-          });
+            });
+          } catch (err) {
+            outstanding.markDeliveryFailed(corr);
+            console.warn(`[mentor] deliverToMentee transport failed (corr=${corr}, mentee=${menteeAgent}):`, err instanceof Error ? err.message : String(err));
+            if (reservation.exhausted) {
+              escalateMentorDeliveryExhaustion(
+                reservation.contentKey,
+                reservation.attempt,
+                `${reservation.attempt} transport attempts for the same normalized mentor content threw before delivery confirmation`,
+              );
+            }
+            return { delivered: false, reason: 'transport-failed' as const };
+          }
           if (delivered) {
             self.appendMentorSent(options.config.stateDir, {
               ts: Date.now(),
@@ -4785,9 +4831,21 @@ export class AgentServer {
               topicId: resolveMentorDeliveryTopic(cfg),
               message,
             });
-            outstanding.markSent(corr, menteeAgent);
+            return { delivered: true };
           } else {
+            outstanding.markDeliveryFailed(corr);
             console.warn(`[mentor] deliverToMentee did not deliver (corr=${corr}, mentee=${menteeAgent}) — no local peer + telegram fallback unavailable/blocked`);
+            // The attempt remains in the content ledger. On the final allowed
+            // attempt, emit the distinct delivery failure immediately instead
+            // of waiting for another tick merely to discover the open breaker.
+            if (reservation.exhausted) {
+              escalateMentorDeliveryExhaustion(
+                reservation.contentKey,
+                reservation.attempt,
+                `${reservation.attempt} transport attempts for the same normalized mentor content were refused`,
+              );
+            }
+            return { delivered: false, reason: 'transport-unavailable' as const };
           }
         },
         onTickRan: () => {

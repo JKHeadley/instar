@@ -122,6 +122,40 @@ describe('Mentor-onboarding E2E lifecycle (alive + dormant)', () => {
     const body = fs.readFileSync(jobPath, 'utf-8');
     expect(body).toMatch(/^enabled:\s*false\s*$/m);
   });
+
+  it('production delivery wiring durably breaks identical transport retries while allowing new content', async () => {
+    const runner = (server as any).mentorRunner;
+    const deliver = runner?.services?.deliverToMentee as
+      | ((framework: string, message: string) => Promise<{ delivered: boolean; reason?: string }>)
+      | undefined;
+    expect(deliver).toBeTypeOf('function');
+
+    const repeated = 'May I use the default permission rule?';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await expect(deliver!('codex-cli', repeated)).resolves.toMatchObject({
+        delivered: false,
+        reason: 'transport-unavailable',
+      });
+    }
+    await expect(deliver!('codex-cli', repeated)).resolves.toMatchObject({
+      delivered: false,
+      reason: 'identical-content-retry-exhausted',
+    });
+    await expect(deliver!('codex-cli', 'Please review the next bounded task.')).resolves.toMatchObject({
+      delivered: false,
+      reason: 'transport-unavailable',
+    });
+
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(stateDir, 'mentor-outstanding-prompts.json'), 'utf-8'),
+    ) as {
+      v: number;
+      retries: Record<string, { attempts: number; escalatedAt?: number }>;
+    };
+    expect(persisted.v).toBe(2);
+    expect(Object.values(persisted.retries).map((r) => r.attempts).sort()).toEqual([1, 3]);
+    expect(Object.values(persisted.retries).some((r) => typeof r.escalatedAt === 'number')).toBe(true);
+  });
 });
 
 describe('Mentor ledger survives a broken TokenLedger (regression: production cascade)', () => {
