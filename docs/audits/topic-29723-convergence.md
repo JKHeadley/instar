@@ -93,9 +93,27 @@ instance of the very class under audit, produced *during* the audit. That is the
 evidence that the class is not closed: it is still generating instances in the same session that is
 documenting it.
 
-What genuinely closed since Round 1: the goal-realignment thread (unblocked, in build), the
-rollout-evidence class (fixed in both instances AND ratcheted so it cannot silently recur), the
-recall-strategy defect, and the flake that was blocking unrelated work.
+**What is MERGED since Round 1, and what is only in flight** — separated deliberately, because the
+first draft of this paragraph listed four things as "genuinely closed" when exactly one of them was
+merged. Writing "closed" for work sitting in CI is trusting a label over the artifact, in the audit
+about trusting labels over artifacts.
+
+MERGED on `main` — three:
+
+1. PR #1682 — the claim-verification rollout-evidence endpoint.
+2. PR #1684 — the E2E race that was blocking two unrelated PRs on a red check.
+3. PR #1661 — a staleness check whose remediation text named an impossible action.
+
+IN FLIGHT, not closed — five open PRs with CI running at the time of writing:
+
+4. PR #1688 — the rollout-evidence ratchet, the thing that makes the class un-reintroducible.
+5. PR #1685 — the mutual-ssh evidence-ref correction, the second instance of the class.
+6. PR #1683 — recall retrieving semantically instead of by keyword, Thread 12's core.
+7. PR #1687 — the pre-push gate refusing every clean post-release push.
+8. PR #1686 — this ledger.
+
+Not code at all: the goal-realignment thread is **unblocked and in build with the peer agent** —
+which is progress, not closure, and must not be reported as closure.
 
 What remains open: the enforcement base rate (81 standards / 1 guard) is unchanged; the
 filing-outruns-finishing ratio is unchanged; the councilor pair remains scoped and unbuilt; Slack as
