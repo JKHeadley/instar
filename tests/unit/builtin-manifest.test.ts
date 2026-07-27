@@ -1,3 +1,6 @@
+// safe-git-allow: read-only tracked check — this file runs
+// `git ls-files --error-unmatch` to assert the manifest is NOT tracked.
+// Index query only; mutates nothing.
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'fs';
 import path from 'path';
@@ -20,6 +23,36 @@ describe('INSTAR_BUILTIN_MANIFEST', () => {
     if (!fs.existsSync(MANIFEST_PATH)) {
       execSync('node scripts/generate-builtin-manifest.cjs', { cwd: ROOT });
     }
+  });
+
+  it('REGRESSION: the manifest is a gitignored artifact, never a committed baseline', () => {
+    // This is the fact that made the old "…is stale — commit the result" message
+    // impossible to act on. Asserting it pins the premise the corrected message
+    // rests on: if somebody starts TRACKING the artifact, this goes red and the
+    // remediation wording (rebuild, don't commit) needs revisiting — at which
+    // point a genuine committed-baseline check also becomes possible.
+    const tracked = (() => {
+      try {
+        // Read-only: queries index membership, mutates nothing.
+        // (Escape is the per-file marker at the top — the per-callsite
+        // `incremental-migration` marker expired 2026-05-03 and is closed to
+        // new callsites.)
+        execSync('git ls-files --error-unmatch src/data/builtin-manifest.json', {
+          cwd: ROOT, stdio: 'pipe',
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+
+    expect(
+      tracked,
+      'src/data/builtin-manifest.json is now TRACKED by git. The staleness check above says "rebuild, ' +
+        'do NOT commit", which was correct only while this artifact was gitignored. With a committed ' +
+        'baseline that advice is wrong AND a real committed-vs-source check becomes possible. Revisit ' +
+        'tests/unit/builtin-manifest.test.ts.',
+    ).toBe(false);
   });
 
   it('exists and is valid JSON', () => {
@@ -57,15 +90,32 @@ describe('INSTAR_BUILTIN_MANIFEST', () => {
     }
   });
 
-  it('is up-to-date with current source', () => {
-    // Generate to a TEMP path and diff against the committed file.
+  it('the on-disk build artifact is not older than current source', () => {
+    // WHAT THIS DETECTS, AND WHAT IT CANNOT — stated because the old wording
+    // got both wrong, and because I first "fixed" it in the wrong direction.
     //
-    // This used to regenerate over MANIFEST_PATH itself and compare the file
-    // before/after — a verifier that mutates the artifact it verifies. Under the
-    // parallel suite it raced package-completeness.test.ts, whose full `npx tsc`
-    // build regenerates the same tracked file, so the comparison could read a
-    // half-written or foreign manifest and go red on a perfectly good tree.
-    // Generating elsewhere makes the check read-only and order-independent.
+    // It compares the artifact ON DISK against a fresh regeneration. That is a
+    // REAL check: a local `src/data/builtin-manifest.json` left over from an
+    // earlier build goes red here (observed: on-disk instarVersion 1.3.987 vs
+    // 1.3.990 regenerated, with differing contentHashes). Remediation is to
+    // REBUILD.
+    //
+    // What it is NOT:
+    //   * NOT a check against a committed baseline. The artifact is GENERATED
+    //     and GITIGNORED (.gitignore:87) — absent from git entirely. The old
+    //     message said "…is stale — run the generator and commit the result";
+    //     the "commit" half is impossible to act on. Corrected below.
+    //   * NOT informative on a fresh checkout. `beforeAll` generates the file
+    //     when missing, so the comparison is then generate(src) vs
+    //     generate(src) — trivially equal. Its power depends entirely on a
+    //     PRIOR artifact existing. Green here means "no stale local build was
+    //     found", which on CI usually means "there was no local build to be
+    //     stale".
+    //
+    // (Kept from the prior fix: generate to a TEMP path rather than over
+    // MANIFEST_PATH, so the check never mutates the artifact it reads and
+    // cannot race package-completeness.test.ts, whose build regenerates the
+    // same file.)
     const tmpOut = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), 'builtin-manifest-check-')),
       'builtin-manifest.json',
@@ -77,7 +127,9 @@ describe('INSTAR_BUILTIN_MANIFEST', () => {
         stdio: 'pipe',
       });
 
-      const committed = fs.readFileSync(MANIFEST_PATH, 'utf-8');
+      // NOT "committed" — this is the locally generated artifact on disk.
+      // Naming it `committed` was part of what made the old claim look sound.
+      const onDisk = fs.readFileSync(MANIFEST_PATH, 'utf-8');
       const regenerated = fs.readFileSync(tmpOut, 'utf-8');
 
       // Strip generatedAt timestamp for comparison (changes every run)
@@ -85,8 +137,12 @@ describe('INSTAR_BUILTIN_MANIFEST', () => {
 
       expect(
         normalize(regenerated),
-        'src/data/builtin-manifest.json is stale — run `node scripts/generate-builtin-manifest.cjs` and commit the result',
-      ).toBe(normalize(committed));
+        'src/data/builtin-manifest.json on disk is STALE relative to current source — REBUILD it ' +
+          '(`npm run build`, or `node scripts/generate-builtin-manifest.cjs`). Do NOT try to commit it: ' +
+          'it is a generated, gitignored artifact (.gitignore:87), so the old "commit the result" ' +
+          'advice could never be followed. If this is red in CI rather than locally, the generator may ' +
+          'instead be non-deterministic — compare entry ordering.',
+      ).toBe(normalize(onDisk));
     } finally {
       SafeFsExecutor.safeRmSync(path.dirname(tmpOut), {
         recursive: true, force: true,
