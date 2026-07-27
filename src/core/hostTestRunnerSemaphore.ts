@@ -869,6 +869,13 @@ export class HostTestRunnerSemaphore {
   private readonly bootTimeMs: () => number | null;
   private readonly ttlMsOverride?: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  /**
+   * Errno of a PERMANENT rendezvous failure observed by the last lock attempt, or null.
+   * Cleared on any successful lock take, so a transient permission blip that later
+   * resolves cannot leave the semaphore stuck in fast-fail. See
+   * `isPermanentRendezvousError`.
+   */
+  private rendezvousUnwritable: string | null = null;
   private readonly pollIntervalMs: number;
   private readonly genId: () => string;
 
@@ -1474,13 +1481,23 @@ export class HostTestRunnerSemaphore {
         this.paths.lock,
         JSON.stringify({ pid: process.pid, hostname: this.host, at: this.now() }),
       );
-      if (res.ok) return res.fd;
+      if (res.ok) {
+        this.rendezvousUnwritable = null;
+        return res.fd;
+      }
       if (res.reason === 'error') {
         // Could be a missing base dir — create and retry once.
         try {
           ensureBaseDir(this.paths);
-        } catch {
-          /* @silent-fallback-ok: the outer loop treats persistent errors as lock-unavailable */
+          if (isPermanentRendezvousError(res.code)) this.rendezvousUnwritable = res.code ?? 'EACCES';
+        } catch (err) {
+          // ensureBaseDir ITSELF failed. If it failed for a permission reason the
+          // rendezvous is structurally unwritable — record it so the outer loop can
+          // fail open at once instead of polling a directory that will never appear.
+          const code = (err as NodeJS.ErrnoException).code;
+          if (isPermanentRendezvousError(code)) this.rendezvousUnwritable = code ?? 'EACCES';
+          /* @silent-fallback-ok: a NON-permanent mkdir failure stays on the contention
+             path exactly as before — the outer loop treats it as lock-unavailable. */
         }
       }
       if (this.now() >= deadline) return null;
@@ -1621,6 +1638,46 @@ export class HostTestRunnerSemaphore {
         continue;
       }
       // Lock unavailable within the attempt deadline.
+      //
+      // FAST-FAIL on a structurally unwritable rendezvous. The budget below exists for
+      // CONTENTION — another run holds the lock and will release it. A permission failure
+      // will not resolve by waiting, so polling it merely charges the full budget (60s
+      // targeted / 120s suite) before reaching the SAME admit. The admission decision is
+      // unchanged; only its latency is. Distinct cause so the two are never conflated in
+      // the ledger.
+      if (this.rendezvousUnwritable !== null) {
+        // The storm ceiling, the witness and the ledger ALL live in the same directory we
+        // just proved unwritable, so each is best-effort here and none may prevent the
+        // admit. This is not a weakening: the pre-existing path reached the SAME admit
+        // via `claimStormSlot()` throwing EACCES into the outer handler — 60s later. The
+        // outcome is identical; only the delay is removed.
+        //
+        // Stated plainly because it matters: when the rendezvous cannot be written, the
+        // storm ceiling CANNOT bound fail-open admits — it is implemented as files in
+        // that directory. That limitation is inherent to an unwritable rendezvous, not
+        // introduced here, and pretending otherwise would be the dishonest option.
+        let stormSlot: number | null = null;
+        let witnessFile: string | null = null;
+        try {
+          stormSlot = this.claimStormSlot();
+          witnessFile = this.writeWitness();
+        } catch (err) {
+          if (err instanceof TestRunnerStormCeilingError) throw err; // a real ceiling still refuses
+          /* @silent-fallback-ok: bookkeeping in an unwritable rendezvous cannot succeed;
+             the admit below is the honest outcome and is recorded on stderr regardless. */
+        }
+        try {
+          this.ledger('fail-open-admit', {
+            cause: 'rendezvous-unwritable',
+            lane: req.lane,
+            stormSlot,
+            errno: this.rendezvousUnwritable,
+          });
+        } catch {
+          /* @silent-fallback-ok: the ledger file is inside the unwritable rendezvous. */
+        }
+        return { kind: 'fail-open-admit', cause: 'rendezvous-unwritable', witnessFile };
+      }
       const age = this.lockFileAgeMs();
       if (age !== null && age > LOCK_WEDGE_AGE_MS) {
         // Provably wedged (critical section is sub-ms) — race-safe age-reclaim.
@@ -1906,6 +1963,32 @@ export class HostTestRunnerSemaphore {
 
 function ensureBaseDir(paths: TestRunnerPaths): void {
   if (!fs.existsSync(paths.baseDir)) fs.mkdirSync(paths.baseDir, { recursive: true, mode: 0o700 });
+}
+
+/**
+ * Is this errno a PERMANENT rendezvous failure — one that polling cannot fix?
+ *
+ * The acquisition loop's wait budget exists for CONTENTION: another run holds the lock
+ * and will release it, so waiting is correct. A permission failure is categorically
+ * different — an unwritable rendezvous directory does not become writable because it was
+ * asked twelve more times at five-second intervals.
+ *
+ * MEASURED before this existed: with the rendezvous unwritable, a targeted run took
+ * 61.82s versus a 932ms control (66x) — the full 60s targeted budget burned, and only
+ * THEN the fail-open admit. The admit was always correct; its latency was not.
+ *
+ * Why that mattered beyond slowness: 60s exceeds any observer's patience window. A
+ * sandboxed agent investigating its own runs gave up at 30s and reported the tests as
+ * un-runnable. **A degradation that is loud but arrives after everyone has stopped
+ * looking is indistinguishable from a silent one** — which is the exact failure class
+ * this guard exists to prevent, occurring inside the guard.
+ *
+ * Deliberately NARROW: only EACCES/EPERM/EROFS. ENOENT is excluded — a missing directory
+ * IS fixable, and `ensureBaseDir` fixes it on the very next line. Anything unrecognised
+ * stays on the contention path, so an unfamiliar errno can never shorten the budget.
+ */
+function isPermanentRendezvousError(code: string | undefined): boolean {
+  return code === 'EACCES' || code === 'EPERM' || code === 'EROFS';
 }
 
 /** Sub-millisecond spin — permitted ONLY inside the lock critical section (§2.2). */

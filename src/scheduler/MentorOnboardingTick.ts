@@ -88,7 +88,14 @@ export interface MentorTickDeps {
    * the structural fix for the cross-agent spawn loop. Omitted/undefined ⇒ no
    * delivery (the dormant + dry-run default).
    */
-  deliverToMentee?: (framework: string, message: string) => void;
+  deliverToMentee?: (
+    framework: string,
+    message: string,
+  ) =>
+    | void
+    | boolean
+    | MentorDeliveryOutcome
+    | Promise<void | boolean | MentorDeliveryOutcome>;
   /** Tick id for provenance/episode keying. */
   tickId?: string;
   now?: () => number;
@@ -104,12 +111,27 @@ export type MentorTickReason =
   | 'stage-a-failed'
   | 'ran';
 
+export type MentorDeliveryReason =
+  | 'prior-prompt-in-flight'
+  | 'identical-content-retry-exhausted'
+  | 'delivery-retry-ledger-full'
+  | 'delivery-state-unavailable'
+  | 'transport-unavailable'
+  | 'transport-failed';
+
+export interface MentorDeliveryOutcome {
+  delivered: boolean;
+  reason?: MentorDeliveryReason;
+}
+
 export interface MentorTickResult {
   ran: boolean;
   reason: MentorTickReason;
   mode?: MentorMode;
   /** True when the Stage-A message was delivered to the mentee (live mode only). */
   delivered?: boolean;
+  /** Distinct delivery-layer refusal/failure; never collapsed into "unanswered". */
+  deliveryReason?: MentorDeliveryReason;
   leakDetected?: boolean;
   observationsWritten?: number;
   findingsCount?: number;
@@ -221,9 +243,17 @@ export async function runMentorTick(deps: MentorTickDeps): Promise<MentorTickRes
   // 8. Deliver — ONLY in live mode, and ONLY via the host's persist-only path
   //    (§6). In dry-run we observe + capture but never contact the mentee.
   let delivered = false;
+  let deliveryReason: MentorDeliveryReason | undefined;
   if (deps.mode === 'live' && deps.deliverToMentee && transcript.trim()) {
-    deps.deliverToMentee(deps.framework, transcript);
-    delivered = true;
+    const outcome = await deps.deliverToMentee(deps.framework, transcript);
+    if (typeof outcome === 'object' && outcome !== null && 'delivered' in outcome) {
+      delivered = outcome.delivered;
+      deliveryReason = outcome.reason;
+    } else {
+      // Backward-compatible injected callbacks used by existing tests/plugins:
+      // explicit false means refused; void historically meant "accepted".
+      delivered = outcome !== false;
+    }
   }
 
   return {
@@ -231,14 +261,13 @@ export async function runMentorTick(deps: MentorTickDeps): Promise<MentorTickRes
     reason: 'ran',
     mode: deps.mode,
     delivered,
+    ...(deliveryReason ? { deliveryReason } : {}),
     leakDetected: leak.leaked,
     observationsWritten: captured.observationsWritten,
     findingsCount: findings.length,
-    // The tick SURFACES the Stage-A message it produced; it does NOT deliver it.
-    // No mentee-delivery path is wired yet — `live` mode is not reachable until
-    // the persist-only delivery (§6) is built + tested. Until then both dry-run
-    // and live only observe + capture. Delivery is a live-promotion blocker.
-    // <!-- tracked: topic-13435 -->
+    // The tick surfaces the exact Stage-A message for status/audit alongside
+    // the structured delivery outcome. Live delivery still occurs only through
+    // the injected host boundary above; dry-run never calls that boundary.
     stageAMessage: transcript,
   };
 }

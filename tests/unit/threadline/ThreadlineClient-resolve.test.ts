@@ -179,3 +179,72 @@ describe('ThreadlineClient — duplicate-identity name resolution (§A/§B/§C)'
     expect(await pr).toEqual([]);
   });
 });
+
+// ── Bare fingerprint-prefix addressing ───────────────────────────────────────
+//
+// `threadline_discover` returns each agent's fingerprint truncated to 8 hex chars,
+// and threadline_send's own parameter docs advertise that form ("fd9268c2..."). The
+// resolver had no bare-prefix branch, so that address fell through to name matching
+// and resolved to null: the documented discover-then-send workflow could not work.
+// Observed live 2026-07-27 — echo→instar-codey, both agents healthy, every send
+// answered `Agent not found: "7970149e"`.
+
+describe('ThreadlineClient — bare fingerprint-prefix addressing', () => {
+  let client: ThreadlineClient;
+  let p: Priv & { resolveAgent(x: string): Promise<string | null> };
+
+  beforeEach(() => {
+    client = new ThreadlineClient({ name: 'Tester', stateDir: '/tmp/resolve-prefix-test' }, () => 1_000_000);
+    p = client as unknown as Priv & { resolveAgent(x: string): Promise<string | null> };
+  });
+
+  it('resolves the 8-char prefix that discover emits (the reported bug)', async () => {
+    seed(client, '7970149e92589e0e6f173754df4d5cd0', 'instar-codey', true);
+    await expect(p.resolveAgent('7970149e')).resolves.toBe('7970149e92589e0e6f173754df4d5cd0');
+  });
+
+  it('still resolves a full fingerprint exactly (no regression)', async () => {
+    seed(client, '63b1dbb21646e2f5f860441f6c6443ad', 'echo', true);
+    await expect(p.resolveAgent('63b1dbb21646e2f5f860441f6c6443ad'))
+      .resolves.toBe('63b1dbb21646e2f5f860441f6c6443ad');
+  });
+
+  it('is case-insensitive on the prefix', async () => {
+    seed(client, '7970149e92589e0e6f173754df4d5cd0', 'instar-codey', true);
+    await expect(p.resolveAgent('7970149E')).resolves.toBe('7970149e92589e0e6f173754df4d5cd0');
+  });
+
+  it('THROWS on an ambiguous prefix rather than delivering to the wrong agent', async () => {
+    seed(client, 'abcd1111111111111111111111111111', 'one', true);
+    seed(client, 'abcd2222222222222222222222222222', 'two', true);
+    await expect(p.resolveAgent('abcd')).rejects.toThrow(/Ambiguous fingerprint prefix/);
+  });
+
+  it('names every candidate in the ambiguity error so the caller can disambiguate', async () => {
+    seed(client, 'abcd1111111111111111111111111111', 'one', true);
+    seed(client, 'abcd2222222222222222222222222222', 'two', true);
+    await expect(p.resolveAgent('abcd')).rejects.toThrow(/abcd1111111111111111111111111111/);
+  });
+
+  it('prefers the single LIVE row when a stale twin shares the prefix', async () => {
+    seed(client, 'abcd1111111111111111111111111111', 'one', true);
+    seed(client, 'abcd2222222222222222222222222222', 'one-dead', false);
+    await expect(p.resolveAgent('abcd')).resolves.toBe('abcd1111111111111111111111111111');
+  });
+
+  it('returns null for a prefix matching nothing', async () => {
+    seed(client, '7970149e92589e0e6f173754df4d5cd0', 'instar-codey', true);
+    await expect(p.resolveAgent('deadbeef')).resolves.toBeNull();
+  });
+
+  it('still resolves a hex-LIKE agent name when no fingerprint matches it', async () => {
+    // Guards the fall-through: prefix matching must not shadow name resolution.
+    seed(client, '7970149e92589e0e6f173754df4d5cd0', 'abcdef', true);
+    await expect(p.resolveAgent('abcdef')).resolves.toBe('7970149e92589e0e6f173754df4d5cd0');
+  });
+
+  it('leaves ordinary name resolution untouched', async () => {
+    seed(client, '7970149e92589e0e6f173754df4d5cd0', 'instar-codey', true);
+    await expect(p.resolveAgent('instar-codey')).resolves.toBe('7970149e92589e0e6f173754df4d5cd0');
+  });
+});

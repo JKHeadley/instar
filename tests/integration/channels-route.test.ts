@@ -71,8 +71,29 @@ describe('GET /channels (integration — the wiring, not just the resolver)', ()
 
     expect(res.status).toBe(200);
     expect(res.body.channels.map((c: { id: string }) => c.id).sort())
-      .toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'threadline-relay']);
-    expect(res.body.summary.total).toBe(4);
+      .toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'threadline-relay', 'user-imessage', 'user-slack', 'user-telegram', 'user-whatsapp']);
+    expect(res.body.summary.total).toBe(8);
+  });
+
+  /**
+   * Pins the AUDIENCE PARTITION, not just the count.
+   *
+   * The test above is satisfied by any six ids. Without this one, a change that dropped the user
+   * channels would be "fixed" by editing the list back down to four — the same edit that hides the
+   * loss. Asserting BOTH audiences are present means removing a whole audience fails as a removal
+   * rather than as an arithmetic disagreement.
+   */
+  it('REGRESSION: both audiences are served — peer channels AND the operator-facing ones', async () => {
+    const res = await request(mount(tmpDir)).get('/channels').set('Authorization', `Bearer ${AUTH}`);
+
+    const byAudience = (a: string) =>
+      res.body.channels.filter((c: { audience: string }) => c.audience === a)
+        .map((c: { id: string }) => c.id).sort();
+
+    expect(byAudience('peer')).toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'threadline-relay']);
+    expect(byAudience('user')).toEqual(['user-imessage', 'user-slack', 'user-telegram', 'user-whatsapp']);
+    // Every row must declare one; an untagged channel is not a third state, it is a bug.
+    for (const c of res.body.channels) expect(['peer', 'user']).toContain(c.audience);
   });
 
   it('every row carries purpose, when-preferred, cost and evidence — the operator-facing columns', async () => {

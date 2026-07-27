@@ -168,10 +168,54 @@ The external passes are **NON-SKIPPABLE** whenever a non-Claude framework was **
 
 Convergence criteria (BOTH must hold — additive, per Autonomy Principle 2):
 
-1. **The new round produces no material new issues.** "Material" means any finding that would require a spec change if unaddressed. Cosmetic findings, repeats of already-addressed concerns, and minor phrasing quibbles are non-material. (A cheap-to-change-after tag the Decision-Completeness reviewer contested and rejected IS a material finding.)
+1. **No DESIGN-class findings for TWO consecutive rounds.**
+
+   **Why this replaced "no material new issues" (2026-07-27).** "Material" was defined as *any finding
+   that would require a spec change if unaddressed* — and a contract-precision or naming finding DOES
+   require a spec edit, so it counted. **On a spec that appends its own review history, the reviewable
+   surface grows every round, and a diligent reviewer will always find precision to add on a larger
+   surface. So the loop could not terminate BY CONSTRUCTION for that document shape**, and the 10-round
+   cap fired for a reason unrelated to whether the design was sound.
+   That is not a hypothesis. `standards-registry-ships-with-code` recorded 4–5 findings under a column
+   headed "Material findings" in *every one* of its ten rounds, while its own report observed that
+   rounds 5–10 *"produced no design defects at all — they produced contract precision, naming, and
+   scope-bound findings."* A second spec on the same problem hit the cap identically. A verdict that
+   does not measure its subject is this project's signature failure; here it lived in the stop
+   criterion itself.
+
+   **Each reviewer CLASSIFIES every finding it raises — the class is declared, never inferred by the
+   comparator from wording:**
+
+   - **DESIGN-class** — changes what would be BUILT or how it would BEHAVE. Architecture; a safety,
+     security, scalability, or integration property; a decision point's classification or floor; a
+     multi-machine posture; a missing failure mode; **or a statement in the spec that is factually
+     WRONG about the system** (round 10 of that spec caught a false rollback claim — that is
+     design-class, not precision, and must keep resetting the counter).
+   - **PRECISION-class** — improves the DOCUMENT without changing what would be built: contract
+     wording, naming, scope-bound phrasing, an added caveat, a clarified example.
+
+   **Precision findings are still addressed** — they are genuinely valuable and several changed
+   production code — but they do not reset the counter. Only a DESIGN-class finding does.
+
+   **Two consecutive rounds, not one**, because a single quiet round is weak evidence on a spec whose
+   surface keeps growing; requiring two makes the terminating condition harder to reach by luck while
+   still reachable at all. Under this rule the spec above converges at round 7 on its merits.
+
+   (A cheap-to-change-after tag the Decision-Completeness reviewer contested and rejected is
+   DESIGN-class — it asserts reversibility the reviewer denies, which is a claim about behaviour.)
+
+   **Honest limit:** the classification is made by a reviewer, so this trades one judgment for a
+   better-specified one rather than removing judgment. A reviewer that mislabels a design defect as
+   precision can end the loop early — which is why the taxonomy names the wrong-about-the-system case
+   explicitly, and why the report must record each round's class counts so a suspiciously quiet
+   round is visible rather than merely accepted.
 2. **Zero unresolved user-decisions remain in `## Open questions`.** A spec cannot converge while a live decision is still parked on the user — every open question must be resolved into a `## Frontloaded Decisions` entry (or a contested-and-surviving cheap-to-change-after tag) before convergence. This is enforced STRUCTURALLY: `write-convergence-tag.mjs` refuses to stamp the tag while `## Open questions` contains unresolved entries, so the criterion cannot be skipped by prose (Structure > Willpower).
 
-A lightweight LLM (Haiku-class) compares the new round's findings to the prior round's findings and emits a boolean `converged: true|false` with reasoning. Human-readable comparison log is retained.
+A lightweight LLM (Haiku-class) compares the new round's findings to the prior round's findings and emits a
+boolean `converged: true|false` with reasoning. It consumes each finding's DECLARED class — it must not
+re-classify from wording, because the reviewer that raised a finding is the one that knows whether it changes
+what would be built. It also emits `designFindings` and `precisionFindings` counts per round so the
+consecutive-quiet-round count is auditable rather than asserted. Human-readable comparison log is retained.
 
 **Not converged** → back to Phase 2.
 **Converged** → Phase 4.

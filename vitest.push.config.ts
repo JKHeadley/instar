@@ -31,8 +31,28 @@ const FLAKY_TESTS = [
   'tests/e2e/lifecycle.test.ts',
 
   // ── Environment-dependent / non-deterministic ─────────────────────
-  'tests/unit/agent-registry.test.ts',
-  'tests/unit/builtin-manifest.test.ts',
+  // (empty — see the two re-arm notes below)
+  //
+  // agent-registry.test.ts + builtin-manifest.test.ts — RE-ARMED 2026-07-27,
+  // for the SAME reason as the 2026-06-05 pair below: the
+  // "environment-dependent" label was wrong on both. Measured on current main,
+  // three consecutive runs each: agent-registry 42/42/42, builtin-manifest
+  // 9/9/9. Neither is flaky.
+  //   builtin-manifest was additionally SUSPECTED of depending on
+  //   src/data/builtin-manifest.json — a generated, gitignored artifact that a
+  //   CI job which never builds would not have. That hypothesis was TESTED and
+  //   FALSIFIED: deleting the file changes nothing, because the test's own
+  //   beforeAll regenerates it via scripts/generate-builtin-manifest.cjs. It
+  //   was already self-sufficient by design.
+  //   Both arrived here in f193df789 ("exclude pre-existing flaky tests from
+  //   push gate") — a BULK exclusion, not an individual diagnosis. That is the
+  //   actual defect: the label was applied to a batch and then read, forever
+  //   after, as a finding about each member.
+  // This block is deliberately verbose because the note two entries down
+  // already said all of this on 2026-06-05, and two more tests were sitting
+  // mislabelled directly above it anyway. Writing the lesson next to the
+  // unfixed case did not fix the next one.
+  //
   // security.test.ts + feature-delivery-completeness.test.ts — RE-ARMED
   // 2026-06-05. Both are DETERMINISTIC source-content guards (the old
   // "environment-dependent" label was wrong) and both rotted while parked:

@@ -95,11 +95,31 @@ describe('instar channel definitions resolve honestly', () => {
     expect(report.summary).toEqual({ total: 4, working: 0, unusable: 4, unknown: 0 });
   });
 
+  it('threadline-relay working detail scopes the verdict to the server-process relay client', async () => {
+    const report = await resolveChannels(buildChannelDefinitions(baseCtx()));
+    const relay = report.channels.find(c => c.id === 'threadline-relay')!;
+    expect(relay.state).toBe('working');
+    expect(relay.detail).toContain('server process relay client');
+    expect(relay.detail).toContain('not another process client such as the MCP tool path');
+    expect(relay.detail).toContain('not that any given send will land');
+
+    const broken = await resolveChannels(buildChannelDefinitions(baseCtx({
+      relayStatus: () => ({ ready: false, connected: true }),
+    })));
+    const brokenRelay = broken.channels.find(c => c.id === 'threadline-relay')!;
+    expect(brokenRelay.state).toBe('broken');
+    expect(brokenRelay.detail).toContain('server process relay client reports ready=false, connected=true');
+    expect(brokenRelay.detail).toContain('another process client such as the MCP tool path has its own state');
+  });
+
   it('mutual-ssh reports construction WITHOUT claiming a completed round-trip', async () => {
     // The scope limit that bit me: loading is not functioning. The detail must say so.
     const report = await resolveChannels(buildChannelDefinitions(baseCtx()));
     const ssh = report.channels.find(c => c.id === 'mutual-ssh')!;
     expect(ssh.state).toBe('working');
+    // Pins the MEANING, not the wording. An exact-string assertion here would fail on a benign
+    // rephrase while catching nothing extra — the claim that must not rot is "this is not a
+    // round-trip", and that is what is asserted.
     expect(ssh.detail.toLowerCase()).toContain('not a completed round-trip');
   });
 

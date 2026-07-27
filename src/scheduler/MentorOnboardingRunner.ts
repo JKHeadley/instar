@@ -12,7 +12,13 @@
  *
  * Ships dormant: `mentor.enabled=false` / `mentor.mode='off'` by default (§16).
  */
-import { runMentorTick, type MentorTickResult, type MentorMode, type MentorCycleCapture } from './MentorOnboardingTick.js';
+import {
+  runMentorTick,
+  type MentorTickResult,
+  type MentorMode,
+  type MentorCycleCapture,
+  type MentorDeliveryOutcome,
+} from './MentorOnboardingTick.js';
 import { llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
 import {
   runAutonomousGuardian,
@@ -165,7 +171,14 @@ export interface MentorRunnerServices {
   /** Build the conversation surface (Stage A's only input). */
   getSurface: (framework: string) => ConversationSurface;
   /** Persist-only delivery to the mentee (live mode only; never spawns). */
-  deliverToMentee?: (framework: string, message: string) => void;
+  deliverToMentee?: (
+    framework: string,
+    message: string,
+  ) =>
+    | void
+    | boolean
+    | MentorDeliveryOutcome
+    | Promise<void | boolean | MentorDeliveryOutcome>;
   /** Called once when a tick actually RAN (ran=true) — lets the host advance the
    *  min-interval clock and the per-day run counter. */
   onTickRan?: () => void;

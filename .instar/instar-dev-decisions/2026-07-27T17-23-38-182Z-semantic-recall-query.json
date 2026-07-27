@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-27T17:23:38.182Z",
+  "slug": "semantic-recall-query",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 34,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

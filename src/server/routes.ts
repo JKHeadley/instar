@@ -268,7 +268,7 @@ import type { TopicMemory } from '../memory/TopicMemory.js';
 import type { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
 import type { ProjectMapper } from '../core/ProjectMapper.js';
 import type { CartographerTree } from '../core/CartographerTree.js';
-import { verifyMergedItemsViaGit } from '../core/ProjectRoundExecution.js';
+import { verifyMergedItemsViaGit, resolveCanonicalMainRef } from '../core/ProjectRoundExecution.js';
 import type { ProjectDriftChecker } from '../core/ProjectDriftChecker.js';
 import type { ScopeVerifier } from '../core/ScopeVerifier.js';
 import type { HighRiskAction } from '../core/ScopeVerifier.js';
@@ -337,6 +337,7 @@ import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
 import { resolveChannels } from '../core/channelRegistry.js';
 import { buildChannelDefinitions } from '../core/instarChannels.js';
+import { buildUserChannelDefinitions } from '../core/userChannels.js';
 import { evaluateSendGate, negotiatorLogDir } from '../threadline/NegotiatorGate.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { recordThreadMessage } from '../threadline/recordThreadMessage.js';
@@ -1583,53 +1584,6 @@ function hashAuthHeader(header: unknown): string {
 }
 
 
-/**
- * Resolve the canonical-main ref a merged PR's commit must be reachable from,
- * for the projects `building → merged` gate (StageTransitionValidator).
- *
- * Default is `origin/main`. But on a dev-agent home `origin` is the agent's
- * FORK (e.g. instar-echo) while PRs merge on the UPSTREAM repo (JKHeadley/instar),
- * so origin/main never contains the merge commit → every advance failed
- * MERGE_COMMIT_UNREACHABLE. We ask gh which repo it resolves for this cwd
- * (the same repo `gh pr view` reads), then find the LOCAL remote whose URL
- * points at that repo and return `<remote>/main`. Falls back to `origin/main`
- * when gh or the remote mapping is unavailable (canonical-origin installs).
- *
- * READ-ONLY: `gh repo view` + `git remote -v` (the latter via
- * SafeGitExecutor.readSync — `remote` is a READONLY_GIT_VERB, shape-checked
- * to list/get-url only).
- */
-function resolveCanonicalMainRef(repoPath: string): string {
-  const FALLBACK = 'origin/main';
-  try {
-    const ghRepo = execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], {
-      cwd: repoPath,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    if (!ghRepo) return FALLBACK;
-    // `git remote -v` is read-only (shape-checked by readSync). Find the remote
-    // whose fetch URL contains the gh-resolved "owner/repo".
-    const remotesOut = SafeGitExecutor.readSync(['remote', '-v'], {
-      cwd: repoPath,
-      operation: 'projects.advance.resolveCanonicalMainRef',
-      encoding: 'utf-8',
-    });
-    for (const line of remotesOut.split('\n')) {
-      // format: "<name>\t<url> (fetch)"
-      const m = /^(\S+)\s+(\S+)\s+\(fetch\)/.exec(line.trim());
-      if (!m) continue;
-      const [, name, url] = m;
-      // match owner/repo with or without a trailing .git
-      if (url.includes(ghRepo) || url.includes(`${ghRepo}.git`)) {
-        return `${name}/main`;
-      }
-    }
-    return FALLBACK;
-  } catch { /* @silent-fallback-ok: resolving the canonical-main ref is best-effort — gh missing / not-a-gh-repo / git error falls back to the documented `origin/main` default (the prior behavior), which the merge-base gate then re-validates. Not a degradation: it's the conservative default this resolver exists to refine, not replace. */
-    return FALLBACK; // gh missing / not a gh repo / git error → preserve default
-  }
-}
 
 /**
  * Read-check-increment for the per-token projects-creation counter.
@@ -21765,16 +21719,43 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { status, resolution } = req.body;
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+      ? req.body as Record<string, unknown>
+      : {};
+    const supportedFields = new Set(['status', 'resolution']);
+    const unsupportedFields = Object.keys(body).filter((field) => !supportedFields.has(field));
+    if (unsupportedFields.length > 0) {
+      res.status(400).json({
+        error: `Unsupported field(s): ${unsupportedFields.join(', ')}`,
+        unsupportedFields,
+        supportedFields: Array.from(supportedFields),
+      });
+      return;
+    }
+    const hasStatus = Object.prototype.hasOwnProperty.call(body, 'status');
+    const hasResolution = Object.prototype.hasOwnProperty.call(body, 'resolution');
+    const status = hasStatus ? body.status : undefined;
+    const resolution = hasResolution ? body.resolution : undefined;
     const validStatuses = ['pending', 'in_progress', 'completed', 'cancelled'];
-    if (status && !validStatuses.includes(status)) {
+    if (status !== undefined && (typeof status !== 'string' || !validStatuses.includes(status))) {
       res.status(400).json({ error: `"status" must be one of: ${validStatuses.join(', ')}` });
+      return;
+    }
+    if (resolution !== undefined && (typeof resolution !== 'string' || resolution.length === 0)) {
+      res.status(400).json({ error: '"resolution" must be a non-empty string' });
+      return;
+    }
+    const updates: { status?: 'pending' | 'in_progress' | 'completed' | 'cancelled'; resolution?: string } = {};
+    if (typeof status === 'string') updates.status = status as 'pending' | 'in_progress' | 'completed' | 'cancelled';
+    if (typeof resolution === 'string') updates.resolution = resolution;
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: 'Request body must include at least one supported field: status, resolution' });
       return;
     }
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
     if (refuseInadmissibleWrite(req, res)) return;
     const currentAction = ctx.evolution.listActions({}).find((action) => action.id === req.params.id);
-    const success = ctx.evolution.updateAction(req.params.id, { status, resolution });
+    const success = ctx.evolution.updateAction(req.params.id, updates);
     if (!success) {
       res.status(404).json({ error: 'Action not found' });
       return;
@@ -23399,6 +23380,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const status = admission.accepted ? 202 : admission.reason === 'queue-full' ? 429 : 200;
     res.status(status).json({ observed: admission.accepted, queued: admission.accepted, blocked: false,
       evidenceAvailable: !evidence.unavailable, canaryOk: evidence.canaryOk, reason: admission.reason });
+  });
+
+  /**
+   * Read-only counters for the completion-claim verifier.
+   *
+   * `CompletionClaimVerifier.stats()` has existed since the verifier shipped and was
+   * called by no route, so the feature ran (and still runs) in dryRun with its own
+   * declared graduation evidence unobservable — `docs/specs/claim-verification-sentinel.md`
+   * names `rollout-evidence-type: endpoint` with a `classified-completion-claims >= 1`
+   * criterion, which nothing could evaluate. A dark feature whose rollout criterion
+   * cannot be read is a feature that stays dark forever, which is the failure this
+   * exposes rather than a new capability.
+   *
+   * Local-scope only and deliberately so: the audit route already owns the pool
+   * projection, and duplicating a fan-out here would add a second cross-machine
+   * surface for the same data. Gates nothing, mutates nothing.
+   */
+  router.get('/completion-claim/stats', (_req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    const stats = ctx.completionClaimVerifier.stats();
+    res.json({
+      stats,
+      // The spec's graduation metric, surfaced by the name the spec uses so the
+      // rollout check does not have to know the internal counter's field name.
+      'classified-completion-claims': stats.classifiedTurns,
+      scope: 'local',
+    });
   });
 
   router.get('/completion-claim/audit', async (req, res) => {
@@ -30172,7 +30180,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           detail: 'no peer HTTP endpoint configured for this agent',
         }),
       });
-      const report = await resolveChannels(defs);
+      // The DIRECT USER channels ride the same registry rather than a second surface: "which channel
+      // should I use?" is one question, and splitting the answer would force a caller to already know
+      // which list to consult. Every probe below reads LIVE adapter state — never config, because
+      // `configured: true` survives the connection dying (see src/core/userChannels.ts).
+      const telegramAdapter = ctx.telegram;
+      const slackAdapter = ctx.slack;
+      const userDefs = buildUserChannelDefinitions({
+        telegramStatus: () => {
+          if (!telegramAdapter || typeof telegramAdapter.getStatus !== 'function') return null;
+          const s = telegramAdapter.getStatus();
+          return {
+            started: s.started,
+            fatalReason: s.fatalReason,
+            consecutivePollErrors: s.consecutivePollErrors,
+            lastError: s.lastError,
+            stoppedAt: s.stoppedAt,
+          };
+        },
+        // `isConnected()` clears on disconnect; `started` means "ever connected" and would report a
+        // long-dead socket as healthy forever.
+        slackConnected: () =>
+          slackAdapter && typeof slackAdapter.isConnected === 'function' ? slackAdapter.isConnected() : null,
+        slackEnabled: () => Boolean(slackAdapter),
+        // `getStatus().state` is a real state machine, so `qr-pending` (waiting on a human to
+        // scan) stays distinguishable from `disconnected` (the link dropped).
+        whatsappState: () =>
+          ctx.whatsapp && typeof ctx.whatsapp.getStatus === 'function'
+            ? ctx.whatsapp.getStatus().state
+            : null,
+        // `getConnectionInfo().state`, NOT the sibling `connectedAt` — that field is computed as
+        // `started ? new Date().toISOString() : undefined`, so it reports the moment you asked
+        // rather than the moment it connected.
+        imessageState: () =>
+          ctx.imessage && typeof ctx.imessage.getConnectionInfo === 'function'
+            ? ctx.imessage.getConnectionInfo().state
+            : null,
+      });
+      const report = await resolveChannels([...defs, ...userDefs]);
       return res.status(200).json({ advisory: true, ...report });
     } catch (error) {
       // A registry that 500s teaches nothing. Report the failure as the registry's own verdict.

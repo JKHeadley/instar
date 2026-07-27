@@ -118,7 +118,21 @@ export function atomicWriteFileSync(
 
 export type LockTakeResult =
   | { ok: true; fd: number }
-  | { ok: false; reason: 'held' | 'error' };
+  | {
+      ok: false;
+      reason: 'held' | 'error';
+      /**
+       * The errno of the failure, surfaced ONLY on `reason: 'error'`.
+       *
+       * WHY: callers need to distinguish a TRANSIENT failure (worth polling) from a
+       * PERMANENT one (never worth polling). An unwritable rendezvous directory reports
+       * EACCES/EPERM and will not become writable by being asked twelve more times, but
+       * without the code every error looked alike and was waited out on the contention
+       * path. Purely additive — `reason` is unchanged, so existing callers behave exactly
+       * as before.
+       */
+      code?: string;
+    };
 
 /**
  * ONE attempt to take the exclusive lock at `lockPath` (O_CREAT|O_EXCL) and
@@ -142,7 +156,7 @@ export function tryTakeLockOnce(lockPath: string, record: string): LockTakeResul
       }
     }
     if (e.code === 'EEXIST') return { ok: false, reason: 'held' };
-    return { ok: false, reason: 'error' };
+    return { ok: false, reason: 'error', ...(e.code ? { code: e.code } : {}) };
   }
 }
 

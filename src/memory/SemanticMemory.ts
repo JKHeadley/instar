@@ -111,6 +111,60 @@ function sanitizeFts5Query(query: string): string {
     .trim();
 }
 
+/**
+ * English function words that carry no retrieval signal but are FATAL to an
+ * FTS5 implicit-AND query.
+ *
+ * FTS5 requires EVERY bare token to match. No stored entity contains the word
+ * "why", so any question beginning "why ..." matches nothing regardless of the
+ * content words beside it. Recall is fed the user's raw message — always a
+ * natural-language sentence — so in practice it returned empty almost always.
+ * Measured on a live 2,852-entity store: "can I reach Codey" → 0 results,
+ * "is Codey responding to my messages" → 0, "why is Codey not replying" → 0,
+ * while "reach Codey" → 7, "Codey messages" → 17, "Codey" → 20.
+ */
+const FTS_STOPWORDS = new Set([
+  'a', 'about', 'am', 'an', 'and', 'any', 'are', 'as', 'at', 'be', 'been', 'but',
+  'by', 'can', 'could', 'did', 'do', 'does', 'for', 'from', 'get', 'got', 'had',
+  'has', 'have', 'how', 'i', 'if', 'in', 'is', 'it', 'its', 'me', 'my', 'no',
+  'of', 'on', 'or', 'our', 'should', 'so', 'that', 'the', 'their', 'them',
+  'then', 'there', 'these', 'they', 'this', 'to', 'was', 'we', 'were', 'what',
+  'when', 'where', 'which', 'who', 'why', 'will', 'with', 'would', 'you', 'your',
+]);
+
+/**
+ * Build the two FTS5 match expressions a recall query needs.
+ *
+ * `strict` drops stopwords and keeps FTS5's implicit AND, so a genuine
+ * multi-keyword query stays precise. `loose` ORs the same content words and is
+ * used ONLY as a fallback when strict returns nothing — five loosely-relevant
+ * memories beat the empty set that made stored lessons unreachable.
+ *
+ * Stopword removal never empties the query: if a message is ALL stopwords the
+ * original tokens are kept, so behaviour degrades to the previous semantics
+ * rather than silently matching everything.
+ *
+ * Exported for tests — the failure this fixes is invisible at the route level
+ * (a zero-result search looks identical to "nothing was ever stored").
+ */
+export function buildFtsQueryVariants(
+  query: string,
+): { strict: string; loose: string } | null {
+  const sanitized = sanitizeFts5Query(query);
+  if (!sanitized) return null;
+
+  const tokens = sanitized.split(' ').filter((t) => t.length > 0);
+  if (tokens.length === 0) return null;
+
+  const content = tokens.filter((t) => !FTS_STOPWORDS.has(t.toLowerCase()));
+  const effective = content.length > 0 ? content : tokens;
+
+  return {
+    strict: effective.join(' '),
+    loose: effective.length > 1 ? effective.join(' OR ') : effective.join(' '),
+  };
+}
+
 export class SemanticMemory {
   /**
    * W-4 / §A57 — process-wide registry of active SemanticMemory instances.
@@ -462,6 +516,24 @@ export class SemanticMemory {
   private embeddingProvider: EmbeddingProvider | null = null;
   private vectorSearch: VectorSearch | null = null;
   private _vectorAvailable = false;
+
+  /**
+   * Which retrieval strategy actually served the most recent `search()` call.
+   *
+   * `fts-strict` is the precise implicit-AND query; `fts-loose-fallback` means the
+   * strict query found NOTHING and the weaker OR query was used instead. Exposed
+   * because "No Silent Degradation to Brittle Fallback" requires a drop to a weaker
+   * strategy to be an observable event rather than a detail — a retrieval path that
+   * silently serves from the cheap strategy reports healthy while being fake-healthy.
+   * That is not hypothetical here: recall ran on keyword-only search for its entire
+   * life while a fully-populated vector index went uncalled, and nothing said so.
+   */
+  private _lastSearchStrategy: 'fts-strict' | 'fts-loose-fallback' | 'none' = 'none';
+
+  /** Which strategy served the last `search()` — see `_lastSearchStrategy`. */
+  get lastSearchStrategy(): 'fts-strict' | 'fts-loose-fallback' | 'none' {
+    return this._lastSearchStrategy;
+  }
   private jsonlPath: string;
   /** Set after corruption auto-recovery — caller should reimport from JSONL */
   private _needsRebuild = false;
@@ -1483,8 +1555,14 @@ export class SemanticMemory {
   search(query: string, options?: SemanticSearchOptions): ScoredEntity[] {
     const db = this.ensureOpen();
 
-    const sanitized = sanitizeFts5Query(query);
-    if (!sanitized) return [];
+    const variants = buildFtsQueryVariants(query);
+    if (!variants) {
+      // Reset rather than leaving the previous call's strategy readable — a stale
+      // "served by strict" on a query that never ran is exactly the kind of
+      // falsely-healthy signal this field exists to prevent.
+      this._lastSearchStrategy = 'none';
+      return [];
+    }
 
     const limit = options?.limit ?? 20;
 
@@ -1496,7 +1574,7 @@ export class SemanticMemory {
       WHERE entities_fts MATCH ?
     `;
 
-    const params: (string | number)[] = [sanitized];
+    const params: (string | number)[] = [variants.strict];
 
     if (options?.types && options.types.length > 0) {
       const placeholders = options.types.map(() => '?').join(',');
@@ -1527,7 +1605,27 @@ export class SemanticMemory {
     sql += ` ORDER BY entities_fts.rank LIMIT ?`;
     params.push(limit * 3); // Fetch extra for re-ranking
 
-    const rows = db.prepare(sql).all(...params) as (EntityRow & { fts_rank: number })[];
+    const statement = db.prepare(sql);
+    let rows = statement.all(...params) as (EntityRow & { fts_rank: number })[];
+    this._lastSearchStrategy = 'fts-strict';
+
+    // Strict (implicit-AND over content words) is the precise query and stays
+    // authoritative whenever it finds anything. Only when it finds NOTHING do we
+    // widen to OR — an empty result is what made stored lessons unreachable, and
+    // a loosely-relevant hit is strictly better than silence. Every other filter
+    // (type, domain, confidence, privacy) is unchanged and still applies.
+    //
+    // The widening is RECORDED, not silent. Per the "No Silent Degradation to
+    // Brittle Fallback" standard, falling back to a weaker strategy is an event:
+    // a retrieval path that quietly serves from the cheap strategy looks healthy
+    // while being fake-healthy, which is the exact defect this whole change exists
+    // to fix. Reading `lastSearchStrategy` tells a caller what actually served.
+    if (rows.length === 0 && variants.loose !== variants.strict) {
+      const looseParams = [...params];
+      looseParams[0] = variants.loose;
+      rows = statement.all(...looseParams) as (EntityRow & { fts_rank: number })[];
+      this._lastSearchStrategy = 'fts-loose-fallback';
+    }
 
     // ─── Vector results (if available) ────────────────────────
     // vectorScores is populated asynchronously via searchHybrid() for callers
