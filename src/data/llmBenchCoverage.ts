@@ -49,6 +49,8 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   'correction-learning': { task: 'correction-distiller' },
   CoherenceReviewer: { task: 'gate-triage' },
   FeedbackReadinessArbiter: { task: 'feedback-readiness' },
+  GoalPriorityExtractor: { pending: 'wave-3' },
+  AlignmentReviewer: { pending: 'wave-3' },
 
   // ── Argued exemptions (pinned; each must carry a real reason) ──
   InteractivePoolCanaryJudge: {
@@ -193,6 +195,8 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   SessionSummarySentinel: true,
   TelegramAdapter: true,
   FeedbackReadinessArbiter: true,
+  GoalPriorityExtractor: true,
+  AlignmentReviewer: true,
 
   // ── Gates judging user/session/operation content → true ──
   HubIntentClassifier: true, // judges an inbound hub message's bind-intent (untrusted user text)
@@ -386,6 +390,8 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   TaskClassifier: false, // classifies task type
   ResumeValidator: false, // matches a resume UUID against a topic — a state match, not a claim
   FeedbackReadinessArbiter: false, // judges whether cluster evidence warrants work, not a completion/health claim
+  GoalPriorityExtractor: false, // extracts durable operator priorities; it does not credit a completion/progress/health claim
+  AlignmentReviewer: { claimKind: 'healthClaim' }, // judges whether the active run remains healthy relative to durable operator priorities
 
   // Reflectors/jobs that extract/summarize/route but do not credit a completion/health claim.
   crossModelReviewer: false, // reviews a SPEC document, not a session's completion claim
@@ -501,6 +507,8 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   ResumeValidator: { pending: 'contract-wave-2' }, // closed resume-UUID match yes/no verdict
   CoherenceReviewer: { pending: 'contract-wave-2' }, // gate-triage — closed coherence verdict
   FeedbackReadinessArbiter: { contractTest: 'tests/unit/feedback-factory/readiness-arbiter.test.ts' },
+  GoalPriorityExtractor: { pending: 'contract-wave-2' },
+  AlignmentReviewer: { pending: 'contract-wave-2' },
 
   // ── Argued false (pinned shrink-only) — no closed-vocabulary verdict parse ──
   // No live LLM callsite, a fixed canary, or free-text / open-set content.
@@ -825,6 +833,8 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   OverrideDetector: exposed(EXPOSED_USER),
   TaskClassifier: exposed(EXPOSED_USER), // classifies a user task (R8 input-classifier — must stay exposed)
   FeedbackReadinessArbiter: exposed(EXPOSED_USER_TOOL), // feedback titles + canonical cluster metadata
+  GoalPriorityExtractor: exposed(EXPOSED_USER), // verified operator message + quoted context
+  AlignmentReviewer: exposed(EXPOSED_ALL), // operator priorities + model/tool-authored run focus
 
   // ── Reflectors ──
   JobReflector: exposed(EXPOSED_MODEL_TOOL),

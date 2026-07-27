@@ -21,6 +21,12 @@ evidence from both the user's message and the run's own plan. If history is
 incomplete, evidence conflicts, a provider fails, or the citations do not check out,
 the answer is "indeterminate" and nothing is injected.
 
+The seven-day window only controls how far back the system looks for newly missed
+priorities. Once a verified priority is in the ledger, it does not fade out with
+age. It stays active until the operator explicitly replaces it or clearly confirms
+it is addressed. This removes the need to keep repeating a still-valid priority.
+Ambiguous acknowledgements and mere silence do not retire it.
+
 The hourly timer is only a wake-up, not an hourly AI bill. If neither the source
 goals nor the run's meaningful focus changed, the system reuses the prior result:
 zero new model calls and zero repeated nudges. When something did change, the work

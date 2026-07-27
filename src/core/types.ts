@@ -5651,6 +5651,22 @@ export interface MonitoringConfig {
     /** How recently the shared snapshot's lastOutputAt must have advanced (default 300_000). */
     recentOutputChangeWindowMs?: number;
   };
+  /**
+   * Periodic Goal Re-Alignment Phase 1 ("see it"). Dev-gated and dry-run
+   * only: verified operator intake, durable priority ledger, and cached
+   * alignment verdicts. No injection or operator notification exists in Phase 1.
+   */
+  goalRealignment?: {
+    enabled?: boolean;
+    /** Must remain true in Phase 1; false is ignored by the runtime. */
+    dryRun?: boolean;
+    /** Eligibility wake-up, not an unconditional LLM call. Default 60. */
+    cadenceMinutes?: number;
+    /** Window for discovering NEW priorities only. Never expires ledger rows. */
+    recencyDays?: number;
+    /** Prompt projection bound; ledger rows are never trimmed. */
+    maxPriorities?: number;
+  };
   throughputFloor?: {
     enabled?: boolean;
     flatlineMs?: number;

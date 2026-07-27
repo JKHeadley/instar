@@ -224,6 +224,18 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     autonomousHeartbeat: {
       dryRun: true,
     },
+    // Periodic Goal Re-Alignment Phase 1 ("see it"). DEV-GATED: enabled is
+    // deliberately omitted so it runs on the development agent and stays dark
+    // on the fleet. Phase 1 is structurally dry-run: it computes + logs verdicts
+    // and exposes GET /goal-realignment, with no injection dependency at all.
+    // The 7-day window discovers NEW priorities only; durable ledger rows remain
+    // active until explicit supersession or confirmed-addressed evidence.
+    goalRealignment: {
+      dryRun: true,
+      cadenceMinutes: 60,
+      recencyDays: 7,
+      maxPriorities: 40,
+    },
     // Autonomous Throughput Floor (ACT-847): bounded PULL/AUDIT-only reads.
     throughputFloor: {
       flatlineMs: 75 * 60_000,

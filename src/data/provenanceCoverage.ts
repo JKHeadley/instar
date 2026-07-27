@@ -158,6 +158,12 @@ export const DP_COMPLETION_CLAIM_VERIFY = 'completion-claim-verify';
 /** Feedback cluster evidence → owned-work readiness judgment. */
 export const DP_FEEDBACK_READINESS = 'feedback-readiness';
 
+/** Verified operator message → durable goal-priority classification. */
+export const DP_GOAL_PRIORITY_EXTRACT = 'goal-priority-extract';
+
+/** Durable goal digest + current run focus → dry-run alignment verdict. */
+export const DP_ALIGNMENT_REVIEW = 'alignment-review';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -248,6 +254,30 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'A bounded frontier-model judgment authorizes cluster-to-work readiness; provenance stores packet identity and enumerated outcomes, never feedback text or model output.',
+  },
+  {
+    decisionPoint: DP_GOAL_PRIORITY_EXTRACT,
+    component: 'GoalPriorityExtractor',
+    status: 'wired',
+    volumeClass: 'budget:250',
+    contentClass: 'content-bearing',
+    reason:
+      'Verified operator messages are classified into a durable priority ledger; provenance stores only message identity, bounds, and content hashes.',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Phase 1 records extraction decisions for soak analysis; authoritative outcome rules require later operator-confirmed longitudinal labels.',
+  },
+  {
+    decisionPoint: DP_ALIGNMENT_REVIEW,
+    component: 'AlignmentReviewer',
+    status: 'wired',
+    volumeClass: 'budget:250',
+    contentClass: 'content-bearing',
+    reason:
+      'The dry-run reviewer compares a bounded priority digest with current run focus; provenance stores only evidence-packet identity and bounds.',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Phase 1 is signal-only and has no actuation outcome; verdict quality is collected for later benchmark and operator-label calibration.',
   },
 
   // ── Pending (the ACT-1193 uniform-provenance retrofit backlog — §5.6: "Not

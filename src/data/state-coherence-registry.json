@@ -5,6 +5,61 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "goal-realignment-runtime",
+      "description": "Phase 1 candidate-priority inbox, checkpointed extraction outbox, counters, and latest dry-run verdict. Unresolved candidates are never silently discarded; resolved rows and applied checkpoints are capped.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/goal-realignment/runtime.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "resolution",
+        "boundedByResolution": true,
+        "maxOpenItems": 5000,
+        "note": "At most 5000 unresolved candidates are admitted; 2000 resolved candidates and their applied checkpoints are retained for pull-visible diagnosis."
+      }
+    },
+    {
+      "category": "goal-realignment-priority-ledger",
+      "description": "Append-only, source-cited operator priority events. Active authority is never recency-trimmed; events close only through explicit supersession or confirmed completion.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "state/goal-realignment/priority-events.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "streamed",
+        "complianceHold": true,
+        "keepSegments": 0,
+        "note": "Lifetime operator-authority evidence: active file segments at 32 MiB and archives are retained rather than age-trimmed."
+      }
+    },
+    {
+      "category": "audit-goal-realignment",
+      "description": "Scrubbed Phase 1 dry-run alignment verdict stream; contains hashes, IDs, counters, and bounded model reason, never raw source messages.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/goal-realignment.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 33554432,
+        "keepSegments": 4
+      }
+    },
+    {
       "category": "coherence-journal",
       "description": "Per-machine append-only cross-machine event streams (topic-placement / session-lifecycle / autonomous-run); replicated first-hop over the mesh (COHERENCE-JOURNAL-SPEC P1).",
       "scope": "must-be-coherent",
