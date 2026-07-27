@@ -58,8 +58,25 @@ export type ChannelState =
 /** Which direction(s) a channel can actually carry traffic — the half-built case made explicit. */
 export type ChannelDirection = 'bidirectional' | 'send-only' | 'receive-only' | 'none';
 
+/**
+ * Who is on the other end. This exists because "which channel should I use?" is ONE question with
+ * two very different answers, and splitting it across two surfaces recreates the arbitrariness this
+ * registry was built to remove — a caller would have to already know which list to consult.
+ *
+ * The distinction is kept as DATA rather than as two registries because the choice between them is
+ * itself a routing decision: reaching a peer costs latency, reaching the operator costs their
+ * attention. A caller cannot weigh that trade-off if it can only see one side of it.
+ */
+export type ChannelAudience =
+  /** Another agent. */
+  | 'peer'
+  /** A human operator, on the surface they actually read. */
+  | 'user';
+
 export interface ChannelDefinition {
   id: string;
+  /** Who is on the other end — see ChannelAudience for why this is data, not two registries. */
+  audience: ChannelAudience;
   /** What it is for, in the operator's terms. */
   purpose: string;
   /** When this channel is the right choice over the others. */
@@ -82,6 +99,7 @@ export interface ChannelProbeResult {
 
 export interface ChannelReport extends ChannelProbeResult {
   id: string;
+  audience: ChannelAudience;
   purpose: string;
   whenPreferred: string;
   cost: string;
@@ -125,7 +143,13 @@ export async function resolveChannels(
 ): Promise<ChannelRegistryReport> {
   const channels = await Promise.all(
     definitions.map(async (def): Promise<ChannelReport> => {
-      const base = { id: def.id, purpose: def.purpose, whenPreferred: def.whenPreferred, cost: def.cost };
+      const base = {
+        id: def.id,
+        audience: def.audience,
+        purpose: def.purpose,
+        whenPreferred: def.whenPreferred,
+        cost: def.cost,
+      };
       try {
         const result = await withTimeout(def.probe());
         // A probe returning a shape we do not recognise is a failed probe, not a healthy channel.
