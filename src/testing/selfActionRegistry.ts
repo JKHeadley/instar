@@ -865,6 +865,33 @@ const mutualSshRepairSweep: SelfActionController = {
   },
 };
 
+const followMeEnrollmentConsumer: SelfActionController = {
+  id: 'follow-me-enrollment-consumer',
+  actionVerb: 'redrive-enroll-start',
+  models: 'src/server/AgentServer.ts + src/coordination/FollowMeConsumerBackoffStore.ts (four-attempt pair episode, causal-evidence wake)',
+  modelsPath: 'src/server/AgentServer.ts',
+  delegatedGiveUp: 'the durable fourth-failure parked state for an unchanged account-machine evidence key',
+  boundK: 4,
+  perTargetBoundK: 4,
+  ticks: 24,
+  tickMs: 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) {
+      return followMeEnrollmentConsumer.makeUnderPressure(f, sink);
+    },
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      const attempts = Number(f.durableState.get('follow-me-attempts') ?? 0);
+      if (attempts >= 4) return;
+      f.durableState.set('follow-me-attempts', attempts + 1);
+      sink.emit({ verb: 'redrive-enroll-start', target: 'account-machine-pair' });
+    } };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   evolutionActionExpirySweep,
   spendReconSweep,
@@ -885,4 +912,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   correctionClassReviewOutcomes,
   feedbackGeneratedDefaultsHeal,
   mutualSshRepairSweep,
+  followMeEnrollmentConsumer,
 ];

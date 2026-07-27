@@ -9951,7 +9951,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // Auto-generate dashboardPin if missing — the dashboard should always be
     // accessible via PIN, not bearer token. Users don't need to know about tokens.
     if (!config.dashboardPin && config.authToken) {
-      const pin = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit PIN
+      const pin = String(crypto.randomInt(100000, 1000000)); // 6-digit PIN
       config.dashboardPin = pin;
       patched = true;
       result.upgraded.push(`config.json: generated dashboard PIN (${pin})`);

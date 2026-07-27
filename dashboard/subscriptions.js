@@ -471,6 +471,7 @@ export function renderPendingLogins(doc, target, logins, now = Date.now(), outco
 /** Pivot the pool-scope + pending-scope bodies into a grid model. Pure + testable. */
 export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
   const accountRows = (poolScope && Array.isArray(poolScope.accounts)) ? poolScope.accounts : [];
+  const gapRows = (poolScope && Array.isArray(poolScope.emailGaps)) ? poolScope.emailGaps : [];
   const pendingRows = (pendingScope && Array.isArray(pendingScope.logins)) ? pendingScope.logins : [];
   const failed = (poolScope && poolScope.pool && Array.isArray(poolScope.pool.failed)) ? poolScope.pool.failed : [];
   const selfMachineId = (poolScope && poolScope.pool && poolScope.pool.selfMachineId) || null;
@@ -484,6 +485,15 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     const mid = a && a.machineId;
     if (!mid || offlineMachineIds.has(mid)) continue;
     if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: (a.machineNickname || mid), offline: false });
+  }
+  for (const gap of gapRows) {
+    const mid = gap && gap.machineId;
+    if (!mid || offlineMachineIds.has(mid)) continue;
+    if (!machines.has(mid)) machines.set(mid, {
+      machineId: mid,
+      nickname: gap.machineNickname || mid,
+      offline: false,
+    });
   }
   for (const f of failed) {
     const mid = f && f.machineId;
@@ -499,6 +509,13 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     if (!id) continue;
     if (!accounts.has(id)) accounts.set(id, { accountId: id, email: a.email || id });
     else if (!accounts.get(id).email && a.email) accounts.get(id).email = a.email;
+  }
+  for (const gap of gapRows) {
+    const id = gap && gap.accountId;
+    if (id && !accounts.has(id)) accounts.set(id, {
+      accountId: id,
+      email: gap.nickname || id,
+    });
   }
   // A pending matrix login can reference an account not yet in any pool row — surface its row too.
   for (const l of pendingRows) {
@@ -529,6 +546,11 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
   for (const l of pendingRows) {
     if (l && l.id && l.machineId) inProgress.set(`${l.id}::${l.machineId}`, l);
   }
+  const emailMissing = new Set(
+    gapRows
+      .filter((gap) => gap && gap.accountId && gap.machineId)
+      .map((gap) => `${gap.accountId}::${gap.machineId}`),
+  );
 
   const machineList = Array.from(machines.values());
   const accountList = Array.from(accounts.values());
@@ -552,6 +574,7 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
       if (m.offline) state = 'offline';                              // whole column offline (FD6)
       else if (t && t.state === 'held') state = 'held';
       else if (t && t.state === 'cant-resolve') state = 'cant-resolve';
+      else if (emailMissing.has(key) || (t && t.state === 'email-missing')) state = 'email-missing';
       // Durable pending state wins over enrollment bookkeeping after restart: the
       // full flow rehydrates into its cell even if the pool row still says Active.
       // broken (D5): the server says this attempt's sign-in pane is DEAD (record ⟂ pane
@@ -586,12 +609,13 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
 
 const MATRIX_CELL_GLYPH = {
   active: '✓', 'needs-reauth': '⟳', 'in-progress': '◷', offline: '—', held: '⚠', 'cant-resolve': '✗',
-  expired: '✗', 'just-verified': '✓', broken: '✗',
+  'email-missing': '⚠', expired: '✗', 'just-verified': '✓', broken: '✗',
 };
 const MATRIX_CELL_WORD = {
   active: 'Active', 'needs-reauth': 'Needs sign-in', 'in-progress': 'Signing in…',
   offline: 'Machine offline', held: 'Didn’t match — re-try', 'cant-resolve': 'Can’t set up', other: 'Set up',
-  expired: 'Sign-in link expired', 'just-verified': 'Set up complete', broken: 'Sign-in needs a restart',
+  'email-missing': 'Account record is missing its email', expired: 'Sign-in link expired',
+  'just-verified': 'Set up complete', broken: 'Sign-in needs a restart',
 };
 
 /** D5 wording floor: never show a raw internal machine id (m_<hex>) to the operator —
@@ -700,17 +724,21 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
       const td = el(doc, 'td', `sub-matrix-cell sub-matrix-${c.state}${justVerified && c.state !== 'just-verified' ? ' sub-matrix-just-verified' : ''}`);
       // Stable cell identity for the interaction-hold rule + targeted merge updates (F9).
       td.setAttribute('data-cell-key', sanitizeForDisplay(`${c.accountId}::${c.machineId}`, 'url'));
-      if (c.state === 'empty' || c.state === 'needs-reauth' || c.state === 'held' || c.state === 'cant-resolve' || c.state === 'expired' || c.state === 'broken') {
+      if (c.state === 'empty' || c.state === 'needs-reauth' || c.state === 'held' || c.state === 'cant-resolve' || c.state === 'email-missing' || c.state === 'expired' || c.state === 'broken') {
         // An actionable cell → a button that runs the SAME in-dashboard sign-in flow (PIN → link →
         // paste code). empty → "Set up"; needs-reauth (an existing account whose login expired) →
         // "Sign in"; held/cant-resolve/expired/broken → "Retry". A needs-reauth account already
         // resolves to its email, so the start-cell orchestrator drives a real re-auth — never a
         // cosmetic button, and a broken (dead-pane) attempt is superseded server-side on Retry.
-        const label = c.state === 'empty' ? 'Set up' : (c.state === 'needs-reauth' ? 'Sign in' : 'Retry');
+        const label = c.state === 'empty' ? 'Set up'
+          : c.state === 'needs-reauth' ? 'Sign in'
+          : c.state === 'email-missing' ? 'Repair identity'
+          : 'Retry';
         const btn = el(doc, 'button', 'sub-matrix-setup', label);
         btn.setAttribute('data-matrix-setup', '1');
         btn.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
         btn.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+        if (c.state === 'email-missing') btn.setAttribute('data-email-repair', '1');
         if (c.state !== 'empty') {
           // Show the status word ("⟳ Needs sign-in" / "⚠ Didn't match…") ABOVE the button.
           td.appendChild(el(doc, 'div', 'sub-matrix-glyph', `${MATRIX_CELL_GLYPH[c.state]} ${MATRIX_CELL_WORD[c.state]}`));
@@ -1197,6 +1225,7 @@ export function createController(opts) {
     if (!cell) return;
     const accountId = btn.getAttribute('data-account-id');
     const machineId = btn.getAttribute('data-machine-id');
+    const emailRepair = btn.getAttribute('data-email-repair') === '1';
     if (!accountId || !machineId) return;
     // A retry clears the previous attempt's terminal presentation for this cell.
     delete state.matrixTransient[`${accountId}::${machineId}`];
@@ -1212,6 +1241,7 @@ export function createController(opts) {
     confirm.setAttribute('data-matrix-confirm', '1');
     confirm.setAttribute('data-account-id', accountId);
     confirm.setAttribute('data-machine-id', machineId);
+    if (emailRepair) confirm.setAttribute('data-email-repair', '1');
     cell.appendChild(confirm);
     // An explicit way OUT of the interaction (the hold would otherwise pin the cell
     // forever if the operator changes their mind) — client-side only, nothing started yet.
@@ -1237,6 +1267,7 @@ export function createController(opts) {
     if (!cell) return;
     const accountId = btn.getAttribute('data-account-id');
     const machineId = btn.getAttribute('data-machine-id');
+    const emailRepair = btn.getAttribute('data-email-repair') === '1';
     const pinInput = cell.querySelector('.sub-matrix-pin');
     const pin = pinInput ? pinInput.value.trim() : '';
     if (!accountId || !machineId) { setCellStatus(cell, 'Couldn’t prepare this — please refresh.'); return; }
@@ -1245,6 +1276,22 @@ export function createController(opts) {
     btn.setAttribute('disabled', '1');
     void (async () => {
       try {
+        if (emailRepair) {
+          const r = await postJson(`/subscription-pool/${encodeURIComponent(accountId)}/repair-email`, { pin });
+          if (pinInput) pinInput.value = '';
+          if (r.ok) {
+            cell.removeAttribute('data-interaction-open');
+            setCellStatus(cell, '✓ Account identity repaired.');
+            await tick();
+            return;
+          }
+          const msg = r.json && r.json.error
+            ? r.json.error
+            : 'Couldn’t verify this account from its signed-in credential.';
+          setCellStatus(cell, msg);
+          btn.removeAttribute('disabled');
+          return;
+        }
         const r = await postJson(URLS.startCell, { accountId, machineId, pin });
         if (pinInput) pinInput.value = ''; // PIN is memory-only — clear it immediately
         if (r.ok && r.json && r.json.verificationUrl) {
@@ -1257,8 +1304,15 @@ export function createController(opts) {
             ttlExpiresAt: r.json.ttlExpiresAt, notice: r.json.notice, kind: r.json.kind,
           });
         } else if (r.status === 409) {
-          state.matrixTransient[`${accountId}::${machineId}`] = { state: 'cant-resolve', at: now() };
-          setCellStatus(cell, 'Can’t set this account up here — its details couldn’t be resolved.');
+          const code = r.json && r.json.code;
+          state.matrixTransient[`${accountId}::${machineId}`] = {
+            state: code === 'account-record-missing-email' ? 'email-missing' : 'cant-resolve',
+            at: now(),
+          };
+          const message = r.json && r.json.error
+            ? r.json.error
+            : 'Can’t set this account up here — its identity details could not be verified.';
+          setCellStatus(cell, message);
           btn.removeAttribute('disabled');
         } else {
           const msg = (r.json && (r.json.error || r.json.reason)) ? (r.json.error || r.json.reason) : `failed (${r.status})`;

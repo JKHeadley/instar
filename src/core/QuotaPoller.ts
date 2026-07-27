@@ -595,19 +595,9 @@ export class QuotaPoller {
       const patch: Parameters<SubscriptionPool['update']>[1] = { lastQuota: snap };
       // A clean read on an account previously flagged needs-reauth restores it.
       if (account.status === 'needs-reauth') patch.status = 'active';
-      // Census #3: email auto-patch. When credential re-pointing is enabled the enrollment home
-      // no longer maps 1:1 to a tenant (a swap moves the credential), so reading the slot's
-      // `.claude.json` email and writing it onto this pool account would CROSS-CONTAMINATE pool
-      // emails and poison the recovery probe's email→account map. So while the gate is enabled the
-      // auto-patch is SUPPRESSED (the ledger + identity oracle own divergence detection now). With
-      // the gate absent/off this is byte-for-byte today's behavior.
-      if (account.framework === 'claude-code' && !this.locationGate?.isEnabled()) {
-        // Auto-populate the account email from the config home's own login record,
-        // so the stored email always reflects which account actually authenticated
-        // (a login into the wrong account surfaces here instead of hiding).
-        const email = readAccountEmail(account.configHome);
-        if (email && email !== account.email) patch.email = email;
-      }
+      // Email is provider-attested identity, not quota metadata. Quota polling
+      // must never mutate it; drift detection and the identity registrar own
+      // that authority.
       try {
         this.pool.update(attributedId, patch);
       } catch {

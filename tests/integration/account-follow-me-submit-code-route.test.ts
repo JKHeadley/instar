@@ -182,7 +182,7 @@ describe('WS5.2 code paste-back submit-code routes (integration)', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'afm-code-'));
     const ctx = buildCtx(dir, { dev: true, seedPending: false });
     const pool = (ctx as unknown as { subscriptionPool: SubscriptionPool }).subscriptionPool;
-    pool.add({
+    pool.addFixture({
       id: 'fm-1', nickname: 'main', provider: 'anthropic', framework: 'claude-code',
       configHome: path.join(dir, '.claude-followme-fm-1'), status: 'needs-reauth',
       email: 'approved@x.com',
@@ -313,7 +313,7 @@ describe('WS5.2 code paste-back submit-code routes (integration)', () => {
     const ctx = buildCtx(dir, { dev: true, seedPending: true, credentialPresent: true, oracleEmail: 'approved@x.com' });
     // The account ALREADY exists (the operator's "Needs sign-in → Sign in" matrix path).
     const pool = (ctx as unknown as { subscriptionPool: SubscriptionPool }).subscriptionPool;
-    pool.add({ id: 'fm-1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/old/home', email: 'approved@x.com', status: 'needs-reauth' });
+    pool.addFixture({ id: 'fm-1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/old/home', email: 'approved@x.com', status: 'needs-reauth' });
     const app = express(); app.use(express.json());
     app.use(createRoutes(ctx));
     server = await listen(app);

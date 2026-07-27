@@ -38,6 +38,11 @@ import { ReviewExchangeEngine } from '../coordination/ReviewExchange.js';
 import { DeliveredMandateStore } from '../coordination/DeliveredMandateStore.js';
 import { packageMandateForDelivery, acceptDeliveredMandate } from '../coordination/AccountFollowMeMandateBridge.js';
 import { readFollowMeBounds, acceptMandateDelivery } from '../coordination/AccountFollowMeMandateDelivery.js';
+import {
+  FollowMeConsumerBackoffStore,
+  classifyFollowMeFailure,
+  followMeBackoffKey,
+} from '../coordination/FollowMeConsumerBackoffStore.js';
 import { CutoverReadiness } from '../feedback-factory/cutoverReadiness.js';
 import { InboxDrainer } from '../feedback-factory/inbox/InboxDrainer.js';
 import { BlobInboxClient } from '../feedback-factory/inbox/BlobInboxClient.js';
@@ -395,6 +400,8 @@ export class AgentServer {
   /** Dynamic MCP idle-offload sweep timer (dark + dryRun-first; cleared on stop). */
   private mcpIdleOffloadSweepTimer: ReturnType<typeof setInterval> | null = null;
   private followMeConsumerRunning = false;
+  private followMeConsumerBackoff: FollowMeConsumerBackoffStore | null = null;
+  private subscriptionEmailBarrier: import('../core/SubscriptionPool.js').SubscriptionEmailReconciliationBarrier | null = null;
   private resourceSampler: ResourceSampler | null = null;
   private frameworkIssueLedger: FrameworkIssueLedger | null = null;
   private mentorRunner: MentorOnboardingRunner | null = null;
@@ -517,6 +524,9 @@ export class AgentServer {
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
     prHandLease?: import('../core/PrHandLease.js').PrHandLease;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
+    subscriptionIdentityOracle?: import('../core/CredentialLocationLedger.js').IdentityOracle;
+    subscriptionEmailBinding?: import('../core/SubscriptionPool.js').SubscriptionEmailBindingAuthority;
+    subscriptionEmailBarrier?: import('../core/SubscriptionPool.js').SubscriptionEmailReconciliationBarrier;
     accountFollowMePeerViews?: import('./routes.js').RouteContext['accountFollowMePeerViews'];
     quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller;
     quotaAwareScheduler?: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler;
@@ -911,6 +921,7 @@ export class AgentServer {
     threadlineFlowBridge?: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge;
   }) {
     this.config = options.config;
+    this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
     this.startTime = new Date();
@@ -3334,6 +3345,9 @@ export class AgentServer {
       commitmentTracker: options.commitmentTracker ?? null,
       prHandLease: options.prHandLease ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
+      subscriptionIdentityOracle: options.subscriptionIdentityOracle,
+      subscriptionEmailBinding: options.subscriptionEmailBinding,
+      subscriptionEmailBarrier: options.subscriptionEmailBarrier,
       accountFollowMePeerViews: options.accountFollowMePeerViews,
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
@@ -5124,9 +5138,11 @@ export class AgentServer {
    * enforces the dev-gate (503 when off) + deny-by-default, so this consumer carries NO authority of
    * its own; it only nudges the route for mandates the operator already approved + delivered.
    */
+  /* @self-action-controller: follow-me-enrollment-consumer */
   private async driveDeliveredFollowMeEnrollments(): Promise<void> {
     if (this.followMeConsumerRunning) return; // re-entrancy guard (a slow tick must not overlap)
     if (!this.deliveredMandateStore) return;
+    if (this.subscriptionEmailBarrier?.isBlocking()) return;
     this.followMeConsumerRunning = true;
     try {
       const now = Date.now();
@@ -5141,23 +5157,54 @@ export class AgentServer {
       const host = this.config.host || '127.0.0.1';
       const base = `http://${host}:${this.config.port}`;
       const authHeader = { Authorization: `Bearer ${this.config.authToken ?? ''}` };
+      this.followMeConsumerBackoff ??= new FollowMeConsumerBackoffStore(this.config.stateDir);
+      const targetMachineId =
+        (this.config as InstarConfig & { machineId?: string }).machineId ?? 'local';
 
       // Build the set of accounts already handled (pending login in flight, or already enrolled) so a
       // tick never re-drives — the durable idempotency (pending logins + pool both persist on disk).
       const handled = new Set<string>();
       try {
-        const [pl, sp] = await Promise.all([
+        const [pl, sp, poolScope] = await Promise.all([
           fetch(`${base}/subscription-pool/pending-logins`, { headers: authHeader, signal: AbortSignal.timeout(5000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
           fetch(`${base}/subscription-pool`, { headers: authHeader, signal: AbortSignal.timeout(5000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
-        ]) as [{ logins?: Array<{ id?: string }> } | null, { accounts?: Array<{ id?: string }> } | null];
+          fetch(`${base}/subscription-pool?scope=pool`, { headers: authHeader, signal: AbortSignal.timeout(5000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        ]) as [
+          { logins?: Array<{ id?: string }> } | null,
+          { accounts?: Array<{ id?: string }> } | null,
+          { accounts?: Array<{ id?: string; email?: string }>; emailGaps?: Array<{ accountId?: string }> } | null,
+        ];
         for (const l of pl?.logins ?? []) if (l?.id) handled.add(l.id);
         for (const a of sp?.accounts ?? []) if (a?.id) handled.add(a.id);
-      } catch { /* best-effort — a read failure just means we may attempt; the route is idempotent-enough */ }
+        const evidenceFor = (accountId: string, mandateIds: string[]) => {
+          const holderEmails = (poolScope?.accounts ?? [])
+            .filter((account) => account.id === accountId && typeof account.email === 'string')
+            .map((account) => account.email!.trim().toLowerCase())
+            .sort();
+          const gaps = (poolScope?.emailGaps ?? []).filter((gap) => gap.accountId === accountId).length;
+          return {
+            identityEvidenceKey: JSON.stringify({ holderEmails, gaps }),
+            identityResolved: gaps === 0 && new Set(holderEmails).size === 1,
+            authoritySetKey: JSON.stringify([...mandateIds].sort()),
+          };
+        };
 
+      const seenPairs = new Set<string>();
       for (const rec of delivered) {
         const m = rec.portable.mandate;
         const accountId = ((m.authorities ?? []).find((a) => a.action === 'account-follow-me')?.bounds ?? {}).accountId as string | undefined;
         if (!accountId || handled.has(accountId)) continue; // already pending or enrolled — never re-drive
+        const backoffKey = followMeBackoffKey(accountId, targetMachineId);
+        if (seenPairs.has(backoffKey)) continue;
+        seenPairs.add(backoffKey);
+        const mandateIds = delivered
+          .filter((candidate) => (candidate.portable.mandate.authorities ?? []).some(
+            (authority) => authority.action === 'account-follow-me' &&
+              (authority.bounds ?? {}).accountId === accountId,
+          ))
+          .map((candidate) => candidate.id);
+        const evidence = evidenceFor(accountId, mandateIds);
+        if (!this.followMeConsumerBackoff.shouldAttempt(backoffKey, now, evidence)) continue;
         try {
           const resp = await fetch(`${base}/subscription-pool/follow-me/enroll/start`, {
             method: 'POST',
@@ -5168,12 +5215,33 @@ export class AgentServer {
             signal: AbortSignal.timeout(200_000),
           });
           const ok = resp.ok;
-          console.log(`[follow-me-consumer] drove enroll-start for ${accountId} (mandate ${rec.id}) → ${resp.status}${ok ? '' : ' (will retry next tick)'}`);
-          if (ok) handled.add(accountId); // don't double-drive within this same tick
+          let code: string | undefined;
+          if (!ok) {
+            const body = await resp.json().catch(() => null) as { code?: unknown } | null;
+            if (typeof body?.code === 'string') code = body.code;
+          }
+          if (ok) {
+            handled.add(accountId);
+            this.followMeConsumerBackoff.clear(backoffKey);
+          } else {
+            const state = this.followMeConsumerBackoff.recordFailure(
+              backoffKey,
+              classifyFollowMeFailure(resp.status, code),
+              now,
+              evidence,
+              code,
+            );
+            console.log(
+              `[follow-me-consumer] enroll-start ${accountId} → ${resp.status}/${code ?? 'unclassified'}; ` +
+              `${state.parkedAt ? 'parked' : `attempt ${state.attempts}/4`}`,
+            );
+          }
         } catch (err) {
+          this.followMeConsumerBackoff.recordFailure(backoffKey, 'other', now, evidence);
           console.warn(`[follow-me-consumer] enroll-start self-call failed for ${accountId} (mandate ${rec.id}):`, err);
         }
       }
+      } catch { /* best-effort — a read failure just means the next tick retries the read */ }
     } catch (err) {
       console.warn('[follow-me-consumer] sweep failed (non-fatal):', err);
     } finally {

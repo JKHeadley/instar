@@ -18,9 +18,9 @@ describe('quota scheduler framework safety integration', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-fw-int-'));
     dirs.push(dir);
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'codex-hot', nickname: 'Codex hot', provider: 'openai', framework: 'codex-cli', configHome: '/h/codex-hot' });
-    pool.add({ id: 'codex-safe', nickname: 'Codex safe', provider: 'openai', framework: 'codex-cli', configHome: '/h/codex-safe' });
-    pool.add({ id: 'claude-empty', nickname: 'Claude empty', provider: 'anthropic', framework: 'claude-code', configHome: '/h/claude-empty' });
+    pool.addFixture({ id: 'codex-hot', nickname: 'Codex hot', email: 'codex-hot@example.test', provider: 'openai', framework: 'codex-cli', configHome: '/h/codex-hot' });
+    pool.addFixture({ id: 'codex-safe', nickname: 'Codex safe', email: 'codex-safe@example.test', provider: 'openai', framework: 'codex-cli', configHome: '/h/codex-safe' });
+    pool.addFixture({ id: 'claude-empty', nickname: 'Claude empty', email: 'claude-empty@example.test', provider: 'anthropic', framework: 'claude-code', configHome: '/h/claude-empty' });
     pool.update('codex-hot', { lastQuota: { sevenDay: { utilizationPct: 99, resetsAt: '2026-07-12T00:00:00Z' }, source: 'codex-rollout' } });
     pool.update('codex-safe', { lastQuota: { sevenDay: { utilizationPct: 45, resetsAt: '2026-07-12T00:00:00Z' }, source: 'codex-rollout' } });
     pool.update('claude-empty', { lastQuota: { sevenDay: { utilizationPct: 0, resetsAt: '2026-07-11T00:00:00Z' }, source: 'oauth-usage-endpoint-fallback' } });

@@ -44,7 +44,7 @@ function buildCtx(dir: string, opts: {
   deliveredBounds: { accountId: string; targetMachineId: string; mechanism: string } | null;
 }) {
   const pool = new SubscriptionPool({ stateDir: dir });
-  pool.add({ id: 'a1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/x/a1', email: 'approved@x.com' });
+  pool.addFixture({ id: 'a1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/x/a1', email: 'approved@x.com' });
   const enrollmentWizard = new EnrollmentWizard({
     store: new PendingLoginStore({ stateDir: dir }),
     driveLogin: async () => ({ verificationUrl: 'https://claude.com/oauth', userCode: 'WXYZ-1234', ttlMs: 15 * 60_000 }),

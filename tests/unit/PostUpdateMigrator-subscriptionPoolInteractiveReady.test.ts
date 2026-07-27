@@ -49,12 +49,13 @@ describe('PostUpdateMigrator — subscription-pool interactive-ready sweep', () 
 
   function addAccount(id: string, configHome: string, framework: 'claude-code' | 'codex-cli' = 'claude-code') {
     const pool = new SubscriptionPool({ stateDir });
-    pool.add({
+    pool.addFixture({
       id,
       nickname: id,
       provider: framework === 'claude-code' ? 'anthropic' : 'openai',
       framework,
       configHome,
+      email: `${id}@example.test`,
     });
   }
 

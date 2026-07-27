@@ -58,7 +58,7 @@ describe('credential re-pointing census re-routing — E2E feature-alive (dark =
   async function bootWired(enabled: boolean): Promise<{ pool: SubscriptionPool; seenHomes: string[]; probeCalls: () => number }> {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cred-census-e2e-'));
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({ id: 'claude-1', nickname: 'primary', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, '.claude-enroll'), email: 'a@x.com' });
+    pool.addFixture({ id: 'claude-1', nickname: 'primary', provider: 'anthropic', framework: 'claude-code', configHome: path.join(dir, '.claude-enroll'), email: 'a@x.com' });
     const poolView: LedgerPoolView = { list: () => pool.list().map((a) => ({ id: a.id, email: a.email, configHome: a.configHome, framework: a.framework })) };
 
     const ledger = new CredentialLocationLedger({ stateDir: dir, pool: poolView, oracle: noopOracle });
