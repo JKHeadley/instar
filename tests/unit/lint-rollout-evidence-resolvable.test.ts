@@ -38,15 +38,38 @@ describe('lint-rollout-evidence-resolvable — wiring', () => {
     const out = execFileSync('node', [LINT], { cwd: ROOT, encoding: 'utf8' });
     // It must report its denominator — a guard that says only "clean" cannot be
     // distinguished from a guard that scanned nothing.
-    expect(out).toMatch(/rollout-active endpoint spec\(s\)/);
+    expect(out).toMatch(/guarded endpoint spec\(s\)/);
     expect(out).toMatch(/resolving/);
   });
 
   it('reports a non-zero denominator — a scan of nothing is not a pass', () => {
     const out = execFileSync('node', [LINT], { cwd: ROOT, encoding: 'utf8' });
-    const m = /clean — (\d+) rollout-active endpoint spec\(s\)/.exec(out);
+    const m = /clean — (\d+) guarded endpoint spec\(s\)/.exec(out);
     expect(m).not.toBeNull();
     expect(Number(m![1])).toBeGreaterThan(0);
+  });
+
+  it('guards COMPOSED dispositions too, and reports each count separately', () => {
+    // The scope this lint shipped with was 'active' only, and the class is wider:
+    // a composed spec rides an owner feature for GRADUATION but still carries a real
+    // rollout-criteria naming a measurement. A 404 there parks the feature for
+    // exactly the same reason. Both counts are reported separately so a future
+    // narrowing shows up as a number going to zero rather than as silence.
+    const out = execFileSync('node', [LINT], { cwd: ROOT, encoding: 'utf8' });
+    const m = /\((\d+) active, (\d+) composed\)/.exec(out);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBeGreaterThan(0);
+    expect(Number(m![2])).toBeGreaterThan(0);
+  });
+
+  it('the source actually admits composed — not just the message', () => {
+    // Guard against the shallow version of this change: editing the summary line to
+    // SAY composed while the filter still skips it. Asserts the predicate itself.
+    const src = fs.readFileSync(LINT, 'utf8');
+    expect(src).toMatch(/disposition !== 'active' && disposition !== 'composed'/);
+    // And that the refusal message names WHICH disposition fired, so a reader is not
+    // left inferring it — the scope error this whole widening is a correction for.
+    expect(src).toMatch(/rollout-disposition:\$\{disposition\}/);
   });
 });
 

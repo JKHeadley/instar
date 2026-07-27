@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-27T21:10:50.727Z",
+  "slug": "rollout-evidence-ratchet-composed",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 31,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -115,18 +115,39 @@ for (const file of specFiles()) {
   try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
   const fm = frontmatter(text);
   if (!fm) continue;
-  if (field(fm, 'rollout-disposition') !== 'active') continue;
+  // GUARDED DISPOSITIONS — 'active' AND 'composed'.
+  //
+  // 'composed' does NOT mean exempt. It names WHO owns graduation (the rollout rides
+  // an owner feature via rollout-owner-feature) rather than WHETHER the evidence
+  // matters. A composed spec still carries a real rollout-criteria naming a
+  // measurement, and often rollout-metrics-json thresholds against it. If its ref
+  // 404s the criterion is exactly as unevaluable as an active one's, and the feature
+  // parks for exactly the same reason.
+  //
+  // Widening is safe BECAUSE of assertion C rather than in spite of it: a composed
+  // spec whose owner feature was genuinely abandoned may legitimately carry a stale
+  // ref, and the shrink-only baseline is where that goes — with a stated reason,
+  // deleted automatically the moment the ref starts resolving. So this does not force
+  // anyone to FIX anything; it forces them to DECLARE. Entry needs evidence.
+  //
+  // EARNED (2026-07-27): this lint shipped guarding 'active' only, and its own header
+  // said "a sweep of all 5 rollout-active specs" — accurate for its scope, and the
+  // scope was narrower than the class it names. A single-pass sweep is incomplete by
+  // definition (Iterative Audit to Convergence); this is that standard applied to the
+  // guard itself, one pass later.
+  const disposition = field(fm, 'rollout-disposition');
+  if (disposition !== 'active' && disposition !== 'composed') continue;
   if (field(fm, 'rollout-evidence-type') !== 'endpoint') continue;
   const ref = field(fm, 'rollout-evidence-ref');
   if (!ref || !ref.startsWith('/')) continue; // unparseable ⇒ skip, not fail
   const slug = field(fm, 'slug') || path.basename(file, '.md');
   const resolves = srcContains(ref);
-  seenActive.push({ slug, ref, resolves });
+  seenActive.push({ slug, ref, resolves, disposition });
 
   // A — every active endpoint ref resolves, unless explicitly accepted.
   if (!resolves && !allowed.has(slug)) {
     errors.push(
-      `${path.relative(ROOT, file)}: rollout-disposition:active names ` +
+      `${path.relative(ROOT, file)}: rollout-disposition:${disposition} names ` +
       `rollout-evidence-ref "${ref}" but no route with that path exists in src/. ` +
       `The graduation criterion can never be evaluated, so this rollout is parked ` +
       `indefinitely. Build the endpoint, correct the ref, or add an explicit ` +
@@ -157,6 +178,8 @@ if (errors.length) {
   process.exit(1);
 }
 console.log(
-  `lint-rollout-evidence-resolvable: clean — ${seenActive.length} rollout-active endpoint spec(s), ` +
+  `lint-rollout-evidence-resolvable: clean — ${seenActive.length} guarded endpoint spec(s) ` +
+  `(${seenActive.filter((s) => s.disposition === 'active').length} active, ` +
+  `${seenActive.filter((s) => s.disposition === 'composed').length} composed), ` +
   `${seenActive.filter((s) => s.resolves).length} resolving, ${allowed.size} accepted-unresolved.`,
 );
