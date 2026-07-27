@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-27T07:07:26.022Z",
+  "slug": "relay-scope-detail",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 9,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

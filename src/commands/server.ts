@@ -149,7 +149,7 @@ import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForward
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
-import { relayOutbound } from '../core/TelegramRelay.js';
+import { RelayRefusedError, isRelayRefusal, relayOutbound } from '../core/TelegramRelay.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
 import { wireRegistrySync } from '../core/wireRegistrySync.js';
@@ -5433,8 +5433,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           const { LeaseHandbackReconciler, DEFAULT_LEASE_HANDBACK_CONFIG, HANDBACK_CONSENT_TTL_MS } = await import('../core/LeaseHandbackReconciler.js');
           void HANDBACK_CONSENT_TTL_MS;
           const { readHandbackLatchUntilMs } = await import('../core/handbackLatch.js');
-          const { ropeReachableOnAnyRope } = await import('../core/ropeHealth.js');
+          const { ropeHealthProviderFromSnapshot } = await import('../core/ropeHealth.js');
           const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+          // Scoped to THIS server/reconciler lifecycle — never the module-global
+          // synthetic-test seam. A success must be newer than the latest failure
+          // and fresher than one lease TTL, so repeated reads cannot turn old
+          // traffic into a continuous-health window.
+          const handbackRopeHealth = ropeHealthProviderFromSnapshot(
+            () => meshResolver.snapshot(),
+            { maxAgeMs: seamlessness.leaseTtlMs },
+          );
           const hbCfgRead = () => {
             const c = config.multiMachine?.leaseSelfHeal?.preferredCaptainHandback ?? {};
             return {
@@ -5463,7 +5471,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 heartbeatFresh: cap?.online === true,
                 // U4.3 rope-health snapshot seam (R-r2-7): absent record/provider
                 // reads NOT-healthy → defer. U4.3 registers the real provider.
-                ropeReachable: ropeReachableOnAnyRope(machineId),
+                ropeReachable: handbackRopeHealth.reachableOnAnyRope(machineId),
                 leaseEligible: !!cap,
                 quotaOk: cap?.quotaState?.blocked !== true,
               };
@@ -8385,9 +8393,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (alive) {
               console.log(`[slack→session] Injecting into ${existingSession}: "${message.content.slice(0, 80)}"`);
               // Wait for Claude to be ready (handles race with recently spawned sessions)
-              const ready = await sessionManager.waitForClaudeReady(existingSession, 15000);
+              let ready = await sessionManager.waitForClaudeReady(existingSession, 15000);
+              // A pane sitting on a selection menu is NOT stuck — something is waiting
+              // on an answer, and the always-on auto-resolver clears those within
+              // seconds. Two things must not happen here: killing a live conversation
+              // for being polite, and injecting INTO the menu (Enter would select an
+              // option — the message would answer the question). So give the resolver
+              // a bounded window, then re-evaluate; a menu that never clears falls
+              // through to the pre-existing stuck path rather than losing the message.
+              if (!ready && sessionManager.classifyPaneState(existingSession) === 'menu') {
+                console.warn(`[slack→session] Session ${existingSession} is on a selection menu — waiting for it to clear, not killing`);
+                ready = await sessionManager.waitForClaudeReady(existingSession, 15000);
+              }
               if (!ready) {
-                // Session is stuck (permissions prompt, tool hang, etc.)
+                // Session is stuck (tool hang, wedged TUI, etc.)
                 // Kill it and fall through to spawn a fresh session — never silently lose messages
                 console.warn(`[slack→session] Session ${existingSession} not ready after 15s — killing and respawning`);
                 try {
@@ -16887,18 +16906,23 @@ export async function startServer(options: StartOptions): Promise<void> {
     // config syntax, and other technical leakage in agent-to-user messages.
     let messagingToneGate: import('../core/MessagingToneGate.js').MessagingToneGate | undefined;
     if (sharedIntelligence) {
-      const { MessagingToneGate } = await import('../core/MessagingToneGate.js');
-      // Pass a live config getter so the failClosedOnExhaustion kill-switch
-      // (spec §Design 6) is honored without a restart.
+      const { MessagingToneGate, resolveToneGateOperatorConfig } = await import('../core/MessagingToneGate.js');
+      // Pass a live config getter so the operator knobs (kill-switch, fail-mode,
+      // candidate-body capture — spec §Design 6) are honored without a restart.
+      // Single wiring point: resolveToneGateOperatorConfig reads the TOP-LEVEL
+      // toneGate block (messaging is an array — a messaging.toneGate read is
+      // structurally dead, the cause of the 2026-07-24 capture wiring gap).
+      // The getter re-runs on EVERY review, but `config` is the boot-time
+      // snapshot — nothing re-reads the file into it, so a knob resolved only
+      // from `config` is restart-required no matter how often the getter fires.
+      // Layering the LIVE block on top is what makes the documented rollback
+      // ("set advisoryMigration:false, no restart") actually true; without it
+      // the spec would promise a lever that does not move until a bounce.
       messagingToneGate = new MessagingToneGate(sharedIntelligence, () => {
-        const tg = (config as { messaging?: { toneGate?: { failClosedOnExhaustion?: boolean; failClosedMode?: 'always' | 'tiered' | 'never'; toneTierDryRun?: boolean } } }).messaging?.toneGate;
-        return {
-          failClosedOnExhaustion: tg?.failClosedOnExhaustion,
-          // operator-channel-sacred (outbound): default 'always' (today's behavior).
-          // 'tiered' is an explicit opt-in; ship it with toneTierDryRun:true first to soak.
-          failClosedMode: tg?.failClosedMode,
-          toneTierDryRun: tg?.toneTierDryRun,
-        };
+        const live = liveConfig.get<Record<string, unknown>>('toneGate', undefined as never);
+        return resolveToneGateOperatorConfig(
+          live && typeof live === 'object' ? { ...config, toneGate: live } : config,
+        );
       });
       console.log(pc.green('  Messaging tone gate: active (Haiku via shared IntelligenceProvider)'));
     } else {
@@ -22671,6 +22695,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                   const pin = _pinPlacementMetadata ? _pinPlacementMetadata(sk) : _topicPinStore?.asTopicMetadata(sk);
                   return pin?.pinned === true && pin.preferredMachine ? pin.preferredMachine : null;
                 },
+                hasLiveSession: (sk) => {
+                  // Liveness keeps legitimate respawns admissible while live duplicates remain visible.
+                  const topicSessions = telegram?.getAllTopicSessions?.();
+                  const sessionName = topicSessions?.get(Number(sk));
+                  if (!sessionName) return false;
+                  return sessionManager.getCachedRunningSessions().sessions.some((session) =>
+                    session.tmuxSession === sessionName && (session.status === 'starting' || session.status === 'running'));
+                },
                 durableCustodyLive: () => !!_inboundQueue,
                 journal: (row) => ownerDarkAudit.append(row),
                 raiseAttention: (item) => {
@@ -23410,8 +23442,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               const v = (config as { multiMachine?: { relayTimeoutMs?: number } }).multiMachine?.relayTimeoutMs;
               return typeof v === 'number' && v > 0 ? v : 15_000;
             })();
-            telegram.outboundRelay = (topicId, text, opts) =>
-              relayOutbound(topicId, text, opts, {
+            telegram.outboundRelay = async (topicId, text, opts) => {
+              const r = await relayOutbound(topicId, text, opts, {
                 leaseHolder: () => coordinator.getSyncStatus().leaseHolder,
                 selfMachineId: meshSelfId,
                 peerUrl,
@@ -23419,6 +23451,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                 timeoutMs: relayTimeoutMs,
                 log: (line) => console.warn(pc.yellow(`  ${line}`)),
               });
+              // A holder REFUSAL (422 — a tone-gate nudge, the credential wall)
+              // is not a transport failure and must not be reported as one. It
+              // is thrown as a typed error so the standby's route can re-emit
+              // the holder's own body verbatim; otherwise the agent sees
+              // "router unreachable" and can never answer the nudge that is
+              // actually waiting for it.
+              if (isRelayRefusal(r)) throw new RelayRefusedError(r);
+              return r;
+            };
           }
 
           // ── L4 transfer-by-nickname activation: the "move/run this on <nickname>"
@@ -24235,8 +24276,42 @@ export async function startServer(options: StartOptions): Promise<void> {
         guardRegistry.register('monitoring.throughputFloor.enabled', () => autonomousThroughputFloor!.guardStatus());
       }
     } catch (err) { /* @silent-fallback-ok: fleet-dark optional observer; failure is logged and adds no authority */ console.warn('[AutonomousThroughputFloor] init failed:', (err as Error).message); }
+    const { WorkQueueRegistry } = await import('../core/WorkQueue.js');
+    const { FeedbackProcessingService, resolveCanonicalStoreDir } = await import('../feedback-factory/processing/FeedbackProcessingService.js');
+    const { ParallelActivityIndex } = await import('../core/ParallelActivityIndex.js');
+    const ageDays = (value: string | undefined): number => value ? Math.max(0, (Date.now() - Date.parse(value)) / 86_400_000) : 0;
+    const feedbackStoreDir = resolveCanonicalStoreDir(config);
+    const feedbackReader = feedbackStoreDir ? new FeedbackProcessingService({ dataDir: feedbackStoreDir }) : null;
+    const topicActivityIndex = new ParallelActivityIndex({ stateDir: config.stateDir });
+    const workQueue = new WorkQueueRegistry({
+      commitments: () => (commitmentTracker?.getActive() ?? []).map((c) => ({
+        id: c.id, source: 'commitment' as const, sourceRef: c.id, title: c.userRequest,
+        kind: c.type, goalAlignment: [], urgency: 60,
+        ageDays: ageDays(c.createdAt), userDirected: Boolean(c.boundBy), status: c.status as 'pending',
+        assignee: null, priority: 'medium' as const,
+      })),
+      evolutionActions: () => (evolution?.listActions() ?? []).map((a) => ({
+        id: a.id, source: 'evolution-action' as const, sourceRef: a.id, title: a.title,
+        kind: 'evolution-action', goalAlignment: a.tags ?? [], urgency: a.priority === 'critical' ? 90 : 50,
+        ageDays: ageDays(a.createdAt), userDirected: Boolean(a.source), status: a.status,
+        assignee: null, priority: a.priority as 'critical' | 'high' | 'medium' | 'low',
+      })),
+      feedback: () => (feedbackReader?.activeClusters() ?? []).map((c) => ({
+        id: c.clusterId, source: 'feedback' as const, sourceRef: c.clusterId, title: c.title,
+        kind: c.type ?? 'feedback', goalAlignment: [], urgency: 50,
+        ageDays: ageDays(c.createdAt), userDirected: false, status: 'open' as const,
+        assignee: null, priority: 'medium' as const,
+      })),
+      topics: () => topicActivityIndex.activities().filter((a) => a.focus).map((a) => ({
+        id: `topic-${a.topicId}`, source: 'topic' as const, sourceRef: String(a.topicId), title: a.focus!,
+        kind: 'topic-intent', goalAlignment: a.tags, urgency: a.running ? 70 : 40,
+        ageDays: a.updatedAt ? Math.max(0, (Date.now() - a.updatedAt) / 86_400_000) : 0,
+        userDirected: true, status: 'open' as const, assignee: null, priority: 'medium' as const,
+      })),
+    });
 
     const server = new AgentServer({ config, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle: credentialIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    server.setWorkQueue(workQueue);
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
       const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
       const reader = replicatedPeerStreamReader;

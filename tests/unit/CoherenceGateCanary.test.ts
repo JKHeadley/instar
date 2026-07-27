@@ -133,13 +133,89 @@ describe('CoherenceGate — Canary & Health', () => {
   // ── Reviewer Health ────────────────────────────────────────────────
 
   describe('reviewer health', () => {
-    it('reports healthy status when no reviews have run', () => {
+    // REPLACES a test that asserted `overallStatus === 'healthy'` when no reviews had
+    // run. That assertion pinned the defect in place as correct behaviour: a reviewer
+    // that had never executed once reported `passRate: 1` (a PERFECT score) and
+    // `status: 'healthy'`, so the absence of observations was indistinguishable from
+    // the presence of good ones. The name of the old test — "reports healthy status
+    // when no reviews have run" — described the bug accurately; only the expectation
+    // that this was DESIRABLE was wrong.
+    it('refuses to call a reviewer that has NEVER RUN healthy, and reports no rate for it', () => {
       const gate = createGate();
       const health = gate.getReviewerHealth();
 
-      expect(health.overallStatus).toBe('healthy');
-      expect(health.reviewers).toBeDefined();
+      expect(health.overallStatus).toBe('unobserved');
+      expect(Object.keys(health.reviewers).length).toBeGreaterThan(0);
+
+      for (const [name, r] of Object.entries(health.reviewers)) {
+        expect(r.status, `${name} never ran`).toBe('unobserved');
+        // A rate over zero observations is not a rate.
+        expect(r.passRate, `${name} passRate`).toBeNull();
+        expect(r.errorRate, `${name} errorRate`).toBeNull();
+        // The denominator is always present so the reader can see WHY there is no rate.
+        expect(r.total).toBe(0);
+        expect(r.insufficientEvidence).toBe(true);
+        expect(r.observationsRequired).toBeGreaterThan(0);
+      }
+
       expect(health.lastCanaryRun).toBeNull();
+    });
+
+    it('does not let thin evidence read as a proven pass rate', () => {
+      const gate = createGate();
+      // ONE passing observation. The rate is a truthful 1.0 — but 1-of-1 is not a
+      // basis for the verdict "healthy", which is the only thing the floor gates.
+      const reviewers = (gate as unknown as { reviewers: Map<string, { metrics: Record<string, number> }> }).reviewers;
+      const first = [...reviewers.values()][0];
+      first.metrics.passCount = 1;
+
+      const r = gate.getReviewerHealth();
+      const entry = Object.values(r.reviewers).find(x => x.total === 1)!;
+      expect(entry.passRate).toBe(1);          // the rate is reported honestly
+      expect(entry.status).toBe('unobserved'); // the VERDICT is withheld
+      expect(entry.insufficientEvidence).toBe(true);
+    });
+
+    it('still reports FAILING on thin evidence — the floor gates optimism only, never bad news', () => {
+      const gate = createGate();
+      const reviewers = (gate as unknown as { reviewers: Map<string, { metrics: Record<string, number> }> }).reviewers;
+      const first = [...reviewers.values()][0];
+      // Errored on both of its only two calls. Below the observation floor, but a
+      // failure is a failure — suppressing it "for want of samples" would recreate
+      // the original defect pointing the other way.
+      first.metrics.errorCount = 2;
+
+      const r = gate.getReviewerHealth();
+      const entry = Object.values(r.reviewers).find(x => x.total === 2)!;
+      expect(entry.errorRate).toBe(1);
+      expect(entry.status).toBe('failing');
+      expect(r.overallStatus).toBe('failing');
+    });
+
+    it('reports HEALTHY once there is enough evidence to support the claim', () => {
+      const gate = createGate();
+      const reviewers = (gate as unknown as { reviewers: Map<string, { metrics: Record<string, number> }> }).reviewers;
+      for (const rv of reviewers.values()) rv.metrics.passCount = 20;
+
+      const r = gate.getReviewerHealth();
+      expect(r.overallStatus).toBe('healthy');
+      for (const entry of Object.values(r.reviewers)) {
+        expect(entry.status).toBe('healthy');
+        expect(entry.passRate).toBe(1);
+        expect(entry.insufficientEvidence).toBe(false);
+      }
+    });
+
+    it('overallStatus never aggregates an unobserved reviewer as healthy', () => {
+      const gate = createGate();
+      const reviewers = (gate as unknown as { reviewers: Map<string, { metrics: Record<string, number> }> }).reviewers;
+      const all = [...reviewers.values()];
+      // All but one well-observed and clean; one never ran.
+      for (const rv of all.slice(1)) rv.metrics.passCount = 20;
+
+      const r = gate.getReviewerHealth();
+      // The healthy majority must not drown out the one we know nothing about.
+      expect(r.overallStatus).toBe('unobserved');
     });
 
     it('reports per-reviewer health metrics', async () => {
@@ -163,18 +239,68 @@ describe('CoherenceGate — Canary & Health', () => {
         expect(reviewer).toHaveProperty('passRate');
         expect(reviewer).toHaveProperty('total');
         expect(reviewer).toHaveProperty('status');
-        expect(['healthy', 'degraded', 'failing']).toContain(reviewer.status);
+        // 'unobserved' included: a reviewer with no observations must be reportable as
+        // such rather than being forced into one of the three verdict states.
+        expect(['healthy', 'degraded', 'failing', 'unobserved']).toContain(reviewer.status);
       }
     });
 
+    // This test previously carried the comment "Simulate high error rate by directly
+    // manipulating metrics" — and then manipulated nothing. It created a fresh gate and
+    // asserted `overallStatus === 'healthy'`, so despite its name it exercised the
+    // never-ran path and left `degraded` and `failing` with ZERO coverage while sitting
+    // green in the suite. A passing test named for a check is indistinguishable from
+    // that check being verified. It now performs the simulation its own comment described.
     it('detects degraded status when error rate is high', () => {
       const gate = createGate();
-      // Simulate high error rate by directly manipulating metrics
-      // (In production, this would happen from real API failures)
-      const health = gate.getReviewerHealth();
+      const reviewers = (gate as unknown as { reviewers: Map<string, { metrics: Record<string, number> }> }).reviewers;
+      const first = [...reviewers.values()][0];
+      // 3 errors in 10 calls = 0.3 — above the 0.2 degraded threshold, below the 0.5
+      // failing one, and well past the observation floor so the verdict is supported.
+      first.metrics.passCount = 7;
+      first.metrics.errorCount = 3;
 
-      // Fresh reviewers should all be healthy
-      expect(health.overallStatus).toBe('healthy');
+      const health = gate.getReviewerHealth();
+      const entry = Object.values(health.reviewers).find(x => x.total === 10)!;
+      expect(entry.errorRate).toBeCloseTo(0.3, 5);
+      expect(entry.status).toBe('degraded');
+      expect(health.overallStatus).toBe('degraded');
+    });
+
+    it('detects failing status when the error rate is past the failing threshold', () => {
+      const gate = createGate();
+      const reviewers = (gate as unknown as { reviewers: Map<string, { metrics: Record<string, number> }> }).reviewers;
+      const first = [...reviewers.values()][0];
+      first.metrics.passCount = 2;
+      first.metrics.errorCount = 8; // 0.8 > 0.5
+
+      const health = gate.getReviewerHealth();
+      const entry = Object.values(health.reviewers).find(x => x.total === 10)!;
+      expect(entry.status).toBe('failing');
+      expect(health.overallStatus).toBe('failing');
+    });
+
+    it('getReviewerStats reports null rates — not zeros or a perfect score — when nothing ran', () => {
+      const gate = createGate();
+      const stats = gate.getReviewerStats() as Record<string, Record<string, {
+        passRate: number | null; flagRate: number | null; errorRate: number | null;
+        avgLatencyMs: number | null; jsonValidityRate: number | null;
+        total: number; insufficientEvidence: boolean;
+      }>>;
+      const perReviewer = stats.reviewers;
+      expect(Object.keys(perReviewer).length).toBeGreaterThan(0);
+      for (const [name, r] of Object.entries(perReviewer)) {
+        // Before: passRate 0 here but 1 in getReviewerHealth — the same quantity with
+        // opposite defaults in one file — and jsonValidityRate 1, claiming perfect JSON
+        // validity from a reviewer that had never parsed a single response.
+        expect(r.passRate, `${name} passRate`).toBeNull();
+        expect(r.flagRate, `${name} flagRate`).toBeNull();
+        expect(r.errorRate, `${name} errorRate`).toBeNull();
+        expect(r.avgLatencyMs, `${name} avgLatencyMs`).toBeNull();
+        expect(r.jsonValidityRate, `${name} jsonValidityRate`).toBeNull();
+        expect(r.total).toBe(0);
+        expect(r.insufficientEvidence).toBe(true);
+      }
     });
 
     it('includes canary results in health report after running canaries', async () => {

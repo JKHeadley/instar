@@ -399,6 +399,28 @@ export class JobScheduler {
           }
         });
         this.cronTasks.set(job.slug, task);
+
+        // Stamp when this job STARTED EXISTING, once. The startup missed-job
+        // sweep needs it to tell "brand-new, its window simply hasn't come yet"
+        // apart from "has been sitting here unrun through window after window".
+        // Without it the sweep could only see "no lastRun" and fired both alike
+        // (ACT-724 defect (a)). Never overwritten, so the age is real.
+        const existing = this.state.getJobState(job.slug);
+        if (!existing?.firstSeenAt) {
+          try {
+            this.state.saveJobState({
+              slug: job.slug,
+              consecutiveFailures: 0,
+              ...(existing ?? {}),
+              firstSeenAt: new Date().toISOString(),
+            });
+          } catch (err) {
+            // A bookkeeping write must never stop the scheduler from starting.
+            // Missing firstSeenAt degrades SAFE: the sweep declines to treat the
+            // job as missed (see checkMissedJobs) rather than firing it blind.
+            console.error(`[scheduler] Could not stamp firstSeenAt for "${job.slug}": ${err}`);
+          }
+        }
       } catch (err) {
         console.error(`[scheduler] Invalid cron expression for job "${job.slug}": ${job.schedule} — ${err instanceof Error ? err.message : err}`);
       }
@@ -1906,23 +1928,38 @@ export class JobScheduler {
       const task = this.cronTasks.get(job.slug);
       if (!task) continue;
 
-      // Jobs that have never run: trigger on startup if their first expected
-      // run time has already passed (i.e., the job was added while the server
-      // was down and missed its first scheduled window).
-      if (!jobState?.lastRun) {
-        // Use a large overdueRatio so never-run jobs sort below truly-overdue jobs
-        missedJobs.push({ job, overdueRatio: 1.5 });
-        continue;
-      }
-
-      const lastRun = new Date(jobState.lastRun).getTime();
-
       // Get expected interval from next two runs
       const nextRun = task.nextRun();
       const nextNextRun = task.nextRuns(2)[1];
       if (!nextRun || !nextNextRun) continue;
 
       const intervalMs = nextNextRun.getTime() - nextRun.getTime();
+
+      // Jobs that have never run: trigger on startup ONLY if their first
+      // expected run time has already passed — i.e. the job has existed for
+      // longer than one full interval without ever running, so a window really
+      // did go by. That was always the intended rule (it is stated in the
+      // comment this replaces), but nothing recorded when a job started
+      // existing, so the branch could not check it and fired EVERY never-run
+      // job instead. A reminder scheduled for December discharged itself on the
+      // next boot (ACT-724 defect (a)).
+      //
+      // Fails SAFE in both unknown cases: a job with no firstSeenAt (legacy
+      // state written before this field existed) is treated as not-missed. The
+      // cost is one skipped catch-up; the cost of guessing the other way is a
+      // future-dated job firing early, which is indistinguishable from the
+      // reminder having been delivered.
+      if (!jobState?.lastRun) {
+        const firstSeen = jobState?.firstSeenAt ? new Date(jobState.firstSeenAt).getTime() : null;
+        if (firstSeen === null || Number.isNaN(firstSeen)) continue;
+        const ageMs = now - firstSeen;
+        if (ageMs <= intervalMs) continue; // its window genuinely hasn't come yet
+        // Use a large overdueRatio so never-run jobs sort below truly-overdue jobs
+        missedJobs.push({ job, overdueRatio: 1.5 });
+        continue;
+      }
+
+      const lastRun = new Date(jobState.lastRun).getTime();
       const timeSinceLastRun = now - lastRun;
 
       // If overdue by more than 1.5x the interval, mark as missed

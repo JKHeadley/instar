@@ -8,6 +8,8 @@ import {
   MessagingToneGate,
   detectDeterministicLeak,
   scrubClickLinksForFloor,
+  normalizeAutomatedTemplate,
+  fingerprintAutomatedTemplate,
 } from '../../src/core/MessagingToneGate.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 
@@ -28,6 +30,17 @@ function errorProvider(err: Error): IntelligenceProvider {
 }
 
 describe('MessagingToneGate', () => {
+  it('normalizes volatile canary ids to one template fingerprint', () => {
+    const a = 'Delivery canary mesh-12345 reached topic-987654 at 2026-07-24T20:00:00Z';
+    const b = 'Delivery canary mesh-67890 reached topic-123456 at 2026-07-24T20:05:00Z';
+    expect(normalizeAutomatedTemplate(a)).toBe(normalizeAutomatedTemplate(b));
+    expect(fingerprintAutomatedTemplate(a)).toBe(fingerprintAutomatedTemplate(b));
+  });
+
+  it('keeps genuinely different automated templates distinct', () => {
+    expect(fingerprintAutomatedTemplate('Delivery canary succeeded for mesh-12345'))
+      .not.toBe(fingerprintAutomatedTemplate('Delivery canary failed for mesh-12345'));
+  });
   describe('pass case', () => {
     it('passes clean conversational messages', async () => {
       const provider = mockProvider(() =>

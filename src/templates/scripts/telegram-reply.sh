@@ -4,6 +4,12 @@
 # Usage:
 #   ./telegram-reply.sh TOPIC_ID "message text"
 #   ./telegram-reply.sh --format markdown TOPIC_ID "**bold**"
+#
+#   EVERY FLAG GOES BEFORE THE TOPIC ID. Flag parsing stops at the topic id, so
+#   anything after it is message text. A flag in the wrong position used to be
+#   sent to the user as literal text with its effect silently dropped; it is now
+#   refused. Correct:
+#     ./telegram-reply.sh --tone-ack B2_FILE_PATH --tone-reason "why" TOPIC_ID "msg"
 #   echo "message text" | ./telegram-reply.sh TOPIC_ID
 #   cat <<'EOF' | ./telegram-reply.sh TOPIC_ID
 #   Multi-line message here
@@ -24,6 +30,24 @@
 #                     deliberately no env form (a standing env export would be
 #                     a blanket pre-ack that silently disables the inform
 #                     layer; spec outbound-jargon-filepath-gap §2.4(4)).
+#
+#   Tone-gate advisory reactions (answering a 422 `tone-gate-advisory`). BOTH
+#   forms are recorded as evidence that tunes the gate; neither is optional
+#   once you have been handed a decisionRef.
+#   --tone-complied <RULE>     You agreed with the nudge and revised the text.
+#                              Grades the check `right`.
+#   --tone-ack <RULE>          You disagree and are sending unchanged. Grades
+#                              the check `wrong`. REQUIRES --tone-reason: a
+#                              reasonless ack is refused and nothing sends,
+#                              because that reason IS the tuning evidence.
+#   --tone-reason "<why>"      Why the nudge is wrong in this case.
+#   --tone-decision-ref <REF>  The decisionRef from the 422, so the reaction
+#                              joins the verdict it answers.
+#
+#   Example (note the ordering — flags first, topic id last):
+#     ./telegram-reply.sh --tone-ack B2_FILE_PATH \
+#       --tone-reason "the operator asked for the path explicitly" \
+#       --tone-decision-ref DQ-1234 29723 "the message"
 #
 # Outbound advisory preflight (inform-only — spec outbound-jargon-filepath-gap §2.4):
 #   When this send comes from an automated LLM job session (the scheduler
@@ -66,6 +90,10 @@
 FORMAT=""
 STDIN_BASE64=0
 ACK_ADVISORY=0
+TONE_ACK=""
+TONE_ACK_REASON=""
+TONE_COMPLIED=""
+TONE_DECISION_REF=""
 
 # Parse leading flags before positional args.
 while [ $# -gt 0 ]; do
@@ -85,6 +113,27 @@ while [ $# -gt 0 ]; do
     --ack-advisory)
       ACK_ADVISORY=1
       shift
+      ;;
+    # ── Tone-gate advisory migration (2026-07-19) ────────────────────────────
+    # DISTINCT from --ack-advisory above, which acknowledges the deterministic
+    # PREFLIGHT. These four answer the SERVER-SIDE tone gate's 422 nudge. The
+    # names are deliberately un-abbreviated so the two ack families can never be
+    # confused at a callsite.
+    --tone-ack)
+      TONE_ACK="$2"
+      shift 2
+      ;;
+    --tone-reason)
+      TONE_ACK_REASON="$2"
+      shift 2
+      ;;
+    --tone-complied)
+      TONE_COMPLIED="$2"
+      shift 2
+      ;;
+    --tone-decision-ref)
+      TONE_DECISION_REF="$2"
+      shift 2
       ;;
     --)
       shift
@@ -107,6 +156,43 @@ if [ -z "$TOPIC_ID" ]; then
   echo "Usage: telegram-reply.sh [--format MODE] TOPIC_ID [message]" >&2
   exit 1
 fi
+
+# A flag placed AFTER the topic id was silently swallowed into the message.
+#
+# The parse loop above stops at the first non-flag argument (the topic id), so
+# everything from there on becomes message text via `MSG="$*"` below. A
+# misplaced `--tone-ack` was therefore SENT TO THE USER as visible message body
+# while the override it was meant to carry never reached the server — and,
+# because the flags never applied, the tone gate re-reviewed the send and its
+# verdict was then misread as absurd. That is how a CORRECT check came to be
+# graded `wrong` in the decision-quality data on 2026-07-26. The record is
+# durable; the cause was two characters of argument order.
+#
+# The asymmetry is the defect: a flag-shaped token BEFORE the topic id is fatal
+# ("Unknown flag", above), but after it the script was maximally permissive.
+# Refuse flag-shaped tokens in both positions. This also catches a TYPO'd flag
+# (`--tone-akc`), which is the realistic case and was equally silent.
+#
+# Deliberately strict: any `--*` argument. A message that genuinely needs such a
+# token as literal text goes through stdin, which is the documented primary path
+# and is unaffected by this check ($# is 0 there).
+for _arg in "$@"; do
+  case "$_arg" in
+    --*)
+      echo "Refused: '$_arg' appears AFTER the topic id." >&2
+      echo "" >&2
+      echo "Flags are only parsed BEFORE the topic id. Placed here it would have been" >&2
+      echo "sent to the user as literal message text, and its effect silently dropped." >&2
+      echo "" >&2
+      echo "  Correct:  telegram-reply.sh --tone-ack RULE --tone-reason \"why\" $TOPIC_ID \"message\"" >&2
+      echo "  You ran:  telegram-reply.sh $TOPIC_ID ... $_arg ..." >&2
+      echo "" >&2
+      echo "If '$_arg' is genuinely part of the message text, pipe the message on stdin:" >&2
+      echo "  cat <<'EOF' | telegram-reply.sh $TOPIC_ID" >&2
+      exit 1
+      ;;
+  esac
+done
 
 # Read message from args or stdin
 if [ $# -gt 0 ]; then
@@ -299,7 +385,9 @@ fi
 # component is enum-validated or charset-clamped above, so this fragment is
 # safe to interpolate into JSON and (parameterized) SQL contexts.
 METADATA_JSON=""
-if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] || { [ "$ACK_ADVISORY" = "1" ] && [ "$SENDER_CLASS" != "script" ]; }; then
+if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] \
+  || [ -n "$TONE_ACK" ] || [ -n "$TONE_COMPLIED" ] \
+  || { [ "$ACK_ADVISORY" = "1" ] && [ "$SENDER_CLASS" != "script" ]; }; then
   META_PARTS=""
   [ -n "$MESSAGE_KIND" ] && META_PARTS="\"messageKind\":\"${MESSAGE_KIND}\""
   if [ -n "$SENDER_CLASS" ]; then
@@ -322,6 +410,31 @@ if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] || { [
     [ -z "$ACK_CODES_JSON" ] && ACK_CODES_JSON="[]"
     [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
     META_PARTS="${META_PARTS}\"advisoryAck\":true,\"advisoryCodes\":${ACK_CODES_JSON}"
+  fi
+  # ── Tone-gate reaction metadata ─────────────────────────────────────────
+  # Without these four the migration is inert through the only sanctioned send
+  # path: the agent would be told by the 422 to override and have no way to do
+  # it. Values are charset-clamped — a rule id and a correlation id have narrow
+  # alphabets, and the reason is JSON-escaped via python3 (the only field that
+  # can contain arbitrary prose).
+  if [ -n "$TONE_ACK" ]; then
+    TONE_ACK_CLEAN=$(printf '%s' "$TONE_ACK" | tr -cd 'A-Z0-9_' | cut -c1-64)
+    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
+    META_PARTS="${META_PARTS}\"toneAdvisoryAck\":\"${TONE_ACK_CLEAN}\""
+    if [ -n "$TONE_ACK_REASON" ]; then
+      TONE_REASON_JSON=$(printf '%s' "$TONE_ACK_REASON" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()[:500]))' 2>/dev/null || printf '""')
+      META_PARTS="${META_PARTS},\"toneAdvisoryAckReason\":${TONE_REASON_JSON}"
+    fi
+  fi
+  if [ -n "$TONE_COMPLIED" ]; then
+    TONE_COMPLIED_CLEAN=$(printf '%s' "$TONE_COMPLIED" | tr -cd 'A-Z0-9_' | cut -c1-64)
+    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
+    META_PARTS="${META_PARTS}\"toneAdvisoryComplied\":\"${TONE_COMPLIED_CLEAN}\""
+  fi
+  if [ -n "$TONE_DECISION_REF" ]; then
+    TONE_REF_CLEAN=$(printf '%s' "$TONE_DECISION_REF" | tr -cd 'a-zA-Z0-9-' | cut -c1-128)
+    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
+    META_PARTS="${META_PARTS}\"toneAdvisoryDecisionRef\":\"${TONE_REF_CLEAN}\""
   fi
   METADATA_JSON="{${META_PARTS}}"
 fi
@@ -420,9 +533,48 @@ elif [ "$HTTP_CODE" = "408" ]; then
   echo "AMBIGUOUS (HTTP 408): outcome unknown — verify in conversation before retrying"
   exit 0
 elif [ "$HTTP_CODE" = "422" ]; then
-  # Tone gate blocked the message — surface the issue + suggestion to the agent
+  # The 422 class is no longer one thing. Branch on `error` so a NUDGE reads as
+  # a nudge and the unoverridable wall reads as a wall — before the advisory
+  # migration this branch printed "BLOCKED" for every 422, which would have made
+  # the migration invisible through the only sanctioned send path.
+  # `blockedBy` is the machine code for the deterministic guards (whose `error`
+  # field carries the human sentence); the tone-gate classes put their code in
+  # `error`. Prefer `blockedBy` so both shapes classify correctly.
+  ERR_KIND=$(echo "$BODY" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("blockedBy") or d.get("error",""))' 2>/dev/null || echo "")
   ISSUE=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("issue","unknown"))' 2>/dev/null || echo "unknown")
   SUGGESTION=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("suggestion",""))' 2>/dev/null || echo "")
+  TONE_RULE=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("rule",""))' 2>/dev/null || echo "")
+  TONE_REF=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("decisionRef",""))' 2>/dev/null || echo "")
+  HOW_TO=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("howToProceed",""))' 2>/dev/null || echo "")
+
+  if [ "$ERR_KIND" = "credential-exposure-guard" ]; then
+    # The one outbound check with NO override. Print the server's own message —
+    # it names the credential CLASS and the remedy, and never the value.
+    GUARD_MSG=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("error",""))' 2>/dev/null || echo "")
+    echo "BLOCKED — live credential exposure. This one cannot be overridden." >&2
+    [ -n "$GUARD_MSG" ] && echo "  $GUARD_MSG" >&2
+    echo "  Remove the value, refer to the secret by NAME, and use Secret Drop if the recipient needs it." >&2
+    exit 1
+  elif [ "$ERR_KIND" = "tone-gate-advisory" ]; then
+    echo "ADVISORY — not sent yet, and the decision is YOURS (this is a nudge, not a wall)." >&2
+    echo "  Rule: ${TONE_RULE:-unknown}" >&2
+    echo "  Issue: $ISSUE" >&2
+    [ -n "$SUGGESTION" ] && echo "  Suggestion: $SUGGESTION" >&2
+    [ -n "$TONE_REF" ] && echo "  decisionRef: $TONE_REF" >&2
+    echo "  AGREE  → revise, then re-run with: --tone-complied ${TONE_RULE:-RULE}${TONE_REF:+ --tone-decision-ref $TONE_REF}" >&2
+    echo "  DISAGREE → re-run unchanged with: --tone-ack ${TONE_RULE:-RULE} --tone-reason \"why the nudge is wrong here\"${TONE_REF:+ --tone-decision-ref $TONE_REF}" >&2
+    [ -n "$HOW_TO" ] && echo "  $HOW_TO" >&2
+    # exit 1 (not 0): the message genuinely did NOT send, and a caller that
+    # treats 0 as delivered would drop it silently. The wording above is what
+    # tells the agent this is its call — not the exit code.
+    exit 1
+  elif [ "$ERR_KIND" = "tone-gate-advisory-reason-required" ]; then
+    echo "NOT SENT — an override needs a reason (it is the evidence that grades this check)." >&2
+    echo "  Re-run with: --tone-ack ${TONE_RULE:-RULE} --tone-reason \"why the nudge is wrong here\"" >&2
+    [ -n "$HOW_TO" ] && echo "  $HOW_TO" >&2
+    exit 1
+  fi
+
   echo "BLOCKED by tone gate — message not sent to user." >&2
   echo "  Issue: $ISSUE" >&2
   if [ -n "$SUGGESTION" ]; then

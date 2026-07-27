@@ -123,7 +123,7 @@ function compute() {
       stateAuthored: false,
       nodeCount: 0, authorableCount: 0, freshCount: 0, staleCount: 0,
       neverAuthoredCount: 0, neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0,
-      authorFailedCount: 0, freshRatio: 1,
+      authorFailedCount: 0, freshRatio: null,
     };
   }
 
@@ -163,7 +163,10 @@ function compute() {
     authorFailedCount: authorFailed,
     // Denominator EXCLUDES never-authored-within-grace (grace period before a new
     // node counts as debt): fresh + stale + never-authored-past-grace.
-    freshRatio: (fresh + stale + neverPast) === 0 ? 1 : Number((fresh / (fresh + stale + neverPast)).toFixed(4)),
+    // null (NOT 1) when there is nothing to divide by: an empty index has not
+    // earned a perfect score. Reporting 1 here made this ratchet structurally
+    // unable to fail on an empty map — the exact case it exists to catch.
+    freshRatio: (fresh + stale + neverPast) === 0 ? null : Number((fresh / (fresh + stale + neverPast)).toFixed(4)),
   };
 }
 
@@ -188,7 +191,19 @@ function main() {
 
   if (CHECK) {
     const failures = [];
-    if (report.freshRatio < FLOORS.freshRatio) {
+    if (report.freshRatio === null && report.stateAuthored && report.nodeCount === 0) {
+      // An index EXISTS and yielded nothing authorable. That is the dangerous
+      // empty: the ratchet was asked to assess and could not, which must never
+      // read as a pass (reporting 1 here is what made this check structurally
+      // unable to fail on an empty map — the exact case it exists to catch).
+      failures.push('fresh ratio UNKNOWN — an authored index exists but contains ZERO nodes, so freshness could NOT be assessed (this is not a pass)');
+    } else if (report.freshRatio === null) {
+      // Either no authored state at all (the documented CI case) or an index whose
+      // nodes are all still within grace — legitimately too early to assess. NOT a
+      // failure, but it is NOT a pass either: say so out loud rather than
+      // letting a vacuous check read as a green one.
+      if (!QUIET) console.error('[cartographer-freshness] NOT ASSESSED — no authored cartographer state; this check gated on nothing.');
+    } else if (report.freshRatio < FLOORS.freshRatio) {
       failures.push(`fresh ratio ${report.freshRatio} < floor ${FLOORS.freshRatio}`);
     }
     if (report.neverAuthoredPastGrace > FLOORS.neverAuthoredPastGraceCeiling) {

@@ -54,15 +54,26 @@ describe('CommitmentTracker.verify() batches store saves (wedge fix)', () => {
   it('persists the store exactly ONCE per verify() sweep, not once per commitment', () => {
     const tracker = new CommitmentTracker({ stateDir, liveConfig: new LiveConfig(stateDir) });
 
-    // N behavioral commitments: verify() will mutate each (pending -> verified)
-    // via mutateSync(), so the pre-fix code would have written the store N times.
+    // N config-change commitments: verify() mutates each (pending -> verified) via
+    // mutateSync(), so the pre-fix code would have written the store N times.
+    //
+    // FIXTURE CHANGED 2026-07-26 (behavioural -> config-change). This test's SUBJECT
+    // is unchanged — it still asserts one store write per sweep regardless of how
+    // many commitments mutate. But behavioural commitments no longer mutate during a
+    // sweep at all: their status used to be decided by whether their id appeared in a
+    // file this class writes itself, which is bookkeeping rather than conduct, so the
+    // sweep is now a no-op for them. With zero mutations there was nothing to batch
+    // and this test measured 0 writes — a vehicle that had stopped moving, not a
+    // broken guarantee. `config-change` genuinely verifies live state, so it mutates
+    // and exercises the batching this test exists to protect.
     const N = 40;
     for (let i = 0; i < N; i++) {
       tracker.record({
         userRequest: `rule ${i}`,
         agentResponse: 'ok',
-        type: 'behavioral',
-        behavioralRule: `Always do thing number ${i}`,
+        type: 'config-change',
+        configPath: 'updates.autoApply',
+        configExpectedValue: true, // matches the fixture config.json, so it verifies
       });
     }
 

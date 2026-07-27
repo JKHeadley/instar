@@ -44,6 +44,16 @@ instar leave                # Remove this machine from the mesh
 
 Note: `whoami`, `pair`, `join`, `wakeup`, and `leave` are top-level commands, not subcommands of `machines`.
 
+## Capability Registry
+
+The development-agent capability registry is an advisory, read-only view of what
+the local machine can currently prove about doorway and model availability.
+`GET /capability-registry` returns the classified evidence, while
+`GET /capability-registry/health` reports observation counts and status
+measurements. The routes never admit, place, or route work; when the feature is
+dark or its receiver is unavailable they return a named `503` instead of an
+ambiguous empty success.
+
 ## Seamlessness Architecture (Components)
 
 The seamlessness guarantees above -- "one agent, many machines, never two

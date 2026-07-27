@@ -3908,6 +3908,12 @@ export class TelegramAdapter implements MessagingAdapter {
       updatedAt: now,
     };
 
+    // Durable acceptance precedes all Telegram/network work. If the provider
+    // is stalled or the process restarts mid-send, the local attention item
+    // still exists and remains idempotently addressable.
+    this.attentionItems.set(item.id, attention);
+    this.saveAttentionItems();
+
     // ── Agent-Health lane (calm self-health notices) ─────────────────────
     // A routine self-health/housekeeping notice routes into ONE named "🩺 Agent
     // Health" topic from the very first item — it never spawns its own topic
@@ -3919,8 +3925,6 @@ export class TelegramAdapter implements MessagingAdapter {
       const laneTopicId = await this.routeToAgentHealthLane(attention);
       attention.coalesced = true;
       if (laneTopicId !== null) attention.topicId = laneTopicId;
-      this.attentionItems.set(item.id, attention);
-      this.saveAttentionItems();
       return attention;
     }
 
@@ -3935,8 +3939,6 @@ export class TelegramAdapter implements MessagingAdapter {
       const hubTopicId = await this.routeToAttentionHub(attention);
       attention.coalesced = true;
       if (hubTopicId !== null) attention.topicId = hubTopicId;
-      this.attentionItems.set(item.id, attention);
-      this.saveAttentionItems();
       return attention;
     }
 
@@ -3959,8 +3961,6 @@ export class TelegramAdapter implements MessagingAdapter {
       // Coalesced items are managed via /attention (PATCH / dashboard), not /ack.
       attention.coalesced = true;
       if (noticeTopicId !== null) attention.topicId = noticeTopicId;
-      this.attentionItems.set(item.id, attention);
-      this.saveAttentionItems();
       return attention;
     }
 
@@ -4041,8 +4041,6 @@ export class TelegramAdapter implements MessagingAdapter {
       }
     }
 
-    this.attentionItems.set(item.id, attention);
-    this.saveAttentionItems();
     return attention;
   }
 
@@ -4119,10 +4117,15 @@ export class TelegramAdapter implements MessagingAdapter {
       `<b>${this.escapeHtml(item.title)}</b>`,
       this.escapeHtml(String(item.summary ?? '').slice(0, 400)),
     ].filter(Boolean).join('\n');
+    // `line` is caller-authored, already-escaped Telegram HTML (<b> title +
+    // escaped summary). It MUST be sent with formatMode:'html' so the markdown
+    // converter does not re-escape the tags into literal `<b>`/`</b>` text — the
+    // exact rendering bug seen in this lane (2026-07-14), and the same fix the
+    // intro post and the attention-hub post already carry.
     // @silent-fallback-ok — best-effort lane post; the item is already recorded in
     // the attention store, so a transient send failure is non-fatal. If the topic
     // was deleted out from under us, drop the cached id so it's recreated next time.
-    await this.sendToTopic(topicId, line).catch(() => { this.agentHealthTopicId = null; });
+    await this.sendToTopic(topicId, line, { formatMode: 'html' }).catch(() => { this.agentHealthTopicId = null; });
     return topicId;
   }
 

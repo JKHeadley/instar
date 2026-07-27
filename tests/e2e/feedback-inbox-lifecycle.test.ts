@@ -131,12 +131,19 @@ describe('feedback-inbox E2E — alive when enabled (production init path + real
 
   it('WIRING INTEGRITY: the seeded blob lands as a durable row in the real on-disk store', async () => {
     // The priming drain runs at start(); poll briefly for it to complete.
+    //
+    // Poll for BOTH observable effects, not just the first. The drain writes the
+    // durable row and THEN clears the inbox, so waiting only on the row can exit
+    // between the two — the row is present, the inbox clear has not landed yet,
+    // and the assertion below reads a stale count of 1. That is a race in the
+    // test, not a defect in the drain: it fails only under load (observed on CI
+    // 2026-07-27, twice, and reproduced locally once in five runs).
     const storeFile = path.join(stateDir, 'state', 'feedback-factory', 'store', 'feedback.jsonl');
     let content = '';
     for (let i = 0; i < 50; i++) {
       if (fs.existsSync(storeFile)) {
         content = fs.readFileSync(storeFile, 'utf8');
-        if (content.includes('fb-e2e-1')) break;
+        if (content.includes('fb-e2e-1') && blob.count('inbox/') === 0) break;
       }
       await new Promise((r) => setTimeout(r, 100));
     }

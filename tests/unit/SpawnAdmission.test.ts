@@ -35,6 +35,7 @@ function makeDeps(over: Partial<SpawnAdmissionDeps> = {}): SpawnAdmissionDeps {
     readOwnership: vi.fn((): OwnershipRec => ({ owner: 'machine-a', epoch: 1, status: 'owned' })),
     isMachineAlive: vi.fn(() => true),
     durableCustodyLive: vi.fn(() => true),
+    hasLiveSession: vi.fn(() => true),
     journal: vi.fn(),
     raiseAttention: vi.fn(),
     provenance: vi.fn(),
@@ -61,9 +62,19 @@ describe('respawn-dead live hard-pin graduation', () => {
   const queued = { messageId: 'm1', action: 'queued', acked: true };
 
   it('enforces forward for respawn-dead when the hard-pin owner is remotely alive', () => {
-    const deps = makeDeps({ readHardPinOwner: vi.fn(() => 'machine-b'), isMachineAlive: vi.fn(() => true) });
+    const deps = makeDeps({ readHardPinOwner: vi.fn(() => 'machine-b'), isMachineAlive: vi.fn(() => true), hasLiveSession: vi.fn(() => true) });
     const decision = new SpawnAdmission(LIVE_OWNER_BINDING, deps).admit(admitInput({ callsite: 'telegram-respawn-dead', routerVerdict: queued }));
     expect(decision).toMatchObject({ allow: false, mode: 'enforce', row: 'router-queued-suppress', refusalAction: 'forward', ownership: { kind: 'other-alive', owner: 'machine-b' } });
+  });
+
+  it('blocks queued suppression only when a live session already exists for the key', () => {
+    const decision = new SpawnAdmission(DRY, makeDeps({ hasLiveSession: vi.fn(() => true) })).admit(admitInput({ callsite: 'telegram-respawn-dead', routerVerdict: queued }));
+    expect(decision).toMatchObject({ allow: true, wouldBlock: true, row: 'router-queued-suppress' });
+  });
+
+  it('allows a prior completed/dead session to respawn when no live session exists', () => {
+    const decision = new SpawnAdmission(DRY, makeDeps({ hasLiveSession: vi.fn(() => false) })).admit(admitInput({ callsite: 'telegram-respawn-dead', routerVerdict: queued }));
+    expect(decision).toMatchObject({ allow: true, wouldBlock: false, row: 'router-queued-suppress' });
   });
 
   it.each([

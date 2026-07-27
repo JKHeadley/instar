@@ -77,7 +77,11 @@ describe('Machines glance (integration — real /pool)', () => {
   it('feature ON: /pool 200, glance renders from live machines + drills to a record', async () => {
     const machines = [
       { machineId: 'm_1', nickname: 'Laptop', online: true, clockSkewStatus: 'ok', activeSessionCount: 2, maxSessions: 6,
-        hardware: { cpuModel: 'Apple M2', cpuCores: 8, totalMemBytes: 17179869184 }, guardPosture: { onConfirmed: 16, offDeviant: 6 } },
+        hardware: { cpuModel: 'Apple M2', cpuCores: 8, totalMemBytes: 17179869184 },
+        guardPosture: {
+          onConfirmed: 16, errored: 1, loadBearingUninspectable: 1,
+          loadBearingUninspectableKeys: ['multiMachine.sessionPool.inboundQueue.enabled'],
+        } },
       { machineId: 'm_2', nickname: 'Mini', online: false, clockSkewStatus: 'ok' },
     ];
     server = await bootApp({
@@ -105,7 +109,10 @@ describe('Machines glance (integration — real /pool)', () => {
     onlineBtn.dispatchEvent(new (dom.window as any).Event('click'));
     const row = handle.drilldown.querySelector('.glance-list-row');
     row.dispatchEvent(new (dom.window as any).Event('click'));
-    expect(handle.drilldown.querySelector('[data-glance-record]')!.textContent).toMatch(/Specs|Status/);
+    const recordText = handle.drilldown.querySelector('[data-glance-record]')!.textContent;
+    expect(recordText).toMatch(/Specs|Status/);
+    expect(recordText).toContain('Load-bearing protection unproven');
+    expect(recordText).toContain('multiMachine.sessionPool.inboundQueue.enabled');
   });
 
   it('dark: /pool enabled:false → the tab builds a friendly single-machine glance', async () => {

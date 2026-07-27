@@ -56,6 +56,18 @@ export interface CapabilityEntry {
 // ── Top-level capability entries ─────────────────────────────────────────
 
 export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
+  {
+    key: 'channelRegistry',
+    prefixes: ['/channels'],
+    description: 'Which peer-to-peer channels exist and which are usable right now, with the evidence for each verdict.',
+    build: () => ({ configured: true, endpoints: ['GET /channels'] }),
+  },
+  {
+    key: 'capabilityRegistry',
+    prefixes: ['/capability-registry'],
+    description: 'Local capability registry read surface; dark until explicitly enabled.',
+    build: ({ ctx }) => ({ configured: resolveDevAgentGate((ctx.config as any).capabilityRegistry?.enabled, ctx.config), endpoints: ['GET /capability-registry', 'GET /capability-registry/health'] }),
+  },
   // E2E-PAIRING: EXEMPT — capability classification metadata only (no new endpoint
   // behavior); the subscription-pool routes already have integration + e2e tests
   // (P1.1–P2.1), and the capabilities-discoverability unit lint is the coverage for
@@ -283,6 +295,12 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       configured: !!ctx.parallelActivityIndex,
       endpoints: ['GET /parallel-work/activities'],
     }),
+  },
+  {
+    key: 'workQueue',
+    prefixes: ['/work-queue'],
+    description: 'Unified work-intake registry — deterministic ranked read of active work; dev-agent gated while fleet rollout is dark.',
+    build: ({ ctx }) => ({ configured: !!ctx.workQueue, endpoints: ['GET /work-queue', 'POST /work-queue/rescore'] }),
   },
   {
     key: 'autonomousHeartbeat',

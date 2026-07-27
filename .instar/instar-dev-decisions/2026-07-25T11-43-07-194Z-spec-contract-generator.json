@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-25T11:43:07.194Z",
+  "slug": "spec-contract-generator",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 20,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

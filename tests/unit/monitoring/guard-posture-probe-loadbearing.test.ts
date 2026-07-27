@@ -17,7 +17,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createGuardPostureProbes, type PeerPostureRead } from '../../../src/monitoring/probes/GuardPostureProbe.js';
-import type { GuardInventoryResult, GuardRow } from '../../../src/monitoring/guardPostureView.js';
+import {
+  buildGuardInventory,
+  type GuardInventoryResult,
+  type GuardRow,
+} from '../../../src/monitoring/guardPostureView.js';
+import { GuardRegistry } from '../../../src/monitoring/GuardRegistry.js';
+import type { ResolvedGuardConfigSnapshot } from '../../../src/monitoring/guardPosture.js';
 import type { GuardPostureSummary } from '../../../src/core/types.js';
 import { TelegramAdapter } from '../../../src/messaging/TelegramAdapter.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
@@ -50,7 +56,8 @@ function inventory(guards: GuardRow[]): GuardInventoryResult {
       off: 0, offDeviant: 0, offDarkDefault: 0,
       divergedPendingRestart: 0, errored: 0, missing: 0, offRuntimeDivergent: 0,
       runtimeEnriched: `0/${guards.length}`,
-      loadBearingGapKeys: [], loadBearingSoakingKeys: [], loadBearingAcceptedKeys: [],
+      loadBearingGapKeys: [], loadBearingUninspectableKeys: [],
+      loadBearingSoakingKeys: [], loadBearingAcceptedKeys: [],
     },
   };
 }
@@ -165,6 +172,49 @@ describe('GuardPostureProbe — G3 separate episode track (real createAttentionI
     expect(adapter.getAttentionItem('guard-posture-loadbearing:ep-1')).toBeUndefined();
   });
 
+  it('errored load-bearing guard is uninspectable without becoming a second load-bearing-gap anomaly', async () => {
+    const registry = new GuardRegistry();
+    registry.register(LB_KEY, () => {
+      throw new Error('status getter failed');
+    });
+    const snapshot: ResolvedGuardConfigSnapshot = {
+      resolved: {
+        multiMachine: { sessionPool: { inboundQueue: { enabled: true } } },
+      },
+      defaults: {
+        multiMachine: { sessionPool: { inboundQueue: { enabled: false } } },
+      },
+      fileAbsent: false,
+    };
+    const fullInventory = buildGuardInventory({
+      snapshot,
+      bootSnapshot: {
+        ts: new Date().toISOString(),
+        posture: { [LB_KEY]: true },
+      },
+      registry,
+    });
+    const erroredRow = fullInventory.guards.find((guard) => guard.key === LB_KEY)!;
+
+    expect(erroredRow.effective).toBe('errored');
+    expect(fullInventory.summary.loadBearingGapKeys).not.toContain(LB_KEY);
+    expect(fullInventory.summary.loadBearingUninspectableKeys).toContain(LB_KEY);
+
+    const probeInventory: GuardInventoryResult = {
+      ...fullInventory,
+      guards: [erroredRow],
+    };
+    const probe = makeProbe(() => probeInventory);
+    await probe.run();
+    await probe.run();
+
+    const attention = adapter.getAttentionItems().filter((item) => item.category === 'guard-posture');
+    expect(attention).toHaveLength(1);
+    expect(attention[0].id).toBe('guard-posture:ep-1');
+    expect(attention[0].summary).toContain('errored');
+    expect(adapter.getAttentionItem('guard-posture-loadbearing:ep-1')).toBeUndefined();
+  });
+
   it('alertLoadBearingGaps:false suppresses the lb ATTENTION alert (rollback lever)', async () => {
     const probe = makeProbe(() => inventory([lbGapRow]), [], { alertLoadBearingGaps: false });
     await probe.run();
@@ -209,6 +259,34 @@ describe('GuardPostureProbe — G3 separate episode track (real createAttentionI
     expect(r1.passed).toBe(true);
     expect(r2.passed).toBe(true);
     expect(adapter.getAttentionItems().filter((i) => i.category === 'guard-posture')).toEqual([]);
+  });
+
+  it('a peer uninspectable list is read-only context: errored still emits exactly one existing anomaly and no notification track', async () => {
+    const peerPosture: GuardPostureSummary = {
+      onConfirmed: 0, onUnverified: 0, onStale: 0, onDryRun: 0,
+      offDeviant: 0, offDeviantKeys: [], offRuntimeDivergent: 0, offRuntimeDivergentKeys: [],
+      divergedPendingRestart: 0, errored: 1, missing: 0,
+      loadBearingGapKeys: [],
+      loadBearingUninspectable: 1,
+      loadBearingUninspectableKeys: [LB_KEY],
+      generatedAt: new Date().toISOString(),
+    };
+    const peers: PeerPostureRead[] = [{
+      machineId: 'm-peer',
+      nickname: 'peer',
+      online: true,
+      posture: peerPosture,
+      postureAgeMs: 1_000,
+    }];
+    const probe = makeProbe(() => inventory([]), peers);
+    await probe.run();
+    await probe.run();
+
+    const attention = adapter.getAttentionItems().filter((item) => item.category === 'guard-posture');
+    expect(attention).toHaveLength(1);
+    expect(attention[0].id).toBe('guard-posture:ep-1');
+    expect(attention[0].summary).toContain('errored');
+    expect(adapter.getAttentionItem('guard-posture-loadbearing:ep-1')).toBeUndefined();
   });
 
   it('operator-accept on THIS machine does NOT silence a peer gap (per-machine independence)', async () => {

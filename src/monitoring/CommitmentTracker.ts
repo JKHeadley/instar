@@ -228,6 +228,45 @@ export interface Commitment {
    * and cadence continues (see Round 3 clarification #4).
    */
   nextUpdateDueAt?: string;
+  /**
+   * A SPECIFIC promised moment — "I'll check in on this by Friday" (ACT-724).
+   * Exactly one reminder is posted to `topicId` when it arrives; see
+   * docs/specs/dated-commitment-reminder.md.
+   *
+   * DELIBERATELY NOT `nextUpdateDueAt`. That field is PromiseBeacon cadence
+   * input with live semantics — it moves as the beacon nudges. Overloading it
+   * would make a one-time dated reminder and a rolling cadence each a side
+   * effect of the other, so a date could be silently rescheduled by unrelated
+   * cadence logic. A promise with a date is a different thing from a nudge
+   * interval, and gets its own field.
+   */
+  checkInAt?: string;
+  /**
+   * Set ONLY after the reminder has actually been delivered.
+   *
+   * The name is load-bearing: an earlier draft stamped this BEFORE sending, so
+   * a failed send left a commitment permanently marked "sent" and the reminder
+   * never fired again — a field asserting a delivery that never happened, on a
+   * feature whose whole purpose is that promises are not silently dropped.
+   * (External review, 2026-07-25.) Send first; stamp only on success.
+   *
+   * Duplicates from a crash between send and stamp are absorbed by the relay's
+   * existing content dedup (identical text to the same topic inside its window),
+   * so at-least-once delivery does not become at-least-twice.
+   */
+  checkInReminderSentAt?: string;
+  /**
+   * How many delivery attempts have been made. Bounds retry so a permanently
+   * broken transport cannot be hammered forever, while a transient failure
+   * still gets another chance — the thing stamp-before-send gave away.
+   */
+  checkInReminderAttempts?: number;
+  /**
+   * Set when retries were EXHAUSTED without delivery. A loud give-up: the
+   * reminder is genuinely undelivered and this is the record that says so,
+   * rather than a "sent" stamp that quietly lies.
+   */
+  checkInReminderFailedAt?: string;
   /** Soft deadline — past it, cadence doubles (no terminal transition). */
   softDeadlineAt?: string;
   /** Hard deadline — past it, commitment transitions to `expired`. */
@@ -1387,14 +1426,39 @@ export class CommitmentTracker extends EventEmitter {
       return null;
     }
 
+    // A BEHAVIOURAL commitment is not automatically verifiable either, and it
+    // suffered the identical defect the block above was written to cure —
+    // measured live on 2026-07-26: CMT-068 at 162,344 violation ticks, and four
+    // commitments created in the same minute holding IDENTICAL counts (80,425),
+    // which individual behaviour cannot produce.
+    //
+    // The old check asked whether the commitment's ID appeared in the behavioural
+    // rules file. That file is written BY THIS CLASS from its own active list, and
+    // nothing else on the machine reads it (verified across the whole agent home),
+    // so the check verified that the system had written its own file. Its result
+    // was decided entirely by whether the optional `behavioralRule` field was
+    // populated: 74 commitments WITH the field all read `verified`; 24 WITHOUT it
+    // all read `violated`. 98 of 98, no exceptions. Not one observed behaviour.
+    //
+    // "Verified" was therefore false comfort and "violated" a false alarm — a
+    // missing optional field is not a broken promise. Same resolution as above:
+    // returning null neither violates nor delivers, so closure stays explicit
+    // (deliver()/markDelivered(), or `expiresAt`) and the overdue surfacing keeps
+    // it visible meanwhile. A promise nobody can verify should NAG, not vanish —
+    // and must never be reported as kept.
+    if (commitment.type === 'behavioral') {
+      // Preserve the one genuinely useful side effect of the old path: the rules
+      // file self-heals if it has gone missing. That is bookkeeping repair, and
+      // it is no longer mistaken for evidence about the promise.
+      this.ensureBehavioralRulesFile();
+      return null;
+    }
+
     let result: { passed: boolean; detail: string };
 
     switch (commitment.type) {
       case 'config-change':
         result = this.verifyConfigChange(commitment);
-        break;
-      case 'behavioral':
-        result = this.verifyBehavioral(commitment);
         break;
       case 'one-time-action':
         result = this.verifyOneTimeAction(commitment);
@@ -1502,9 +1566,19 @@ export class CommitmentTracker extends EventEmitter {
       };
     }
 
+    // "all verified" was a claim about commitments the sweep had never observed —
+    // the same conflation fixed at the behavioural early-return in `verifyOne`.
+    // Report what is actually known: how many carry a real verification, and how
+    // many are simply not automatically checkable. Absence of violations is not
+    // evidence of compliance.
+    const verified = active.filter(c => c.status === 'verified').length;
+    const unverified = active.length - verified;
     return {
       status: 'healthy',
-      message: `${active.length} commitment(s) tracked, all verified`,
+      message:
+        unverified === 0
+          ? `${active.length} commitment(s) tracked, all verified`
+          : `${active.length} commitment(s) tracked — ${verified} verified, ${unverified} not automatically verifiable (no violations)`,
       lastCheck: new Date().toISOString(),
     };
   }
@@ -1527,24 +1601,24 @@ export class CommitmentTracker extends EventEmitter {
     };
   }
 
-  private verifyBehavioral(commitment: Commitment): { passed: boolean; detail: string } {
-    // Behavioral commitments are "verified" if the rule text exists in the rules file
-    if (!commitment.behavioralRule) {
-      return { passed: false, detail: 'Missing behavioralRule on behavioral commitment' };
-    }
-
+  /**
+   * Self-heal the behavioural rules file if it has gone missing.
+   *
+   * REPLACES `verifyBehavioral`, which returned this file's contents as a VERDICT
+   * on whether a promise had been kept. Presence of a commitment's id in a file
+   * this class writes from its own active list is bookkeeping, not behaviour — see
+   * the reasoning at the behavioural early-return in `verifyOne`. Repairing the
+   * file is still worth doing; it just is not evidence about the promise, so this
+   * returns nothing.
+   */
+  private ensureBehavioralRulesFile(): void {
     try {
       if (!fs.existsSync(this.rulesPath)) {
         this.writeBehavioralRules();
       }
-      const content = fs.readFileSync(this.rulesPath, 'utf-8');
-      const hasRule = content.includes(commitment.id);
-      return {
-        passed: hasRule,
-        detail: hasRule ? 'Behavioral rule present in injection file' : 'Behavioral rule missing from injection file — regenerating',
-      };
     } catch {
-      return { passed: false, detail: 'Failed to read behavioral rules file' };
+      // @silent-fallback-ok — the rules file is nice-to-have; a failure here must
+      // never affect a commitment's status (that conflation was the defect).
     }
   }
 

@@ -134,6 +134,47 @@ export function ULTRACODE_SPAWN_CLAUDEMD_SECTION(port: number): string {
 Claude Code's ultracode mode is xhigh effort plus dynamic workflow orchestration. It is deliberately NOT a \`--effort\` CLI value. Instar uses Claude's supported prompt-keyword trigger instead: \`POST /sessions/spawn\` accepts \`{"name":"deep-task","prompt":"...","framework":"claude-code","ultracode":true}\` and prefixes \`ultracode\` to that spawned turn. Claude's \`workflowKeywordTriggerEnabled\` setting defaults to true; an operator who disabled it has deliberately disabled this trigger, so the prefixed keyword becomes ordinary prompt text. The option ships dark (false/absent changes nothing), is rejected for non-Claude frameworks, and applies only to that one-shot spawn — it does not pin a topic or mutate Claude settings. Status/result uses the normal \`GET /sessions\` surface at \`http://localhost:${port}\`.\n`;
 }
 
+/**
+ * Tone-gate advisory migration (operator approval 2026-07-19, topic 33368).
+ * Shared by `generateClaudeMd` (new installs) and `migrateClaudeMd` (existing
+ * agents) — Agent Awareness Standard + Migration Parity. An agent that does not
+ * know the override path cannot use it, and an override it never performs is a
+ * grading signal the meter never receives.
+ *
+ * Unique content-sniff marker: 'Most checks are NUDGES you may override'.
+ */
+/**
+ * How to actually SEND a tone-advisory reaction — the missing bridge.
+ *
+ * The section above documents `metadata.*` fields: the HTTP shape. But the
+ * agent template mandates the relay SCRIPT ("ALWAYS the relay script, never a
+ * hand-rolled curl"), and the script's flags for these reactions were
+ * documented NOWHERE agent-facing. So an agent handed a `decisionRef` had to
+ * invent an invocation — and a flag placed after the topic id was silently
+ * swallowed into the message body and sent to the user as literal text, while
+ * the override never applied. That is how a CORRECT check was graded `wrong`
+ * on 2026-07-26. The script now refuses a misplaced flag; this documents the
+ * right form so the refusal is rarely needed.
+ *
+ * Unique content-sniff marker: 'EVERY FLAG GOES BEFORE THE TOPIC ID'.
+ */
+export const TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION = `- **How to send the reaction (the relay script, not a curl).** Pass the reaction as FLAGS — and **EVERY FLAG GOES BEFORE THE TOPIC ID**, because flag parsing stops at the topic id and anything after it is message text:
+  \`\`\`
+  cat <<'EOF' | .instar/scripts/telegram-reply.sh --tone-ack B2_FILE_PATH --tone-reason "the operator asked for the path explicitly" --tone-decision-ref <decisionRef> TOPIC_ID
+  your message, unchanged
+  EOF
+  \`\`\`
+  Use \`--tone-complied <RULE>\` instead of \`--tone-ack\`/\`--tone-reason\` when you agreed and revised. A flag in the wrong position is now REFUSED (it used to be sent to the user as literal text with its effect silently dropped, which is exactly how a correct check once got graded \`wrong\`). If such a token is genuinely part of your message, pipe the text on stdin — the check only inspects arguments.`;
+
+export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**Most checks are NUDGES you may override — two things are walls.** Under the advisory migration (operator approval 2026-07-19; \`toneGate.advisoryMigration\`, dev-gated live / fleet-dark) a cited judgment rule returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded**:
+- **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
+- **You disagree** → re-send unchanged with \`metadata.toneAdvisoryAck: "<RULE>"\` **and** \`metadata.toneAdvisoryAckReason: "<why the nudge is wrong here>"\` → the check is graded \`wrong\`. **The reason is required** — a reasonless ack is refused (\`tone-gate-advisory-reason-required\`) and nothing sends. That reason IS the evidence that tunes this gate; without it every tone decision grades \`unknown\` forever.
+- **Wall 1 — a LIVE credential** in outbound text → \`422\` with \`blockedBy: credential-exposure-guard\`, \`overridable: false\`. Deterministic, runs before the LLM authority, holds during an outage, and **no metadata reaches it**. Remove the value, refer to the secret by NAME, and route it through Secret Drop if the recipient genuinely needs it.
+- **Wall 2 — the self-stop family** (B15–B19: quitting for a context/fatigue reason, declaring an unverified wall, handing a doable task back to the user). These stay hard blocks. They exist to constrain YOU, so an override reason written by you is produced by exactly the reasoning the rule distrusts — and the harm (work abandoned) lands the moment the message sends, which no later review can undo.
+- **How to tell whether this is live here**: read the RESPONSE, never assume. \`error: tone-gate-advisory\` = nudges are on. \`error: tone-gate-blocked\` = this install blocks (either the migration is dark, or you hit a wall). A \`tone-gate-blocked\` carrying \`advisoryUnavailable\` means the nudge was withdrawn because the override could not have been RECORDED — the check keeps its authority rather than loosen for nothing.
+- **When to use** (PROACTIVE — this is the trigger): the moment you get a \`tone-gate-advisory\`, decide and declare it — comply or override-with-reason. Never silently drop the message, and never re-send in a loop hoping the verdict changes. Your override is a SIGNAL recorded at the self-report rung, never authority.
+${TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION}`;
+
 export function EXTERNAL_HOG_CLAUDEMD_SECTION(port: number): string {
   return `\n### External-Hog Zombie Auto-Kill Sentinel (⚗️ dev-gated dark, watch-only) — the runaway-editor-zombie killer
 
@@ -5234,6 +5275,30 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    if (!content.includes('Registry First — capability registry:')) {
+      content += '\n- **Registry First — capability registry:** when asking which machine can serve a capability, consult `GET /capability-registry`; it distinguishes unavailable, unobserved, stale, and available evidence.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added capability registry Registry First awareness');
+    }
+
+    if (!content.includes('Registry First — channel registry:')) {
+      content += '\n- **Registry First — channel registry:** before reporting that a peer agent is unreachable, consult `GET /channels`; it lists every peer channel with purpose, when-preferred, cost and a live verdict. A channel that failed to start still gets a row, and `unknown` means undetermined — never healthy.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added channel registry Registry First awareness');
+    }
+
+    if (!content.includes('Decision journal — principle is required:')) {
+      content += '\n- **Decision journal — principle is required:** `POST /intent/journal` now REFUSES (400) a decision that names no guiding principle, and refuses invented field names by name rather than storing them. A field no reader consumes makes a submission look recorded without being recorded. Writable fields: `sessionId`, `decision`, `principle`, `topicId`, `jobSlug`, `alternatives`, `confidence`, `context`, `conflict`, `tags`, `evidence` — put reasoning in `context`, guiding intent in `principle`. `GET /intent/journal/stats` carries `principledCount`/`unprincipledCount`, because `topPrinciples: []` alone cannot distinguish "nothing decided yet" from "many decisions, none said why". The machine dispatch path is exempt.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added decision-journal principle requirement awareness');
+    }
+
+    if (!content.includes('Alignment score — N/A means not assessed:')) {
+      content += '\n- **Alignment score — N/A means not assessed:** `GET /intent/alignment` returns `grade: \'N/A\'` and `assessable: false` when the analysis window held no decisions. Do NOT read that as a failing grade — `score: 0` is a placeholder, not a measurement. Branch on `assessable` (or `sampleSize > 0`) before treating the score as a verdict.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added alignment-score not-assessed awareness');
+    }
+
     if (!content.includes('Codex quota is first-class in the pool:')) {
       content += '\n- **Codex quota is first-class in the pool:** Codex accounts read the real 5-hour + weekly windows from their latest rollout instead of appearing permanently empty. Placement and every reactive/proactive swap are framework-safe: a Codex session can use only Codex accounts, and a Claude session only Claude accounts.\n';
       patched = true;
@@ -5288,6 +5353,33 @@ setTimeout(() => process.exit(0), 2000);
     // CMT-1901) — Agent Awareness Standard + Migration Parity: existing agents learn the
     // GET /external-hog status + the PIN-gated arm / Bearer disarm routes, the two-key
     // floor+model kill rule, the watch-only/PIN-arm posture, and the proactive triggers.
+    // Tone-gate advisory migration (operator approval 2026-07-19, topic 33368) —
+    // Agent Awareness Standard + Migration Parity: an existing agent that does not
+    // know about `toneAdvisoryAckReason` / `toneAdvisoryComplied` will keep treating
+    // a nudge as a wall and will never produce the override evidence the whole
+    // migration exists to collect. Content-sniffed for idempotency.
+    if (!content.includes('Most checks are NUDGES you may override')) {
+      content += `\n${TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added tone-gate advisory migration (nudge/override/credential-wall) section');
+    }
+
+    // Tone-advisory reaction INVOCATION (spec: misplaced-flag-sent-as-message-text)
+    // — Agent Awareness Standard + Migration Parity. The section above documents
+    // `metadata.*` (the HTTP shape) while the template mandates the relay SCRIPT;
+    // the flags that bridge them, and the fact that they must precede the topic
+    // id, were documented nowhere. An agent therefore had to invent the
+    // invocation, and a misplaced flag was silently sent to the user as message
+    // text with its override dropped — grading a correct check `wrong`.
+    // Sniffed on its OWN marker, because an agent that already carries the
+    // section above would otherwise never receive this (the block above is
+    // content-sniffed on a marker that has not changed).
+    if (!content.includes('EVERY FLAG GOES BEFORE THE TOPIC ID')) {
+      content += `\n${TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added tone-advisory reaction invocation (flags precede the topic id)');
+    }
+
     if (!content.includes('External-Hog Zombie Auto-Kill Sentinel')) {
       content += EXTERNAL_HOG_CLAUDEMD_SECTION(port);
       patched = true;
@@ -5562,9 +5654,24 @@ setTimeout(() => process.exit(0), 2000);
     // Framework-agnostic (server-side); the marker is mirrored to the shadows.
     // Content-sniffed; idempotent.
     if (!content.includes('### Outbound Message Gate')) {
-      content += `\n### Outbound Message Gate\n\nYour messages to the user pass an always-on LLM gate (the tone gate) before they send. It blocks high-stakes leaks (CLI commands, file paths, config keys, endpoints) AND the self-stop anti-patterns (B15–B18: quitting on yourself for a context/fatigue reason, calling a doable thing impossible, parking your own work on the user). It judges the behavioral rules **by MEANING, not by literal phrases — a paraphrase of the anti-pattern is caught exactly the same as the canonical wording**, so do not assume rewording evades it. The gate FAILS CLOSED (holds the message, queued for retry — never silently delivers) if it can't produce a verdict (provider down, unparseable output, or a slow-review timeout); the operator kill-switch is \`messaging.toneGate.failClosedOnExhaustion\`. Constitution: "Intelligent Prompts — An LLM Gate Must Not String-Match".\n`;
+      content += `\n### Outbound Message Gate\n\nYour messages to the user pass an always-on LLM gate (the tone gate) before they send. It reviews high-stakes leaks (CLI commands, file paths, config keys, endpoints) AND the self-stop anti-patterns (B15–B19: quitting on yourself for a context/fatigue reason, calling a doable thing impossible, parking your own work on the user). The two families are treated DIFFERENTLY — the leak/representation rules are overridable nudges (see below); the self-stop family stays a hard block, because there the check exists to constrain YOU and your reason for overriding would come from the very reasoning it distrusts. It judges the behavioral rules **by MEANING, not by literal phrases — a paraphrase of the anti-pattern is caught exactly the same as the canonical wording**, so do not assume rewording evades it. The gate FAILS CLOSED (holds the message, queued for retry — never silently delivers) if it can't produce a verdict (provider down, unparseable output, or a slow-review timeout); the operator kill-switch is \`toneGate.failClosedOnExhaustion\`. Constitution: "Intelligent Prompts — An LLM Gate Must Not String-Match".\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Outbound Message Gate section');
+    }
+
+    // Tone-gate kill-switch path fix (tone-gate capture wiring, 2026-07-24) —
+    // Migration Parity item 3: agents whose CLAUDE.md was installed before the
+    // wiring fix cite the structurally-dead `messaging.toneGate.*` location
+    // (messaging is an array — a value there was never honored). Rewrite the
+    // dead path in place so operators following the doc set a key that works.
+    // Idempotent: the old literal is absent after the first run.
+    if (content.includes('`messaging.toneGate.failClosedOnExhaustion`')) {
+      content = content.replace(
+        /`messaging\.toneGate\.failClosedOnExhaustion`/g,
+        '`toneGate.failClosedOnExhaustion`'
+      );
+      patched = true;
+      result.upgraded.push('CLAUDE.md: fixed tone-gate kill-switch config path (messaging.toneGate → top-level toneGate)');
     }
 
     // Autonomous-run silence backstop (autonomous-progress-heartbeat.md) — Agent
@@ -7976,6 +8083,39 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.skipped.push('CLAUDE.md: Commitments & Follow-Through section already present');
     }
 
+    // Dated check-in reminders (ACT-724 step 1). SEPARATE from the block above:
+    // an agent that already HAS the Commitments section never re-enters that
+    // branch, so appending to it would reach only fresh installs — the exact
+    // Migration Parity failure mode. A dated promise the agent does not know it
+    // can register is a promise nothing will remind anyone about.
+    if (
+      content.includes('**Commitments & Follow-Through**') &&
+      !content.includes('/commitments/check-in-reminder')
+    ) {
+      const marker = '- **When to use** (PROACTIVE — this is the trigger): the moment you promise the user a future action, open a commitment.';
+      const datedSection = `- **A promise with a DATE produces a real reminder (ACT-724 step 1, ships dark).** When you say "I'll check in on this by Friday", set \`checkInAt\` (an absolute ISO instant — resolve "Friday" to a real moment at creation time; never store a bare date) on the commitment. A recurring reconciler then posts EXACTLY ONE fixed-template reminder into that commitment's own topic when the instant arrives, and stops. Delivering or withdrawing the commitment first means no reminder ever fires — teardown is a status check, nothing to cancel.
+  - Read the dated backlog: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments/check-in-reminder\` → \`{ enabled, dryRun, datedCount, pending, undelivered }\`. **\`undelivered\` is the one to look at**: those are promises the user did NOT receive after retries were exhausted.
+  - Run one pass now: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments/check-in-reminder/pass\` (idempotent — a re-run sends nothing).
+  - The guarantee is **at-least-once, deduped at the delivery layer** — not exactly-once. A reminder is marked sent ONLY after it actually sent, so a failed send retries (bounded) instead of being recorded as delivered.
+  - Ships dark (\`commitments.checkInReminder\`, dryRun defaulting TRUE). **Honest scope:** while the reconciler runs, no dated commitment can slip past it — but nothing yet guarantees the reconciler runs, so "structurally impossible to have a dated promise without a reminder" is NOT true yet.
+`;
+      const at = content.indexOf(marker);
+      if (at >= 0) {
+        content = content.slice(0, at) + datedSection + content.slice(at);
+      } else {
+        // The section exists but has drifted from the shipped wording. Append
+        // rather than skip: a missing capability is worse than a misplaced one.
+        const idx = content.indexOf('**Commitments & Follow-Through**');
+        const endOfBlock = content.indexOf('\n\n', idx);
+        const insertAt = endOfBlock >= 0 ? endOfBlock : idx;
+        content = content.slice(0, insertAt) + '\n' + datedSection + content.slice(insertAt);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added dated check-in reminder to Commitments section');
+    } else if (content.includes('/commitments/check-in-reminder')) {
+      result.skipped.push('CLAUDE.md: dated check-in reminder already present');
+    }
+
     // Publishing (Telegraph public pages). Awareness-parity pass: add the
     // agent-facing section if absent so it reaches Codex/Gemini shadows via
     // the markers list. Inserted before Private Viewing (template doc order).
@@ -8919,6 +9059,14 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Mesh Rope Health (recovery probe + partition alerts)',
+      // Tone-gate advisory migration: framework-agnostic by construction — the
+      // outbound gate sits on the SERVER, so a Codex/Gemini agent's messages hit
+      // exactly the same nudge. Without this marker such an agent receives a
+      // `422 tone-gate-advisory` telling it to override, with no idea that
+      // `toneAdvisoryAck` + a reason exist — it would read the nudge as a wall
+      // and either loop or silently drop the message, which is the pre-migration
+      // failure reproduced on the frameworks that never learned the fix.
+      'Most checks are NUDGES you may override',
       // Owned-Identities Registry (correction-derived-hardening): framework-
       // agnostic — a Codex/Gemini agent provisions identities too, and its
       // self-unblock exhaustion consults the same server-side probe. It must
@@ -8939,6 +9087,17 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // the reviewer erred" trigger + the honest 501-when-off phrasing.
       '### Context-Aware Outbound Review',
       '### Self-Discovery',
+      '**Registry First — capability registry:',
+      // channel-registry: a Codex/Gemini agent must also learn to consult /channels
+      // before reporting a peer unreachable, or it will improvise the same weaker
+      // workaround I did — stop, and tell the operator the peer cannot be reached.
+      '**Registry First — channel registry:',
+      // decision-journal: a Codex/Gemini agent that does not learn the new
+      // requirement will POST without `principle`, take a 400 it cannot explain,
+      // and fall back to recording decisions somewhere nothing reads — which is
+      // the exact failure this refusal exists to prevent.
+      '**Decision journal — principle is required:',
+      '**Alignment score — N/A means not assessed:',
       '**Publishing**',
       '**Private Viewing**',
       '**Secret Drop**',
@@ -13513,8 +13672,21 @@ process.stdin.on('end', async () => {
     // server-side claim pass. No hook regex is allowed to define coverage.
     if (!message) process.exit(0);
     const transcript = typeof input.transcript_path === 'string' ? path.resolve(input.transcript_path) : '';
-    const claudeRoot = path.resolve(os.homedir(), '.claude', 'projects');
-    if (!transcript || (transcript !== claudeRoot && !transcript.startsWith(claudeRoot + path.sep))) process.exit(0);
+    // Confine reads to a Claude projects tree. CLAUDE_CONFIG_DIR must be
+    // honoured: an agent running with a custom config dir (e.g.
+    // ~/.claude-followme-<name>) keeps its transcripts under THAT dir, so a
+    // hardcoded ~/.claude/projects rejects every transcript and the observer
+    // records nothing — silently, since the guard just exits 0 (ACT-966,
+    // second cause). Both roots are allowed so the guard works whether or not
+    // the variable is set; each is still a Claude projects tree, so the
+    // containment intent is unchanged.
+    const claudeRoots = [];
+    if (process.env.CLAUDE_CONFIG_DIR) claudeRoots.push(path.resolve(process.env.CLAUDE_CONFIG_DIR, 'projects'));
+    claudeRoots.push(path.resolve(os.homedir(), '.claude', 'projects'));
+    const withinClaudeRoot = claudeRoots.some(function (root) {
+      return transcript === root || transcript.startsWith(root + path.sep);
+    });
+    if (!transcript || !withinClaudeRoot) process.exit(0);
     const stat = fs.statSync(transcript);
     if (!stat.isFile()) process.exit(0);
     const max = 512 * 1024;
@@ -13611,12 +13783,22 @@ process.stdin.on('end', async () => {
 });
 
 function uuidv7() {
-  const bytes = crypto.randomBytes(16);
+  // Uses globalThis.crypto.getRandomValues, NOT node:crypto's randomBytes.
+  // This function is at MODULE scope while the \`const crypto = await
+  // import('node:crypto')\` above lives inside the stdin 'end' callback, so a
+  // bare \`crypto\` here resolves to the global WebCrypto object — which has
+  // getRandomValues but NOT randomBytes. That made every invocation throw
+  // "crypto.randomBytes is not a function" and exit(0) silently, so the
+  // observer recorded nothing (ACT-966). getRandomValues needs no import and
+  // works identically under an ESM or CJS host, so the scope trap cannot
+  // return. Hex is formatted manually because Uint8Array has no toString('hex').
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
   const now = BigInt(Date.now());
   for (let i = 5; i >= 0; i--) bytes[5 - i] = Number((now >> BigInt(i * 8)) & 255n);
   bytes[6] = (bytes[6] & 15) | 112;
   bytes[8] = (bytes[8] & 63) | 128;
-  const h = bytes.toString('hex');
+  const h = Array.from(bytes, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
   return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
 }
 `;
@@ -14311,6 +14493,24 @@ process.stdin.on('end', async () => {
     // Recovery-queue reopen-and-prove + outbound advisory acknowledgement
     // version shipped through v1.3.882 (pre bounded final transport outcome).
     'd55feb9a203c7835c36b6bf0e23972c79a1e26fe6ea29683f31f831fb956c0f3',
+    // Bounded final transport outcome — the version shipped immediately BEFORE
+    // the tone-gate advisory migration added --tone-ack / --tone-reason /
+    // --tone-complied / --tone-decision-ref and the branching 422 renderer.
+    // Registering it here is what lets a deployed agent actually RECEIVE those
+    // flags: without this entry the SHA-history migrator leaves the old script
+    // in place with a `.new` candidate beside it, and the migration would be
+    // reachable only through a hand-rolled curl — i.e. inert on the one send
+    // path the agent template mandates.
+    '1182b2c7e3779a9c37355e7317962ea48122a5f4a42425d7f3f9973e8127aa19',
+    // The tone-advisory version, shipped immediately BEFORE the flag-position
+    // guard. In this version a flag placed AFTER the topic id was swallowed
+    // into `MSG="$*"` and SENT TO THE USER as literal message text, while the
+    // override it carried never reached the server — silently, on the very
+    // flags the entry above was added to deliver. Registering this SHA is what
+    // lets a deployed agent receive the guard; without it the migrator leaves
+    // the swallowing version in place with a `.new` beside it, and every agent
+    // keeps mis-sending a misplaced (or typo'd) flag as message body.
+    'a2cf02154a6023725f15480a575f54a5231278c70396cd12051b7d7055b72d98',
   ]);
 
   /**

@@ -263,6 +263,21 @@ interface ValueDocCache {
 
 const VALUE_DOC_CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
 
+/**
+ * Observations a reviewer needs before its rates support a 'healthy' VERDICT.
+ *
+ * This is not a new discipline — it adopts a precedent this codebase already keeps.
+ * `SelfActionGovernor.checkObserveLimbo` computes the same shape of rate
+ * (`total > 0 ? wouldDeny / total : 0`) but gates its promotion criterion on
+ * `total >= 100`, so a zero-observation rate can never satisfy it. That guard is why
+ * the identical expression is harmless there and was a defect here.
+ *
+ * The floor is smaller (5, not 100) because this surface reports health continuously
+ * rather than gating a one-way promotion, so it has to become useful sooner. It gates
+ * ONLY the optimistic conclusion; a genuine failure on thin evidence is still reported.
+ */
+const REVIEWER_HEALTH_MIN_OBSERVATIONS = 5;
+
 // ── Main Class ───────────────────────────────────────────────────────
 
 /**
@@ -1645,13 +1660,21 @@ export class CoherenceGate {
     for (const [name, reviewer] of this.reviewers) {
       const m = reviewer.metrics;
       const total = m.passCount + m.failCount + m.errorCount;
+      // Every rate here is null on zero observations rather than a hardcoded default.
+      // Before this, the SAME quantity had OPPOSITE defaults in the two health surfaces
+      // of this one file: `passRate: 0` here (pessimistic) and `passRate: 1` in
+      // getReviewerHealth (optimistic) — and `jsonValidityRate: 1` claimed perfect JSON
+      // validity from a reviewer that had never parsed anything. Neither default was
+      // reasoned about; a reader could not tell "measured" from "not measured".
       perReviewer[name] = {
-        passRate: total > 0 ? m.passCount / total : 0,
-        flagRate: total > 0 ? m.failCount / total : 0,
-        errorRate: total > 0 ? m.errorCount / total : 0,
-        avgLatencyMs: total > 0 ? Math.round(m.totalLatencyMs / total) : 0,
-        jsonValidityRate: total > 0 ? 1 - (m.jsonParseErrors / total) : 1,
+        passRate: total > 0 ? m.passCount / total : null,
+        flagRate: total > 0 ? m.failCount / total : null,
+        errorRate: total > 0 ? m.errorCount / total : null,
+        avgLatencyMs: total > 0 ? Math.round(m.totalLatencyMs / total) : null,
+        jsonValidityRate: total > 0 ? 1 - (m.jsonParseErrors / total) : null,
         total,
+        insufficientEvidence: total < REVIEWER_HEALTH_MIN_OBSERVATIONS,
+        observationsRequired: REVIEWER_HEALTH_MIN_OBSERVATIONS,
       };
     }
 
@@ -1750,32 +1773,52 @@ export class CoherenceGate {
    * Get reviewer health — per-reviewer pass rate relative to baseline expectations.
    */
   getReviewerHealth(): ReviewerHealthReport {
-    const reviewerHealth: Record<string, {
-      passRate: number;
-      total: number;
-      status: 'healthy' | 'degraded' | 'failing';
-    }> = {};
+    const reviewerHealth: ReviewerHealthReport['reviewers'] = {};
 
     for (const [name, reviewer] of this.reviewers) {
       const m = reviewer.metrics;
       const total = m.passCount + m.failCount + m.errorCount;
-      const passRate = total > 0 ? m.passCount / total : 1;
-      const errorRate = total > 0 ? m.errorCount / total : 0;
 
-      let status: 'healthy' | 'degraded' | 'failing' = 'healthy';
-      if (errorRate > 0.5 || (total > 10 && passRate < 0.1)) {
+      // A rate over zero observations is not a rate. Report null rather than a
+      // number the reader cannot distinguish from a measured one.
+      const passRate = total > 0 ? m.passCount / total : null;
+      const errorRate = total > 0 ? m.errorCount / total : null;
+      const insufficientEvidence = total < REVIEWER_HEALTH_MIN_OBSERVATIONS;
+
+      // The floor gates only the OPTIMISTIC conclusion. A reviewer that errored on
+      // both of its two calls IS failing, and thin evidence must never suppress bad
+      // news — only the claim "this is healthy" needs a sample behind it.
+      let status: ReviewerHealthStatus;
+      if (errorRate !== null && (errorRate > 0.5 || (total > 10 && passRate !== null && passRate < 0.1))) {
         status = 'failing';
-      } else if (errorRate > 0.2 || m.jsonParseErrors > total * 0.3) {
+      } else if (errorRate !== null && (errorRate > 0.2 || m.jsonParseErrors > total * 0.3)) {
         status = 'degraded';
+      } else if (insufficientEvidence) {
+        // Includes total === 0 ("never ran"). Distinguishable from 'healthy' by the
+        // reader AND by any consumer switching on status.
+        status = 'unobserved';
+      } else {
+        status = 'healthy';
       }
 
-      reviewerHealth[name] = { passRate, total, status };
+      reviewerHealth[name] = {
+        passRate,
+        errorRate,
+        total,
+        observationsRequired: REVIEWER_HEALTH_MIN_OBSERVATIONS,
+        insufficientEvidence,
+        status,
+      };
     }
 
+    // Precedence: bad news outranks thin evidence, which outranks a healthy claim.
+    // 'unobserved' must never aggregate up as 'healthy' — that was the defect.
     const allStatuses = Object.values(reviewerHealth).map(r => r.status);
-    let overallStatus: 'healthy' | 'degraded' | 'failing' = 'healthy';
+    let overallStatus: ReviewerHealthStatus = 'healthy';
     if (allStatuses.includes('failing')) overallStatus = 'failing';
     else if (allStatuses.includes('degraded')) overallStatus = 'degraded';
+    else if (allStatuses.includes('unobserved')) overallStatus = 'unobserved';
+    else if (allStatuses.length === 0) overallStatus = 'unobserved'; // no reviewers at all
 
     return {
       overallStatus,
@@ -1988,12 +2031,27 @@ export interface CanaryTestResult {
   pass: boolean;
 }
 
+/**
+ * `unobserved` exists because the absence of observations previously rendered as the
+ * presence of good ones: a reviewer that had never run once reported `passRate: 1` and
+ * `status: 'healthy'`. Read a fourth state as "no verdict yet", never as a problem.
+ */
+export type ReviewerHealthStatus = 'healthy' | 'degraded' | 'failing' | 'unobserved';
+
 export interface ReviewerHealthReport {
-  overallStatus: 'healthy' | 'degraded' | 'failing';
+  overallStatus: ReviewerHealthStatus;
   reviewers: Record<string, {
-    passRate: number;
+    /** null when there are no observations — a rate over zero calls is not a rate. */
+    passRate: number | null;
+    /** Exposed because it DRIVES the verdict; a hidden input to a decision is unauditable. */
+    errorRate: number | null;
+    /** The denominator. Always present, so any rate above can be judged. */
     total: number;
-    status: 'healthy' | 'degraded' | 'failing';
+    /** Observations a 'healthy' verdict requires. */
+    observationsRequired: number;
+    /** true when `total < observationsRequired` (includes never-ran). */
+    insufficientEvidence: boolean;
+    status: ReviewerHealthStatus;
   }>;
   lastCanaryRun: CanaryTestResult[] | null;
 }

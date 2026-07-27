@@ -233,7 +233,7 @@ export class ProviderCostReportStore {
     for (const r of rows) {
       const keyRef = String(r.key_ref);
       const door = String(r.door);
-      const k = `${keyRef} ${door}`;
+      const k = `${keyRef}\u0000${door}`;
       const a = agg.get(k) ?? { keyRef, door, cost: 0, costSeen: false, calls: 0, tout: 0, toutSeen: false };
       a.calls += 1;
       if (typeof r.provider_cost_usd === 'number') {
@@ -272,7 +272,7 @@ export class ProviderCostReportStore {
       const day = String(r.day);
       const door = String(r.door);
       const modelId = String(r.model_id);
-      const k = `${day} ${door} ${modelId}`;
+      const k = `${day}\u0000${door}\u0000${modelId}`;
       const a = agg.get(k) ?? { day, door, modelId, cost: 0, calls: 0 };
       a.cost += r.provider_cost_usd as number;
       a.calls += 1;

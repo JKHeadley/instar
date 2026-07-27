@@ -164,6 +164,67 @@ describe('MultiMachineCoordinator — active lease-pull split-brain surface', ()
     coord.stop();
   });
 
+  it('CMT-984/CMT-992: a standby takes over a non-renewing observed holder on the pull cadence', async () => {
+    const machineId = `m_${crypto.randomBytes(8).toString('hex')}`;
+    const identity = seedIdentity(dir, machineId);
+    new MachineIdentityManager(dir).registerMachine(identity as any, 'standby');
+
+    let now = 2_000;
+    let mono = 2_000;
+    const bLease = fl('B').signLease(
+      1,
+      new Date(now).toISOString(),
+      new Date(now + 10 * TTL).toISOString(),
+      7,
+    );
+    const store = new LocalLeaseStore({ filePath: path.join(dir, 'lease-local.json') });
+    expect(store.casWrite(bLease).ok).toBe(true);
+
+    const tunnel: LeaseTransport = {
+      broadcast: async () => true,
+      observed: () => ({ lease: bLease, lastNonceByHolder: { B: bLease.nonce } }),
+      isReachable: () => true,
+      pullAllPeers: async () => { /* B is dark: its last signed lease remains unchanged */ },
+    };
+    const lc = new LeaseCoordinator({
+      lease: fl('A'),
+      store,
+      tunnel,
+      presumedDeadHolders: () => new Set(),
+      now: () => now,
+      monotonicNow: () => mono,
+      staleHolderTakeover: () => ({ enabled: true, nonRenewalMissedObservations: 2 }),
+    });
+
+    vi.useFakeTimers();
+    const state = new StateManager(dir);
+    const coord = new MultiMachineCoordinator(state, {
+      stateDir: dir,
+      multiMachine: { leasePullIntervalMs: 1_000 } as any,
+    });
+    coord.start();
+    coord.attachLeaseCoordinator(lc);
+    await coord.initializeLease();
+
+    expect(lc.currentHolder()).toBe('B');
+    expect(coord.isAwake).toBe(false);
+
+    // Reproduce the 2026-07-23 offline test: B stops renewing while its signed
+    // lease still looks live by wall clock. The F2 monotonic window opens at
+    // 2×TTL; the next pull tick must claim serving without waiting for the
+    // separate 2-minute heartbeat phase.
+    mono += 2 * TTL + 1;
+    now += 2 * TTL + 1;
+    await vi.advanceTimersByTimeAsync(1_300);
+
+    expect(lc.currentHolder()).toBe('A');
+    expect(lc.currentEpoch()).toBe(2);
+    expect(lc.holdsLease()).toBe(true);
+    expect(coord.isAwake).toBe(true);
+    expect(state.readOnly).toBe(false);
+    coord.stop();
+  });
+
   it('pull loop does not arm when the transport cannot pull (git-only mesh)', async () => {
     const machineId = `m_${crypto.randomBytes(8).toString('hex')}`;
     const identity = seedIdentity(dir, machineId);

@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-25T09:09:53.397Z",
+  "slug": "capability-registry-increment-0",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

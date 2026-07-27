@@ -30,6 +30,36 @@ import { detectInternalIdLeak } from './internal-id-leak.js';
 import { detectSelfStopShape } from './self-stop-floor.js';
 import { detectDeferralShape } from './deferral-floor.js';
 import { DP_MESSAGING_TONE_GATE } from '../data/provenanceCoverage.js';
+import { scrubForStore } from './durableSecretScrub.js';
+import { CONTENT_FULL_KEY } from './JudgmentProvenanceLog.js';
+import { resolveDevAgentGate } from './devAgentGate.js';
+
+/** Normalize volatile fields so repeated automated templates share one identity. */
+export function normalizeAutomatedTemplate(text: string): string {
+  return text
+    .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g, '<timestamp>')
+    .replace(/\b(?:mesh|topic|session|message|job|run|agent)[-_:#]?\d+[a-z0-9-]*\b/gi, '<id>')
+    .replace(/\b\d{6,}\b/g, '<number>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function fingerprintAutomatedTemplate(text: string): string {
+  return crypto.createHash('sha256').update(normalizeAutomatedTemplate(text), 'utf8').digest('hex');
+}
+
+/**
+ * Hard ceiling on a recorded candidate body, in characters. A CEILING, not a default
+ * the caller can raise: `maxBodyChars` is clamped DOWN to it, never up, so no config
+ * value can turn the provenance store into an unbounded archive of outbound prose.
+ *
+ * 4000 covers the overwhelming majority of real outbound messages whole — the point
+ * of recording the body is that a later judge can read what was actually said, and a
+ * body cut off mid-argument answers "was blocking this correct?" no better than a
+ * hash does. Rows that do hit the ceiling are marked `bodyTruncated: true` so the
+ * judge knows it is reading a fragment rather than assuming it has the whole message.
+ */
+export const TONE_CANDIDATE_BODY_MAX_CHARS = 4000;
 
 /**
  * The prompt-version tag for the tone-gate judge, declared as the provenance
@@ -122,24 +152,128 @@ export function detectDeterministicLeak(
  * recent-message COUNT, the deterministic gate-signal KINDS). It NEVER stores the
  * message body or any plaintext slice of it.
  *
- * WHY NO plaintext head (mirrors the CompletionEvaluator content-bearing sibling,
- * §5.3): the candidate IS the very outbound text this gate exists to inspect for
- * leaks — a bounded head, even credential-scrubbed, would still archive
+ * WHY NO plaintext head BY DEFAULT (mirrors the CompletionEvaluator content-bearing
+ * sibling, §5.3): the candidate IS the very outbound text this gate exists to inspect
+ * for leaks — a bounded head, even credential-scrubbed, would still archive
  * non-credential PII / user-facing prose the store must not become a copy of. The
- * hash gives full identity (correlate/dedupe/replay-verify) with zero body
- * exposure.
+ * hash gives full identity (correlate/dedupe/replay-verify) with zero body exposure.
+ *
+ * WHY AN OPT-IN CANDIDATE BODY EXISTS ANYWAY (operator decision, 2026-07-23, topic
+ * 33368). The identity-only row cannot answer the question the meter exists to ask.
+ * "Was blocking this message correct?" is not decidable from a sha256: a hash cannot
+ * be re-read, and a later judge handed one has strictly nothing to judge. The
+ * operator's model is record richly now, judge later in bulk with a strong model —
+ * which requires the body to still be there at judging time.
+ *
+ * The operator weighed the retention question directly and settled it: the same text
+ * is ALREADY written to the session transcript on disk, so storing it a second time
+ * in a store only the operator and the agent read crosses no line the transcript has
+ * not already crossed. That reasoning is explicitly scoped to INTERNAL benchmarking
+ * of this install's own decisions.
+ *
+ * IT DOES NOT EXTEND to third-party data. The operator's stated next step —
+ * crowdsourcing scenarios from other installs' agents — needs an anonymisation layer
+ * that does not exist yet, and "scrub the identifiers" is not that layer: a support
+ * conversation with every name removed is still identifiable from what it is about,
+ * and stripping what makes it a scenario destroys its value as one. Incoming
+ * scenarios are also untrusted input — text a model will later read, contributed by
+ * someone who may wish to shape how it scores. Neither problem exists for
+ * locally-generated rows, and neither is solved here. A future ingest path for
+ * external scenarios MUST NOT reuse this flag as its authorization.
+ *
+ * The body is therefore: OFF unless explicitly enabled, credential-scrubbed through
+ * the same durable scrubber every other content-bearing store uses, hard length-
+ * clamped, and recorded ALONGSIDE the sha256 rather than replacing it — identity
+ * stays intact whether or not the body is present, so rows written before and after
+ * an operator flips this flag remain correlatable.
  */
 export function buildToneDecisionContext(
   text: string,
   context: ToneReviewContext,
+  /**
+   * Opt-in candidate-body capture. Absent/false ⇒ byte-identical behaviour to the
+   * identity-only row. Passed explicitly rather than read from config here so this
+   * stays a pure function (its callers own config resolution) and so a test can
+   * exercise both sides without touching global state.
+   */
+  opts?: { recordCandidateBody?: boolean; maxBodyChars?: number },
 ): Record<string, unknown> {
   const sha256 = (s: string): string => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+  const candidate: Record<string, unknown> = {
+    sha256: sha256(text),
+    bytes: Buffer.byteLength(text, 'utf8'),
+    chars: text.length,
+  };
+  if (context.messageKind === 'automated' && context.templateFingerprint) {
+    candidate.templateFingerprint = context.templateFingerprint;
+  }
+  // Machine-local by construction — see CONTENT_FULL_KEY. Attached to the envelope
+  // only when it actually holds something, so an identity-only row stays byte-identical
+  // to what it was before this feature existed.
+  const contentFull: Record<string, unknown> = {};
+  if (opts?.recordCandidateBody === true) {
+    // Clamp BEFORE scrubbing, never after: scrubbing first and truncating second can
+    // slice a `[REDACTED:...]` marker in half and leave the tail of a real secret
+    // sitting past the cut. Clamping first means the scrubber always sees the exact
+    // bytes that will be stored.
+    // Number.isFinite FIRST: Math.min(NaN, X) is NaN, and `text.length > NaN` is false,
+    // so a NaN bound would skip the clamp entirely AND report bodyTruncated:false — the
+    // ceiling bypassed by a row that claims to be complete. A non-finite bound falls back
+    // to the ceiling rather than being trusted.
+    const requested = opts.maxBodyChars;
+    const bound = typeof requested === 'number' && Number.isFinite(requested)
+      ? requested
+      : TONE_CANDIDATE_BODY_MAX_CHARS;
+    const limit = Math.max(0, Math.min(bound, TONE_CANDIDATE_BODY_MAX_CHARS));
+    const clamped = text.length > limit ? text.slice(0, limit) : text;
+    const scrubbed = scrubForStore(clamped);
+    // The body goes ONLY under the reserved machine-local key. `candidate` itself is
+    // part of the envelope that feeds `contextRedacted` — a SERVED field, on the
+    // cross-machine allowlist, scrubbed only for credential shapes. Putting the body
+    // there would publish outbound message text to the local read surface and to peer
+    // machines on a pool merge. This is not a hypothetical: the first implementation
+    // did exactly that, and it looked correct.
+    contentFull.candidateBody = scrubbed.text;
+    // Metadata ABOUT the body stays visible — a reader needs these to trust the row,
+    // and none of them carry content.
+    candidate.bodyTruncated = text.length > limit;
+    // Kinds are computed over the FULL text, not the stored fragment.
+    //
+    // Clamping first is required for storage safety (see above), but it makes the
+    // stored fragment's redaction list mean "kinds found in the first N chars" —
+    // which is NOT the question a reader asks. "Did this message contain a
+    // credential?" must be answerable for the WHOLE message, or a secret sitting
+    // past the cut makes the row read as clean. Two bounded scrubs: one over the
+    // full text for accurate metadata (its scrubbed output is discarded), one over
+    // the clamped text for the bytes actually stored.
+    // An oversize/errored full scan returns a MARKER span, not real findings. Using it
+    // would REPLACE the genuine kinds found in the stored fragment with ["oversize"] —
+    // a row whose body visibly redacted a token would report only that the scan failed.
+    // Fall back to the fragment's own findings and say plainly that whole-message
+    // accounting was unavailable.
+    const rawFullScan = text.length > limit ? scrubForStore(text) : scrubbed;
+    const fullScanUsable = rawFullScan.error !== true && rawFullScan.truncated !== true;
+    const fullScan = fullScanUsable ? rawFullScan : scrubbed;
+    if (!fullScanUsable) candidate.bodyRedactionScope = 'stored-fragment-only';
+    if (fullScan.redactions.length > 0) {
+      candidate.bodyRedactionKinds = [...new Set(fullScan.redactions.map((r) => r.kind))];
+      // True when the full message carried a credential that the clamp cut away, so
+      // the stored fragment shows no redaction marker despite the message having had
+      // one. Without this a truncated row looks cleaner than the message actually was.
+      if (fullScan.redactions.length > scrubbed.redactions.length) {
+        candidate.bodyRedactionsBeyondClamp = true;
+      }
+    }
+    // The scrubber replaces the whole field on its own error/oversize paths. Record
+    // that plainly so a judge reading this row can tell "nothing sensitive was found"
+    // from "the scrub failed and the body was withheld" — those are not the same
+    // fact, and silently conflating them would make the row quietly untrustworthy.
+    if (scrubbed.error === true) candidate.bodyWithheld = 'scrub-error';
+    else if (scrubbed.truncated === true) candidate.bodyWithheld = 'oversize';
+  }
   const ctx: Record<string, unknown> = {
-    candidate: {
-      sha256: sha256(text),
-      bytes: Buffer.byteLength(text, 'utf8'),
-      chars: text.length,
-    },
+    ...(Object.keys(contentFull).length > 0 ? { [CONTENT_FULL_KEY]: contentFull } : {}),
+    candidate,
     channel: String(context.channel ?? '').slice(0, 32),
     messageKind: context.messageKind ?? 'reply',
     recentMessageCount: Array.isArray(context.recentMessages) ? context.recentMessages.length : 0,
@@ -184,6 +318,7 @@ export function buildDegradedToneResult(
   text: string,
   latencyMs: number,
   reason: DegradeReason,
+  advisoryMigration = false,
 ): ToneReviewResult {
   const leak = detectDeterministicLeak(text);
   if (leak) {
@@ -195,6 +330,10 @@ export function buildDegradedToneResult(
       latencyMs,
       failedClosed: true,
       degradedToDeterministic: true,
+      // The disposition follows the RULE, not the path that reached it: a file
+      // path is the same opinion whether the judge or the floor named it. The
+      // credential guard runs BEFORE this floor and is unaffected.
+      ...(resolveRuleDisposition(leak.rule, advisoryMigration) === 'advisory' ? { advisory: true } : {}),
     };
   }
   // ux-is-the-product-hardening §2.1 — the behavioral self-stop guard (B15/B18)
@@ -216,6 +355,9 @@ export function buildDegradedToneResult(
       latencyMs,
       failedClosed: true,
       degradedToDeterministic: true,
+      ...(resolveRuleDisposition('B15_CONTEXT_DEATH_STOP', advisoryMigration) === 'advisory'
+        ? { advisory: true }
+        : {}),
     };
   }
   return {
@@ -318,6 +460,24 @@ export interface ToneReviewResult {
    * Spec: docs/specs/tone-gate-graceful-degradation.md (postmortem F4).
    */
   degradedToDeterministic?: boolean;
+  /**
+   * The §5.1 decision-quality correlation id of THIS review, when the router
+   * minted one (absent on the degraded/deterministic paths, which never reach
+   * the router). The route seam returns it to the agent on an advisory verdict
+   * so a subsequent override/compliance can be JOINED to the decision it
+   * reacted to — the correlation that turns an override into gradeable
+   * evidence instead of an unattached log line.
+   */
+  decisionRef?: string;
+  /**
+   * Set by the route seam when an ADVISORY verdict was withdrawn back to a
+   * BLOCK because its reaction could not have been recorded (no correlation id,
+   * or the quality seam dark/dry-run). Audit-only — it exists so the fallback
+   * is observable rather than looking like an ordinary block.
+   */
+  advisoryUnrecordable?: boolean;
+  /** Bounded, scrubbed head of the agent's override reason — audit only. */
+  overrideReasonHead?: string;
 }
 
 export const VALID_RULES = new Set([
@@ -448,6 +608,82 @@ export const RULE_DISPOSITIONS: Record<string, GateRuleDisposition> = {
   B20_INTERNAL_ID_LEAK: 'blocking',
   B21_USER_TASK_SUBSTITUTION: 'advisory',
 };
+
+/**
+ * The advisory MIGRATION (operator approval 2026-07-19, topic 33368 — the
+ * CMT-904 follow-up the map above anticipated). Under the migration EVERY
+ * `blocking` rule above resolves `advisory`: the gate names the pitfall and
+ * hands the message back to the AGENT, who may re-send unchanged with a
+ * RECORDED reason. Two things make this the right shape rather than a
+ * weakening:
+ *
+ *  1. The hard wall moved to where it belongs. A judgment about a file path or
+ *     a phrasing is an opinion; a LIVE CREDENTIAL in outbound text is
+ *     irreversible exposure. The latter is now a DETERMINISTIC, non-overridable
+ *     guard at the route seam (`outbound-credential-guard`) that needs no LLM
+ *     and cannot be acknowledged away — so removing the LLM hard-block removes
+ *     no credential protection.
+ *  2. A hard block produces NO evidence. When the gate overrules the agent and
+ *     the agent has no recourse, there is no disagreement to record, and the
+ *     decision-quality meter can only ever grade `unknown` (observed: 1,440
+ *     tone-gate decisions over 7 days, zero graded). The override reason IS the
+ *     evidence source (`tone-agent-override-v1` / `tone-agent-complied-v1`).
+ *
+ * An override is a SIGNAL, never authority: it is recorded at the `self-report`
+ * rung, so it can never outrank an independent grader.
+ */
+export const ADVISORY_MIGRATION_EXEMPT_RULES: ReadonlySet<string> = new Set<string>([
+  // ── The self-stop family stays a WALL (review finding, 2026-07-25) ────────
+  // The operator's directive was about REPRESENTATION — "a check blocking me
+  // from sending you a directory path is too much power". Reading it as also
+  // covering the behavioural self-stop guards is an inference, and the two rule
+  // families have opposite harm profiles:
+  //
+  //   B1–B7 / B11–B14 / B20–B21: the agent judges an externally verifiable fact
+  //   ("is this path useful to the user?"). It is a reasonably disinterested
+  //   judge, a wrong override costs one leaked path, and the disagreement is
+  //   genuinely informative evidence.
+  //
+  //   B15–B19: the agent is THE PARTY THE RULE CONSTRAINS. The override reason
+  //   would be produced by the same reasoning process that produced the stop —
+  //   and the gate's founding premise is that this exact judgment, in this exact
+  //   state, is the compromised one. Worse, the harm is not the message: it is
+  //   the abandoned work, which happens the instant the message sends. Bulk
+  //   judging at T+7d cannot un-abandon it, so the evidence rationale that
+  //   justifies the whole migration does not reach this family.
+  //
+  // Migrating these is a real operator decision, surfaced rather than assumed.
+  // A future migration should give them a THIRD disposition rather than a plain
+  // nudge: overridable only by naming a `stop_reason_kind` from the enum the
+  // prompt already emits (external-blocker | design-fork | operator-stop |
+  // completion), with `agent-state` refused — a falsifiable claim that can be
+  // cross-checked against BlockerLedger instead of free prose.
+  'B15_CONTEXT_DEATH_STOP',
+  'B16_UNVERIFIED_WALL',
+  'B17_FALSE_BLOCKER',
+  'B18_AUTONOMY_STOP',
+  'B19_PARKED_ON_USER',
+]);
+
+/**
+ * The effective disposition of a cited rule. `RULE_DISPOSITIONS` is the
+ * unmigrated baseline (kept intact so the rollback is a flag, not a revert);
+ * this resolver applies the migration on top.
+ *
+ * A rule NOT in the baseline map — `GATE_UNAVAILABLE`, or any id a future
+ * caller invents — resolves `blocking`. That is deliberate and load-bearing:
+ * an AVAILABILITY hold ("the authority could not produce a verdict") is not a
+ * judgment the agent can acknowledge away, and an unregistered id must never
+ * inherit advisory leniency by omission.
+ */
+export function resolveRuleDisposition(rule: string, advisoryMigration: boolean): GateRuleDisposition {
+  if (!rule) return 'blocking';
+  const baseline = RULE_DISPOSITIONS[rule];
+  if (baseline === undefined) return 'blocking';
+  if (baseline === 'advisory') return 'advisory';
+  if (!advisoryMigration) return 'blocking';
+  return ADVISORY_MIGRATION_EXEMPT_RULES.has(rule) ? 'blocking' : 'advisory';
+}
 
 export const PHASE2_MIGRATION_DEBT = {
   rules: [] as const,
@@ -692,6 +928,8 @@ export interface ToneReviewContext {
    * scheduled-task sends (stamped by the scheduler env, not the model).
    */
   messageKind?: MessageKind;
+  /** Stable identity for observe-only automated-template provenance. */
+  templateFingerprint?: string;
   /**
    * Deterministic agent-state signal (spec §Design 1a). Detected OUTSIDE the
    * prompt (in-process `readSessionClocks` at the route seam) and fed in as
@@ -729,7 +967,7 @@ export interface ToneReviewContext {
   synchronousReply?: boolean;
 }
 
-/** Tune knobs read live from InstarConfig.messaging.toneGate (spec §Design 6). */
+/** Tune knobs read live from top-level InstarConfig.toneGate (spec §Design 6). */
 export interface ToneGateConfig {
   /**
    * When true (DEFAULT), the provider-exhaustion and route-budget-timeout paths
@@ -757,6 +995,60 @@ export interface ToneGateConfig {
    * classification before any real delivery). No effect outside 'tiered'.
    */
   toneTierDryRun?: boolean;
+  /**
+   * Record the candidate message BODY on the decision-quality provenance row, in
+   * addition to the sha256 identity that is always recorded (operator decision
+   * 2026-07-23, topic 33368 — see buildToneDecisionContext for the full reasoning
+   * and its limits).
+   *
+   * OFF unless explicitly set. Absent/false is byte-identical to the identity-only
+   * behaviour that shipped before this flag existed, so an agent that never sets it
+   * stores exactly what it stored yesterday.
+   *
+   * Scoped to INTERNAL benchmarking of this install's own decisions. It is NOT
+   * authorization for ingesting third-party scenarios, which need an anonymisation
+   * layer that does not exist yet.
+   */
+  recordCandidateBody?: boolean;
+  /**
+   * The advisory migration (see ADVISORY_MIGRATION_EXEMPT_RULES): every
+   * judgment/representation rule becomes an overridable NUDGE, with the live
+   * credential guard as the one remaining hard wall.
+   *
+   * OMITTED in ConfigDefaults ON PURPOSE — absence resolves through the
+   * development-agent gate (live on a dev agent, dark on the fleet). An
+   * explicit `false` is the operator rollback (restores the pre-migration
+   * blocking behaviour without a deploy, read live per review); an explicit
+   * `true` is the fleet flip.
+   */
+  advisoryMigration?: boolean;
+}
+
+/**
+ * Resolve the operator's tone-gate knobs from a full InstarConfig-shaped object.
+ *
+ * The ONLY correct source is the TOP-LEVEL `toneGate` block: `messaging` is an
+ * array of adapter configs, so the historically-documented `messaging.toneGate.*`
+ * location is structurally unreachable and is deliberately NOT read here (a
+ * value there is a dead key, never honored — reading it would resurrect a
+ * location no working config ever used). This helper is the single wiring
+ * point between config.json and the gate's live getter; the 2026-07-24
+ * candidate-body gap existed because the construction site inlined this logic
+ * against the dead location and whitelisted only three of the four knobs.
+ */
+export function resolveToneGateOperatorConfig(config: unknown): ToneGateConfig {
+  const tg = (config as { toneGate?: ToneGateConfig } | null | undefined)?.toneGate;
+  return {
+    failClosedOnExhaustion: tg?.failClosedOnExhaustion,
+    failClosedMode: tg?.failClosedMode,
+    toneTierDryRun: tg?.toneTierDryRun,
+    recordCandidateBody: tg?.recordCandidateBody,
+    // Dev-gated: absent ⇒ live on a development agent, dark on the fleet.
+    advisoryMigration: resolveDevAgentGate(
+      tg?.advisoryMigration,
+      config as { developmentAgent?: boolean } | undefined,
+    ),
+  };
 }
 
 export class MessagingToneGate {
@@ -781,6 +1073,12 @@ export class MessagingToneGate {
 
   async review(text: string, context: ToneReviewContext): Promise<ToneReviewResult> {
     const start = Date.now();
+    // The router mints the decision-quality correlation id synchronously at
+    // entry (before the first attempt) and hands it to this callback. Captured
+    // here so an ADVISORY verdict can carry it back to the agent as
+    // `decisionRef` — without it an override is an orphan log line that no
+    // grader can ever join to the decision it disputes.
+    let decisionRef: string | undefined;
     const prompt = this.buildPrompt(
       text,
       context.channel,
@@ -817,12 +1115,23 @@ export class MessagingToneGate {
       // recorder's own total/fail-open contract).
       provenance: {
         decisionPoint: DP_MESSAGING_TONE_GATE,
-        context: buildToneDecisionContext(text, context),
+        context: buildToneDecisionContext(text, context, {
+          // Read live through getConfig() like every other tone-gate knob, so the
+          // operator can turn body capture on or off without a restart.
+          recordCandidateBody: this.getConfig().recordCandidateBody === true,
+        }),
         optionsPresented: [...TONE_OPTIONS_PRESENTED],
         promptId: TONE_GATE_PROMPT_ID,
+        onCorrelationId: (id: string) => {
+          decisionRef = id;
+        },
       },
     };
     const cfg = this.getConfig();
+    const advisoryMigration = cfg.advisoryMigration === true;
+    /** Stamp the correlation id onto whichever disposition this review returns. */
+    const withRef = (r: ToneReviewResult): ToneReviewResult =>
+      decisionRef ? { ...r, decisionRef } : r;
     // Availability-sensitive disposition (spec §Design 6 + tone-gate-graceful-
     // degradation F4). THREE-valued — distinguishes "operator forced pure-hold"
     // from "default degrade-to-deterministic". RAW tri-state (NOT normalized):
@@ -851,19 +1160,27 @@ export class MessagingToneGate {
 
     try {
       // First pass.
-      let interp = this.interpret(this.parseResponse(await this.provider.evaluate(prompt, opts)), start);
+      let interp = this.interpret(
+        this.parseResponse(await this.provider.evaluate(prompt, opts)),
+        start,
+        advisoryMigration,
+      );
       // ONE re-prompt on a model-output-discipline failure (invalid/empty rule,
       // unparseable response, or a contradictory structured verdict) — same
       // candidate + context envelope, no narrowing.
       if (interp.kind === 'retry') {
-        interp = this.interpret(this.parseResponse(await this.provider.evaluate(prompt, opts)), start);
+        interp = this.interpret(
+          this.parseResponse(await this.provider.evaluate(prompt, opts)),
+          start,
+          advisoryMigration,
+        );
       }
-      if (interp.kind === 'ok') return interp.result;
+      if (interp.kind === 'ok') return withRef(interp.result);
       // Still a discipline failure after one re-prompt → no usable verdict
       // (availability). Tier for the operator channel; else FAIL-CLOSED (hold).
-      if (tierDeliver) return this.operatorChannelDeliver(start);
+      if (tierDeliver) return withRef(this.operatorChannelDeliver(start));
       dryRunHold('unparseable-after-retry');
-      return this.failClosed(start, interp.reason);
+      return withRef(this.failClosed(start, interp.reason));
     } catch (err) {
       // Fork-bomb P3 (forkbomb-prevention-simple §D-DISPOSITION): a capacity shed
       // (host spawn cap saturated) HOLDS — UNLESS tiered-operator, where DELIVERY
@@ -873,45 +1190,45 @@ export class MessagingToneGate {
       // host is too saturated to do extra work and the shed is brief/retryable,
       // so the P3 invariant (a spawn-cap shed of a gating call fails closed) holds.
       if (isCapacityUnavailable(err)) {
-        if (tierDeliver) return this.operatorChannelDeliver(start);
+        if (tierDeliver) return withRef(this.operatorChannelDeliver(start));
         dryRunHold('capacity-shed');
-        return {
+        return withRef({
           pass: false,
           rule: 'CAPACITY_UNAVAILABLE',
           issue: 'Outbound tone review unavailable — host spawn capacity saturated.',
           suggestion: 'Held (fail-closed) under load; retry shortly.',
           latencyMs: Date.now() - start,
           capacityUnavailable: true,
-        };
+        });
       }
       // Provider-exhaustion / error path — the SUSTAINED outage class that
       // silently cut the user off (rate-limit → breaker open → every verdict
       // dropped). operator-channel-sacred tiers toward DELIVERY for the verified
       // operator; otherwise THREE-valued (tone-gate-graceful-degradation F4):
       //   true → pure-hold · false → fail-open · undefined → degrade-to-deterministic.
-      if (tierDeliver) return this.operatorChannelDeliver(start);
+      if (tierDeliver) return withRef(this.operatorChannelDeliver(start));
       dryRunHold('provider-error');
       if (failClosedOnExhaustion === true) {
         // Operator override → pure-hold (legacy strict, No Silent Degradation).
-        return this.failClosed(start, 'provider-error');
+        return withRef(this.failClosed(start, 'provider-error'));
       }
       if (failClosedOnExhaustion === false) {
         // Operator override → fail-open (legacy permissive: send unchecked).
-        return {
+        return withRef({
           pass: true,
           rule: '',
           issue: '',
           suggestion: '',
           latencyMs: Date.now() - start,
           failedOpen: true,
-        };
+        });
       }
       // DEFAULT (F4): degrade to the in-process deterministic leak floor. No LLM,
       // no subprocess — a clean message SENDS (the user is never silently cut
       // off during a backend outage); a real leaked artifact still HOLDS. The
       // SLOW manifestation of this same outage (the gate stalling past the route
       // budget) degrades identically at the route seam via `reviewWithinBudget`.
-      return buildDegradedToneResult(text, Date.now() - start, 'provider-error');
+      return withRef(buildDegradedToneResult(text, Date.now() - start, 'provider-error', advisoryMigration));
     }
   }
 
@@ -958,6 +1275,7 @@ export class MessagingToneGate {
   private interpret(
     parsed: ParsedToneResponse | null,
     start: number,
+    advisoryMigration = false,
   ): { kind: 'ok'; result: ToneReviewResult } | { kind: 'retry'; reason: string } {
     if (!parsed) return { kind: 'retry', reason: 'unparseable' };
 
@@ -978,6 +1296,14 @@ export class MessagingToneGate {
               parsed.suggestion ||
               'Continue the work; reserve a stop for a genuine external blocker, a real design fork only the user can resolve, an operator instruction to stop, or a real completion.',
             latencyMs: Date.now() - start,
+            // The DERIVED B15 block carries the same disposition as a cited
+            // one. Before the migration this branch built its result inline and
+            // silently skipped the disposition lookup, so a B15 flipped to
+            // advisory would still have hard-blocked here — the one path where
+            // the two verdict routes could disagree.
+            ...(resolveRuleDisposition('B15_CONTEXT_DEATH_STOP', advisoryMigration) === 'advisory'
+              ? { advisory: true }
+              : {}),
           },
         };
       }
@@ -999,10 +1325,10 @@ export class MessagingToneGate {
         issue: parsed.issue,
         suggestion: parsed.suggestion,
         latencyMs: Date.now() - start,
-        // Advisory disposition (operator directive 2026-07-18): a cited
-        // advisory rule is a NUDGE, not a block — the seam gives the agent the
-        // final call with a recorded override path.
-        ...(!parsed.pass && RULE_DISPOSITIONS[parsed.rule] === 'advisory'
+        // Advisory disposition (operator directive 2026-07-18, migrated
+        // 2026-07-19): a cited advisory rule is a NUDGE, not a block — the seam
+        // gives the agent the final call with a recorded override path.
+        ...(!parsed.pass && resolveRuleDisposition(parsed.rule, advisoryMigration)=== 'advisory'
           ? { advisory: true }
           : {}),
       },

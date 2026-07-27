@@ -892,6 +892,66 @@ const followMeEnrollmentConsumer: SelfActionController = {
   },
 };
 
+/**
+ * check-in-reminder — the dated-commitment reminder pass (ACT-724).
+ *
+ * Convergence argument: the emit is guarded by a DURABLE stamp written only on
+ * a successful send, so a delivered reminder is never re-emitted; and by a
+ * bounded attempt counter, so a permanently failing transport stops at
+ * CHECK_IN_MAX_ATTEMPTS instead of retrying forever. Under sustained pressure
+ * (every send failing, every pass firing) the total emit count is therefore
+ * bounded by attempts, not by elapsed time — the settling brake is the counter.
+ *
+ * Modeled here at its WORST case: the send always fails, so the stamp never
+ * lands and only the attempt bound can stop it. If that bound were missing this
+ * model would emit once per tick forever, and the ratchet would fail.
+ */
+const checkInReminderPass: SelfActionController = {
+  id: 'check-in-reminder-pass',
+  actionVerb: 'check-in-notify',
+  models: 'src/monitoring/CheckInReminderReconciler.ts (send-then-stamp + bounded attempts)',
+  modelsPath: 'src/monitoring/CheckInReminderReconciler.ts',
+  // The attempt counter is persisted on the commitment through the CAS mutate
+  // BEFORE the send, so a restart resumes the count rather than resetting it —
+  // a crash-loop cannot buy fresh attempts. The restart model therefore
+  // reconstructs from durableState and must still settle.
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) {
+      const KEY = 'check-in-attempts';
+      return {
+        tick() {
+          sink.considered += 1;
+          const attempts = (f.durableState.get(KEY) as number | undefined) ?? 0;
+          if (attempts >= 5) return; // the bound survives the restart
+          f.durableState.set(KEY, attempts + 1);
+          sink.emit({ verb: 'check-in-notify', target: 'commitment-topic' });
+        },
+      };
+    },
+  },
+  boundK: 5, // CHECK_IN_MAX_ATTEMPTS
+  perTargetBoundK: 5,
+  ticks: 20,
+  tickMs: 5 * 60_000, // the built-in job cadence
+  makeUnderPressure(f, sink) {
+    const KEY = 'check-in-attempts';
+    return {
+      tick() {
+        sink.considered += 1;
+        const attempts = (f.durableState.get(KEY) as number | undefined) ?? 0;
+        // Retries exhausted -> terminal. This is the brake; without it the
+        // never-landing stamp would let this emit on every tick forever.
+        if (attempts >= 5) return;
+        f.durableState.set(KEY, attempts + 1);
+        // The worst case: the send FAILS, so no stamp is written and the
+        // commitment stays selectable until the attempt bound stops it.
+        sink.emit({ verb: 'check-in-notify', target: 'commitment-topic' });
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   evolutionActionExpirySweep,
   spendReconSweep,
@@ -904,6 +964,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   livenessHeartbeat,
   externalHogKillBreaker,
   meteredReserveExpirySweep,
+  checkInReminderPass,
   spendStalePriceAlert,
   ownerDarkNotice,
   duplicateConvergeWrite,

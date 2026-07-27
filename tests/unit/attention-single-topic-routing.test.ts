@@ -273,6 +273,28 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(rec.messagesByThread.get(HUB)).toBeUndefined();
   });
 
+  it('the agent-health lane ITEM post rides parse_mode HTML + _formatMode html (the 2026-07-14 raw <b>-tag fix)', async () => {
+    makeAdapter({ getAttentionHubTopicId: () => 781 });
+    const rec = installApiStub(adapter);
+
+    const item = await adapter.createAttentionItem({
+      id: 'lane-fmt-1', healthKey: 'lane-entity-fmt', lane: 'agent-health',
+      title: 'Inbound stranded on Laptop (67 topics)',
+      summary: "Topics owned by Laptop — inbound can't reach a servable machine.",
+      category: 'agent-health', priority: 'NORMAL',
+    });
+
+    const laneThread = item.topicId!;
+    const sends = rec.sendParamsByThread.get(laneThread) ?? [];
+    // The ITEM post is the one carrying the <b>-wrapped title (the lane intro is a
+    // separate, already-correct post). Without formatMode:'html' this post went out
+    // as plain text and the <b> tags rendered LITERALLY in Telegram — the bug.
+    const itemPost = sends.find((p) => String(p.text ?? '').includes('<b>Inbound stranded on Laptop'));
+    expect(itemPost).toBeDefined();
+    expect(itemPost!.parse_mode).toBe('HTML');
+    expect(itemPost!._formatMode).toBe('html');
+  });
+
   it("LEGACY 'per-item' mode preserves the pre-flip behavior: own topic, registered maps, /done closes it", async () => {
     makeAdapter({ attentionRouting: { mode: 'per-item' } });
     const rec = installApiStub(adapter);

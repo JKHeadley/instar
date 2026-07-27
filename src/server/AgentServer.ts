@@ -131,7 +131,9 @@ import { SafeGitExecutor, auditBootCredentialCoherence } from '../core/SafeGitEx
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
+import { createThroughputRoutes } from './throughputRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
+import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
@@ -209,6 +211,7 @@ import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/Burn
 import { BurnVerifier } from '../monitoring/BurnVerifier.js';
 import { LlmRateGate } from '../monitoring/LlmRateGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { CapabilityRegistryReceiver } from '../core/CapabilityRegistry.js';
 import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/MentorVisibleEcho.js';
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
@@ -301,6 +304,7 @@ export class AgentServer {
   }) => Promise<{ ok: boolean; agentMessage?: boolean; reason?: string }>;
   private routeContext: {
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
+    workQueue?: WorkQueueRegistry | null;
     pendingRelayLookup?: (deliveryId: string) => boolean;
     autonomousLivenessReconciler?:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
@@ -385,7 +389,8 @@ export class AgentServer {
       oldOwnerQuiesced?: boolean; splitBrainRecoveryPacket?: { incidentId: string; oldOwnerStatus: 'unreachable-or-fenced'; operatorDecisionRef: string } }) => {
       ownerAuthorityEpoch: number; invalidatedClaims: number; abandonedRuns: number;
       reconciliation: ReturnType<FeedbackDrainStore['reconcileInitiativeLinks']>;
-    };
+  };
+
     isRestorePending: () => boolean;
   } | null = null;
   private feedbackDrainBackupTimer: ReturnType<typeof setInterval> | null = null;
@@ -394,6 +399,11 @@ export class AgentServer {
   private parallelActivityIndex: ParallelActivityIndex | null = null;
   private parallelWorkSentinel: ParallelWorkSentinel | null = null;
   private parallelWorkSentinelTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Attach late-bound advisory work intake after the large server bootstrap. */
+  setWorkQueue(workQueue: WorkQueueRegistry): void {
+    if (this.routeContext) this.routeContext.workQueue = workQueue;
+  }
   // WS5.2 Account Follow-Me — delivered-mandate consumer (seam #1): drives enroll-start for
   // operator-approved+delivered mandates so a tapped Approve actually produces a login.
   private followMeConsumerTimer: ReturnType<typeof setInterval> | null = null;
@@ -522,6 +532,7 @@ export class AgentServer {
     orphanReaper?: import('../monitoring/OrphanProcessReaper.js').OrphanProcessReaper;
     coherenceMonitor?: import('../monitoring/CoherenceMonitor.js').CoherenceMonitor;
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
+    workQueue?: WorkQueueRegistry;
     prHandLease?: import('../core/PrHandLease.js').PrHandLease;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     subscriptionIdentityOracle?: import('../core/CredentialLocationLedger.js').IdentityOracle;
@@ -2350,6 +2361,7 @@ export class AgentServer {
         if (sources?.ci === true && this.failureLedger) {
           this.ciFailurePoller = new CiFailurePoller({
             ledger: this.failureLedger,
+            stateDir: options.config.stateDir,
             resolveByMergeCommit: (oid) => {
               const i = tracker?.findByMergeCommit(oid);
               // `origin` (loop self-exclusion, §4.3) lands with slice 2's origin
@@ -3305,6 +3317,7 @@ export class AgentServer {
       })();
     });
     const routeCtx = {
+      capabilityRegistry: new CapabilityRegistryReceiver(),
       config: options.config,
       sessionManager: options.sessionManager,
       state: options.state,
@@ -3343,6 +3356,7 @@ export class AgentServer {
       orphanReaper: options.orphanReaper ?? null,
       coherenceMonitor: options.coherenceMonitor ?? null,
       commitmentTracker: options.commitmentTracker ?? null,
+      workQueue: options.workQueue ?? null,
       prHandLease: options.prHandLease ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
@@ -3693,6 +3707,7 @@ export class AgentServer {
     }
     const routes = createRoutes(routeCtx);
     this.app.use(routes);
+    this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });
@@ -4468,6 +4483,40 @@ export class AgentServer {
     const lastResultPath = options.config.stateDir
       ? path.join(options.config.stateDir, 'mentor-last-result.json')
       : null;
+    const sweepMentorOrphans = (): void => {
+      const outstanding = self.getOrCreateMentorOutstanding();
+      const orphans = outstanding.sweepExpired();
+      for (const orphan of orphans) {
+        if (!outstanding.recordOrphanNotified(orphan.corr)) continue;
+        console.warn(`[mentor] orphaned prompt — no reply within ${orphan.ageMs}ms (corr=${orphan.corr}, mentee=${orphan.mentee})`);
+        try {
+          DegradationReporter.getInstance().report({
+            feature: 'mentor.reply-orphaned',
+            primary: 'mentor receives a correlated mentee reply within replyTimeoutMs',
+            fallback: 'the content-key retry brake accounts for the attempt before any later send',
+            reason: `outstanding prompt corr=${orphan.corr} aged ${orphan.ageMs}ms without a mentor-reply`,
+            impact: 'the attempt is classified as unconfirmed delivery; identical content remains subject to its bounded retry budget',
+          });
+        } catch { /* best-effort */ }
+      }
+    };
+    const escalateMentorDeliveryExhaustion = (
+      contentKey: string,
+      attempts: number,
+      reason: string,
+    ): void => {
+      const outstanding = self.getOrCreateMentorOutstanding();
+      if (!outstanding.recordRetryExhaustionEscalated(contentKey)) return;
+      try {
+        DegradationReporter.getInstance().report({
+          feature: 'mentor.delivery-unconfirmed-retry-exhausted',
+          primary: 'a mentor prompt produces a correlated mentee reply',
+          fallback: 'the durable content-key breaker suppresses further identical sends',
+          reason,
+          impact: `that agenda item is paused as a transport/delivery failure after ${attempts} attempts; a genuinely new agenda item remains eligible`,
+        });
+      } catch { /* best-effort */ }
+    };
     return new MentorOnboardingRunner(
       {
         capture: (input) => ledger.captureRun(input),
@@ -4643,6 +4692,11 @@ export class AgentServer {
         isMenteeBusy: () => {
           const cfg = getConfig();
           const menteeAgent = cfg.menteeAgentName || `instar-${cfg.menteeFramework}`;
+          // Sweep + classify expired correlations BEFORE asking the busy gate.
+          // canSendTo also sweeps defensively, but doing it here preserves the
+          // orphan evidence instead of deleting it before the distinct delivery
+          // signal can be emitted.
+          sweepMentorOrphans();
           return !self.getOrCreateMentorOutstanding().canSendTo(menteeAgent).ok;
         },
         minIntervalElapsed: () => {
@@ -4687,29 +4741,28 @@ export class AgentServer {
           const menteeAgent = cfg.menteeAgentName || `instar-${framework}`;
           const corr = `mp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-          // Anti-ping-pong (spec §Fix 2b item 4 + Justin's original concern). Same
-          // logic regardless of transport. Refuse to send a new prompt while a
-          // prior one is unanswered within replyTimeoutMs.
+          // Anti-ping-pong + content-key retry breaker. Reserve the attempt in
+          // durable state BEFORE calling any transport. A failed reservation is
+          // a hard refusal: acting without the restart-proof ledger would turn a
+          // storage problem back into an unbounded self-action loop.
           const outstanding = self.getOrCreateMentorOutstanding();
-          const orphans = outstanding.sweepExpired();
-          for (const orphan of orphans) {
-            if (outstanding.recordOrphanNotified(orphan.corr)) {
-              console.warn(`[mentor] orphaned prompt — no reply within ${orphan.ageMs}ms (corr=${orphan.corr}, mentee=${orphan.mentee})`);
-              try {
-                DegradationReporter.getInstance().report({
-                  feature: 'mentor.reply-orphaned',
-                  primary: 'mentor receives Codey reply within replyTimeoutMs',
-                  fallback: 'tick continues; no auto-resend; Stage-B sees the routed-sent row + no matching reply row',
-                  reason: `outstanding prompt corr=${orphan.corr} aged ${orphan.ageMs}ms without a mentor-reply`,
-                  impact: 'mentor cycle silently lost a reply; next tick allowed to retry',
-                });
-              } catch { /* best-effort */ }
+          const reservation = outstanding.reserveSend(corr, menteeAgent, message);
+          if (!reservation.ok) {
+            if (reservation.reason === 'prior-prompt-in-flight') {
+              console.warn(`[mentor] deliverToMentee deferred — prior-prompt-in-flight (corr=${reservation.outstandingCorr}, sentAt=${reservation.sentAt})`);
+              return { delivered: false, reason: reservation.reason };
             }
-          }
-          const check = outstanding.canSendTo(menteeAgent);
-          if (!check.ok) {
-            console.warn(`[mentor] deliverToMentee deferred — prior-prompt-in-flight (corr=${check.outstandingCorr}, sentAt=${check.sentAt})`);
-            return;
+            if (reservation.reason === 'identical-content-retry-exhausted') {
+              console.warn(`[mentor] deliverToMentee suppressed — identical-content-retry-exhausted (attempts=${reservation.attempts}, key=${reservation.contentKey.slice(0, 12)})`);
+              escalateMentorDeliveryExhaustion(
+                reservation.contentKey,
+                reservation.attempts,
+                `${reservation.attempts} attempts for the same normalized mentor content ended without a confirmed reply`,
+              );
+              return { delivered: false, reason: reservation.reason };
+            }
+            console.warn(`[mentor] deliverToMentee refused — ${reservation.reason}`);
+            return { delivered: false, reason: reservation.reason };
           }
 
           // Deliver via the unified a2a transport: same-machine /a2a/inbox
@@ -4720,47 +4773,55 @@ export class AgentServer {
             cfg.botToken && cfg.menteeChatId
               ? self.getOrCreateMentorBot(cfg.botToken, cfg.menteeChatId) ?? undefined
               : undefined;
-          const delivered = await self.deliverA2aMessage({
-            fromAgent: 'echo',
-            toAgent: menteeAgent,
-            role: 'mentor',
-            corr,
-            body: message,
-            allowedRoles: new Set(['mentor']),
-            // Route the mentor exchange to a DEDICATED mentor topic when one is
-            // configured, so the mentor's a2a check-ins don't interleave with
-            // the human↔mentee conversation topic (menteeTopicId). This one id
-            // drives both the /a2a/inbox body (where the mentee binds its
-            // session) and the Telegram fallback, so the whole exchange moves
-            // together. Falls back to menteeTopicId (backward-compatible).
-            telegramTopicId: resolveMentorDeliveryTopic(cfg),
-            targetMachineId: cfg.menteeMachineId,
-            // fromBotId = echo's mentor-bot id, so the mentee's allowlist
-            // (knownMentors[echo].botId === senderBotId) passes.
-            fromBotId: cfg.botToken ? cfg.botToken.split(':')[0] : undefined,
-            toBotId: cfg.menteeBotId,
-            telegramBot: telegramBot
-              ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
-              : undefined,
-            botToken: cfg.botToken,
-            visibleEcho: {
-              enabled: cfg.visibleEcho !== false,
-              bot: telegramBot
+          let delivered = false;
+          try {
+            delivered = await self.deliverA2aMessage({
+              fromAgent: 'echo',
+              toAgent: menteeAgent,
+              role: 'mentor',
+              corr,
+              body: message,
+              allowedRoles: new Set(['mentor']),
+              // Route the mentor exchange to a DEDICATED mentor topic when one is
+              // configured, so mentor a2a stays off the human conversation.
+              telegramTopicId: resolveMentorDeliveryTopic(cfg),
+              targetMachineId: cfg.menteeMachineId,
+              fromBotId: cfg.botToken ? cfg.botToken.split(':')[0] : undefined,
+              toBotId: cfg.menteeBotId,
+              telegramBot: telegramBot
                 ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
                 : undefined,
-              topicId: resolveMentorDeliveryTopic(cfg),
-              roleTag: '[mentor]',
-              reportFailure: (reason) => {
-                DegradationReporter.getInstance().report({
-                  feature: 'mentor.visible-echo',
-                  primary: 'successful inbox-local mentor delivery is mirrored visibly in Telegram',
-                  fallback: 'canonical /a2a/inbox delivery remains successful; operator may see a phantom prompt',
-                  reason,
-                  impact: 'mentor exchange was delivered but its visible chat mirror is partial or absent',
-                });
+              botToken: cfg.botToken,
+              visibleEcho: {
+                enabled: cfg.visibleEcho !== false,
+                bot: telegramBot
+                  ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
+                  : undefined,
+                topicId: resolveMentorDeliveryTopic(cfg),
+                roleTag: '[mentor]',
+                reportFailure: (reason) => {
+                  DegradationReporter.getInstance().report({
+                    feature: 'mentor.visible-echo',
+                    primary: 'successful inbox-local mentor delivery is mirrored visibly in Telegram',
+                    fallback: 'canonical /a2a/inbox delivery remains successful; operator may see a phantom prompt',
+                    reason,
+                    impact: 'mentor exchange was delivered but its visible chat mirror is partial or absent',
+                  });
+                },
               },
-            },
-          });
+            });
+          } catch (err) {
+            outstanding.markDeliveryFailed(corr);
+            console.warn(`[mentor] deliverToMentee transport failed (corr=${corr}, mentee=${menteeAgent}):`, err instanceof Error ? err.message : String(err));
+            if (reservation.exhausted) {
+              escalateMentorDeliveryExhaustion(
+                reservation.contentKey,
+                reservation.attempt,
+                `${reservation.attempt} transport attempts for the same normalized mentor content threw before delivery confirmation`,
+              );
+            }
+            return { delivered: false, reason: 'transport-failed' as const };
+          }
           if (delivered) {
             self.appendMentorSent(options.config.stateDir, {
               ts: Date.now(),
@@ -4770,9 +4831,21 @@ export class AgentServer {
               topicId: resolveMentorDeliveryTopic(cfg),
               message,
             });
-            outstanding.markSent(corr, menteeAgent);
+            return { delivered: true };
           } else {
+            outstanding.markDeliveryFailed(corr);
             console.warn(`[mentor] deliverToMentee did not deliver (corr=${corr}, mentee=${menteeAgent}) — no local peer + telegram fallback unavailable/blocked`);
+            // The attempt remains in the content ledger. On the final allowed
+            // attempt, emit the distinct delivery failure immediately instead
+            // of waiting for another tick merely to discover the open breaker.
+            if (reservation.exhausted) {
+              escalateMentorDeliveryExhaustion(
+                reservation.contentKey,
+                reservation.attempt,
+                `${reservation.attempt} transport attempts for the same normalized mentor content were refused`,
+              );
+            }
+            return { delivered: false, reason: 'transport-unavailable' as const };
           }
         },
         onTickRan: () => {
@@ -5064,13 +5137,16 @@ export class AgentServer {
           console.warn('[mentee] receiver wiring raised (non-fatal):', err);
         }
 
-        // ── Layer 3 DeliveryFailureSentinel — default-OFF feature flag ──
+        // ── Layer 3 DeliveryFailureSentinel — recovery is the safe default ──
         // Spec § 3j: `monitoring.deliveryFailureSentinel.enabled` defaults
         // false. The sentinel only spins up when an operator explicitly
         // opts in. Layer 1 + Layer 2 ship unconditionally; Layer 3 is the
         // opt-in upgrade for general delivery resilience.
         const monitoringCfg = (this.config as { monitoring?: { deliveryFailureSentinel?: { enabled?: boolean } } }).monitoring;
-        const sentinelEnabled = monitoringCfg?.deliveryFailureSentinel?.enabled === true;
+        // A durable accepted outbound row must always have a running owner.
+        // Preserve an explicit legacy `enabled:false` opt-out, but omitted
+        // configuration resolves to recovery mode for existing agents.
+        const sentinelEnabled = monitoringCfg?.deliveryFailureSentinel?.enabled !== false;
         if (sentinelEnabled && this.config.stateDir) {
           try {
             this.startDeliverySentinel().catch((err) => {
@@ -5284,6 +5360,35 @@ export class AgentServer {
     }
 
     const configPath = path.join(stateDir, 'config.json');
+
+    // L0 zombie-free delivery invariant (drive12 UX-first spec, Increment 1):
+    // fleet DEFAULT-ON since v1.3.953 (operator go-fleet 2026-07-24 after
+    // test+dev soak) — absence of the top-level `outboundQueueExpiry` block
+    // arms the guard; an explicit `enabled: false` keeps an install dark.
+    // Per-queue-class max age comes from the shipped data file (0 ⇒ no expiry,
+    // the data-edit rollback sentinel). Resolution failures fail SAFE: guard
+    // stays dark, sentinel unaffected.
+    let l0AgeGuard: { enabled: boolean; maxAgeMs: number } | undefined;
+    try {
+      const armed =
+        (this.config as unknown as { outboundQueueExpiry?: { enabled?: boolean } }).outboundQueueExpiry?.enabled !== false;
+      if (armed) {
+        // Packaging convention for runtime-read shipped JSON is <pkg>/src/data/
+        // (cf. DEFAULT_MIRROR_PATH) — plain tsc emits no JSON into dist/, so a
+        // dist-relative '../data/...' would ENOENT on every deployed install.
+        // '../../src/data/...' resolves correctly from BOTH layouts
+        // (dist/server/ and src/server/); wiring-integrity test pins this.
+        const dataUrl = new URL('../../src/data/outbound-queue-expiry.json', import.meta.url);
+        const parsed = JSON.parse(await fs.promises.readFile(dataUrl, 'utf-8')) as {
+          queues?: Record<string, { maxAgeHours?: number }>;
+        };
+        const hours = parsed.queues?.['delivery-recovery']?.maxAgeHours ?? 0;
+        l0AgeGuard = { enabled: true, maxAgeMs: Math.max(0, hours) * 60 * 60 * 1000 };
+      }
+    } catch (err) {
+      console.warn('[delivery-sentinel] L0 age-guard policy resolution failed; guard stays dark:', err);
+    }
+
     const sentinel = new DeliveryFailureSentinel(
       {
         store,
@@ -5306,10 +5411,13 @@ export class AgentServer {
             }
           : undefined,
       },
+      l0AgeGuard ? { l0AgeGuard } : {},
     );
     this.deliverySentinel = sentinel;
     await sentinel.start();
-    console.log('[instar] delivery-failure-sentinel started (Layer 3 recovery active)');
+    console.log(
+      `[instar] delivery-failure-sentinel started (Layer 3 recovery active${l0AgeGuard ? `; L0 age-guard armed at ${Math.round(l0AgeGuard.maxAgeMs / 3_600_000)}h` : ''})`,
+    );
   }
 
   /**

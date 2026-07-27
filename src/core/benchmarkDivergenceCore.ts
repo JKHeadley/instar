@@ -584,7 +584,7 @@ function clampFloodModel(v: unknown): string | null {
 export function mergeFindingsByKey(findings: readonly FindingView[]): FindingView[] {
   const byKey = new Map<string, FindingView>();
   for (const f of findings) {
-    const key = `${f.taskId} ${f.decisionPointId} ${f.model}`;
+    const key = `${f.taskId}\u0000${f.decisionPointId}\u0000${f.model}`;
     const cur = byKey.get(key);
     if (!cur) {
       byKey.set(key, f);

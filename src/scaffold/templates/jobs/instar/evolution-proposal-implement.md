@@ -15,11 +15,15 @@ gate: "curl -sf -H \"Authorization: Bearer $INSTAR_AUTH_TOKEN\" -H \"X-Instar-Ag
 toolAllowlist: "*"
 unrestrictedTools: true
 ---
-Implement approved evolution proposals: curl -s http://localhost:${INSTAR_PORT:-4042}/evolution/proposals?status=approved
+AUTH="${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
+PORT="${INSTAR_PORT:-4042}"
+
+Implement approved evolution proposals: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/proposals?status=approved"
 
 For each approved proposal:
 1. Read the full description and understand what needs to be built
 2. Implement it: create the skill/hook/job/config change described
-3. After implementation, mark complete: curl -s -X PATCH http://localhost:${INSTAR_PORT:-4042}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"implemented","resolution":"What was done"}'
+3. After implementation, mark complete: curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"implemented","resolution":"What was done"}'
 
 If no approved proposals exist, exit silently.

@@ -503,6 +503,13 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // Feedback Factory operating drain: all mutations target the canonical
   // holder's durable queue/authority/promotion state. Non-holders must proxy
   // or be refused by write admission; they never run a competing local drain.
+  // ACT-724 check-in reminder pass: mutates the COMMITMENT store (the
+  // delivery stamp + attempt counter), which is shared agent state, and the
+  // spec requires the pass to run on the serving-lease holder ONLY — the same
+  // single-writer shape as the feedback-factory entries below. Belt-and-braces
+  // even if that rule were violated: the CAS stamp makes a second writer a
+  // no-op, so a duplicate reminder is impossible, only duplicated work.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/check-in-reminder/pass', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/process', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/tick', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/runs/', domain: 'cluster-shared' });
