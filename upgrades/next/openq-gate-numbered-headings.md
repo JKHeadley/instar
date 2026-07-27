@@ -1,0 +1,44 @@
+## Title
+
+A section number could hide an unanswered question from the convergence gate
+
+## Summary of New Capabilities
+
+No new capability. This repairs a check that already existed and was quietly not
+looking at part of what it was meant to cover.
+
+## What Changed
+
+The convergence tag writer refuses to mark a design document "converged" while it
+still has an unanswered question parked on a person. That check only recognised a
+section titled exactly `Open questions`. Many documents number their sections —
+`9. Open questions` — and for those the check found nothing, concluded there was
+nothing to find, and let the document through.
+
+The two halves of the same gate also disagreed with each other on identical input:
+the sibling check covering decision points refused a numbered heading outright,
+while the open-questions check waved it past. Both now recognise the same set of
+heading shapes (plain, numbered, lettered, dotted, parenthesised, and with a
+trailing variant such as `(round 2)`), and they share one matcher so a future fix
+to one cannot silently miss the other.
+
+What deliberately did NOT change: a document with genuinely no such section is
+still treated as having nothing outstanding. Whether that should instead refuse is
+a separate decision worth arguing on its own rather than folding in here.
+
+## Evidence
+
+The defect was reproduced with a control before any fix was written: a live,
+unanswered question under a numbered heading returned "nothing outstanding", while
+the identical question under a plain heading was caught.
+
+Seven tests now cover the numbered, lettered, dotted, parenthesised and
+variant-suffix headings plus the cross-check that both halves of the gate agree.
+Reverting the fix makes exactly those seven fail; restoring it returns 50 passing
+tests across all four suites that touch the changed file, with type-checking clean.
+
+## What to Tell Your User
+
+Nothing you need to do. A safety check that decides whether a design document is
+finished had a blind spot: if the document numbered its sections, an unanswered
+question could slip past unnoticed. It now sees those documents too.

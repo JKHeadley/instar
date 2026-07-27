@@ -102,12 +102,44 @@ function parseArgs() {
  * Anything else with content (e.g. a `- **Q1:** …` bullet or a paragraph posing
  * a question) is an unresolved entry.
  */
+/**
+ * Builds the H2 matcher for a named gate section.
+ *
+ * ONE builder, used by BOTH gate sections, deliberately: the numbered-heading
+ * hole below existed because the two matchers were written separately and only
+ * one of them ever got a heading-variance fix. A shared builder means the next
+ * variance fix cannot land on one gate and miss its sibling.
+ *
+ * Tolerated shapes:
+ *   - `## Open questions`                    (canonical)
+ *   - `## 9. Open questions`                 (numbered — the hole this closes)
+ *   - `## 8b. Open questions` / `## 3) …`    (lettered / paren'd)
+ *   - `## 1.2 Open questions`                (dotted)
+ *   - `## Open questions (round 2)`          (suffix variant — already worked)
+ *
+ * Why this was load-bearing: `findOpenQuestions` returns `[]` when the heading
+ * does not match, and `[]` means "nothing parked on the user". So a NUMBERED
+ * heading made a LIVE, unresolved user-decision invisible to the gate the skill
+ * calls structural ("cannot be skipped by prose"). Verified with a control
+ * before the fix: numbered heading + a live question → `[]`; the identical
+ * question under a plain heading → caught. Its sibling `findDecisionPointGaps`
+ * failed CLOSED on the very same input — two defaults for one quantity.
+ */
+const SECTION_LABEL = String.raw`(?:\d+(?:\.\d+)*[a-z]?[.)]?\s+)?`;
+function gateSectionHeadingRe(name) {
+  return new RegExp(String.raw`^##\s+${SECTION_LABEL}${name}\b[^\n]*$`, 'im');
+}
+
 export function findOpenQuestions(specBody) {
   // \b…[^\n]*$ (not \s*$) so heading variants like "## Open questions (round 2)"
   // or "## Open Questions & Decisions" are still recognized — a variant heading
   // must not make the section invisible to the gate (reviewer finding, PR 2).
-  const m = specBody.match(/^##\s+Open questions\b[^\n]*$/im);
-  if (!m) return []; // no section → nothing parked on the user
+  // SECTION_LABEL additionally tolerates a numbered prefix (see the builder).
+  const m = specBody.match(gateSectionHeadingRe('Open questions'));
+  // A genuinely ABSENT section still means nothing is parked on the user; that
+  // semantic is unchanged and separately tested. What changed is that a present
+  // section can no longer hide behind its own section number.
+  if (!m) return [];
   const start = m.index + m[0].length;
   const restAfter = specBody.slice(start);
   const nextHeading = restAfter.search(/^##\s+/m);
@@ -144,7 +176,11 @@ export const GRANDFATHERED_SLUGS = [
 
 export function findDecisionPointGaps(specBody, slug) {
   if (slug && GRANDFATHERED_SLUGS.includes(slug)) return { ok: true };
-  const m = specBody.match(/^##\s+Decision points touched\b[^\n]*$/im);
+  // Same shared builder as findOpenQuestions — this gate already failed CLOSED
+  // on a numbered heading (correct direction), but it was refusing specs whose
+  // section was PRESENT and merely numbered, which is a false refusal rather
+  // than a safety property. Both gates now recognise the same heading shapes.
+  const m = specBody.match(gateSectionHeadingRe('Decision points touched'));
   if (!m) return { ok: false, reason: 'missing-section' };
   const start = m.index + m[0].length;
   const restAfter = specBody.slice(start);
