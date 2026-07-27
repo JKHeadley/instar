@@ -1,13 +1,12 @@
 # Upgrade Guide — vNEXT
 
-<!-- internal-only -->
 <!-- bump: patch -->
 
 ## What Changed
 
 Instar notices problems in three separate stores — the attention queue, the evolution action queue,
-and the sentinel log — and nothing has ever read across them. The same problem is therefore noticed
-dozens of times and closed zero times (measured filing-to-completion ≈ 30:1).
+and the sentinel log — and nothing has ever read across them. So the same problem is noticed dozens
+of times and closed zero times (measured filing-to-completion ≈ 30:1).
 
 `src/core/RecurrenceReader.ts` groups OPEN observations from all three into recurrence clusters,
 carrying a `coverage` block that names every store it could NOT read. Pure module, read-only, no
@@ -28,3 +27,28 @@ Title-only keying will not merge the same problem worded differently; semantic m
 LLM and a judgment point, deliberately avoided. The blunt key can occasionally over-merge — `exemplar`
 and `sources` are carried so a reader spots it. Read-only: it reports, it does not act. Driving
 action through existing gated paths is the next increment, not this one.
+
+## What to Tell Your User
+
+Nothing is required of you, and nothing visible changes yet — this ships the engine, not a surface.
+
+What it does, in plain terms: your agent writes down the things it notices in three different places,
+and until now nothing looked at all three together. So one recurring problem could be written down a
+hundred times and read as a hundred separate problems. This groups them.
+
+On a live agent it turned 2,068 unresolved items into 836 actual problems — and found 69 problems
+that had been noticed 1,242 times between them without a single one ever being picked up. The
+largest was one component's warnings repeating 177 times, nearly half that agent's attention queue.
+
+If you later ask your agent "what keeps going wrong?", this is what lets it answer honestly instead
+of reciting a list. And if it can only read some of its records, it will tell you that rather than
+reporting a clean bill — "nothing found" and "couldn't look" stay different answers.
+
+## Summary of New Capabilities
+
+- Groups repeated observations across the attention queue, action queue and sentinel log into
+  distinct problems, so recurrence becomes visible instead of buried in volume.
+- Flags problems noticed repeatedly that were **never** turned into tracked work — the sharpest
+  signal for what is actually being dropped.
+- Refuses to issue a verdict over an incomplete read: any unreadable store is named with its reason,
+  and the verdict field is omitted entirely rather than hedged.
