@@ -69,6 +69,28 @@ describe('buildFtsQueryVariants', () => {
     const v = buildFtsQueryVariants('Codey AND secrets');
     expect(v!.strict).not.toContain('AND');
   });
+
+  it('strips the apostrophe, which FTS5 reads as a string delimiter', () => {
+    // Measured live 2026-07-27 against the running agent: this exact query threw
+    // `fts5: syntax error near "'"` on BOTH /semantic/search and
+    // /semantic/search/hybrid, while the identical query without the apostrophe
+    // returned the correct entity at rank 1. Contractions and possessives are
+    // ordinary in the raw user message recall is fed, so the character that broke
+    // retrieval was one of the most common in the input.
+    const v = buildFtsQueryVariants("why can a telegram bot not see another bot's messages");
+    expect(v).not.toBeNull();
+    expect(v!.strict).not.toContain("'");
+    expect(v!.fallback ?? '').not.toContain("'");
+    // The word survives the strip — this must not silently drop the content term.
+    expect(v!.strict.toLowerCase()).toContain('bot');
+  });
+
+  it('strips apostrophes from contractions too, not only possessives', () => {
+    const v = buildFtsQueryVariants("what doesn't the relay deliver");
+    expect(v).not.toBeNull();
+    expect(v!.strict).not.toContain("'");
+    expect(v!.strict.toLowerCase()).toContain('relay');
+  });
 });
 
 describe('SemanticMemory.search — natural-language recall', () => {

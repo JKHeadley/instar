@@ -102,11 +102,28 @@ export interface SemanticMemoryCapabilityLeafKeyVault {
 /**
  * Strip FTS5 special syntax characters from a query.
  * Prevents query manipulation via AND, OR, NOT, NEAR, *, column filters.
+ *
+ * The apostrophe is in this set for a reason worth stating: FTS5 treats `'` as a
+ * STRING DELIMITER, so an ordinary English possessive or contraction — "bot's",
+ * "doesn't", "what's" — reaches the parser as an unterminated string and the whole
+ * query THROWS `fts5: syntax error near "'"`. Measured live against the running
+ * agent on 2026-07-27: `why can a telegram bot not see another bot's messages`
+ * errored on BOTH /semantic/search and /semantic/search/hybrid, while the identical
+ * query without the apostrophe returned the correct entity at rank 1.
+ *
+ * That throw is not confined to keyword search. `searchHybrid()` runs FTS5 alongside
+ * vector KNN, so the exception takes the whole hybrid call down with it — and
+ * PromptBuildRecall is fed the user's RAW message, where contractions are ordinary.
+ * So the character that breaks retrieval is one of the most common in the input.
+ *
+ * Stripping (rather than escaping) matches how every other special character here is
+ * handled, and costs nothing for retrieval: FTS5's unicode61 tokenizer already splits
+ * on the apostrophe, so `bot's` and `bots` produce the same tokens either way.
  */
 function sanitizeFts5Query(query: string): string {
   return query
     .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '')
-    .replace(/[*:"^{}().$@#!~`?\\[\]]/g, '')
+    .replace(/['*:"^{}().$@#!~`?\\[\]]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }

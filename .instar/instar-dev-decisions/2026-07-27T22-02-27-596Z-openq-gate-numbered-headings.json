@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-27T22:02:27.596Z",
+  "slug": "openq-gate-numbered-headings",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 42,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

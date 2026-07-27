@@ -1290,6 +1290,7 @@ export class PostUpdateMigrator {
     this.migratePlaywrightProfilesSeed(result);
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
+    this.migrateConvergeDesignClassCriterion(result);
     this.migrateJudgmentWithinFloorsReviewQuestions(result);
     this.migrateJudgmentProvenanceGitignore(result);
     this.migrateHonestProgressMessagingDefaults(result);
@@ -1627,6 +1628,52 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`spec-converge SKILL (conformance auto-invoke): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // Deliver the corrected CONVERGENCE STOP CRITERION to already-installed agents
+  // (Migration Parity, "updating existing skill content").
+  //
+  // PR #1673 replaced "no material new issues" with "no DESIGN-class findings for
+  // TWO consecutive rounds", because the old rule could not terminate on a spec
+  // that appends its own review history — the reviewable surface grows every
+  // round, so a diligent reviewer always finds precision to add.
+  //
+  // WHY THIS NEEDS ITS OWN MIGRATION, and it is the finding that produced it:
+  // migrateConformanceGateAutoInvoke above already delivers this same file, but
+  // its idempotency guard returns early once the installed copy contains the
+  // marker from THAT change. Every agent that took it is therefore permanently
+  // short-circuited for EVERY LATER change to spec-converge/SKILL.md — a one-shot
+  // wearing idempotent's clothes. Verified live on this agent 2026-07-27: the
+  // conformance marker present, the corrected criterion absent, so #1673 could
+  // never arrive. Caught one command before running the OLD criterion and
+  // reporting its verdict as evidence.
+  //
+  // This follows the established per-change pattern (each content change carries
+  // its own marker-keyed migration) rather than redesigning the guard — the
+  // general fix is a CONTENT-FINGERPRINT guard, which is fleet-migration
+  // machinery above this change's risk floor and is tracked as ACT-1420.
+  // Customized files stay untouched; idempotent; safe to run repeatedly.
+  private migrateConvergeDesignClassCriterion(result: MigrationResult): void {
+    const MARKER = 'No DESIGN-class findings for TWO consecutive rounds';
+    try {
+      const installed = path.join(this.config.projectDir, '.claude', 'skills', 'spec-converge', 'SKILL.md');
+      if (!fs.existsSync(installed)) return; // fresh installs get the bundled copy
+      const current = fs.readFileSync(installed, 'utf8');
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (!current.includes('# /spec-converge')) {
+        result.skipped.push('spec-converge SKILL (design-class criterion): customized — left untouched');
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', 'skills', 'spec-converge', 'SKILL.md');
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(installed, next);
+        result.upgraded.push('spec-converge SKILL (design-class convergence criterion)');
+      }
+    } catch (err) {
+      result.errors.push(`spec-converge SKILL (design-class criterion): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -8114,6 +8161,23 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.upgraded.push('CLAUDE.md: added dated check-in reminder to Commitments section');
     } else if (content.includes('/commitments/check-in-reminder')) {
       result.skipped.push('CLAUDE.md: dated check-in reminder already present');
+    }
+
+    // Commitments curl payload fix (2026-07-27) — the shipped template was
+    // already corrected, but existing agents with the section present skipped
+    // the additive section migration and kept a payload rejected by POST
+    // /commitments: missing agentResponse, and the stale follow-up type. Rewrite
+    // only the exact stale payload so custom docs and already-correct docs are
+    // untouched. Keep the stale type split so the source-contract test can still
+    // catch accidental new documentation of that rejected value.
+    const staleCommitmentsPayload =
+      `-d '{"userRequest":"<what you promised>","type":"follow-${'up'}","topicId":TOPIC_ID}'`;
+    const correctedCommitmentsPayload =
+      `-d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID}'`;
+    if (content.includes(staleCommitmentsPayload)) {
+      content = content.split(staleCommitmentsPayload).join(correctedCommitmentsPayload);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: fixed commitments guidance payload (agentResponse + one-time-action)');
     }
 
     // Publishing (Telegraph public pages). Awareness-parity pass: add the
