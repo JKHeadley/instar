@@ -11,7 +11,7 @@ rollout-source-pr: 1534
 rollout-flag-path: monitoring.completionClaimVerification.enabled
 rollout-criteria: "The verifier admits at least one candidate claim and retains nonzero classification coverage in the evidence window without becoming an outbound authority."
 rollout-evidence-type: endpoint
-rollout-evidence-ref: /completion-claim-verification/stats
+rollout-evidence-ref: /completion-claim/stats
 rollout-metrics-json: '{"cadenceHours":6,"evidenceMaxAgeHours":12,"metrics":[{"id":"classified-completion-claims","source":"feature-summary","sourceRef":"claim-verification.classified-claims","direction":"at-least","threshold":1,"minSamples":1}]}'
 approved-by: "operator blanket pre-approval relayed 2026-07-20 — proceed immediately through build/merge"
 supervision: pre-approved-build-and-merge
