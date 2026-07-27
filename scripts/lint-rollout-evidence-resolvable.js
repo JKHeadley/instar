@@ -64,13 +64,11 @@ const SRC_DIR = path.join(ROOT, 'src');
  * Delete an entry when its endpoint lands; assertion C fails if you don't.
  */
 const KNOWN_UNRESOLVED = [
-  {
-    slug: 'mutual-ssh-autobootstrap',
-    reason:
-      'Feature PR #1539 merged 2026-07-21 without the /multi-machine/mutual-ssh ' +
-      'endpoint its spec names as rollout evidence; the rollout has been active and ' +
-      'unmeasurable since. Tracked as ACT-1398.',
-  },
+  // EMPTY, and it got here the way the design intended: shrink-only. It shipped with two
+  // entries; both fixes merged within the hour (#1682, #1685), and each time this lint failed
+  // ITSELF and refused to pass until the now-resolving entry was deleted. An empty baseline is
+  // the goal state — every rollout-active spec names a readout that exists. Adding an entry here
+  // is allowed, but it is a debt with a built-in creditor.
 ];
 
 function specFiles() {

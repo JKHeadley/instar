@@ -117,3 +117,24 @@ FAIL — claim-verification-sentinel: rollout-evidence-ref "/completion-claim/st
 The entry was deleted. Baseline is now **1 accepted-unresolved** (`mutual-ssh-autobootstrap`,
 ACT-1398), 4 of 5 resolving. Nothing about the guard changed — the shrink-only property was
 exercised for real rather than only in a test, before the guard had even landed.
+
+## Second firing, and the baseline reaches zero
+
+PR #1685 (the mutual-ssh `rollout-evidence-ref` correction) merged while this branch was open.
+Rebasing onto that main produced, for the second time in one session:
+
+```
+FAIL — mutual-ssh-autobootstrap: rollout-evidence-ref "/machines/ssh-health" now RESOLVES,
+       but the slug is still listed in KNOWN_UNRESOLVED. Delete that entry.        exit 1
+```
+
+The entry was deleted. The baseline is now **empty**: 5 rollout-active endpoint specs, 5 resolving,
+0 accepted-unresolved. Had this merged unrebased, `main`'s lint chain would have failed on the very
+next build — the shrink-only property is not decorative.
+
+**A defect in the guard's own tests, found by reaching the goal state.** Two tests asserted the
+baseline was non-empty (`expect(joined.length).toBeGreaterThan(0)` and an unconditional match on
+`/ACT-\d+|PR #\d+/`). That made *carrying accepted debt* the passing state and an empty ledger a
+build failure — exactly backwards. They are now conditional on the entry count, plus a third test
+that runs the lint with an empty baseline and asserts exit 0, so emptying the ledger can never break
+the build again. 7 tests pass.

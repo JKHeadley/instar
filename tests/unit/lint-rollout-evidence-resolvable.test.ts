@@ -53,21 +53,43 @@ describe('lint-rollout-evidence-resolvable — wiring', () => {
 describe('lint-rollout-evidence-resolvable — the baseline is a ledger, not a parking space', () => {
   const source = fs.readFileSync(LINT, 'utf8');
 
+  // The baseline is EMPTY as shipped, and these tests are written to stay true through
+  // that. The first version required at least one entry — which quietly made "carrying
+  // debt" the passing state and an empty ledger a failure. That is backwards: the goal
+  // state is zero accepted-unresolved findings. The requirement is CONDITIONAL — if an
+  // entry exists, it must be substantive and tracked.
+  const baseline = source.slice(
+    source.indexOf('const KNOWN_UNRESOLVED'),
+    source.indexOf('function specFiles'),
+  );
+  const entryCount = [...baseline.matchAll(/\bslug:\s*'/g)].length;
+
   it('every accepted-unresolved entry carries a substantive reason', () => {
     // Assertion B is enforced at runtime; this pins the checked-in baseline so a
     // placeholder reason cannot be added without a test failing too.
-    const reasons = [...source.matchAll(/reason:\s*\n?\s*'([^']*)'/g)].map((m) => m[1]);
-    const joined = [...source.matchAll(/reason:[\s\S]{0,400}?,\n\s*\}/g)].map((m) => m[0]);
-    expect(joined.length).toBeGreaterThan(0);
+    const reasons = [...baseline.matchAll(/reason:\s*\n?\s*'([^']*)'/g)].map((m) => m[1]);
+    expect(reasons.length).toBe(entryCount);
     for (const r of reasons) expect(r.replace(/\s/g, '').length).toBeGreaterThan(11);
   });
 
   it('each baseline entry names a tracking reference so it cannot rot silently', () => {
-    // An accepted finding with no tracker is an abandoned finding.
-    const entries = source.slice(
-      source.indexOf('const KNOWN_UNRESOLVED'),
-      source.indexOf('function specFiles'),
-    );
-    expect(entries).toMatch(/ACT-\d+|PR #\d+/);
+    // An accepted finding with no tracker is an abandoned finding. Vacuously true at
+    // zero entries — nothing untracked can exist when nothing is accepted.
+    if (entryCount === 0) {
+      expect(baseline).not.toMatch(/\bslug:\s*'/);
+      return;
+    }
+    expect(baseline).toMatch(/ACT-\d+|PR #\d+/);
+  });
+
+  it('an EMPTY baseline is the goal state, not a broken one', () => {
+    // The guard's value is the shrink-only property, not the presence of debt. This
+    // asserts the lint still passes with nothing accepted — otherwise emptying the
+    // ledger (the thing success looks like) would break the build.
+    // execFileSync throws on a non-zero exit, so reaching the assertion IS the exit-0
+    // check — the same shape the two tests above use.
+    const out = execFileSync('node', [LINT], { cwd: ROOT, encoding: 'utf8' });
+    expect(out).toContain('accepted-unresolved');
+    expect(out).toContain('0 accepted-unresolved');
   });
 });

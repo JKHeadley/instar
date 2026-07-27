@@ -21,11 +21,17 @@ Ships with an accepted-findings baseline so it passes today. **The baseline can 
 entry whose ref starts resolving is an error, forcing deletion, so a stale exemption cannot mask a
 later regression at the same path.
 
-**That property was exercised for real before this even landed.** The baseline started with two
-entries. #1682 merged an hour later; rebasing onto that main made the lint fail *itself*, naming the
-now-resolving `claim-verification-sentinel` entry and refusing to pass until it was deleted. It was
-deleted. One entry remains (`mutual-ssh-autobootstrap`), 4 of 5 rollout-active specs resolving. The
-self-destruct is not a claim about the future — it has already fired once, on its own author.
+**That property was exercised for real, twice, before this even landed.** The baseline started with
+two entries. #1682 merged an hour later; rebasing onto that main made the lint fail *itself*, naming
+the now-resolving `claim-verification-sentinel` entry and refusing to pass until it was deleted.
+Then #1685 merged and it happened again, on `mutual-ssh-autobootstrap`.
+
+**So this ships with an EMPTY baseline** — all 5 rollout-active specs name a readout that exists.
+That is the goal state, and it is worth saying plainly that the guard's value is the shrink-only
+property, not the presence of debt. Its own tests originally required at least one entry, which
+quietly made *carrying debt* the passing state and an empty ledger a failure; they now require
+substantiveness and a tracking reference **conditionally**, and assert that an empty baseline still
+passes.
 
 ## Evidence
 
@@ -36,7 +42,7 @@ proves nothing:
 |---|---|
 | drop the mutual-ssh baseline entry | **FAIL**, names spec + ref + remedies, **exit 1** |
 | allowlist a slug that DOES resolve | **FAIL**, "now RESOLVES … delete that entry", **exit 1** |
-| clean repo | `5 rollout-active endpoint spec(s), 4 resolving, 1 accepted`, **exit 0** |
+| clean repo | `5 rollout-active endpoint spec(s), 5 resolving, 0 accepted-unresolved`, **exit 0** |
 
 Exit codes checked directly rather than through a pipe — a lint that prints FAIL and exits 0 is one
 CI ignores.

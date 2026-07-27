@@ -37,10 +37,19 @@ So the list can only shrink. If a listed feature's readout starts existing, the 
 until the entry is deleted. You can't leave a stale exemption sitting there, and more importantly a
 forgotten exemption can't hide the same problem happening again later at the same address.
 
-**That already happened once, before this even shipped.** The list started with two entries. The
-fix for one of them merged an hour later, and the very next run of the check failed — naming the
-now-resolving entry and refusing to pass until it was deleted. It was deleted. One entry remains.
-The self-destruct isn't a claim about the future; it has already fired once, on its own author.
+**That already happened twice, before this even shipped.** The list started with two entries. The
+fix for one merged an hour later, and the very next run of the check failed — naming the
+now-resolving entry and refusing to pass until it was deleted. Then the fix for the second one
+merged, and it happened again.
+
+So the list ships **empty**. Every feature in that cautious stage now names a readout that exists.
+That is what success looks like here, and it is worth being precise about why: the value of this
+check is that the list can only shrink, not that anything is on it.
+
+Reaching zero also exposed a mistake in the check's own tests. Two of them required the list to have
+at least one entry — which quietly made *having unfinished business* the passing state, and an empty
+list a build failure. Exactly backwards. They now apply their requirements only when an entry
+exists, and a new test runs the whole check against an empty list to prove it passes.
 
 ## How I know it works
 
