@@ -165,6 +165,17 @@ export function buildFtsQueryVariants(
   };
 }
 
+/**
+ * Which retrieval strategy actually served a search.
+ *
+ * `vector-hybrid` means embeddings were used; the `fts-*` values mean lexical
+ * matching served it, either because the query was lexically satisfiable or
+ * because the vector path was unavailable. Exposed so a caller can tell a
+ * semantic answer from a keyword one — silently serving the cheap strategy is
+ * the degradation this reporting exists to make visible.
+ */
+export type SearchStrategy = 'vector-hybrid' | 'fts-strict' | 'fts-loose-fallback' | 'none';
+
 export class SemanticMemory {
   /**
    * W-4 / §A57 — process-wide registry of active SemanticMemory instances.
@@ -528,10 +539,10 @@ export class SemanticMemory {
    * That is not hypothetical here: recall ran on keyword-only search for its entire
    * life while a fully-populated vector index went uncalled, and nothing said so.
    */
-  private _lastSearchStrategy: 'fts-strict' | 'fts-loose-fallback' | 'none' = 'none';
+  private _lastSearchStrategy: SearchStrategy = 'none';
 
-  /** Which strategy served the last `search()` — see `_lastSearchStrategy`. */
-  get lastSearchStrategy(): 'fts-strict' | 'fts-loose-fallback' | 'none' {
+  /** Which strategy served the last search — see `_lastSearchStrategy`. */
+  get lastSearchStrategy(): SearchStrategy {
     return this._lastSearchStrategy;
   }
   private jsonlPath: string;
@@ -1712,7 +1723,10 @@ export class SemanticMemory {
    */
   async searchHybrid(query: string, options?: SemanticSearchOptions): Promise<ScoredEntity[]> {
     if (!this._vectorAvailable || !this.embeddingProvider || !this.vectorSearch) {
-      // Graceful degradation: fall back to FTS5-only
+      // Graceful degradation: fall back to FTS5-only. `search()` records the
+      // strategy it used, so the caller can still tell that the vector path did
+      // not run — a degradation that reports itself rather than one that looks
+      // identical to success.
       return this.search(query, options);
     }
 
@@ -1733,6 +1747,12 @@ export class SemanticMemory {
 
     // Run the combined search (which now picks up vector scores)
     const results = this.search(query, options);
+
+    // The inner search() just recorded a lexical strategy, which is true of the
+    // candidate selection but misleading as the answer to "did the semantic path
+    // run?" — embeddings genuinely participated in ranking here. Overwrite AFTER
+    // the call so the reported strategy matches what actually served.
+    this._lastSearchStrategy = 'vector-hybrid';
 
     // Clear cached scores
     this._lastVectorScores = null;

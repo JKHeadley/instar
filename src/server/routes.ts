@@ -3802,7 +3802,7 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({ contextText: '', source: 'no-recall', elapsedMs: 0, resultsCount: 0, cacheKey: '' });
       return;
     }
-    const result = recall.recall({ userMessage, sessionId });
+    const result = await recall.recall({ userMessage, sessionId });
     res.json(result);
   });
 
