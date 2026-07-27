@@ -84,6 +84,23 @@ Long-running sessions accumulate a lot of activity. The session activity sentine
 
 The partitioner is the algorithm that decides where one episode ends and the next begins. It uses signals like topic switches, long pauses, explicit user marking, and job-boundary events.
 
+## Goal re-alignment (Phase 1)
+
+Component: `GoalRealignment`.
+
+On development agents, Phase 1 keeps an append-only ledger of verified operator
+priorities and periodically compares that durable compass with the current run
+focus. Priorities do not expire with age: they remain active until explicitly
+superseded or confirmed addressed. The reviewer is dry-run only. It records
+`aligned`, `diverged`, or `indeterminate` verdicts but cannot inject prompts,
+write planner state, notify the operator, block work, or correct a session.
+
+The authenticated `GET /goal-realignment` route exposes a bounded status view for
+soak analysis: intake counts, source-completeness state, ledger projection
+metadata, and the latest verdict. It never returns raw operator messages or model
+transcripts. Incomplete or conflicting evidence produces `indeterminate` at zero
+confidence rather than a guess.
+
 ## Release readiness (instar-dev / maintainer environments)
 
 Components: `ReleaseReadinessSentinel`.

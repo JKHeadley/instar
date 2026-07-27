@@ -12,6 +12,10 @@ import { getTier, type RateLimitTier } from './types.js';
 import { redactToken } from './sanitize.js';
 import { Agent } from 'undici';
 
+// RULE 3: EXEMPT — this transport consumes Slack's documented Web API JSON
+// contract; malformed/non-ok responses fail loudly and never establish hidden
+// process state, while callers retain their existing delivery retry/recovery.
+
 export interface SlackApiOptions {
   /** Use app-level token instead of bot token */
   useAppToken?: boolean;

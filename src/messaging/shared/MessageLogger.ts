@@ -24,6 +24,8 @@ export interface LogEntry {
   platformUserId?: number | string;
   /** Platform name (telegram, whatsapp, etc.) */
   platform?: string;
+  /** Platform-authenticated forwarding provenance. Undefined means unknown. */
+  forwarded?: boolean;
 }
 
 /** Legacy Telegram-specific log entry shape for backward compatibility */
@@ -37,6 +39,7 @@ export interface TelegramLogEntry {
   senderName?: string;
   senderUsername?: string;
   telegramUserId?: number;
+  forwarded?: boolean;
 }
 
 export interface MessageLoggerConfig {

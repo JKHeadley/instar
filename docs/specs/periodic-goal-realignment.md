@@ -12,6 +12,7 @@ review-iterations: 6
 review-completed-at: "2026-07-24T13:02:55.412Z"
 review-report: "docs/specs/reports/periodic-goal-realignment-convergence.md"
 cross-model-review: "codex-cli:gpt-5.5"
+operator-amendment: "2026-07-27, topic 458 — priorities persist until explicit supersession or confirmed completion"
 single-run-completable: true
 frontloaded-decisions: 18
 cheap-to-change-tags: 0
@@ -151,11 +152,11 @@ transfer the existing run to the new principal. The run must end and be explicit
 re-registered under the new principal. Histories from different UIDs are never
 merged.
 
-The default rolling window is seven days. The verified initiating directive for the
-run is pinned until that run ends because it is the run's founding constraint, not a
-claim that every old topic priority is still current. No other entry survives after
-its last citation leaves the window, even if an earlier digest called it active.
-The reader returns coverage metadata:
+The default rolling window is seven days and governs discovery of *new* priority
+evidence only. Once an eligible priority enters the durable ledger, age never removes
+it from active authority. It remains active until a later eligible operator message
+explicitly supersedes it or explicitly confirms it addressed. The reader returns
+coverage metadata:
 
 ```text
 complete | truncated | source-unavailable
@@ -219,14 +220,13 @@ are rejected. Unsupported entries are never salvaged from free text. If validati
 leaves conflicting active priorities or incomplete coverage, the digest is
 `indeterminate` and cannot drive a direction verdict.
 
-Only the pinned initiating directive survives outside the rolling window. Every
-other entry is removed from the live digest/reviewer input when its final citation
-expires; the audit retains only its non-content ID/hash and `expired` disposition.
-A later eligible message may mark one superseded/completed only with an explicit
-cited reversal, replacement, or completion. Absence is never evidence of
-supersession. This is a deliberate precision-first v1 tradeoff: a non-initiating
-multi-week priority needs a fresh operator mention to remain active, so it cannot
-silently become stale authority for `diverged`.
+Every validated priority survives outside the discovery window. A later eligible
+message may mark one superseded/completed only with an explicit cited reversal,
+replacement, or completion; an ambiguous acknowledgement remains
+`needs-operator-confirmation`. Absence, age, unrelated work, and incomplete history
+are never evidence of supersession or completion. Precision is enforced by this
+positive evidence bar and by the stricter two-sided `diverged` rubric, not by
+forgetting an otherwise active priority.
 
 This validated digest is the durable, source-cited *derived goal ledger*. A manually
 maintained structured goal form would be cheaper to interpret, but it would make the
@@ -234,6 +234,25 @@ operator translate ordinary conversation into a second control surface. The desi
 gets the same inspectable structure from authenticated messages on change, with the
 semantic reviewer used for extraction and audit rather than requiring manual ledger
 upkeep.
+
+#### Phase 1 implementation slice: durable intake before judgment
+
+Phase 1 is observation-only (`dryRun: true`) and adds no session injection, planner
+write, run-file mutation, or operator attention path. Every deterministic
+instruction-shaped message from the verified topic operator enters a durable
+candidate-priority inbox before semantic classification. The inbox retains the
+explicit result (`priority`, `restatement`, `supersession`, `confirmed-addressed`,
+`no-priority`, `needs-operator-confirmation`, or extraction failure) so a miss cannot
+silently disappear.
+
+Extraction is a checkpointed outbox keyed by immutable source identity. Before any
+priority event is applied, the system atomically persists the source cursor, exact
+raw provider output, validated extraction, prompt ID, and model ID. A crash after
+that checkpoint reuses the same extraction and therefore the same server-derived
+priority ID; it does not ask the model again. Priority events are append-only, while
+the live digest is a materialized projection that excludes only explicit
+`superseded` or `addressed_confirmed` states. The recency window is used solely to
+bound recovery discovery of candidate messages and never trims this ledger.
 
 ### 3. RunFocusSnapshot: the monitored file is untrusted subject data
 
@@ -474,7 +493,7 @@ reset. Hash-only grounding is forbidden.
 machine, owner machine, run ID, cache ages and opaque generation IDs,
 coverage/truncation, verdict,
 cache-hit/call/suppression counters, routing outcome, breaker/budget state, pending
-delivery, expired-priority count, unresolved-divergence age, disposition counts, and
+delivery, closed-priority count, unresolved-divergence age, disposition counts, and
 framework parity. It never returns raw messages or full model prompts.
 
 ### 9. Multi-machine posture
@@ -603,7 +622,8 @@ merely because its timestamp is recent.
 1. **FD1:** Telegram is the first supported history adapter; unsupported adapters
    report unavailable rather than losing provenance.
 2. **FD2:** The run-initiating verified operator directive is a pinned source anchor;
-   the rolling delta window is seven days.
+   the seven-day rolling window bounds discovery of new evidence, never ledger
+   lifetime.
 3. **FD3:** Source history is indexed/paginated with explicit completeness; JSONL is
    not scanned on the periodic hot path.
 4. **FD4:** Digest entries are extractive and citation-validated; conflicting or
@@ -633,8 +653,8 @@ merely because its timestamp is recent.
     ambiguous crash boundary.
 17. **FD17:** A divergence brief requests a session disposition but never pauses
     work or escalates to the operator.
-18. **FD18:** Only the initiating directive survives the seven-day window; other
-    priorities require fresh evidence and cannot become stale divergence authority.
+18. **FD18:** Every validated priority survives the discovery window until explicit
+    cited supersession or confirmed completion; age and absence never retire it.
 
 ## Rollout and rollback
 
@@ -667,6 +687,10 @@ edits the autonomous run.
 
 | Scenario | Expected |
 |---|---|
+| Standing priority is older than the discovery window | Remains in the live digest until explicit supersession or confirmed completion |
+| Instruction exists only inside quoted/pasted text | Candidate is retained as `needs-operator-confirmation`; never authoritative |
+| Crash after extraction checkpoint but before ledger event | Replay reuses raw extraction and produces the same deterministic priority ID |
+| Ambiguous acknowledgement such as “Ship it” | Does not retire a durable priority |
 | Unchanged source/focus across repeated ticks and restart | Zero new LLM calls and injections; cached status only |
 | New operator message, unchanged run state | Digest rebuild + one review, within budgets |
 | State focus changes, no operator message | No digest rebuild; one review on changed focus hash |

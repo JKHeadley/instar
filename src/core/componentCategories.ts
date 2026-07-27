@@ -139,6 +139,8 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   ResumeValidator: 'gate',               // does a resume UUID match the topic? (pre-resume gate)
   Usher: 'reflector',                    // route a turn to candidate topics
   TopicIntentExtractor: 'reflector',     // extract topic intent from a turn
+  GoalPriorityExtractor: 'reflector',    // extract verified operator priorities at intake
+  AlignmentReviewer: 'reflector',        // compare active run focus with the durable priority digest
   PreCompactionFlush: 'reflector',       // extract durable facts before compaction
   TreeSynthesis: 'reflector',            // synthesize knowledge fragments → answer
   LLMConflictResolver: 'reflector',      // resolve divergent multi-machine state

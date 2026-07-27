@@ -7704,6 +7704,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               senderName: entry.senderName,
               senderUsername: entry.senderUsername,
               telegramUserId: entry.telegramUserId,
+              forwarded: entry.forwarded,
             });
           }
         };
@@ -13850,6 +13851,110 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.log(`[SpeakerElection.ownerLiveness] would-fall-through topic=${o.topicId} owner=${o.owner} self=${o.self} rule=${o.rule} online=${o.onlinePool.length}`);
       },
     });
+
+    // ── Periodic Goal Re-Alignment Phase 1 ("see it") ───────────────
+    // This boot path is intentionally independent of PresenceProxy and of LLM
+    // availability. Intake evidence still enters the durable candidate inbox
+    // when the provider is unavailable; failures stay pull-visible.
+    const goalRealignmentCfg = config.monitoring?.goalRealignment;
+    if (telegram && resolveDevAgentGate(goalRealignmentCfg?.enabled, config)) {
+      try {
+        const {
+          AlignmentReviewer,
+          GoalRealignmentCoordinator,
+          GoalRealignmentIntake,
+          PriorityLedger,
+          ALIGNMENT_REVIEW_PROMPT_ID,
+          GOAL_PRIORITY_PROMPT_ID,
+          createAlignmentReviewFn,
+          createPriorityExtractionFn,
+        } = await import('../monitoring/GoalRealignment.js');
+        const { AutonomousRunStore } = await import('../core/AutonomousRunStore.js');
+        const { TopicOperatorStore } = await import('../users/TopicOperatorStore.js');
+        const ledger = new PriorityLedger({ stateDir: config.stateDir });
+        const unavailable = {
+          evaluate: async () => { throw new Error('goal-realignment-intelligence-unavailable'); },
+        };
+        const queued = sharedIntelligence
+          ? {
+              evaluate: (
+                prompt: string,
+                options: {
+                  model: 'fast';
+                  temperature: number;
+                  maxTokens: number;
+                  attribution: { component: string };
+                  provenance?: import('../core/decisionQualityTypes.js').DecisionProvenanceBlock;
+                },
+              ) => sharedLlmQueue.enqueue(
+                'background',
+                () => sharedIntelligence.evaluate(prompt, {
+                  ...options,
+                  // The two registered callers always supply their own exact
+                  // component. This literal fallback also keeps the shared
+                  // queue boundary legible to the static attribution ratchet.
+                  attribution: options.attribution ?? { component: 'GoalPriorityExtractor' },
+                }),
+                0.25,
+              ),
+            }
+          : unavailable;
+        const intake = new GoalRealignmentIntake({
+          ledger,
+          extract: createPriorityExtractionFn(queued),
+          promptId: GOAL_PRIORITY_PROMPT_ID,
+          model: 'fast',
+        });
+        const reviewer = new AlignmentReviewer({
+          stateDir: config.stateDir,
+          ledger,
+          // Phase 1 is structurally dry-run. An accidental config false
+          // cannot create injection because no such dependency exists.
+          dryRun: true,
+          review: createAlignmentReviewFn(queued),
+          promptId: ALIGNMENT_REVIEW_PROMPT_ID,
+          model: 'fast',
+          maxPriorities: goalRealignmentCfg?.maxPriorities ?? 40,
+        });
+        const runStore = new AutonomousRunStore(config.stateDir);
+        const coordinator = new GoalRealignmentCoordinator({
+          stateDir: config.stateDir,
+          intake,
+          reviewer,
+          listActiveRuns: () => runStore.listActive().map((run) => ({
+            topicId: run.topicId,
+            runId: run.runId,
+            condition: run.condition,
+          })),
+          // Fresh instance per read avoids a stale cache beside AgentServer's
+          // single authoritative writer instance.
+          getOperatorUid: (topicId) =>
+            new TopicOperatorStore(path.join(config.stateDir, 'state'))
+              .getOperator(topicId)?.uid ?? null,
+          getRecentVerifiedRows: topicMemory
+            ? (topicId, sinceIso, limit) => topicMemory.getMessagesSince(topicId, sinceIso, limit)
+            : undefined,
+          cadenceMinutes: goalRealignmentCfg?.cadenceMinutes ?? 60,
+          recencyDays: goalRealignmentCfg?.recencyDays ?? 7,
+          onError: (stage, error, topicId) => {
+            console.warn(
+              `[GoalRealignment] ${stage} failed${topicId == null ? '' : ` for topic ${topicId}`}: `
+              + `${error instanceof Error ? error.message : String(error)}`,
+            );
+          },
+        });
+        const beforeGoalRealignmentCb = telegram.onMessageLogged;
+        telegram.onMessageLogged = (entry) => {
+          if (beforeGoalRealignmentCb) beforeGoalRealignmentCb(entry);
+          coordinator.ingestLogged(entry);
+        };
+        coordinator.start();
+        (globalThis as Record<string, unknown>).__instarGoalRealignmentWired = true;
+        console.log(pc.green('  Goal realignment Phase 1 wired (durable ledger + dry-run reviewer)'));
+      } catch (error) {
+        console.warn('[GoalRealignment] init failed:', error instanceof Error ? error.message : String(error));
+      }
+    }
 
     let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;
     if (sharedIntelligence && telegram) {

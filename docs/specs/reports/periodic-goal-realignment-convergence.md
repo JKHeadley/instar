@@ -1,5 +1,20 @@
 # Convergence Report — Periodic Goal Re-Alignment
 
+## Post-convergence operator amendment
+
+On 2026-07-27 the verified operator changed one lifetime decision: a validated
+priority now persists until explicit cited supersession or confirmed completion.
+The seven-day window bounds discovery of new priorities only and never trims the
+durable ledger. This replaces the convergence report's historical expiry conclusion,
+but not the rest of the six-round design. In particular, `diverged` still requires
+positive two-sided contradiction evidence, absence is never supersession evidence,
+and incomplete or conflicting evidence remains `indeterminate`.
+
+The same Phase 1 authorization also requires a durable candidate-priority inbox and
+a source-keyed extraction checkpoint (cursor, raw provider output, validated result,
+prompt, and model) before ledger events. These are implementation invariants, not a
+restoration of the later seven-round redesign.
+
 ## Convergence verdict
 
 **Converged after 6 rounds at reviewed design revision SHA-256
@@ -65,7 +80,7 @@ possible problem never becomes blocking authority.
 |---|---|---|
 | Digest source | Assumed durable verified store | New closed provenance contract; indexed/paginated; explicit completeness; router-authoritative proxy |
 | Principal | Current mutable topic binding | Immutable topic/run-scoped opaque principal captured from authenticated registration evidence |
-| Seven-day window | Rolling source of truth | Initiating directive pinned; other priorities expire from active authority; expiry is pull-visible |
+| Seven-day window | Rolling source of truth | Discovery bound only; ledger priorities persist until explicit supersession or confirmed completion |
 | Digest grounding | Timestamp only | Relational citations with exact quotes, deterministic IDs, strict validation |
 | Verdict | Forced 3 labels | Adds `indeterminate`; diverged requires two-sided positive contradiction evidence |
 | Cadence | Reviewer call every tick | Timer is eligibility wake-up; unchanged source/focus means zero calls |
@@ -147,12 +162,12 @@ it never silently consumes the active session's Claude quota.
 - **Decision-completeness:** zero material; signable.
 - **Lessons/foundation:** zero material; signable.
 - **External GPT-tier:** serious preference objections repeated around v1 escalation,
-  seven-day expiry, and complexity. Disposition:
+  seven-day expiry, and complexity. Historical round-six disposition:
   - operator paging rejected because the reviewer is signal-only and false-positive
     attention is the exact risk this convergence was asked to control; high-priority
     unresolved state remains visible on the authenticated pull surface;
-  - non-initiating priorities require refresh and expired counts are visible; they
-    cannot silently retain divergence authority;
+  - the refresh/expiry decision recorded in round six was later replaced by the
+    operator amendment above; positive evidence now controls retirement;
   - the rollout already starts single-machine, cache-only, dark/dry-run, while the
     implementation contract remains unified from birth so a staged v1 does not ship a
     machine-blind foundation;

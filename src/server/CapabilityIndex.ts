@@ -312,6 +312,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'goalRealignment',
+    prefixes: ['/goal-realignment'],
+    description: 'Periodic Goal Re-Alignment Phase 1 ("see it") — sender-verified operator messages flow through a deterministic candidate inbox and checkpointed extraction outbox into an append-only durable priority ledger. A cadence-shaped, content-addressed reflector compares active-run focus with the durable digest and logs evidence-linked aligned/drifting/diverged/indeterminate verdicts. Dry-run only: no injection, attention, blocking, planner write, or state-file mutation. GET /goal-realignment exposes the ledger, aging candidates, counters, and last verdict; dev-gated dark on the fleet.',
+    build: ({ ctx }) => ({
+      enabled: resolveDevAgentGate(ctx.config.monitoring?.goalRealignment?.enabled, ctx.config),
+      endpoints: ['GET /goal-realignment'],
+    }),
+  },
+  {
     key: 'growthAnalyst',
     prefixes: ['/growth'],
     description: 'Growth & Milestone Analyst — composes InitiativeTracker rollout stages + staleness, ApprovalLedger approve-vs-change, and CorrectionLedger recurrence into one digest with explicit notify-rules (R1 promotion-ready, R2 incubation-expired-unproven, R3 initiative-stalling, R4 spec-pattern, R5 correction-pattern). A TIGHT incubation window whose expiry is itself the trigger, so a feature is never silently left behind; promotion requires real proof-of-life, never elapsed time alone. Ships dark (monitoring.growthAnalyst.enabled) and is compute + read-only — no Telegram sending in this slice. Null/503 when disabled.',

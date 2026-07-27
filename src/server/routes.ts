@@ -291,6 +291,7 @@ import {
   DEFAULT_MAX_CONCURRENT_AUTONOMOUS,
 } from '../core/AutonomousSessions.js';
 import { AutonomousRunStore, hashPathSet, type AutonomousRunRecord } from '../core/AutonomousRunStore.js';
+import { PriorityLedger } from '../monitoring/GoalRealignment.js';
 import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import {
   runAccretionSweep,
@@ -2073,6 +2074,32 @@ export function createRoutes(ctx: RouteContext): Router {
   // routes) can reference it lexically; the gate/route logic lives with the
   // other /autonomous routes below.
   const autonomousRunStore = new AutonomousRunStore(ctx.config.stateDir);
+  const goalRealignmentLedger = new PriorityLedger({ stateDir: ctx.config.stateDir });
+
+  // Periodic Goal Re-Alignment Phase 1 pull surface. The route is the only
+  // user-visible output of this phase: ledger + candidate inbox + recent
+  // dry-run verdicts. There is deliberately no injection/action endpoint.
+  router.get('/goal-realignment', (req, res) => {
+    const config = ctx.config.monitoring?.goalRealignment;
+    if (!resolveDevAgentGate(config?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'goal realignment is dark on this agent' });
+      return;
+    }
+    const rawTopic = typeof req.query.topicId === 'string' ? req.query.topicId : undefined;
+    const topicId = rawTopic === undefined ? undefined : Number(rawTopic);
+    if (rawTopic !== undefined && (!Number.isInteger(topicId) || (topicId as number) < 0)) {
+      res.status(400).json({ error: 'topicId must be a non-negative integer' });
+      return;
+    }
+    res.json({
+      enabled: true,
+      dryRun: true,
+      cadenceMinutes: config?.cadenceMinutes ?? 60,
+      recencyDaysForNewPriorities: config?.recencyDays ?? 7,
+      priorityLifetime: 'until-explicitly-superseded-or-confirmed-addressed',
+      ...goalRealignmentLedger.overview(topicId),
+    });
+  });
 
   // Truncation detector for Telegram messages (Drop Zone integration)
   const truncationDetector = new TruncationDetector();
