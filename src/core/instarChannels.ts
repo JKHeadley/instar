@@ -42,18 +42,21 @@ export function buildChannelDefinitions(ctx: ChannelProbeContext): ChannelDefini
       audience: 'peer',
       purpose: 'Direct agent-to-agent messaging over the shared relay.',
       whenPreferred: 'The default for peer work: fastest, and invisible to the operator, so it does not spend their attention.',
-      cost: 'Requires the relay to be connected. Invisible when it fails, which is its main hazard.',
+      cost: 'Requires the server process relay client to be connected, and another process can hold a different relay state. Invisible when it fails, which is its main hazard.',
       probe: async (): Promise<ChannelProbeResult> => {
         const s = ctx.relayStatus();
         if (s === null) {
           return { state: 'not-configured', direction: 'none', detail: 'threadline layer was never constructed on this agent' };
         }
         if (s.ready && s.connected) {
-          return { state: 'working', direction: 'bidirectional', detail: 'relay reports ready and connected' };
+          return {
+            state: 'working', direction: 'bidirectional',
+            detail: 'server process relay client reports ready and connected; NOTE this confirms the server client, not another process client such as the MCP tool path, and not that any given send will land',
+          };
         }
         return {
           state: 'broken', direction: 'none',
-          detail: `relay reports ready=${s.ready}, connected=${s.connected}; a send would be refused`,
+          detail: `server process relay client reports ready=${s.ready}, connected=${s.connected}; a server-process send would be refused, while another process client such as the MCP tool path has its own state`,
         };
       },
     },
