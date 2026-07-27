@@ -661,6 +661,21 @@ export interface AgentMdExecute {
 
 export interface JobState {
   slug: string;
+  /**
+   * When this job was first REGISTERED with the scheduler (ISO). Distinct from
+   * `lastRun`: it answers "how long has this job existed?" for a job that has
+   * never run.
+   *
+   * WHY IT EXISTS: the startup missed-job sweep treated every job with no
+   * `lastRun` as overdue, so a brand-new job whose first window was months away
+   * fired immediately on the next boot (ACT-724 defect (a) — an annual reminder
+   * discharged itself the day it was created). The intended rule was already
+   * written in the comment above that branch — "trigger on startup if their
+   * first expected run time has already passed" — but nothing recorded when the
+   * job started existing, so the condition was uncheckable and the code simply
+   * fired everything. This is the missing fact.
+   */
+  firstSeenAt?: string;
   lastRun?: string;
   lastResult?: 'success' | 'failure' | 'timeout' | 'pending';
   /** Error message from the last failure (cleared on success) */
@@ -2283,9 +2298,8 @@ export interface MachineCapacity {
 }
 
 /** The compact posture block that rides the capacity heartbeat
- *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Counts plus per-key detail for ONLY
- *  the two sharpest signals (offDeviantKeys, offRuntimeDivergentKeys) —
- *  bounded by the manifest size. */
+ *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Counts plus bounded per-key detail for
+ *  the read surfaces that must not collapse an absent class into all-clear. */
 export interface GuardPostureSummary {
   onConfirmed: number;
   onUnverified: number;
@@ -2302,6 +2316,11 @@ export interface GuardPostureSummary {
    *  heartbeat so a peer gap is visible fleet-wide. Optional for wire back-compat —
    *  an un-upgraded peer omits them and the probe Array.isArray-guards the read. */
   loadBearingGapKeys?: string[];
+  /** Full count plus at most 16 deterministic keys. Read-surface context only:
+   *  probes and pool notifications deliberately ignore these fields because
+   *  the underlying missing/errored/stale/divergent classes already alarm. */
+  loadBearingUninspectable?: number;
+  loadBearingUninspectableKeys?: string[];
   loadBearingSoakingKeys?: string[];
   loadBearingAcceptedKeys?: string[];
   generatedAt: string;
@@ -3316,6 +3335,10 @@ export interface InstarConfig {
    * (Introduced 2026-06-02 — Justin's ask, topic 13481.)
    */
   developmentAgent?: boolean;
+  /** Unified work-intake registry rollout; omitted resolves live only on dev agents. */
+  workQueue?: { enabled?: boolean };
+  /** Capability registry read surface; omitted resolves via the dev-agent gate. */
+  capabilityRegistry?: { enabled?: boolean };
   /**
    * Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
    * deterministic "what I already have" block injected at session start: vault
@@ -4011,6 +4034,31 @@ export interface InstarConfig {
   users: UserProfile[];
   /** Messaging adapters to enable */
   messaging: MessagingAdapterConfig[];
+  /**
+   * Operator config for the outbound Messaging Tone Gate, read LIVE via the
+   * gate's config getter (no restart needed). TOP-LEVEL by necessity:
+   * `messaging` is an array of adapter configs, so the historically-documented
+   * `messaging.toneGate.*` location was structurally unreachable — no config
+   * could ever set it (the 2026-07-24 candidate-body wiring gap).
+   */
+  toneGate?: {
+    /** Kill-switch for fail-closed-on-provider-exhaustion (default true). */
+    failClosedOnExhaustion?: boolean;
+    /** Fail-direction policy: 'always' (default) | 'tiered' (opt-in) | 'never'. */
+    failClosedMode?: 'always' | 'tiered' | 'never';
+    /** Soak flag for 'tiered' — log would-deliver without delivering. */
+    toneTierDryRun?: boolean;
+    /** Opt-in candidate-body capture for decision-quality benchmarking. */
+    recordCandidateBody?: boolean;
+  };
+  /**
+   * L0 zombie-free delivery invariant arm flag (drive12 UX-first enforcement
+   * spec, Increment 1). When true, outbound recovery queues enforce their
+   * per-class max age at DEQUEUE time (policy: src/data/outbound-queue-expiry.json;
+   * a class's maxAgeHours 0 ⇒ no expiry). DARK by default — the test agent
+   * (Codey) arms first per the maturation ladder.
+   */
+  outboundQueueExpiry?: { enabled?: boolean };
   /** Monitoring config */
   monitoring: MonitoringConfig;
   /** Feature-rollout reconciler config (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.3
@@ -5119,7 +5167,7 @@ export interface ResponseReviewConfig {
    * (held). Set false to revert THAT behavior to the prior fail-open without a
    * deploy (read live via the gate's optional liveConfig getter; a promise
    * REJECTION keeps its pre-existing unconditional fail-closed). Mirrors
-   * messaging.toneGate.failClosedOnExhaustion.
+   * toneGate.failClosedOnExhaustion (top-level).
    */
   failClosedOnCriticalAbstain?: boolean;
   /** Threshold for escalating warn-mode violations */

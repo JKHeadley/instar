@@ -388,7 +388,7 @@ function stripEnvelopeFields(data: Record<string, unknown>): Record<string, unkn
 
 /** A cache key (§8.2): keyed by (origin, store, maxHlc). Deterministic string. */
 export function snapshotCacheKey(origin: string, store: string, maxHlc: HlcTimestamp): string {
-  return `${origin} ${store} ${serializeHlcKey(maxHlc)}`;
+  return `${origin}\u0000${store}\u0000${serializeHlcKey(maxHlc)}`;
 }
 
 interface CacheEntry {
@@ -573,7 +573,7 @@ export class SnapshotRebuildBreaker {
   }
 
   private keyOf(peer: string, origin: string, store: string): string {
-    return `${peer} ${origin} ${store}`;
+    return `${peer}\u0000${origin}\u0000${store}`;
   }
 
   /**

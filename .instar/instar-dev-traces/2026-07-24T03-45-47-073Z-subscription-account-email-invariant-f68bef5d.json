@@ -1,0 +1,103 @@
+{
+  "version": 3,
+  "slug": "subscription-account-email-invariant",
+  "sessionId": "f220d0eb-15d1-4898-8d18-69c57174d09f",
+  "timestamp": "2026-07-24T03:45:47.073Z",
+  "artifactPath": "upgrades/side-effects/subscription-account-email-invariant.md",
+  "artifactSha256": "75e3bf89542c21681515ac8c4e4f69e7c60ac359e894314023c0f5f77e9922fd",
+  "specPath": "docs/specs/subscription-account-email-invariant.md",
+  "coveredFiles": [
+    "dashboard/subscriptions.js",
+    "docs/specs/reports/subscription-account-email-invariant-convergence.md",
+    "docs/specs/subscription-account-email-invariant.eli16.md",
+    "docs/specs/subscription-account-email-invariant.md",
+    "src/commands/server.ts",
+    "src/coordination/FollowMeConsumerBackoffStore.ts",
+    "src/core/QuotaPoller.ts",
+    "src/core/SubscriptionAccountEmailRepair.ts",
+    "src/core/SubscriptionPool.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/core/resolveFollowMeEnrollTarget.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/credential-ledger-boot-seed.test.ts",
+    "tests/e2e/credential-repointing-census-lifecycle.test.ts",
+    "tests/e2e/subscription-inuse-lifecycle.test.ts",
+    "tests/e2e/subscription-proactive-swap-lifecycle.test.ts",
+    "tests/e2e/subscription-quota-lifecycle.test.ts",
+    "tests/e2e/subscription-swap-lifecycle.test.ts",
+    "tests/e2e/subscriptions-tab-lifecycle.test.ts",
+    "tests/integration/account-follow-me-delivered-mandate-enroll.test.ts",
+    "tests/integration/account-follow-me-enroll-start-route.test.ts",
+    "tests/integration/account-follow-me-scan-route.test.ts",
+    "tests/integration/account-follow-me-submit-code-route.test.ts",
+    "tests/integration/account-followme-revocation-route.test.ts",
+    "tests/integration/account-matrix-start-cell-route.test.ts",
+    "tests/integration/credential-repointing-census-routes.test.ts",
+    "tests/integration/quota-framework-safety.integration.test.ts",
+    "tests/integration/subscription-inuse-route.test.ts",
+    "tests/integration/subscription-pin-sessions.test.ts",
+    "tests/integration/subscription-pool-routes.test.ts",
+    "tests/integration/subscription-pool-scope.test.ts",
+    "tests/integration/subscription-proactive-swap-route.test.ts",
+    "tests/integration/subscription-quota-routes.test.ts",
+    "tests/unit/PostUpdateMigrator-subscriptionPoolInteractiveReady.test.ts",
+    "tests/unit/account-follow-me-locally-executable.test.ts",
+    "tests/unit/account-followme-revocation-wiring.test.ts",
+    "tests/unit/credential-location-gate.test.ts",
+    "tests/unit/credential-write-routing.test.ts",
+    "tests/unit/follow-me-consumer-agent-loop.test.ts",
+    "tests/unit/follow-me-consumer-backoff-store.test.ts",
+    "tests/unit/quota-poller.test.ts",
+    "tests/unit/resolve-follow-me-enroll-target.test.ts",
+    "tests/unit/subscription-account-email-repair.test.ts",
+    "tests/unit/subscription-account-email.test.ts",
+    "tests/unit/subscription-email-route-capability-inventory.test.ts",
+    "tests/unit/subscription-pool-scope.test.ts",
+    "tests/unit/subscription-pool.test.ts",
+    "tests/unit/subscriptions-render.test.ts",
+    "upgrades/next/subscription-account-email-invariant.md",
+    "upgrades/side-effects/subscription-account-email-invariant.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This changes a fleet safety invariant, provider-backed account identity, retry authority, persistence, routes, and multi-machine follow-me behavior; the full converged-spec lane is required.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "updater_deferral_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 3
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/subscription-account-email-invariant-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "duplicateBuildCheck": {
+    "verdict": "likely-duplicate",
+    "cause": "concurrency",
+    "causes": [
+      "concurrency",
+      "degraded"
+    ],
+    "decision": "proceed",
+    "reason": "This is the already-authorized continuation branch for the subscription-account email invariant; the reported overlap is only shared self-action infrastructure and the open-PR scan is degraded, while the branch's implementation/spec artifacts are unique and already pushed.",
+    "acknowledgedEvidenceIds": [
+      "EV-1"
+    ],
+    "checkedAt": "2026-07-24T03:45:23.992Z",
+    "specSlug": "subscription-account-email-invariant"
+  }
+}

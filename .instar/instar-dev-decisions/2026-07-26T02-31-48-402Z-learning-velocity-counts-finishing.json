@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-26T02:31:48.402Z",
+  "slug": "learning-velocity-counts-finishing",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 65,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

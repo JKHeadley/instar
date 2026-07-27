@@ -25,7 +25,7 @@
      "deterministic": 14
     }
    },
-   "benchedPromptSource": "src/core/MessagingToneGate.ts:TONE_GATE_PROMPT_TEMPLATE",
+   "benchedPromptSource": "src/core/MessagingToneGate.ts#TONE_GATE_PROMPT_TEMPLATE",
    "benchedPromptHash": "4ae0cf6b02663c21a695393727bd05662334f0d8f1a9d3e45d8d9b2141208d54",
    "capturedAt": "2026-07-23T22:30:00.000Z"
   },
@@ -47,7 +47,7 @@
      "deterministic": 6
     }
    },
-   "benchedPromptSource": "src/monitoring/ExternalHogClassifierPrompt.ts:EXTERNAL_HOG_CLASSIFIER_PROMPT_TEMPLATE",
+   "benchedPromptSource": "src/monitoring/ExternalHogClassifierPrompt.ts#EXTERNAL_HOG_CLASSIFIER_PROMPT_TEMPLATE",
    "benchedPromptHash": "98b026dbe3ee48cab1403ef24218e9e24f6ea2b3d598c23e383bed4e894cbb56",
    "capturedAt": "2026-07-24T01:20:00.000Z",
    "scoredPopulation": "production-candidate only (10 of 17 cases). Excluded by design: 4 floor-excluded (never allowlist-matched, so no model is ever consulted about them), 1 invalid-unwinnable (renders byte-identical to another case with the opposite expected answer — a prompt defect, see ACT-1212), 2 contested-expectation (the models made the better argument and the expectation was withdrawn). Excluded cases are retained in the task file as evidence, not deleted.",

@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { utils } from 'ssh2';
+import ssh2 from 'ssh2';
+// `ssh2` is CommonJS: a NAMED esm import throws at load
+// ("Named export 'utils' not found"). Default-import the namespace and destructure
+// at runtime. See ssh2-cjs-named-imports side-effects artifact.
+const { utils } = ssh2;
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 const MARKER = 'instar-peer-access';

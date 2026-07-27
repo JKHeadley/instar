@@ -61,6 +61,44 @@ function authorAll(): void {
 }
 
 describe('cartographer-freshness ratchet script', () => {
+  // ── Honest denominators (convergence-towards-coherence Tier 1, item 1) ──────
+  // Before this, BOTH empty cases reported freshRatio: 1 — a perfect score that
+  // passed every possible floor, making this ratchet structurally unable to fail
+  // on an empty map (the exact case it exists to catch). The two empties are now
+  // distinguished: no authored state at all is a legitimate skip that says so out
+  // loud; an index that EXISTS and yields nothing authorable is a hard failure.
+  it('does NOT silently pass when an authored index exists but has no authorable nodes', () => {
+    const cartoDir = path.join(stateDir, 'cartographer');
+    fs.mkdirSync(cartoDir, { recursive: true });
+    fs.writeFileSync(path.join(cartoDir, 'index.json'), JSON.stringify({ nodes: {}, generatedAt: new Date().toISOString() }));
+    const r = runCheck();
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/fresh ratio UNKNOWN/);
+    expect(r.out).toMatch(/not a pass/);
+  });
+
+  it('reports an UNKNOWN ratio (not 1) and still exits 0 when there is no authored state — the documented CI case', () => {
+    // Asserts the DATA rather than the log line: the honest value is null, and the
+    // legitimate no-state case must remain a pass so this ratchet cannot break every
+    // build in a repo that ships the cartographer dark.
+    const r = runCheck();
+    expect(r.code).toBe(0);
+    const report = JSON.parse(execFileSync('node', [SCRIPT, '--json'], {
+      cwd: repo, encoding: 'utf8',
+      env: { ...process.env, CARTOGRAPHER_FRESHNESS_ROOT: repo },
+    }));
+    expect(report.stateAuthored).toBe(false);
+    expect(report.freshRatio).toBeNull();
+  });
+
+  it('an empty authored index can never satisfy a floor, however low', () => {
+    const cartoDir = path.join(stateDir, 'cartographer');
+    fs.mkdirSync(cartoDir, { recursive: true });
+    fs.writeFileSync(path.join(cartoDir, 'index.json'), JSON.stringify({ nodes: {}, generatedAt: new Date().toISOString() }));
+    // A floor of 0 previously passed trivially because the ratio was reported as 1.
+    expect(runCheck({ CARTOGRAPHER_FRESHNESS_FLOOR: '0' }).code).toBe(1);
+  });
+
   it('passes on a fresh scaffold (within grace) with the default floors', () => {
     new CartographerTree({ projectDir: repo, stateDir }).scaffold();
     expect(runCheck().code).toBe(0);

@@ -103,7 +103,25 @@ describe('B21_USER_TASK_SUBSTITUTION — advisory disposition through POST /tele
     expect(sent).toHaveLength(0);
   });
 
-  it('delivers unchanged on an explicit toneAdvisoryAck matching the cited rule (override recorded path)', async () => {
+  it('refuses a REASONLESS ack — the recorded reason is the evidence, so it is structural', async () => {
+    const provider = makeProvider({
+      pass: false,
+      rule: 'B21_USER_TASK_SUBSTITUTION',
+      issue: 'hands the user a portal click procedure',
+      suggestion: 'perform it yourself',
+    });
+    const sent: Array<{ topicId: number; text: string }> = [];
+    server = await listen(buildApp({ toneGate: new MessagingToneGate(provider), sent }));
+
+    const res = await reply(104, CLICK_LIST_MESSAGE, {
+      toneAdvisoryAck: 'B21_USER_TASK_SUBSTITUTION',
+    });
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe('tone-gate-advisory-reason-required');
+    expect(sent).toHaveLength(0);
+  });
+
+  it('delivers unchanged on an explicit toneAdvisoryAck + reason matching the cited rule (override recorded path)', async () => {
     const provider = makeProvider({
       pass: false,
       rule: 'B21_USER_TASK_SUBSTITUTION',
@@ -115,12 +133,17 @@ describe('B21_USER_TASK_SUBSTITUTION — advisory disposition through POST /tele
 
     const res = await reply(102, CLICK_LIST_MESSAGE, {
       toneAdvisoryAck: 'B21_USER_TASK_SUBSTITUTION',
+      toneAdvisoryAckReason: 'the operator explicitly asked for the click-by-click list this time',
     });
     expect(res.status).toBe(200);
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toBe(CLICK_LIST_MESSAGE);
   });
 
+  // Baseline (advisory migration OFF — this harness builds the gate with no
+  // config, so the dev-agent gate never applies). Under the migration B17
+  // resolves advisory; the invariant that survives BOTH is that an ack can only
+  // ever satisfy a rule the gate itself dispositioned advisory.
   it('NEVER lets toneAdvisoryAck override a BLOCKING rule (B17 stays a hard block)', async () => {
     const provider = makeProvider({
       pass: false,

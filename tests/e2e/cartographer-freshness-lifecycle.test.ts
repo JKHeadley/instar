@@ -230,7 +230,12 @@ describe('Cartographer doc-freshness sweep — feature is alive (Tier 3 E2E)', (
     expect(res.body.sweepEnabled).toBe(true);
     // The spec #2 backlog object must be present with its real shape.
     expect(res.body.freshness).toBeDefined();
-    expect(typeof res.body.freshness.freshRatio).toBe('number');
+    // Honest denominator (convergence-towards-coherence Tier 1): this case has NO
+    // authored index, so there is nothing to divide by and the ratio must be null.
+    // This assertion previously required a NUMBER here, which locked in the old
+    // behaviour of reporting a perfect 1.0 over an empty tree — the value that made
+    // the CI freshness ratchet structurally unable to fail on an empty map.
+    expect(res.body.freshness.freshRatio).toBeNull();
     expect(typeof res.body.freshness.authorableCount).toBe('number');
     expect(res.body.freshness).toHaveProperty('neverAuthoredPastGrace');
     expect(res.body.freshness).toHaveProperty('staleCount');

@@ -380,11 +380,6 @@ export class AutonomousLivenessReconciler {
       const topicId = run.topicId;
 
       // ── Candidate criteria (each fails toward NOT-a-candidate — the safe side) ──
-      // Global gate: an emergency-paused queue means "halt all automation".
-      if (queuePaused) {
-        this.observed.delete(topicId);
-        continue;
-      }
       // Criterion 1: active + remaining + CURRENT generation (obsolete run rejected).
       if (run.remainingSeconds <= 0) {
         this.observed.delete(topicId);
@@ -478,6 +473,21 @@ export class AutonomousLivenessReconciler {
           count: obs.count,
           needed: this.cfg.debounceTicks,
           remainingSeconds: run.remainingSeconds,
+        });
+        continue;
+      }
+
+      // A paused resume queue is an actuation brake, not an evidence brake.
+      // Keep the orphan in observation (and in dry-run evidence) so a pause
+      // cannot create a silent dead-but-active window.
+      if (queuePaused) {
+        this.setCondition(topicId, 'blocked-queue-owns', now);
+        this.deps.audit({
+          ts: new Date(now).toISOString(),
+          event: 'would-respawn-paused',
+          topicId,
+          remainingSeconds: run.remainingSeconds,
+          dryRun: this.cfg.dryRun,
         });
         continue;
       }

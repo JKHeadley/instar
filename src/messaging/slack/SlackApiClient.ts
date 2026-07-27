@@ -10,6 +10,7 @@
 
 import { getTier, type RateLimitTier } from './types.js';
 import { redactToken } from './sanitize.js';
+import { Agent } from 'undici';
 
 export interface SlackApiOptions {
   /** Use app-level token instead of bot token */
@@ -40,13 +41,22 @@ const PERMANENT_ERRORS = new Set([
   'not_authed',
 ]);
 
+const FETCH_FAILURES_BEFORE_TRANSPORT_RESET = 3;
+
 export class SlackApiClient {
   private botToken: string;
   private appToken: string | null;
+  private consecutiveFetchFailures = 0;
+  private dispatcher: Agent;
 
   constructor(botToken: string, appToken?: string) {
     this.botToken = botToken;
     this.appToken = appToken ?? null;
+    this.dispatcher = new Agent({
+      connections: 10,
+      keepAliveTimeout: 10_000,
+      keepAliveMaxTimeout: 30_000,
+    });
   }
 
   /**
@@ -84,14 +94,31 @@ export class SlackApiClient {
     attempt: number,
     maxRetries: number,
   ): Promise<SlackApiResponse> {
-    const response = await fetch(`https://slack.com/api/${method}`, {
+    let response: Response;
+    // Keep the recovery pool scoped to Slack requests. Rebuilding a
+    // process-global dispatcher could disrupt unrelated HTTP clients. Node's
+    // fetch honors the undici `dispatcher` init option, but the DOM-typed
+    // RequestInit doesn't declare it — declare the init with the extended type
+    // instead of casting the literal.
+    const init: RequestInit & { dispatcher?: Agent } = {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json; charset=utf-8',
       },
       body: JSON.stringify(params),
-    });
+    };
+    init.dispatcher = this.dispatcher;
+    try {
+      response = await fetch(`https://slack.com/api/${method}`, init);
+      this.consecutiveFetchFailures = 0;
+    } catch (error) {
+      this.consecutiveFetchFailures++;
+      if (this.consecutiveFetchFailures >= FETCH_FAILURES_BEFORE_TRANSPORT_RESET) {
+        this.resetHttpTransport();
+      }
+      throw error;
+    }
 
     const data = (await response.json()) as SlackApiResponse;
 
@@ -122,6 +149,22 @@ export class SlackApiClient {
     }
 
     return data;
+  }
+
+  /**
+   * Rebuild undici's connection pool after repeated network failures. A Wi‑Fi
+   * interface/DNS change can leave keep-alive sockets pinned to the old route;
+   * retrying through that pool otherwise fails for the whole outage window.
+   */
+  private resetHttpTransport(): void {
+    this.consecutiveFetchFailures = 0;
+    this.dispatcher.close().catch(() => {});
+    this.dispatcher = new Agent({
+      connections: 10,
+      keepAliveTimeout: 10_000,
+      keepAliveMaxTimeout: 30_000,
+    });
+    console.warn('[slack-api] Rebuilt HTTP transport after repeated fetch failures');
   }
 }
 

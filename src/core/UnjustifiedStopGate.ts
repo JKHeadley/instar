@@ -35,6 +35,7 @@
 
 import { createHash } from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
+import { DP_UNJUSTIFIED_STOP_GATE } from '../data/provenanceCoverage.js';
 import type { StopGateBreakerState, StopGateBreakerStateStore } from './StopGateBreakerState.js';
 import { emptyStopGateBreakerState, normalizeStopGateBreakerState } from './StopGateBreakerState.js';
 
@@ -611,7 +612,7 @@ export class UnjustifiedStopGate {
 
     let responseText: string;
     try {
-      responseText = await this.callWithTimeout(prompt);
+      responseText = await this.callWithTimeout(prompt, input);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const latencyMs = this.config.now() - start;
@@ -687,7 +688,42 @@ export class UnjustifiedStopGate {
     return { ok: true, result: { ...validation.result, latencyMs, promptHash: this.systemPromptHash } };
   }
 
-  private async callWithTimeout(prompt: string): Promise<string> {
+  /**
+   * The §5.6 provenance context for one stop decision — IDENTITY ONLY.
+   *
+   * The gate judges a session's stop rationale, which means the input is
+   * content-bearing and largely UNTRUSTED (the stop reason and recent turns are
+   * session-provided). None of it enters the row. What goes in is what a later
+   * reader needs to reconstruct the SHAPE of the decision without republishing
+   * the conversation: hashes, counts, bounds, and code-derived booleans.
+   *
+   * Recording the rationale text would turn the provenance store into a
+   * transcript archive, which is exactly the failure the content-bearing class
+   * exists to prevent.
+   */
+  private buildStopDecisionContext(input: EvaluateInput): Record<string, unknown> {
+    const reason = input.untrustedContent?.stopReason ?? '';
+    const turns = input.untrustedContent?.recentTurns ?? [];
+    const artifacts = input.evidenceMetadata?.artifacts ?? [];
+    return {
+      // Identity of the judged text, never the text.
+      stopReasonSha256: createHash('sha256').update(reason).digest('hex'),
+      stopReasonChars: reason.length,
+      // Shape of the evidence the authority was allowed to cite.
+      artifactCount: artifacts.length,
+      artifactKinds: [...new Set(artifacts.map((a) => (a as { kind?: string }).kind ?? 'unknown'))].sort(),
+      // Which detector signals fired — code-derived booleans, safe verbatim.
+      signals: input.evidenceMetadata?.signals ?? {},
+      sessionStartTs: input.evidenceMetadata?.sessionStartTs ?? null,
+      metaSelfReferenceHint: input.evidenceMetadata?.metaSelfReferenceHint === true,
+      // Conversation shape only.
+      recentTurnCount: turns.length,
+      recentTurnChars: turns.reduce((n, t) => n + (t?.text?.length ?? 0), 0),
+      selfDeferralGuardEnabled: this.config.selfDeferralGuardEnabled === true,
+    };
+  }
+
+  private async callWithTimeout(prompt: string, input?: EvaluateInput): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.clientTimeoutMs);
     try {
@@ -700,6 +736,21 @@ export class UnjustifiedStopGate {
         temperature: 0,
         rateLimitWaitMs: RATE_LIMIT_WAIT_MS,
         attribution: { component: 'UnjustifiedStopGate' }, // attribution for /metrics/features
+        // LLM-Decision Quality Meter §5.1.4/§5.6 enrollment. Observability
+        // ONLY: the settlement seam consumes this block and records the row on
+        // its own path — it never reaches the model and never alters the
+        // continue/allow/escalate verdict. A provenance write failure is
+        // contained by the recorder's own fail-open contract.
+        ...(input
+          ? {
+              provenance: {
+                decisionPoint: DP_UNJUSTIFIED_STOP_GATE,
+                context: this.buildStopDecisionContext(input),
+                optionsPresented: ['continue', 'allow', 'escalate'],
+                promptId: this.systemPromptHash,
+              },
+            }
+          : {}),
       });
       return await Promise.race([call, abortRace]);
     } finally {

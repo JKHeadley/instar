@@ -21,11 +21,44 @@ export interface RopeHealthProvider {
   reachableOnAnyRope(machineId: string): boolean | undefined;
 }
 
+/** Minimal row shape consumed from PeerEndpointResolver.snapshot(). */
+export interface RopeHealthSnapshotVerdictRow {
+  peer: string;
+  dead: boolean;
+  lastOkAt: number;
+  lastFailAt: number;
+}
+
 let provider: RopeHealthProvider | null = null;
 
 /** Register the snapshot provider (U4.3's landing point; tests use it too). */
 export function setRopeHealthProvider(p: RopeHealthProvider | null): void {
   provider = p;
+}
+
+/**
+ * Adapt the resolver's single-authority snapshot into U4.4's per-peer verdict.
+ * A row that has never recorded a dial is UNKNOWN, not healthy.
+ */
+export function ropeHealthProviderFromSnapshot(
+  snapshot: () => readonly RopeHealthSnapshotVerdictRow[],
+  options: { maxAgeMs: number; now?: () => number },
+): RopeHealthProvider {
+  return {
+    reachableOnAnyRope(machineId: string): boolean | undefined {
+      const now = (options.now ?? Date.now)();
+      const observed = snapshot().filter(
+        (row) => row.peer === machineId && (row.lastOkAt > 0 || row.lastFailAt > 0),
+      );
+      if (observed.length === 0) return undefined;
+      return observed.some(
+        (row) =>
+          row.lastOkAt > 0 &&
+          row.lastOkAt > row.lastFailAt &&
+          now - row.lastOkAt <= options.maxAgeMs,
+      );
+    },
+  };
 }
 
 /** Read the current provider's verdict; absent provider ⇒ undefined (defer). */

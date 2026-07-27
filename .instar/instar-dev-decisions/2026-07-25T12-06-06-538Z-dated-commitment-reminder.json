@@ -1,0 +1,26 @@
+{
+  "ts": "2026-07-25T12:06:06.538Z",
+  "slug": "dated-commitment-reminder",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 626,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered as check-in-reminder-pass; durable attempt counter (5) persisted pre-send bounds steady state and survives restart; success stamp and exhaustion stamp are both durable terminal states; modeled at worst case (all sends fail) so the bound is load-bearing; per-pass cap of 25 bounds instantaneous mass."
+    }
+  },
+  "verdict": "pass"
+}

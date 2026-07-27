@@ -547,7 +547,22 @@ describe('CommitmentTracker', () => {
   // ── Verification: Behavioral ───────────────────────────
 
   describe('verification — behavioral', () => {
-    it('verifies when rule is present in rules file', () => {
+    // THESE THREE TESTS REPLACE ONES THAT ASSERTED THE DEFECT.
+    //
+    // The old trio pinned "a behavioural promise is verified iff its id appears in
+    // the rules file" as correct. That file is written by this class from its own
+    // active list and nothing else reads it, so the check verified the system's own
+    // bookkeeping and reported it as a verdict on the promise. Measured live
+    // 2026-07-26: 74 commitments WITH `behavioralRule` all read `verified`, 24
+    // WITHOUT it all read `violated` — 98 of 98, decided entirely by whether an
+    // optional field was populated.
+    //
+    // Worth naming: the middle test was called "detects violation when rules file
+    // is deleted" and its body asserted `passed: true`, with a comment conceding
+    // "so it should still pass". A test whose name contradicts its own assertion
+    // documents an intention nobody implemented.
+
+    it('does NOT produce a verdict for a behavioural promise — it cannot observe behaviour', () => {
       const tracker = makeTracker(stateDir);
       const c = tracker.record({
         type: 'behavioral',
@@ -556,13 +571,15 @@ describe('CommitmentTracker', () => {
         behavioralRule: 'Always check with user before deploying changes',
       });
 
-      // Recording should have created the rules file
-      const result = tracker.verifyOne(c.id);
-      expect(result).not.toBeNull();
-      expect(result!.passed).toBe(true);
+      // null = the sweep is a no-op, exactly as for an unverifiable one-time-action.
+      expect(tracker.verifyOne(c.id)).toBeNull();
+      // And the promise stays open rather than being declared kept or broken.
+      expect(tracker.get(c.id)!.status).toBe('pending');
+      expect(tracker.get(c.id)!.verificationCount).toBe(0);
+      expect(tracker.get(c.id)!.violationCount).toBe(0);
     });
 
-    it('detects violation when rules file is deleted', () => {
+    it('repairs the rules file when deleted, without treating that as evidence either way', () => {
       const tracker = makeTracker(stateDir);
       const c = tracker.record({
         type: 'behavioral',
@@ -571,32 +588,58 @@ describe('CommitmentTracker', () => {
         behavioralRule: 'Check before deploying',
       });
 
-      // First verify passes
-      expect(tracker.verifyOne(c.id)!.passed).toBe(true);
-
-      // Delete the rules file
       const rulesPath = path.join(stateDir, 'state', 'commitment-rules.md');
       SafeFsExecutor.safeUnlinkSync(rulesPath, { operation: 'tests/unit/CommitmentTracker.test.ts:580' });
 
-      // Verify again — it should regenerate the file and pass
-      const result = tracker.verifyOne(c.id);
-      // The verifyBehavioral method regenerates if file missing, so it should still pass
-      expect(result!.passed).toBe(true);
+      expect(tracker.verifyOne(c.id)).toBeNull();   // no verdict, either direction
+      expect(fs.existsSync(rulesPath)).toBe(true);  // but the bookkeeping self-heals
+      expect(tracker.get(c.id)!.status).toBe('pending');
     });
 
-    it('handles missing behavioralRule gracefully', () => {
+    it('a MISSING behavioralRule is not a broken promise', () => {
       const tracker = makeTracker(stateDir);
       const c = tracker.record({
         type: 'behavioral',
         userRequest: 'req',
         agentResponse: 'resp',
-        // Missing behavioralRule!
+        // Missing behavioralRule — an optional field, not a broken promise.
       });
 
-      const result = tracker.verifyOne(c.id);
-      expect(result).not.toBeNull();
-      expect(result!.passed).toBe(false);
-      expect(result!.detail).toContain('Missing behavioralRule');
+      expect(tracker.verifyOne(c.id)).toBeNull();
+      // Previously this read `violated` and accumulated a tick on every sweep.
+      expect(tracker.get(c.id)!.status).toBe('pending');
+      expect(tracker.get(c.id)!.violationCount).toBe(0);
+    });
+
+    it('REGRESSION: repeated sweeps never accumulate ticks on a behavioural promise', () => {
+      // The live signature this fixes: CMT-068 at 162,344 violations, and four
+      // commitments created in the same minute holding identical counts (80,425) —
+      // proof the counter tracked sweeps, not conduct.
+      const tracker = makeTracker(stateDir);
+      const withRule = tracker.record({
+        type: 'behavioral', userRequest: 'a', agentResponse: 'b', behavioralRule: 'r',
+      });
+      const withoutRule = tracker.record({ type: 'behavioral', userRequest: 'c', agentResponse: 'd' });
+
+      for (let i = 0; i < 25; i++) tracker.verify();
+
+      for (const id of [withRule.id, withoutRule.id]) {
+        const c = tracker.get(id)!;
+        expect(c.violationCount, `${id} violations after 25 sweeps`).toBe(0);
+        expect(c.verificationCount, `${id} verifications after 25 sweeps`).toBe(0);
+        expect(c.status).toBe('pending');
+      }
+    });
+
+    it('health does not claim "all verified" over promises it never observed', () => {
+      const tracker = makeTracker(stateDir);
+      tracker.record({ type: 'behavioral', userRequest: 'a', agentResponse: 'b', behavioralRule: 'r' });
+      tracker.verify();
+
+      const health = tracker.getHealth();
+      expect(health.status).toBe('healthy');          // nothing is wrong …
+      expect(health.message).not.toMatch(/all verified/); // … but nothing is verified either
+      expect(health.message).toMatch(/not automatically verifiable/);
     });
   });
 

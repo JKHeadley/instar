@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-24T17:25:10.636Z",
+  "slug": "delivery-reliability-recovery-hardening",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 7,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Existing circuit breaker and bounded recovery tests."
+    }
+  },
+  "verdict": "blocked"
+}

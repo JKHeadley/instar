@@ -205,7 +205,7 @@ export class RoutingPriceAuthority {
 
   private manifestMtimeMs = -1;
   private doorMeta: Record<string, RoutingDoorMeta> = {};
-  /** canonical(door + ' ' + modelId) → points sorted by (effectiveAt, recordedAt) ASC. */
+  /** canonical(door + '\u0000' + modelId) → points sorted by (effectiveAt, recordedAt) ASC. */
   private canonicalIndex = new Map<string, RoutingPricePoint[]>();
   private observedIndex = new Map<string, RoutingPricePoint[]>();
   private overlaySubsidy = new Map<string, RoutingPricePoint['subsidy']>();
@@ -222,7 +222,7 @@ export class RoutingPriceAuthority {
   }
 
   private static key(door: string, modelId: string): string {
-    return `${door} ${canonicalModelId(modelId)}`;
+    return `${door}\u0000${canonicalModelId(modelId)}`;
   }
 
   /** True when the canonical manifest exists on disk (an install without the instar source has none). */
@@ -384,7 +384,7 @@ export class RoutingPriceAuthority {
   private newestCanonicalAgeDays(door: string, atMs: number): number | null {
     let newest = -Infinity;
     for (const [key, arr] of this.canonicalIndex) {
-      if (!key.startsWith(`${door} `)) continue;
+      if (!key.startsWith(`${door}\u0000`)) continue;
       const last = arr[arr.length - 1];
       if (last) {
         const eff = Date.parse(last.effectiveAt);

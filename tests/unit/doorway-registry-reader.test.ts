@@ -174,7 +174,7 @@ describe('DoorwayRegistryReader — D5 two-state contract + merged view + §1.3 
     writeScanState(stateDir, {
       schemaVersion: 1,
       lastScanAt: '2026-07-04T10:00:00.000Z',
-      machineId: 'evil id',
+      machineId: 'evil\u0000id',
       doorways: [
         // out-of-enum probeStatus → clamped to 'malformed-response'; bad timestamp → null.
         { id: 'claude-code', reachable: 'yes', probeStatus: 'HACKED<script>', lastScannedAt: 'not-a-date' },

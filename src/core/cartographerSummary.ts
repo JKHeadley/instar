@@ -167,7 +167,7 @@ export function neutralizeInstructionShapedContent(summary: string): { text: str
  * child digest is unchanged gets a fingerprint-only refresh (no LLM call).
  */
 export function childDigestHash(childSummaries: readonly string[]): string {
-  const joined = childSummaries.join(' ');
+  const joined = childSummaries.join('\u0000');
   return crypto.createHash('sha256').update(joined, 'utf8').digest('hex').slice(0, 40);
 }
 

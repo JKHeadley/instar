@@ -85,6 +85,15 @@ describe('Decision-Quality E2E lifecycle (feature is alive)', () => {
     // genuinely-deleted one, never collapsed into one false "dead" list).
     expect(Array.isArray(res.body.censusDebt.pendingRefDead)).toBe(true);
     expect(Array.isArray(res.body.censusDebt.pendingRefUnverifiable)).toBe(true);
+    // census-tracker-ref-kinds: and on the REAL production init path both are
+    // EMPTY. This harness boots a fresh stateDir with no evolution queue — i.e.
+    // exactly a fleet install that never minted the old machine-local ACT id.
+    // Before the fleet-stable `backlog:` kind, that machine could not resolve a
+    // single pending tracker; the debt signal was permanently uninformative.
+    // If a future change reintroduces a machine-local or doc-path anchor, these
+    // two lines are what catch it — on the boot path, not in a unit mock.
+    expect(res.body.censusDebt.pendingRefUnverifiable, 'pending trackers must resolve on a fleet install').toEqual([]);
+    expect(res.body.censusDebt.pendingRefDead, 'no pending tracker should read as deleted').toEqual([]);
     expect(res.body.rejections).toEqual({ enumInvalid: 0, rungMismatch: 0, ownerMismatch: 0, unknownDecisionPoint: 0 });
     // The three first-customer WIRED points are present in the census surface.
     const wiredPoints = (res.body.points as Array<any>).map((p) => p.decisionPoint);

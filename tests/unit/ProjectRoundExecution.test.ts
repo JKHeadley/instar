@@ -24,10 +24,30 @@ import os from 'node:os';
 import path from 'node:path';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { ProjectRoundLock } from '../../src/core/ProjectRoundLock.js';
-import { runRound } from '../../src/core/ProjectRoundExecution.js';
+import { runRound, type MergedVerificationResult } from '../../src/core/ProjectRoundExecution.js';
 import { ProjectRoundWorktrees } from '../../src/core/ProjectRoundWorktrees.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+
+/**
+ * These stubs return the SAME three-state verdict the real verifier returns, so
+ * the tests exercise the contract production runs rather than a simpler one.
+ *
+ * `notLanded` uses the no-mergeCommitOid reason deliberately: that is exactly
+ * what `verifyMergedItemsViaGit` reports for work that has not landed yet, and
+ * the runner must read it as work-to-do — never as "could not check", which
+ * would stall every fresh round.
+ */
+const allVerified = (ids: string[]): MergedVerificationResult =>
+  ({ verified: new Set(ids), regressed: new Set(), unverifiable: new Map() });
+const notLanded = (ids: string[]): MergedVerificationResult =>
+  ({
+    verified: new Set(),
+    regressed: new Set(),
+    unverifiable: new Map(ids.map((i) => [i, 'no mergeCommitOid recorded on the item'])),
+  });
+const someVerified = (verifiedIds: string[], regressedIds: string[]): MergedVerificationResult =>
+  ({ verified: new Set(verifiedIds), regressed: new Set(regressedIds), unverifiable: new Map() });
 
 function makeStateDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pre-state-'));
@@ -103,7 +123,7 @@ describe('ProjectRoundExecution.runRound', () => {
         spawnArgs: ['-c', 'exit 0'],
         pollIntervalMs: 50,
         sigtermGraceMs: 100,
-        verifyMergedItems: async () => { spawned++; return new Set<string>(); },
+        verifyMergedItems: async (ids) => { spawned++; return notLanded(ids); },
       },
       { stateDir }
     );
@@ -129,7 +149,7 @@ describe('ProjectRoundExecution.runRound', () => {
         sigtermGraceMs: 100,
         verifyMergedItems: async (ids) => {
           spawnedCalls++;
-          return new Set(ids);
+          return allVerified(ids);
         },
       },
       { stateDir }
@@ -148,10 +168,10 @@ describe('ProjectRoundExecution.runRound', () => {
     // Step 1: pre-spawn check returns 0 → child spawns.
     // Step 2 (post-spawn): we verify-merged on natural exit.
     let calls = 0;
-    const verify = async (ids: string[]): Promise<Set<string>> => {
+    const verify = async (ids: string[]): Promise<MergedVerificationResult> => {
       calls++;
-      // First call (pre-spawn): nothing verified. Second call (post-spawn): all verified.
-      return calls === 1 ? new Set<string>() : new Set(ids);
+      // First call (pre-spawn): nothing landed yet. Second (post-spawn): all verified.
+      return calls === 1 ? notLanded(ids) : allVerified(ids);
     };
     const r = await runRound(
       {
@@ -174,10 +194,13 @@ describe('ProjectRoundExecution.runRound', () => {
   it('natural exit + subset verified → partially-complete', async () => {
     await newProject(tracker, 'p-part', ['i1', 'i2', 'i3'], targetRepo);
     let calls = 0;
-    const verify = async (ids: string[]): Promise<Set<string>> => {
+    const verify = async (ids: string[]): Promise<MergedVerificationResult> => {
       calls++;
-      if (calls === 1) return new Set<string>();
-      return new Set([ids[0]]); // only first item verified
+      if (calls === 1) return notLanded(ids);
+      // Only the first landed; the rest are GENUINELY not merged (git exit 1).
+      // They must be `regressed`, not `unverifiable` — `partially-complete`
+      // asserts real non-landing, and an uncheckable item cannot support it.
+      return someVerified([ids[0]], ids.slice(1));
     };
     const r = await runRound(
       {
@@ -204,9 +227,9 @@ describe('ProjectRoundExecution.runRound', () => {
   it('halt mid-run: haltedAt set during child sleep → outcome=halted', async () => {
     await newProject(tracker, 'p-halt', ['i1'], targetRepo);
     let phase = 0;
-    const verify = async (): Promise<Set<string>> => {
+    const verify = async (ids: string[]): Promise<MergedVerificationResult> => {
       phase++;
-      return new Set<string>(); // never verified — child has to run
+      return notLanded(ids); // never landed — child has to run
     };
     // The child sleeps 10s but the runner halts mid-poll.
     const runPromise = runRound(
@@ -238,10 +261,10 @@ describe('ProjectRoundExecution.runRound', () => {
   it('dynamic stop revalidation: itemIds change → relaunch counter increments', async () => {
     await newProject(tracker, 'p-dyn', ['i1', 'i2'], targetRepo);
     let calls = 0;
-    const verify = async (ids: string[]): Promise<Set<string>> => {
+    const verify = async (ids: string[]): Promise<MergedVerificationResult> => {
       calls++;
-      // 1st pre-spawn: nothing. After relaunch: all verified (so we exit cleanly).
-      return calls >= 2 ? new Set(ids) : new Set<string>();
+      // 1st pre-spawn: nothing landed. After relaunch: all verified (clean exit).
+      return calls >= 2 ? allVerified(ids) : notLanded(ids);
     };
     // Long-running child, runner relaunches it on itemIds change.
     const runPromise = runRound(
@@ -282,7 +305,7 @@ describe('ProjectRoundExecution.runRound', () => {
         spawnArgs: ['-c', 'exit 0'],
         pollIntervalMs: 50,
         sigtermGraceMs: 100,
-        verifyMergedItems: async (ids) => new Set(ids), // instant complete
+        verifyMergedItems: async (ids) => allVerified(ids), // instant complete
       },
       { stateDir }
     );
@@ -302,7 +325,7 @@ describe('ProjectRoundExecution.runRound', () => {
         spawnArgs: ['-c', 'exit 0'],
         pollIntervalMs: 50,
         sigtermGraceMs: 100,
-        verifyMergedItems: async (ids) => new Set(ids),
+        verifyMergedItems: async (ids) => allVerified(ids),
       },
       { stateDir }
     );

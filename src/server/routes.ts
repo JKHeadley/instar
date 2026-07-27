@@ -65,6 +65,8 @@ import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { WorkQueueRegistry } from '../core/WorkQueue.js';
+import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjection, readDoorwaySources, type CapabilityProjection } from '../core/CapabilityRegistry.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
@@ -91,7 +93,7 @@ import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowl
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
-import { buildDegradedToneResult } from '../core/MessagingToneGate.js';
+import { RULE_DISPOSITIONS, buildDegradedToneResult, resolveToneGateOperatorConfig, fingerprintAutomatedTemplate } from '../core/MessagingToneGate.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
@@ -117,11 +119,13 @@ import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
+import { decorateWithRopeCondition } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
-import { annotateDecisionOutcome, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
+import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
-import { DP_COMPLETION_EVALUATE, PROVENANCE_COVERAGE, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
+import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
+import { CheckInReminderReconciler } from '../monitoring/CheckInReminderReconciler.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -164,6 +168,7 @@ import { randomUUID as cryptoRandomUUID } from 'node:crypto';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { resolveGhBinary } from '../core/resolveGhBinary.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { validateStageTransition, type ValidationContext as StageValidationContext } from '../core/StageTransitionValidator.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
@@ -263,7 +268,7 @@ import type { TopicMemory } from '../memory/TopicMemory.js';
 import type { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
 import type { ProjectMapper } from '../core/ProjectMapper.js';
 import type { CartographerTree } from '../core/CartographerTree.js';
-import { verifyMergedItemsViaGit } from '../core/ProjectRoundExecution.js';
+import { verifyMergedItemsViaGit, resolveCanonicalMainRef } from '../core/ProjectRoundExecution.js';
 import type { ProjectDriftChecker } from '../core/ProjectDriftChecker.js';
 import type { ScopeVerifier } from '../core/ScopeVerifier.js';
 import type { HighRiskAction } from '../core/ScopeVerifier.js';
@@ -330,6 +335,9 @@ import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
+import { resolveChannels } from '../core/channelRegistry.js';
+import { buildChannelDefinitions } from '../core/instarChannels.js';
+import { buildUserChannelDefinitions } from '../core/userChannels.js';
 import { evaluateSendGate, negotiatorLogDir } from '../threadline/NegotiatorGate.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { recordThreadMessage } from '../threadline/recordThreadMessage.js';
@@ -354,6 +362,9 @@ import type { CoherenceGate } from '../core/CoherenceGate.js';
 import type { MessagingToneGate } from '../core/MessagingToneGate.js';
 import { isJunkPayload } from '../core/junk-payload.js';
 import { detectLocalhostLink } from '../core/localhost-link.js';
+import { RelayRefusedError } from '../core/TelegramRelay.js';
+import { scrubForStore } from '../core/durableSecretScrub.js';
+import { credentialGuardMessage, detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
@@ -733,6 +744,9 @@ export function createDeliveryFailedHandler(opts: {
 }
 
 export interface RouteContext {
+  capabilityRegistry?: CapabilityRegistryReceiver | null;
+  /** Unified work-intake registry; absent while fleet rollout is dark. */
+  workQueue?: WorkQueueRegistry | null;
   config: InstarConfig;
   /** Live-config READ handle (mtime-staleness re-reader). Routes that must
    *  honor config flips WITHOUT a restart (outbound-advisory rollback
@@ -1570,53 +1584,6 @@ function hashAuthHeader(header: unknown): string {
 }
 
 
-/**
- * Resolve the canonical-main ref a merged PR's commit must be reachable from,
- * for the projects `building → merged` gate (StageTransitionValidator).
- *
- * Default is `origin/main`. But on a dev-agent home `origin` is the agent's
- * FORK (e.g. instar-echo) while PRs merge on the UPSTREAM repo (JKHeadley/instar),
- * so origin/main never contains the merge commit → every advance failed
- * MERGE_COMMIT_UNREACHABLE. We ask gh which repo it resolves for this cwd
- * (the same repo `gh pr view` reads), then find the LOCAL remote whose URL
- * points at that repo and return `<remote>/main`. Falls back to `origin/main`
- * when gh or the remote mapping is unavailable (canonical-origin installs).
- *
- * READ-ONLY: `gh repo view` + `git remote -v` (the latter via
- * SafeGitExecutor.readSync — `remote` is a READONLY_GIT_VERB, shape-checked
- * to list/get-url only).
- */
-function resolveCanonicalMainRef(repoPath: string): string {
-  const FALLBACK = 'origin/main';
-  try {
-    const ghRepo = execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], {
-      cwd: repoPath,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    if (!ghRepo) return FALLBACK;
-    // `git remote -v` is read-only (shape-checked by readSync). Find the remote
-    // whose fetch URL contains the gh-resolved "owner/repo".
-    const remotesOut = SafeGitExecutor.readSync(['remote', '-v'], {
-      cwd: repoPath,
-      operation: 'projects.advance.resolveCanonicalMainRef',
-      encoding: 'utf-8',
-    });
-    for (const line of remotesOut.split('\n')) {
-      // format: "<name>\t<url> (fetch)"
-      const m = /^(\S+)\s+(\S+)\s+\(fetch\)/.exec(line.trim());
-      if (!m) continue;
-      const [, name, url] = m;
-      // match owner/repo with or without a trailing .git
-      if (url.includes(ghRepo) || url.includes(`${ghRepo}.git`)) {
-        return `${name}/main`;
-      }
-    }
-    return FALLBACK;
-  } catch { /* @silent-fallback-ok: resolving the canonical-main ref is best-effort — gh missing / not-a-gh-repo / git error falls back to the documented `origin/main` default (the prior behavior), which the merge-base gate then re-validates. Not a degradation: it's the conservative default this resolver exists to refine, not replace. */
-    return FALLBACK; // gh missing / not a gh repo / git error → preserve default
-  }
-}
 
 /**
  * Read-check-increment for the per-token projects-creation counter.
@@ -1894,10 +1861,75 @@ export function parseActOrdinal(id: string): number | null {
  */
 export type PendingTrackerVerdict = 'alive' | 'dead' | 'unverifiable';
 
+/**
+ * A pending tracker reference, typed by KIND.
+ *
+ * WHY A KIND EXISTS (census-tracker-ref-kinds): `ACT-1193` was never a *broken*
+ * id — it is the wrong KIND of id for the job. An evolution-action id is a
+ * MACHINE-LOCAL bookkeeping handle, and `PROVENANCE_COVERAGE` is a shipped
+ * source constant that is byte-identical on every install. A per-machine handle
+ * written into a fleet-wide constant can only resolve on the one machine that
+ * minted it, so the debt check is structurally incapable of answering anywhere
+ * else. The 2026-07-23 fix stopped that reading as a DELETION (`unverifiable`
+ * instead of `dead`), which was correct — but a check that can only ever answer
+ * "I don't know" is not yet doing its job.
+ *
+ * A `backlog:` ref resolves against BACKLOG_TRACKERS — a SHIPPED SOURCE
+ * CONSTANT, byte-identical on every install. That is the whole difference.
+ *
+ * REJECTED ALTERNATIVE, recorded because it is the intuitive one and it is
+ * wrong: anchoring to a spec DOCUMENT path (`spec:<slug>`). `docs/` is excluded
+ * from the published package (`.npmignore`; absent from package.json `files[]`),
+ * so a file-existence check resolves FALSE on every fleet install — turning 49
+ * `unverifiable` entries into 49 fleet-wide false DELETIONS. That is strictly
+ * worse than the status quo and re-runs the exact false alarm the 2026-07-23 fix
+ * removed. Caught by external cross-model review, 2026-07-25.
+ */
+export type TrackerRef =
+  | { kind: 'act'; id: string }
+  | { kind: 'backlog'; key: string }
+  | { kind: 'unknown' };
+
+/**
+ * Classify a tracker ref. Shape-only — resolution is the adjudicator's job.
+ *
+ * `backlog:<key>` names an entry in BACKLOG_TRACKERS. The key is charset-clamped
+ * to the same shape the ratchet enforces, so a malformed ref parses as `unknown`
+ * (and reads `dead`) rather than silently becoming a lookup miss.
+ */
+export function parseTrackerRef(ref: string): TrackerRef {
+  const s = (ref ?? '').trim();
+  if (/^ACT-\d+$/.test(s)) return { kind: 'act', id: s };
+  const m = /^backlog:([a-z0-9][a-z0-9-]*)$/.exec(s);
+  if (m) return { kind: 'backlog', key: m[1] };
+  return { kind: 'unknown' };
+}
+
 export function adjudicatePendingTracker(
   act: string,
-  liveActs: LiveEvolutionActs,
+  // NULLABLE on purpose: a machine with no evolution queue on disk can still
+  // adjudicate a `backlog:` ref (it needs no queue). Before this, the CALLSITE
+  // skipped adjudication entirely when the queue was missing, which would have
+  // made every fleet-stable ref silently uncounted on exactly the installs the
+  // fleet-stable kind exists to serve.
+  liveActs: LiveEvolutionActs | null,
 ): PendingTrackerVerdict {
+  const ref = parseTrackerRef(act);
+
+  if (ref.kind === 'backlog') {
+    // Pure lookup over a shipped constant: the same answer on every machine,
+    // with no filesystem and no packaging assumption. A missing key IS a real
+    // deletion — the registry ships with the code, so its absence is a fact
+    // everywhere at once rather than a local gap. `unverifiable` is therefore
+    // unreachable for this kind BY CONSTRUCTION, which is the point.
+    return backlogTrackerExists(ref.key) ? 'alive' : 'dead';
+  }
+
+  // ── ACT kind: unchanged behaviour ──────────────────────────────────────
+  // No queue readable ⇒ this machine cannot resolve a machine-local id. Report
+  // `unverifiable`, never `dead`: not-knowing must not be reported as deletion,
+  // which is the false alarm the 2026-07-23 fix removed.
+  if (liveActs === null) return 'unverifiable';
   if (liveActs.alive.has(act)) return 'alive';
   const ord = parseActOrdinal(act);
   if (ord !== null && ord > liveActs.highWater) return 'unverifiable';
@@ -1929,6 +1961,38 @@ function readLiveEvolutionActs(stateDir: string): LiveEvolutionActs | null {
 
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
+
+  router.get('/capability-registry', (_req, res) => {
+    const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
+    if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
+    if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
+    const projectionFile = path.join(ctx.config.stateDir, 'capability-registry.json');
+    let projection: CapabilityProjection | null = new CapabilityRegistryWriter(projectionFile, 'local').read();
+    if (!projection) {
+      try {
+        const local = readDoorwaySources(ctx.config.projectDir, ctx.config.stateDir, new Date().toISOString(), 'local');
+        projection = { schemaVersion: 1, machineId: 'local', machineEpoch: 0, projectionSeq: 0, ...local, truncated: false, entries: local.entries } as CapabilityProjection;
+      } catch (error) {
+        DegradationReporter.getInstance().report({
+          feature: 'CapabilityRegistry.routeProjection',
+          primary: 'Durable or freshly rebuilt local capability projection',
+          fallback: 'Receiver snapshot or truthful never-observed response',
+          reason: `local doorway projection unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          impact: 'The read route omits local doorway evidence until a projection or receiver snapshot is available.',
+        });
+      }
+    }
+    const fallbackRows = ctx.capabilityRegistry.snapshot();
+    const scanState = projection?.scanState ?? (fallbackRows.length ? 'observed' : 'never-observed');
+    const capabilities = projection ? classifyProjection(projection) : fallbackRows;
+    return res.status(200).json({ advisory: true, scanState, capabilities });
+  });
+  router.get('/capability-registry/health', (_req, res) => {
+    const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
+    if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
+    if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
+    return res.status(200).json({ advisory: true, ...ctx.capabilityRegistry.health() });
+  });
 
   /**
    * Standby-write reconciliation route seam (spec §3.4): the admission check
@@ -2109,6 +2173,177 @@ export function createRoutes(ctx: RouteContext): Router {
     | { ok: true }
     | { ok: false; status: number; reason: string; body: Record<string, unknown> };
 
+  /**
+   * Minimum override-reason length. Low ON PURPOSE — this is a "did you type
+   * anything" floor, not a quality bar. A length check cannot judge whether a
+   * reason is good; that is the bulk judge's job, later, reading the recorded
+   * text. Setting it high would only teach the agent to pad.
+   */
+  const TONE_ADVISORY_REASON_MIN = 8;
+
+  /**
+   * Record how the agent REACTED to an advisory nudge — the tone gate's first
+   * real evidence source (`tone-agent-override-v1` / `tone-agent-complied-v1`).
+   *
+   * override → the verdict is graded `wrong`; complied → `right`. Both land at
+   * the `self-report` rung, so an interested party's account can never outrank
+   * an independent grader.
+   *
+   * Silent no-op without a `decisionRef`: an outcome with nothing to join to is
+   * an orphan row that inflates volume and grades nothing. Total and
+   * fire-and-forget — observability must never break the message path.
+   */
+  /**
+   * A router-minted correlation id: `d-<uuid>` / `b-<uuid>`, optionally with a
+   * machine segment. The agent hands this back through request metadata, so it
+   * is UNTRUSTED input to a durable write — shape-check before it reaches the
+   * annotate chokepoint. (The chokepoint validates grade/rung/owner but has
+   * never had to validate a correlation id, because until this feature no
+   * agent-supplied string could reach it.)
+   */
+  /**
+   * Parse the four tone-advisory reaction fields off a request `metadata`
+   * object, clamped. One helper rather than four inline ternaries per callsite:
+   * the review found the fields plumbed into 2 of 7 outbound routes, and
+   * per-callsite duplication is exactly how that happens again.
+   */
+  function toneAdvisoryMetadata(metadata: Record<string, unknown> | undefined): {
+    toneAdvisoryAck?: string;
+    toneAdvisoryAckReason?: string;
+    toneAdvisoryDecisionRef?: string;
+    toneAdvisoryComplied?: string;
+  } {
+    const str = (v: unknown, max: number): string | undefined =>
+      typeof v === 'string' ? v.slice(0, max) : undefined;
+    return {
+      toneAdvisoryAck: str(metadata?.toneAdvisoryAck, 64),
+      toneAdvisoryAckReason: str(metadata?.toneAdvisoryAckReason, 500),
+      toneAdvisoryDecisionRef: str(metadata?.toneAdvisoryDecisionRef, 128),
+      toneAdvisoryComplied: str(metadata?.toneAdvisoryComplied, 64),
+    };
+  }
+
+  /**
+   * ── Server-side compliance correlation ──────────────────────────────────
+   *
+   * The problem this removes: an override is STRUCTURALLY enforced (the message
+   * will not send without its reason, so the `wrong` grade always lands), while
+   * compliance was an opt-in field the agent had to remember on a revised
+   * re-send. That asymmetry biases the sample toward "the gate was wrong" — the
+   * exact bias the compliance path exists to prevent — and "remember to declare
+   * it" is precisely the willpower this codebase refuses to build on.
+   *
+   * So the server remembers instead. When an advisory 422 goes out we note
+   * (topic → rule, decisionRef, text fingerprint). If the next PASSING send to
+   * that topic within the window carries DIFFERENT text, the agent revised: the
+   * original verdict is graded `right` automatically, with no agent metadata.
+   *
+   * Deliberately conservative — it grades `right` only on positive evidence of a
+   * revision (a passing send with changed text inside the window). A silent
+   * abandonment records nothing rather than being counted either way.
+   */
+  // 10 minutes, not 30: the correlation cannot distinguish "revised the nudged
+  // message" from "gave up on it and sent something unrelated next". A shorter
+  // window is the cheap discriminator — a revision follows a nudge promptly,
+  // while an unrelated message is more likely to arrive later. A similarity
+  // threshold was considered and REJECTED: a genuine rewrite in response to a
+  // nudge often shares almost no wording with the original ("I put it in
+  // docs/x.md" → "want a link or the summary here?"), so similarity would
+  // silently discard exactly the compliances worth recording.
+  const ADVISORY_PENDING_TTL_MS = 10 * 60 * 1000;
+  const ADVISORY_PENDING_MAX = 500;
+  const pendingAdvisories = new Map<number, { rule: string; decisionRef?: string; textSha: string; at: number }>();
+
+  function sha256Short(s: string): string {
+    return createHash('sha256').update(s).digest('hex').slice(0, 32);
+  }
+
+  function notePendingAdvisory(topicId: number | undefined, rule: string, decisionRef: string | undefined, text: string): void {
+    if (typeof topicId !== 'number') return;
+    // Bounded: drop the oldest rather than grow without limit.
+    if (pendingAdvisories.size >= ADVISORY_PENDING_MAX) {
+      const oldest = [...pendingAdvisories.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (oldest) pendingAdvisories.delete(oldest[0]);
+    }
+    pendingAdvisories.set(topicId, { rule, decisionRef, textSha: sha256Short(text), at: Date.now() });
+  }
+
+  /** Returns the reaction to record, if this passing send revises a pending advisory. */
+  function takeRevisionOf(topicId: number | undefined, text: string): { rule: string; decisionRef?: string } | null {
+    if (typeof topicId !== 'number') return null;
+    const p = pendingAdvisories.get(topicId);
+    if (!p) return null;
+    if (Date.now() - p.at > ADVISORY_PENDING_TTL_MS) {
+      pendingAdvisories.delete(topicId);
+      return null;
+    }
+    // Identical text is not a revision — it is a resend, and a resend that
+    // happens to pass is NOT evidence the gate was right.
+    if (sha256Short(text) === p.textSha) return null;
+    pendingAdvisories.delete(topicId);
+    return { rule: p.rule, decisionRef: p.decisionRef };
+  }
+
+  function isPlausibleDecisionRef(ref: string): boolean {
+    return /^[db]-[0-9a-f]{8}(-[0-9a-f-]{8,})?[0-9a-f-]*$/i.test(ref) && ref.length <= 128;
+  }
+
+  function recordToneAdvisoryReaction(input: {
+    decisionRef?: string;
+    rule: string;
+    reaction: 'override' | 'complied';
+    reason?: string;
+    /**
+     * How a `complied` was established. `declared` = the agent named the rule it
+     * accepted; `inferred` = the SERVER correlated a revised re-send after a
+     * nudge. The two are NOT equally strong — an inferred credit cannot tell a
+     * revision from an unrelated next message — so the distinction is RECORDED
+     * on the row rather than flattened. A later judge can weight or discard the
+     * inferred ones; it cannot recover a distinction that was never written down.
+     */
+    derivation?: 'declared' | 'inferred';
+  }): void {
+    try {
+      if (!input.decisionRef || !isPlausibleDecisionRef(input.decisionRef)) return;
+      const ref = input.decisionRef;
+      const reaction = input.reaction;
+      const rule = input.rule;
+      const derivation = input.derivation;
+      // The reason IS the evidence, and it is agent-authored free text landing
+      // in two durable stores. The chokepoint's own scrub is weaker than the
+      // pattern set this very change treats as authoritative (it misses a
+      // 20-char AWS key), so scrub with the strong list HERE before handing it
+      // over. A guard that walls a credential in the message body while storing
+      // one from the reason field would be theatre.
+      const note = input.reason ? scrubForStore(input.reason).text.slice(0, 500) : undefined;
+      // ── Off the send path ────────────────────────────────────────────────
+      // `upsertOutcome` is a synchronous better-sqlite3 transaction that
+      // recomputes the whole (decision_point, day) rollup twice over a window-
+      // function view SQLite cannot push a predicate into. Measured: ~3ms at
+      // today's 1.4k rows, ~80ms at 60k, ~190ms at 120k — and this change puts
+      // the FIRST high-frequency conversational path in front of it. The result
+      // is discarded either way, so there is no reason for the operator's reply
+      // latency to carry a growing rollup recompute.
+      setImmediate(() => {
+        try {
+          annotateDecisionOutcome({
+            correlationId: ref,
+            ruleId: reaction === 'override' ? 'tone-agent-override-v1' : 'tone-agent-complied-v1',
+            gradedBy: { component: 'ToneGateAdvisory' },
+            grade: reaction === 'override' ? 'wrong' : 'right',
+            decisionPoint: DP_MESSAGING_TONE_GATE,
+            ...(note ? { evidenceNote: note } : {}),
+            evidence: { reaction, rule, ...(derivation ? { derivation } : {}) },
+          });
+        } catch {
+          /* @silent-fallback-ok — recording a reaction must never affect delivery */
+        }
+      });
+    } catch {
+      /* @silent-fallback-ok — recording a reaction must never affect delivery */
+    }
+  }
+
   async function evaluateOutbound(
     text: string,
     channel: string,
@@ -2136,6 +2371,23 @@ export function createRoutes(ctx: RouteContext): Router {
        * decision-quality meter, never authority. Never overrides a blocking rule.
        */
       toneAdvisoryAck?: string;
+      /**
+       * WHY the agent is overriding — REQUIRED alongside `toneAdvisoryAck`.
+       * Recorded as the evidence note on the `tone-agent-override-v1` outcome.
+       */
+      toneAdvisoryAckReason?: string;
+      /**
+       * The `decisionRef` returned on the advisory response, joining this
+       * reaction to the exact verdict it answers. Falls back to the current
+       * review's own id when omitted (a re-review of the same text).
+       */
+      toneAdvisoryDecisionRef?: string;
+      /**
+       * The rule the agent ACCEPTED: set on the revised re-send so a good catch
+       * is graded `right`. Without it, compliance is invisible and the meter
+       * only ever sees the overrides — a systematically unflattering sample.
+       */
+      toneAdvisoryComplied?: string;
     },
   ): Promise<OutboundEvaluation> {
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
@@ -2160,6 +2412,31 @@ export function createRoutes(ctx: RouteContext): Router {
               `If the operator explicitly asked for the raw local URL, resend with metadata.allowLocalhostLink: true.`,
             blockedBy: 'localhost-link-guard',
             match: localLink.match,
+          },
+        };
+      }
+    }
+
+    // ── Live-credential hard wall (operator directive 2026-07-19) ──────────
+    // The ONE non-overridable outbound check, and the precondition that makes
+    // the advisory migration safe: every LLM judgment became an overridable
+    // nudge, so the thing that must never be overridable moved to a
+    // deterministic guard. Runs BEFORE the authority — like the localhost-link
+    // guard — so it holds on installs with no gate configured, during a
+    // provider outage, and under spawn-cap saturation. No `metadata` escape
+    // hatch exists by design; the error names the credential CLASS only.
+    {
+      const cred = detectOutboundCredential(text);
+      if (cred.detected && cred.kind) {
+        return {
+          ok: false,
+          status: 422,
+          reason: 'credential-exposure-guard',
+          body: {
+            error: credentialGuardMessage(cred.kind),
+            blockedBy: 'credential-exposure-guard',
+            credentialKind: cred.kind,
+            overridable: false,
           },
         };
       }
@@ -2424,9 +2701,11 @@ export function createRoutes(ctx: RouteContext): Router {
       // single-human-operator), and decide whether an availability failure should
       // DELIVER (operator's own channel, 'tiered' mode, not dryRun) vs HOLD.
       const recipientClass = resolveToneRecipientClass(ctx.topicOperatorStore, options.topicId);
-      const _toneCfg = (ctx.config as {
-        messaging?: { toneGate?: { failClosedOnExhaustion?: boolean; failClosedMode?: 'always' | 'tiered' | 'never'; toneTierDryRun?: boolean } };
-      }).messaging?.toneGate;
+      // Single wiring point (tone-gate capture wiring fix): the top-level
+      // toneGate block via the shared resolver — the old inlined
+      // messaging?.toneGate read here was the second copy of the knob list
+      // against the structurally-dead location (messaging is an array).
+      const _toneCfg = resolveToneGateOperatorConfig(ctx.config);
       const _toneMode: 'always' | 'tiered' | 'never' =
         _toneCfg?.failClosedMode ?? (_toneCfg?.failClosedOnExhaustion === false ? 'never' : 'always');
       const operatorTierDeliver =
@@ -2447,8 +2726,14 @@ export function createRoutes(ctx: RouteContext): Router {
       const budgetFailClosed = !operatorTierDeliver && perCallAllowsClosed && globalFailClosed !== false;
       const budgetDegrade =
         budgetFailClosed && globalFailClosed !== true
-          ? (latencyMs: number) => buildDegradedToneResult(text, latencyMs, 'budget-timeout')
+          ? (latencyMs: number) =>
+              // Same disposition as review()'s fast-throw degrade: the SLOW and
+              // FAST manifestations of one outage must not disagree about
+              // whether a caught artifact is a nudge or a wall.
+              buildDegradedToneResult(text, latencyMs, 'budget-timeout', _toneCfg?.advisoryMigration === true)
           : undefined;
+      const templateFingerprint =
+        options.messageKind === 'automated' ? fingerprintAutomatedTemplate(text) : undefined;
       const result = await reviewWithinBudget(
         ctx.messagingToneGate.review(text, {
           channel,
@@ -2456,6 +2741,7 @@ export function createRoutes(ctx: RouteContext): Router {
           signals,
           targetStyle: ctx.config.messagingStyle,
           messageKind: options.messageKind,
+          templateFingerprint,
           agentState,
           recipientClass,
           // Undefined in observe-only mode (the default) and on every uncertainty,
@@ -2488,6 +2774,36 @@ export function createRoutes(ctx: RouteContext): Router {
         result,
       });
 
+      // ── Compliance credit ────────────────────────────────────────────────
+      // The revised re-send passed → the ORIGINAL verdict is graded `right`.
+      // Recording only overrides would measure the gate exclusively through the
+      // cases the agent disputed: a sample guaranteed to look worse than the
+      // gate is.
+      //
+      // The SERVER correlates this (see notePendingAdvisory) so it does not
+      // depend on the agent remembering two metadata fields across a revise
+      // cycle — the override path is structurally enforced, and an opt-in
+      // counterpart would leave the sample permanently skewed. The explicit
+      // `toneAdvisoryComplied` remains honored as a direct declaration.
+      if (result.pass) {
+        const revised = takeRevisionOf(options.topicId, text);
+        if (options.toneAdvisoryComplied) {
+          recordToneAdvisoryReaction({
+            decisionRef: options.toneAdvisoryDecisionRef ?? revised?.decisionRef,
+            rule: options.toneAdvisoryComplied,
+            reaction: 'complied',
+            derivation: 'declared',
+          });
+        } else if (revised) {
+          recordToneAdvisoryReaction({
+            decisionRef: revised.decisionRef,
+            rule: revised.rule,
+            reaction: 'complied',
+            derivation: 'inferred',
+          });
+        }
+      }
+
       if (!result.pass) {
         // ── Advisory disposition (operator directive 2026-07-18, topic 29723) ──
         // An advisory-rule citation is a NUDGE, never a terminal block: the
@@ -2496,9 +2812,96 @@ export function createRoutes(ctx: RouteContext): Router {
         // resend unchanged with metadata.toneAdvisoryAck = "<rule>" to
         // acknowledge; the override is RECORDED (a decision-quality signal,
         // never authority). A blocking rule can NEVER be overridden this way.
+        // ── The evidence-capturability invariant ─────────────────────────────
+        // NEVER trade authority for evidence we are not collecting.
+        //
+        // The migration's entire justification is that an overridable nudge
+        // produces the disagreement data a hard block cannot. That bargain is
+        // void whenever the reaction could not actually be recorded, and there
+        // are two independent ways for that to be true — both reachable in the
+        // DEFAULT configuration, which is what makes this a real hazard rather
+        // than a theoretical one:
+        //
+        //   1. The quality seam is dark or dry-run. `provenance.uniformSeam` is
+        //      a SEPARATE gate from `toneGate.advisoryMigration`, and its dryRun
+        //      DEFAULTS TRUE — so flipping the migration on without it would
+        //      hand out every loosening and record nothing.
+        //   2. No `decisionRef` was minted. The budget-timeout degrade builds
+        //      its verdict in the route, outside the gate, where the router's
+        //      correlation id is unreachable — precisely the path that fires
+        //      under load.
+        //
+        // In either case the verdict falls back to a BLOCK. That is the safe
+        // direction (it preserves today's behaviour rather than relaxing it),
+        // and it makes the migration self-limiting: it can only ever be as live
+        // as its own evidence collection.
+        //
+        // SCOPE: only a MIGRATION-derived advisory is subject to this. A rule
+        // whose BASELINE disposition is already advisory (B21, which shipped
+        // that way in the correction-derived-hardening work) never made the
+        // evidence bargain — it was always simply the agent's call — so
+        // demoting it here would silently harden a shipped, working behaviour
+        // on every install where the quality seam is dark. That would be a
+        // regression introduced by a safety check, which is its own bug class.
+        if (
+          result.advisory === true &&
+          RULE_DISPOSITIONS[result.rule] !== 'advisory' &&
+          (!result.decisionRef || !decisionQualityRecordingLive())
+        ) {
+          logToneGateDecision({
+            text,
+            channel,
+            topicId: options.topicId,
+            signals,
+            result: { ...result, advisory: false, advisoryUnrecordable: true },
+          });
+          return {
+            ok: false,
+            status: 422,
+            reason: 'tone-gate-blocked',
+            body: {
+              error: 'tone-gate-blocked',
+              rule: result.rule,
+              issue: result.issue,
+              suggestion: result.suggestion,
+              // Named, never silent: the operator can see WHY a nudge came back
+              // as a wall (No Silent Degradation).
+              advisoryUnavailable: !result.decisionRef
+                ? 'no-decision-ref'
+                : 'quality-recording-not-live',
+              latencyMs: result.latencyMs,
+            },
+          };
+        }
         if (result.advisory === true) {
           if (options.toneAdvisoryAck === result.rule) {
-            const overridden = { ...result, advisoryOverridden: true };
+            // The override REASON is structurally required, not requested. The
+            // whole point of the migration is the evidence: an override with no
+            // recorded reason is an ungradeable event, and "remember to explain
+            // yourself" is exactly the willpower this codebase refuses to rely
+            // on. So a reasonless ack is refused and the message stays unsent.
+            const reason = (options.toneAdvisoryAckReason ?? '').trim();
+            if (reason.length < TONE_ADVISORY_REASON_MIN) {
+              return {
+                ok: false,
+                status: 422,
+                reason: 'tone-gate-advisory-reason-required',
+                body: {
+                  error: 'tone-gate-advisory-reason-required',
+                  notSent: true,
+                  rule: result.rule,
+                  howToProceed:
+                    `The override needs a reason: re-send with metadata.toneAdvisoryAck = "${result.rule}" AND ` +
+                    `metadata.toneAdvisoryAckReason = a short sentence on why the nudge is wrong here. ` +
+                    `It is recorded as the evidence that grades this check.`,
+                },
+              };
+            }
+            const overridden = {
+              ...result,
+              advisoryOverridden: true,
+              overrideReasonHead: scrubForStore(reason).text.slice(0, 120),
+            };
             logToneGateDecision({
               text,
               channel,
@@ -2506,8 +2909,17 @@ export function createRoutes(ctx: RouteContext): Router {
               signals,
               result: overridden,
             });
+            recordToneAdvisoryReaction({
+              decisionRef: options.toneAdvisoryDecisionRef ?? result.decisionRef,
+              rule: result.rule,
+              reaction: 'override',
+              reason,
+            });
             return { ok: true };
           }
+          // Remember it so a later revised send is credited WITHOUT the agent
+          // having to carry metadata back (the asymmetry fix).
+          notePendingAdvisory(options.topicId, result.rule, result.decisionRef, text);
           return {
             ok: false,
             status: 422,
@@ -2518,7 +2930,17 @@ export function createRoutes(ctx: RouteContext): Router {
               rule: result.rule,
               issue: result.issue,
               suggestion: result.suggestion,
-              howToProceed: `ADVISORY — the message was NOT sent, and the decision is yours: revise and re-send, or re-send unchanged with metadata.toneAdvisoryAck set to "${result.rule}" to acknowledge and deliver (the override is recorded).`,
+              // Handed back so the resend can JOIN its reaction to this exact
+              // decision. Without it an override is an orphan the grader can
+              // never attach to the verdict it disputes.
+              ...(result.decisionRef ? { decisionRef: result.decisionRef } : {}),
+              howToProceed:
+                `ADVISORY — the message was NOT sent, and the decision is yours. Either (a) revise and re-send, adding ` +
+                `metadata.toneAdvisoryComplied = "${result.rule}"` +
+                (result.decisionRef ? ` and metadata.toneAdvisoryDecisionRef = "${result.decisionRef}"` : '') +
+                ` so the check gets credit for a catch; or (b) re-send unchanged with metadata.toneAdvisoryAck = ` +
+                `"${result.rule}" plus metadata.toneAdvisoryAckReason explaining why the nudge is wrong here. ` +
+                `Both are recorded — they are how this check learns whether it is any good.`,
               latencyMs: result.latencyMs,
             },
           };
@@ -2560,6 +2982,9 @@ export function createRoutes(ctx: RouteContext): Router {
       messageKind?: MessageKind;
       failClosedOnBudgetTimeout?: boolean;
       toneAdvisoryAck?: string;
+      toneAdvisoryAckReason?: string;
+      toneAdvisoryDecisionRef?: string;
+      toneAdvisoryComplied?: string;
     },
   ): Promise<boolean> {
     // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
@@ -2908,6 +3333,22 @@ export function createRoutes(ctx: RouteContext): Router {
         // failure so it is AUDITED, never silent (the No-Silent-Degradation
         // reconciliation rests on this being observable).
         failedOpenOperatorChannel: entry.result.failedOpenOperatorChannel || false,
+        // ── Advisory migration audit (ALWAYS ON) ──────────────────────────
+        // The override is the one event this whole feature exists to observe,
+        // and until this line existed an override logged BYTE-IDENTICALLY to
+        // the verdict it overrode. The structured evidence row is the rich
+        // record, but it lives behind a separate feature gate that defaults to
+        // recording nothing — so the audit that must never be absent belongs
+        // HERE, on the unconditional stderr line, not there.
+        advisory: entry.result.advisory || false,
+        advisoryOverridden: entry.result.advisoryOverridden || false,
+        // Present only when the advisory disposition was withdrawn because its
+        // evidence could not be captured — names the reason rather than
+        // silently reverting to a wall.
+        advisoryUnrecordable: entry.result.advisoryUnrecordable || false,
+        // A bounded, scrubbed head of the override reason. Enough to audit that
+        // a reason existed and roughly what it said; never the whole field.
+        overrideReasonHead: entry.result.overrideReasonHead ?? null,
         latencyMs: entry.result.latencyMs,
         signals: {
           junk: entry.signals.junk?.detected ?? null,
@@ -3361,7 +3802,7 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({ contextText: '', source: 'no-recall', elapsedMs: 0, resultsCount: 0, cacheKey: '' });
       return;
     }
-    const result = recall.recall({ userMessage, sessionId });
+    const result = await recall.recall({ userMessage, sessionId });
     res.json(result);
   });
 
@@ -6563,7 +7004,7 @@ export function createRoutes(ctx: RouteContext): Router {
         nodeCount: 0, authoredCount: 0, neverAuthoredCount: 0, staleCount: 0, generatedAt: null,
         freshness: {
           nodeCount: 0, authorableCount: 0, freshCount: 0, staleCount: 0, neverAuthoredCount: 0,
-          neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0, authorFailedCount: 0, freshRatio: 1, generatedAt: null,
+          neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0, authorFailedCount: 0, freshRatio: null, generatedAt: null,
         },
         sweepEnabled: sweepCfg?.enabled === true,
         ...meta,
@@ -6755,12 +7196,23 @@ export function createRoutes(ctx: RouteContext): Router {
     let report: StandardsCoverageReport;
     try { report = conformanceReport(); }
     catch (err) { res.status(500).json({ error: 'coverage compute failed', detail: err instanceof Error ? err.message : String(err) }); return; }
+    // `converged` means ONLY "the deterministic pass is stable" — re-running on
+    // unchanged inputs is byte-identical. It has never meant "the standards are
+    // healthy", but sitting bare beside `enforcedRatio` it read that way: on
+    // 2026-07-25 this response reported `converged: true` next to `0.0455` over a
+    // registry fragment, and the agent reading it drew the wrong conclusion twice
+    // in one day, then quoted it to the operator. The meaning now travels with the
+    // field, and the trustworthiness of the ratio travels beside it.
     res.json({
       enabled: true,
       generatedAt: report.generatedAt,
-      // The deterministic pass always converges — re-running on unchanged inputs is
-      // byte-identical, so `converged` is structurally true.
       converged: true,
+      convergedMeans: 'the deterministic pass is stable on unchanged inputs; NOT that standards are healthy',
+      // `assessmentConfidence` + `confidenceReason` arrive via the summary spread and are
+      // the fields to read. `assessmentTrustworthy` is retained (deprecated) for one
+      // release: it is TRUE only on a 'verified' verdict, which requires an external
+      // expectation that does not exist yet — so a stale-but-coherent registry now reads
+      // 'unverified' with the reason attached instead of asserting trust it never earned.
       ...report.summary,
     });
   });
@@ -9431,13 +9883,62 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
       } catch { /* skip unreadable source */ }
-      // (2) Evolution actions — a JSON array under .actions (each with top-level
-      // createdAt), NOT a logs/*.jsonl stream.
+      // (2) Evolution actions — COUNTED ON COMPLETION, NOT ON FILING.
+      //
+      // The metric's own inversion (ACT-1244, verified 2026-07-25). The old line
+      // counted EVERY action at its `createdAt`, so 739 of 771 "learning events" —
+      // 96% — were items merely FILED. Measured the same day on this agent's real
+      // queue: of 1,285 actions, 740 were still pending, 523 cancelled (494 of those
+      // carrying the resolution "Abandoned without active tracking since creation
+      // date"), 20 completed, 2 in progress.
+      //
+      // So the metric answering "are we learning?" was almost purely a measure of
+      // filing RATE — and filing is precisely what we do INSTEAD of finishing: the
+      // faster work was abandoned, the higher the adaptability score climbed. It read
+      // 88/100 "accelerating" on the morning the operator halted all work because the
+      // opposite was visibly true.
+      //
+      // A learning event is a piece of work that FINISHED. An action contributes one
+      // only when it reached `completed`, stamped at `completedAt` (when the learning
+      // actually happened) rather than `createdAt` (when the intention was recorded).
+      // Pending, in_progress, cancelled and auto-abandoned contribute nothing and are
+      // accounted for by exclusion reason, so a low score is legible as "little has
+      // finished" rather than mistaken for "we stopped learning".
+      const actionAccounting = {
+        considered: 0,
+        counted: 0,
+        excluded: {} as Record<string, number>,
+      };
+      const excludeAction = (reason: string): void => {
+        actionAccounting.excluded[reason] = (actionAccounting.excluded[reason] ?? 0) + 1;
+      };
       try {
         const p = path.join(ctx.config.stateDir, 'state', 'evolution', 'action-queue.json');
         if (fs.existsSync(p)) {
           const aq = JSON.parse(fs.readFileSync(p, 'utf-8'));
-          for (const a of (aq.actions ?? [])) push(tsField(a), 'evolution');
+          for (const a of (aq.actions ?? [])) {
+            actionAccounting.considered += 1;
+            const rec = (a ?? {}) as Record<string, unknown>;
+            const status = typeof rec.status === 'string' ? rec.status : 'unknown';
+            if (status !== 'completed') {
+              // Name the auto-abandoned class specifically: it is the single largest
+              // bucket and the one the old metric scored as learning.
+              const resolution = typeof rec.resolution === 'string' ? rec.resolution : '';
+              excludeAction(status === 'cancelled' && /abandoned without active tracking/i.test(resolution)
+                ? 'auto-abandoned'
+                : `not-completed:${status}`);
+              continue;
+            }
+            // A completion with no completion timestamp cannot be placed in the
+            // window; counting it at createdAt would re-import the filing bias.
+            const completedAt = rec.completedAt ?? rec.updatedAt;
+            if (completedAt === undefined || completedAt === null || completedAt === '') {
+              excludeAction('completed-without-timestamp');
+              continue;
+            }
+            push(completedAt, 'evolution');
+            actionAccounting.counted += 1;
+          }
         }
       } catch { /* skip unreadable source */ }
       // (3) Corrections — persisted in the SQLite CorrectionLedger, not a JSONL file.
@@ -9449,7 +9950,15 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         } catch { /* skip ledger error */ }
       }
-      res.json(computeLearningVelocity(events, new Date().toISOString(), windowDays));
+      // The score never travels without what it was computed over (the
+      // honest-denominator rule applied to this metric): `counting` states the rule in
+      // one line, and `evolutionActions` shows how much was excluded and why — so a
+      // reader can tell "we are not learning" from "almost nothing has finished yet".
+      res.json({
+        ...computeLearningVelocity(events, new Date().toISOString(), windowDays),
+        counting: 'evolution actions count on completion (completedAt), never on filing (createdAt)',
+        evolutionActions: actionAccounting,
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to compute learning velocity' });
     }
@@ -13298,6 +13807,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Advisory-rule override (operator directive 2026-07-18): the FULL rule id
     // the sender explicitly acknowledges. Length-clamped; validated against the
     // cited rule at the seam (a mismatch or a blocking rule is never overridden).
+    const toneAdvisoryAckReason =
+      typeof metadata?.toneAdvisoryAckReason === 'string'
+        ? metadata.toneAdvisoryAckReason.slice(0, 500)
+        : undefined;
+    const toneAdvisoryDecisionRef =
+      typeof metadata?.toneAdvisoryDecisionRef === 'string'
+        ? metadata.toneAdvisoryDecisionRef.slice(0, 128)
+        : undefined;
+    const toneAdvisoryComplied =
+      typeof metadata?.toneAdvisoryComplied === 'string'
+        ? metadata.toneAdvisoryComplied.slice(0, 64)
+        : undefined;
     const toneAdvisoryAck =
       typeof metadata?.toneAdvisoryAck === 'string'
         ? metadata.toneAdvisoryAck.slice(0, 64)
@@ -13387,6 +13908,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         allowLocalhostLink,
         messageKind,
         toneAdvisoryAck,
+        toneAdvisoryAckReason,
+        toneAdvisoryDecisionRef,
+        toneAdvisoryComplied,
       }))
     )
       return;
@@ -13417,12 +13941,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // lease holder, the kind metadata must survive the hop so the
         // HOLDER's gate/audit see accurate context. Direct sends ignore it.
         kindMetadata:
-          messageKind || senderClass || advisoryAck
+          messageKind || senderClass || advisoryAck || toneAdvisoryAck || toneAdvisoryComplied
             ? {
                 ...(messageKind ? { messageKind } : {}),
                 ...(senderClass ? { senderClass } : {}),
                 ...(metadataJobSlug ? { jobSlug: metadataJobSlug } : {}),
                 ...(advisoryAck ? { advisoryAck: true, advisoryCodes } : {}),
+                // ── Tone-advisory reaction across the relay hop ─────────────
+                // A tokenless standby SKIPS its own gate and relays to the
+                // lease holder, which gates on receipt. Without these four the
+                // holder re-cites the advisory on every attempt and the ack can
+                // never reach it — a relayed topic would hold a permanently
+                // unsendable message with no recourse, which is the exact
+                // failure the migration exists to remove.
+                ...(toneAdvisoryAck ? { toneAdvisoryAck } : {}),
+                ...(toneAdvisoryAckReason ? { toneAdvisoryAckReason } : {}),
+                ...(toneAdvisoryDecisionRef ? { toneAdvisoryDecisionRef } : {}),
+                ...(toneAdvisoryComplied ? { toneAdvisoryComplied } : {}),
               }
             : undefined,
       });
@@ -13515,6 +14050,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // retry of this exact text is not wrongly suppressed as a duplicate. Safe
       // no-op when nothing was reserved (allowDuplicate / below-floor text).
       outboundContentDedup.releaseReservation(topicId, text);
+      // ── Holder refusal, relayed verbatim ────────────────────────────────
+      // On a tokenless standby the tone gate runs on the HOLDER, so its 422
+      // arrives here as a thrown RelayRefusedError. Re-emit the holder's own
+      // status and body: reporting an actionable refusal (a nudge with a rule,
+      // a decisionRef and how to proceed) as a generic 500 is what left a
+      // relayed topic holding a permanently unanswerable message.
+      if (err instanceof RelayRefusedError) {
+        res.status(err.status).json({ ...err.body, relayedFromHolder: true });
+        return;
+      }
       // @silent-fallback-ok — NOT a silent fallback: this catch surfaces a 500 to the
       // caller. The tag exists because the no-silent-fallbacks scanner's fixed 20-line
       // window reaches past this route's end into the next route's `db = null`
@@ -13567,6 +14112,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         try { db.close(); } catch { /* best-effort */ }
       }
     }
+  });
+
+  // ── Unified work-intake registry (dev-agent live, fleet dark) ──
+  /** GET /work-queue — ranked active work from the unified intake registry. */
+  router.get('/work-queue', (_req, res) => {
+    if (!resolveDevAgentGate(ctx.config.workQueue?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'work queue is not enabled' });
+      return;
+    }
+    if (!ctx.workQueue) { res.status(503).json({ error: 'work queue unavailable' }); return; }
+    res.json({ items: ctx.workQueue.list() });
+  });
+  // @write-domain:none
+  /** POST /work-queue/rescore — recompute rankings without durable writes. */
+  router.post('/work-queue/rescore', (_req, res) => {
+    if (!resolveDevAgentGate(ctx.config.workQueue?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'work queue is not enabled' });
+      return;
+    }
+    if (!ctx.workQueue) { res.status(503).json({ error: 'work queue unavailable' }); return; }
+    res.json({ items: ctx.workQueue.rescore() });
   });
 
   // POST /build/heartbeat — /build pipeline status relay.
@@ -13725,6 +14291,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // verdicts (a fast block) still hold; only the no-verdict-in-time path
         // delivers. (Block/allow on a returned verdict is unchanged.)
         failClosedOnBudgetTimeout: false,
+        // Channel parity for the advisory migration. This route is MANDATED by
+        // the agent template for every ship/restart narration and has no
+        // fallback channel — so an advisory 422 here that promised an override
+        // the route could not accept would loop the agent with nowhere to go.
+        ...toneAdvisoryMetadata(metadata),
       })
     )
       return;
@@ -14309,10 +14880,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       await checkOutboundMessage(text, 'slack', res, {
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
-        toneAdvisoryAck:
-          typeof metadata?.toneAdvisoryAck === 'string'
-            ? metadata.toneAdvisoryAck.slice(0, 64)
-            : undefined,
+        // Channel parity: the override/compliance evidence path is not a
+        // Telegram feature. A Slack override that recorded nothing would make
+        // the meter's sample silently channel-dependent.
+        ...toneAdvisoryMetadata(metadata),
         // Kind threading mirrors /telegram/reply — the jargon/filePath signal
         // computation is single-sourced inside evaluateOutbound, so every
         // channel gets it uniformly (spec outbound-jargon-filepath-gap §2.2).
@@ -14642,7 +15213,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     try {
-      const item = await ctx.telegram.createAttentionItem({
+      const create = ctx.telegram.createAttentionItem({
         id,
         title,
         summary,
@@ -14653,6 +15224,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         lane,
         healthKey,
       });
+      // Acceptance of an attention item must not inherit Telegram latency.
+      // The adapter persists/idempotently owns the item before its network
+      // routing; return the accepted envelope if the external send is slow.
+      const item = await Promise.race([
+        create,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+      ]);
+      if (item === null) {
+        res.status(201).json({ id, title, summary, category: category || 'general', priority, description: description || undefined, sourceContext: sourceContext || undefined, lane, healthKey, status: 'OPEN' });
+        return;
+      }
       res.status(201).json(item);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -15282,17 +15864,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const candidateIds = candidates.map((c) => c.id);
       if (candidateIds.length > 0) {
         let verified: Set<string> = new Set();
+        let regressedIds: Set<string> = new Set();
         try {
-          verified = await verifyMergedItemsViaGit(project.targetRepoPath, candidateIds, ctx.initiativeTracker);
+          const outcome = await verifyMergedItemsViaGit(
+            project.targetRepoPath,
+            candidateIds,
+            ctx.initiativeTracker,
+            // The fork-origin fix the advance path already applies. Without it a
+            // dev-agent home checks the agent's FORK, where the merge commit is
+            // genuinely absent, and every healthy item reads as regressed.
+            resolveCanonicalMainRef(project.targetRepoPath),
+          );
+          verified = outcome.verified;
+          regressedIds = outcome.regressed;
         } catch {
-          // git not available, no network, etc. — leave verified empty so we
-          // still update ciCheckedAt to back off; better than a hot loop.
+          // Whole-call failure — leave BOTH sets empty so every candidate falls
+          // into the unverifiable branch below. We still bump ciCheckedAt to back
+          // off rather than spin, but we do not invent a verdict.
         }
         let touched = false;
         for (const cand of candidates) {
           const child = ctx.initiativeTracker.get(cand.id);
           if (!child) continue;
           const isMerged = verified.has(cand.id);
+          const isRegressed = regressedIds.has(cand.id);
+          // "I could not check" is not a verdict. Previously anything not in
+          // `verified` was marked `regressed`, so a guard refusal, a missing
+          // binary or a bad ref demoted a healthy item and cleared its round's
+          // schedule. Only git's documented exit 1 demotes now; an unverifiable
+          // item keeps its stage and only takes the ciCheckedAt backoff, so the
+          // question is asked again later instead of being answered wrongly now.
+          if (!isMerged && !isRegressed) {
+            try {
+              await ctx.initiativeTracker.update(cand.id, {
+                ciCheckedAt: new Date(nowMs).toISOString(),
+                ifMatch: child.version,
+              });
+              touched = true;
+            } catch { /* @silent-fallback-ok — backoff only; stage untouched */ }
+            continue;
+          }
           try {
             await ctx.initiativeTracker.update(cand.id, {
               pipelineStage: isMerged ? 'merged' : 'regressed',
@@ -15557,27 +16168,59 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // out multimachine-coherence P0). Both helpers are READ-ONLY git/gh against
       // the project's target repo.
       ghPrView: async (prNumber: number) => {
+        // Resolve gh by absolute path: the server is launched by launchd with a
+        // minimal PATH that omits /opt/homebrew/bin, so bare 'gh' died with a raw
+        // `spawnSync gh ENOENT` and NO project item could reach `merged`
+        // (found 2026-07-25). A missing binary is now a NAMED diagnostic rather
+        // than an opaque spawn error — the gate still refuses, but says why.
+        const ghBin = resolveGhBinary();
+        if (!ghBin) {
+          throw new Error(
+            'the GitHub CLI (gh) could not be found. The server may be running with a ' +
+            'minimal PATH; set INSTAR_GH_PATH to its absolute path. The merge cannot be ' +
+            'verified without it, so this transition is refused rather than assumed.',
+          );
+        }
         const out = execFileSync(
-          'gh',
+          ghBin,
           ['pr', 'view', String(prNumber), '--json', 'state,mergeCommit,statusCheckRollup'],
           { cwd: project.targetRepoPath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
         );
         return JSON.parse(out) as import('../core/StageTransitionValidator.js').GhPrView;
       },
       gitMergeBaseIsAncestor: (sha: string, branch: string) => {
-        // `merge-base --is-ancestor` is a READ-ONLY verb (in SafeGitExecutor's
-        // READONLY_GIT_VERBS) — routed through readSync (the sanctioned read
-        // path), not raw execFileSync, per the destructive-tool funnel. It
-        // exits 0 (ancestor → readSync returns) or 1 (not → readSync throws).
+        // `merge-base --is-ancestor` is a READ-ONLY verb — routed through readSync
+        // (the sanctioned read path), not raw execFileSync, per the destructive-tool
+        // funnel. It exits 0 (ancestor) or 1 (not an ancestor).
+        //
+        // `sourceTreeReadOk` is REQUIRED here and its absence was a live defect
+        // (found 2026-07-25 recording PR #1641 as merged). readSync runs the
+        // SourceTreeGuard unless the caller declares a read, and a project's
+        // targetRepoPath IS an instar source tree — so the guard refused this query
+        // every time. `merge-base` is already in SOURCE_TREE_READ_TIER_VERBS, i.e.
+        // the permission for exactly this read exists; it simply was never asked for.
+        //
+        // The far worse half was below: the old `catch { return false }` converted
+        // that REFUSAL into "the merge commit is not on main" — a fabricated factual
+        // claim, and the reason this step's failure was indistinguishable from a real
+        // negative for as long as it existed. A refusal is not an answer. Only git's
+        // documented exit status 1 means "not an ancestor"; every other failure
+        // (guard refusal, missing binary, bad revision → 128, timeout) is UNVERIFIABLE
+        // and is rethrown so the validator can say so instead of guessing.
         try {
           SafeGitExecutor.readSync(['merge-base', '--is-ancestor', sha, branch], {
             cwd: project.targetRepoPath,
             operation: 'projects.advance.mergeBaseIsAncestor',
             stdio: ['ignore', 'ignore', 'ignore'],
+            sourceTreeReadOk: true,
           });
-          return true; // exit 0 = sha is an ancestor of branch
-        } catch { /* @silent-fallback-ok: merge-base --is-ancestor signals via exit code (0 ancestor / 1 not); a non-zero exit IS the negative answer, not a degradation — returning false is the correct, complete result, and the validator surfaces MERGE_COMMIT_UNREACHABLE to the caller. */
-          return false; // exit 1 = not an ancestor; any other failure = treat as not-ancestor (validator re-checks)
+          return true; // exit 0 = sha IS an ancestor of branch
+        } catch (err) {
+          const status = (err as { status?: unknown }).status;
+          if (status === 1) return false; // the ONLY genuine "not an ancestor"
+          throw new Error(
+            `merge-base --is-ancestor could not be verified (${err instanceof Error ? err.message : String(err)})`,
+          );
         }
       },
       // Resolve the canonical-main ref the merge commit must be reachable from.
@@ -15600,8 +16243,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     try {
+      // Persist the evidence the gate just established, in the SAME write that
+      // records the stage. Before 2026-07-26 the validated artifact built the
+      // validation context and was then discarded, so an item read `merged`
+      // while carrying no prNumber, no merge commit and no check timestamp —
+      // strictness at the gate, amnesia in the record. Two merged-state
+      // reconcilers select on `mergeCommitOid`, so nothing being written meant
+      // they matched nothing and reported nothing, which reads exactly like
+      // "no regressions found".
       const updated = await ctx.initiativeTracker.update(itemId, {
         pipelineStage: targetStage,
+        ...(result.evidence
+          ? {
+              prNumber: result.evidence.prNumber,
+              mergeCommitOid: result.evidence.mergeCommitOid,
+              ciCheckedAt: result.evidence.verifiedAt,
+            }
+          : {}),
         ifMatch: child.version,
       });
       // Bump the project version too so concurrent advance calls don't
@@ -15613,8 +16271,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ifMatch: project.version,
       });
       res.json({
-        item: { id: updated.id, pipelineStage: updated.pipelineStage, version: updated.version },
+        item: {
+          id: updated.id,
+          pipelineStage: updated.pipelineStage,
+          version: updated.version,
+          // Echo back what the record now holds, so a caller can confirm the
+          // evidence landed instead of trusting that it did.
+          prNumber: updated.prNumber,
+          mergeCommitOid: updated.mergeCommitOid,
+          ciCheckedAt: updated.ciCheckedAt,
+        },
         project: { id: refreshed.id, version: refreshed.version },
+        ...(result.evidence ? { evidence: result.evidence } : {}),
       });
     } catch (err) {
       if (err instanceof Error && err.name === 'OccVersionMismatchError') {
@@ -15800,7 +16468,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // single-machine view on installs where the pool registry isn't wired (dark).
   router.get('/pool', (_req, res) => {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
-    const machines = ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [];
+    // Rope-condition decoration: the registry's `online` flag feeds placement and
+    // ages out on the conservative failoverThreshold (~15 min observed), while
+    // the rope-health monitor knows a peer's transports are down within one
+    // evaluation. Attach the live classification so reachability renders
+    // honestly without touching placement semantics. Monitor dark → absent.
+    const machines = decorateWithRopeCondition(
+      ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [],
+      ctx.ropeHealthMonitor?.status().peers,
+    );
     const sshEnrollment = ctx.mutualSshHealth ? ctx.mutualSshHealth() : null;
     res.json({
       enabled: !!ctx.machinePoolRegistry,
@@ -16038,6 +16714,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       let right = 0;
       let wrong = 0;
       let unknown = 0;
+      // right+wrong outcomes whose evidence is the interested party's own
+      // account (see the honesty marker on gradeDistribution below).
+      let selfReportGraded = 0;
       const byRule: Record<string, GradeCounts> = {};
       const byRung: Record<string, GradeCounts> = {};
       const byStrength: Record<string, GradeCounts> = {};
@@ -16045,6 +16724,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (r.grade === 'right') right += r.n;
         else if (r.grade === 'wrong') wrong += r.n;
         else if (r.grade === 'unknown') unknown += r.n;
+        if ((r.grade === 'right' || r.grade === 'wrong') && r.evidenceStrength === 'self-report') {
+          selfReportGraded += r.n;
+        }
         bump(byRule, r.ruleId, r.grade, r.n);
         bump(byRung, r.rung, r.grade, r.n);
         bump(byStrength, r.evidenceStrength, r.grade, r.n);
@@ -16061,7 +16743,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         outcomesKnownRatio: decisions > 0 ? outcomesKnown / decisions : 0,
         // Below the minimum sample an aggregate rate is not actionable (§5.5 codex r5).
         insufficientEvidence: outcomesKnown < minSample,
-        gradeDistribution: { right, wrong, unknown, expired: expiredByPoint.get(entry.decisionPoint) ?? 0 },
+        gradeDistribution: {
+          right,
+          wrong,
+          unknown,
+          expired: expiredByPoint.get(entry.decisionPoint) ?? 0,
+          // ── Self-report honesty marker ────────────────────────────────────
+          // `byStrength` segregates evidence classes, but this FLAT sibling
+          // blends them — and it is the field a casual reader (or a future
+          // automated consumer) quotes. With the tone gate's agent-reaction
+          // rules registered, a decision point can now have right/wrong grades
+          // that are ENTIRELY the agent's own account of a judgment about its
+          // own message. Unmarked, that reads as measured error rate.
+          //
+          // These two fields let any consumer of the flat distribution see how
+          // much of it is self-report without having to know `byStrength`
+          // exists. `selfReportOnly` is the loud case: every graded outcome
+          // here is the interested party's word.
+          selfReportShare: right + wrong > 0 ? selfReportGraded / (right + wrong) : 0,
+          selfReportOnly: right + wrong > 0 && selfReportGraded === right + wrong,
+        },
         // Strength FIRST (default aggregate) — proof-like and heuristic grades are never conflated.
         byStrength,
         byRule,
@@ -16086,12 +16787,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (entry.status === 'wired') wired++;
       else if (entry.status.startsWith('pending:')) {
         pending++;
-        if (liveActs !== null) {
-          const act = entry.status.slice('pending:'.length);
-          const verdict = adjudicatePendingTracker(act, liveActs);
-          if (verdict === 'dead') pendingRefDead.push(`${entry.decisionPoint}:${act}`);
-          else if (verdict === 'unverifiable') pendingRefUnverifiable.push(`${entry.decisionPoint}:${act}`);
-        }
+        const act = entry.status.slice('pending:'.length);
+        // No liveActs guard here: the adjudicator handles a missing queue itself
+        // (ACT ⇒ unverifiable, backlog ⇒ resolved against the shipped registry).
+        const verdict = adjudicatePendingTracker(act, liveActs);
+        if (verdict === 'dead') pendingRefDead.push(`${entry.decisionPoint}:${act}`);
+        else if (verdict === 'unverifiable') pendingRefUnverifiable.push(`${entry.decisionPoint}:${act}`);
       } else if (entry.status.startsWith('exempt:')) exempt++;
     }
 
@@ -17984,6 +18685,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       await checkOutboundMessage(text, 'whatsapp', res, {
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
+        // Channel parity for the advisory migration — an override path that
+        // works on Telegram and silently does not on WhatsApp would make the
+        // meter's sample channel-dependent, and strand this channel's agent.
+        ...toneAdvisoryMetadata(metadata),
       })
     )
       return;
@@ -18044,6 +18749,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         await checkOutboundMessage(text, 'imessage', res, {
           allowDebugText: imessageMetadata?.allowDebugText === true,
           allowDuplicate: imessageMetadata?.allowDuplicate === true,
+          ...toneAdvisoryMetadata(imessageMetadata),
         })
       )
         return;
@@ -21013,16 +21719,43 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { status, resolution } = req.body;
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+      ? req.body as Record<string, unknown>
+      : {};
+    const supportedFields = new Set(['status', 'resolution']);
+    const unsupportedFields = Object.keys(body).filter((field) => !supportedFields.has(field));
+    if (unsupportedFields.length > 0) {
+      res.status(400).json({
+        error: `Unsupported field(s): ${unsupportedFields.join(', ')}`,
+        unsupportedFields,
+        supportedFields: Array.from(supportedFields),
+      });
+      return;
+    }
+    const hasStatus = Object.prototype.hasOwnProperty.call(body, 'status');
+    const hasResolution = Object.prototype.hasOwnProperty.call(body, 'resolution');
+    const status = hasStatus ? body.status : undefined;
+    const resolution = hasResolution ? body.resolution : undefined;
     const validStatuses = ['pending', 'in_progress', 'completed', 'cancelled'];
-    if (status && !validStatuses.includes(status)) {
+    if (status !== undefined && (typeof status !== 'string' || !validStatuses.includes(status))) {
       res.status(400).json({ error: `"status" must be one of: ${validStatuses.join(', ')}` });
+      return;
+    }
+    if (resolution !== undefined && (typeof resolution !== 'string' || resolution.length === 0)) {
+      res.status(400).json({ error: '"resolution" must be a non-empty string' });
+      return;
+    }
+    const updates: { status?: 'pending' | 'in_progress' | 'completed' | 'cancelled'; resolution?: string } = {};
+    if (typeof status === 'string') updates.status = status as 'pending' | 'in_progress' | 'completed' | 'cancelled';
+    if (typeof resolution === 'string') updates.resolution = resolution;
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: 'Request body must include at least one supported field: status, resolution' });
       return;
     }
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
     if (refuseInadmissibleWrite(req, res)) return;
     const currentAction = ctx.evolution.listActions({}).find((action) => action.id === req.params.id);
-    const success = ctx.evolution.updateAction(req.params.id, { status, resolution });
+    const success = ctx.evolution.updateAction(req.params.id, updates);
     if (!success) {
       res.status(404).json({ error: 'Action not found' });
       return;
@@ -21615,16 +22348,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.post('/intent/journal', async (req, res) => {
     try {
-      const { DecisionJournal } = await import('../core/DecisionJournal.js');
+      const { DecisionJournal, validateDecisionSubmission } = await import(
+        '../core/DecisionJournal.js'
+      );
       const { EvidencePolicyError } = await import('../memory/SemanticMemory.js');
       const journal = new DecisionJournal(ctx.config.stateDir);
 
-      const { sessionId, decision, evidence, ...rest } = req.body || {};
-
-      if (!sessionId || !decision) {
-        res.status(400).json({ error: 'sessionId and decision are required' });
+      // Refuse before recording. A submission that names no guiding principle,
+      // or that carries a field no reader consumes, would otherwise succeed and
+      // look recorded without being recorded.
+      const verdict = validateDecisionSubmission(req.body);
+      if (!verdict.ok) {
+        res.status(400).json({
+          error: verdict.message,
+          reason: verdict.reason,
+          unknownFields: verdict.unknownFields,
+          missingFields: verdict.missingFields,
+        });
         return;
       }
+
+      const { sessionId, decision, evidence, ...rest } = req.body || {};
 
       // WikiClaim Phase 3 (spec § Producers line 258): every decision must
       // cite at least one evidence row. The route accepts an explicit
@@ -22636,6 +23380,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const status = admission.accepted ? 202 : admission.reason === 'queue-full' ? 429 : 200;
     res.status(status).json({ observed: admission.accepted, queued: admission.accepted, blocked: false,
       evidenceAvailable: !evidence.unavailable, canaryOk: evidence.canaryOk, reason: admission.reason });
+  });
+
+  /**
+   * Read-only counters for the completion-claim verifier.
+   *
+   * `CompletionClaimVerifier.stats()` has existed since the verifier shipped and was
+   * called by no route, so the feature ran (and still runs) in dryRun with its own
+   * declared graduation evidence unobservable — `docs/specs/claim-verification-sentinel.md`
+   * names `rollout-evidence-type: endpoint` with a `classified-completion-claims >= 1`
+   * criterion, which nothing could evaluate. A dark feature whose rollout criterion
+   * cannot be read is a feature that stays dark forever, which is the failure this
+   * exposes rather than a new capability.
+   *
+   * Local-scope only and deliberately so: the audit route already owns the pool
+   * projection, and duplicating a fan-out here would add a second cross-machine
+   * surface for the same data. Gates nothing, mutates nothing.
+   */
+  router.get('/completion-claim/stats', (_req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    const stats = ctx.completionClaimVerifier.stats();
+    res.json({
+      stats,
+      // The spec's graduation metric, surfaced by the name the spec uses so the
+      // rollout check does not have to know the internal counter's field name.
+      'classified-completion-claims': stats.classifiedTurns,
+      scope: 'local',
+    });
   });
 
   router.get('/completion-claim/audit', async (req, res) => {
@@ -25590,6 +26361,117 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * counter is the rollout hard-stop signal. MUST be registered before
    * `/commitments/:id` or Express routes the literal here to the :id handler.
    */
+  /**
+   * POST /commitments/check-in-reminder/pass — run ONE check-in reminder pass
+   * (ACT-724; docs/specs/dated-commitment-reminder.md).
+   *
+   * Driven by the `commitment-checkin-reminder` built-in job. Idempotent: the
+   * `checkInReminderSentAt` stamp means a re-run sends nothing, so a retried or
+   * duplicated trigger is safe.
+   */
+  router.post('/commitments/check-in-reminder/pass', async (_req, res) => {
+    const cfg = (ctx.config as Record<string, any>).commitments?.checkInReminder as
+      | { enabled?: boolean; dryRun?: boolean; maxPerPass?: number }
+      | undefined;
+    const enabled = resolveDevAgentGate(cfg?.enabled, ctx.config);
+    if (!enabled || !ctx.commitmentTracker) {
+      res.status(503).json({ error: 'check-in-reminder-not-enabled' });
+      return;
+    }
+    // Deterministic delivery — NOT the tone-gated path. A reminder must not be
+    // holdable by a gate that fails closed; the text is a fixed template with
+    // no agent prose, so there is nothing for a tone gate to judge.
+    const telegram = ctx.telegram;
+    const dryRun = cfg?.dryRun !== false;
+    // A transport is required only to SEND. A dry run sends nothing, so demanding
+    // one would make the soak — the whole point of the dark window — impossible
+    // on an agent with no messaging configured, and would report the feature as
+    // unavailable when it is merely quiet.
+    if (!telegram && !dryRun) {
+      res.status(503).json({ error: 'no-delivery-transport' });
+      return;
+    }
+    try {
+      const reconciler = new CheckInReminderReconciler(
+        {
+          tracker: ctx.commitmentTracker,
+          send: async (topicId, text) => {
+            if (!telegram) throw new Error('no-delivery-transport');
+            // Route the send through the SAME durable content dedup the
+            // /telegram/reply route uses.
+            //
+            // This is load-bearing and was nearly a false claim: the reconciler
+            // sends first and stamps after, so a crash in between re-sends on
+            // the next pass. The spec justified that by saying "the relay
+            // absorbs the duplicate" — but the dedup lives in the reply ROUTE,
+            // and `sendToTopic` bypasses it entirely. Asserting the mitigation
+            // without wiring it would have been a safety property that existed
+            // only in the comment. (Caught in review round 2, 2026-07-25.)
+            //
+            // A duplicate is treated as SUCCESS-equivalent: the user already has
+            // this exact reminder, so the send is complete and the caller may
+            // stamp. Treating it as a failure would retry-loop until the window
+            // expired and then genuinely double-send.
+            if (outboundContentDedup.isDuplicate(topicId, text)) {
+              return { ok: true, suppressedDuplicate: true } as unknown;
+            }
+            if (!outboundContentDedup.tryReserve(topicId, text)) {
+              return { ok: true, suppressedDuplicate: true } as unknown;
+            }
+            try {
+              const r = await telegram.sendToTopic(topicId, text);
+              outboundContentDedup.record(topicId, text);
+              return r;
+            } catch (err) {
+              // Release so a genuine transport failure is retried rather than
+              // suppressed as a "duplicate" on the next pass.
+              outboundContentDedup.releaseReservation(topicId, text);
+              throw err;
+            }
+          },
+        },
+        {
+          enabled: true,
+          // dryRun defaults TRUE: the graduated state is an explicit operator
+          // decision, never something that arrives by omission.
+          dryRun,
+          ...(typeof cfg?.maxPerPass === 'number' ? { maxPerPass: cfg.maxPerPass } : {}),
+        },
+      );
+      const report = await reconciler.runPass();
+      res.json(report);
+    } catch (err) {
+      res.status(500).json({ error: 'check-in-reminder-pass-failed', detail: String(err) });
+    }
+  });
+
+  /** GET /commitments/check-in-reminder — read-only posture + the dated backlog. */
+  router.get('/commitments/check-in-reminder', (_req, res) => {
+    const cfg = (ctx.config as Record<string, any>).commitments?.checkInReminder as
+      | { enabled?: boolean; dryRun?: boolean; maxPerPass?: number }
+      | undefined;
+    const enabled = resolveDevAgentGate(cfg?.enabled, ctx.config);
+    if (!enabled || !ctx.commitmentTracker) {
+      res.status(503).json({ error: 'check-in-reminder-not-enabled' });
+      return;
+    }
+    const all = ctx.commitmentTracker.getAll();
+    const dated = all.filter((c) => !!c.checkInAt);
+    res.json({
+      enabled: true,
+      dryRun: cfg?.dryRun !== false,
+      datedCount: dated.length,
+      // Surfaced deliberately: an exhausted reminder is a promise the user did
+      // NOT receive, and it must be visible rather than buried in a stamp.
+      undelivered: dated
+        .filter((c) => !!c.checkInReminderFailedAt)
+        .map((c) => ({ id: c.id, topicId: c.topicId, checkInAt: c.checkInAt, attempts: c.checkInReminderAttempts ?? 0 })),
+      pending: dated
+        .filter((c) => !c.checkInReminderSentAt && !c.checkInReminderFailedAt)
+        .map((c) => ({ id: c.id, topicId: c.topicId, checkInAt: c.checkInAt })),
+    });
+  });
+
   router.get('/commitments/escalation-metrics', (_req, res) => {
     if (!ctx.commitmentTracker) {
       res.json({ enabled: false });
@@ -29273,6 +30155,81 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       console.error(`MoltBridge routes failed to mount: ${err instanceof Error ? err.message : err}`);
     });
   }
+
+  // ── Channel Registry (auth-gated read) ──────────────────────────────
+  // "Which ways of reaching a peer exist, and which work right now?" The channel SET is code-defined,
+  // so a channel that failed to construct still gets a row saying so — see src/core/channelRegistry.ts
+  // for why that invariant is the whole point.
+  router.get('/channels', async (_req, res) => {
+    try {
+      const relayClient = ctx.threadlineRelayClient;
+      const defs = buildChannelDefinitions({
+        relayStatus: () => {
+          if (!relayClient) return null;
+          const connected = relayClient.connectionState === 'connected';
+          return { ready: connected, connected };
+        },
+        mutualSshConstructed: () =>
+          Boolean((globalThis as { __instarMutualSshRuntime?: unknown }).__instarMutualSshRuntime),
+        mutualSshEnabled: () => ctx.config.multiMachine?.mutualSsh?.enabled === true,
+        // Peer HTTP needs a configured peer AND a credential for its authenticated routes. We hold
+        // neither by default, and saying so plainly beats probing something we could not use anyway.
+        peerHttp: async () => ({
+          reachable: false,
+          haveCredential: false,
+          detail: 'no peer HTTP endpoint configured for this agent',
+        }),
+      });
+      // The DIRECT USER channels ride the same registry rather than a second surface: "which channel
+      // should I use?" is one question, and splitting the answer would force a caller to already know
+      // which list to consult. Every probe below reads LIVE adapter state — never config, because
+      // `configured: true` survives the connection dying (see src/core/userChannels.ts).
+      const telegramAdapter = ctx.telegram;
+      const slackAdapter = ctx.slack;
+      const userDefs = buildUserChannelDefinitions({
+        telegramStatus: () => {
+          if (!telegramAdapter || typeof telegramAdapter.getStatus !== 'function') return null;
+          const s = telegramAdapter.getStatus();
+          return {
+            started: s.started,
+            fatalReason: s.fatalReason,
+            consecutivePollErrors: s.consecutivePollErrors,
+            lastError: s.lastError,
+            stoppedAt: s.stoppedAt,
+          };
+        },
+        // `isConnected()` clears on disconnect; `started` means "ever connected" and would report a
+        // long-dead socket as healthy forever.
+        slackConnected: () =>
+          slackAdapter && typeof slackAdapter.isConnected === 'function' ? slackAdapter.isConnected() : null,
+        slackEnabled: () => Boolean(slackAdapter),
+        // `getStatus().state` is a real state machine, so `qr-pending` (waiting on a human to
+        // scan) stays distinguishable from `disconnected` (the link dropped).
+        whatsappState: () =>
+          ctx.whatsapp && typeof ctx.whatsapp.getStatus === 'function'
+            ? ctx.whatsapp.getStatus().state
+            : null,
+        // `getConnectionInfo().state`, NOT the sibling `connectedAt` — that field is computed as
+        // `started ? new Date().toISOString() : undefined`, so it reports the moment you asked
+        // rather than the moment it connected.
+        imessageState: () =>
+          ctx.imessage && typeof ctx.imessage.getConnectionInfo === 'function'
+            ? ctx.imessage.getConnectionInfo().state
+            : null,
+      });
+      const report = await resolveChannels([...defs, ...userDefs]);
+      return res.status(200).json({ advisory: true, ...report });
+    } catch (error) {
+      // A registry that 500s teaches nothing. Report the failure as the registry's own verdict.
+      return res.status(200).json({
+        advisory: true,
+        channels: [],
+        summary: { total: 0, working: 0, unusable: 0, unknown: 0 },
+        error: `channel registry could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+        generatedAt: new Date().toISOString(),
+      });
+    }
+  });
 
   // ── Threadline Status (auth-gated) ──────────────────────────────────
   router.get('/threadline/status', (_req, res) => {

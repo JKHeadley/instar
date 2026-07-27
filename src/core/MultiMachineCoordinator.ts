@@ -1324,9 +1324,13 @@ export class MultiMachineCoordinator extends EventEmitter {
   /**
    * One pull tick: fan-out pull every peer, fold the freshest lease into our
    * view, reconcile role (a pulled HIGHER-epoch peer fences us → auto-demote),
-   * then surface a SAME-epoch contested split-brain Near-Silently. Pull is for
-   * LEARNING (anti-blinding); the heartbeat tickLease remains the only path that
-   * ACTS (acquire/renew). Re-arms via `arm` even on failure.
+   * then surface a SAME-epoch contested split-brain Near-Silently. A successful
+   * peer observation also nudges the normal fenced lease tick: this closes the
+   * phase gap where stale-holder eligibility becomes true just after the slow
+   * 2-minute heartbeat tick and takeover otherwise waits almost another full
+   * heartbeat period. The nudge does not add authority — tickLease still owns
+   * every acquire/renew decision and all its observe-only/preferred/fencing
+   * gates. Re-arms via `arm` even on failure.
    */
   private async tickLeasePull(arm: () => void): Promise<void> {
     if (this.leasePulling) { arm(); return; }
@@ -1368,6 +1372,18 @@ export class MultiMachineCoordinator extends EventEmitter {
         // §Problem A — ACT on a same-epoch contested tie (not just surface it):
         // deterministic tie-break → loser relinquishes / winner advances once.
         await this.resolveContestedSplitBrain();
+        // CMT-984/CMT-992 — automatic serving takeover must follow the existing
+        // 5s anti-blinding pull cadence, not the unrelated 2-minute heartbeat
+        // phase. Once F2's monotonic non-renewal window opens (or the observed
+        // lease expires), immediately re-run the ONE authoritative lease actor.
+        // tickLease's reentrancy guard makes this safe against a concurrent
+        // heartbeat tick; observe-only machines still refuse to acquire.
+        if (
+          !this.leaseCoordinator!.holdsLease() &&
+          this.leaseCoordinator!.peerTakeoverEligible()
+        ) {
+          await this.tickLease();
+        }
       }
     } catch {
       // @silent-fallback-ok — a pull failure (incl. a bounded-await timeout) is retried next tick

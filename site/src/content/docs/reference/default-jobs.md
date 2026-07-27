@@ -11,6 +11,7 @@ Instar ships with fourteen default jobs that run automatically on schedule. Each
 |-----|------|-------|---------|
 | `health-check` | `*/5 * * * *` (every 5 min) | Haiku | Verify infrastructure health |
 | `commitment-detection` | `*/5 * * * *` (every 5 min) | Haiku | Detect new commitments in the recent conversation flow |
+| `commitment-checkin-reminder` | `*/5 * * * *` (every 5 min) | — (no LLM) | Post one reminder for each commitment whose check-in date has arrived. Ships disabled. |
 | `reflection-trigger` | `0 */4 * * *` (every 4h) | Opus | Reflect on recent work and surface insights |
 | `evolution-overdue-check` | `0 */4 * * *` (every 4h) | Haiku | Surface overdue commitments and stalled action items |
 | `evolution-proposal-evaluate` | `0 */6 * * *` (every 6h) | Sonnet | Evaluate evolution proposals against current goals |

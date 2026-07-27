@@ -221,6 +221,44 @@ describe('classifyTier — risk floor: new capability (diff-text based)', () => 
     expect(r.suggestedTier).toBe(1);
   });
 
+  /**
+   * REGRESSION (2026-07-27). `\.config\b` used to be a CONFIG_SURFACE_HINT alternative, so a diff
+   * that merely READ a file named `*.config.ts` matched it. Combined with any ordinary object
+   * literal it fired "new config key added" and raised the risk floor to 2 — on a read-only
+   * developer script that adds no config key at all.
+   *
+   * This is not a cosmetic false positive. The floor is what makes a tier declaration mean
+   * something, and declaring under it is an audited act here. A floor that fires on a FILENAME
+   * teaches authors that below-floor declarations are routine, which is how a real floor gets
+   * argued past later. A noisy guard degrades the guard it belongs to.
+   */
+  it('does NOT fire on a mere .config FILENAME reference — the reproduction of the real case', () => {
+    const r = classifyTier({
+      inScopeFiles: ['scripts/recheck-parked-tests.mjs'],
+      addedLines: 40,
+      deletedLines: 0,
+      addedDiffText:
+        "const CONFIG = path.join(ROOT, 'vitest.push.config.ts');\n" +
+        'const out = {\n  slice: 6,\n  runs: 2,\n};',
+    });
+    expect(r.riskFloor, 'reading a .config filename is not adding a config key').toBe(1);
+    expect(r.reasons.join(' ')).not.toMatch(/config key/i);
+  });
+
+  it('STILL fires on a real config surface — the fix must not blind the check', () => {
+    // The other side of the boundary. Narrowing the hint must not stop it catching what it is for.
+    for (const anchor of ['ConfigDefaults', 'defaultConfig', 'InstarConfig', 'configSchema']) {
+      const r = classifyTier({
+        inScopeFiles: ['src/core/Thing.ts'],
+        addedLines: 2,
+        deletedLines: 0,
+        addedDiffText: `export const ${anchor} = {\n  newWidgetTimeout: 5000,\n};`,
+      });
+      expect(r.riskFloor, `${anchor} must still raise the floor`).toBe(2);
+      expect(r.reasons.join(' ')).toMatch(/config key/i);
+    }
+  });
+
   it('SKIPS the new-capability check entirely when addedDiffText is absent', () => {
     // The diff would have contained `export class` but we did not pass it →
     // the classifier must NOT guess. Only size governs.

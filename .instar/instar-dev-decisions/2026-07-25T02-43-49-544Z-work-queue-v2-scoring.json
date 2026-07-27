@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-25T02:43:49.544Z",
+  "slug": "work-queue-v2-scoring",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 18,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -13,7 +13,8 @@
  * (e.g., trigger conflict-mark when two refs come into conflict).
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { DP_TOPIC_INTENT_EXTRACT } from '../data/provenanceCoverage.js';
 import {
   TopicIntentStore,
   buildEvent,
@@ -286,6 +287,32 @@ export function createLlmExtractFn(
         temperature: 0,
         maxTokens: 600,
         attribution: { component: 'TopicIntentExtractor' },
+        // LLM-Decision Quality Meter §5.1.4/§5.6 enrollment. Observability ONLY:
+        // the settlement seam consumes this block and records on its own path —
+        // it never reaches the model and never alters the extraction. A
+        // provenance write failure is contained by the recorder's fail-open
+        // contract, so it cannot break the degrade-safe [] guarantee above.
+        //
+        // IDENTITY ONLY. The input is a user TURN plus a rolling conversational
+        // summary — both untrusted and quotable. Neither enters the row; what
+        // does is an explicit allowlist of derived values, so a future field on
+        // ExtractorInput cannot appear here by default.
+        provenance: {
+          decisionPoint: DP_TOPIC_INTENT_EXTRACT,
+          context: {
+            topicId: input.topicId,
+            arcId: input.arcId,
+            messageId: input.message.id,
+            messageSha256: createHash('sha256').update(input.message.text ?? '').digest('hex'),
+            messageChars: (input.message.text ?? '').length,
+            fromUser: input.message.fromUser === true,
+            turn: input.message.turn,
+            existingRefCount: input.existingRefs.length,
+            hasRollingSummary: typeof input.rollingSummary === 'string' && input.rollingSummary.length > 0,
+            rollingSummaryChars: (input.rollingSummary ?? '').length,
+          },
+          optionsPresented: ['new-ref', 'reref', 'affirm', 'contradict'],
+        },
       });
     } catch {
       // network/timeout/provider failure / LlmQueue cap breach → degrade to no

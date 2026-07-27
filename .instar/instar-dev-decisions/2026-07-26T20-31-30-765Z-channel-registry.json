@@ -1,0 +1,26 @@
+{
+  "ts": "2026-07-26T20:31:30.765Z",
+  "slug": "channel-registry",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 308,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      1656,
+      1657
+    ],
+    "notes": "Not a code defect — a missing capability, surfaced by the 2026-07-26 relay outage. When the relay died I reported the peer unreachable without evaluating alternatives, because no surface answers \"what else reaches him, and which is alive?\". Latent for as long as multiple channels have existed. The build is shaped by three failures the same night that share one form (relay drop recorded only as connected; mutual-ssh absent from the 88-row guard inventory; peer absent from peers/health): the thing that failed removed itself from the list of failures, so a missing row and a healthy system read identically. Detection latency was unbounded because nothing was watching for the absence of a channel-choice surface; it took an operator observation (\"the paths feel arbitrary\") to name it."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

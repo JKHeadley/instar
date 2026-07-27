@@ -42,6 +42,7 @@ export const GLANCE_MAX_TOKEN_LEN = 40; // a longer token is a glued-word budget
 // asserts adopted ∪ grandfathered == every TAB_REGISTRY id, so a NEW tab in NEITHER
 // set fails the build; the monotonicity test asserts the grandfather size ≤ ceiling.
 export const GLANCE_ADOPTED_TABS = [
+  'throughput',
   'commitments', 'blockers', // Phases 1–2
   'machines', 'systems', 'spend', 'routing-map', // Phase 3 (the jargon belt); 'systems' is the Health tab
   // Phase 4 — the sweep: every remaining data-summary view on the floor.
@@ -966,6 +967,22 @@ export function machineRecordNode(doc, m, opts = {}) {
     rows.push(['Safety checks on', String(on)]);
     const problems = guardPostureProblems(p);
     if (problems > 0) rows.push(['Safety checks needing a look', String(problems)]);
+    const uninspectableKeys = Array.isArray(p.loadBearingUninspectableKeys)
+      ? p.loadBearingUninspectableKeys.filter((key) => typeof key === 'string')
+      : [];
+    const uninspectableCount = Number.isFinite(p.loadBearingUninspectable)
+      ? Math.max(uninspectableKeys.length, Math.floor(p.loadBearingUninspectable))
+      : uninspectableKeys.length;
+    if (uninspectableCount > 0 || uninspectableKeys.length > 0) {
+      const shown = uninspectableKeys.join(', ');
+      const truncated = uninspectableCount > uninspectableKeys.length
+        ? ` (${uninspectableKeys.length} shown)`
+        : '';
+      rows.push([
+        'Load-bearing protection unproven',
+        `${uninspectableCount}${shown ? ` — ${shown}${truncated}` : ''}`,
+      ]);
+    }
   } else {
     rows.push(['Safety checks', 'not reported yet']);
   }

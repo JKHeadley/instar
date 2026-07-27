@@ -63,7 +63,11 @@ describe('Jargon-belt glance tabs — E2E feature-alive', () => {
   it('Machines: /pool 200, the glance renders end-to-end, an XSS nickname is inert', async () => {
     const machines = [
       { machineId: 'm_1', nickname: 'Laptop', online: true, clockSkewStatus: 'ok', activeSessionCount: 1, maxSessions: 6,
-        hardware: { cpuModel: 'Apple M2', cpuCores: 8, totalMemBytes: 17179869184 }, guardPosture: { onConfirmed: 16 } },
+        hardware: { cpuModel: 'Apple M2', cpuCores: 8, totalMemBytes: 17179869184 },
+        guardPosture: {
+          onConfirmed: 16, errored: 1, loadBearingUninspectable: 1,
+          loadBearingUninspectableKeys: ['multiMachine.sessionPool.inboundQueue.enabled'],
+        } },
       { machineId: 'm_2', nickname: '<img src=x onerror=alert(1)> Mini', online: true, clockSkewStatus: 'ok' },
     ];
     server = await bootApp({ ...BASE, machinePoolRegistry: { getCapacities: () => machines } });
@@ -80,6 +84,12 @@ describe('Jargon-belt glance tabs — E2E feature-alive', () => {
     expect(handle.drilldown.querySelector('img')).toBeNull();
     expect(handle.drilldown.querySelector('script')).toBeNull();
     expect(handle.drilldown.textContent).toContain('onerror'); // literal text, harmless
+    const laptopRow = Array.from(handle.drilldown.querySelectorAll('.glance-list-row'))
+      .find((row: any) => row.textContent.includes('Laptop'));
+    laptopRow.dispatchEvent(new (dom.window as any).Event('click'));
+    const recordText = handle.drilldown.querySelector('[data-glance-record]').textContent;
+    expect(recordText).toContain('Load-bearing protection unproven');
+    expect(recordText).toContain('multiMachine.sessionPool.inboundQueue.enabled');
   });
 
   it('Health: /systems/status 200, the full glance renders end-to-end from live subsystems', async () => {
