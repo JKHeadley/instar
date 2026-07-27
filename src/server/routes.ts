@@ -337,6 +337,7 @@ import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
 import { resolveChannels } from '../core/channelRegistry.js';
 import { buildChannelDefinitions } from '../core/instarChannels.js';
+import { buildUserChannelDefinitions } from '../core/userChannels.js';
 import { evaluateSendGate, negotiatorLogDir } from '../threadline/NegotiatorGate.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { recordThreadMessage } from '../threadline/recordThreadMessage.js';
@@ -30125,7 +30126,31 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           detail: 'no peer HTTP endpoint configured for this agent',
         }),
       });
-      const report = await resolveChannels(defs);
+      // The DIRECT USER channels ride the same registry rather than a second surface: "which channel
+      // should I use?" is one question, and splitting the answer would force a caller to already know
+      // which list to consult. Every probe below reads LIVE adapter state — never config, because
+      // `configured: true` survives the connection dying (see src/core/userChannels.ts).
+      const telegramAdapter = ctx.telegram;
+      const slackAdapter = ctx.slack;
+      const userDefs = buildUserChannelDefinitions({
+        telegramStatus: () => {
+          if (!telegramAdapter || typeof telegramAdapter.getStatus !== 'function') return null;
+          const s = telegramAdapter.getStatus();
+          return {
+            started: s.started,
+            fatalReason: s.fatalReason,
+            consecutivePollErrors: s.consecutivePollErrors,
+            lastError: s.lastError,
+            stoppedAt: s.stoppedAt,
+          };
+        },
+        // `isConnected()` clears on disconnect; `started` means "ever connected" and would report a
+        // long-dead socket as healthy forever.
+        slackConnected: () =>
+          slackAdapter && typeof slackAdapter.isConnected === 'function' ? slackAdapter.isConnected() : null,
+        slackEnabled: () => Boolean(slackAdapter),
+      });
+      const report = await resolveChannels([...defs, ...userDefs]);
       return res.status(200).json({ advisory: true, ...report });
     } catch (error) {
       // A registry that 500s teaches nothing. Report the failure as the registry's own verdict.

@@ -1,0 +1,74 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The channel registry answered "which ways of reaching a PEER work right now?" with real probes. Asked
+the same question about the *operator*, the only available answer was `/capabilities` reporting
+`telegram: { configured: true, adapter: true, bidirectional: true }` — three values read from
+configuration, none of them a measurement. A Telegram whose poll loop died on a rejected token hours
+ago still reports all three as `true`.
+
+The two direct user channels now sit in the same registry, with liveness read from live adapter
+state: Telegram's `started` (is the loop polling *now*) and `fatalReason` (rejected credential vs
+dropped network), and Slack's `isConnected()`. Every channel row gains an `audience` field of `peer`
+or `user`, so one surface answers the whole "which channel should I use?" question instead of two.
+
+## Evidence
+
+The verdicts distinguish cases a boolean cannot: a rejected token reports
+`reachable-no-credential` ("Telegram answered and REJECTED the bot token") rather than a generic
+failure; a network death reports `broken`; a loop stopped with no recorded reason reports `unknown`
+with "cannot tell a deliberate stop from a silent death" — explicitly not healthy and not a confident
+broken; and no adapter at all reports `not-configured`, because off is not broken.
+
+Refusals, by falsification. Making the Telegram probe read existence instead of liveness — precisely
+what the configuration reading does:
+
+```
+× THE FIX: a configured-but-DEAD Telegram is never reported as working
+× a missing bot token is a credential verdict, not a network one
+× a network death is broken — distinct from a credential problem
+× stopped for NO recorded reason is unknown — never working, never a confident broken
+  Tests  4 failed | 12 passed (16)
+```
+
+Giving Slack "ever connected" semantics — the trap its own source warns about, since `started` means
+"ever connected" while `isConnected()` clears on disconnect:
+
+```
+× THE TRAP: enabled with the socket DOWN is broken, not working
+```
+
+Restored: 35 passed across the three channel-registry suites; `tsc --noEmit` exit 0. Two source
+ratchets keep the probes from drifting back to configuration.
+
+## Known limits
+
+A live reading is not a promise — `working` means the loop was polling when asked, not that it will
+be a second later. Telegram `working` means the poll loop is up, not that a message to a particular
+topic would land. Slack is modelled as a single workspace. WhatsApp and iMessage adapters exist in
+the tree and are **not** covered here, so the registry makes no claim about them at all.
+
+## What to Tell Your User
+
+Your agent can now tell whether it can actually reach you, rather than only whether it was set up to.
+
+Before this, asking "are your channels working?" got an answer read from a settings file — which says
+yes just as confidently after the connection has died. Now it checks the live connection, and when
+something is wrong it says which kind of wrong: a rejected login is a different problem from a
+dropped network, and needs a different fix.
+
+It is also careful about what it does not know. If a channel stopped for a reason nothing recorded,
+it reports "unknown" rather than guessing — because a confident wrong answer during an outage is
+worse than an honest one.
+
+And each channel now records *when it is the right one to use*. For your own channels that includes
+something worth saying plainly: they cost your attention, and they are also the only place your agent
+can see what you actually see. Both of those are real, and they pull in opposite directions.
+
+## Summary of New Capabilities
+
+No new endpoint, command, or config key. `GET /channels` gains two rows for the direct user channels
+with live-state liveness, and every row gains an `audience` field marking it `peer` or `user`.
