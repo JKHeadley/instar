@@ -21719,16 +21719,43 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { status, resolution } = req.body;
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+      ? req.body as Record<string, unknown>
+      : {};
+    const supportedFields = new Set(['status', 'resolution']);
+    const unsupportedFields = Object.keys(body).filter((field) => !supportedFields.has(field));
+    if (unsupportedFields.length > 0) {
+      res.status(400).json({
+        error: `Unsupported field(s): ${unsupportedFields.join(', ')}`,
+        unsupportedFields,
+        supportedFields: Array.from(supportedFields),
+      });
+      return;
+    }
+    const hasStatus = Object.prototype.hasOwnProperty.call(body, 'status');
+    const hasResolution = Object.prototype.hasOwnProperty.call(body, 'resolution');
+    const status = hasStatus ? body.status : undefined;
+    const resolution = hasResolution ? body.resolution : undefined;
     const validStatuses = ['pending', 'in_progress', 'completed', 'cancelled'];
-    if (status && !validStatuses.includes(status)) {
+    if (status !== undefined && (typeof status !== 'string' || !validStatuses.includes(status))) {
       res.status(400).json({ error: `"status" must be one of: ${validStatuses.join(', ')}` });
+      return;
+    }
+    if (resolution !== undefined && (typeof resolution !== 'string' || resolution.length === 0)) {
+      res.status(400).json({ error: '"resolution" must be a non-empty string' });
+      return;
+    }
+    const updates: { status?: 'pending' | 'in_progress' | 'completed' | 'cancelled'; resolution?: string } = {};
+    if (typeof status === 'string') updates.status = status as 'pending' | 'in_progress' | 'completed' | 'cancelled';
+    if (typeof resolution === 'string') updates.resolution = resolution;
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: 'Request body must include at least one supported field: status, resolution' });
       return;
     }
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
     if (refuseInadmissibleWrite(req, res)) return;
     const currentAction = ctx.evolution.listActions({}).find((action) => action.id === req.params.id);
-    const success = ctx.evolution.updateAction(req.params.id, { status, resolution });
+    const success = ctx.evolution.updateAction(req.params.id, updates);
     if (!success) {
       res.status(404).json({ error: 'Action not found' });
       return;
