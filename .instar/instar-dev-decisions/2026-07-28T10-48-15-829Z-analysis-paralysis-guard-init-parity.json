@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-28T10:48:15.829Z",
+  "slug": "analysis-paralysis-guard-init-parity",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

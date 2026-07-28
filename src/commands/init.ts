@@ -4302,6 +4302,12 @@ fi
   // All use shared templates from PostUpdateMigrator for DRY maintenance.
   fs.writeFileSync(path.join(hooksDir, 'deferral-detector.js'), migrator.getHookContent('deferral-detector'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'self-stop-guard.js'), migrator.getHookContent('self-stop-guard'), { mode: 0o755 });
+
+  // Analysis-paralysis guard — nudges a session that has read five-plus times
+  // without acting. Installed on fresh init as well as via the migrator so a NEW
+  // agent has parity with an updated one (migration-parity-hooks guard); a hook
+  // that only reaches existing agents is half a feature.
+  fs.writeFileSync(path.join(hooksDir, 'analysis-paralysis-guard.js'), migrator.getHookContent('analysis-paralysis-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'post-action-reflection.js'), migrator.getHookContent('post-action-reflection'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'external-communication-guard.js'), migrator.getHookContent('external-communication-guard'), { mode: 0o755 });
 
