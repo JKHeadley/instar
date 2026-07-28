@@ -8,10 +8,22 @@ export default defineConfig(withTestRunnerBound('e2e', {
     environment: 'node',
     testTimeout: 60000, // E2E tests may involve real sessions + cron waits
     // Asset-only: production registry resolution needs its gitignored generated
-    // data on a fresh checkout, but E2E still deliberately does NOT compile dist.
-    // A tsc/build globalSetup would wake dormant dist-gated tests (e.g.
-    // dev-preflight-cli, which spawns `pnpm` — absent on the CI e2e runner) that
-    // skip-by-design when dist is missing.
+    // data on a fresh checkout, but this config deliberately does NOT compile
+    // dist — a build here would cost every e2e run a full tsc.
+    //
+    // The dist-gated tests are NOT dormant. `vitest.config.ts` (what `npm test`
+    // and the CI unit shards run) includes `tests/e2e/**` AND wires
+    // build-dist.globalSetup, so all three run there — verified 2026-07-28 by
+    // executing cli-unknown-command under that config: 2 tests, 512ms + 387ms of
+    // real work, not instant returns. Skipping here is duplicate-coverage
+    // avoidance, not an excuse to leave them unrun.
+    //
+    // The previous note here justified the skip by saying dev-preflight-cli
+    // "spawns `pnpm` — absent on the CI e2e runner". That is no longer true:
+    // PR #1712 made the preflight resolve its package manager (pnpm, else
+    // `npm run lint`), and it exits 0 under a pnpm-free PATH. The obstacle the
+    // comment described is gone; the cost argument above is the reason that
+    // remains.
     globalSetup: ['tests/setup/ensure-registry-asset.globalSetup.ts'],
   },
 }));
