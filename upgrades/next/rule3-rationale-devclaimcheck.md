@@ -51,3 +51,22 @@ unblocks locally merging `main` into older branches.
   emits identical JS.
 - Side-effects review: `upgrades/side-effects/rule3-rationale-devclaimcheck.md`.
 - ELI16: `upgrades/rule3-rationale-devclaimcheck.eli16.md`.
+
+
+## Correction after opening: this was TWO files, not one
+
+The first version of this change covered only `devClaimCheck.ts` and claimed that unblocked merging
+`main` into an older branch. **That claim was false**, and an A/B test caught it: branching from a
+pre-#813 `main` commit and staging a merge of current `main` flagged **two** files —
+`devCiFailures.ts` as well. Fixing one of two blockers unblocks nothing.
+
+`devCiFailures.ts` now carries its own rationale and registry row. It is marked **🔵 Exempt** rather
+than Partial, because unlike its sibling every failure path is loud: a non-zero `gh` exit rejects
+with captured stderr, and its `JSON.parse(stdout)` carries no `|| 'null'` default, so empty output
+throws rather than degrading into a successful-looking empty result.
+
+**How the check nearly fooled me.** My first A/B run reported the fixed side PASSING — but the merge
+had failed (a ref I had not fetched), so nothing was staged and the checker exited 0 over an empty
+file list. A vacuous pass is indistinguishable from a real one unless you assert the check had input.
+The re-run prints staged counts: 7,499 files / 905 `src/*.ts` on the failing side, and refuses to
+read 0 staged files as a pass.
