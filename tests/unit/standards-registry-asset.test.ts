@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { countRegistryArticles, sha256, resolveStandardsRegistry, earnsVerified, registryMirrorPaths, holdsAuthoredConstitution } from '../../src/core/standardsRegistryPath.js';
 import { computeCoverage } from '../../src/core/StandardsEnforcementAuditor.js';
+import { ensureRegistryAsset } from '../setup/ensure-registry-asset.globalSetup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -70,6 +71,62 @@ describe('standards registry ships as a build artifact', () => {
     expect(meta.sha256).toBe(sha256(bytes));
     expect(meta.articleCount).toBe(countRegistryArticles(bytes.toString('utf-8')));
     expect(meta.generatedFrom).toBe('docs/STANDARDS-REGISTRY.md');
+  });
+
+  it('the source-only E2E bootstrap emits byte-identical production artifacts', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-e2e-parity-'));
+    const sourceRoot = path.join(tmp, 'source-only');
+    const generatorRoot = path.join(tmp, 'real-generator');
+    try {
+      for (const root of [sourceRoot, generatorRoot]) {
+        fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+        fs.copyFileSync(AUTHORED, path.join(root, 'docs', 'STANDARDS-REGISTRY.md'));
+        fs.copyFileSync(
+          path.join(ROOT, 'docs', 'standards-registry-floor.json'),
+          path.join(root, 'docs', 'standards-registry-floor.json'),
+        );
+        fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(root, 'package.json'));
+      }
+
+      ensureRegistryAsset(sourceRoot);
+
+      // Run the shipped generator in a second isolated root. Copying its compiled
+      // parser dependency preserves the real post-tsc execution shape without
+      // compiling this checkout or letting either implementation observe the
+      // other's outputs.
+      fs.mkdirSync(path.join(generatorRoot, 'scripts'), { recursive: true });
+      fs.mkdirSync(path.join(generatorRoot, 'dist', 'core'), { recursive: true });
+      fs.copyFileSync(
+        path.join(ROOT, 'scripts', 'generate-standards-registry-asset.mjs'),
+        path.join(generatorRoot, 'scripts', 'generate-standards-registry-asset.mjs'),
+      );
+      fs.copyFileSync(
+        path.join(ROOT, 'dist', 'core', 'StandardsRegistryParser.js'),
+        path.join(generatorRoot, 'dist', 'core', 'StandardsRegistryParser.js'),
+      );
+      execFileSync('node', ['scripts/generate-standards-registry-asset.mjs'], {
+        cwd: generatorRoot,
+        stdio: 'pipe',
+      });
+
+      for (const rel of [
+        'src/data/standards-registry.md',
+        'src/data/standards-registry.meta.json',
+        'dist/data/standards-registry.md',
+        'dist/data/standards-registry.meta.json',
+      ]) {
+        expect(
+          fs.readFileSync(path.join(sourceRoot, rel)),
+          `${rel} from the asset-only E2E setup drifted from the real build generator`,
+        ).toEqual(fs.readFileSync(path.join(generatorRoot, rel)));
+      }
+    } finally {
+      SafeFsExecutor.safeRmSync(tmp, {
+        recursive: true,
+        force: true,
+        operation: 'tests/unit/standards-registry-asset.test.ts',
+      });
+    }
   });
 
   it(
