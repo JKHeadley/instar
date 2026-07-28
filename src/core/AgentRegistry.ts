@@ -31,6 +31,32 @@ function legacyRegistryPath(): string { return path.join(registryDir(), 'port-re
 const DEFAULT_PORT_RANGE_START = 4040;
 const DEFAULT_PORT_RANGE_END = 4099;
 
+/**
+ * WHATWG Fetch "bad ports" — node's global `fetch` (undici) throws
+ * `TypeError: fetch failed { cause: 'bad port' }` for any URL on one of these
+ * ports. Instar's multi-machine mesh does ALL of its cross-machine I/O over node
+ * fetch (pairing `POST /api/pair`, lease broadcast/pull, heartbeat), so an agent
+ * whose server lands on a blocked port is SILENTLY unreachable over the mesh —
+ * curl works (it ignores the blocklist), so the failure is invisible. Observed
+ * live 2026-06-02: a paired test agent on port 4045 (NFS `lockd`, on this list)
+ * could never be joined ("fetch failed: bad port") despite curl reaching it. The
+ * default allocation range (4040–4099) contains 4045, so the allocator MUST skip
+ * these. Source: the WHATWG Fetch spec "bad ports" table.
+ */
+export const FETCH_BLOCKED_PORTS: ReadonlySet<number> = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87,
+  95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139,
+  143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548,
+  554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659,
+  4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697,
+  10080,
+]);
+
+/** True if `port` is on the WHATWG fetch bad-ports list (node `fetch` refuses it). */
+export function isFetchBlockedPort(port: number): boolean {
+  return FETCH_BLOCKED_PORTS.has(port);
+}
+
 /** Agent name validation: alphanumeric, underscore, hyphen. Max 64 chars. */
 const AGENT_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 
@@ -376,11 +402,26 @@ export function registerAgent(
 
 /**
  * Unregister an agent by its canonical path.
+ *
+ * `opts.onlyIfPid` guards the removal: the entry is only removed when its
+ * recorded pid matches. Server shutdown MUST pass its own pid — otherwise an
+ * old server generation's late shutdown (auto-update restart) deletes the
+ * successor's fresh registration by path, and the agent silently vanishes
+ * from the registry (the registry lost-update race). An entry whose pid is
+ * missing or different is presumed to belong to the successor and is left
+ * intact. Operator/CLI removal (no opts) still removes unconditionally.
  */
-export function unregisterAgent(agentPath: string): void {
+export function unregisterAgent(agentPath: string, opts?: { onlyIfPid?: number }): void {
   const canonicalPath = path.resolve(agentPath);
   withLockSync(registry => {
-    registry.entries = registry.entries.filter(e => e.path !== canonicalPath);
+    registry.entries = registry.entries.filter(e => {
+      if (e.path !== canonicalPath) return true;
+      if (opts?.onlyIfPid !== undefined && e.pid !== opts.onlyIfPid) {
+        console.log(`[AgentRegistry] Skipped unregister of ${canonicalPath}: entry pid ${e.pid} != caller pid ${opts.onlyIfPid} (entry belongs to a newer generation)`);
+        return true;
+      }
+      return false;
+    });
   });
 }
 
@@ -401,15 +442,22 @@ export function updateStatus(agentPath: string, status: AgentStatus, pid?: numbe
 
 /**
  * Update the heartbeat for an agent by canonical path.
+ *
+ * Returns whether the entry was found. A `false` return means the entry has
+ * vanished (e.g. an old generation's shutdown raced the registration away) —
+ * callers that own a live server should re-register rather than silently
+ * no-op forever.
  */
-export function heartbeat(agentPath: string): void {
+export function heartbeat(agentPath: string): boolean {
   const canonicalPath = path.resolve(agentPath);
-  withLockSync(registry => {
+  return withLockSync(registry => {
     const entry = registry.entries.find(e => e.path === canonicalPath);
     if (entry) {
       entry.lastHeartbeat = new Date().toISOString();
       entry.pid = process.pid;
+      return true;
     }
+    return false;
   });
 }
 
@@ -436,15 +484,42 @@ export function forceRemoveRegistryLock(): boolean {
  * Start a periodic heartbeat. Returns a cleanup function.
  * Tracks consecutive failures and force-removes the registry lock after
  * repeated failures — recovers from crash-induced stale locks.
+ *
+ * `reRegister` (optional) is invoked when a heartbeat finds the entry MISSING
+ * — i.e. something deleted this agent's registration while its server is
+ * still alive (the classic case: an old generation's pid-unguarded shutdown
+ * unregister racing a back-to-back update restart). The callback should
+ * re-create the registration (e.g. `() => registerAgent(...)`); the next
+ * heartbeat then confirms it. Without the callback the missing entry is only
+ * logged — preserving the old behavior for callers that don't own a server.
  */
-export function startHeartbeat(agentPath: string, intervalMs: number = 60_000): () => void {
+export function startHeartbeat(
+  agentPath: string,
+  intervalMs: number = 60_000,
+  reRegister?: () => void,
+): () => void {
   const canonicalPath = path.resolve(agentPath);
   let consecutiveFailures = 0;
   const MAX_FAILURES_BEFORE_RECOVERY = 3;
 
+  const beatOnce = (): void => {
+    const found = heartbeat(canonicalPath);
+    if (!found) {
+      console.warn(`[AgentRegistry] Heartbeat found no entry for ${canonicalPath} — registration was removed while this server is alive`);
+      if (reRegister) {
+        try {
+          reRegister();
+          console.log(`[AgentRegistry] Re-registered ${canonicalPath} after missing-entry heartbeat`);
+        } catch (reErr) {
+          console.error(`[AgentRegistry] Re-registration failed for ${canonicalPath}: ${reErr}`);
+        }
+      }
+    }
+  };
+
   const interval = setInterval(() => {
     try {
-      heartbeat(canonicalPath);
+      beatOnce();
       consecutiveFailures = 0;
     } catch (err) {
       consecutiveFailures++;
@@ -464,8 +539,8 @@ export function startHeartbeat(agentPath: string, intervalMs: number = 60_000): 
     }
   }, intervalMs);
 
-  // Initial heartbeat
-  try { heartbeat(canonicalPath); } catch { /* ignore */ }
+  // Initial heartbeat (also resurrects immediately if the entry is missing)
+  try { beatOnce(); } catch { /* ignore */ }
 
   return () => clearInterval(interval);
 }
@@ -539,7 +614,7 @@ export function allocatePort(
     // agents that may still be running but have stale registry entries
     const usedPorts = new Set(registry.entries.map(e => e.port));
     for (let port = rangeStart; port <= rangeEnd; port++) {
-      if (!usedPorts.has(port) && isPortFreeSync(port)) {
+      if (!usedPorts.has(port) && !FETCH_BLOCKED_PORTS.has(port) && isPortFreeSync(port)) {
         return port;
       }
     }
@@ -644,7 +719,7 @@ export function allocatePortByName(
     // agents that may still be running but have stale registry entries
     const usedPorts = new Set(registry.entries.map(e => e.port));
     for (let port = rangeStart; port <= rangeEnd; port++) {
-      if (!usedPorts.has(port) && isPortFreeSync(port)) {
+      if (!usedPorts.has(port) && !FETCH_BLOCKED_PORTS.has(port) && isPortFreeSync(port)) {
         return port;
       }
     }

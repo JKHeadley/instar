@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "sessionId": "c734d944-32d0-49d1-b87c-7d994cf4a8ce",
+  "timestamp": "2026-07-15T22:52:50.036Z",
+  "artifactPath": "upgrades/side-effects/telegram-recovery-queue-truth.md",
+  "artifactSha256": "e460901080afb10a3a912fabed7adbb2f7d9ddd8d6b58051b35bea4f677f4135",
+  "specPath": "docs/specs/telegram-delivery-robustness.md",
+  "coveredFiles": [
+    "src/messaging/pending-relay-store.ts",
+    "src/monitoring/delivery-failure-sentinel.ts",
+    "src/templates/scripts/telegram-reply.sh",
+    "tests/e2e/telegram-recovery-queue-truth-lifecycle.test.ts",
+    "tests/integration/sentinel-recovery.test.ts",
+    "tests/unit/pending-relay-store.test.ts",
+    "tests/unit/telegram-reply-recoverable-classification.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Tier 2: outbound-message durability and exactly-once recovery behavior span shell, SQLite ownership, and autonomous drain concurrency.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/sentinel-recovery.test.ts",
+      "howCaught": "The existing watchdog remains bounded by maxConcurrent and per-topic pacing; renewable claims settle to one owner, and exact-token finalization or retry prevents overlapping drains from multiplying sends."
+    }
+  }
+}

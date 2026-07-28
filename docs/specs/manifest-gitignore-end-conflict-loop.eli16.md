@@ -1,0 +1,14 @@
+# ELI16 — stop committing the generated builtin-manifest, end the merge-conflict loop
+
+Instar keeps a file called `src/data/builtin-manifest.json`. It's a catalog of every built-in skill and hook, with a content hash for each. Nobody writes it by hand — a script (`scripts/generate-builtin-manifest.cjs`) GENERATES it from the actual skill/hook files, and that script runs automatically as the first step of `npm run build`. So the file is a build output, like a compiled `.js` — but unlike compiled files, it was being COMMITTED into git.
+
+That caused a painful, recurring problem. Every pull request that touches a skill or a hook regenerates this file, so the PR's copy differs from main's copy. On a busy repo where many PRs merge per hour, the file conflicts in git almost every time main moves: you resolve the conflict, push, wait ~10 minutes for the required tests, and by the time they finish another PR has merged and re-conflicted your file. One recent tiny docs PR needed FIVE conflict resolutions and still kept losing the race. It's a structural trap, not bad luck.
+
+This change fixes the root cause: it stops committing the generated file. Concretely, it adds `src/data/builtin-manifest.json` to `.gitignore` and removes it from git's tracking (the file still sits on disk; it's just no longer version-controlled). Because nothing commits it anymore, two PRs can never disagree about its contents — the conflict is impossible by construction.
+
+The careful part is making sure nothing breaks, because the published npm package and the running code both need this file:
+- **Publishing still includes it.** The repo has a `.npmignore`, and when that exists npm uses it (not `.gitignore`) to decide what to pack. The manifest isn't in `.npmignore`, so it's still shipped — verified with `npm pack --dry-run` (the tarball still lists `src/data/builtin-manifest.json`). And `prepublishOnly` runs `npm run build` first, which regenerates the file, so it's guaranteed to exist when the package is packed.
+- **The runtime is safe even if it's missing.** The only code that reads it, `CapabilityMapper.loadBuiltinManifest()`, already wraps the read in a check-then-try/catch and returns an empty manifest if the file isn't there — so a missing file degrades gracefully, it never crashes.
+- **The one test that reads it now generates it itself.** `builtin-manifest.test.ts` was the only test depending on the committed file existing. It now regenerates the file in a `beforeAll` if it's absent, so a fresh checkout (which won't have the file until built) still passes. Verified: deleting the file and running the test regenerates it and all 9 assertions pass.
+
+The upside: every future skill/hook PR — Echo's, Codey's, Gemini's — stops fighting this file. The repo's build, publish, and CI all keep working exactly as before, because the file is still produced at build time; it's just no longer a thing git can conflict on.

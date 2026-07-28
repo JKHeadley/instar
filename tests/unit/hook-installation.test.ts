@@ -45,8 +45,62 @@ describe('Hook installation for external operation safety', () => {
     const content = fs.readFileSync(hookPath, 'utf-8');
     expect(content).toContain('mcp__');
     expect(content).toContain('/operations/evaluate');
+    expect(content).toContain('/playwright-profiles/seat/acquire');
+    expect(content).toContain("service === 'playwright'");
+    expect(content).toContain("const holderId = process.env.INSTAR_SESSION_ID || ''");
     expect(content).toContain('mutability');
     expect(content).toContain('BLOCKED');
+  });
+
+  it('blocks every Playwright tool when another drive holds the physical seat', async () => {
+    let server: Server | null = null;
+    const port = await new Promise<number>((resolve) => {
+      server = createServer((req, res) => {
+        if (req.method === 'POST' && req.url === '/playwright-profiles/seat/acquire') {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ holderLabel: 'mentor-drive', retryAfterMs: 12_000 }));
+          return;
+        }
+        res.writeHead(500);
+        res.end();
+      });
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server!.address();
+        if (!addr || typeof addr === 'string') throw new Error('expected tcp address');
+        resolve(addr.port);
+      });
+    });
+
+    try {
+      const configPath = path.join(projectDir, '.instar', 'config.json');
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      fs.writeFileSync(configPath, JSON.stringify({ ...config, port, authToken: 'test-token' }));
+      const hookPath = path.join(projectDir, '.instar', 'hooks', 'instar', 'external-operation-gate.js');
+      const result = await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
+        const child = spawn(process.execPath, [hookPath], {
+          cwd: projectDir,
+          env: {
+            ...process.env,
+            CLAUDE_PROJECT_DIR: projectDir,
+            INSTAR_SESSION_ID: 'spawn-unique-session-id',
+            INSTAR_SESSION_NAME: 'competing-drive',
+          },
+          stdio: ['pipe', 'ignore', 'pipe'],
+        });
+        let stderr = '';
+        const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('hook timed out')); }, 5_000);
+        child.stderr.setEncoding('utf8');
+        child.stderr.on('data', chunk => { stderr += chunk; });
+        child.on('exit', status => { clearTimeout(timer); resolve({ status, stderr }); });
+        child.on('error', reject);
+        child.stdin.end(JSON.stringify({ tool_name: 'mcp__playwright__browser_snapshot', tool_input: {} }));
+      });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('Playwright operator seat is already in use');
+      expect(result.stderr).toContain('mentor-drive');
+    } finally {
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
+    }
   });
 
   it('explicitly permits canonical proceed and legacy allow actions, but blocks unknown actions', async () => {
@@ -137,7 +191,98 @@ describe('Hook installation for external operation safety', () => {
     expect(content).toContain('delete|remove|trash|purge|destroy|drop|clear');
     expect(content).toContain('send|create|post|write|add|insert|new|compose|publish');
     expect(content).toContain('update|modify|edit|patch|rename|move|change|set|toggle|enable|disable');
+    expect(content).toContain('get|list|search|fetch|check|read|view|describe|show|count|query|find|status');
+    expect(content).toContain("let mutability = 'modify'");
   });
+
+  it('routes unknown verbs to the gate while explicit reads retain the fast path', async () => {
+    const gateCalls: Array<{ action: string; mutability: string }> = [];
+    const server = createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/operations/evaluate') {
+        let body = '';
+        req.on('data', chunk => { body += String(chunk); });
+        req.on('end', () => {
+          const parsed = JSON.parse(body) as { description: string; mutability: string };
+          gateCalls.push({
+            action: parsed.description.split(' on ')[0].replace(/ /g, '_'),
+            mutability: parsed.mutability,
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ action: 'proceed', riskLevel: 'low' }));
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    const port = await new Promise<number>((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('expected tcp address');
+        resolve(addr.port);
+      });
+    });
+    const configPath = path.join(projectDir, '.instar', 'config.json');
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    fs.writeFileSync(configPath, JSON.stringify({ ...config, port, authToken: 'test-token' }));
+    const hookPath = path.join(projectDir, '.instar', 'hooks', 'instar', 'external-operation-gate.js');
+
+    async function runAction(action: string): Promise<number | null> {
+      return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [hookPath], {
+          cwd: projectDir,
+          env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+          stdio: ['pipe', 'ignore', 'pipe'],
+        });
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error(`external operation hook timed out for ${action}`));
+        }, 5000);
+        child.stderr.resume();
+        child.on('error', err => {
+          clearTimeout(timer);
+          reject(err);
+        });
+        child.on('exit', status => {
+          clearTimeout(timer);
+          resolve(status);
+        });
+        child.stdin.end(JSON.stringify({ tool_name: `mcp__service__${action}`, tool_input: {} }));
+      });
+    }
+
+    try {
+      const unknownVerbs = ['expunge', 'wipe', 'revoke', 'archive', 'flush', 'force_delete_all'];
+      for (const action of unknownVerbs) expect(await runAction(action)).toBe(0);
+      expect(gateCalls.slice(0, unknownVerbs.length)).toEqual(
+        unknownVerbs.map(action => ({ action, mutability: 'modify' })),
+      );
+
+      const callsBeforeReads = gateCalls.length;
+      for (const action of ['get_item', 'list_items', 'search_items', 'fetch_item']) {
+        expect(await runAction(action)).toBe(0);
+      }
+      expect(gateCalls).toHaveLength(callsBeforeReads);
+
+      const compoundMutators = ['get_or_create', 'list_and_delete', 'search_and_replace', 'check_then_revoke', 'status_update'];
+      for (const action of compoundMutators) expect(await runAction(action)).toBe(0);
+      expect(gateCalls.slice(-compoundMutators.length)).toEqual(
+        compoundMutators.map(action => ({ action, mutability: 'modify' })),
+      );
+
+      for (const [action, mutability] of [
+        ['delete_item', 'delete'],
+        ['purge_all', 'delete'],
+        ['send_message', 'write'],
+        ['update_item', 'modify'],
+      ] as const) {
+        expect(await runAction(action)).toBe(0);
+        expect(gateCalls.at(-1)).toEqual({ action, mutability });
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 30_000);
 
   it('adds MCP matcher to .claude/settings.json', () => {
     const settingsPath = path.join(projectDir, '.claude', 'settings.json');

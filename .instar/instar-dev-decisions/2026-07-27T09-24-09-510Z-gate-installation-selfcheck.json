@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-27T09:24:09.510Z",
+  "slug": "gate-installation-selfcheck",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 106,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -31,6 +31,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -54,15 +55,18 @@ export interface GlobalSecrets {
 
 export class GlobalSecretStore {
   private masterKey: Buffer | null = null;
+  private readonly exec: typeof execFileSync;
   private secretsDir: string;
   private encryptedFile: string;
   private keyFile: string;
   private useKeychain: boolean;
 
-  constructor(basePath?: string) {
+  constructor(basePath?: string, opts: { keychainExec?: typeof execFileSync; forceKeychain?: boolean } = {}) {
     this.secretsDir = basePath || defaultSecretsDir();
-    // Skip keychain when a custom basePath is provided (tests / self-contained stores)
-    this.useKeychain = !basePath;
+    // Skip keychain when a custom basePath is provided (tests / self-contained stores),
+    // unless forceKeychain is set (tests exercising keychain logic with an injected exec).
+    this.useKeychain = !basePath || opts.forceKeychain === true;
+    this.exec = opts.keychainExec ?? execFileSync;
     this.encryptedFile = path.join(this.secretsDir, 'global.secrets.enc');
     this.keyFile = path.join(this.secretsDir, 'global.key');
 
@@ -221,15 +225,28 @@ export class GlobalSecretStore {
       return true;
     }
 
-    // Generate a new key and store in keychain
+    // Generation guard (spec keychain-per-agent-master-key §5): NEVER generate
+    // a fresh key while an encrypted store already exists — the old key is
+    // merely unavailable (keychain entry deleted/rotated), and a fresh key
+    // would silently orphan all existing data behind undecryptable ciphertext.
+    if (this.exists) {
+      DegradationReporter.getInstance().report({
+        feature: 'GlobalSecretStore.initWithKeychain',
+        primary: 'Unlock the existing global secret store with the keychain master key',
+        fallback: 'Store stays locked (no fresh key generated over existing ciphertext)',
+        reason: 'Why: the keychain entry is missing but global.secrets.enc exists — generating a new key would orphan it',
+        impact: 'Global secrets unavailable until the original key is restored. See docs/specs/keychain-per-agent-master-key.md#recovery-operator-notes',
+      });
+      return false;
+    }
+
+    // Generate a new key and store in keychain (true first-run only)
     const newKey = crypto.randomBytes(MASTER_KEY_LENGTH);
     if (this.writeKeychain(newKey)) {
       this.masterKey = newKey;
       // Mark key file as keychain-backed
       fs.writeFileSync(this.keyFile, JSON.stringify({ type: 'keychain' }), { mode: 0o600 });
-      if (!this.exists) {
-        this.writeSecrets({ agents: {} });
-      }
+      this.writeSecrets({ agents: {} });
       return true;
     }
 
@@ -384,7 +401,7 @@ export class GlobalSecretStore {
     if (process.platform !== 'darwin') return null;
 
     try {
-      const result = execFileSync('security', [
+      const result = this.exec('security', [
         'find-generic-password',
         '-s', KEYCHAIN_SERVICE,
         '-a', KEYCHAIN_ACCOUNT,
@@ -403,7 +420,7 @@ export class GlobalSecretStore {
     try {
       // Delete existing entry first
       try {
-        execFileSync('security', [
+        this.exec('security', [
           'delete-generic-password',
           '-s', KEYCHAIN_SERVICE,
           '-a', KEYCHAIN_ACCOUNT,
@@ -413,7 +430,7 @@ export class GlobalSecretStore {
         // Entry may not exist
       }
 
-      execFileSync('security', [
+      this.exec('security', [
         'add-generic-password',
         '-s', KEYCHAIN_SERVICE,
         '-a', KEYCHAIN_ACCOUNT,

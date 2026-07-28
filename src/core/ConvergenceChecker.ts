@@ -56,7 +56,7 @@ const CHECKS: Check[] = [
   },
   {
     category: 'commitment_overreach',
-    pattern: /(i.ll (make sure|ensure|guarantee|always|never forget)|i (promise|commit to|will always)|you can count on me to|i.ll remember (to|this)|from now on i.ll)/i,
+    pattern: /(^|[^a-zA-Z])i.ll (make sure|ensure|guarantee|always|never forget)|(^|[^a-zA-Z])i (promise([^a-zA-Z]|$)|commit to|will always)|you can count on me to|(^|[^a-zA-Z])i.ll remember (to|this)|from now on i.ll/i,
     detail: 'Makes a promise that may not survive context compaction or session end.',
   },
   {

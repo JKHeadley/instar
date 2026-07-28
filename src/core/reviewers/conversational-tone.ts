@@ -7,6 +7,7 @@
 
 import { CoherenceReviewer } from '../CoherenceReviewer.js';
 import type { ReviewContext, ReviewerOptions } from '../CoherenceReviewer.js';
+import { renderUntrustedConversation } from '../untrustedConversationContext.js';
 
 export class ConversationalToneReviewer extends CoherenceReviewer {
   constructor(options?: ReviewerOptions) {
@@ -26,6 +27,25 @@ export class ConversationalToneReviewer extends CoherenceReviewer {
       if (rc.formality) {
         relationshipHint += `\nRelationship formality: ${rc.formality}`;
       }
+    }
+
+    // Context-aware carve-out (context-aware-outbound-review §D3): render the
+    // ONE ATOMIC block (context section + prompt contract) ONLY when the gate
+    // handed this reviewer the augmented ctx (opt-in set + primary-user
+    // recipient — structural scoping). Absent fields ⇒ conversationSection is
+    // '' and the prompt is BYTE-IDENTICAL to feature-dark: the pre-existing
+    // static "Code the user explicitly asked to see" exception stands exactly
+    // as today. The renderer never throws (total containment, §D5).
+    let conversationSection = '';
+    if (
+      context.recentConversation &&
+      context.recentConversation.length > 0 &&
+      context.conversationContextMeta
+    ) {
+      conversationSection = renderUntrustedConversation(
+        context.recentConversation,
+        context.conversationContextMeta,
+      );
     }
 
     return `${preamble}
@@ -48,7 +68,7 @@ EXCEPTIONS (these ARE allowed):
 - Code the user explicitly asked to see
 
 This message will be sent via ${context.channel}. Consider channel-appropriateness.
-${relationshipHint}
+${relationshipHint}${conversationSection}
 
 Respond EXCLUSIVELY with valid JSON:
 { "pass": boolean, "severity": "block"|"warn", "issue": "...", "suggestion": "..." }

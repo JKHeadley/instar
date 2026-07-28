@@ -378,7 +378,12 @@ describe('5. Sybil Protection', () => {
   });
 
   it('rejects PoW for wrong IP', () => {
-    const challenge = generateChallenge('127.0.0.1', 8);
+    // The IP is hashed into the PoW (SHA-256(epoch || clientIP || nonce)), so a
+    // nonce solved for 127.0.0.1 only validates for 10.0.0.1 if its hash happens
+    // to clear the difficulty bar there too — probability 2^-difficulty per run.
+    // At difficulty 8 that is 1/256, which flakes CI (~0.4% of runs). Use 16 so
+    // the false-accept probability is ~1.5e-5 (negligible) while solve stays fast.
+    const challenge = generateChallenge('127.0.0.1', 16);
     const solution = solveChallenge(challenge, '127.0.0.1');
     expect(verifySolution(solution, '10.0.0.1').valid).toBe(false);
   });

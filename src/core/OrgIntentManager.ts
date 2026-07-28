@@ -12,6 +12,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { parseIdentityLayer, type OrgIdentity } from './OrgIntentIdentityLayer.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -32,6 +33,8 @@ export interface ParsedOrgIntent {
   goals: OrgGoal[];
   values: string[];
   tradeoffHierarchy: string[];
+  /** MTP Protocol layer 3 (EXO 3.0): why high-judgment humans stay + what we're not for. */
+  identity?: OrgIdentity;
   raw: string;
 }
 
@@ -277,14 +280,28 @@ export class OrgIntentManager {
       : [];
 
     const values = valuesSection ? extractListItems(valuesSection) : [];
-    const tradeoffHierarchy = tradeoffSection ? extractListItems(tradeoffSection) : [];
+    let tradeoffHierarchy = tradeoffSection ? extractListItems(tradeoffSection) : [];
+    // The Tradeoff Hierarchy is documented (and scaffolded by `instar intent org-init`)
+    // as a single chained line — "Safety > Operator trust > Correctness > ..." — not a
+    // bulleted list, so extractListItems returns []. Accept the chained form too so the
+    // resolver actually sees the order. (exo3-harness mtp-tradeoff: was "no hierarchy".)
+    if (tradeoffHierarchy.length === 0 && tradeoffSection) {
+      const chain = tradeoffSection
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .split('\n').map(l => l.trim()).filter(Boolean)
+        .find(l => /[>›»]/.test(l));
+      if (chain) {
+        tradeoffHierarchy = chain.split(/\s*[>›»]\s*/).map(s => s.trim()).filter(Boolean);
+      }
+    }
+    const identity = parseIdentityLayer(raw) ?? undefined;
 
     // If all sections are empty after parsing, treat as template-only
-    if (constraints.length === 0 && goals.length === 0 && values.length === 0 && tradeoffHierarchy.length === 0) {
+    if (constraints.length === 0 && goals.length === 0 && values.length === 0 && tradeoffHierarchy.length === 0 && !identity) {
       return null;
     }
 
-    return { name, constraints, goals, values, tradeoffHierarchy, raw };
+    return { name, constraints, goals, values, tradeoffHierarchy, identity, raw };
   }
 
   /** Validate agent intent against org constraints (structural/heuristic) */

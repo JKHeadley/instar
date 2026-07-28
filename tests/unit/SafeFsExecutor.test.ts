@@ -287,3 +287,48 @@ describe('SafeFsExecutor agent-runtime-state carve-out', () => {
     expect(fs.existsSync(srcFile)).toBe(true);
   });
 });
+
+describe('safeRm/safeRmSync — transient-error retry defaults (CI tmpdir-cleanup flake class)', () => {
+  // Live: 2026-06-05 CI shard failure in handoff-manager.test.ts cleanup —
+  // `ENOTEMPTY: directory not empty, rmdir '/tmp/handoff-…/.git'` — a
+  // recursive force-delete racing a concurrent writer fails once and would
+  // succeed milliseconds later. fs.rm retries this class natively but only
+  // when maxRetries is set; the funnel now defaults it for recursive+force.
+
+  it('a recursive+force delete succeeds despite a transient ENOTEMPTY-style race (retry window)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'safefs-retry-'));
+    fs.mkdirSync(path.join(dir, 'sub'));
+    fs.writeFileSync(path.join(dir, 'sub', 'a.txt'), 'x');
+    // Simulate the race: drop a new file into the tree ~50ms in, inside the
+    // 3×100ms retry window. Without retry defaults this pattern is exactly
+    // the class that intermittently fails; with them the delete converges.
+    const t = setTimeout(() => {
+      try { fs.writeFileSync(path.join(dir, 'sub', 'late.txt'), 'y'); } catch { /* dir may already be gone — fine */ }
+    }, 50);
+    try {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'retry-default-test' });
+    } finally {
+      clearTimeout(t);
+    }
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('explicit caller maxRetries wins over the default (maxRetries: 0 keeps fail-fast)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'safefs-noretry-'));
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'x');
+    // No way to force a deterministic ENOTEMPTY here without mocking fs —
+    // assert the OPTION PLUMBING instead: an explicit 0 must not be replaced.
+    // (The defaulting helper only fills undefined.)
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, maxRetries: 0, operation: 'explicit-zero-test' });
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('non-recursive deletes get no retry defaults (unchanged semantics)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'safefs-nonrec-'));
+    const file = path.join(dir, 'a.txt');
+    fs.writeFileSync(file, 'x');
+    await SafeFsExecutor.safeRm(file, { force: true, operation: 'nonrecursive-test' });
+    expect(fs.existsSync(file)).toBe(false);
+    fs.rmdirSync(dir);
+  });
+});

@@ -1,0 +1,44 @@
+{
+  "version": 3,
+  "slug": "NEXT",
+  "sessionId": "783f1baa-7352-4229-8bda-00de9b0ec3cf",
+  "timestamp": "2026-07-20T02:55:04.070Z",
+  "artifactPath": "upgrades/side-effects/NEXT.md",
+  "artifactSha256": "9937e0a98a04918a15c48b2931d1da2cc65fa2ae32960193030521bd6c618719",
+  "specPath": "docs/specs/correction-class-review-and-verify-before-done.md",
+  "coveredFiles": [
+    "docs/LLM-ROUTING-REGISTRY.md",
+    "src/core/WriteDomainRegistry.ts",
+    "src/core/componentCategories.ts",
+    "src/monitoring/ClaimClauseArbiter.ts",
+    "src/monitoring/CompletionClaimVerifier.ts",
+    "src/monitoring/CorrectionClassReview.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/lint-dev-agent-dark-gate.test.ts",
+    "tests/unit/turn-evidence-completion-verifier.test.ts",
+    "upgrades/side-effects/NEXT.md"
+  ],
+  "phase": "complete",
+  "tier": 3,
+  "tierReasoning": "CI structural ratchets exposed omitted registries and an async callback error path across server, persistence, routing, and completion surfaces",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-second-pass",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

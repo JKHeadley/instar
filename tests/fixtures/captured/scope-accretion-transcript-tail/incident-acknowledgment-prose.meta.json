@@ -1,0 +1,8 @@
+{
+  "source": "The agent's own Telegram outbound log .instar/telegram-messages.jsonl — the REAL agent-authored acknowledgment of the 2026-07-02 scope-accretion incident (topic 29836, 2026-07-02T05:15:49Z), containing the exact \"documented stretch\" phrasing in plain prose",
+  "command": "grep 'documented stretch' .instar/telegram-messages.jsonl | head -1 | python3 -c \"…json.loads(line)['text']…\"",
+  "capturedAt": "2026-07-02T08:00:44Z",
+  "machine": "echo laptop (Justin MacBook, darwin 24.6.0)",
+  "redactions": "none",
+  "note": "The judge-tail-shaped POSITIVE input for the Layer B accretion-evasion scan: real agent prose from the motivating incident itself. (No local transcript carries the phrase in an assistant TEXT block — the incident run executed on the peer machine — so the agent-authored incident prose from the outbound log is the most faithful capturable artifact.)"
+}

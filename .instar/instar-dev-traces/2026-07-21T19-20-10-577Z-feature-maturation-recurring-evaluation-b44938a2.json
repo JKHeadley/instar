@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "slug": "feature-maturation-recurring-evaluation",
+  "sessionId": "6fa7c41d-2b0f-4669-b508-34ce50313091",
+  "timestamp": "2026-07-21T19:44:57.300Z",
+  "artifactPath": "upgrades/side-effects/feature-maturation-recurring-evaluation.md",
+  "artifactSha256": "03fa3f91d54d329db4440c7994b05a1c7fab34c729399336b225819a8bfccb45",
+  "specPath": "docs/specs/feature-maturation-recurring-evaluation.md",
+  "coveredFiles": [
+    "docs/specs/feature-maturation-recurring-evaluation.eli16.md",
+    "docs/specs/feature-maturation-recurring-evaluation.md",
+    "docs/specs/reports/feature-maturation-recurring-evaluation-convergence.md",
+    "src/core/FeatureRolloutReconciler.ts",
+    "src/core/InitiativeTracker.ts",
+    "src/core/featureRolloutScan.ts",
+    "src/monitoring/BlockerLifecycleLedger.ts",
+    "src/monitoring/BlockerLifecycleService.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/unit/BlockerLifecycleLedger.test.ts",
+    "tests/unit/BlockerLifecycleMaturation.test.ts",
+    "tests/unit/feature-maturation-contract.test.ts",
+    "upgrades/next/feature-maturation-recurring-evaluation.md",
+    "upgrades/side-effects/feature-maturation-recurring-evaluation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Runtime metrics persistence and recurring evaluation extend fleet-shipped monitoring surfaces; full converged-spec ceremony is appropriate.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 6
+      },
+      {
+        "name": "iterative-converging-audit",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 6
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/feature-maturation-recurring-evaluation-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

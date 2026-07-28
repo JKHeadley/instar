@@ -150,6 +150,48 @@ describe('OrgIntentManager', () => {
       });
     });
 
+    it('parses a chained "A > B > C" Tradeoff Hierarchy (documented format)', () => {
+      // Regression (exo3-harness mtp-tradeoff): the documented/scaffolded form is a
+      // single chained line, not a bulleted list. It must parse to an ordered array
+      // so /intent/tradeoff-resolve can resolve, instead of "no hierarchy defined".
+      fs.writeFileSync(path.join(stateDir, 'ORG-INTENT.md'), [
+        '# Organizational Intent: Test Corp',
+        '',
+        '## Constraints (Mandatory — agents cannot override)',
+        '',
+        '- Never leak secrets.',
+        '',
+        '## Tradeoff Hierarchy',
+        '',
+        'Safety > Operator trust > Correctness > Durability > Speed',
+      ].join('\n'));
+
+      const parsed = manager.parse();
+      expect(parsed).not.toBeNull();
+      expect(parsed!.tradeoffHierarchy).toEqual([
+        'Safety', 'Operator trust', 'Correctness', 'Durability', 'Speed',
+      ]);
+    });
+
+    it('still parses a bulleted Tradeoff Hierarchy', () => {
+      fs.writeFileSync(path.join(stateDir, 'ORG-INTENT.md'), [
+        '# Organizational Intent: Test Corp',
+        '',
+        '## Constraints (Mandatory — agents cannot override)',
+        '',
+        '- Never leak secrets.',
+        '',
+        '## Tradeoff Hierarchy',
+        '',
+        '- Safety',
+        '- Speed',
+      ].join('\n'));
+
+      const parsed = manager.parse();
+      expect(parsed).not.toBeNull();
+      expect(parsed!.tradeoffHierarchy).toEqual(['Safety', 'Speed']);
+    });
+
     it('extracts goals with specializable flag', () => {
       fs.writeFileSync(path.join(stateDir, 'ORG-INTENT.md'), [
         '# Organizational Intent: Test Corp',

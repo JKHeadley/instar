@@ -1,0 +1,9 @@
+# ELI16 — StandingDrive Slice 2
+
+A standing drive must not gain authority merely because its next proposed step sounds helpful or closely related to the operator's goal. Slice 2 turns that rule into a closed, auditable calculation. The calculation receives only the frozen drive envelope, current phase id, and structured action request. It returns an allow or a typed hold, the exact frozen rule that matched when one exists, the envelope digest used, and a deterministic decision digest. There is no model prompt, similarity score, network lookup, clock, or locale-sensitive comparison in the decision path.
+
+Git and local-test targets use safe project-relative prefix semantics. An operator-approved `src/` scope therefore includes `src/core/file.ts`, but cannot escape through `..`, an absolute path, or a platform-specific backslash path. Other domains retain exact target matching. Constraints are canonicalized by fixed code-unit order, so two machines receive the same result even when object fields or replicated rule arrays arrive in different insertion orders. If multiple frozen rules match, the lowest code-unit rule id is selected deterministically.
+
+Malformed runtime input, unknown schema versions, the wrong phase or domain, a non-enumerated operation, and a constraint mismatch all fail closed into explicit typed results. The original enum-only helper remains available as a compatibility projection over the new detailed authority, so existing callers do not change behavior while later execution slices gain an audit-grade result.
+
+This slice still does not wake a session, dispatch an external effect, send a message, or grant new external permission. It only establishes the deterministic scope authority that every later actuator must compose with the existing lifecycle, authority-rebind, breaker, stop, operation, and coherence gates.

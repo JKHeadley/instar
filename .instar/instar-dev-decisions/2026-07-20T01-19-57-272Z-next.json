@@ -1,0 +1,20 @@
+{
+  "ts": "2026-07-20T01:19:57.272Z",
+  "slug": "NEXT",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 26,
+  "loc": 2513,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

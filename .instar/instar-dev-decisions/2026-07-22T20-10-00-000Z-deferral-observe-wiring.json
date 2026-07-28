@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-22T20:10:00.000Z",
+  "slug": "deferral-observe-wiring",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 90,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "Wire the deferral-floor recognizer into buildToneDecisionContext as an OBSERVE-ONLY content-free boolean (deferralShapeDetected). Signal for the decision-quality meter + pushback->improvement pipeline; NEVER alters the gate's block/allow verdict; fail-open helper (a detector throw records false). Purely additive to the provenance context. Built directly by Echo. tsc clean; new test 6/6 + existing MessagingToneGate 55/55 green (no regression)."
+}

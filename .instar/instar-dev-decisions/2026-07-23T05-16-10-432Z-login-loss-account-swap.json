@@ -1,0 +1,28 @@
+{
+  "ts": "2026-07-23T05:16:10.432Z",
+  "slug": "login-loss-account-swap",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      1558
+    ],
+    "notes": "PR #1558 established the safe default-session swap path; this extension closes the newly identified login-loss trigger gap."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/swap-continuity-wiring.test.ts",
+      "howCaught": "The login-loss level trigger settles through source repair or one bounded refresh and remains constrained by dwell, in-flight holds, failure backoff, per-target and per-cycle caps, and the existing thrash breaker."
+    }
+  },
+  "verdict": "blocked"
+}

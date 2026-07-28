@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-24T21:07:16.622Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 287,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Latent gap since the recovery sentinels were written: RateLimitSentinel + CompactionSentinel keyed recovery on terminal-output staleness with no live-session guard, and never cleared recovery state / unregistered a session on completion. A completed session (no new output) was indistinguishable from a throttled one, so it stayed a recovery target indefinitely. Surfaced fleet-wide via the Mini quota-wall incident (topic 28130, 2026-06-24). Fix moves the invariant to the recovery-ACTION boundary."
+  },
+  "verdict": "pass"
+}

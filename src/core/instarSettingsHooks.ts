@@ -61,12 +61,39 @@ export const INSTAR_BASH_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry
   },
   {
     type: 'command',
+    command: `node ${PD}/.instar/hooks/instar/self-stop-guard.js`,
+    timeout: 5000,
+  },
+  {
+    type: 'command',
     command: `node ${PD}/.instar/hooks/instar/external-communication-guard.js`,
     timeout: 5000,
   },
   {
     type: 'command',
     command: `node ${PD}/.instar/hooks/instar/post-action-reflection.js`,
+    timeout: 5000,
+  },
+  {
+    // Parallel-Hand PR Lease guard (spec: parallel-hand-pr-lease.md): before a
+    // `git push`, asks the server whether another LIVE session of this agent owns
+    // the branch's lease; blocks (exit 2) only on a deny. Dev-gated dark + dryRun;
+    // fail-open on every uncertainty (a broken guard never blocks a push).
+    type: 'command',
+    command: `node ${PD}/.instar/hooks/instar/pr-hand-lease-guard.js`,
+    blocking: true,
+    timeout: 6000,
+  },
+  {
+    // Doorway-scan command-allowlist guard (spec DOORWAY-MODEL-KNOWLEDGE-REGISTRY §2.7):
+    // a strict command-shape allowlist that fires only inside the doorway-scan job
+    // session (env-first, INSTAR_JOB_SLUG=doorway-scan). Scope resolution fails OPEN
+    // (a guard bug never blocks an unrelated instar-dev/interactive session); command
+    // matching fails CLOSED (a non-sanctioned command in the doorway-scan session is
+    // refused). Strict no-op everywhere else.
+    type: 'command',
+    command: `node ${PD}/.instar/hooks/instar/doorway-scan-guard.js`,
+    blocking: true,
     timeout: 5000,
   },
 ];

@@ -40,6 +40,11 @@ function createMockUpdateChecker(overrides?: Partial<UpdateChecker>): UpdateChec
       healthCheck: 'skipped',
     }),
     getInstalledVersion: vi.fn().mockReturnValue('0.9.8'),
+    // The loop-breaker's STRAND detection (AutoUpdater.ts) calls this every tick when
+    // lastAppliedVersion === latest; without it the mock throws before the notify block.
+    // Default it to the latest applied version so isStrand=false (the benign
+    // awaiting-restart path the spam-prevention test asserts).
+    getShadowInstalledVersion: vi.fn().mockReturnValue('0.9.9'),
     getLastCheck: vi.fn().mockReturnValue(null),
     rollback: vi.fn().mockResolvedValue({ success: false, previousVersion: '0.9.8', restoredVersion: '0.9.8', message: 'No rollback' }),
     canRollback: vi.fn().mockReturnValue(false),

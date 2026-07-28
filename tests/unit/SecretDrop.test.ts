@@ -4,8 +4,9 @@
  * Tests creation, retrieval, submission, expiry, CSRF, and one-time-use behavior.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { SecretDrop } from '../../src/server/SecretDrop.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import crypto from 'node:crypto';
+import { SecretDrop, canonicalSubmitMessage, buildSignedSubmission } from '../../src/server/SecretDrop.js';
 
 describe('SecretDrop', () => {
   let drop: SecretDrop;
@@ -270,5 +271,148 @@ describe('SecretDrop', () => {
       expect(html).toContain('Expired');
       expect(html).toContain('no longer valid');
     });
+  });
+
+  describe('R1a — sealed-handoff sender authentication', () => {
+    function genKey() {
+      const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+      const pubRaw = Buffer.from(publicKey.export({ type: 'spki', format: 'der' })).subarray(-32);
+      return { privateKey, pubHex: Buffer.from(pubRaw).toString('hex') };
+    }
+    function sign(privateKey: crypto.KeyObject, token: string, values: Record<string, string>): string {
+      return crypto.sign(null, canonicalSubmitMessage(token, values), privateKey).toString('hex');
+    }
+    const csrf = (token: string) => drop.getPending(token)!.csrfToken;
+
+    it('accepts a correctly-signed submission', () => {
+      const k = genKey();
+      const { token } = drop.create({ label: 'Token', senderVerification: { senderPubKeyHex: k.pubHex } });
+      const values = { secret: 'live-token-value' };
+      const sub = drop.submit(token, csrf(token), { ...values, _sig: sign(k.privateKey, token, values) });
+      expect(sub).not.toBeNull();
+      expect(sub!.values.secret).toBe('live-token-value');
+      expect(sub!.values._sig).toBeUndefined(); // _sig is auth metadata, never stored as a value
+    });
+
+    it('rejects an unsigned submission and does NOT burn the one-time token', () => {
+      const k = genKey();
+      const { token } = drop.create({ label: 'Token', senderVerification: { senderPubKeyHex: k.pubHex } });
+      expect(drop.submit(token, csrf(token), { secret: 'x' })).toBeNull();
+      expect(drop.getPending(token)).not.toBeNull(); // a real sender can retry
+    });
+
+    it('rejects a signature made with the wrong key', () => {
+      const k = genKey(); const attacker = genKey();
+      const { token } = drop.create({ label: 'Token', senderVerification: { senderPubKeyHex: k.pubHex } });
+      const values = { secret: 'x' };
+      expect(drop.submit(token, csrf(token), { ...values, _sig: sign(attacker.privateKey, token, values) })).toBeNull();
+    });
+
+    it('rejects a value tampered after signing', () => {
+      const k = genKey();
+      const { token } = drop.create({ label: 'Token', senderVerification: { senderPubKeyHex: k.pubHex } });
+      const sig = sign(k.privateKey, token, { secret: 'original' });
+      expect(drop.submit(token, csrf(token), { secret: 'TAMPERED', _sig: sig })).toBeNull();
+    });
+
+    it('rejects a signature replayed from a different request token', () => {
+      const k = genKey();
+      const a = drop.create({ label: 'A', senderVerification: { senderPubKeyHex: k.pubHex } });
+      const b = drop.create({ label: 'B', senderVerification: { senderPubKeyHex: k.pubHex } });
+      const sigForA = sign(k.privateKey, a.token, { secret: 'x' });
+      expect(drop.submit(b.token, csrf(b.token), { secret: 'x', _sig: sigForA })).toBeNull();
+    });
+
+    it('backward-compat: no senderVerification → submit works without _sig', () => {
+      const { token } = drop.create({ label: 'Plain' });
+      const sub = drop.submit(token, csrf(token), { secret: 'human-pasted' });
+      expect(sub).not.toBeNull();
+      expect(sub!.values.secret).toBe('human-pasted');
+    });
+
+    it('round-trip: buildSignedSubmission (sender) is accepted by submit (receiver)', () => {
+      // Sender holds a raw 32-byte Ed25519 seed; receiver pins the derived pubkey.
+      const seed = crypto.randomBytes(32);
+      const priv = crypto.createPrivateKey({
+        key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]),
+        format: 'der', type: 'pkcs8',
+      });
+      const pubHex = Buffer.from(
+        Buffer.from(crypto.createPublicKey(priv).export({ type: 'spki', format: 'der' })).subarray(-32),
+      ).toString('hex');
+
+      const { token } = drop.create({ label: 'Token', senderVerification: { senderPubKeyHex: pubHex } });
+      const body = buildSignedSubmission(token, { secret: 'live-token' }, seed.toString('hex'));
+      const sub = drop.submit(token, csrf(token), body);
+      expect(sub).not.toBeNull();
+      expect(sub!.values.secret).toBe('live-token');
+    });
+
+    it('buildSignedSubmission rejects a non-32-byte seed', () => {
+      expect(() => buildSignedSubmission('t', { secret: 'x' }, 'aabb')).toThrow(/32 bytes/);
+    });
+  });
+});
+
+/**
+ * Sliding retrieval window — a stored submission must not be deleted out from
+ * under an active consumer. The window slides on every retrieve and is bounded
+ * only by an absolute cap. Regression guard for the 2026-06-02 incident where a
+ * fixed 5-minute window kept expiring a secret mid-handoff, forcing the user to
+ * resubmit repeatedly.
+ */
+describe('SecretDrop — sliding retrieval window', () => {
+  const MIN = 60 * 1000;
+  let drop: SecretDrop;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    drop = new SecretDrop('TestAgent');
+  });
+
+  afterEach(() => {
+    drop.shutdown();
+    vi.useRealTimers();
+  });
+
+  // Submit a secret and return its token.
+  function submitOne(): string {
+    const { token } = drop.create({ label: 'Key' });
+    const pending = drop.getPending(token)!;
+    drop.submit(token, pending.csrfToken, { secret: 'v' });
+    return token;
+  }
+
+  it('stays alive past the idle window when retrieved before it lapses', () => {
+    const token = submitOne();
+    // 14 min < 15-min idle window: still here, and the peek SLIDES the window.
+    vi.advanceTimersByTime(14 * MIN);
+    expect(drop.peekReceived(token)).not.toBeNull();
+    // Another 14 min (28 total) — without the slide the original timer would
+    // have purged it at 15 min. The slide keeps it alive.
+    vi.advanceTimersByTime(14 * MIN);
+    expect(drop.peekReceived(token)).not.toBeNull();
+  });
+
+  it('is purged at the absolute cap even under continuous retrieval', () => {
+    const token = submitOne();
+    // Peek every 10 min; the 30-min absolute cap must still win.
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(10 * MIN);
+      drop.peekReceived(token);
+    }
+    expect(drop.peekReceived(token)).toBeNull();
+  });
+
+  it('cleans up an untouched submission after the idle window', () => {
+    const token = submitOne();
+    vi.advanceTimersByTime(15 * MIN + 1000);
+    expect(drop.peekReceived(token)).toBeNull();
+  });
+
+  it('consumeReceived removes the submission immediately', () => {
+    const token = submitOne();
+    expect(drop.consumeReceived(token)).not.toBeNull();
+    expect(drop.peekReceived(token)).toBeNull();
   });
 });

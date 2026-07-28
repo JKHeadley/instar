@@ -128,9 +128,14 @@ auto_advance: true
     const heartbeatApi = new MachineHeartbeat({
       stateDir: project.stateDir,
       machineId: 'test-machine',
-      // Tests use a tiny staleness threshold so claim-ownership can be
-      // exercised in both states (fresh + stale) without faking timers.
-      staleThresholdMs: 50,
+      // Tests use a short-but-generous staleness threshold so claim-ownership
+      // can be exercised in both states without faking timers: the "stale"
+      // case writes a 10-minute-old timestamp (>> 60s), and the "fresh" case
+      // gets 60s of headroom so a loaded CI shard can't age a just-written
+      // heartbeat past the threshold mid-test (live flake: shard 1/4 on PR
+      // #794 — expected 409, got 200, because >50ms elapsed between writing
+      // the peer heartbeat and the route reading it).
+      staleThresholdMs: 60_000,
     });
     heartbeatApi.writeOnce(); // ensure THIS machine has a fresh record
     const machineHeartbeat = { api: heartbeatApi, config: { machineId: 'test-machine' } };
@@ -486,6 +491,72 @@ goal: try escape
     expect(tracker.get(itemId)?.pipelineStage).toBe('spec-drafted');
   });
 
+  it('POST /projects/:id/advance — spec-drafted → spec-converged accepts the canonical TIMESTAMP tag + report (Part A bug-fix through the real route)', async () => {
+    const { projectVersion, itemId } = await seedProject('adv-converge');
+    // The canonical converging-audit format: review-convergence is the ISO
+    // TIMESTAMP STRING the tooling writes — NOT boolean true. Pre-fix this
+    // advance was REJECTED with CONVERGENCE_TAG_MISSING (`"<ts>" !== true`).
+    fs.writeFileSync(
+      path.join(targetRepo, 'docs/specs/a.md'),
+      `---\ntitle: a\nslug: a\nreview-convergence: "2026-06-10T18:10:05Z"\n---\n\n# spec body\n`,
+    );
+    fs.mkdirSync(path.join(targetRepo, 'docs/specs/reports'), { recursive: true });
+    fs.writeFileSync(path.join(targetRepo, 'docs/specs/reports/a-convergence.md'), '# convergence report\n');
+
+    // Step 1: outline → spec-drafted.
+    const drafted = await request(app)
+      .post('/projects/adv-converge/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(projectVersion))
+      .send({ itemId, targetStage: 'spec-drafted', artifact: { specPath: 'docs/specs/a.md' } });
+    expect(drafted.status).toBe(200);
+
+    // Step 2: spec-drafted → spec-converged (the bug-fix path).
+    const v2 = tracker.get('adv-converge')!.version;
+    const converged = await request(app)
+      .post('/projects/adv-converge/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(v2))
+      .send({ itemId, fromStage: 'spec-drafted', targetStage: 'spec-converged', artifact: { specPath: 'docs/specs/a.md' } });
+    expect(converged.status).toBe(200);
+    expect(converged.body.item.pipelineStage).toBe('spec-converged');
+    expect(tracker.get(itemId)?.pipelineStage).toBe('spec-converged');
+
+    // Restore the empty spec for subsequent tests.
+    fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '');
+  });
+
+  it('POST /projects/:id/advance — spec-drafted → spec-converged with timestamp tag but MISSING report returns 409 (report check stays unconditional)', async () => {
+    const { projectVersion, itemId } = await seedProject('adv-converge-noreport');
+    fs.writeFileSync(
+      path.join(targetRepo, 'docs/specs/a.md'),
+      `---\ntitle: a\nslug: a\nreview-convergence: "2026-06-10T18:10:05Z"\n---\n\n# spec body\n`,
+    );
+    // The reports/ dir exists but the specific report file for slug `a` does
+    // not → CONVERGENCE_REPORT_MISSING (not ESCAPE, which is the dir-absent case).
+    fs.mkdirSync(path.join(targetRepo, 'docs/specs/reports'), { recursive: true });
+    SafeFsExecutor.safeRmSync(path.join(targetRepo, 'docs/specs/reports/a-convergence.md'), { force: true, operation: 'tests/integration/projects-api.test.ts:advance-converge-noreport' });
+
+    const drafted = await request(app)
+      .post('/projects/adv-converge-noreport/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(projectVersion))
+      .send({ itemId, targetStage: 'spec-drafted', artifact: { specPath: 'docs/specs/a.md' } });
+    expect(drafted.status).toBe(200);
+
+    const v2 = tracker.get('adv-converge-noreport')!.version;
+    const converged = await request(app)
+      .post('/projects/adv-converge-noreport/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(v2))
+      .send({ itemId, fromStage: 'spec-drafted', targetStage: 'spec-converged', artifact: { specPath: 'docs/specs/a.md' } });
+    expect(converged.status).toBe(409);
+    expect(converged.body.code).toBe('CONVERGENCE_REPORT_MISSING');
+
+    // Restore the empty spec for subsequent tests.
+    fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '');
+  });
+
   it('POST /projects/:id/advance — missing If-Match returns 428', async () => {
     const { itemId } = await seedProject('adv-2');
     const res = await request(app)
@@ -534,6 +605,34 @@ goal: try escape
       .set('If-Match', String(projectVersion))
       .send({ itemId: 'no-such-child', targetStage: 'spec-drafted', artifact: {} });
     expect(res.status).toBe(404);
+  });
+
+  it('POST /projects/:id/advance — building → merged WIRES ghPrView (never GH_PR_VIEW_UNAVAILABLE) [#866]', async () => {
+    // Wiring-integrity (#866): the validator has no internal default for
+    // ghPrView, so building→merged was structurally impossible on every
+    // install (always GH_PR_VIEW_UNAVAILABLE) until the route injects it.
+    // After the fix the helper is provided, so ANY failure of the now-wired
+    // helper surfaces as GH_PR_VIEW_FAILED — never UNAVAILABLE — regardless of
+    // whether `gh` is installed/authed in CI (a missing gh binary or a fake PR
+    // both throw inside the injected helper, which the validator maps to
+    // GH_PR_VIEW_FAILED). The ONLY way to get UNAVAILABLE is the helper being
+    // absent — i.e. the bug. So this assertion proves the wiring deterministically.
+    const { projectVersion, itemId } = await seedProject('adv-merged-866');
+    const res = await request(app)
+      .post('/projects/adv-merged-866/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(projectVersion))
+      .send({
+        itemId,
+        fromStage: 'building',
+        targetStage: 'merged',
+        artifact: { prNumber: 999999 }, // nonexistent PR → helper throws → GH_PR_VIEW_FAILED
+      });
+    // The transition is rejected (no real merged PR), but NOT for the
+    // helper-missing reason — the helper is now wired.
+    expect(res.status).toBe(409);
+    expect(res.body.code).not.toBe('GH_PR_VIEW_UNAVAILABLE');
+    expect(res.body.code).toBe('GH_PR_VIEW_FAILED');
   });
 
   it('POST /projects/:id/halt — halts the active round (idempotent)', async () => {
@@ -668,7 +767,7 @@ goal: try escape
     await seedProject('claim-3');
     const proj = tracker.get('claim-3')!;
     fs.mkdirSync(path.join(project.stateDir, 'machine-health'), { recursive: true });
-    // Stale: heartbeat is from 10 minutes ago, staleThresholdMs is 50ms in tests.
+    // Stale: heartbeat is from 10 minutes ago, staleThresholdMs is 60s in tests.
     fs.writeFileSync(
       path.join(project.stateDir, 'machine-health', 'm-peer.json'),
       JSON.stringify({

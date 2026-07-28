@@ -1,0 +1,23 @@
+{
+  "ts": "2026-07-20T00:44:36.472Z",
+  "slug": "durable-stop-gate-breaker",
+  "suggestedTier": 1,
+  "declaredTier": 3,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 23,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Restart-storm reconstruction must keep timeout feedback at K=2; process-local state fails."
+    },
+    "component": "UnjustifiedStopGate"
+  },
+  "verdict": "blocked"
+}

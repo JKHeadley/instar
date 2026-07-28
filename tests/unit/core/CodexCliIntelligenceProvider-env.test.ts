@@ -8,26 +8,57 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 
-// Mock child_process BEFORE importing the SUT so the mocked execFile is
-// captured by the SUT's import binding.
+// Mock child_process BEFORE importing the SUT so the mocked execFile/spawn
+// are captured by the SUT's import binding. Plain mode uses execFile; the
+// default exec-json mode uses spawn (via spawnCodexExecJson).
 const execFileSpy = vi.fn();
+const spawnSpy = vi.fn();
 
 vi.mock('node:child_process', () => ({
   execFile: (...args: unknown[]) => execFileSpy(...args),
+  spawn: (...args: unknown[]) => spawnSpy(...args),
 }));
 
 import { CodexCliIntelligenceProvider } from '../../../src/core/CodexCliIntelligenceProvider.js';
+
+/** Minimal fake spawn child: streams + immediate non-zero exit. */
+function makeFakeSpawnChild(): EventEmitter & Record<string, unknown> {
+  const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  const makeStream = () => {
+    const s = new EventEmitter() as EventEmitter & Record<string, unknown>;
+    s.setEncoding = () => s;
+    s.destroy = () => {};
+    return s;
+  };
+  child.stdout = makeStream();
+  child.stderr = makeStream();
+  const stdin = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  stdin.end = () => {};
+  child.stdin = stdin;
+  child.kill = () => true;
+  setImmediate(() => {
+    child.emit('exit', 1);
+    child.emit('close', 1);
+  });
+  return child;
+}
 
 describe('CodexCliIntelligenceProvider — Rule 1a env-scrubbing', () => {
   const saved = {
     apiKey: process.env.OPENAI_API_KEY,
     orgId: process.env.OPENAI_ORG_ID,
     projectId: process.env.OPENAI_PROJECT_ID,
+    execJson: process.env.INSTAR_CODEX_EXEC_JSON,
   };
 
   beforeEach(() => {
     execFileSpy.mockReset();
+    spawnSpy.mockReset();
+    // The execFile-based assertions below pin the PLAIN-mode (kill-switch)
+    // path; the exec-json (spawn) path has its own describe further down.
+    process.env.INSTAR_CODEX_EXEC_JSON = '0';
     // Set a sentinel in parent env to verify it's scrubbed from child env.
     process.env.OPENAI_API_KEY = 'sk-PARENT-LEAK-SENTINEL';
     process.env.OPENAI_ORG_ID = 'org-PARENT-LEAK';
@@ -41,12 +72,14 @@ describe('CodexCliIntelligenceProvider — Rule 1a env-scrubbing', () => {
       setImmediate(() => cb(null, 'mocked-judgment-output', ''));
       return fakeChild;
     });
+    spawnSpy.mockImplementation(() => makeFakeSpawnChild());
   });
 
   afterEach(() => {
     restore('OPENAI_API_KEY', saved.apiKey);
     restore('OPENAI_ORG_ID', saved.orgId);
     restore('OPENAI_PROJECT_ID', saved.projectId);
+    restore('INSTAR_CODEX_EXEC_JSON', saved.execJson);
   });
 
   it('passes a scrubbed env to execFile (no OPENAI_API_KEY)', async () => {
@@ -109,6 +142,29 @@ describe('CodexCliIntelligenceProvider — Rule 1a env-scrubbing', () => {
       delete process.env.CLAUDECODE;
       delete process.env.CLAUDE_SESSION_ID;
     }
+  });
+
+  it('exec-json mode (spawn path) also passes the scrubbed env — Rule 1a holds in BOTH modes', async () => {
+    delete process.env.INSTAR_CODEX_EXEC_JSON; // default ON → spawn path
+    const provider = new CodexCliIntelligenceProvider({
+      codexPath: '/usr/local/bin/codex',
+      resolveExecJson: () => true,
+    });
+    // The fake spawn child exits 1 immediately, so the call rejects — the
+    // env assertion is what this test pins, not the call outcome.
+    await expect(provider.evaluate('test prompt')).rejects.toThrow();
+    expect(spawnSpy).toHaveBeenCalledTimes(1);
+    const spawnOpts = spawnSpy.mock.calls[0][2] as { env?: NodeJS.ProcessEnv };
+    expect(spawnOpts.env).toBeDefined();
+    expect(spawnOpts.env!.OPENAI_API_KEY).toBeUndefined();
+    expect(spawnOpts.env!.OPENAI_ORG_ID).toBeUndefined();
+    expect(spawnOpts.env!.OPENAI_PROJECT_ID).toBeUndefined();
+    expect(Object.keys(spawnOpts.env!).length).toBeLessThan(50);
+    // And the prompt is OFF argv (stdin hygiene) — positional is '-'.
+    const argv = spawnSpy.mock.calls[0][1] as string[];
+    expect(argv).toContain('--json');
+    expect(argv[argv.length - 1]).toBe('-');
+    expect(argv).not.toContain('test prompt');
   });
 });
 

@@ -164,7 +164,7 @@ describe('StallTriageNurse', () => {
         config: { ...TEST_CONFIG, framework: 'codex-cli', model: 'haiku' },
       });
       expect((nurse as unknown as { config: { model: string } }).config.model)
-        .toBe('gpt-5.2');
+        .toBe('gpt-5.4-mini'); // haiku → light tier; gpt-5.2 retired from ChatGPT-account Codex 2026-06-03
     });
     it('codex-cli: raw Codex model id passes through verbatim', () => {
       const nurse = new StallTriageNurse(deps, {

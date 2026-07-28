@@ -1,0 +1,3 @@
+# Decision-audit lines now ride their own commit
+
+Every gated commit writes one audit line recording what tier was declared vs suggested — the accountability record for build decisions. But the line was written DURING the commit (by the pre-commit hook), which means it landed just after the files were staged — so it sat uncommitted in the building worktree. Most worktrees produce exactly one PR and then get deleted, taking the audit line with them. The record looked like it "never fired" when it actually fired and evaporated. Now the hook stages the audit file right after writing it, so the line travels inside the very commit it describes. If the gate blocks the commit, the staged line simply rides the retry — both lines describe real evaluations.

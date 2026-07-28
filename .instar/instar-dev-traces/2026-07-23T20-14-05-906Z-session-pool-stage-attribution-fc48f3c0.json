@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "slug": "session-pool-stage-attribution",
+  "sessionId": "0c50f55c-9d35-4f2a-9082-c1850bd89ff7",
+  "timestamp": "2026-07-23T20:14:05.906Z",
+  "artifactPath": "upgrades/side-effects/session-pool-stage-attribution.md",
+  "artifactSha256": "5a657f9eaedf6865ea4e8bd917fd572a5f73416a5cc876fa91c020549c771101",
+  "specPath": "docs/specs/session-pool-stage-attribution.md",
+  "coveredFiles": [
+    "docs/specs/session-pool-stage-attribution.eli16.md",
+    "docs/specs/session-pool-stage-attribution.md",
+    "src/commands/server.ts",
+    "src/core/SessionPoolFailoverRunner.ts",
+    "src/core/sessionPoolFailoverRunnerConfig.ts",
+    "tests/unit/SessionPoolFailoverRunner.test.ts",
+    "tests/unit/StageAdvancer.test.ts",
+    "tests/unit/session-pool-failover-runner-wiring.test.ts",
+    "upgrades/1.3.915.md",
+    "upgrades/side-effects/session-pool-stage-attribution.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The change corrects evidence attribution at a staged rollout authority boundary and therefore merits the full approved-spec chain despite its compact implementation.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-boundary-review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  }
+}

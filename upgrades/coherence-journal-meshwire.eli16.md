@@ -1,0 +1,9 @@
+# The diaries actually sync now (P1 closing step — mesh transport)
+
+P1.1 made each machine keep its diaries, P1.2 made them readable, P1.3 built the engine that safely receives a peer's diary. This is the wire that connects them: machines now actually hand each other their diaries over the secure line they already use.
+
+It's deliberately tiny and cheap. The existing once-every-30-seconds "are you alive?" check between machines now carries one extra scrap of information: a peer's "I'm at line N in each of my diaries." When a machine notices a peer is further along than the copy it holds, it asks for just the missing lines — over a separate, size-capped request, so the fast heartbeat itself never gets heavy. The receiving side runs every defense from P1.3 (a machine can only hand over its OWN diary; every line validated; restores caught; nothing trusted until durably saved).
+
+**The safety choice that matters:** this ships DARK even on me. Merging it does NOT turn on cross-machine syncing. The transport and the drive are gated behind an explicit "replication on" switch that defaults off everywhere — so landing this code changes nothing about live mesh traffic. Turning it on between the Laptop and the Mini is a separate, deliberate, watched step (the live proof you pre-approved). This is on purpose: the mesh is load-bearing for everything, and "merge a PR" should never silently rewire it.
+
+What the live proof will show, once both machines are on this version and I flip the switch: move conversation 13481 from the Laptop to the Mini, then ask the LAPTOP "where did 13481 live and why did it move?" — and it answers correctly from the Mini's synced diary. That's the whole initiative's promise, demonstrated end to end. After the proof, the switch can become the spec's default (live-on-dev); until then it stays off so nothing surprises us.

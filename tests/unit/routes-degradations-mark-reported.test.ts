@@ -7,14 +7,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import { Router } from 'express';
-import type { Server } from 'node:http';
+import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-function buildApp(): { server: Server; port: number } {
+function buildApp(): express.Express {
   const app = express();
   app.use(express.json());
   const router = Router();
@@ -46,13 +46,10 @@ function buildApp(): { server: Server; port: number } {
   });
 
   app.use(router);
-  const server = app.listen(0);
-  const port = (server.address() as { port: number }).port;
-  return { server, port };
+  return app;
 }
 
 describe('POST /health/degradations/mark-reported', () => {
-  let handle: { server: Server; port: number } | null = null;
   let tmpDir: string;
 
   beforeEach(() => {
@@ -77,70 +74,49 @@ describe('POST /health/degradations/mark-reported', () => {
   });
 
   afterEach(() => {
-    if (handle) handle.server.close();
-    handle = null;
     DegradationReporter.resetForTesting();
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/routes-degradations-mark-reported.test.ts:83' });
   });
 
   it('flips by exact feature name', async () => {
-    handle = buildApp();
-    const res = await fetch(`http://127.0.0.1:${handle.port}/health/degradations/mark-reported`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feature: 'unjustifiedStopGate.timeout' }),
-    });
+    const res = await request(buildApp())
+      .post('/health/degradations/mark-reported')
+      .send({ feature: 'unjustifiedStopGate.timeout' });
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toEqual({ flipped: 1 });
+    expect(res.body).toEqual({ flipped: 1 });
   });
 
   it('flips multiple via featurePattern regex', async () => {
-    handle = buildApp();
-    const res = await fetch(`http://127.0.0.1:${handle.port}/health/degradations/mark-reported`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ featurePattern: '^unjustifiedStopGate\\.' }),
-    });
+    const res = await request(buildApp())
+      .post('/health/degradations/mark-reported')
+      .send({ featurePattern: '^unjustifiedStopGate\\.' });
     expect(res.status).toBe(200);
-    expect((await res.json()).flipped).toBe(2);
+    expect(res.body.flipped).toBe(2);
   });
 
   it('returns 400 when neither feature nor featurePattern is provided', async () => {
-    handle = buildApp();
-    const res = await fetch(`http://127.0.0.1:${handle.port}/health/degradations/mark-reported`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    });
+    const res = await request(buildApp())
+      .post('/health/degradations/mark-reported')
+      .send({});
     expect(res.status).toBe(400);
   });
 
   it('returns 400 on invalid featurePattern regex', async () => {
-    handle = buildApp();
-    const res = await fetch(`http://127.0.0.1:${handle.port}/health/degradations/mark-reported`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ featurePattern: '[unterminated' }),
-    });
+    const res = await request(buildApp())
+      .post('/health/degradations/mark-reported')
+      .send({ featurePattern: '[unterminated' });
     expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toMatch(/invalid featurePattern/);
+    expect(res.body.error).toMatch(/invalid featurePattern/);
   });
 
   it('idempotent: re-flipping returns 0', async () => {
-    handle = buildApp();
-    const url = `http://127.0.0.1:${handle.port}/health/degradations/mark-reported`;
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feature: 'unjustifiedStopGate.timeout' }),
-    });
-    const second = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feature: 'unjustifiedStopGate.timeout' }),
-    });
-    expect((await second.json()).flipped).toBe(0);
+    const app = buildApp();
+    await request(app)
+      .post('/health/degradations/mark-reported')
+      .send({ feature: 'unjustifiedStopGate.timeout' });
+    const second = await request(app)
+      .post('/health/degradations/mark-reported')
+      .send({ feature: 'unjustifiedStopGate.timeout' });
+    expect(second.body.flipped).toBe(0);
   });
 });

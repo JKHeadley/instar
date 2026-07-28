@@ -425,4 +425,50 @@ describe('InboundMessageGate', () => {
       nullGate.shutdown();
     });
   });
+
+  // ── Block-decision observability (PR4a) ─────────────────────────
+  // A blocked inbound was previously SILENT — the verdict lived only in the
+  // returned GateDecision + in-memory metric counters, never the log. That is
+  // exactly how the Echo↔Dawn remote-relay leg went dark for ~1.5 days with no
+  // trace. The gate now logs every eval + verdict (fingerprint truncated, no
+  // payload content), surfacing the RESOLVED trust level so a fingerprint/trust
+  // mismatch (trusted peer resolving 'untrusted' → insufficient_trust) is
+  // diagnosable from server.log alone.
+
+  describe('block-decision observability', () => {
+    it('logs a BLOCK line with reason + fingerprint + resolved trust when an op is not permitted', async () => {
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const untrusted = createMockTrustManager({ trustLevel: 'untrusted', allowedOps: [] });
+      const g = new InboundMessageGate(untrusted as any, router, {});
+      const decision = await g.evaluate(createMessage({ from: 'deadbeefcafefingerprint' }));
+      expect(decision.action).toBe('block');
+      expect(decision.reason).toBe('insufficient_trust');
+      const logged = spy.mock.calls.map(c => String(c[0]));
+      expect(logged.some(l => l.includes('[inbound-gate] BLOCK insufficient_trust') && l.includes('deadbeefcafe'))).toBe(true);
+      // the resolved trust level is surfaced so a fp/trust mismatch is diagnosable
+      expect(logged.some(l => l.includes('trust=untrusted'))).toBe(true);
+      spy.mockRestore();
+      g.shutdown();
+    });
+
+    it('logs an eval line and a PASS line for an allowed message', async () => {
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const decision = await gate.evaluate(createMessage({ from: 'feedfacefeedfacefingerprint' }));
+      expect(decision.action).toBe('pass');
+      const logged = spy.mock.calls.map(c => String(c[0]));
+      expect(logged.some(l => l.startsWith('[inbound-gate] eval from=feedfacefeed'))).toBe(true);
+      expect(logged.some(l => l.startsWith('[inbound-gate] PASS from=feedfacefeed'))).toBe(true);
+      spy.mockRestore();
+    });
+
+    it('logs a BLOCK line for an oversized payload (pre-trust check)', async () => {
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const g = new InboundMessageGate(trustManager as any, router, { maxPayloadBytes: 100 });
+      await g.evaluate(createMessage({ from: 'bignaughtypayloadfp', content: 'x'.repeat(500) }));
+      const logged = spy.mock.calls.map(c => String(c[0]));
+      expect(logged.some(l => l.includes('[inbound-gate] BLOCK payload_too_large'))).toBe(true);
+      spy.mockRestore();
+      g.shutdown();
+    });
+  });
 });

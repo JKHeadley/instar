@@ -248,6 +248,20 @@ describeMaybe('E2E: Instar lifecycle', () => {
     expect(statusRes.body.sessions.running).toBeGreaterThanOrEqual(1);
   });
 
+  it('delivers the ultracode keyword through the real API → tmux → Claude argv path', async () => {
+    const res = await request(app)
+      .post('/sessions/spawn')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ name: 'e2e-ultracode', prompt: 'Inspect this deeply', ultracode: true });
+
+    expect(res.status).toBe(201);
+    const argvLog = path.join(projectDir, 'mock-claude-argv.log');
+    await waitFor(() => {
+      const output = fs.existsSync(argvLog) ? fs.readFileSync(argvLog, 'utf8') : '';
+      return output.includes('ultracode') && output.includes('Inspect this deeply');
+    }, 5000, 'ultracode-prefixed prompt to reach mock Claude');
+  });
+
   // ── Phase 6: Job trigger via API ─────────────────────────
 
   it('triggers a job via API and verifies event log', async () => {

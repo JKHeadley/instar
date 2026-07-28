@@ -1,0 +1,62 @@
+{
+  "version": 3,
+  "sessionId": "a7be9a7c-77ec-4ed1-807a-5a3180f5f3ca",
+  "timestamp": "2026-07-17T21:53:53.000Z",
+  "artifactPath": "upgrades/side-effects/cross-machine-transfer-drain-wiring.md",
+  "artifactSha256": "fa6ec68645fbb2eb936f4caa0373188d597d3608989f2c61ec22685ba5c3eb35",
+  "specPath": "docs/specs/MULTI-MACHINE-SEAMLESSNESS-SPEC.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SessionDrainRunner.ts",
+    "src/core/WorkingSetPullCoordinator.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/integration/pool-placement-transfer-routes.test.ts",
+    "tests/unit/SessionDrainRunner.test.ts",
+    "tests/unit/WorkingSetPullCoordinator.test.ts",
+    "tests/unit/ws12-drain-wiring.test.ts",
+    "upgrades/next/cross-machine-transfer-drain-wiring.md",
+    "upgrades/side-effects/cross-machine-transfer-drain-wiring.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Activates production remote-owner drain authority and propagates fenced ownership-claim proof across authenticated mesh transfer; emergency-stop and response-honesty boundaries required independent high-risk review.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-high-risk-review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 9
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/multi-machine-seamlessness-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  },
+  "duplicateBuildCheck": {
+    "verdict": "verify",
+    "cause": "main-only",
+    "causes": [
+      "main-only"
+    ],
+    "decision": "proceed",
+    "reason": "The guard found the existing session-pool substrate. This fix connects its already-implemented drain sender to the production route context and propagates the existing fenced claim CAS result; it does not add a duplicate routing or ownership system.",
+    "acknowledgedEvidenceIds": [
+      "EV-1"
+    ],
+    "checkedAt": "2026-07-17T20:46:45.407Z",
+    "specSlug": "multi-machine-seamlessness-spec"
+  }
+}

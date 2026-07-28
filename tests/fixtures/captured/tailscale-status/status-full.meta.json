@@ -1,0 +1,15 @@
+{
+  "source": "real `tailscale status --json` stdout on the dev laptop (Tailscale 1.94.2, BackendState Running, 3 peers) \u2014 the exact byte stream the U4.5 key-expiry tier's bounded exec consumes",
+  "command": "tailscale status --json",
+  "capturedAt": "2026-07-02T08:30:00Z",
+  "machine": "echo laptop (build worktree)",
+  "redactions": [
+    "node public keys (nodekey:<64 hex>) -> same-length hex fill, uniquified per key (JSON Peer-map keys must stay distinct)",
+    "login email -> same-shape placeholder",
+    "tailnet MagicDNS suffix + tailnet name -> same-length placeholders (grammar-valid *.ts.net kept)",
+    "hostnames / DNSNames / DisplayName -> same-length x/0 fill (punctuation + case class preserved)",
+    "tailscale IPv4 (100.x CGNAT), IPv6 (fd7a:), public endpoint ip:port, LAN ips -> same-length digit fill (IP grammar preserved)",
+    "profile/user URLs -> same-length fill after the scheme"
+  ],
+  "note": "KeyExpiry values (Self + all peers) are UNREDACTED \u2014 they are the parse target. All structural bytes (whitespace, key order, field presence) byte-identical to the live capture; redactions are same-length so offsets are preserved. IP/email/tailnet-SHAPED placeholder values are deliberately retained so the content-scrub test proves such rows never reach parser output."
+}

@@ -19,6 +19,7 @@ import {
   getSessionStartTs,
   compactionInFlight,
   getHotPathState,
+  resolveTopicForTmux,
   _resetForTests,
 } from '../../src/server/stopGate.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -197,5 +198,195 @@ describe('stopGate — getHotPathState', () => {
     } finally {
       SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/stopGate.test.ts:201' });
     }
+  });
+});
+
+// ── GAP-B (autonomous-run-registration-guarantee) — D1 read precedence ──────
+describe('stopGate — D1 autonomousActive read precedence (GAP-B)', () => {
+  let root: string;
+
+  const perTopicFile = (topicId: string) =>
+    path.join(root, '.instar', 'autonomous', `${topicId}.local.md`);
+  const legacyInstarFile = () => path.join(root, '.instar', 'autonomous-state.local.md');
+  const legacyClaudeFile = () => path.join(root, '.claude', 'autonomous-state.local.md');
+
+  const writeFile = (file: string, body = 'active: true\n') => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body);
+  };
+
+  beforeEach(() => {
+    _resetForTests();
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'stop-gate-gapb-'));
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/unit/stopGate.test.ts:gapb-d1' });
+  });
+
+  it('per-topic registration makes autonomousActive true (canonical path wins)', () => {
+    writeFile(perTopicFile('6931'));
+    const state = getHotPathState({
+      sessionId: 'sess-h',
+      stateRoot: root,
+      topicId: '6931',
+      recoveryScriptPath: '/no/such/path',
+    });
+    expect(state.autonomousActive).toBe(true);
+  });
+
+  it('per-topic for a DIFFERENT topic does NOT activate (only my topic counts)', () => {
+    writeFile(perTopicFile('6931'));
+    const state = getHotPathState({
+      sessionId: 'sess-h',
+      stateRoot: root,
+      topicId: '9999', // my topic — no file for it, and no legacy files
+      recoveryScriptPath: '/no/such/path',
+    });
+    expect(state.autonomousActive).toBe(false);
+  });
+
+  it('falls through to the .instar legacy single-file when no per-topic file exists', () => {
+    writeFile(legacyInstarFile());
+    const state = getHotPathState({
+      sessionId: 'sess-h',
+      stateRoot: root,
+      topicId: '6931',
+      recoveryScriptPath: '/no/such/path',
+    });
+    expect(state.autonomousActive).toBe(true);
+  });
+
+  it('falls through to the .claude oldest-legacy file when nothing above exists', () => {
+    writeFile(legacyClaudeFile());
+    const state = getHotPathState({
+      sessionId: 'sess-h',
+      stateRoot: root,
+      topicId: '6931',
+      recoveryScriptPath: '/no/such/path',
+    });
+    expect(state.autonomousActive).toBe(true);
+  });
+
+  it('returns false when none of the three paths exist', () => {
+    const state = getHotPathState({
+      sessionId: 'sess-h',
+      stateRoot: root,
+      topicId: '6931',
+      recoveryScriptPath: '/no/such/path',
+    });
+    expect(state.autonomousActive).toBe(false);
+  });
+
+  it('topic-less (undefined topicId) still reads BOTH legacy paths', () => {
+    // The unresolved-topic case: no per-topic read possible, but the legacy
+    // fallbacks MUST still be checked — never a silent false.
+    writeFile(legacyInstarFile());
+    const state = getHotPathState({
+      sessionId: 'sess-h',
+      stateRoot: root,
+      topicId: undefined,
+      recoveryScriptPath: '/no/such/path',
+    });
+    expect(state.autonomousActive).toBe(true);
+  });
+
+  it('explicit autonomousStateFile override is the sole path read (back-compat)', () => {
+    // A legacy single-file exists in the tree, but the explicit override
+    // points at a DIFFERENT, absent file → false (override wins, ignores tree).
+    writeFile(legacyInstarFile());
+    const state = getHotPathState({
+      sessionId: 'sess-h',
+      stateRoot: root,
+      topicId: '6931',
+      autonomousStateFile: path.join(root, 'nowhere', 'absent.md'),
+      recoveryScriptPath: '/no/such/path',
+    });
+    expect(state.autonomousActive).toBe(false);
+  });
+});
+
+// ── GAP-B — D2 unresolved-topic fallback (the no-silent-fallback boundary) ───
+describe('stopGate — D2 unresolved-topic boundary (GAP-B, both sides)', () => {
+  let root: string;
+  const legacyInstarFile = () => path.join(root, '.instar', 'autonomous-state.local.md');
+
+  beforeEach(() => {
+    _resetForTests();
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'stop-gate-gapb-d2-'));
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/unit/stopGate.test.ts:gapb-d2' });
+  });
+
+  it('topic resolves (HIT) → per-topic file is read', () => {
+    const perTopic = path.join(root, '.instar', 'autonomous', '6931.local.md');
+    fs.mkdirSync(path.dirname(perTopic), { recursive: true });
+    fs.writeFileSync(perTopic, 'active: true\n');
+    const state = getHotPathState({
+      sessionId: 'sess-h',
+      stateRoot: root,
+      topicId: '6931',
+      recoveryScriptPath: '/no/such/path',
+    });
+    expect(state.autonomousActive).toBe(true);
+  });
+
+  it('topic MISS but a legacy file exists → does NOT silently return false', () => {
+    // This is the no-silent-fallbacks boundary: a registry-lookup miss
+    // (topicId undefined) must STILL surface the legacy registration.
+    fs.mkdirSync(path.dirname(legacyInstarFile()), { recursive: true });
+    fs.writeFileSync(legacyInstarFile(), 'active: true\n');
+    const state = getHotPathState({
+      sessionId: 'sess-h',
+      stateRoot: root,
+      topicId: undefined, // the MISS
+      recoveryScriptPath: '/no/such/path',
+    });
+    expect(state.autonomousActive).toBe(true);
+  });
+
+  it('topic MISS and no legacy file → false (the genuinely-inactive case)', () => {
+    const state = getHotPathState({
+      sessionId: 'sess-h',
+      stateRoot: root,
+      topicId: undefined,
+      recoveryScriptPath: '/no/such/path',
+    });
+    expect(state.autonomousActive).toBe(false);
+  });
+});
+
+// ── GAP-B — resolveTopicForTmux (registry inversion, mirrors bash hook) ──────
+describe('stopGate — resolveTopicForTmux (GAP-B D2 registry inversion)', () => {
+  const registry = JSON.stringify({
+    topicToSession: {
+      '6931': 'echo-autonomous-mode',
+      '12143': 'echo-other-topic',
+    },
+  });
+  const reader = (_p: string) => registry;
+
+  it('inverts topicToSession on the tmux name (HIT)', () => {
+    expect(resolveTopicForTmux('/reg.json', 'echo-autonomous-mode', reader)).toBe('6931');
+    expect(resolveTopicForTmux('/reg.json', 'echo-other-topic', reader)).toBe('12143');
+  });
+
+  it('returns null for an unknown tmux name (MISS)', () => {
+    expect(resolveTopicForTmux('/reg.json', 'echo-never-seen', reader)).toBeNull();
+  });
+
+  it('returns null for a null/empty tmux name', () => {
+    expect(resolveTopicForTmux('/reg.json', null, reader)).toBeNull();
+    expect(resolveTopicForTmux('/reg.json', '', reader)).toBeNull();
+  });
+
+  it('fails open to null on a corrupt/missing registry (never throws)', () => {
+    expect(resolveTopicForTmux('/reg.json', 'echo-autonomous-mode', () => 'not json')).toBeNull();
+    expect(
+      resolveTopicForTmux('/reg.json', 'echo-autonomous-mode', () => {
+        throw new Error('ENOENT');
+      }),
+    ).toBeNull();
   });
 });

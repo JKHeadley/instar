@@ -118,4 +118,69 @@ describe('MessageProcessingLedger', () => {
     expect(computeReplyIdempotencyKey('upd-x', 0)).toBe(computeReplyIdempotencyKey('upd-x', 0));
     expect(computeReplyIdempotencyKey('upd-x', 0)).not.toBe(computeReplyIdempotencyKey('upd-x', 1));
   });
+
+  // ── sender envelope (Know Your Principal: a re-run replays as the real user) ──
+  it('stores and returns the sender envelope captured at ingress', () => {
+    ledger = MessageProcessingLedger.openMemory();
+    ledger.record('upd-s', {
+      platform: 'telegram', topic: '13481', input: 'hi',
+      sender: { userId: 7812716706, username: 'justin', firstName: 'Justin' },
+    });
+    expect(ledger.get('upd-s')!.senderEnvelope).toEqual({ userId: 7812716706, username: 'justin', firstName: 'Justin' });
+  });
+
+  it('sender envelope is null when none was captured', () => {
+    ledger = MessageProcessingLedger.openMemory();
+    ledger.record('upd-ns', { platform: 'telegram', topic: '13481', input: 'hi' });
+    expect(ledger.get('upd-ns')!.senderEnvelope).toBeNull();
+  });
+
+  // ── reply-evidence query (the no-duplicate-re-run half of stuck recovery) ──
+  it('hasReplyCommittedForTopicSince: true once any inbound on the topic is committed at/after the mark', () => {
+    ledger = MessageProcessingLedger.openMemory();
+    ledger.record('upd-r1', { platform: 'telegram', topic: '99', input: 'q1' });
+    ledger.beginProcessing('upd-r1', 1);
+    const before = new Date(Date.now() - 60_000).toISOString();
+    expect(ledger.hasReplyCommittedForTopicSince('99', before)).toBe(false);
+    ledger.commitReply('upd-r1', computeReplyIdempotencyKey('upd-r1', 0), 1);
+    expect(ledger.hasReplyCommittedForTopicSince('99', before)).toBe(true);
+  });
+
+  it('hasReplyCommittedForTopicSince: scoped to the topic and the time bound', () => {
+    ledger = MessageProcessingLedger.openMemory();
+    ledger.record('upd-a', { platform: 'telegram', topic: 'A', input: 'a' });
+    ledger.beginProcessing('upd-a', 1);
+    ledger.commitReply('upd-a', computeReplyIdempotencyKey('upd-a', 0), 1);
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const future = new Date(Date.now() + 60_000).toISOString();
+    expect(ledger.hasReplyCommittedForTopicSince('B', past)).toBe(false); // other topic
+    expect(ledger.hasReplyCommittedForTopicSince('A', future)).toBe(false); // committed before the bound
+  });
+
+  // ── markAbandoned (gap #2: terminal resolution of an exhausted stuck entry) ──
+  it('markAbandoned moves a stuck entry to terminal abandoned WITHOUT faking a reply', () => {
+    ledger = MessageProcessingLedger.openMemory();
+    ledger.record('upd-ab', { platform: 'telegram', topic: 'T', input: 'q' });
+    ledger.beginProcessing('upd-ab', 1);
+    ledger.markAbandoned('upd-ab', 7);
+    const e = ledger.get('upd-ab')!;
+    expect(e.state).toBe('abandoned');
+    expect(e.abandonedAt).toBeTruthy();
+    expect(e.replyCommittedAt).toBeNull(); // NOT a fake reply
+    expect(e.replyEpoch).toBe(7);
+    // Terminal: acted-on (redelivery dropped) + never revived.
+    expect(ledger.isActedOn('upd-ab')).toBe(true);
+    expect(ledger.beginProcessing('upd-ab', 9)).toBe(false);
+    // No false reply-evidence on the topic (the bug a 'cursor_advanced' shortcut would cause).
+    expect(ledger.hasReplyCommittedForTopicSince('T', new Date(Date.now() - 60_000).toISOString())).toBe(false);
+    // Not re-selected by reclaimStuck (out of 'processing').
+    expect(ledger.reclaimStuck(-1).some((r) => r.dedupeKey === 'upd-ab')).toBe(false);
+  });
+
+  it('markAbandoned is a no-op on an entry that is not in processing', () => {
+    ledger = MessageProcessingLedger.openMemory();
+    ledger.record('upd-rc', { platform: 'telegram', topic: 'T' }); // state 'received'
+    ledger.markAbandoned('upd-rc', 1);
+    expect(ledger.get('upd-rc')!.state).toBe('received'); // unchanged
+  });
 });

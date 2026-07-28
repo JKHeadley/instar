@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-23T22:11:22.176Z",
+  "slug": "login-flow-restart-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 94,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "PendingLoginStore deliberately persisted public flow metadata, but no boot consumer restored the framework process that metadata referred to. The submit route therefore conflated a durable record with a live pane and surfaced transport-style errors after restart."
+  },
+  "classClosure": null,
+  "verdict": "blocked"
+}

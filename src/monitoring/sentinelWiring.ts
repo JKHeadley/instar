@@ -24,6 +24,7 @@ import type { SocketDisconnectSentinelDeps } from './SocketDisconnectSentinel.js
 import type {
   ActiveWorkSilenceSentinelDeps,
   SessionRegistryEntry,
+  SilenceFunnelEvent,
 } from './ActiveWorkSilenceSentinel.js';
 import type {
   ContextWedgeSentinelDeps,
@@ -51,6 +52,10 @@ export type AttentionPoster = (item: {
   summary: string;
   category?: string;
   priority?: string;
+  /** Route into the calm "🩺 Agent Health" lane (see TelegramAdapter). */
+  lane?: 'agent-health';
+  /** Stable per-entity key for Agent-Health-lane suppression dedup. */
+  healthKey?: string;
 }) => Promise<boolean>;
 
 export function makeAttentionPoster(opts: {
@@ -177,6 +182,28 @@ export function looksActivelyWorking(
 }
 
 /**
+ * Stricter sibling of looksActivelyWorking (HONEST-PROGRESS-MESSAGING A1): is the
+ * framework GENERATING RIGHT NOW? Uses only the live-generation markers
+ * (`liveActivity` — the animated spinner / "Working (Ns" / "esc to interrupt"),
+ * deliberately EXCLUDING `toolCallOrSpinner`'s scrollback-persistent tool names
+ * which linger in an idle pane. This is the correct signal for the silence
+ * sentinel's live-frame re-check: a frozen scrollback full of past `Read(`/`Bash(`
+ * is NOT "generating now", but a still-rendered spinner / "esc to interrupt" IS.
+ */
+export function looksGeneratingNow(
+  output: string,
+  framework?: IntelligenceFramework,
+): boolean {
+  if (!output) return false;
+  const sig = getActivitySignal(framework);
+  return (
+    sig.liveActivity.test(output) ||
+    sig.escapeToInterrupt.test(output) ||
+    sig.runningIndicator.test(output)
+  );
+}
+
+/**
  * Tracks per-session output-change time so the silence sentinel can tell
  * "frozen mid-task" from "still producing output". Only sessions whose most
  * recent frame shows active-work signatures are surfaced as candidates; an
@@ -212,7 +239,18 @@ export class OutputActivityTracker {
     for (const s of running) {
       seen.add(s.tmuxSession);
       const output = this.sessions.captureOutput(s.tmuxSession, SILENCE_CAPTURE_LINES) ?? '';
-      const hash = cheapHash(output);
+      // Hash a SPINNER-IMMUNE view of the frame. The host's "working" spinner
+      // (e.g. Claude's `✻ Sautéed for 26m 16s · (esc to interrupt)`) ticks its
+      // elapsed-time counter every second, so a raw hash changes on every poll
+      // even when the turn has produced no real output for many minutes — which
+      // made `lastChangeAt` perpetually fresh and blinded ActiveWorkSilenceSentinel
+      // to a stalled-but-spinning turn (the 26-min API-stall incident). Stripping
+      // the volatile status region means only REAL scrollback changes refresh the
+      // activity timestamp. Safe: the silence nudge is a non-destructive `Enter`
+      // (sendKey 'Enter'), so a false-positive on a genuinely-long turn is harmless;
+      // the only destructive recovery (Ctrl-C) lives in SocketDisconnectSentinel,
+      // gated on a positive error-string marker. (Cross-model reviewed, task #63.)
+      const hash = cheapHash(stripVolatileStatus(output, s.framework));
       const prev = this.last.get(s.tmuxSession);
       let lastChangeAt: number;
       if (!prev) {
@@ -241,12 +279,48 @@ export class OutputActivityTracker {
     }
     return out;
   }
+
+  /**
+   * Cached read of the LAST-computed output-change time for a session, WITHOUT
+   * capturing (no tmux frame is read). Returns the `lastChangeAt` recorded by
+   * the most recent `snapshot()` call, or null when the session has not been
+   * observed yet OR its first sighting only recorded the baseline (lastChangeAt
+   * is still 0 — i.e. no real output change has been observed).
+   *
+   * This is the AutonomousProgressHeartbeat's predicate #8 read (spec
+   * §Shared-snapshot dependency): the heartbeat shares THIS tracker (the one
+   * ActiveWorkSilenceSentinel ticks on its own 60s loop) and reads the value it
+   * already computed — it NEVER captures its own frame. Returns null fails-closed
+   * for the heartbeat (no emit).
+   */
+  lastOutputAtFor(sessionName: string): number | null {
+    const rec = this.last.get(sessionName);
+    if (!rec || rec.lastChangeAt <= 0) return null;
+    return rec.lastChangeAt;
+  }
 }
 
 export function buildActiveWorkSilenceDeps(opts: {
   tracker: OutputActivityTracker;
   sessions: SentinelSessionSurface;
   escalate: EscalateFn;
+  /** Auto-recovery respawn primitive (DARK; only wired when autoRecover is on).
+   *  Returns whether the respawn succeeded. */
+  recoverFn?: (sessionName: string) => Promise<boolean>;
+  /** Resolve a session to its Telegram topic, so silence/recovery notices land
+   *  in the STALLED session's OWN topic (operator ask, 2026-06-09). */
+  getTopicForSession?: (sessionName: string) => number | null | undefined;
+  /** Deliver a notice to a specific topic. Returns success; never throws. */
+  deliverToTopic?: (topicId: number, text: string) => Promise<boolean>;
+  /** HONEST-PROGRESS-MESSAGING A1/A2 — capture the session's CURRENT live frame
+   *  for corroboration before escalating. */
+  captureFrame?: (sessionName: string) => string | null;
+  /** A2(c) — does the session have a live sub-agent (SubagentTracker)? */
+  hasActiveSubagents?: (sessionName: string) => boolean;
+  /** Resolve the framework so the live-frame "generating now" check is accurate. */
+  frameworkForSession?: (sessionName: string) => IntelligenceFramework | undefined;
+  /** Observability funnel hook (E). */
+  recordEvent?: (event: SilenceFunnelEvent, sessionName: string, detail?: string) => void;
 }): ActiveWorkSilenceSentinelDeps {
   return {
     listSessions: () => opts.tracker.snapshot(),
@@ -255,8 +329,26 @@ export function buildActiveWorkSilenceDeps(opts: {
       return opts.sessions.sendKey(sessionName, 'Enter');
     },
     notifyFn: async (sessionName, text) => {
+      // Route to the stalled session's OWN topic when we can resolve it
+      // (operator ask: "messages should only go to the topic that's stalled").
+      // Fall back to the consolidated tone-gated escalate path otherwise.
+      const topicId = opts.getTopicForSession?.(sessionName);
+      if (topicId != null && opts.deliverToTopic) {
+        const ok = await opts.deliverToTopic(topicId, text).catch(() => false);
+        if (ok) return;
+      }
       await opts.escalate(sessionName, text);
     },
+    recoverFn: opts.recoverFn,
+    captureFrame: opts.captureFrame,
+    // A1 uses the STRICT "generating now" check (live spinner / esc-to-interrupt
+    // / running), never the broad scrollback-matching looksActivelyWorking — a
+    // frozen pane full of past tool names is NOT generating now.
+    looksActivelyWorking: opts.captureFrame
+      ? (frame, sessionName) => looksGeneratingNow(frame, opts.frameworkForSession?.(sessionName))
+      : undefined,
+    hasActiveSubagents: opts.hasActiveSubagents,
+    recordEvent: opts.recordEvent,
   };
 }
 
@@ -282,9 +374,17 @@ export const RATE_LIMIT_RESUME_NUDGE =
 
 export interface RateLimitRecoverySurface {
   isSessionAlive(sessionName: string): boolean;
-  /** Topic-tagged nudge through the provenance-checked injectMessage path. */
-  injectTopicNudge(sessionName: string, topicId: number, text: string): boolean;
-  /** Trusted internal nudge that bypasses the topic-prefix requirement. */
+  /**
+   * Trusted internal nudge that bypasses the topic-prefix requirement.
+   *
+   * This is the ONLY channel the resume nudge is allowed to use. The resume
+   * nudge is infrastructure poking the session to continue — it is NOT a user
+   * message, so it must never carry a `[telegram:N]` prefix. A telegram-prefixed
+   * nudge is byte-indistinguishable from a real message from the user, which
+   * makes the agent answer it ("no throttle on my end") and relay that denial
+   * back to the topic, contradicting the sentinel's own throttle notices.
+   * (Incoherence incident 2026-06-05.)
+   */
   injectInternalNudge(sessionName: string, text: string): boolean;
   getTopicForSession(sessionName: string): number | null | undefined;
   /** The always-available system topic; null during initial setup. */
@@ -303,7 +403,8 @@ export interface RateLimitRecoverySurface {
 /**
  * Build the resume/notify functions for RateLimitSentinel. Both paths ALWAYS
  * record an audit event and never silently return:
- *  - resumeFn: topic-bound → topic-tagged inject; non-topic-bound → internal inject.
+ *  - resumeFn: ALWAYS internal inject (no `[telegram:N]` user-message prefix),
+ *    topic-bound or not — the resume nudge is infrastructure, never a user turn.
  *  - notifyFn: session topic → lifeline topic → recovery-unreachable audit.
  */
 export function buildRateLimitRecoveryDeps(s: RateLimitRecoverySurface): {
@@ -313,24 +414,20 @@ export function buildRateLimitRecoveryDeps(s: RateLimitRecoverySurface): {
   return {
     resumeFn: async (sessionName) => {
       if (!s.isSessionAlive(sessionName)) return false;
+      // The resume nudge ALWAYS goes through the internal recovery channel —
+      // topic-bound or not. It un-sticks the session identically to the
+      // user-message path (both converge on the same low-level inject) but
+      // carries no `[telegram:N]` prefix, so the agent can never mistake it for
+      // a message from the user and relay a contradictory "no throttle" reply.
+      // The topic (when present) is recorded for the audit trail only.
+      // (Incoherence incident 2026-06-05 — see throttle-notice-coherence spec.)
       const topicId = s.getTopicForSession(sessionName);
-      if (topicId != null) {
-        const ok = s.injectTopicNudge(sessionName, topicId, RATE_LIMIT_RESUME_NUDGE);
-        s.recordRecovery(
-          ok ? 'recovery-reached' : 'recovery-unreachable',
-          sessionName,
-          ok ? 'resume nudge injected via topic' : 'topic injectMessage returned false',
-          ['topic'],
-        );
-        return ok;
-      }
-      // Non-topic-bound (e.g. interactive dev window): internal injection path.
       const ok = s.injectInternalNudge(sessionName, RATE_LIMIT_RESUME_NUDGE);
       s.recordRecovery(
         ok ? 'recovery-reached' : 'recovery-unreachable',
         sessionName,
         ok
-          ? 'resume nudge injected via internal path (session not topic-bound)'
+          ? `resume nudge injected via internal recovery channel${topicId != null ? ` (topic ${topicId})` : ''}`
           : 'internal injection returned false',
         ['internal-injection'],
       );
@@ -374,6 +471,44 @@ export function buildRateLimitRecoveryDeps(s: RateLimitRecoverySurface): {
 }
 
 /** FNV-1a — enough to detect that captured output changed. Not security-sensitive. */
+/**
+ * Spinner-immune view of a captured pane for the change-detector hash. Removes
+ * the host's animated working-status region — the rotating Braille glyph, the
+ * ticking elapsed-time counter, the token/context counters, and the
+ * `esc to interrupt` footer line — so only REAL scrollback content affects the
+ * hash. Without this, the spinner's per-second clock made every poll look like
+ * fresh output and blinded the silence sentinel to a stalled-but-spinning turn.
+ * Conservative + anchored: real assistant/tool text is never stripped; unknown
+ * frameworks still get the shared footer/glyph/timer stripping. (task #63)
+ */
+export function stripVolatileStatus(
+  output: string,
+  framework: Parameters<typeof getActivitySignal>[0],
+): string {
+  if (!output) return output;
+  const sig = getActivitySignal(framework);
+  // Strip volatile TOKENS from each line (not the whole line): real hosts put
+  // genuine progress on the same line as the spinner/affordance — e.g.
+  // `Bash(npm test) step 2 (esc to interrupt)` — so dropping the line would erase
+  // the real active→silent signal. We remove only the parts that change without
+  // real progress: the rotating glyph, the `esc to interrupt` affordance phrase,
+  // the elapsed-time and token/context counters.
+  const escPhrase = new RegExp(sig.escapeToInterrupt.source, 'gi');
+  return output
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/[⠀-⣿]/g, '') // Braille spinner glyphs
+        .replace(escPhrase, '') // the "esc to interrupt" affordance phrase
+        .replace(/\b\d+h\s*\d+m\s*\d+s\b/g, '') // elapsed "10h 19m 44s"
+        .replace(/\b\d+m\s*\d+s\b/g, '') // elapsed "26m 16s"
+        .replace(/\(\s*\d+\s*s\b/g, '(') // "(12s …" working-status seconds
+        .replace(/[↑↓]\s*[\d.,]+\s*k?\s*tokens?/gi, '') // token counter
+        .replace(/\b\d+%\s*context\b/gi, ''), // "N% context"
+    )
+    .join('\n');
+}
+
 function cheapHash(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {

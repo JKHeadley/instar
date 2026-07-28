@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "sessionId": "c734d944-32d0-49d1-b87c-7d994cf4a8ce",
+  "timestamp": "2026-07-15T23:43:39.804Z",
+  "artifactPath": "upgrades/side-effects/telegram-recovery-queue-truth.md",
+  "artifactSha256": "b8adbddddafea13a235fbf3167bb3989eb4b3b65a60a64a9dc47dceea65395e1",
+  "specPath": "docs/specs/telegram-delivery-robustness.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Tier 2 follow-up: migration lineage for a safety-sensitive shipped relay template.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    }
+  }
+}

@@ -1,0 +1,37 @@
+# eli16-pr-gate — every PR's DESCRIPTION must carry a plain-English ELI16 overview.
+#
+# Justin's standard (2026-06-05): "when I click on the [PR] link, that's what I'm
+# going to see and read and approve." The ELI16 *file* (docs/specs/<slug>.eli16.md)
+# stays as the durable companion (enforced at commit time by the instar-dev gate);
+# this gate enforces that the OVERVIEW is also in the PR body so it is front and
+# centre at review time, and that PR formats are finally consistent across the fleet.
+#
+# Re-runs on `edited` so a reviewer/author can fix the description and the check
+# clears without a new push. Exemptions (bot authors, the automated release-cut PR)
+# live in scripts/eli16-pr-description-check.mjs.
+
+name: eli16-pr-gate
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  eli16:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: PR description must include an ELI16 overview
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: node scripts/eli16-pr-description-check.mjs

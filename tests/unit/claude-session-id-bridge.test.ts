@@ -10,6 +10,15 @@
  * - Session resume: beforeSessionKill uses claudeSessionId to save the correct UUID
  * - Cross-contamination prevention: without claudeSessionId, the mtime heuristic
  *   guesses wrong when multiple sessions are active
+ * - Sentinel recovery verification: RateLimit/Compaction sentinels resolve the
+ *   session's transcript via claudeSessionId to check jsonl growth
+ *
+ * The bridge is LAST-WRITER-WINS, not write-once: a fresh respawn or
+ * `claude --resume` rotates the conversation UUID, and the first hook event
+ * carrying the new id must update the record. The old write-once guard froze
+ * the first-ever UUID, leaving records pointing at dead transcripts after any
+ * respawn — which made sentinel jsonl-growth verification permanently fail and
+ * falsely escalate healthy sessions (2026-06-06 echo-api-errors incident).
  *
  * Previously, HTTP hooks (type: "http") were supposed to do this, but they silently
  * failed to fire in Claude Code <=2.1.78. Now command hooks (hook-event-reporter.js)
@@ -35,6 +44,7 @@ interface MockSession {
 
 class MockSessionManager {
   private sessions: Map<string, MockSession> = new Map();
+  saveCount = 0;
 
   addSession(id: string, name: string): void {
     this.sessions.set(id, { id, name });
@@ -45,10 +55,12 @@ class MockSessionManager {
   }
 
   setClaudeSessionId(instarSid: string, claudeSessionId: string): void {
+    // Mirrors SessionManager.setClaudeSessionId (last-writer-wins).
+    if (!claudeSessionId) return;
     const session = this.sessions.get(instarSid);
-    if (session) {
-      session.claudeSessionId = claudeSessionId;
-    }
+    if (!session || session.claudeSessionId === claudeSessionId) return;
+    session.claudeSessionId = claudeSessionId;
+    this.saveCount += 1;
   }
 }
 
@@ -75,11 +87,11 @@ function buildTestApp(opts: {
     opts.hookEventReceiver.receive(payload);
 
     // Bridge instar session ID ↔ Claude Code session ID
-    // (mirrors the logic in routes.ts)
+    // (mirrors the logic in routes.ts — last-writer-wins on rotation)
     const instarSid = typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '';
     if (instarSid && payload.session_id) {
       const session = opts.sessionManager.getSessionById(instarSid);
-      if (session && !session.claudeSessionId) {
+      if (session && session.claudeSessionId !== payload.session_id) {
         opts.sessionManager.setClaudeSessionId(instarSid, payload.session_id);
       }
     }
@@ -122,7 +134,10 @@ describe('claudeSessionId bridge via /hooks/events', () => {
     expect(session?.claudeSessionId).toBe('claude-uuid-123');
   });
 
-  it('does not overwrite claudeSessionId on subsequent events', async () => {
+  it('updates claudeSessionId when the conversation UUID rotates (respawn/--resume)', async () => {
+    // REGRESSION (2026-06-06 echo-api-errors): the bridge was write-once, so a
+    // fresh respawn left the record pointing at a dead transcript and sentinel
+    // jsonl-growth verification could never succeed → false escalations.
     sessionManager.addSession('instar-abc', 'test-session');
 
     // First event sets it
@@ -130,13 +145,30 @@ describe('claudeSessionId bridge via /hooks/events', () => {
       .post('/hooks/events?instar_sid=instar-abc')
       .send({ event: 'PostToolUse', session_id: 'first-uuid', tool_name: 'Bash' });
 
-    // Second event should NOT overwrite
+    // Session respawns → new conversation UUID → next event must update
     await request(app)
       .post('/hooks/events?instar_sid=instar-abc')
       .send({ event: 'PostToolUse', session_id: 'second-uuid', tool_name: 'Read' });
 
     const session = sessionManager.getSessionById('instar-abc');
-    expect(session?.claudeSessionId).toBe('first-uuid');
+    expect(session?.claudeSessionId).toBe('second-uuid');
+  });
+
+  it('does not re-save when session_id is unchanged (idempotent per event)', async () => {
+    sessionManager.addSession('instar-abc', 'test-session');
+
+    await request(app)
+      .post('/hooks/events?instar_sid=instar-abc')
+      .send({ event: 'PostToolUse', session_id: 'same-uuid', tool_name: 'Bash' });
+    await request(app)
+      .post('/hooks/events?instar_sid=instar-abc')
+      .send({ event: 'PostToolUse', session_id: 'same-uuid', tool_name: 'Read' });
+    await request(app)
+      .post('/hooks/events?instar_sid=instar-abc')
+      .send({ event: 'Stop', session_id: 'same-uuid' });
+
+    expect(sessionManager.getSessionById('instar-abc')?.claudeSessionId).toBe('same-uuid');
+    expect(sessionManager.saveCount).toBe(1); // only the first event persisted anything
   });
 
   it('does not set claudeSessionId when instar_sid is missing', async () => {

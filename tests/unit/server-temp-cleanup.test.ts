@@ -19,12 +19,12 @@ describe('Server — temp file cleanup', () => {
     expect(source).toContain('function cleanupTelegramTempFiles');
   });
 
-  it('targets /tmp/instar-telegram directory', () => {
+  it('targets the project-local Telegram inbound directory', () => {
     const cleanupSection = source.slice(
       source.indexOf('function cleanupTelegramTempFiles'),
       source.indexOf('export async function startServer')
     );
-    expect(cleanupSection).toContain('/tmp/instar-telegram');
+    expect(cleanupSection).toContain('getTelegramInboundDir(_projectDir)');
   });
 
   it('uses 7-day max age for temp files', () => {

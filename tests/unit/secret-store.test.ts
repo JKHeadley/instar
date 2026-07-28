@@ -255,6 +255,25 @@ describe('SecretStore', () => {
 
       expect(key1.equals(key2)).toBe(true);
     });
+
+    it('NEVER touches the OS keychain under a test run, even without forceFile (pollution guard)', () => {
+      // The keychain entry is machine-global — one service/account shared by
+      // every agent on the box. A test that constructs a manager without
+      // forceFile and generates a fresh key would OVERWRITE that global entry,
+      // breaking every real store encrypted with the old key (2026-06-05
+      // incident). The constructor detects VITEST/NODE_ENV=test and forces
+      // file mode structurally — no per-test convention required.
+      const mgr = new MasterKeyManager(tmpDir, false); // forceFile NOT set
+      const key = mgr.getMasterKey();
+
+      expect(key.length).toBe(32);
+      // Proof the file path was used: the per-stateDir key file exists and
+      // round-trips the same key, and the manager reports not-keychain-backed.
+      const keyPath = path.join(tmpDir, 'machine', 'secrets-master.key');
+      expect(fs.existsSync(keyPath)).toBe(true);
+      expect(Buffer.from(fs.readFileSync(keyPath, 'utf-8').trim(), 'hex').equals(key)).toBe(true);
+      expect(mgr.isKeychainBacked).toBe(false);
+    });
   });
 
   // ── Forward-Secret Wire Encryption ─────────────────────────────

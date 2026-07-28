@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-22T02:05:31.227Z",
+  "slug": "resilient-degradation-ladder-increment-1",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 129,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Increment 1 of the operator's degradation-principle work (#3): the path-dependent ladder core (deferrable backoff + gating responsiveness budget) extending the existing IntelligenceRouter framework-swap tail. Dark/dev-gated; behavior-preserving when off."
+  },
+  "verdict": "pass"
+}
