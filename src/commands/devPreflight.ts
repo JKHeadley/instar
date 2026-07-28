@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import pc from 'picocolors';
@@ -20,6 +20,11 @@ export interface DevPreflightOutput {
   error(text: string): void;
 }
 
+export interface LintCommand {
+  command: string;
+  args: string[];
+}
+
 export interface DevPreflightOptions {
   cwd?: string;
   baseRef?: string;
@@ -27,6 +32,8 @@ export interface DevPreflightOptions {
   output?: DevPreflightOutput;
   capabilityPrefixes?: Set<string>;
   diffProvider?: () => string;
+  /** Injectable so callers/tests pin the manager instead of probing the host. */
+  lintCommandResolver?: () => LintCommand | null;
 }
 
 export interface RouteWarning {
@@ -82,6 +89,34 @@ export class SpawnDevPreflightRunner implements DevPreflightRunner {
       });
     });
   }
+}
+
+/** True when `command` is on PATH and answers `--version`. */
+function isUsableManager(command: string): boolean {
+  const probe = spawnSync(command, ['--version'], { stdio: 'ignore' });
+  return !probe.error && probe.status === 0;
+}
+
+/**
+ * Resolve the package manager that runs `lint`.
+ *
+ * This repo's manager is pnpm, but preflight also runs where pnpm is absent:
+ * CI installs with `npm ci` and never installs pnpm (.github/workflows/ci.yml).
+ * A hardcoded `pnpm` produced `lint failed to start: spawn pnpm ENOENT` there,
+ * which the summary then reported as a lint FAILURE — an environment gap
+ * rendered as a verdict about the code. The neighbouring discoverability step
+ * already avoided this by spawning `npx`.
+ *
+ * Returns null when neither manager is usable. The caller reports that as an
+ * explicit skipped check and fails the run — it is never counted as a pass,
+ * because "the check could not run" and "the check passed" must not look alike.
+ */
+export function resolveLintCommand(
+  probe: (command: string) => boolean = isUsableManager,
+): LintCommand | null {
+  if (probe('pnpm')) return { command: 'pnpm', args: ['lint'] };
+  if (probe('npm')) return { command: 'npm', args: ['run', 'lint'] };
+  return null;
 }
 
 export function extractAddedRoutePrefixes(diff: string): Map<string, string[]> {
@@ -207,7 +242,16 @@ export async function runDevPreflight(options: DevPreflightOptions = {}): Promis
   output.write(`${pc.bold('Instar dev preflight')}\n`);
   output.write('Verify-only: this command never edits CapabilityIndex or server routes.\n\n');
 
-  const lint = await runner.run('pnpm', ['lint'], 'lint');
+  const lintCommand = (options.lintCommandResolver ?? resolveLintCommand)();
+  let lint: CommandResult;
+  if (lintCommand) {
+    lint = await runner.run(lintCommand.command, lintCommand.args, 'lint');
+  } else {
+    // Report the gap as a gap. A check that could not run must not be
+    // indistinguishable from one that ran and passed.
+    output.error('lint: no usable package manager found (tried pnpm, npm) — check DID NOT RUN\n');
+    lint = { command: 'pnpm', args: ['lint'], exitCode: 1 };
+  }
   output.write('\n');
   const discoverability = await runner.run('npx', DISCOVERABILITY_TEST_ARGS, 'capabilities discoverability');
 
