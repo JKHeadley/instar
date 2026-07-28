@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-28T10:25:56.042Z",
+  "slug": "growth-digest-fallback-tags",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 7,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
