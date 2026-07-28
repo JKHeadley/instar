@@ -1,0 +1,44 @@
+# publish-spec-review honest send
+
+<!-- internal-only -->
+
+## What Changed
+
+`skills/spec-converge/scripts/publish-spec-review.mjs` spawned the relay script as a bare
+relative path (`.instar/scripts/telegram-reply.sh`) and then printed
+`[published] … delivered to topic N` without inspecting the spawn result.
+
+instar-dev work is required to happen in a worktree, and a worktree has no
+`.instar/scripts/`, so every send from one failed with ENOENT and was reported as
+delivered. Reproduced live: the ENOENT line and the "delivered" line printed one after the
+other, and the operator received nothing.
+
+This matters because the script sits on a hook-enforced path — `grounding-before-messaging`
+blocks a hand-written spec-review message and directs the agent here — so the one tool
+whose job is delivering approval asks could silently drop them, leaving work "awaiting
+operator approval" that the operator was never actually asked for.
+
+Two changes:
+
+- `resolveRelayScript()` walks up from cwd until it finds the relay, so a worktree reaches
+  the agent home. Honors `INSTAR_AGENT_HOME` first and falls back to the documented
+  `.claude/scripts/` path for older installs. Returns null rather than a guessed path.
+- `relayDelivered()` requires the relay's own `Sent <n> chars to topic <id>` confirmation,
+  not merely exit 0. On any failure the script prints `[NOT DELIVERED]` with the reason,
+  emits the composed message so the ask is not lost, and exits 1 — it fails closed instead
+  of failing silent.
+
+The script already refused a broken link, a missing overview, and a stub overview — and
+then did not check whether the message sent. Filed three times in fifteen days (ACT-616
+2026-07-13, ACT-1390 2026-07-27, ACT-1517 2026-07-28) before being fixed.
+
+## Evidence
+
+- 11 unit tests over both exported functions, including the exact production failure
+  (ENOENT → not delivered), the worktree walk-up that shipped broken, the `.claude`
+  fallback, precedence when both exist, and exit-0-with-no-confirmation.
+- Proven against the real filesystem from the actual worktree: `resolveRelayScript`
+  returns the agent home's relay and it exists on disk.
+- The fix direction was confirmed before the code was written — the unmodified script run
+  from the agent home printed `Sent 408 chars to topic 29723` and genuinely delivered,
+  while the same command from the worktree printed ENOENT followed by "delivered".
