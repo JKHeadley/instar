@@ -189,6 +189,31 @@ state as measured fact. **The fix belongs at the CREATION chokepoint**: enrolmen
 decision made when a promise is recorded, not a field that may be omitted and compensated
 for afterwards.
 
+### Reconciling the two proposals — they are stock and flow, not alternatives
+
+This document now contains two answers to "what should be built", and a reader is owed the
+relationship between them rather than left to guess.
+
+| | what it addresses | what it fixes |
+|---|---|---|
+| **Creation chokepoint** (Addendum) | the **FLOW** — promises being recorded without enrolment | stops the pile *growing*: +132/week does not become +264/week |
+| **Agent-context injection** (main body) | the **STOCK** — the 287 already recorded and unenrolled | nothing, on its own — the arithmetic above says it cannot drain them |
+
+They are not competing designs. The chokepoint is necessary and insufficient: it makes every
+*future* promise reachable, and does nothing whatever for the 287 that already exist. Nothing
+in this document makes a new promise disappear from the existing pile.
+
+**And that leaves a third thing, which is NOT designed here.** If a per-run resurfacer cannot
+drain 287, and a creation-time fix does not reach them, then the stock needs its own answer —
+most plausibly a **one-time triage** rather than a drip: bulk-classify the existing 307 and
+retire what is genuinely moot. 15 of them are more than 30 days old, and a promise made 52
+days ago about a specific PR may simply no longer be a live commitment. That is a judgement
+call per row, it is a different shape of work from either proposal above, and guessing at it
+here would be the third design in a document that already has two.
+
+Stated rather than resolved, because the honest position is that this document establishes
+what will NOT work and one thing that will help — and the stock question is genuinely open.
+
 ### And this reaches the ACTION half too
 
 The same measurement on actions, which the merged `undated-action-resurfacer` draft covers:
