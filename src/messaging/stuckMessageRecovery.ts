@@ -42,6 +42,18 @@ export interface StuckRecoveryDeps {
   hasRepliedSince?: (topic: string, sinceISO: string) => boolean;
   /** Re-route the stored input as the holder (set current-inbound key, then inject). */
   reinject: (topicId: string, dedupeKey: string, text: string, sender: SenderEnvelope | null) => void;
+  /**
+   * Part D, third site (docs/specs/ownership-follows-live-work.md): per-topic
+   * ownership check. This re-feed is gated only on `holdsLease()` (machine-level),
+   * so a lease-holder that is NOT the topic's owner would re-run a topic it doesn't
+   * own (the active-active double-dispatch). When this returns true (a REACHABLE
+   * peer owns the topic), SKIP that topic's entry — leaving its stuck messages IN
+   * the durable ledger UNTOUCHED (not committed, not abandoned, not re-injected) so
+   * the OWNER's own stuck-recovery drains them. The skip is per-TOPIC (the unit of
+   * ownership), never per-message. Absent ⇒ today's behavior (no ownership check).
+   * Uses the SAME shared reachability helper as the checkAndRecover Part-D gate.
+   */
+  ownerElsewhereReachable?: (topic: string) => boolean;
   now?: () => number;
   logger?: (msg: string) => void;
 }
@@ -51,6 +63,13 @@ export interface StuckRecoveryResult {
   skipped: number;
   /** Entries recognized as already-answered (reply evidence) and committed, not re-run. */
   alreadyHandled: number;
+  /**
+   * Entries whose re-run budget was exhausted this pass: terminally marked
+   * 'abandoned' (so they stop re-looping every cycle) and surfaced here so the
+   * caller emits a "I didn't get to this — resend" loss notice. The abandonment
+   * is never silent. Each: the topic it arrived on + its dedupeKey.
+   */
+  abandoned: Array<{ topic: string; dedupeKey: string }>;
 }
 
 /**
@@ -60,7 +79,7 @@ export interface StuckRecoveryResult {
  */
 export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResult {
   const maxAttempts = deps.maxReplayAttempts ?? 3;
-  if (!deps.holdsLease()) return { recovered: 0, skipped: 0, alreadyHandled: 0 };
+  if (!deps.holdsLease()) return { recovered: 0, skipped: 0, alreadyHandled: 0, abandoned: [] };
 
   const repliedSince =
     deps.hasRepliedSince ?? ((topic, sinceISO) => deps.ledger.hasReplyCommittedForTopicSince(topic, sinceISO));
@@ -69,8 +88,21 @@ export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResu
   let recovered = 0;
   let skipped = 0;
   let alreadyHandled = 0;
+  const abandoned: Array<{ topic: string; dedupeKey: string }> = [];
   for (const entry of stuck) {
     if (!entry.inputSnapshot || !entry.topic) {
+      skipped++;
+      continue;
+    }
+    // Part D, third site: if a REACHABLE peer owns this topic, this machine must
+    // NOT re-feed it (it doesn't own the topic) — leave the entry UNTOUCHED in the
+    // durable ledger so the owner's own stuck-recovery drains it. reclaimStuck() is
+    // a read-only SELECT, so a `continue` here genuinely leaves the row in
+    // 'processing' (no beginProcessing, no commit, no markAbandoned). Skipped per
+    // TOPIC (the unit of ownership), never per-message. A throwing helper resolves
+    // to the SAFE side (not-owned-elsewhere → proceed as today) inside the wiring.
+    if (deps.ownerElsewhereReachable?.(entry.topic)) {
+      deps.logger?.(`stuck-recovery: ${entry.dedupeKey} skipped — topic ${entry.topic} owned by a reachable peer (owner drains it)`);
       skipped++;
       continue;
     }
@@ -87,9 +119,16 @@ export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResu
       continue;
     }
     if (entry.attempts >= maxAttempts) {
-      // Re-run budget exhausted — leave it (a message that legitimately never
-      // got a reply, or a persistently failing turn) rather than loop forever.
-      deps.logger?.(`stuck-recovery: giving up on ${entry.dedupeKey} after ${entry.attempts} attempts`);
+      // Re-run budget exhausted (a message that legitimately never got a reply,
+      // or a persistently failing turn). TERMINALLY abandon it: marking it out of
+      // 'processing' stops reclaimStuck re-selecting it every cycle (the give-up
+      // log-loop that fired every ~10 min) AND surfaces it so the caller emits a
+      // "I didn't get to this — resend" notice — the abandonment is never silent
+      // (the 2026-06-15 wedge-recovery-drops-messages gap). markAbandoned leaves
+      // reply_committed_at NULL, so it never masquerades as a real reply.
+      deps.ledger.markAbandoned(entry.dedupeKey, deps.epoch);
+      deps.logger?.(`stuck-recovery: abandoned ${entry.dedupeKey} after ${entry.attempts} attempts (loss notice surfaced)`);
+      abandoned.push({ topic: entry.topic, dedupeKey: entry.dedupeKey });
       skipped++;
       continue;
     }
@@ -100,5 +139,5 @@ export function recoverStuckMessages(deps: StuckRecoveryDeps): StuckRecoveryResu
     deps.logger?.(`stuck-recovery: re-ran ${entry.dedupeKey} (attempt ${entry.attempts + 1})`);
     recovered++;
   }
-  return { recovered, skipped, alreadyHandled };
+  return { recovered, skipped, alreadyHandled, abandoned };
 }

@@ -40,9 +40,11 @@
  */
 
 import type { ResumeQueue, ResumeQueueEntry } from './ResumeQueue.js';
+import { AGE_LIMIT_ACTIVE_RUN_REASON, COMMITMENT_ACTIVE_RUN_REASON, isAutoResumableEmergencyPauseReason } from '../core/WorkEvidence.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const JOB_SLUG_RE = /^[a-z0-9-]+$/;
+const THREAD_ID_RE = /^[A-Za-z0-9._:-]{1,256}$/;
 const PRIORITY_CLASSES = new Set(['interactive', 'job', 'other']);
 
 export interface ResumeQueueDrainerDeps {
@@ -63,6 +65,30 @@ export interface ResumeQueueDrainerDeps {
   topicBindingMatches: (topicId: number, cwd: string) => boolean;
   /** An operator stop instruction recorded for the topic since the entry queued. */
   operatorStopSince: (topicId: number, sinceIso: string) => boolean;
+  /**
+   * Resume-idle-autonomous fix (spec: resume-idle-autonomous-on-reap.md):
+   * OPTIONAL drain-time liveness re-check for an entry admitted because its topic
+   * had an active autonomous run at age-limit-reap time. Returns `false` when the
+   * run is NO LONGER active (completed OR its window elapsed between enqueue and
+   * drain) → the entry invalidates `autonomous-run-finished`, never a spawn.
+   * Absent (undefined) ⇒ today's behavior (no extra check) — back-compat.
+   */
+  autonomousRunFinished?: (topicId: number, reason: string) => boolean;
+  /**
+   * GAP-B D9 (spec: autonomous-registration-guarantee.md) — OPTIONAL drain-time
+   * re-validation for an entry admitted via the COMMITMENT_ACTIVE_RUN_REASON
+   * backstop (an UNregistered run kept alive by a fresh open commitment). Returns
+   * `true` when the qualifying commitment + recent-user-activity STILL hold at
+   * drain time → spawn proceeds; `false` when the commitment was
+   * delivered/expired/violated or the user-activity window lapsed between enqueue
+   * and drain → the entry invalidates `commitment-no-longer-active`, never a
+   * spawn (so a done-but-not-marked commitment can't revive finished work). The
+   * state-file `autonomousRunFinished` re-check is useless here (no state file by
+   * construction), so this is its parallel. Absent ⇒ today's behavior. A
+   * throwing/absent dep resolves to the SAFE side (still-active ⇒ allow), matching
+   * autonomousRunFinished's contract: it never wrongly drops a legitimate revival.
+   */
+  commitmentStillActiveForTopic?: (topicId: number) => boolean;
   /** Jobs: exists, not disabled, not CrashLoopPauser-paused, not run since queuedAt. */
   jobCheck: (slug: string, queuedAtIso: string) => { ok: boolean; why?: string };
   pathExists: (p: string) => boolean;
@@ -70,6 +96,10 @@ export interface ResumeQueueDrainerDeps {
   /** Respawn the topic's session (continuation prompt + entry cwd via the new
    *  spawn-path parameter). Returns the spawned tmux session name. */
   respawnTopic: (entry: ResumeQueueEntry, continuationPrompt: string) => Promise<string>;
+  /** Re-route the exact canonical inbound through Threadline after a warm worker reap. */
+  respawnThread?: (entry: ResumeQueueEntry) => Promise<string>;
+  /** The exact canonical inbound is still present and has not already produced a reply. */
+  threadlineMessagePending?: (entry: ResumeQueueEntry) => boolean;
   triggerJob: (slug: string) => Promise<'triggered' | 'queued' | 'skipped'>;
   /** Spawn verification after a grace period (R2.9). */
   spawnAliveAfterGrace: (tmuxSession: string) => Promise<boolean>;
@@ -102,6 +132,28 @@ export interface ResumeQueueDrainerConfig {
   attemptBackoffMs: number;
   /** Tier-1 verdict deadline (prevents tick serialization). */
   tier1DeadlineMs: number;
+  /**
+   * Stale-emergency-pause auto-recovery (spec:
+   * resume-queue-stale-emergency-pause.md). Layer 2 auto-resumes a stale
+   * emergency/sentinel pause only when an active-autonomous-run entry was queued
+   * STRICTLY MORE than this many minutes AFTER the pause began — long enough that
+   * a fresh "kill all" + a coincidental age-reap minutes later never auto-undoes
+   * the stop. CODE-defaulted (never frozen into ConfigDefaults — preserves the
+   * fleet flip), like the other resumeQueue keys.
+   */
+  staleEmergencyPauseAutoResumeMin: number;
+  /** Master off-switch for Layer 2 (the bounded behavior change). Layer 1 (the
+   *  paused-with-waiting-work alert) is unaffected and always on. */
+  autoResumeStalePause: boolean;
+  /**
+   * "The Agent Is Always Reachable" G2 (spec: agent-always-reachable). When a
+   * revival is HELD by the pressure gate (calm-ticks) and the oldest waiting
+   * entry has been queued longer than this, surface ONE plain-English
+   * `pressure-held` notice (NOT silence, NOT the 24h ttl-expired) so the user
+   * learns a topic is held under load with guidance — closing the topic-28744
+   * silent-no-revival gap. 0 disables the notice.
+   */
+  pressureHeldNoticeMs: number;
 }
 
 export const DEFAULT_RESUME_DRAINER_CONFIG: ResumeQueueDrainerConfig = {
@@ -113,6 +165,9 @@ export const DEFAULT_RESUME_DRAINER_CONFIG: ResumeQueueDrainerConfig = {
   tier1Check: true,
   attemptBackoffMs: 2 * 60_000,
   tier1DeadlineMs: 5_000,
+  staleEmergencyPauseAutoResumeMin: 60,
+  autoResumeStalePause: true,
+  pressureHeldNoticeMs: 20 * 60_000, // ~2 reaper ticks — surface a pressure-held revival, never silent
 };
 
 export class ResumeQueueDrainer {
@@ -125,8 +180,19 @@ export class ResumeQueueDrainer {
   private consecutiveFailures = 0;
   private breakerOpenUntil = 0;
   private lastGateBlock = '';
+  /** G2 (agent-always-reachable): episode flag so a pressure-held revival surfaces
+   *  ONE notice per held episode, reset when the gate clears. */
+  private pressureHeldNotified = false;
   /** would-resume audited once per entry in dry-run. */
   private dryRunAudited = new Set<string>();
+  /**
+   * Layer-1 (paused-with-waiting-work) dedupe marker — IN MEMORY by design (a
+   * server restart mid-pause may re-alert once, which folds harmlessly into the
+   * single rolling aggregate item). Keyed on `pausedAt|waitingCount` so a NEW
+   * pause OR a GROWING backlog under the same pause re-alerts (closes the
+   * "alert once then go silent as more entries accumulate" gap — codex r3 #3).
+   */
+  private lastPausedWaitingAlertKey = '';
 
   constructor(deps: ResumeQueueDrainerDeps, cfg?: Partial<ResumeQueueDrainerConfig>) {
     this.deps = deps;
@@ -185,7 +251,22 @@ export class ResumeQueueDrainer {
 
       if (queue.isDisabled()) return { resumed: false, blocked: 'queue-disabled' };
       if (!queue.config().enabled) return { resumed: false, blocked: 'queue-off' };
-      if (queue.isPaused()) return { resumed: false, blocked: 'paused' };
+      if (queue.isPaused()) {
+        // Stale-emergency-pause robustness (spec:
+        // resume-queue-stale-emergency-pause.md). A paused queue used to early-
+        // return here unconditionally, silently stranding every waiting revival
+        // (the 2026-06-14 4-hour-silent-strand incident). Two layers now run at
+        // this exact chokepoint; both are inert on a dry-run (observe-only) queue,
+        // which strands nothing and must not page.
+        if (!queue.isDryRun()) {
+          const resumed = this.handlePausedQueue();
+          // Layer 2 auto-resumed a stale pause → fall through to normal draining.
+          // Otherwise the pause stands (Layer 1 alert, if any, already raised).
+          if (!resumed) return { resumed: false, blocked: 'paused' };
+        } else {
+          return { resumed: false, blocked: 'paused' };
+        }
+      }
 
       // Calm tracking on the shared gauge.
       const tier = this.safeTier();
@@ -217,12 +298,38 @@ export class ResumeQueueDrainer {
           this.deps.audit({ event: 'gates-blocked', gate, tier, calmTicks: this.calmTicks });
           this.lastGateBlock = gate;
         }
+        // G2 (agent-always-reachable): a PRESSURE-held revival must NOT be silent.
+        // When the calm-ticks (pressure) gate holds a revival and the oldest READY
+        // entry has waited past the notice window, surface ONE plain-English notice
+        // through the DETERMINISTIC raiseAggregated funnel (a system notice, never
+        // the tone-gated reply path that could itself be held by the same pressure),
+        // then suppress until the gate clears. Closes the topic-28744 silent-no-revival gap.
+        if (gate === 'calm-ticks') {
+          if (this.cfg.pressureHeldNoticeMs > 0 && !this.pressureHeldNotified && !queue.isDryRun()) {
+            const heldNowIso = new Date(this.now()).toISOString();
+            const ready = queue.nextCandidates().find((e) => !e.nextAttemptAt || e.nextAttemptAt <= heldNowIso);
+            const heldMs = ready ? this.now() - Date.parse(ready.queuedAt) : 0;
+            if (ready && Number.isFinite(heldMs) && heldMs >= this.cfg.pressureHeldNoticeMs) {
+              this.deps.raiseAggregated(
+                'pressure-held',
+                `A session I closed is waiting to come back, but the machine is under memory/CPU pressure, so I'm holding the restart until it eases — I'm not ignoring it. I'm freeing resources in the meantime; message me to retry, or I'll bring it back automatically once there's headroom.`,
+              );
+              this.pressureHeldNotified = true;
+            }
+          }
+        } else {
+          // The hold is no longer pressure (quota/session-cap/etc.) — re-arm the
+          // pressure-held notice for a future pressure episode.
+          this.pressureHeldNotified = false;
+        }
         return { resumed: false, blocked: gate };
       }
       if (this.lastGateBlock) {
         this.deps.audit({ event: 'gates-cleared', calmTicks: this.calmTicks });
         this.lastGateBlock = '';
       }
+      // Pressure (and every other gate) has cleared — re-arm the pressure-held notice.
+      this.pressureHeldNotified = false;
 
       // ONE candidate per tick (R2.4), ordered (R2.5), attempt-backoff honored.
       const nowIso = new Date(this.now()).toISOString();
@@ -276,6 +383,8 @@ export class ResumeQueueDrainer {
       try {
         if (candidate.topicId != null) {
           spawnedTmux = await this.deps.respawnTopic(candidate, this.continuationPrompt(candidate));
+        } else if (candidate.threadId && candidate.threadlineMessageId && this.deps.respawnThread) {
+          spawnedTmux = await this.deps.respawnThread(candidate);
         } else if (candidate.jobSlug) {
           const result = await this.deps.triggerJob(candidate.jobSlug);
           if (result === 'skipped') {
@@ -353,6 +462,98 @@ export class ResumeQueueDrainer {
     }
   }
 
+  /**
+   * Paused-queue handling at the tick chokepoint (LIVE queues only — the caller
+   * guards `!isDryRun()`). Returns `true` IFF Layer 2 auto-resumed a stale
+   * emergency pause (the caller then falls through to normal draining); `false`
+   * keeps the pause (the caller early-returns `blocked:'paused'`).
+   *
+   * Layer 1 (signal-only): raise ONE deduped `paused-waiting` notice when the
+   * queue is paused with ≥1 waiting entry — at most once per (pause episode ×
+   * waiting-count) so a NEW pause or a GROWING backlog re-alerts, but a steady
+   * pause does not drip every tick.
+   *
+   * Layer 2 (bounded behavior change): auto-resume a STALE emergency/sentinel
+   * pause (see staleness predicate) so a blunt stop on one topic never strands
+   * unrelated, later-queued active-run revivals forever.
+   */
+  private handlePausedQueue(): boolean {
+    const queue = this.deps.queue;
+    const info = queue.pauseInfo();
+    const waiting = queue.list().filter((e) => e.status === 'queued' || e.status === 'starting');
+
+    // ── Layer 2: stale emergency-stop pause auto-recovery ──
+    if (this.cfg.autoResumeStalePause && this.isStaleEmergencyPause(info, waiting)) {
+      queue.unpause();
+      this.deps.audit({
+        event: 'auto-resumed-stale-pause',
+        pausedAt: info.pausedAt,
+        reason: info.reason,
+        waiting: waiting.length,
+      });
+      this.deps.raiseAggregated(
+        'auto-resumed-stale-pause',
+        `I auto-resumed the revival queue. It had been paused by an emergency stop at ${info.pausedAt}, ` +
+        `but an active autonomous run has been recycled and queued since then — so the stop wasn't about ` +
+        `this work. Any topic you actually stopped stays protected (per-topic operator stops still block ` +
+        `its revival).`,
+      );
+      // The Layer-1 marker is irrelevant after an unpause; reset so a future
+      // pause episode alerts cleanly.
+      this.lastPausedWaitingAlertKey = '';
+      return true;
+    }
+
+    // ── Layer 1: paused-with-waiting-work escalation (signal-only) ──
+    if (waiting.length > 0) {
+      const key = `${info.pausedAt ?? 'unknown'}|${waiting.length}`;
+      if (key !== this.lastPausedWaitingAlertKey) {
+        this.lastPausedWaitingAlertKey = key;
+        this.deps.audit({
+          event: 'paused-waiting',
+          pausedAt: info.pausedAt,
+          reason: info.reason,
+          waiting: waiting.length,
+          resumeRoute: 'POST /sessions/resume-queue/resume',
+        });
+        this.deps.raiseAggregated(
+          'paused-waiting',
+          `Revival queue paused since ${info.pausedAt ?? 'an earlier stop'} (${info.reason ?? 'no reason recorded'}) — ` +
+          `${waiting.length} session${waiting.length === 1 ? '' : 's'} ${waiting.length === 1 ? 'is' : 'are'} waiting and ` +
+          `won't come back until it's resumed. Ask me to resume it, or resume it from the dashboard.`,
+        );
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Staleness predicate (spec §"Layer 2"). ALL must hold:
+   *  - the pause reason is a blunt emergency/sentinel stop (closed-world
+   *    predicate — never the deliberate `autonomous stop-all` pause);
+   *  - a waiting entry's reason === AGE_LIMIT_ACTIVE_RUN_REASON (the operator
+   *    has a live autonomous run they want continued);
+   *  - that entry's queuedAt is STRICTLY MORE than the threshold AFTER pausedAt
+   *    (the work the pause now blocks was queued long after the stop).
+   * A missing/unparseable timestamp resolves to the SAFE side (NOT stale — the
+   * pause stays), so a malformed clock can only keep the pause, never clear it.
+   */
+  private isStaleEmergencyPause(
+    info: { paused: boolean; pausedAt?: string; reason?: string },
+    waiting: ResumeQueueEntry[],
+  ): boolean {
+    if (!isAutoResumableEmergencyPauseReason(info.reason)) return false;
+    const pausedAtMs = info.pausedAt ? Date.parse(info.pausedAt) : NaN;
+    if (!Number.isFinite(pausedAtMs)) return false;
+    const thresholdMs = this.cfg.staleEmergencyPauseAutoResumeMin * 60_000;
+    return waiting.some((e) => {
+      if (e.reason !== AGE_LIMIT_ACTIVE_RUN_REASON) return false;
+      const queuedAtMs = Date.parse(e.queuedAt);
+      if (!Number.isFinite(queuedAtMs)) return false;
+      return queuedAtMs - pausedAtMs > thresholdMs;
+    });
+  }
+
   private safeTier(): 'normal' | 'moderate' | 'critical' {
     try {
       return this.deps.pressureTier();
@@ -390,6 +591,8 @@ export class ResumeQueueDrainer {
     if (entry.resumeUuid && !UUID_RE.test(entry.resumeUuid)) return 'resumeUuid-format';
     if (!PRIORITY_CLASSES.has(entry.priorityClass)) return 'priorityClass-enum';
     if (entry.jobSlug && !JOB_SLUG_RE.test(entry.jobSlug)) return 'jobSlug-charset';
+    if (entry.threadId && !THREAD_ID_RE.test(entry.threadId)) return 'threadId-charset';
+    if ((entry.threadId && !entry.threadlineMessageId) || (!entry.threadId && entry.threadlineMessageId)) return 'threadline-pair';
     if (entry.reason.length > 1000) return 'reason-length';
     if (entry.workEvidence.length > 32 || entry.workEvidence.some((e) => e.length > 64)) {
       return 'workEvidence-length';
@@ -409,6 +612,37 @@ export class ResumeQueueDrainer {
       if (this.safeBool(() => this.deps.topicOwnerElsewhere(topicId), true)) return 'topic-owner-elsewhere';
       if (!this.safeBool(() => this.deps.topicBindingMatches(topicId, entry.cwd), false)) return 'binding-mismatch';
       if (this.safeBool(() => this.deps.operatorStopSince(topicId, sinceIso), true)) return 'operator-stop';
+      // Resume-idle-autonomous fix (spec: resume-idle-autonomous-on-reap.md): for an
+      // entry admitted via the age-limit-active-run path, re-verify the run is STILL
+      // live immediately before the spawn. If it completed or its window elapsed since
+      // enqueue, invalidate (never a spawn) — closing the window-elapsed/completed-by-
+      // drain subset of the stale-marker residual structurally, without spending a
+      // resurrection slot to discover it. A throwing/absent dep resolves to the SAFE
+      // side (NOT finished ⇒ no extra invalidation) so this is strictly additive: it
+      // can only ADD an invalidation, never wrongly drop a legitimate revival.
+      if (
+        entry.reason === AGE_LIMIT_ACTIVE_RUN_REASON &&
+        this.deps.autonomousRunFinished &&
+        this.safeBool(() => this.deps.autonomousRunFinished!(topicId, entry.reason), false)
+      ) {
+        return 'autonomous-run-finished';
+      }
+      // GAP-B D9: the parallel drain-time re-check for the committed-unregistered-
+      // run backstop. The state-file read above is inert here (no state file by
+      // construction), so re-validate the commitment liveness instead. A
+      // throwing/absent dep resolves to STILL-ACTIVE (safeBool fallback true ⇒ no
+      // invalidation), the SAFE side — it can only ADD an invalidation when the
+      // commitment provably closed, never wrongly drop a legitimate revival.
+      if (
+        entry.reason === COMMITMENT_ACTIVE_RUN_REASON &&
+        this.deps.commitmentStillActiveForTopic &&
+        !this.safeBool(() => this.deps.commitmentStillActiveForTopic!(topicId), true)
+      ) {
+        return 'commitment-no-longer-active';
+      }
+    } else if (entry.threadId && entry.threadlineMessageId) {
+      if (!this.deps.respawnThread || !this.deps.threadlineMessagePending) return 'threadline-recovery-unwired';
+      if (!this.safeBool(() => this.deps.threadlineMessagePending!(entry), false)) return 'threadline-message-settled';
     } else if (entry.jobSlug) {
       const check = this.safeVal(() => this.deps.jobCheck(entry.jobSlug!, sinceIso), { ok: false, why: 'job-check-failed' });
       if (!check.ok) return check.why ?? 'job-invalid';

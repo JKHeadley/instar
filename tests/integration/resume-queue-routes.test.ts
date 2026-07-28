@@ -16,6 +16,7 @@ import os from 'node:os';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { ResumeQueue } from '../../src/monitoring/ResumeQueue.js';
 import { ResumeQueueDrainer, type ResumeQueueDrainerDeps } from '../../src/monitoring/ResumeQueueDrainer.js';
+import { AGE_LIMIT_ACTIVE_RUN_REASON } from '../../src/core/WorkEvidence.js';
 
 let tmpDir: string;
 let stateDir: string;
@@ -188,6 +189,58 @@ describe('emergency-stop reach (R2.7)', () => {
     const byKey = new Map(queue.list().map((e) => [e.stableKey, e.status]));
     expect(byKey.get('topic:7')).toBe('cancelled');
     expect(byKey.get('topic:8')).toBe('queued');
+    queue.stop();
+  });
+});
+
+describe('stale-emergency-pause auto-resume reflected over HTTP (resume-queue-stale-emergency-pause.md)', () => {
+  it('GET /sessions/resume-queue shows paused:false after the drainer auto-resumes a stale emergency pause', async () => {
+    // Controllable clock so the staleness window is deterministic over the real route.
+    let nowMs = 5_000_000_000_000;
+    const queue = new ResumeQueue({ stateDir, now: () => nowMs }, { dryRun: false });
+    queue.start();
+    // pause (pausedAt = T0), advance past the 60-min default, then queue an
+    // active-autonomous-run entry (queuedAt = T0 + 61m) — the stale predicate.
+    queue.pause('message-sentinel emergency stop');
+    nowMs += 61 * 60_000;
+    queue.considerEnqueue({
+      sessionName: 'sess-active', tmuxSession: 'tmux-active', topicId: 99,
+      resumeUuid: '11111111-1111-4111-8111-111111111111', cwd: tmpDir,
+      reason: AGE_LIMIT_ACTIVE_RUN_REASON, disposition: 'terminal', origin: 'autonomous',
+      workEvidence: ['build-or-autonomous-active'],
+    });
+    expect(queue.isPaused()).toBe(true);
+
+    const drainer = new ResumeQueueDrainer(
+      {
+        queue,
+        pressureTier: () => 'normal',
+        canSpawnSession: () => true,
+        sessionCountOk: () => true,
+        migrationInFlight: () => false,
+        liveSessionForTopic: () => false,
+        currentResumeUuid: () => '11111111-1111-4111-8111-111111111111',
+        topicOwnerElsewhere: () => false,
+        topicBindingMatches: () => true,
+        operatorStopSince: () => false,
+        jobCheck: () => ({ ok: true }),
+        pathExists: () => true,
+        respawnTopic: async (entry) => `respawned-${entry.tmuxSession}`,
+        triggerJob: async () => 'triggered',
+        spawnAliveAfterGrace: async () => true,
+        raiseAggregated: () => {},
+        audit: () => {},
+        now: () => nowMs,
+      },
+      { requiredCalmTicks: 0 }, // no calm dwell; let the auto-resume fall through and drain
+    );
+    // The tick auto-resumes the stale pause and falls through to drain the entry.
+    const r = await drainer.tick();
+    expect(r.resumed).toBe(true);
+
+    const got = await request(appWith(queue, drainer)).get('/sessions/resume-queue');
+    expect(got.status).toBe(200);
+    expect(got.body.paused).toBe(false); // the live HTTP route observes the auto-resume
     queue.stop();
   });
 });

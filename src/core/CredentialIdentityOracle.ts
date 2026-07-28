@@ -18,8 +18,9 @@
  * missing-or-empty-or-nonstring email) → `unavailable` with a reason. NEVER a "mismatch": an
  * unverifiable slot is quarantine-never-repair upstream, never a guess.
  *
- * Reuses `readClaudeOauth` (OAuthRefresher) for the per-slot blob read — no hand-rolled keychain
- * access. The profile fetch lives here behind a bounded timeout; this file is allowlisted in
+ * Reuses `readClaudeOauthAsync` (OAuthRefresher) for the per-slot blob read — no hand-rolled
+ * keychain access, and NON-BLOCKING so the sequential audit loop never freezes the event loop on a
+ * slow `securityd`. The profile fetch lives here behind a bounded timeout; this file is allowlisted in
  * `scripts/lint-no-direct-llm-http.js` for the SAME reason QuotaCollector is — an OAuth profile
  * call is identity bookkeeping, not an LLM message call.
  *
@@ -31,7 +32,7 @@
  * nothing.
  */
 
-import { readClaudeOauth, type CredentialStore } from './OAuthRefresher.js';
+import { readClaudeOauthAsync, type CredentialStore } from './OAuthRefresher.js';
 import type { IdentityOracle, IdentityOracleResult } from './CredentialLocationLedger.js';
 
 const OAUTH_PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile';
@@ -67,7 +68,12 @@ export class CredentialIdentityOracle implements IdentityOracle {
 
   async resolveSlotTenant(slot: string): Promise<IdentityOracleResult> {
     // 1. Read the slot's current credential blob → access token. (No write; reuses OAuthRefresher.)
-    const oauth = this.store ? readClaudeOauth(slot, this.store) : readClaudeOauth(slot);
+    //    ASYNC read so this oracle — called sequentially over all 5 account slots by the
+    //    credential-audit loop — keeps the keychain spawn OFF the event loop (each await yields),
+    //    instead of the old sync read that froze the loop under multi-agent securityd contention.
+    const oauth = this.store
+      ? await readClaudeOauthAsync(slot, this.store)
+      : await readClaudeOauthAsync(slot);
     const token = oauth?.accessToken;
     if (!token || typeof token !== 'string') {
       return { unavailable: true, reason: 'no access token in slot credential store' };

@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "delivery-reliability-recovery-hardening",
+  "sessionId": "b6982ce3-180b-44cb-a89d-531869e095e5",
+  "timestamp": "2026-07-24T17:30:16.639Z",
+  "artifactPath": "upgrades/side-effects/delivery-reliability-recovery-hardening.md",
+  "artifactSha256": "4f268abaeaf78bfd0a832322cff05d7187c41982a3870eaa423d7b1c7807e8bc",
+  "specPath": "docs/specs/delivery-reliability-recovery-hardening.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-07-24T17-24-42-391Z-delivery-reliability-recovery-hardening.json",
+    ".instar/instar-dev-decisions/2026-07-24T17-25-10-636Z-delivery-reliability-recovery-hardening.json",
+    ".instar/instar-dev-traces/2026-07-24T17-24-25-064Z-delivery-reliability-recovery-hardening-fe3cc94d.json",
+    ".instar/instar-dev-traces/2026-07-24T17-24-49-213Z-delivery-reliability-recovery-hardening-5df02879.json",
+    "src/monitoring/delivery-failure-sentinel.ts",
+    "upgrades/side-effects/delivery-reliability-recovery-hardening.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Preserve existing circuit-breaker suspend/resume contract.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Existing circuit breaker and bounded recovery tests."
+    }
+  }
+}

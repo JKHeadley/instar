@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateGuideContent } from './upgrade-guide-validator.mjs';
 import { assembleNextMd, gatherFragmentInputs, hasInternalOnlyMarker } from './assemble-next-md.mjs';
+import { isReleaseRelevant } from './release-relevant-paths.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -191,13 +192,19 @@ try {
   const fragmentChanges = changedFiles.filter(f =>
     f.startsWith('upgrades/next/') || f === 'upgrades/NEXT.md'
   );
-  if (srcChanges.length > 0 && fragmentChanges.length === 0) {
+  // Release-relevance is now the SHARED predicate (scripts/release-relevant-paths.mjs),
+  // the same one the server-side Layer-1 PR gate uses — so "needs a release note?"
+  // has one answer in both places. This BROADENS the old src/**.ts-only check to
+  // also catch scripts/, .github/workflows/, package.json, and skill code/templates
+  // (all of which ship behavior but previously slipped this local gate).
+  const releaseRelevantChanges = changedFiles.filter(isReleaseRelevant);
+  if (releaseRelevantChanges.length > 0 && fragmentChanges.length === 0) {
     errors.push(
-      `${srcChanges.length} source file(s) changed but no release-note fragment was added. ` +
+      `${releaseRelevantChanges.length} release-relevant file(s) changed but no release-note fragment was added. ` +
       `Without upgrades/next/<slug>.md (or upgrades/NEXT.md), publish.yml SILENTLY SKIPS the ` +
       `release — your change would merge but never ship. Add a fragment describing the change:\n` +
-      srcChanges.slice(0, 5).map(f => `      • ${f}`).join('\n') +
-      (srcChanges.length > 5 ? `\n      • ...and ${srcChanges.length - 5} more` : '')
+      releaseRelevantChanges.slice(0, 5).map(f => `      • ${f}`).join('\n') +
+      (releaseRelevantChanges.length > 5 ? `\n      • ...and ${releaseRelevantChanges.length - 5} more` : '')
     );
   }
 
@@ -338,44 +345,57 @@ if (!process.env.CI) {
   // isn't what this PR is changing. Falls back to the versioned guide when no
   // fragment / NEXT.md is staged (post-release-cut state).
   const inFlight = assembledContent !== null;
-  const guideContent = inFlight
-    ? assembledContent
-    : (versionedGuideExists ? fs.readFileSync(versionedGuidePath, 'utf-8') : null);
-  if (guideContent !== null) {
+
+  // This check is a RELEASE-LEVEL re-check on the notes THIS PUSH is shipping —
+  // which means it only has a subject when in-flight notes exist. It deliberately
+  // does NOT fall back to the versioned guide.
+  //
+  // Why (three recurrences, 2026: v1.3.492, v1.3.802, v1.3.1009): the release cut
+  // renames upgrades/next/*.md into upgrades/<version>.md and bumps package.json,
+  // but side-effects artifacts are named per CHANGE SLUG, never per version — so
+  // upgrades/side-effects/<version>.md is a file the release flow never creates.
+  // Falling back to the frozen guide therefore demanded a filename that cannot
+  // exist, on EVERY push from a clean post-release tree, for a release that had
+  // already shipped and already been reviewed.
+  //
+  // The damage was not the refusal, it was the REMEDY the message named: three
+  // separate times someone hand-wrote a placeholder upgrades/side-effects/<version>.md
+  // to get past it (see 1.3.492.md and 1.3.802.md, both of which say so in their
+  // own text). A gate whose advice is unfollowable teaches people to write junk
+  // that satisfies it.
+  //
+  // Nothing is weakened. Per-change enforcement lives in the pre-COMMIT gate
+  // (scripts/instar-dev-precommit.js — refuses in-scope staged files without an
+  // ELI16 + side-effects artifact), and check 3b above already refuses a
+  // release-relevant push that ships no fragment, with an actionable remedy.
+  if (inFlight) {
     // Extract "## What Changed" section
-    const whatChangedMatch = guideContent.match(/## What Changed\s*([\s\S]*?)(?=\n##\s|$)/);
+    const whatChangedMatch = assembledContent.match(/## What Changed\s*([\s\S]*?)(?=\n##\s|$)/);
     const whatChanged = whatChangedMatch ? whatChangedMatch[1] : '';
 
     const qualifies = FIX_PATTERNS.some((p) => p.test(whatChanged));
 
     if (qualifies) {
       const sideEffectsDir = path.join(ROOT, 'upgrades', 'side-effects');
-      // When in-flight notes (fragments/NEXT.md) drive the push, any fresh
-      // artifact (last 24h) counts — the versioned-filename requirement only
-      // applies when a versioned guide is being validated without in-flight notes.
-      const artifactName = (!inFlight && versionedGuideExists) ? `${version}.md` : null;
       let artifactFound = false;
 
       if (fs.existsSync(sideEffectsDir)) {
         const files = fs.readdirSync(sideEffectsDir).filter((f) => f.endsWith('.md'));
-        if (artifactName) {
-          artifactFound = files.includes(artifactName);
-        } else {
-          // For in-flight notes (fragments/NEXT.md), any fresh artifact from the
-          // last 24h counts. The expectation is that during release cut, the
-          // fragment/NEXT.md -> <version>.md rename pairs with an artifact rename.
-          const recent = files.filter((f) => {
-            const stat = fs.statSync(path.join(sideEffectsDir, f));
-            return Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000;
-          });
-          artifactFound = recent.length > 0;
-        }
+        // Any fresh artifact from the last 24h counts — the in-flight notes name
+        // the change, the artifact reviews it, and the two are paired by the PR
+        // rather than by filename.
+        const recent = files.filter((f) => {
+          const stat = fs.statSync(path.join(sideEffectsDir, f));
+          return Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000;
+        });
+        artifactFound = recent.length > 0;
       }
 
       if (!artifactFound) {
         errors.push(
-          `Upgrade notes claim a fix/feature but no matching side-effects review artifact found in upgrades/side-effects/. ` +
-          `Every change qualifying for review must ship with an artifact produced via the /instar-dev skill. ` +
+          `Your release-note fragment claims a fix/feature but no side-effects review artifact was written in the last 24h. ` +
+          `Add upgrades/side-effects/<slug>.md for this change (produced via the /instar-dev skill) — ` +
+          `do NOT create a version-named file to satisfy this check. ` +
           `See skills/instar-dev/SKILL.md and docs/signal-vs-authority.md.`
         );
       }
@@ -428,6 +448,12 @@ try {
   warnings.push(`lint-no-direct-llm-http failed to run: ${err.message}`);
 }
 
+// (The scrape-fixture-realness lint is enforced via the `npm run lint` chain in
+// package.json, which CI runs — not duplicated here. A direct gate invocation
+// would run against this gate's resolved ROOT, which is a scratch dir under the
+// gate's own unit tests, where the registered fixtures don't exist; the chain in
+// `npm run lint` runs in the real repo and is the authoritative enforcement.)
+
 // ── 6. URL.pathname filesystem guard ──────────────────────────────────
 // new URL(..., import.meta.url).pathname preserves %20-encoded spaces,
 // breaking filesystem operations. Use __dirname (via fileURLToPath) instead.
@@ -452,6 +478,46 @@ try {
   }
 } catch {
   // grep not available — skip gracefully
+}
+
+// ── 7. Duplicate-build advisory (docs/specs/duplicate-build-guard.md FD1) ──
+//
+// warnings[] ONLY — NEVER errors[]: a duplicate build is recoverable (close
+// the PR), so the irreversible-action carve-out does not apply and a
+// deterministic push-block would be brittle authority over a judgment call
+// (docs/signal-vs-authority.md). The teeth live at build-start (the PreToolUse
+// gate) + the precommit presence backstop; this is the last-look signal.
+//
+// Honors INSTAR_PRE_PUSH_SKIP (mirrors the husky skip) and the
+// INSTAR_DUP_BUILD_CHECK=off master switch; the open-PR scan is skipped under
+// CI inside the library (§3.3/§5). The library re-fetches origin/main and
+// re-keys its cache at phase 'pre-push' so a merge that landed mid-build is
+// actually seen at push time (§3.2). ANY failure degrades to silence — the
+// guard's own breakage must never block or delay a push (FD5).
+
+if (process.env.INSTAR_PRE_PUSH_SKIP !== '1') {
+  try {
+    const dup = await import('./lib/duplicate-build-check.mjs');
+    if (!dup.isGuardOff(process.env, ROOT)) {
+      const specPath = dup.resolveSpecForAdvisory(ROOT);
+      if (specPath) {
+        const result = dup.runDuplicateBuildCheck({ specPath, root: ROOT, phase: 'pre-push', env: process.env });
+        if (result && (result.verdict === 'likely-duplicate' || result.verdict === 'verify')) {
+          const top = (result.evidence || []).slice(0, 3).map((e) => `      • ${e.id} [${e.source}] ${e.detail}`);
+          warnings.push(
+            `Duplicate-build check: ${result.verdict}` +
+            (result.cause ? ` (cause: ${result.cause})` : '') +
+            ` for spec ${path.relative(ROOT, specPath)}.` +
+            (top.length ? `\n${top.join('\n')}` : '') +
+            `\n      Advisory only (never blocks a push) — review the overlap before merging.` +
+            `\n      docs/specs/duplicate-build-guard.md | off-switch: INSTAR_DUP_BUILD_CHECK=off`
+          );
+        }
+      }
+    }
+  } catch {
+    // Advisory only — the guard's own failure never blocks a push (FD5).
+  }
 }
 
 // ── Report ────────────────────────────────────────────────────────────

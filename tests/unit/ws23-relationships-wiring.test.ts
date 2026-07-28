@@ -67,13 +67,16 @@ describe('WS2.3 server.ts wiring (source touchpoints)', () => {
 });
 
 describe('WS2.3 ConfigDefaults + awareness', () => {
-  it('ConfigDefaults ships the relationships stateSync dark default (enabled:false, dryRun:true)', () => {
+  it('ConfigDefaults ships the relationships stateSync dev-gated posture (OMITS enabled, dryRun:false — operator directive 2026-06-13)', () => {
     const defaultsSrc = read('src/config/ConfigDefaults.ts');
-    // The relationships sub-block follows the preferences sibling under stateSync.
-    expect(defaultsSrc).toMatch(/relationships:\s*\{\s*\n\s*enabled:\s*false,\s*\n\s*dryRun:\s*true,/);
+    // Re-gated to the developmentAgent gate: `enabled` OMITTED (gate resolves it
+    // live-on-dev / dark-fleet); dryRun:false (genuinely live). The relationships
+    // sub-block follows the preferences sibling under stateSync.
+    expect(defaultsSrc).toMatch(/relationships:\s*\{\s*\n\s*dryRun:\s*false,\s*\n\s*\},/);
+    expect(defaultsSrc).not.toMatch(/relationships:\s*\{\s*\n\s*enabled:\s*false/);
   });
 
-  it('the dev-gate dark exclusion classifies the relationships path', () => {
+  it('the dev-gate classifies the relationships path as DEV_GATED (live-on-dev), not a dark exclusion', () => {
     const devGated = read('src/core/devGatedFeatures.ts');
     expect(devGated).toContain("configPath: 'multiMachine.stateSync.relationships.enabled'");
   });

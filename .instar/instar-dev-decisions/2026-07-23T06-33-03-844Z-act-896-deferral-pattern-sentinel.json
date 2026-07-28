@@ -1,0 +1,25 @@
+{
+  "ts": "2026-07-23T06:33:03.844Z",
+  "slug": "act-896-deferral-pattern-sentinel",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "The projection intentionally treats absent or unreadable observability files as no observations, but the new catch site lacked the repository's explicit silent-fallback posture marker."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/no-silent-fallbacks.test.ts",
+      "howCaught": "The hard no-silent-fallbacks ratchet rejected the new catch site in CI; the focused regression now holds the global count at its existing ceiling while the sentinel remains dark and non-actuating."
+    }
+  },
+  "verdict": "pass"
+}

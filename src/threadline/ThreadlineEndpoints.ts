@@ -61,6 +61,14 @@ export interface ThreadlineEndpointsConfig {
   version: string;
   /** Agent state directory — used to resolve the canonical routing identity for /threadline/health */
   stateDir: string;
+  /**
+   * Secure A2A Verified Pairing (§3.6): a callback returning the count of
+   * mutual-verified pairings, surfaced on /threadline/health as
+   * `mutualVerifiedCount`. Optional — when absent the field is omitted (legacy
+   * behavior). Threaded in from the route factory where the trust manager lives;
+   * the relay-server router itself has no trust-manager access.
+   */
+  mutualVerifiedCount?: () => number;
 }
 
 // ── Error Codes ──────────────────────────────────────────────────────
@@ -148,6 +156,11 @@ export function createThreadlineRoutes(
         : handshakeManager.getIdentityPublicKey(),
       fingerprint: routingIdentity?.fingerprint,
       pairedAgents: handshakeManager.listPairedAgents().length,
+      // Secure A2A Verified Pairing (§3.6): count of mutual-verified pairings.
+      // Omitted when no count callback is wired (legacy behavior).
+      ...(config.mutualVerifiedCount
+        ? { mutualVerifiedCount: config.mutualVerifiedCount() }
+        : {}),
       timestamp: new Date().toISOString(),
     });
   });

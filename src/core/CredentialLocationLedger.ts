@@ -51,7 +51,7 @@ export interface CredentialLedgerJournalEntry {
   /** Monotonic sequence within the ledger (== the version at write time). */
   seq: number;
   /** The operation this entry belongs to. */
-  op: 'seed' | 'swap' | 'set-default' | 'quarantine' | 'unquarantine' | 'restore';
+  op: 'seed' | 'swap' | 'set-default' | 'quarantine' | 'unquarantine' | 'restore' | 'reconcile';
   /** The phase of that operation (swap is multi-phase per §2.3; others are single-shot). */
   phase: 'begin' | 'staged' | 'exchanged' | 'verified' | 'done' | 'aborted';
   /** Slots this entry touched (ordered). */
@@ -140,6 +140,40 @@ export interface SeedSlotOutcome {
   reason?: string;
 }
 
+/** Outcome of a periodic NON-DESTRUCTIVE identity re-verification (auditIdentities) for one slot. */
+export interface IdentityAuditOutcome {
+  slot: string;
+  /**
+   * - `refreshed` — healthy slot re-confirmed; lastVerifiedAt stamped fresh (the core fix).
+   * - `recovered` — a quarantined/tenant-less slot now resolves cleanly; assignment restored + unquarantined.
+   * - `diverged-quarantined` — a healthy slot's credential now belongs to a DIFFERENT account (confirmed login change) → quarantined.
+   * - `unverifiable-quarantined` — a healthy slot's email became ambiguous/unknown → quarantined.
+   * - `unavailable-held` — oracle unavailable/threw; a healthy slot is HELD (never quarantined on a transient probe failure).
+   * - `still-quarantined` — an already-quarantined slot still can't be cleanly resolved.
+   */
+  result:
+    | 'refreshed'
+    | 'recovered'
+    | 'diverged-quarantined'
+    | 'unverifiable-quarantined'
+    | 'unavailable-held'
+    | 'still-quarantined';
+  accountId?: string;
+  email?: string;
+  reason?: string;
+}
+
+/** Aggregate report of one auditIdentities pass (returned + retained for the status surface). */
+export interface IdentityAuditReport {
+  at: string;
+  outcomes: IdentityAuditOutcome[];
+  refreshed: number;
+  recovered: number;
+  quarantined: number;
+  /** Held (transient) + still-quarantined — slots the pass could not freshly confirm. */
+  unresolved: number;
+}
+
 const MAX_COMPLETED_JOURNAL = 50;
 const NON_CLAUDE_FRAMEWORKS = new Set(['codex-cli', 'gemini-cli', 'pi-cli']);
 
@@ -160,6 +194,8 @@ export class CredentialLocationLedger {
   private unknownMode = false;
   /** Dedupe the UNKNOWN-mode attention item so a re-read storm raises it once. */
   private unknownAttentionRaised = false;
+  /** Last NON-DESTRUCTIVE identity audit pass (auditIdentities) — surfaced in status. */
+  private lastAuditReport: IdentityAuditReport | null = null;
   /** In-memory index: accountId → slot (rebuilt on every mutation/load). */
   private slotByAccount = new Map<string, string>();
   /** In-memory index: slot → accountId. */
@@ -281,15 +317,19 @@ export class CredentialLocationLedger {
   }
 
   /** Record (or re-point) `slot`'s tenant to `accountId`. Single-writer; bumps version. */
-  recordAssignment(slot: string, accountId: string, opts?: { verifiedAt?: string | null; op?: CredentialLedgerJournalEntry['op'] }): CredentialAssignment {
+  recordAssignment(slot: string, accountId: string, opts?: { verifiedAt?: string | null; op?: CredentialLedgerJournalEntry['op']; source?: string }): CredentialAssignment {
     this.assertMutable('recordAssignment');
     const at = this.now();
     const existing = this.store.assignments.find((a) => a.slot === slot);
-    // A slot's tenant changing means the previous tenant is no longer here — drop any stale
-    // assignment that claimed the SAME accountId in a different slot (one home per credential).
-    this.store.assignments = this.store.assignments.filter(
-      (a) => a.slot !== slot && a.accountId !== accountId,
-    );
+    // A slot's tenant changing means the previous tenant is no longer authoritative
+    // elsewhere. Preserve every enumerated SLOT, though: silently dropping the old
+    // slot made later repairs unable to address it. A duplicate claim is vacated to
+    // a tenant-less quarantine marker until a live probe/verified swap fills it.
+    this.store.assignments = this.store.assignments
+      .filter((a) => a.slot !== slot)
+      .map((a) => a.accountId === accountId
+        ? { ...a, accountId: '', lastVerifiedAt: null, quarantined: true }
+        : a);
     const assignment: CredentialAssignment = {
       slot,
       accountId,
@@ -298,7 +338,12 @@ export class CredentialLocationLedger {
       quarantined: false,
     };
     this.store.assignments.push(assignment);
-    this.bumpAndJournal({ op: opts?.op ?? 'swap', phase: 'done', slots: [slot], detail: `tenant=${accountId}` });
+    this.bumpAndJournal({
+      op: opts?.op ?? 'swap',
+      phase: 'done',
+      slots: [slot],
+      detail: `tenant=${accountId}${opts?.source ? ` source=${opts.source}` : ''}`,
+    });
     this.reindex();
     this.save();
     return assignment;
@@ -440,6 +485,117 @@ export class CredentialLocationLedger {
     return outcomes;
   }
 
+  /**
+   * Periodic, NON-DESTRUCTIVE identity re-verification (the §2.4 scheduled identity audit).
+   *
+   * Unlike `seedFromOracle()` — which WIPES + rebuilds the whole ledger — this re-probes each
+   * EXISTING tracked slot and updates ONLY its verification/quarantine state. It is the missing
+   * piece that keeps a healthy slot's `lastVerifiedAt` FRESH: without a periodic re-stamp the
+   * rebalancer's `targetVerifiedRecent` gate (default 6h) decays every slot to "not recently
+   * verified", leaving every objective (wall-rescue AND use-it-or-lose-it drain) with zero
+   * eligible targets — a permanently-inert optimizer. It ALSO lets a slot that has since become
+   * resolvable EXIT quarantine.
+   *
+   * Safety direction (§2.11 never-guess / quarantine-never-repair):
+   *   - oracle unavailable/throws → HOLD: NEVER quarantine a currently-healthy slot on a
+   *     transient probe failure (that would itself induce the inert-rebalancer failure this
+   *     method exists to prevent). An already-quarantined slot stays quarantined.
+   *   - email → exactly one pool account:
+   *       · matches the slot's current healthy tenant → markVerified (refresh — the core fix).
+   *       · slot is quarantined / tenant-less → RECOVER: record the assignment verified-now and
+   *         lift the quarantine.
+   *       · matches a DIFFERENT account than the recorded healthy tenant → a CONFIRMED login
+   *         divergence (the oracle never guesses a mismatch — an `email` is identity-confirmed)
+   *         → quarantine (safe direction).
+   *   - ambiguous / unknown-email on a currently-healthy slot → quarantine (its login became
+   *     unrecognizable); an already-quarantined slot stays quarantined.
+   *
+   * This NEVER triggers a credential swap — it only refreshes the ledger verification state the
+   * rebalancer reads on its next pass. No-op in UNKNOWN mode (recovery is seedFromOracle's job).
+   */
+  async auditIdentities(): Promise<IdentityAuditReport> {
+    const at = this.now();
+    const outcomes: IdentityAuditOutcome[] = [];
+    if (this.unknownMode) {
+      const empty: IdentityAuditReport = { at, outcomes, refreshed: 0, recovered: 0, quarantined: 0, unresolved: 0 };
+      this.lastAuditReport = empty;
+      return empty;
+    }
+
+    const claudeAccounts = this.pool.list().filter(isClaudeCodeAccount);
+    // Snapshot the slot list up-front: the mutators below rewrite `assignments`.
+    const slots = this.getAssignments().map((a) => a.slot);
+
+    for (const slot of slots) {
+      const existing = this.store.assignments.find((x) => x.slot === slot);
+      if (!existing) continue; // disappeared mid-pass (defensive) — nothing to re-verify.
+
+      let result: IdentityOracleResult;
+      try {
+        result = await this.oracle.resolveSlotTenant(slot);
+      } catch (err) {
+        result = { unavailable: true, reason: `oracle threw: ${(err as Error)?.message ?? 'unknown'}` };
+      }
+
+      if (result.unavailable || !result.email) {
+        // HOLD — a transient probe failure must never demote a healthy slot.
+        outcomes.push({
+          slot,
+          result: existing.quarantined ? 'still-quarantined' : 'unavailable-held',
+          reason: result.reason ?? 'oracle unavailable',
+        });
+        continue;
+      }
+
+      const matches = claudeAccounts.filter((a) => a.email && a.email === result.email);
+      if (matches.length === 1) {
+        const matchId = matches[0].id;
+        if (!existing.quarantined && existing.accountId === matchId) {
+          this.markVerified(slot, at);
+          outcomes.push({ slot, result: 'refreshed', accountId: matchId, email: result.email });
+        } else if (existing.quarantined || existing.accountId === '') {
+          // A quarantined / tenant-less slot now resolves cleanly → recover + un-quarantine.
+          this.recordAssignment(slot, matchId, { verifiedAt: at, op: 'restore' });
+          outcomes.push({ slot, result: 'recovered', accountId: matchId, email: result.email });
+        } else {
+          // Healthy slot, but the confirmed email belongs to a DIFFERENT account → divergence.
+          this.quarantineSlot(slot, `audit: slot diverged — now ${result.email} (${matchId}), recorded tenant ${existing.accountId}`);
+          outcomes.push({ slot, result: 'diverged-quarantined', accountId: matchId, email: result.email, reason: `diverged from ${existing.accountId}` });
+        }
+      } else if (matches.length > 1) {
+        if (existing.quarantined) {
+          outcomes.push({ slot, result: 'still-quarantined', email: result.email, reason: `ambiguous (${matches.length})` });
+        } else {
+          this.quarantineSlot(slot, `audit: ambiguous — ${matches.length} accounts share ${result.email}`);
+          outcomes.push({ slot, result: 'unverifiable-quarantined', email: result.email, reason: `ambiguous (${matches.length})` });
+        }
+      } else {
+        if (existing.quarantined) {
+          outcomes.push({ slot, result: 'still-quarantined', email: result.email, reason: 'unknown-email' });
+        } else {
+          this.quarantineSlot(slot, `audit: unknown email ${result.email} — no pool account`);
+          outcomes.push({ slot, result: 'unverifiable-quarantined', email: result.email, reason: 'unknown-email' });
+        }
+      }
+    }
+
+    const report: IdentityAuditReport = {
+      at,
+      outcomes,
+      refreshed: outcomes.filter((o) => o.result === 'refreshed').length,
+      recovered: outcomes.filter((o) => o.result === 'recovered').length,
+      quarantined: outcomes.filter((o) => o.result === 'diverged-quarantined' || o.result === 'unverifiable-quarantined').length,
+      unresolved: outcomes.filter((o) => o.result === 'unavailable-held' || o.result === 'still-quarantined').length,
+    };
+    this.lastAuditReport = report;
+    return report;
+  }
+
+  /** The last NON-DESTRUCTIVE identity audit pass, or null if none has run. */
+  getLastAuditReport(): IdentityAuditReport | null {
+    return this.lastAuditReport;
+  }
+
   // ─── Attention (LOUD degradation surfaces) ───────────────────────────────────────
 
   private async raiseUnknownModeAttention(): Promise<void> {
@@ -481,4 +637,35 @@ export class CredentialLocationLedger {
       // already durably recorded in the ledger whether or not the notice is delivered.
     }
   }
+}
+
+/**
+ * The boot-seed decision (B3a). Pure + isolated so the wiring decision is unit-testable without
+ * booting server.ts. Returns true ONLY when the re-pointing feature is enabled AND the ledger is
+ * not already seeded — `isSeeded()` is false for BOTH never-seeded and UNKNOWN (corrupt) mode, so
+ * a true result also covers the named recovery path, and a seeded ledger is always skipped (so the
+ * boot-seed is idempotent across restarts). The actual seed (`seedFromOracle()`) is non-destructive
+ * and already unit-tested; this guard is the new logic the wiring introduced.
+ */
+export function shouldBootSeedCredentialLedger(enabled: boolean, isSeeded: boolean): boolean {
+  return enabled && !isSeeded;
+}
+
+/**
+ * The periodic identity-audit gating decision (B3c). Pure + isolated so the scheduled-audit wiring
+ * is unit-testable without booting server.ts. Returns true ONLY when ALL hold:
+ *   - `enabled` — the re-pointing dev-gate is on (strict no-op / no oracle probe on the dark fleet);
+ *   - `isSeeded` — there is a ledger to re-verify (boot-seed + recovery is seedFromOracle's job);
+ *   - NOT `unknownMode` — a corrupt ledger refuses mutations (auditIdentities is a no-op there anyway);
+ *   - NOT `inFlight` — the prior pass has not finished (reentrancy guard; a slow oracle never overlaps).
+ * The audit (`auditIdentities()`) is non-destructive (verification state only; zero credential moves)
+ * and unit-tested; this guard is the new logic the scheduled wiring introduced.
+ */
+export function shouldRunIdentityAudit(
+  enabled: boolean,
+  isSeeded: boolean,
+  unknownMode: boolean,
+  inFlight: boolean,
+): boolean {
+  return enabled && isSeeded && !unknownMode && !inFlight;
 }

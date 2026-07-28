@@ -251,8 +251,27 @@ export class SendGateway {
           warnings.push(`[coherence-gate] ${evalResult.warnings.join('; ')}`);
         }
       } catch (err) {
-        // CoherenceGate errors are fail-open
-        warnings.push(`[coherence-gate] Error: ${err instanceof Error ? err.message : String(err)}`);
+        // reviewer-fail-closed-on-abstain §7 (CMT-1794): a THROWN gate error
+        // escaping evaluate() previously fell open and SENT on every channel,
+        // bypassing CoherenceGate's own external fail-closed policy. On an
+        // EXTERNAL channel, fail CLOSED (held, reported) — an unreviewed external
+        // message is never delivered just because the gate crashed; the safe
+        // direction the standard mandates. INTERNAL keeps the fail-open warning
+        // (blocking internal/self outbound on a gate crash risks wedging the
+        // agent's own control loop — Decision D). A persistent crash holding all
+        // external outbound is bounded by the breaker layer (§3).
+        const detail = err instanceof Error ? err.message : String(err);
+        if (isExternal) {
+          channelStats.blocked++;
+          return {
+            pass: false,
+            reason: `CoherenceGate errored (held, fail-closed on external): ${detail}`,
+            blockedBy: 'coherence-gate',
+            warnings: warnings.length > 0 ? warnings : undefined,
+            durationMs: Date.now() - start,
+          };
+        }
+        warnings.push(`[coherence-gate] Error (internal — fail-open with report): ${detail}`);
       }
     }
 

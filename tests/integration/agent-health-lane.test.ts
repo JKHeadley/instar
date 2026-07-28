@@ -123,7 +123,7 @@ describe('Agent-Health lane (integration with real TelegramAdapter)', () => {
     expect(fs.readFileSync(auditPath, 'utf-8').trim().split('\n').filter(Boolean).length).toBe(2);
   });
 
-  it('a normal (non-lane) attention item is unaffected — still gets its own topic', async () => {
+  it('a normal (non-lane) attention item routes to the "🔔 Attention" hub, never the health lane', async () => {
     const rec = installApiStub(adapter);
     const normal = await adapter.createAttentionItem({
       id: 'user-facing-1', title: 'A real user escalation', summary: 'please look',
@@ -131,6 +131,24 @@ describe('Agent-Health lane (integration with real TelegramAdapter)', () => {
     });
     expect(rec.forumTopicsCreated).toBe(1);
     expect(rec.topicTitles[0]).not.toContain('Agent Health');
+    expect(rec.topicTitles[0]).toContain('Attention');
+    expect(normal.coalesced).toBe(true);
+    expect(typeof normal.topicId).toBe('number');
+  });
+
+  it("in LEGACY per-item mode a normal (non-lane) attention item still gets its own topic", async () => {
+    await adapter.stop();
+    adapter = new TelegramAdapter(
+      { token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, attentionRouting: { mode: 'per-item' } },
+      tmpDir,
+    );
+    const rec = installApiStub(adapter);
+    const normal = await adapter.createAttentionItem({
+      id: 'user-facing-2', title: 'A real user escalation', summary: 'please look',
+      category: 'general', priority: 'HIGH', sourceContext: 'user',
+    });
+    expect(rec.forumTopicsCreated).toBe(1);
+    expect(rec.topicTitles[0]).toContain('A real user escalation');
     expect(normal.coalesced).toBeUndefined();
     expect(typeof normal.topicId).toBe('number');
   });

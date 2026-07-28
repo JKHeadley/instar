@@ -61,6 +61,15 @@ const ALLOWLIST = new Set([
   'src/core/SafeFsExecutor.ts',
   'tests/unit/SafeGitExecutor.test.ts',
   'tests/unit/SafeFsExecutor.test.ts',
+  // tmux-event-loop-resilience Increment 1 tests: per-test cleanup of
+  // mkdtempSync dirs under os.tmpdir() (the cross-process marker round-trip
+  // needs a real on-disk mirror dir; the e2e needs a throwaway stateDir). The
+  // targets are os.tmpdir paths, never the source tree. Routing through
+  // SafeFsExecutor.safeRmSync would write an audit entry per teardown call —
+  // worse noise than a scoped allowlist entry for a test's own tmpdir cleanup.
+  // (Spec: docs/specs/tmux-event-loop-resilience.md, Step 8.)
+  'tests/unit/InFlightSyncOpMarker.test.ts',
+  'tests/e2e/tmux-resilience-lifecycle.test.ts',
   // The lint rule itself runs before SafeGitExecutor.ts is compiled, so it
   // needs direct execSync as a bootstrap escape. The single git call here is
   // a read-only `git diff --cached --name-only` for staged-file detection.
@@ -77,6 +86,10 @@ const ALLOWLIST = new Set([
   // Same bootstrap-escape pattern (june15-headless-spawn-reroute funnel
   // lint) — read-only `git diff --cached --name-only` only.
   'scripts/lint-no-unfunneled-headless-launch.js',
+  // Same bootstrap-escape pattern (fork-bomb spawn-cap funnel lint) —
+  // read-only `git diff --cached --name-only` for --staged. Cannot depend on
+  // the TS funnel because TS is not compiled when the lint runs in pre-push.
+  'scripts/lint-no-unbounded-llm-spawn.js',
   // Same bootstrap-escape pattern (Step 4b credential-write funnel lint) —
   // read-only `git diff --cached --name-only` for --staged. Cannot depend on
   // the TS funnel because TS is not compiled when the lint runs in pre-push.
@@ -96,6 +109,11 @@ const ALLOWLIST = new Set([
   // instar#1069) — read-only `git diff --cached --name-only` for --staged.
   // Cannot depend on the TS funnel because TS is not compiled at pre-push.
   'scripts/lint-no-mainthread-cartographer-walk.js',
+  // Same bootstrap-escape pattern (tmux sync-subprocess chokepoint lint,
+  // docs/specs/tmux-event-loop-resilience.md) — a read-only `git ls-files` /
+  // `git diff --cached --name-only` for staged-file detection. Cannot depend on
+  // the TS funnel because TS is not compiled when the lint runs in pre-push.
+  'scripts/lint-sync-subprocess-chokepoint.js',
   // Postinstall bootstrap script — runs before TypeScript is compiled and
   // before SafeFsExecutor is available. CommonJS, can't use ESM imports.
   'scripts/fix-better-sqlite3.cjs',
@@ -108,6 +126,18 @@ const ALLOWLIST = new Set([
   // Worktree-related git hooks — run before TS is compiled.
   'scripts/worktree-precommit-gate.js',
   'scripts/worktree-commit-msg-hook.js',
+  // audit-convergence-enforcement: the audit-report validator runs pre-compile
+  // (imported by the precommit hook), so it can't depend on the TS SafeGitExecutor
+  // funnel. All its git calls are READ-ONLY: `git rev-parse --show-toplevel` (repo
+  // root), `git ls-files --error-unmatch` (standing-guard tracked check), `git
+  // diff --cached --name-only` (staged set). Never a destructive git op.
+  'scripts/write-audit-convergence.mjs',
+  // audit-convergence tests: read-only `git rev-parse --show-toplevel` / `git
+  // ls-files` to resolve the repo root for reading committed files. No mutation.
+  'tests/unit/write-audit-convergence.test.ts',
+  'tests/unit/audit-convergence-reports.test.ts',
+  'tests/unit/audit-convergence-standard-conformance.test.ts',
+  'tests/unit/iterative-converging-audit-skill-single-source.test.ts',
   // Pre-command shim that wraps git invocations from outside the safe
   // executor — bootstraps the safety check, can't be inside the funnel.
   'scripts/destructive-command-shim.js',
@@ -116,6 +146,12 @@ const ALLOWLIST = new Set([
   // previous release. Build-time only; never executes on an agent's
   // machine. Per INSTAR-JOBS-AS-AGENTMD spec §Drift Classifier.
   'scripts/classify-default-drift.mjs',
+  // release-fragment-gate Layer 2 publish-side annotator — runs READ-ONLY git
+  // (`describe --tags`, `diff --name-only -z`, `log`, `ls-files`) inside the
+  // publish GitHub Action to detect unreleased release-relevant work on a skip.
+  // CI-only; never executes on an agent's machine, and TS isn't compiled there
+  // so it cannot import the SafeGitExecutor funnel. Per RELEASE-FRAGMENT-GATE-SPEC.
+  'scripts/release-skip-annotate.mjs',
   // Tier-3 CI ratchet for the cartographer doc-tree (cartographer-doc-freshness
   // spec #2). A standalone .mjs (parity with docs-coverage.mjs) that runs in CI
   // with NO build step, so it cannot import the TS SafeGitExecutor funnel. All

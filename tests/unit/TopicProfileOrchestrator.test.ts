@@ -57,6 +57,16 @@ async function waitUntil(cond: () => boolean, timeoutMs = 3000): Promise<void> {
   }
 }
 
+// The parked pin becomes visible mid-trip (parkAndRevert assigns entry.parked
+// before its internal flushDurably await yields), so polling parkedFor races
+// the trip's continuation (unpark → breaker-revert audit → disclosure →
+// respawn enqueue). The breaker-revert audit is emitted after every other
+// synchronous trip side-effect — by the time a poll observes it, they have
+// all landed. Wait on that, never on parkedFor.
+async function waitForBreakerTrip(h: Harness): Promise<void> {
+  await waitUntil(() => h.audits.some((a) => a.type === 'breaker-revert'));
+}
+
 interface Harness {
   orch: TopicProfileOrchestrator;
   store: TopicProfileStore;
@@ -505,6 +515,16 @@ describe('kill-path precision', () => {
   it('a framework switch PARKS both resume stores before a FRESH kill and discloses the honest loss', async () => {
     const h = makeHarness();
     liveSession(h);
+    h.spawnImpl.fn = async () => ({
+      ok: true,
+      applied: {
+        framework: 'codex-cli',
+        model: 'gpt-5.5',
+        modelTier: null,
+        thinkingMode: null,
+        effort: null,
+      },
+    });
     await h.orch.requestProfileChange('7', { framework: 'codex-cli' }, OP);
     await waitUntil(() => h.spawns.length === 1);
     expect(h.claude.parks).toContain('7:mid-framework-switch');
@@ -512,6 +532,9 @@ describe('kill-path precision', () => {
     expect(h.kills[0].mode).toBe('fresh'); // never the resume-saving kill
     expect(
       h.disclosures.some((d) => d.text.includes("full transcript can't follow")),
+    ).toBe(true);
+    expect(
+      h.disclosures.some((d) => d.text.includes('Now driving this topic: Codex door, gpt-5.5 model.')),
     ).toBe(true);
     // Profile-triggered kill cleared the escalation marker slot.
     expect(h.escalation.cleared).toContain('7');
@@ -641,7 +664,7 @@ describe('circuit breaker (§10.4)', () => {
     });
     await h.store.mutate('7', { model: 'claude-bad-model', updatedBy: OP.updatedBy }, { shiftPrevious: true });
     for (let i = 0; i < 3; i++) h.orch.recordSpawnFailure('7', 'cli-not-found');
-    await waitUntil(() => h.store.parkedFor('7') !== null);
+    await waitForBreakerTrip(h);
     expect(h.store.parkedFor('7')?.profile.model).toBe('claude-bad-model');
     // Reverted to last-known-good (here: the empty pre-pin profile → defaults).
     expect(h.store.resolve('7')?.model ?? null).toBeNull();
@@ -689,7 +712,7 @@ describe('circuit breaker (§10.4)', () => {
     h.cfg.enabled = false;
     h.cfg.dryRun = true;
     for (let i = 0; i < 3; i++) h.orch.recordSpawnFailure('7', 'model-rejected-by-account');
-    await waitUntil(() => h.store.parkedFor('7') !== null);
+    await waitForBreakerTrip(h);
     expect(h.store.resolve('7')?.model ?? null).toBeNull(); // really reverted
     expect(
       h.disclosures.some((d) => d.text.includes("Couldn't launch")),
@@ -700,7 +723,7 @@ describe('circuit breaker (§10.4)', () => {
     const h = makeHarness();
     await h.orch.requestProfileChange('7', { model: 'claude-bad-model' }, OP);
     for (let i = 0; i < 3; i++) h.orch.recordSpawnFailure('7', 'cli-not-found');
-    await waitUntil(() => h.store.parkedFor('7') !== null);
+    await waitForBreakerTrip(h);
 
     const r = await h.orch.requestRecoveryWrite('7', 'reapply', OP);
     expect(r.outcome).toBe('confirm-required');
@@ -724,7 +747,7 @@ describe('circuit breaker (§10.4)', () => {
     const h = makeHarness();
     await h.orch.requestProfileChange('7', { model: 'claude-bad-model' }, OP);
     for (let i = 0; i < 3; i++) h.orch.recordSpawnFailure('7', 'cli-not-found');
-    await waitUntil(() => h.store.parkedFor('7') !== null);
+    await waitForBreakerTrip(h);
 
     const pin = await h.orch.requestProfileChange('7', { model: 'claude-fable-5' }, OP);
     expect(pin.outcome).toBe('applied');
@@ -740,7 +763,7 @@ describe('circuit breaker (§10.4)', () => {
     liveSession(h);
     await h.orch.requestProfileChange('7', { model: 'claude-bad-model' }, OP);
     for (let i = 0; i < 3; i++) h.orch.recordSpawnFailure('7', 'cli-not-found');
-    await waitUntil(() => h.store.parkedFor('7') !== null);
+    await waitForBreakerTrip(h);
     const killsAfterTrip = h.kills.length;
 
     h.cfg.dryRun = true; // gated regime (the shipped dev config)

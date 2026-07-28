@@ -158,7 +158,12 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
     // /a2a/inbox is the same-machine a2a transport — callers hold the TARGET
     // agent's per-agent token (from AgentRegistry), not the API bearer token,
     // so the inbox route enforces `verifyAgentToken` in its handler.
-    if (req.path === '/messages/relay-agent' || req.path === '/messages/relay-machine' || req.path === '/a2a/inbox') {
+    if (
+      req.path === '/messages/relay-agent'
+      || req.path === '/messages/relay-machine'
+      || req.path === '/a2a/inbox'
+      || req.path === '/a2a/apprenticeship/cycles'
+    ) {
       next();
       return;
     }
@@ -216,6 +221,19 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
     // Secret drop routes — the token in the URL IS the auth.
     // GET serves the form, POST receives the submission. Both are user-facing.
     if (req.path.startsWith('/secrets/drop/')) {
+      next();
+      return;
+    }
+
+    // Dynamic-MCP operator-approval TAP pages — opened by the operator's BROWSER,
+    // which carries no Bearer token (the operator has the dashboard PIN, not the
+    // agent token). Same posture as Secret Drop: the opaque single-use requestId in
+    // the URL gates the GET page (renders the change, never the nonce), and the POST
+    // submit is PIN-gated by checkMandatePin inside the handler. The Bearer middleware
+    // would otherwise 401 the page before it ever renders. Scoped to `/mcp/approve/<id>`
+    // (trailing slash) so the agent-only `/mcp/approve` (exact) + `/mcp/approval-link`
+    // + `/mcp/load|offload|session` stay Bearer-gated.
+    if (req.path.startsWith('/mcp/approve/')) {
       next();
       return;
     }
@@ -537,6 +555,42 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
   }
   next();
 }
+
+/**
+ * #1441 — dashboard static assets must never outlive a deploy. Stamp a
+ * revalidate-always `Cache-Control: no-cache` on every dashboard response.
+ *
+ * Before this, express.static served `Cache-Control: public, max-age=0`, which
+ * Cloudflare's edge silently overrode with its default multi-hour TTL for
+ * .js/.css. A warm-cache browser then paired a FRESH index.html (sent each load)
+ * with a STALE glance.js and threw `glance.blockersGlanceSpec is not a function`,
+ * blanking a whole tab for up to 4h after every phase deploy. `no-cache` (not
+ * `no-store`) keeps the ETag/Last-Modified revalidation express already generates,
+ * so every asset — index.html AND its transitively-imported ES modules
+ * (glance.js → subscriptions.js) — 304-revalidates on each load; a deploy can never
+ * leave a skewed pair. `no-cache` is also a directive Cloudflare honors by NOT
+ * edge-caching, so it kills the stale-edge-copy half of the skew too.
+ *
+ * This runs via `express.static({ setHeaders })` (below) so it wins over
+ * serve-static's own default Cache-Control, and is called directly for the
+ * index.html `res.sendFile` route.
+ */
+export function dashboardCacheControl(res: Response): void {
+  res.setHeader('Cache-Control', 'no-cache');
+}
+
+/**
+ * The `express.static` options for the dashboard directory — exported so the
+ * AgentServer wiring and its integration test exercise the SAME object (no drift).
+ * `setHeaders` applies {@link dashboardCacheControl} after serve-static would set
+ * its own header, so `no-cache` is the final Cache-Control; etag/lastModified stay
+ * on for cheap 304 revalidation.
+ */
+export const DASHBOARD_STATIC_OPTIONS = {
+  etag: true,
+  lastModified: true,
+  setHeaders: dashboardCacheControl,
+} as const;
 
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
   const message = err instanceof Error ? err.message : String(err);

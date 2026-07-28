@@ -156,4 +156,31 @@ describe('MessageProcessingLedger', () => {
     expect(ledger.hasReplyCommittedForTopicSince('B', past)).toBe(false); // other topic
     expect(ledger.hasReplyCommittedForTopicSince('A', future)).toBe(false); // committed before the bound
   });
+
+  // ── markAbandoned (gap #2: terminal resolution of an exhausted stuck entry) ──
+  it('markAbandoned moves a stuck entry to terminal abandoned WITHOUT faking a reply', () => {
+    ledger = MessageProcessingLedger.openMemory();
+    ledger.record('upd-ab', { platform: 'telegram', topic: 'T', input: 'q' });
+    ledger.beginProcessing('upd-ab', 1);
+    ledger.markAbandoned('upd-ab', 7);
+    const e = ledger.get('upd-ab')!;
+    expect(e.state).toBe('abandoned');
+    expect(e.abandonedAt).toBeTruthy();
+    expect(e.replyCommittedAt).toBeNull(); // NOT a fake reply
+    expect(e.replyEpoch).toBe(7);
+    // Terminal: acted-on (redelivery dropped) + never revived.
+    expect(ledger.isActedOn('upd-ab')).toBe(true);
+    expect(ledger.beginProcessing('upd-ab', 9)).toBe(false);
+    // No false reply-evidence on the topic (the bug a 'cursor_advanced' shortcut would cause).
+    expect(ledger.hasReplyCommittedForTopicSince('T', new Date(Date.now() - 60_000).toISOString())).toBe(false);
+    // Not re-selected by reclaimStuck (out of 'processing').
+    expect(ledger.reclaimStuck(-1).some((r) => r.dedupeKey === 'upd-ab')).toBe(false);
+  });
+
+  it('markAbandoned is a no-op on an entry that is not in processing', () => {
+    ledger = MessageProcessingLedger.openMemory();
+    ledger.record('upd-rc', { platform: 'telegram', topic: 'T' }); // state 'received'
+    ledger.markAbandoned('upd-rc', 1);
+    expect(ledger.get('upd-rc')!.state).toBe('received'); // unchanged
+  });
 });

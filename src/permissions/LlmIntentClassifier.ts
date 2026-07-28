@@ -48,7 +48,8 @@ export type LlmIntentDegradeReason =
   | 'no-intelligence' // no provider configured
   | 'error' // provider threw / timed out / circuit open
   | 'unparseable' // LLM returned something we couldn't read as a verdict
-  | 'floor-deterministic'; // heuristic flagged a floor candidate → LLM intentionally skipped
+  | 'floor-deterministic' // heuristic flagged a floor candidate → LLM intentionally skipped
+  | 'conversational-deterministic'; // heuristic flagged a benign conversational self-post → LLM intentionally skipped
 
 export interface LlmIntentClassifierDeps {
   /**
@@ -106,6 +107,19 @@ export class LlmIntentClassifier implements IntentClassifier {
     // floor candidate into an allow-shaped low tier.
     if (floorRead.floorAction || floorRead.tier >= 4) {
       this.report('floor-deterministic');
+      return floorRead;
+    }
+
+    // Symmetric to the floor: a recognized-benign CONVERSATIONAL self-post (a
+    // note/check-in/reminder into the current conversation — deterministically
+    // cleared of any floor/org-write/external/operational marker) is returned AS-IS
+    // and the LLM is never consulted. This is the member-seat fix's load-bearing
+    // half: reconcile() only ever ESCALATES the tier (Math.max), so without this
+    // short-circuit the LLM would re-classify "post a note" up to T2 and re-refuse
+    // the member. The deterministic conversational read is the authority here, just
+    // as the deterministic floor read is above.
+    if (floorRead.conversational) {
+      this.report('conversational-deterministic');
       return floorRead;
     }
 

@@ -43,7 +43,7 @@ describe('recoverStuckMessages', () => {
       ledger: led, holdsLease: () => false, epoch: 2, maxProcessingMs: -1,
       reinject: () => reinjected.push(1),
     });
-    expect(res).toEqual({ recovered: 0, skipped: 0, alreadyHandled: 0 });
+    expect(res).toEqual({ recovered: 0, skipped: 0, alreadyHandled: 0, abandoned: [] });
     expect(reinjected).toHaveLength(0);
   });
 
@@ -82,10 +82,33 @@ describe('recoverStuckMessages', () => {
     });
     run(); // attempts 1→2
     run(); // 2→3
-    const third = run(); // attempts now 3 ≥ 3 → skip
+    const third = run(); // attempts now 3 ≥ 3 → abandon
     expect(third.recovered).toBe(0);
     expect(third.skipped).toBe(1);
     expect(led.get(KEY)!.attempts).toBe(3); // not bumped past the cap
+  });
+
+  // ── Gap #2 (2026-06-15): exhausted entry is TERMINALLY abandoned + surfaced, not
+  // left to re-loop the give-up log every cycle nor silently dropped ──
+  it('abandons an exhausted entry: marks it terminal, surfaces it, and stops re-selecting it', () => {
+    const led = MessageProcessingLedger.openMemory();
+    claim(led);
+    const run = () => recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 1, maxProcessingMs: -1, maxReplayAttempts: 3,
+      reinject: () => {},
+    });
+    run(); run(); // attempts → 3
+    const exhausting = run(); // attempts 3 ≥ 3 → abandon THIS pass
+    expect(exhausting.abandoned).toEqual([{ topic: TOPIC, dedupeKey: KEY }]);
+    // Terminal 'abandoned' state — out of 'processing', no false reply evidence.
+    expect(led.get(KEY)!.state).toBe('abandoned');
+    expect(led.get(KEY)!.abandonedAt).toBeTruthy();
+    expect(led.get(KEY)!.replyCommittedAt).toBeNull();
+    expect(led.isActedOn(KEY)).toBe(true); // a redelivery of the SAME event is dropped
+    // The give-up loop is gone: a subsequent pass does NOT re-select or re-surface it.
+    const next = run();
+    expect(next.abandoned).toEqual([]);
+    expect(next.skipped).toBe(0);
   });
 
   it('skips an entry with no stored input (cannot replay what was not captured)', () => {
@@ -204,6 +227,58 @@ describe('stuck-message recovery — boot wiring integrity', () => {
     const block = src.slice(reinjectIdx, reinjectIdx + 1200);
     expect(block).toMatch(/sender\??\.userId/);     // uses the preserved sender id
     expect(block).toMatch(/firstName: sender\.firstName/); // sets the prefix name
+  });
+});
+
+/**
+ * Part D, third site (docs/specs/ownership-follows-live-work.md): the
+ * `ownerElsewhereReachable` per-topic gate ON TOP of the existing machine-level
+ * holdsLease() gate. A topic owned by a REACHABLE peer is SKIPPED — its stuck
+ * messages stay IN the durable ledger UNTOUCHED so the owner drains them.
+ */
+describe('recoverStuckMessages — Part D per-topic owner gate', () => {
+  it('SKIPS a topic owned by a reachable peer (entry left untouched in the ledger, never re-injected)', () => {
+    const led = MessageProcessingLedger.openMemory();
+    claim(led);
+    const reinjected: unknown[] = [];
+    const res = recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 2, maxProcessingMs: -1,
+      reinject: () => reinjected.push(1),
+      ownerElsewhereReachable: (topic) => topic === TOPIC, // a reachable peer owns it
+    });
+    expect(res.recovered).toBe(0);
+    expect(res.skipped).toBe(1);
+    expect(reinjected).toHaveLength(0);
+    // UNTOUCHED: still 'processing', attempts NOT bumped, NOT abandoned/committed.
+    const entry = led.get(KEY)!;
+    expect(entry.attempts).toBe(1);
+    expect(entry.state).toBe('processing');
+  });
+
+  it('does NOT skip a topic this machine owns / unowned (re-feeds as today)', () => {
+    const led = MessageProcessingLedger.openMemory();
+    claim(led);
+    const reinjected: Array<[string, string, string]> = [];
+    const res = recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 2, maxProcessingMs: -1,
+      reinject: (t, k, text) => reinjected.push([t, k, text]),
+      ownerElsewhereReachable: () => false, // not owned by a reachable peer
+    });
+    expect(res.recovered).toBe(1);
+    expect(reinjected).toEqual([[TOPIC, KEY, 'do the thing']]);
+  });
+
+  it('regression-lock: with NO ownerElsewhereReachable dep (flag off / legacy), re-feeds exactly as today', () => {
+    const led = MessageProcessingLedger.openMemory();
+    claim(led);
+    const reinjected: Array<[string, string, string]> = [];
+    const res = recoverStuckMessages({
+      ledger: led, holdsLease: () => true, epoch: 2, maxProcessingMs: -1,
+      reinject: (t, k, text) => reinjected.push([t, k, text]),
+      // ownerElsewhereReachable absent → no ownership check
+    });
+    expect(res.recovered).toBe(1);
+    expect(reinjected).toHaveLength(1);
   });
 });
 

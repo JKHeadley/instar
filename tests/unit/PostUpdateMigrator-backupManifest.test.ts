@@ -45,6 +45,14 @@ const CANONICAL_HISTORY_ENTRIES = [
   'threadline/conversations.json',
 ];
 
+// Durable conversation identity (durable-conversation-identity §3.4/§6.2 —
+// gemini-C1): BOTH the JSON snapshot AND the WAL journal glob (the top-level
+// trailing-star shape the deployed expandGlob expands — R3-C4). stateDir-relative.
+const CONVERSATION_IDENTITY_ENTRIES = [
+  'state/conversation-registry.json',
+  'conversation-registry.jsonl*',
+];
+
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-backup-manifest-'));
 }
@@ -98,7 +106,7 @@ describe('PostUpdateMigrator.migrateBackupManifest', () => {
     expect(config.backup).toBeDefined();
     // Set-union now also carries the topic-profile entries (TOPIC-PROFILE-SPEC
     // §12 — stateDir-relative; covered in topicProfileMigrations.test.ts).
-    expect(config.backup.includeFiles).toEqual([...PR_GATE_ENTRIES, ...TOPIC_PROFILE_ENTRIES, ...CANONICAL_HISTORY_ENTRIES]);
+    expect(config.backup.includeFiles).toEqual([...PR_GATE_ENTRIES, ...TOPIC_PROFILE_ENTRIES, ...CANONICAL_HISTORY_ENTRIES, ...CONVERSATION_IDENTITY_ENTRIES]);
     expect(result.errors).toEqual([]);
     expect(result.upgraded.some((m) => m.includes('pr-gate state path'))).toBe(true);
   });
@@ -119,7 +127,7 @@ describe('PostUpdateMigrator.migrateBackupManifest', () => {
     for (const e of userEntries) expect(config.backup.includeFiles).toContain(e);
     for (const e of PR_GATE_ENTRIES) expect(config.backup.includeFiles).toContain(e);
     expect(config.backup.includeFiles).toHaveLength(
-      userEntries.length + PR_GATE_ENTRIES.length + TOPIC_PROFILE_ENTRIES.length + CANONICAL_HISTORY_ENTRIES.length,
+      userEntries.length + PR_GATE_ENTRIES.length + TOPIC_PROFILE_ENTRIES.length + CANONICAL_HISTORY_ENTRIES.length + CONVERSATION_IDENTITY_ENTRIES.length,
     );
   });
 

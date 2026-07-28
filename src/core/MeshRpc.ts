@@ -32,6 +32,15 @@ export type MeshCommand =
   | { type: 'transfer'; session: string; target: MachineId }
   | { type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number }
   | {
+      /** Signed cross-machine carrier into the existing A2A inbox accept boundary. */
+      type: 'a2a-inbox-deliver';
+      targetAgent: string;
+      text: string;
+      topicId: number;
+      senderAgent: string;
+      senderBotId: string;
+    }
+  | {
       // WS1.2 drain signal (MULTI-MACHINE-SEAMLESSNESS-SPEC): the transfer
       // planner (router authority) tells the CURRENT owner of `session` to
       // drain its live session because a transfer to `target` is in flight.
@@ -47,9 +56,72 @@ export type MeshCommand =
       target: MachineId;
       ownershipEpoch: number;
     }
+  | {
+      // U4.4 lease hand-back offer (docs/specs/u4-4-lease-handback.md, R-r2-2):
+      // the CURRENT lease holder offers the serving lease BACK to the F4
+      // preferred captain, carrying the SIGNED, epoch-bound, TTL-bounded,
+      // SINGLE-USE consent token the target presents at acquire time (the
+      // `handbackOpts` branch of FencedLease.canAcquire). RBAC: its OWN case,
+      // default-deny — ONLY the machine currently holding the serving lease may
+      // send it (verified against the live lease, mirroring the drain verb's
+      // role-checked posture). Typed handler responses: `accept` /
+      // `declined:churn-latched` / `declined:quota` / `declined:legacy-peer`;
+      // on timeout/silence the holder KEEPS HOLDING (claim-before-release — a
+      // failed hand-back can never leave zero holders). Replay: rides the
+      // standard envelope nonce guard AND the single-use consent token — a
+      // replayed offer never re-authorizes a second claim. Version skew: an old
+      // peer without the verb fails closed (403/`no-handler`); the sender
+      // classifies that as peer-cannot-hand-back and STOPS re-offering for the
+      // episode (degrade to today's sticky behavior, never hammer an old peer).
+      type: 'handback-offer';
+      proposedEpoch: number;
+      consentToken: import('./FencedLease.js').HandbackConsentToken;
+      expiresAt: string;
+    }
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
+  | { type: 'ssh-bootstrap-advert'; advert: import('./SshBootstrapAdvert.js').SshBootstrapAdvert }
+  | { type: 'ssh-proof-publish'; proof: import('./MutualSshVerifier.js').DirectionalSshProof }
+  | {
+      // WS5.2 R7a/R7(c) — per-account SPEND-SLICE renewal (account follow-me).
+      // OPERATOR-MANDATE-GATED with its OWN `checkCommandRBAC` case — deliberately
+      // NOT the "any registered peer" read/observe class (R3a/R6a discipline): a
+      // borrowed account is a money/quota credential, so a slice may be issued ONLY
+      // to a machine the operator's mandate names. A requesting VM asks the FENCED
+      // lease holder to renew its slice; the holder (via SliceIssuer) verifies the
+      // grant is live + a slice remains within `maxSpend` before issuing. A
+      // non-holder receiving it MUST NOT issue (only the fenced single-writer
+      // issues) — that refusal lives in the handler/SliceIssuer, the RBAC gate here
+      // only proves the requester is mandate-authorized. The verb is rate-capped +
+      // coalesced + P19-breaker-protected on the REQUESTER side (SliceRenewalControl)
+      // so worst-case RPC rate is O(per-account-cap), not O(N).
+      type: 'slice-renew';
+      mandateId: string;
+      accountId: string;
+      requestingMachineFp: string;
+      amount: number;
+      expiresAt: number;
+    }
+  | {
+      // WS5.2 R4a / R1 — ONE-DASHBOARD cross-machine account-follow-me mandate DELIVERY.
+      // The operator issues the account-follow-me mandate (PIN-gated) on their SINGLE dashboard,
+      // then delivers it to the TARGET machine via this verb so the target's enroll-start route
+      // can honor it — WITHOUT the operator ever opening the target's own dashboard.
+      //
+      // NOT the "any registered peer" read class — it carries a credential-adjacent authorization.
+      // But the REAL gate is NOT a role check at the RBAC layer: a delivered mandate is trusted
+      // ONLY when the R4a asymmetric issuance signature in the carried PortableMandate verifies, IN
+      // THE HANDLER, against THIS machine's REGISTERED operator-machine Ed25519 key + the
+      // AUTHENTICATED sender fingerprint (Know Your Principal — a name in the payload is never
+      // trusted; the §3.1a local HMAC proof is local-only and cannot ground a peer's mandate).
+      // The RBAC case therefore proves only that the sender is a registered ACTIVE peer
+      // (verifyEnvelope already did the Ed25519 + recipient-binding + nonce checks); the handler
+      // fails CLOSED on any verification failure and NEVER persists an unverified mandate.
+      type: 'account-follow-me-mandate-deliver';
+      /** The R4a-signed bundle: the mandate + its asymmetric issuance signature. */
+      portable: import('../coordination/AccountFollowMeMandateBridge.js').PortableMandate;
+    }
   // Pool Dashboard Streaming (POOL-DASHBOARD-STREAM-SPEC §2.3): a peer asks this
   // machine to mint a single-use bearer ticket so it may open a /pool-stream WS
   // and watch `session`. Read/observe class — minting a ticket discloses
@@ -117,7 +189,7 @@ export type MeshCommand =
       payload: {
         origin: string;
         id: string;
-        op: 'deliver' | 'withdraw' | 'resume' | 'patch-beacon';
+        op: 'deliver' | 'withdraw' | 'resume' | 'patch-beacon' | 'probe' | 'transition';
         args?: Record<string, unknown>;
         opKey: string;
         requestedAt: string;
@@ -248,7 +320,10 @@ export type RbacReason =
   | 'not-router'
   | 'claim-unauthorized'
   | 'release-unauthorized'
-  | 'drain-unauthorized';
+  | 'drain-unauthorized'
+  | 'slice-renew-unauthorized'
+  | 'mandate-deliver-unauthorized'
+  | 'handback-offer-unauthorized';
 
 export interface RbacDeps {
   /** The machine currently holding the router lease (verify-on-read, §L1), or null. */
@@ -257,6 +332,29 @@ export interface RbacDeps {
   ownerOf: (session: string) => MachineId | null;
   /** The machine the router last assigned (via place/transfer) for a session, or null. */
   placementTargetOf: (session: string) => MachineId | null;
+  /**
+   * WS5.2 R7a — the operator-mandate gate for the `slice-renew` verb. Returns true ONLY when the
+   * authorizing mandate authorizes (sender, accountId, requesting fingerprint) for account follow-me
+   * — deny-by-default. INJECTED so the dangerous authority decision is a real check, never an
+   * inherit. ABSENT ⇒ the verb is refused (fail-closed): on a build without the seam wired, a
+   * slice-renew can never be authorized. Mirrors the deny-by-default discipline of R3a/R4a.
+   */
+  authorizeSliceRenew?: (args: {
+    sender: MachineId;
+    mandateId: string;
+    accountId: string;
+    requestingMachineFp: string;
+  }) => boolean;
+  /**
+   * WS5.2 R4a — the gate for `account-follow-me-mandate-deliver`. Returns true ONLY when account
+   * follow-me is ENABLED on this machine AND the sender is THIS machine's trusted operator machine
+   * (the verified-operator binding). Deny-by-default: ABSENT ⇒ the verb is refused (fail-closed) —
+   * on a build without the seam wired, or on a non-dev/dark agent, a delivered mandate can never be
+   * accepted at the gate. This is ONLY the coarse "should I even look at it" gate; the LOAD-BEARING
+   * authority is the R4a asymmetric signature verification in the handler, which re-binds to the
+   * authenticated sender + registered operator key. Mirrors the deny-by-default discipline of R3a.
+   */
+  authorizeMandateDeliver?: (args: { sender: MachineId }) => boolean;
 }
 
 /**
@@ -278,6 +376,14 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // lease-holder — may order an owner to drain; a peer (even the transfer
       // TARGET) may not.
       return isRouter ? { ok: true, reason: 'ok' } : { ok: false, reason: 'drain-unauthorized' };
+    case 'handback-offer':
+      // U4.4 (R-r2-2): only the CURRENT lease holder may offer the lease back —
+      // verified against the live lease view, default-deny, its OWN refusal
+      // reason (mirrors the drain verb's posture). A non-holder — including the
+      // preferred captain itself — can never manufacture a hand-back offer;
+      // the LOAD-BEARING authority remains the holder-signed consent token the
+      // handler verifies at acquire time (this gate is the coarse pre-filter).
+      return isRouter ? { ok: true, reason: 'ok' } : { ok: false, reason: 'handback-offer-unauthorized' };
     case 'claim': {
       // The router's assigned target for this session, OR the router on a failover re-place.
       if (deps.placementTargetOf(command.session) === sender) return { ok: true, reason: 'ok' };
@@ -289,6 +395,34 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       if (deps.ownerOf(command.session) === sender) return { ok: true, reason: 'ok' };
       if (isRouter && command.failover === true) return { ok: true, reason: 'ok' };
       return { ok: false, reason: 'release-unauthorized' };
+    }
+    case 'slice-renew': {
+      // WS5.2 R7a — OPERATOR-MANDATE-GATED, deliberately its OWN case (NOT the
+      // "any registered peer" read class). verifyEnvelope already proved WHO; this
+      // proves the operator's mandate AUTHORIZES this requester to borrow this
+      // account's spend. DENY-BY-DEFAULT: with no `authorizeSliceRenew` seam wired,
+      // or when the mandate does not authorize (sender, account, requesting fp), the
+      // verb is refused. The FENCED-single-writer "only the lease holder issues"
+      // check lives in the handler/SliceIssuer (a non-holder still refuses there);
+      // the gate's job is the mandate authorization, before any issuance work.
+      const authd = deps.authorizeSliceRenew?.({
+        sender,
+        mandateId: command.mandateId,
+        accountId: command.accountId,
+        requestingMachineFp: command.requestingMachineFp,
+      }) ?? false;
+      return authd ? { ok: true, reason: 'ok' } : { ok: false, reason: 'slice-renew-unauthorized' };
+    }
+    case 'account-follow-me-mandate-deliver': {
+      // WS5.2 R4a — deliberately its OWN case (NOT the "any registered peer" read class). The
+      // RBAC gate proves the sender is a registered ACTIVE peer (verifyEnvelope already did the
+      // crypto) AND that follow-me is enabled with this sender bound as the operator machine.
+      // DENY-BY-DEFAULT: with no `authorizeMandateDeliver` seam wired, or when the sender is not
+      // the trusted operator machine / the feature is dark, the verb is refused HERE — before the
+      // handler runs. The LOAD-BEARING authority is still the R4a signature re-verification in the
+      // handler (this gate is the coarse, fail-closed pre-filter).
+      const authd = deps.authorizeMandateDeliver?.({ sender }) ?? false;
+      return authd ? { ok: true, reason: 'ok' } : { ok: false, reason: 'mandate-deliver-unauthorized' };
     }
     case 'commitment-mutate':
       // MUTATING verb, deliberately its OWN case (COMMITMENTS-COHERENCE-SPEC
@@ -310,6 +444,14 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'state-snapshot':
     case 'pool-view-fetch':
     case 'secret-share':
+    case 'ssh-bootstrap-advert':
+    case 'ssh-proof-publish':
+    case 'a2a-inbox-deliver':
+      // Registered-peer class — any caller here has already passed signed,
+      // recipient-bound, replay-safe machine authentication. a2a-inbox-deliver
+      // gains NO content authority here: the recipient handler re-validates the
+      // target agent and dispatches through the existing A2A marker/role/bot-id
+      // allowlist boundary before accepting it.
       // Read/observe class (or e2e-encrypted) — any registered peer (already
       // proven a registered peer by verifyEnvelope). journal-sync joins this
       // class: it serves/applies own-stream coherence-journal deltas, which are
@@ -392,6 +534,9 @@ function statusForReason(reason: string): number {
     case 'claim-unauthorized':
     case 'release-unauthorized':
     case 'drain-unauthorized':
+    case 'slice-renew-unauthorized':
+    case 'mandate-deliver-unauthorized':
+    case 'handback-offer-unauthorized':
       return 403;
     case 'replayed-nonce':
     case 'stale-timestamp':

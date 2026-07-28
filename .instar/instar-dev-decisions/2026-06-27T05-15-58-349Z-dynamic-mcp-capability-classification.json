@@ -1,0 +1,19 @@
+{
+  "ts": "2026-06-27T05:15:58.349Z",
+  "slug": "dynamic-mcp-capability-classification",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 1,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1293
+    ],
+    "notes": "CI guardrails (route classification + silent-fallback ratchet) flagged the dynamic-MCP routes/fail-safes added in #1293."
+  },
+  "verdict": "pass"
+}

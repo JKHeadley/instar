@@ -34,6 +34,17 @@ export interface DeliverMessageHandlerDeps {
    * PRESENT (an old sender never carries one — version skew named).
    */
   validateSender?: (senderEnvelope: { userId?: string | number }, session: string) => boolean;
+  /**
+   * silent-loss-refusal-conservation §2.B — the receiver-side rejection trace.
+   * Fired SYNCHRONOUSLY, once, immediately before the `sender-rejected` NACK is
+   * returned, so the DECIDING (owner) machine keeps a forensic record of its own
+   * refusal (the incident was diagnosed only from the sender's ledger). METADATA
+   * ONLY: the raw command/payload is NEVER passed through this seam (round-1
+   * security #1). try/catch-wrapped by the handler — a trace fault never changes
+   * the NACK. Not fired on a suppression-cache short-circuit (a replay of the
+   * SAME rejected messageId) — the trace is written once per rejection, bounded.
+   */
+  onRejected?: (meta: { reason: 'sender-rejected'; session: string; messageId: string; senderUid?: number }) => void;
 }
 
 export type DeliverMessageAck = {
@@ -41,7 +52,34 @@ export type DeliverMessageAck = {
   accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected';
 };
 
+/** Bounded per-(session,messageId) rejection suppression (§2.B): a peer replaying
+ *  ONE rejected messageId at high rate must not force an unbounded `readFileSync`
+ *  per replay on the event loop. Serves the cached NACK verdict without re-reading
+ *  the registry. Bounded (1024-cap prune, the QueueDrainLoop.refusalCache pattern +
+ *  a 10-min TTL) so a flood of DISTINCT ids can't trade a read-DoS for a memory-DoS
+ *  — the durable ledger already retains per-messageId state, so eviction only loses
+ *  the cheap short-circuit, never correctness. */
+const REJECTION_SUPPRESSION_TTL_MS = 10 * 60 * 1000;
+const REJECTION_SUPPRESSION_CAP = 1024;
+
 export function createDeliverMessageHandler(deps: DeliverMessageHandlerDeps): MeshCommandHandler {
+  const rejectionCache = new Map<string, number>(); // key → firstRejectedAtMs
+
+  function pruneRejectionCache(nowMs: number): void {
+    for (const [k, ts] of rejectionCache) {
+      if (nowMs - ts > REJECTION_SUPPRESSION_TTL_MS) rejectionCache.delete(k);
+    }
+    if (rejectionCache.size > REJECTION_SUPPRESSION_CAP) {
+      // Oldest-first prune (Map preserves insertion order) down to the cap.
+      const excess = rejectionCache.size - REJECTION_SUPPRESSION_CAP;
+      let removed = 0;
+      for (const k of rejectionCache.keys()) {
+        rejectionCache.delete(k);
+        if (++removed >= excess) break;
+      }
+    }
+  }
+
   return (command: MeshCommand): DeliverMessageAck => {
     if (command.type !== 'deliverMessage') {
       // Defensive — the dispatcher only routes deliverMessage here, but be total.
@@ -55,8 +93,31 @@ export function createDeliverMessageHandler(deps: DeliverMessageHandlerDeps): Me
     // message must never be recorded as received (recording first would dedupe
     // the redelivery's NACK into a 'duplicate' ack).
     const envelope = (command as { senderEnvelope?: { userId?: string | number } }).senderEnvelope;
-    if (envelope && deps.validateSender && !deps.validateSender(envelope, command.session)) {
-      return { messageId: command.messageId, accepted: 'sender-rejected' };
+    if (envelope && deps.validateSender) {
+      const suppressKey = `${command.session}\u0000${command.messageId}`;
+      const nowMs = Date.now();
+      const cachedAt = rejectionCache.get(suppressKey);
+      if (cachedAt !== undefined && nowMs - cachedAt <= REJECTION_SUPPRESSION_TTL_MS) {
+        // §2.B short-circuit — serve the cached NACK WITHOUT re-reading the
+        // registry (and without re-firing the trace: bounded to once per reject).
+        return { messageId: command.messageId, accepted: 'sender-rejected' };
+      }
+      if (!deps.validateSender(envelope, command.session)) {
+        rejectionCache.set(suppressKey, nowMs);
+        pruneRejectionCache(nowMs);
+        // §2.B receiver-side trace — metadata-only, synchronous, before the NACK.
+        try {
+          const rawUid = envelope.userId;
+          const senderUid = typeof rawUid === 'number' ? rawUid : Number(rawUid);
+          deps.onRejected?.({
+            reason: 'sender-rejected',
+            session: command.session,
+            messageId: command.messageId,
+            senderUid: Number.isFinite(senderUid) ? senderUid : undefined,
+          });
+        } catch { /* trace fault never changes the NACK */ }
+        return { messageId: command.messageId, accepted: 'sender-rejected' };
+      }
     }
     const firstSeen = deps.recordReceipt(command.messageId, command.session);
     if (!firstSeen) return { messageId: command.messageId, accepted: 'duplicate' };

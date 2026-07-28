@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "work-queue-registry",
+  "sessionId": "b6982ce3-180b-44cb-a89d-531869e095e5",
+  "timestamp": "2026-07-24T20:43:18.137Z",
+  "artifactPath": "upgrades/side-effects/work-queue-registry.md",
+  "artifactSha256": "328bf906cd198c131e76817d630dcdd87ea0cfaa114b9273c752986405d67c79",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-07-24T20-14-00-307Z-work-queue-registry.json",
+    ".instar/instar-dev-decisions/2026-07-24T20-14-34-642Z-work-queue-registry.json",
+    ".instar/instar-dev-decisions/2026-07-24T20-15-26-680Z-work-queue-registry.json",
+    "docs/specs/work-queue-registry.eli16.md",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/work-queue-registry.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Capability discoverability and read-only write-domain ratchet.",
+  "eli16Path": "docs/specs/work-queue-registry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/work-queue-registry.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {
+    "verdict": "likely-duplicate",
+    "cause": "concurrency",
+    "causes": [
+      "concurrency",
+      "degraded"
+    ],
+    "decision": "proceed",
+    "reason": "This is the already-authorized continuation branch for the subscription-account email invariant; the reported overlap is only shared self-action infrastructure and the open-PR scan is degraded, while the branch's implementation/spec artifacts are unique and already pushed.",
+    "acknowledgedEvidenceIds": [
+      "EV-1"
+    ],
+    "checkedAt": "2026-07-24T03:45:23.992Z",
+    "specSlug": "subscription-account-email-invariant"
+  }
+}

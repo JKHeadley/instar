@@ -8,10 +8,11 @@
  * Part of the Instar Quota Migration spec (Phase 1).
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import {
   credentialWriteFunnel,
@@ -80,6 +81,15 @@ export function redactEmail(email: string): string {
 
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 
+/**
+ * Promisified async exec for the NON-BLOCKING keychain read. The macOS keychain read is an
+ * out-of-process `security` spawn; run SYNCHRONOUSLY (`execFileSync`) it blocks the event loop for
+ * the whole spawn — under multi-agent `securityd` contention that was seconds every QuotaCollector
+ * poll cycle (the dashboard-flap / false-sleep residual). `readCredentials` (the polled read on the
+ * collection-cycle timer) uses this so the read yields the loop instead of freezing it.
+ */
+const execFileAsync = promisify(execFile);
+
 export class KeychainCredentialProvider implements CredentialProvider {
   readonly platform = 'darwin';
   readonly securityLevel: SecurityLevel = 'os-encrypted';
@@ -91,12 +101,23 @@ export class KeychainCredentialProvider implements CredentialProvider {
 
   async readCredentials(): Promise<ClaudeCredentials | null> {
     try {
-      const result = execFileSync(
+      // NON-BLOCKING keychain read (promisified `execFile`) so a slow/contended `securityd` yields
+      // the event loop instead of freezing it. `readCredentials` is already async (callers await it);
+      // the prior `execFileSync` made the `async` a lie — it blocked the loop for the spawn duration
+      // on the QuotaCollector poll timer. Same args + same 10s timeout + same null-on-error semantics.
+      const { stdout } = await execFileAsync(
         'security',
         ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
-        { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+        { encoding: 'utf-8', timeout: 10000 }
       );
-      const data = JSON.parse(result.trim());
+      // RULE 3: EXEMPT — this parses our OWN credential store (the `Claude Code-credentials`
+      // keychain entry the agent itself owns, fixed `claudeAiOauth` schema), NOT an evolving
+      // upstream UI/log we detect state from. It is fail-SAFE (any parse error → the `catch`
+      // returns null → caller treats it as no-creds/needs-reauth) and cross-checked downstream
+      // (a stale/wrong token surfaces as a 401 → needs-reauth, never silent corruption). The
+      // async conversion is behavior-preserving; the parse itself is unchanged from the prior
+      // (already-merged) sync read.
+      const data = JSON.parse(stdout.trim());
       const oauth = data.claudeAiOauth;
       if (!oauth?.accessToken) return null;
 

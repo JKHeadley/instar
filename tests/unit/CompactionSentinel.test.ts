@@ -123,6 +123,36 @@ describe('CompactionSentinel', () => {
     expect(failed!.payload.attempts).toBe(3);
   });
 
+  // ─── Stand-down on a still-working session (no-trample fix, 2026-06-18) ───
+
+  it('STANDS DOWN (never force-injects) when the defer budget is exhausted but the session is STILL actively working', async () => {
+    // Regression guard: a session whose live frame still shows active work must
+    // NEVER be force-injected after the defer budget runs out — that interrupts a
+    // genuinely-working session (the recurring mid-turn "[Request interrupted by
+    // user]" on long autonomous runs that compact periodically). It must stand down.
+    const recover = vi.fn().mockResolvedValue(true);
+    const ev: string[] = [];
+    const s = new CompactionSentinel(
+      { recoverFn: recover as any, projectDir: '/fake/project', jsonlRoot: jsonl.root, isActivelyWorking: () => true },
+      { dedupeWindowMs: 60_000, verifyWindowMs: 25_000, maxInjectAttempts: 3, recoveryGuardMs: 600_000, maxWorkingDefers: 2 },
+    );
+    for (const e of ['compaction:recovered', 'compaction:failed', 'compaction:inject-attempted']) {
+      s.on(e as any, () => ev.push(e));
+    }
+    jsonl.write('foo.jsonl', 100);
+    s.report('s1', 'watchdog-poll');
+    await vi.advanceTimersByTimeAsync(0);
+    // Advance well past every defer/verify window (maxWorkingDefers=2).
+    await vi.advanceTimersByTimeAsync(25_000 * 6);
+    // The session was working throughout → it was NEVER injected (no trample):
+    expect(recover).not.toHaveBeenCalled();
+    expect(ev).not.toContain('compaction:inject-attempted');
+    // And it stood down as self-recovered (alive + working), not failed:
+    expect(ev).toContain('compaction:recovered');
+    expect(ev).not.toContain('compaction:failed');
+    s.stop();
+  });
+
   it('stops retrying as soon as jsonl grows (recovers on attempt 2)', async () => {
     jsonl.write('foo.jsonl', 100);
     sentinel.report('s1', 'watchdog-poll');
@@ -406,17 +436,22 @@ describe('CompactionSentinel', () => {
       expect(evs.some(e => e.type === 'compaction:recovered')).toBe(true);
     });
 
-    it('caps consecutive defers at maxWorkingDefers then forces an inject', async () => {
+    it('caps consecutive defers at maxWorkingDefers then STANDS DOWN (never force-injects a still-working session)', async () => {
+      // Fixed 2026-06-18 (topic 13481): the old behavior force-injected after the cap,
+      // which interrupted genuinely-working long sessions. A session still showing
+      // active work after the budget is alive + self-recovered — stand down, never inject.
       build({ maxWorkingDefers: 4 });
       j.write('foo.jsonl', 100);
-      working = true; // hung "working" footer — never clears
+      working = true; // still actively working — footer never clears
       s.report('s1', 'watchdog-poll');
       await vi.advanceTimersByTimeAsync(0);
       // defer #1 at report; defers #2/#3/#4 at the next three verify windows;
-      // the window after that forces an inject.
-      for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(25_500);
+      // the window after that STANDS DOWN (no inject) instead of forcing one.
+      for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(25_500);
       expect(evs.filter(e => e.type === 'compaction:deferred')).toHaveLength(4);
-      expect(rec).toHaveBeenCalledTimes(1);
+      expect(rec).not.toHaveBeenCalled(); // NEVER force-injected the working session
+      expect(evs.some(e => e.type === 'compaction:inject-attempted')).toBe(false);
+      expect(evs.some(e => e.type === 'compaction:recovered')).toBe(true); // stood down as self-recovered
     });
 
     it('maxWorkingDefers=0 disables deferral (injects immediately even while working)', async () => {

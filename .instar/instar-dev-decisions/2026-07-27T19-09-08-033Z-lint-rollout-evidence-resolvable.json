@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-27T19:09:08.033Z",
+  "slug": "lint-rollout-evidence-resolvable",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 7,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

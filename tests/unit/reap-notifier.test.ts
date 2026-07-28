@@ -145,6 +145,7 @@ function makeV2(over?: {
   quietHoursEndAt?: (now: number) => number | null;
   summaryReleaseAt?: (now: number) => number;
   resumeQueuedFor?: (t: string) => boolean;
+  autonomousRunActiveFor?: (t: string) => { active: boolean; remainingSeconds?: number } | null;
   now?: () => number;
 }) {
   const sends: Array<{ topicId: number; text: string }> = [];
@@ -168,6 +169,7 @@ function makeV2(over?: {
       quietHoursEndAt: over?.quietHoursEndAt ?? (() => null),
       summaryReleaseAt: over?.summaryReleaseAt ?? ((now) => now + 10 * 60_000),
       resumeQueuedFor: over?.resumeQueuedFor,
+      autonomousRunActiveFor: over?.autonomousRunActiveFor,
       reportDegradation: (reason) => { degradations.push(reason); },
       now: over?.now ?? (() => NOW),
     },
@@ -348,5 +350,87 @@ describe('ReapNotifier v2 — outcome records + degraded paths (R1.3)', () => {
     await n.flush();
     expect(rows).toHaveLength(0);
     expect(records.map((r) => r.outcome)).toEqual(['no-topic']);
+  });
+});
+
+describe('ReapNotifier — honest recycle (honest-session-recycle-spec)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('an age-limit reap of a topic with an ACTIVE autonomous run reads as a RECYCLE, not a death', async () => {
+    const { n, rows } = makeV2({
+      resolveTopic: () => 42,
+      autonomousRunActiveFor: () => ({ active: true, remainingSeconds: 11 * 3600 + 42 * 60 }),
+    });
+    n.onReaped({ session: sess('instar-exo'), reason: 'age-limit', disposition: 'terminal' });
+    await n.flush();
+    expect(rows).toHaveLength(1);
+    const text = rows[0].text;
+    // Honest continuation copy — NOT the false "maximum allowed runtime" death.
+    expect(text).toContain('🔄');
+    expect(text).toContain('recycled');
+    expect(text).toContain('11h 42m left');
+    expect(text).toContain('no work was lost');
+    expect(text).not.toContain('🪦');
+    expect(text).not.toContain('maximum allowed runtime');
+    expect(text).not.toContain('was shut down');
+  });
+
+  it('NEVER contradicts the run clock: a still-active run is never told "max runtime reached"', async () => {
+    const { n, rows } = makeV2({
+      resolveTopic: () => 7,
+      autonomousRunActiveFor: () => ({ active: true, remainingSeconds: 30 * 60 }),
+    });
+    n.onReaped({ session: sess('s'), reason: 'age-limit', disposition: 'terminal' });
+    await n.flush();
+    expect(rows[0].text).toContain('30m left');
+    expect(rows[0].text).not.toContain('maximum');
+  });
+
+  it('an age-limit reap with NO active run still gets the terminal death copy (loud, not silenced)', async () => {
+    const { n, rows } = makeV2({
+      resolveTopic: () => 42,
+      autonomousRunActiveFor: () => null,
+    });
+    n.onReaped({ session: sess('beta'), reason: 'age-limit', disposition: 'terminal' });
+    await n.flush();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text).toContain('🪦');
+    expect(rows[0].text).toContain('maximum allowed runtime');
+    expect(rows[0].text).not.toContain('🔄');
+  });
+
+  it('only age-limit recycles: a different reason on an active-run topic is NOT softened', async () => {
+    const { n, rows } = makeV2({
+      resolveTopic: () => 42,
+      autonomousRunActiveFor: () => ({ active: true, remainingSeconds: 3600 }),
+    });
+    n.onReaped({ session: sess('z'), reason: 'idle-zombie', disposition: 'terminal' });
+    await n.flush();
+    // idle-zombie is a genuine stuck-session death even mid-run → stays terminal.
+    expect(rows[0].text).toContain('🪦');
+    expect(rows[0].text).not.toContain('🔄');
+  });
+
+  it('a resolver that THROWS fails toward the death copy — never silences the notice', async () => {
+    const { n, rows } = makeV2({
+      resolveTopic: () => 42,
+      autonomousRunActiveFor: () => { throw new Error('autonomous read failed'); },
+    });
+    n.onReaped({ session: sess('gamma'), reason: 'age-limit', disposition: 'terminal' });
+    await n.flush();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text).toContain('🪦');
+  });
+
+  it('a run already PAST its window (remaining 0) is NOT a recycle — death copy stands', async () => {
+    const { n, rows } = makeV2({
+      resolveTopic: () => 42,
+      // The wiring returns null for remaining<=0; simulate that contract here.
+      autonomousRunActiveFor: () => null,
+    });
+    n.onReaped({ session: sess('over'), reason: 'age-limit', disposition: 'terminal' });
+    await n.flush();
+    expect(rows[0].text).toContain('🪦');
   });
 });

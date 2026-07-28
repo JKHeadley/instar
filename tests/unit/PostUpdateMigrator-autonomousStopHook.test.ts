@@ -237,7 +237,9 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
     expect(updated).toContain('## Legitimate Stop Conditions');        // human-readable header (carried forward)
     expect(updated).toContain('completion_condition');                 // the new default field
     expect(updated).toContain('hard_blocker_nonce');                   // the (a) exit nonce
-    expect(result.upgraded.some(u => u.includes('SKILL.md') && u.includes('real-check'))).toBe(true);
+    // Upgrade-message text tracks the CURRENT marker bump (REALCHECK_VERIFY →
+    // SCOPE_ACCRETION, autonomous-scope-accretion-completion.md §4).
+    expect(result.upgraded.some(u => u.includes('SKILL.md') && u.includes('scope-accretion'))).toBe(true);
     expect(result.errors).toEqual([]);
   });
 

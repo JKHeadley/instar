@@ -242,6 +242,9 @@ describe('Fresh-respawn API lever — WIRED into routes.ts (dead-code guard)', (
   });
 
   it('routes.ts forwards fresh to refreshSession', () => {
-    expect(routesSrc).toMatch(/refreshSession\(\{ sessionName, followUpPrompt, reason, fresh \}\)/);
+    // swap-continuity-antithrash §4.5 added the work-gate `force` flag to the
+    // same call — the guard now asserts the current call shape (fresh still
+    // forwarded, force pinned to a strict boolean).
+    expect(routesSrc).toMatch(/refreshSession\(\{ sessionName, followUpPrompt, reason, fresh, force: force === true \}\)/);
   });
 });

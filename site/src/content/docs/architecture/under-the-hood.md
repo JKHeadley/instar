@@ -146,6 +146,12 @@ The durable record of operator approvals (PIN-gated decisions like mandate issua
 ### MeshUrlAdvertiser
 Keeps each machine's reachable URL fresh in the machines registry. Tunnel URLs rotate (quick tunnels get a new hostname every restart), so peers would otherwise keep dialing a dead address; the advertiser publishes the current URL on a cadence and peers pick it up on their next presence pull. The reason "the Mini moved networks" doesn't mean "the Mini vanished."
 
+### PeerEndpointRecorder
+The single chokepoint that records a peer's *fast ropes* (Tailscale/LAN endpoints) into this machine's registry. On a git-less personal 2-machine setup the registry-sync git channel never runs, so each machine only ever learned the other's flaky Cloudflare URL — and the lease, forced onto that one rope, would false-flip `holdsLease` on a Cloudflare hiccup and freeze session revival. `PeerEndpointRecorder` closes that by carrying each machine's validated self-endpoints inside the already-signed lease RPC bodies (broadcast, pull request, and pull *response*) and recording them against the **authenticated** sender — never a self-asserted body field; the pull-response path records only after the responder identity is cryptographically verified. It is idempotent (skips an unchanged set), and absence is a no-op, never a wipe. Gated dark behind `multiMachine.meshTransport.enabled`; the resolver remains the dial-time authority.
+
+### MeshEndpointValidator
+The shared, defense-in-depth validator both `PeerEndpointRecorder` (ingest) and `PeerEndpointResolver` (dial-time) run an advertised endpoint set through before trusting it: per-kind host rules (Tailscale `100.64/10` CGNAT, LAN RFC-1918, Cloudflare public HTTPS) with loopback/link-local/metadata addresses rejected, a `MAX_ENDPOINTS` cap, a URL-length bound, and drop-element-and-log on any bad entry (fail-closed). Validation is hardening, not authority — a spoofed endpoint that slips a check still becomes a *failed rope* the resolver demotes, never a trusted one.
+
 ### LiveConfig
 Watches `config.json` every 5 seconds for changes. When a value changes, it emits events so other systems can hot-reload without a server restart.
 
@@ -379,11 +385,15 @@ The sections above describe what each subsystem does at a behavioral level. The 
 
 ### `src/core/` — agent fundamentals, gates, orchestration
 
-`AccessControl`, `AdaptationValidator`, `AdaptiveTrust`, `AgentBus`, `AgentConnector`, `AgentRegistry`, `AgentWorktreeDetector`, `AuditTrail`, `AutoApprover`, `AutoDispatcher`, `AutoUpdater`, `AutonomousEvolution`, `AutonomyProfileManager`, `AutonomySkill`, `BackupManager`, `BitwardenProvider`, `BlockerLearningLoop`, `BranchManager`, `CaffeinateManager`, `CallbackRegistry`, `CanonicalState`, `CapabilityMapper`, `CapabilityRegistryGenerator`, `CircuitBreakingIntelligenceProvider`, `ClaudeCliIntelligenceProvider`, `CodexCliIntelligenceProvider`, `CoherenceGate`, `CoherenceJournal`, `CoherenceJournalReader`, `CoherenceReviewer`, `CommitmentSweeper`, `Config`, `ConflictNegotiator`, `ContextHierarchy`, `ContextSnapshotBuilder`, `ContextualEvaluator`, `ConvergenceChecker`, `CoordinationProtocol`, `CustomReviewerLoader`, `DecisionJournal`, `DeferredDispatchTracker`, `DiscoveryEvaluator`, `DispatchDecisionJournal`, `DispatchExecutor`, `DispatchManager`, `DispatchScopeEnforcer`, `DispatchVerifier`, `DriftSpendLedger`, `EvolutionManager`, `ExecutionJournal`, `ExternalOperationGate`, `FeatureDefinitions`, `FeatureRegistry`, `FeedbackManager`, `FileClassifier`, `ForegroundRestartWatcher`, `FrameworkSessionStore`, `GitStateManager`, `GitSync`, `GlobalInstallCleanup`, `GlobalSecretStore`, `HandoffManager`, `HeartbeatManager`, `IdentityRenderer`, `InitiativeTracker`, `InputGuard`, `InstarWorktreeManager`, `IntentDriftDetector`, `JargonDetector`, `JobReflector`, `LLMConflictResolver`, `LlmCircuitBreaker`, `LearnSkillBridge`, `LedgerAuth`, `LedgerParaphraseDetector`, `LedgerSessionRegistry`, `MachineHeartbeat`, `MachineIdentity`, `MessageSentinel`, `MessagingToneGate`, `MigrationProvenance`, `MigratorStepEngine`, `MultiMachineCoordinator`, `NonceStore`, `OrgIntentManager`, `OutboundDedupGate`, `OverlapGuard`, `PairingProtocol`, `ParallelDevWiring`, `PatternAnalyzer`, `PlanDocParser`, `PlatformActivityRegistry`, `PolicyEnforcementLayer`, `PortRegistry`, `PostUpdateMigrator`, `PreCompactionFlush`, `Prerequisites`, `ProcessIntegrity`, `ProjectAutoAdvancePoller`, `ProjectDigestCache`, `ProjectDriftChecker`, `ProjectDriftCheckerCache`, `ProjectMapper`, `ProjectRoundCompleteMessage`, `ProjectRoundExecution`, `ProjectRoundLock`, `ProjectRoundRunner`, `ProjectRoundWorktrees`, `PromptBuildRecall`, `PromptGuard`, `RecipientResolver`, `ReflectionConsolidator`, `RelationshipManager`, `RelevanceFilter`, `ResearchRateLimiter`, `ResumeValidator`, `SafeFsExecutor`, `SafeGitExecutor`, `SafeYaml`, `ScopeCoherenceTracker`, `ScopeVerifier`, `SecretManager`, `SecretMigrator`, `SecretRedactor`, `SecretStore`, `SecurityLog`, `SendGateway`, `SessionMaintenanceRunner`, `SessionManager`, `SessionRefresh`, `SharedStateLedger`, `SleepWakeDetector`, `SoulManager`, `SourceTreeGuard`, `StageTransitionValidator`, `StaleProcessGuard`, `StateManager`, `StateWriteAuthority`, `StopGateDb`, `StuckInputSentinel`, `SurfacingTemplates`, `SyncOrchestrator`, `TemporalCoherenceChecker`, `TopicClassifier`, `TopicFrameworksStore`, `TopicLocalModelStore`, `TopicResumeMap`, `TrustElevationTracker`, `TrustRecovery`, `UnjustifiedStopGate`, `UpdateChecker`, `UpdateGate`, `UpgradeGuideProcessor`, `UpgradeNotifyManager`, `WorkLedger`, `WorktreeKeyVault`, `WorktreeManager`.
+`StopGateBreakerState` persists the route-keyed failure count, cooldown, and
+single half-open lease used by `UnjustifiedStopGate`. It contains no prompt or
+credential data, and obsolete route state is pruned after 30 days.
+
+`AccessControl`, `AdaptationValidator`, `AdaptiveTrust`, `AgentBus`, `AgentConnector`, `AgentRegistry`, `AgentWorktreeDetector`, `AuditTrail`, `AutoApprover`, `AutoDispatcher`, `AutoUpdater`, `AutonomousEvolution`, `AutonomyProfileManager`, `BackupManager`, `BitwardenProvider`, `BlockerLearningLoop`, `BranchManager`, `CaffeinateManager`, `CallbackRegistry`, `CanonicalState`, `CapabilityMapper`, `CapabilityRegistryGenerator`, `CircuitBreakingIntelligenceProvider`, `ClaudeCliIntelligenceProvider`, `CodexCliIntelligenceProvider`, `CoherenceGate`, `CoherenceJournal`, `CoherenceJournalReader`, `CoherenceReviewer`, `ResponseReviewDecisionLog`, `CommitmentSweeper`, `Config`, `ConflictNegotiator`, `ContextHierarchy`, `ContextSnapshotBuilder`, `ContextualEvaluator`, `ConvergenceChecker`, `CoordinationProtocol`, `CustomReviewerLoader`, `DecisionJournal`, `DeferredDispatchTracker`, `DiscoveryEvaluator`, `DispatchDecisionJournal`, `DispatchExecutor`, `DispatchManager`, `DispatchScopeEnforcer`, `DispatchVerifier`, `DriftSpendLedger`, `EvolutionManager`, `ExecutionJournal`, `ExternalOperationGate`, `FeatureDefinitions`, `FeatureRegistry`, `FeedbackManager`, `FileClassifier`, `ForegroundRestartWatcher`, `FrameworkSessionStore`, `GitStateManager`, `GitSync`, `GlobalInstallCleanup`, `GlobalSecretStore`, `HandoffManager`, `HeartbeatManager`, `IdentityRenderer`, `InitiativeTracker`, `InputGuard`, `InstarWorktreeManager`, `IntentDriftDetector`, `JargonDetector`, `JobReflector`, `LLMConflictResolver`, `LlmCircuitBreaker`, `LearnSkillBridge`, `LedgerAuth`, `LedgerParaphraseDetector`, `LedgerSessionRegistry`, `MachineHeartbeat`, `MachineIdentity`, `MessageSentinel`, `MessagingToneGate`, `MeteredSpendGate`, `MeteredSpendLedger`, `MigrationProvenance`, `MigratorStepEngine`, `ModelSwapService`, `MultiMachineCoordinator`, `NonceStore`, `OrgIntentManager`, `OutboundDedupGate`, `OverlapGuard`, `PairingProtocol`, `ParallelDevWiring`, `PatternAnalyzer`, `PlanDocParser`, `PlatformActivityRegistry`, `PolicyEnforcementLayer`, `PortRegistry`, `PostUpdateMigrator`, `PreCompactionFlush`, `Prerequisites`, `ProactiveSwapMonitor`, `ProcessIntegrity`, `ProjectAutoAdvancePoller`, `ProjectDigestCache`, `ProjectDriftChecker`, `ProjectDriftCheckerCache`, `ProjectMapper`, `ProjectRoundCompleteMessage`, `ProjectRoundExecution`, `ProjectRoundLock`, `ProjectRoundRunner`, `ProjectRoundWorktrees`, `PromptBuildRecall`, `PromptGuard`, `PinAttemptStore`, `RecipientResolver`, `ReflectionConsolidator`, `RenderedPlanStore`, `RoutingSpendCapsStore`, `RelationshipManager`, `RelevanceFilter`, `ResearchRateLimiter`, `ResumeValidator`, `SafeFsExecutor`, `SafeGitExecutor`, `SafeYaml`, `ScopeCoherenceTracker`, `ScopeVerifier`, `SecretManager`, `SecretMigrator`, `SecretRedactor`, `SecretStore`, `SecurityLog`, `SendGateway`, `SessionBuildContextStore`, `SessionMaintenanceRunner`, `SessionManager`, `SessionRefresh`, `SharedStateLedger`, `SleepWakeDetector`, `SoulManager`, `SourceTreeGuard`, `SpendAlertDispatcher`, `SpendAlertEmitters`, `SpendAlertResolver`, `StageTransitionValidator`, `StaleProcessGuard`, `StateManager`, `StateWriteAuthority`, `StopGateDb`, `StuckInputSentinel`, `SurfacingTemplates`, `SwapAntiThrashEngine`, `SwapLedger`, `SwapWorkGate`, `SyncOrchestrator`, `TemporalCoherenceChecker`, `TopicFrameworksStore`, `TopicLocalModelStore`, `TelegramSpendTopicChannel`, `TopicResumeMap`, `TrustElevationTracker`, `TrustRecovery`, `UnjustifiedStopGate`, `UpdateChecker`, `UpdateGate`, `UpgradeGuideProcessor`, `UpgradeNotifyManager`, `WorkLedger`, `WorktreeKeyVault`, `WorktreeManager`, `WriteAdmission`, `WriteDomainRegistry`.
 
 ### `src/monitoring/` — sentinels, watchdogs, observability
 
-`AccountSwitcher`, `AttributionResolver`, `BurnAlertButtons`, `BurnDetectionSubscriber`, `BurnDetector`, `BurnThrottleRunbook`, `BurnVerifier`, `CoherenceMonitor`, `CommitmentSentinel`, `CommitmentTracker`, `CompactionSentinel`, `CrashLoopPauser`, `CredentialProvider`, `DegradationReporter`, `ErrorCodeExtractor`, `FeedbackAnomalyDetector`, `FrameworkParitySentinel`, `HealthChecker`, `HelperWatchdog`, `HomeostasisMonitor`, `HookEventReceiver`, `InputClassifier`, `InstructionsVerifier`, `LlmQueue`, `LlmRateGate`, `MemoryPressureMonitor`, `NativeHealDegradationBridge`, `OrphanProcessReaper`, `PresenceProxy`, `PromiseBeacon`, `PromptGate`, `ProxyCoordinator`, `QuotaCollector`, `QuotaExhaustionDetector`, `QuotaManager`, `QuotaNotifier`, `QuotaTracker`, `Redactor`, `ReflectionMetrics`, `SessionActivitySentinel`, `SessionCredentialManager`, `SessionMigrator`, `SessionMonitor`, `SessionRecovery`, `SessionWatchdog`, `StallTriageNurse`, `SubagentTracker`, `SystemReviewer`, `TelemetryAuth`, `TelemetryCollector`, `TelemetryHeartbeat`, `TokenLedger`, `TokenLedgerPoller`, `TriageOrchestrator`, `WorktreeMonitor`, `WorktreeReaper`.
+`AccountSwitcher`, `AttributionResolver`, `BurnAlertButtons`, `BurnAlertDelivery`, `BurnDetectionSubscriber`, `BurnDetector`, `BurnThrottleRunbook`, `BurnVerifier`, `CoherenceMonitor`, `CommitmentSentinel`, `CommitmentTracker`, `CompactionSentinel`, `CrashLoopPauser`, `CredentialProvider`, `DegradationReporter`, `ErrorCodeExtractor`, `FeedbackAnomalyDetector`, `FrameworkParitySentinel`, `HealthChecker`, `HelperWatchdog`, `HomeostasisMonitor`, `HookEventReceiver`, `InputClassifier`, `InstructionsVerifier`, `LlmQueue`, `LlmRateGate`, `MemoryPressureMonitor`, `NativeHealDegradationBridge`, `MissingLoginSessionDetector`, `OrphanProcessReaper`, `PresenceProxy`, `ProactiveCompactionSentinel`, `PromiseBeacon`, `ProviderCostReportStore`, `ProviderReconciliationSweep`, `PromptGate`, `ProxyCoordinator`, `QuotaCollector`, `QuotaExhaustionDetector`, `QuotaManager`, `QuotaNotifier`, `QuotaTracker`, `Redactor`, `ReflectionMetrics`, `ReviewCanaryBattery`, `SessionActivitySentinel`, `SessionCredentialManager`, `SessionMigrator`, `SessionMonitor`, `SessionRecovery`, `SessionWatchdog`, `StallTriageNurse`, `SubagentTracker`, `SystemReviewer`, `TelemetryAuth`, `TelemetryCollector`, `TelemetryHeartbeat`, `TokenLedger`, `TokenLedgerPoller`, `TriageOrchestrator`, `WorktreeMonitor`, `WorktreeReaper`.
 
 ### `src/threadline/` — agent-to-agent protocol stack
 
@@ -399,7 +409,21 @@ The sections above describe what each subsystem does at a behavioral level. The 
 
 ### `src/scheduler/` — cron + agentmd job execution
 
-`AgentMdAtomicSave`, `AgentMdJobLoader`, `AgentMdLockFile`, `AgentMdReconcile`, `DisabledBodyDrift`, `InstallBuiltinJobs`, `IntegrationGate`, `JobClaimManager`, `JobLoader`, `JobRunHistory`, `JobScheduler`, `MigrationInvariants`, `MigrationLedger`, `SkipLedger`.
+`AgentMdAtomicSave`, `AgentMdJobLoader`, `AgentMdLockFile`, `AgentMdReconcile`, `DisabledBodyDrift`, `InstallBuiltinJobs`, `IntegrationGate`, `JobClaimManager`, `JobLeaseCutoverGate`, `JobLeaseClaimStore`, `JobLoader`, `JobRunHistory`, `JobScheduler`, `MigrationInvariants`, `MigrationLedger`, `SkipLedger`.
+
+`JobRunHistory` applies the shared `CapacityEnforcement` contract before each JSONL append. Rows within budget are written unchanged; oversized optional detail is condensed and recorded as a durable `truncated` outcome; a row whose essential fields still cannot fit is refused and reported as an invariant failure. This keeps expected bounded-storage behavior observable without misclassifying successful condensation as a service degradation.
+
+The `correction-class-review-backstop` job runs the bounded anti-join that recovers any correction whose record-time class-review shell was missed.
+
+### Correction class review and completion evidence
+
+`CorrectionClassReview` creates a durable shell in `ClassReviewStore` before producing standards and process judgments. `CorrectionInstanceFixGate` then admits correction-derived Actions and Commitments only when they correspond to that exact correction record. `ClassReviewReplicatedStore` merges scrubbed observations and monotonic fill state across machines without granting remote lifecycle authority.
+
+The review API consists of `GET /class-reviews`, `GET /class-reviews/:dedupeKey`, `POST /class-reviews/backfill`, `PATCH /class-reviews/:dedupeKey/outcome`, and `PATCH /class-reviews/:dedupeKey/lifecycle`.
+
+For outbound completion assertions, `TurnEvidence` extracts the closed structural evidence vocabulary, `ClaimClauseArbiter` separates future and completed clauses in one pass, and `CompletionClaimVerifier` persists advisory results. `POST /completion-claim/observe` is the detached admission surface; `GET /completion-claim/audit` serves the bounded local or field-clamped pool view.
+
+**WS4.3 journal-lease cutover.** On a multi-machine pool, scheduled-job claims start on the best-effort AgentBus broadcast (`JobClaimManager`) and upgrade to a durable, epoch-fenced lease over the replicated journal (`JobLeaseClaimStore`) — but only when the `JobLeaseCutoverGate` confirms every online peer advertises the `ws43JournalLease` capability (invariant-5 flag coherence). The gate is the single decision point that guarantees the two claim mechanisms are never both live for the same job set (the named migration hazard); a mixed or single-machine pool stays on the legacy bus path, byte-for-byte today's behavior. Ships dark behind `multiMachine.seamlessness.ws43JournalLease` (dry-run first).
 
 ### `src/identity/` — machine + agent cryptographic identity
 
@@ -497,6 +521,14 @@ Enrollment (P2.1) — adding a new account from a phone, expiry-proof:
   logic is pure and unit-tested against real captured-output fixtures.
 
 Spec: `docs/specs/_drafts/subscription-auth-standard-master-spec.md`.
+
+## Proactive compaction (ProactiveCompactionSentinel)
+
+`ProactiveCompactionSentinel` condenses a long-running autonomous session's conversation *before* it hits the context wall, instead of relying on recovery after the wall is reached. It reads Claude's own grounded remaining-context display and, when an autonomous Claude session crosses 85% used, waits for the canonical work-state probe to affirm a genuinely idle turn boundary, then asks the session to compact in place. A cooldown prevents repeated compaction on successive ticks; interactive sessions, non-Claude frameworks, working sessions, and uncertain readings are never touched. Ships dark by default; when enabled it starts in dry-run (recording what it would do) until live mode is explicitly configured.
+
+## Missing-login detection (MissingLoginSessionDetector)
+
+`MissingLoginSessionDetector` correlates two independent facts — a subscription-pool account whose local login has gone missing, and a live session whose real config home belongs to that account — and raises one deduplicated HIGH attention item ("re-login needed") when both hold. It matches sessions by their live config home rather than the recorded account id, because the recorded id is exactly the field that becomes unreliable under identity drift. Signal-only: it never swaps credentials, re-logs anything in, or touches the session.
 
 ## Inter-agent comms (agent-to-agent Telegram primitive)
 
@@ -661,3 +693,109 @@ Spec: `docs/specs/MENTOR-LIVE-READINESS-SPEC.md` §Fix 2a.
   a single-machine install is a strict no-op. The `EvolutionActionsReplicatedStore` projection strips
   the local ACT id by construction. Spec:
   `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7.
+
+- **`UserRegistryReplicatedStore`** (`src/core/UserRegistryReplicatedStore.ts`) — the SIXTH
+  concrete consumer of the replicated-store foundation and the SECOND **PII kind** (after WS2.3
+  relationships): `user-record`. `UserRegistryReplicatedStore` layers the kind onto the generic
+  envelope so a registered USER the agent knows on machine A (the UserManager registry —
+  `UserProfile`) is known on machine B — ONE user registry, not one-per-machine. It REUSES the
+  WS2.3 PII machinery rather than downgrading it: a discriminated union on `op` (an `op:'put'`
+  VALUE schema and an `op:'delete'` TOMBSTONE schema), a strict **type-clamp on receive**
+  (`createdAt` validates as ISO-8601, `telegramUserId` as a finite number, `channels[]`/
+  `permissions[]`/free text length-clamped, a path-shaped channel `type` jailed out) so a foreign,
+  attacker-controlled record can never smuggle markup through a render slot. The replicated
+  projection is **disclosure-minimized**: the local `userId` is NEVER replicated. The cross-machine
+  `recordKey` is the **channel set** — `sha256(sorted("type:identifier" pairs))`, mirroring
+  `UserManager.channelIndex` — so the SAME user on two machines collapses to ONE record instead of
+  duplicating (the local id is the cross-machine-unstable id, exactly the relationship-UUID trap
+  solved with a stable identity surface). HIGH-impact at the **replication** layer
+  (append-both-and-flag — auto-merging two divergent profiles could fuse two distinct humans) but
+  **advisory** at the **read** layer: a replicated user record is a HINT about what the agent's
+  OTHER machines know, NEVER the authoritative answer to "who is this inbound sender?" — identity
+  RESOLUTION of an inbound principal is LOCAL-ONLY (the local channel index always wins). A removed
+  user emits a channel-keyed tombstone (resurrection guard); a foreign record renders inside a
+  `<replicated-untrusted-data origin="…">` envelope. Per-entry cap raised to 64KB; the
+  `UserManager.persistUsers`/`removeUser` funnels carry the emit seam. Pure mechanism, dark by
+  default behind `multiMachine.stateSync.userRegistry`; a single-machine install is a strict no-op.
+  Spec: `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7,
+  `docs/specs/ws23-relationships-userregistry-security.md`.
+
+- **`TopicOperatorReplicatedStore`** (`src/core/TopicOperatorReplicatedStore.ts`) — the SEVENTH
+  concrete consumer of the replicated-store foundation and the THIRD **PII kind**, completing the
+  WS2 memory family: `topic-operator-record`. `TopicOperatorReplicatedStore` layers the kind onto
+  the generic envelope so the VERIFIED operator a topic was bound to on machine A (the
+  `TopicOperatorStore` binding — `TopicOperator`) is VISIBLE as advisory context on machine B. **THE
+  LOAD-BEARING SAFETY INVARIANT** (the whole point of this kind — Know Your Principal): a replicated
+  topic-operator record is UNTRUSTED peer data — it can NEVER become this machine's authoritative
+  answer to "who is my verified operator?". The LOCAL auth-derived binding
+  (`TopicOperatorStore.setOperator` from an AUTHENTICATED sender) is ALWAYS authoritative; the
+  replicated record is advisory context only, rendered as quoted untrusted data that EXPLICITLY says
+  so, and there is NO apply path back into `TopicOperatorStore` by construction. It rides the same
+  hardened machinery: a discriminated union on `op`, a strict **type-clamp on receive** (`boundAt`
+  ISO-8601-or-absent, `platform`/`uid` short slugs jailed, `names[]` length-bounded), a
+  **disclosure-minimized** projection of exactly `{platform, uid, names, boundAt}`. The cross-machine
+  `recordKey` is `sha256(topicId + ":" + verified-uid)` — keyed on the topic + the AUTHENTICATED uid,
+  NEVER a content-name (a name in a message body can never become part of the identity surface). An
+  unbind emits a tombstone; HIGH-impact at the **replication** layer (append-both-and-flag) but
+  **advisory** at the **read** layer (a replicated operator record is a hint, never the authoritative
+  principal). Per-entry cap raised to 64KB; the `TopicOperatorStore.setOperator` funnel carries the
+  emit seam (emit the LOCAL binding to peers; never receive one). Pure mechanism, dark by default
+  behind `multiMachine.stateSync.topicOperator`; a single-machine install is a strict no-op. With
+  `UserRegistryReplicatedStore`, the WS2 memory family is COMPLETE (7 kinds; playbook deferred).
+  Spec: `docs/specs/multi-machine-replicated-store-foundation.md` §4 / §7,
+  `docs/specs/ws23-relationships-userregistry-security.md`.
+
+## Live Credential Re-pointing (Subscription & Auth Standard)
+
+The machinery that can move a pool account's OAuth credential between config-home "slots" without
+restarting the sessions reading them — the "stock-trader" rebalancer. Ships dark/dry-run-first (live on
+a development agent in dry-run, dark on the fleet); a real credential write needs a deliberate
+`dryRun:false`. Spec: `docs/specs/live-credential-repointing-rebalancer.md`.
+
+### CredentialRebalancerPolicy
+
+The pure §2.4 decision core: `decidePass(snapshot)` computes the zero-or-more credential swaps for one
+balancer pass from a read-only snapshot (per-account quota + reset proximity, per-slot tenancy/verify/
+activity, cooldown state, resolved config). Objective-0 dead/quarantined-default eviction + the
+correlated-oracle-outage floor; objective-1 wall avoidance + the bounded wall-override (fresh-data gate,
+`maxForcedSwapsPerPass`, per-window override budget, recency gate); objective-2 use-it-or-lose-it drain
+(weekly-only, headroom floor, per-slot drain-in-progress hold); eligibility + hysteresis (per-pair +
+per-tenant cooldowns on the account basis, urgency-clamped min-improvement floor, 1 swap/pass). No IO,
+no authority — it decides; the actuator routes an accepted decision through the gated executor.
+
+### CredentialRebalancer
+
+The stateful orchestrator that wraps `decidePass()` in a pass loop: on each `tick()` it builds the
+read-only snapshot from injected providers, asks the policy for the swaps, and actuates each through the
+injected `CredentialSwapExecutor` wrapper — but ONLY under the feature's dark/dry-run gate (dark = a
+strict no-op; dry-run actuates the decision but the executor writes nothing). Carries the cross-pass
+hysteresis the pure policy cannot (cooldown timestamps) and the §2.4 P19 breaker (N consecutive LIVE
+failed swaps opens it; a success resets it; it self-heals by re-probing).
+
+### CredentialRebalancerSnapshot
+
+The pure mappers translating the live system state into the policy's snapshot: `mapAccount` (a
+SubscriptionPool account → `AccountState`; a missing quota reading maps to an epoch `measuredAt` so the
+account is treated as stale/source-only; `rate-limited` stays eligible so wall-avoidance can rescue its
+slot), `mapSlot` (a CredentialLocationLedger assignment → `SlotState`), and `resolveRebalancerConfig`
+(clamp the configured knobs + derive the cooldowns from the poll interval). Kept pure so a units/sign
+bug that would mis-steer the balancer is unit-testable.
+
+### CredentialRepointingLivetest
+
+The §5 livetest battery as testable orchestration — the dry-run→live PROMOTION gate (NOT part of merge
+CI; runs only when the operator arms it at enablement, since it exchanges REAL credentials between REAL
+accounts). Drives the automatable round-trips (identity-verified exchange-then-restore via the oracle,
+always restoring) and surfaces the inherently-manual items (refresher correctness, the §0.c at-expiry
+residual via a disposable grant, liveness) without ever auto-passing them. An `armed` guard performs
+zero swaps unless explicitly armed, so importing or unit-testing the module can never move a credential.
+
+### POST /credentials/livetest (the promotion gate)
+
+`POST /credentials/livetest` is the reachable entrypoint for the §5 livetest battery (the
+`CredentialRepointingLivetest` harness) — the dry-run→live PROMOTION gate. It wires the harness to
+the real swap executor + identity oracle and runs the automatable round-trips. Two independent
+gates protect it: the harness performs ZERO swaps unless `armed:true` is in the request body (the
+operator explicitly arms the battery), and even armed the executor's own `dryRun` keeps writes off
+until a deliberate `dryRun:false`. Dark → 503; every named slot is validated against the enumerated
+ledger set (→ 400) before the harness runs. The report is scrubbed and carries no token material.

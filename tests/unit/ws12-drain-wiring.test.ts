@@ -66,6 +66,16 @@ describe('WS1.2 drain wiring (server boot + transfer route)', () => {
     expect(block).toContain('timeoutMs: 50_000');
     // 501 no-handler (old peer) is reported, not thrown.
     expect(block).toContain('noHandler: res.status === 501');
+    // A peer cannot smuggle claim proof on a refused/non-completion response.
+    expect(block).toContain("const completed = r.ok === true && (status === 'drained' || status === 'drained-interrupted')");
+    expect(block).toContain('claimLanded: completed && r.claimLanded === true');
+  });
+
+  it('passes the constructed sender leg into the production AgentServer route context', () => {
+    const idx = server.indexOf('const server = new AgentServer(');
+    expect(idx).toBeGreaterThan(-1);
+    const block = server.slice(idx, idx + 12_000);
+    expect(block).toContain('sendDrain: _sendDrain ?? undefined');
   });
 
   it('the transfer route gates the drain on owner capability and 409s ONLY the emergency-stop abort', () => {

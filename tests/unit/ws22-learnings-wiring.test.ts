@@ -94,12 +94,17 @@ describe('WS2.2 EvolutionManager emit seam (source touchpoints)', () => {
 });
 
 describe('WS2.2 ConfigDefaults + awareness', () => {
-  it('ConfigDefaults ships the learnings stateSync dark default (enabled:false, dryRun:true)', () => {
+  it('ConfigDefaults ships the learnings stateSync dev-gated posture (OMITS enabled, dryRun:false — operator directive 2026-06-13)', () => {
     const defaultsSrc = read('src/config/ConfigDefaults.ts');
-    expect(defaultsSrc).toMatch(/learnings:\s*\{\s*\n\s*enabled:\s*false,\s*\n\s*dryRun:\s*true,/);
+    // Re-gated to the developmentAgent dark-feature gate: `enabled` is OMITTED so the
+    // gate resolves it live-on-dev / dark-fleet; dryRun:false (genuinely live — no
+    // destructive write warrants a dry-run, unlike credentialRepointing).
+    expect(defaultsSrc).toMatch(/learnings:\s*\{\s*\n\s*dryRun:\s*false,\s*\n\s*\},/);
+    // explicitly NOT a baked-in enabled:false in the learnings block
+    expect(defaultsSrc).not.toMatch(/learnings:\s*\{\s*\n\s*enabled:\s*false/);
   });
 
-  it('the dev-gate dark exclusion classifies the learnings path', () => {
+  it('the dev-gate classifies the learnings path as DEV_GATED (live-on-dev), not a dark exclusion', () => {
     const devGated = read('src/core/devGatedFeatures.ts');
     expect(devGated).toContain("configPath: 'multiMachine.stateSync.learnings.enabled'");
   });

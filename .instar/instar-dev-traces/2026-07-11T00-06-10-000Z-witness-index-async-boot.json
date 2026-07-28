@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "sessionId": "telegram-458-witness-index-async-boot",
+  "timestamp": "2026-07-11T00:06:10.000Z",
+  "artifactPath": "upgrades/side-effects/witness-index-async-boot.md",
+  "artifactSha256": "6bdbe25ca311da8ed2176f196cd045f1b5348183871d1ee077dd2c2499aa63af",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ReplicatedPeerStreamReader.ts",
+    "tests/unit/ReplicatedPeerStreamReader.test.ts",
+    "tests/integration/replicated-witness-index.integration.test.ts",
+    "tests/e2e/replicated-witness-index-lifecycle.test.ts",
+    "upgrades/eli16/witness-index-async-boot.md",
+    "upgrades/next/witness-index-async-boot.md",
+    "upgrades/side-effects/witness-index-async-boot.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Boot-critical regression fix to derived replicated-store infrastructure. No authority or schema change; correctness remains on the legacy scan until a generation-fenced, independently parity-checked candidate is complete.",
+  "eli16Path": "upgrades/eli16/witness-index-async-boot.md",
+  "sideEffectsPath": "upgrades/side-effects/witness-index-async-boot.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

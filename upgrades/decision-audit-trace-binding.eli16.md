@@ -1,0 +1,9 @@
+# Decision audit trace binding
+
+Instar records a small decision artifact whenever its own development gate evaluates a change. That artifact is supposed to answer a simple future question: which work item was this decision about, and what change did the gate actually evaluate? The gate previously answered that question using the newest trace file written in the last hour. In a busy development environment, however, the newest trace can belong to another task or another attempted commit. That let a real change be recorded under `unknown` or under a foreign work-item name even though a correct trace for the staged files was present.
+
+This repair changes the binding rule for the whole class, not just the reported instance. The canonical trace writer now persists the stable slug it already derives from the side-effects artifact. Before the gate reads a trace's tier, slug, or causal record, it requires that trace to be complete and to cover every staged behavior file. Newer unrelated or malformed traces are skipped. For older generated traces that predate the slug field, the gate derives the same stable identity from `artifactPath`. If no trace covers the staged change, the commit is refused with a direct explanation instead of emitting misleading evidence.
+
+The important invariant is: development evidence is selected by scope first and recency second. A regression test creates two fresh traces—an older correct trace and a newer foreign `unknown` trace—and proves that the resulting decision record uses the correct work-item identity. This closes feedback item `fb-2b24aa04-540` and upgrades the development process so parallel work cannot recreate the same evidence-misbinding class.
+
+There is no runtime or user-facing behavior change. The affected surface is the Instar source repository's pre-commit ceremony. Rollback is a normal code revert; no persisted runtime state or migration is involved.

@@ -37,6 +37,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import type { SelfUnblockRun, SelfUnblockRunLoader } from './SelfUnblockChecklist.js';
 
 /** The gated pipeline states. Order matters — `advance` walks them linearly. */
 export const BLOCKER_PIPELINE: readonly BlockerNonTerminalState[] = [
@@ -192,6 +193,16 @@ export interface BlockerLedgerOptions {
   stateDir: string;
   /** The Tier-1 settle authority (B17). Optional — when absent, a true-blocker settle is refused. */
   settleAuthority?: SettleAuthority;
+  /**
+   * The Self-Unblock checklist run store ("Self-Unblock Before Escalating", §5.1).
+   * OPTIONAL — when injected, the feature is ENABLED: a true-blocker settle then
+   * REQUIRES a `selfUnblockRunId`, BlockerLedger LOADS + verifies the persisted
+   * run, and DERIVES the `failedAttempt` from it (a caller-embedded failedAttempt
+   * with no valid persisted run is HARD-rejected `missing_failed_attempt`). When
+   * absent (dark default), the existing caller-supplied `failedAttempt` path is
+   * unchanged. Spec: docs/specs/self-unblock-before-escalating.md.
+   */
+  selfUnblockRunStore?: SelfUnblockRunLoader;
   /** Move terminal entries older than this many days to the archive (default 30). */
   archiveAfterDays?: number;
   /** Default days until a settled true-blocker is reopened for a re-walk (default 30). */
@@ -254,6 +265,8 @@ export class BlockerLedger {
   private readonly archivePath: string;
   private readonly auditPath: string;
   private readonly settleAuthority?: SettleAuthority;
+  /** When set, the Self-Unblock feature is ON: settle derives the failed attempt from a verified run. */
+  private readonly selfUnblockRunStore?: SelfUnblockRunLoader;
   private readonly archiveAfterDays: number;
   private readonly recheckAfterDays: number;
   private readonly maxNoEvidenceResettles: number;
@@ -272,6 +285,7 @@ export class BlockerLedger {
     this.archivePath = path.join(opts.stateDir, 'state', 'blocker-ledger-archive.json');
     this.auditPath = path.join(opts.stateDir, '..', 'logs', 'blocker-decisions.jsonl');
     this.settleAuthority = opts.settleAuthority;
+    this.selfUnblockRunStore = opts.selfUnblockRunStore;
     this.archiveAfterDays = opts.archiveAfterDays ?? DEFAULT_ARCHIVE_AFTER_DAYS;
     this.recheckAfterDays = opts.recheckAfterDays ?? DEFAULT_RECHECK_AFTER_DAYS;
     this.maxNoEvidenceResettles = opts.maxNoEvidenceResettles ?? DEFAULT_MAX_NO_EVIDENCE_RESETTLES;
@@ -555,8 +569,20 @@ export class BlockerLedger {
           kind: 'true-blocker';
           reasonKind: TrueBlockerKind;
           rebuttal: string;
-          /** The mandatory FAILED work-attempt. `at` defaults to now; it MUST precede the access-request. */
-          failedAttempt: { type: 'self-fetch' | 'dry-run'; detail: string; at?: string };
+          /**
+           * The mandatory FAILED work-attempt. `at` defaults to now; it MUST precede
+           * the access-request. When the Self-Unblock run store is configured, this
+           * is DERIVED from the verified persisted run (a caller-embedded value with
+           * no valid `selfUnblockRunId` is HARD-rejected) — see `selfUnblockRunId`.
+           */
+          failedAttempt?: { type: 'self-fetch' | 'dry-run'; detail: string; at?: string };
+          /**
+           * Reference to the persisted Self-Unblock checklist run that PRODUCED the
+           * failed attempt ("Self-Unblock Before Escalating", §5.1). REQUIRED when the
+           * run store is configured; ignored when it is not. BlockerLedger loads +
+           * verifies the run and derives the `failedAttempt` from it.
+           */
+          selfUnblockRunId?: string;
           /** The access-request to the user — recorded AFTER the failed attempt. */
           accessRequest: { messageRef: string; at?: string };
         },
@@ -625,7 +651,8 @@ export class BlockerLedger {
     input: {
       reasonKind: TrueBlockerKind;
       rebuttal: string;
-      failedAttempt: { type: 'self-fetch' | 'dry-run'; detail: string; at?: string };
+      failedAttempt?: { type: 'self-fetch' | 'dry-run'; detail: string; at?: string };
+      selfUnblockRunId?: string;
       accessRequest: { messageRef: string; at?: string };
     },
   ): Promise<BlockerEntry> {
@@ -637,19 +664,52 @@ export class BlockerLedger {
       );
     }
     const rebuttal = this.boundText(input.rebuttal, 'rebuttal');
-    const failDetail = this.boundText(input.failedAttempt?.detail, 'failedAttempt.detail');
     const accessRequestRef = this.boundText(input.accessRequest?.messageRef, 'accessRequest.messageRef');
 
     // 2. A failed-attempt rebuttal — NO kind is exempt. The FORM differs:
     //    secret/account → failed self-fetch is mandatory; others → failed dry-run.
     const requiredAttemptType = SELF_FETCH_KINDS.has(input.reasonKind) ? 'self-fetch' : 'dry-run';
-    if (input.failedAttempt?.type !== requiredAttemptType) {
-      throw new BlockerLedgerError(
-        `${input.reasonKind} requires a recorded failed ${requiredAttemptType} attempt before it can settle ` +
-          `(self-fetch-first mandate: an agent must try its own vault/accounts first)`,
-        'missing_failed_attempt',
-      );
+
+    // 2a. "Self-Unblock Before Escalating" (§5.1): when the run store is configured
+    //     (the feature is ENABLED), the failed attempt is NOT caller-supplied — it is
+    //     DERIVED from a persisted, VERIFIED checklist run. This is the load-bearing
+    //     anti-gaming change: a caller can embed any `failedAttempt`, but it cannot
+    //     mint a run the runner did not produce. A settle with no valid persisted run
+    //     is a no-attempt → HARD reject `missing_failed_attempt`. When the store is
+    //     NOT configured (dark default), the existing caller-supplied path runs below.
+    let failedAttempt: { type: 'self-fetch' | 'dry-run'; detail: string; at?: string };
+    if (this.selfUnblockRunStore) {
+      const run =
+        typeof input.selfUnblockRunId === 'string' && input.selfUnblockRunId
+          ? this.selfUnblockRunStore.loadRun(input.selfUnblockRunId)
+          : null;
+      const verified = this.verifySelfUnblockRun(run, requiredAttemptType);
+      if (!verified.ok) {
+        throw new BlockerLedgerError(
+          `${input.reasonKind} requires a VERIFIED self-unblock checklist run before it can settle ` +
+            `(self-unblock-before-escalating: ${verified.reason}). A caller-supplied failedAttempt ` +
+            `without a valid persisted run does not settle a blocker.`,
+          'missing_failed_attempt',
+        );
+      }
+      // Derive the attempt from the run — the caller's failedAttempt is ignored.
+      failedAttempt = {
+        type: requiredAttemptType,
+        detail: this.boundText(verified.detail, 'failedAttempt.detail'),
+        at: run!.completedAt,
+      };
+    } else {
+      // Dark default: the existing caller-supplied path, byte-for-byte unchanged.
+      if (input.failedAttempt?.type !== requiredAttemptType) {
+        throw new BlockerLedgerError(
+          `${input.reasonKind} requires a recorded failed ${requiredAttemptType} attempt before it can settle ` +
+            `(self-fetch-first mandate: an agent must try its own vault/accounts first)`,
+          'missing_failed_attempt',
+        );
+      }
+      failedAttempt = input.failedAttempt;
     }
+    const failDetail = this.boundText(failedAttempt.detail, 'failedAttempt.detail');
 
     // Snapshot the entry + read-only checks BEFORE the async authority call.
     const snapshot = this.find(id);
@@ -658,7 +718,7 @@ export class BlockerLedger {
     // 3. Temporal proof: the access-request to the user comes AFTER the failed attempt.
     //    (Decoupled from the linear pipeline's `access-requested` state, which is about
     //    requesting access to DO the work; this is the "only you can grant it" ask.)
-    const failedAttemptAt = this.normalizeIso(input.failedAttempt.at) ?? this.iso();
+    const failedAttemptAt = this.normalizeIso(failedAttempt.at) ?? this.iso();
     const accessRequestAt =
       this.normalizeIso(input.accessRequest?.at) ?? snapshot.accessRequest?.at ?? this.iso();
     if (accessRequestAt < failedAttemptAt) {
@@ -856,6 +916,64 @@ export class BlockerLedger {
         'already_settled',
       );
     }
+  }
+
+  /**
+   * Verify a loaded Self-Unblock checklist run represents a GENUINE exhaustion
+   * before its derived attempt can settle a true-blocker ("Self-Unblock Before
+   * Escalating", §5.1). A run is valid iff it:
+   *   - exists (the caller referenced a runId the runner actually produced),
+   *   - is well-formed (a non-empty array of probe results + a completedAt),
+   *   - matches the required attempt TYPE (a self-fetch-kind blocker needs a
+   *     self-fetch run; a dry-run-kind needs a dry-run run),
+   *   - is a genuine exhaustion: EVERY probe came up `holdsRelevantCred: false`
+   *     (`exhausted: true`). A run that found a relevant credential is NOT an
+   *     exhaustion — the agent should self-unblock with it, not escalate.
+   *
+   * Returns `{ ok: true, detail }` with a synthesized human summary of the probed
+   * sources, or `{ ok: false, reason }`.
+   */
+  private verifySelfUnblockRun(
+    run: SelfUnblockRun | null,
+    requiredAttemptType: 'self-fetch' | 'dry-run',
+  ): { ok: true; detail: string } | { ok: false; reason: string } {
+    if (!run) return { ok: false, reason: 'no persisted run found for the supplied runId' };
+    if (!Array.isArray(run.probes) || run.probes.length === 0) {
+      return { ok: false, reason: 'the persisted run has no probe results' };
+    }
+    if (typeof run.completedAt !== 'string' || !run.completedAt) {
+      return { ok: false, reason: 'the persisted run has no completedAt timestamp' };
+    }
+    if (run.requiredAttemptType !== requiredAttemptType) {
+      return {
+        ok: false,
+        reason: `the run produced a '${run.requiredAttemptType}' attempt but this blocker requires '${requiredAttemptType}'`,
+      };
+    }
+    // Each probe must be a well-formed structured result, and NONE may hold a
+    // relevant credential (a genuine exhaustion).
+    for (const probe of run.probes) {
+      if (
+        !probe ||
+        typeof probe.source !== 'string' ||
+        typeof probe.reachable !== 'boolean' ||
+        typeof probe.holdsRelevantCred !== 'boolean'
+      ) {
+        return { ok: false, reason: 'the persisted run contains a malformed probe result' };
+      }
+      if (probe.holdsRelevantCred) {
+        return {
+          ok: false,
+          reason: `the run found a relevant credential at '${probe.source}' — self-unblock with it instead of escalating`,
+        };
+      }
+    }
+    if (run.exhausted !== true) {
+      return { ok: false, reason: 'the persisted run is not flagged as an exhaustion' };
+    }
+    const sources = run.probes.map((p) => p.source).join(', ');
+    const detail = `self-unblock checklist exhausted (run ${run.runId}, target ${run.target}); probed: ${sources}; no relevant credential found`;
+    return { ok: true, detail };
   }
 
   /** Parse a caller-supplied ISO timestamp; return undefined if absent/invalid. */

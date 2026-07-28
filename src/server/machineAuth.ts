@@ -216,6 +216,97 @@ export function signRequest(
   };
 }
 
+// ── multi-transport-mesh-comms — freshness-bound accept-ack (Decision 9) ──────
+// The receiver signs an `ack` proving it (a) is the expected peer, (b) folded the
+// caller's CURRENT lease (observedEpoch), and (c) is answering THIS request (the
+// echoed reqNonce). Domain-separated under `mesh-ack-v1|` so an ack signature can
+// never be replayed as a request signature (the request message format is
+// `machineId|ts|nonce|seq|bodyHash`, which never starts with `mesh-ack-v1|`).
+
+/** The signed body of an accept-ack. `reqNonce` echoes the caller's challenge. */
+export interface LeaseAck {
+  machineId: string;
+  reqNonce: string;
+  observedEpoch: number;
+}
+
+/** Canonical, domain-separated message bytes for an accept-ack. */
+function leaseAckMessage(ack: LeaseAck): string {
+  return `mesh-ack-v1|${ack.machineId}|${ack.reqNonce}|${ack.observedEpoch}`;
+}
+
+/** Receiver-side: sign an accept-ack with this machine's private key. */
+export function signLeaseAck(ack: LeaseAck, privateKeyPem: string): string {
+  return sign(leaseAckMessage(ack), privateKeyPem);
+}
+
+/**
+ * Caller-side: verify an accept-ack is fresh + from the expected peer + confirms
+ * OUR epoch. Returns 'confirmed' (fold of our lease), 'higher-epoch' (a real
+ * takeover — stand down, do NOT confirm), or false (replay / wrong responder /
+ * bad sig / stale nonce → FAILED rope, fail-closed).
+ */
+export function verifyLeaseAck(
+  ack: LeaseAck | undefined,
+  sig: string | undefined,
+  expectedPeerId: string,
+  sentReqNonce: string,
+  sentEpoch: number,
+  peerPublicKeyPem: string,
+): 'confirmed' | 'higher-epoch' | false {
+  if (!ack || !sig) return false;
+  if (typeof ack.machineId !== 'string' || typeof ack.reqNonce !== 'string' || typeof ack.observedEpoch !== 'number') {
+    return false;
+  }
+  if (ack.machineId !== expectedPeerId) return false; // responder identity
+  if (ack.reqNonce !== sentReqNonce) return false; // freshness — defeats recorded-ack replay
+  let sigOk = false;
+  try {
+    sigOk = verify(leaseAckMessage(ack), sig, peerPublicKeyPem);
+  } catch {
+    // @silent-fallback-ok: a signature-verify throw ⇒ unverified ⇒ FAILED rope
+    // (fail-closed — never a false confirmation; the caller treats it as unreachable).
+    sigOk = false;
+  }
+  if (!sigOk) return false;
+  if (ack.observedEpoch === sentEpoch) return 'confirmed';
+  if (ack.observedEpoch > sentEpoch) return 'higher-epoch';
+  return false; // a lower folded epoch never confirms our renewal
+}
+
+/**
+ * Caller-side (PULL): verify an accept-ack proves the responder is the expected
+ * peer AND is answering THIS request — WITHOUT epoch-equality (a pull reads the
+ * peer's lease, it does not fold ours). Used by /api/lease/pull. Returns true iff
+ * sig verifies + machineId matches + reqNonce echoes our challenge.
+ */
+export function verifyLeaseAckIdentity(
+  ack: LeaseAck | undefined,
+  sig: string | undefined,
+  expectedPeerId: string,
+  sentReqNonce: string,
+  peerPublicKeyPem: string,
+): boolean {
+  if (!ack || !sig) return false;
+  if (typeof ack.machineId !== 'string' || typeof ack.reqNonce !== 'string') return false;
+  if (ack.machineId !== expectedPeerId) return false;
+  if (ack.reqNonce !== sentReqNonce) return false;
+  // E2E-PAIRING: EXEMPT — this commit is comment-only (@silent-fallback-ok ratchet tags);
+  // it adds NO new route. The accept-ack routes shipped in the prior commit (1cd2618e)
+  // with their integration tests (tests/integration/mesh-accept-ack.test.ts).
+  try {
+    return verify(leaseAckMessage(ack), sig, peerPublicKeyPem);
+  } catch {
+    // @silent-fallback-ok: a verify throw ⇒ identity unproven ⇒ FAILED rope (fail-closed).
+    return false;
+  }
+}
+
+/** Caller-side: mint a fresh challenge nonce (Decision 9 — crypto.randomBytes(16) hex). */
+export function newReqNonce(): string {
+  return crypto.randomBytes(16).toString('hex');
+}
+
 // ── Challenge-Response ─────────────────────────────────────────────
 
 export interface Challenge {

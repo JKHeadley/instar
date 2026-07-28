@@ -127,8 +127,13 @@ describe('Phase 2 — per-killer routing contracts', () => {
 
     it('terminateSession respects bypassRecoveryFlag for the recovery-in-flight guard ONLY', () => {
       // The bypass is scoped to the recovery-in-flight reason, not the whole guard.
+      // It is now applied INSIDE ReapGuard.blockedReason via a `bypassedReasons`
+      // list (the post-transfer-closeout-correctness refactor), so the guard keeps
+      // evaluating DOWN to the next non-bypassed keep-reason instead of a single-eval
+      // `blocked?.reason === 'recovery-in-flight'` short-circuit that masked
+      // lower-priority guards.
       expect(sessionManagerSource).toContain('bypassRecoveryFlag');
-      expect(sessionManagerSource).toMatch(/blocked\?\.reason\s*===\s*'recovery-in-flight'/);
+      expect(sessionManagerSource).toMatch(/bypassedReasons\.push\(\s*'recovery-in-flight'\s*\)/);
     });
   });
 

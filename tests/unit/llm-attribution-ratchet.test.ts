@@ -162,34 +162,27 @@ export const x = 1; // intelligence.evaluate(p) in a line comment too`;
 
 describe('componentCategories wiring', () => {
   /**
-   * Pre-existing attribution labels that predate this wiring test and are NOT
-   * registered in COMPONENT_CATEGORY. Registering a name changes live
-   * per-component framework routing (it moves the component from the default
-   * framework to its category's configured framework), so each needs its own
-   * deliberate routing decision — out of scope for the token-audit PR. This
-   * list is PINNED: a NEW unregistered component name fails this test; the
-   * fix is registering it in src/core/componentCategories.ts, not extending
-   * this list.
+   * Attribution labels intentionally NOT registered in COMPONENT_CATEGORY because
+   * they pass an EXPLICIT `attribution.category` at their call site (so the router
+   * resolves them by that category, not by this map). `categoryForComponent` — which
+   * only consults the map — therefore returns 'other' for them, which is correct.
+   * This list is PINNED: a NEW map-unregistered component name that does NOT pass an
+   * explicit category fails this test; the fix is registering it in
+   * src/core/componentCategories.ts, not extending this list.
+   *
+   * (The LLM Routing Registry audit, 2026-07-01, cleared the remaining pre-existing
+   * backlog by registering InputClassifier, LLMConflictResolver, PreCompactionFlush,
+   * ResumeValidator, SessionSummarySentinel, TelegramAdapter, TopicIntentExtractor,
+   * TreeSynthesis, Usher, mentor-stage-b, openConversationBrief, a2a-checkin,
+   * correction-learning — moving them off the default framework. See
+   * docs/LLM-ROUTING-REGISTRY.md.)
    */
   const WIRING_EXCLUSIONS = new Set([
     'AmbientContributionGate',
     'BlockerSettleAuthority',
-    'InputClassifier',
     'IntentLlmJudge',
-    'LLMConflictResolver',
     'LlmIntentClassifier',
-    'PreCompactionFlush',
     'RelationshipAnomalyScorer',
-    'ResumeValidator',
-    'SessionSummarySentinel',
-    'TelegramAdapter',
-    'TopicIntentExtractor',
-    'TreeSynthesis',
-    'Usher',
-    'mentor-stage-b',
-    'openConversationBrief',
-    'a2a-checkin',
-    'correction-learning',
   ]);
 
   it('every literal attribution.component in src/ resolves to a registered category or a pinned exclusion', () => {

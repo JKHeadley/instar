@@ -28,8 +28,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 
+import {
+  createAuthenticatedGhExec,
+  createAuthenticatedGitHubCliRuntimeResolver,
+  type AuthenticatedGitHubCliRuntime,
+} from '../core/githubRuntime.js';
 import { GuardLatchStore, type GuardLatchEntry } from './GuardLatchStore.js';
 import { DefaultMergeRunner } from './MergeRunner.js';
 import {
@@ -38,7 +42,7 @@ import {
   type ProtectedPathsVerdict,
   freshState,
 } from './GreenPrAutoMerger.js';
-import type { PrSummary } from './greenPrLogic.js';
+import { latestRunPerCheck, failingChecksFromRollup, FAILING_CONCLUSIONS, type PrSummary } from './greenPrLogic.js';
 
 /** Protected globs (round-4/6): a PR touching these never auto-merges. */
 export const PROTECTED_PATH_PREFIXES = [
@@ -50,6 +54,17 @@ export const PROTECTED_PATH_PREFIXES = [
   'src/monitoring/greenPrLogic.ts',
   'src/monitoring/floorDriftCanary.ts',
   'src/monitoring/greenPrAutomergeWiring.ts',
+  // audit-convergence-enforcement §3: an audit-report PR gets a human eye instead
+  // of auto-merging (the ADV-3 shape≠depth mitigation), AND the validator's own
+  // enforcing machinery is protected from being neutered by an auto-merged PR
+  // (adversarial-R4 finding-2 — same precedent as protecting safe-merge above).
+  // (This is the ARM-TIME protection — the common case: a PR opened WITH the audit
+  // report is routed to the operator. The adversarial arm-then-push TOCTOU hardening
+  // — the gather() re-check + re-adoption — ships as a tracked follow-up: ACT-1192.)
+  'docs/audits/',
+  'scripts/write-audit-convergence.mjs',
+  'scripts/audit-secret-patterns.mjs',
+  'tests/unit/audit-convergence-reports.test.ts',
 ];
 /** Gate scripts the floor contexts execute (extend, never shrink). */
 export const PROTECTED_GATE_SCRIPTS = [
@@ -78,6 +93,13 @@ export interface GreenPrWiringOpts {
   agentNamespace: string;
   mergeTimeoutMs: number;
   mergeKillGraceMs: number;
+  /**
+   * mergerunner-auto-arm-handoff. The two runner-path fields threaded into
+   * MergeRunnerConfig: `mergeStrategy` ('auto' default | 'admin') selects
+   * --auto vs --admin; `armTimeoutMs` is the --auto spawn deadline (60s).
+   */
+  mergeStrategy?: 'auto' | 'admin';
+  armTimeoutMs?: number;
   /** Lease accessors (single-machine: () => true / () => 0). */
   holdsLease: () => boolean;
   leaseEpoch: () => number;
@@ -92,14 +114,8 @@ export interface GreenPrWiringOpts {
   logger?: (msg: string) => void;
   /** Test seam: override the gh exec. */
   ghExec?: (args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
-}
-
-function gh(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((resolve) => {
-    execFile('gh', args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ stdout: stdout ?? '', stderr: stderr ?? '', code: err ? (err as NodeJS.ErrnoException & { code?: number }).code ?? 1 : 0 });
-    });
-  });
+  /** Test seam: explicit GitHub runtime shared by reads and safe-merge. */
+  githubRuntime?: () => AuthenticatedGitHubCliRuntime;
 }
 
 /** Build the GuardLatchStore for this install. */
@@ -117,7 +133,12 @@ export function buildGuardLatchStore(opts: GreenPrWiringOpts): GuardLatchStore {
 
 /** Build the full GreenPrAutoMerger deps (real gh adapters). */
 export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchStore): GreenPrAutoMergerDeps {
-  const exec = opts.ghExec ?? gh;
+  const githubRuntime = opts.githubRuntime
+    ?? createAuthenticatedGitHubCliRuntimeResolver({ stateDir: opts.stateDir });
+  const exec = opts.ghExec ?? createAuthenticatedGhExec({
+    stateDir: opts.stateDir,
+    resolveRuntime: githubRuntime,
+  });
   const now = opts.now ?? (() => Date.now());
 
   const runner = new DefaultMergeRunner(
@@ -128,6 +149,18 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       mergeTimeoutMs: opts.mergeTimeoutMs,
       mergeKillGraceMs: opts.mergeKillGraceMs,
       expectedContractVersion: 2,
+      resolveGitHubEnv: () => {
+        try {
+          return githubRuntime().env;
+        } catch { /* @silent-fallback-ok: missing explicit GitHub identity makes the autonomous act path refuse */
+          return null;
+        }
+      },
+      // mergerunner-auto-arm-handoff M2: the runner selects --auto vs --admin and
+      // the auto-path deadline from these (config → GreenPrAutoMergerConfig →
+      // buildGreenPrDeps → MergeRunnerConfig). Defaults keep the arm path.
+      mergeStrategy: opts.mergeStrategy ?? 'auto',
+      armTimeoutMs: opts.armTimeoutMs ?? 60_000,
     },
     {
       confirmMerged: async (pr, repo) => {
@@ -176,7 +209,10 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
     listOpenPrs: async () => {
       const r = await exec([
         'pr', 'list', '--author', '@me', '--state', 'open', '--base', 'main',
-        '--limit', '100', '--json', 'number,title,labels,isDraft,headRefName,headRefOid,mergeable,statusCheckRollup',
+        // Widened (mergerunner-auto-arm-handoff Blocker 4 — the cheap-pass): one
+        // extra field on the single oldest-first list call already made each tick
+        // lets gather() skip an already-armed PR FREE, regardless of local state.
+        '--limit', '100', '--json', 'number,title,labels,isDraft,headRefName,headRefOid,mergeable,statusCheckRollup,autoMergeRequest',
         '--search', 'sort:created-asc',
       ]);
       if (r.code !== 0) throw new Error(`gh pr list failed: ${r.stderr.slice(0, 200)}`);
@@ -191,18 +227,44 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       return { touches: diffTouchesProtected(files), unverifiable: false };
     },
     refetchPr: async (pr: number) => {
-      const r = await exec(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'title,labels,isDraft,headRefOid,state']);
+      // Widened (mergerunner-auto-arm-handoff Blocker 4): also returns
+      // mergeCommitOid (informational for the merged-at-unexpected-head audit)
+      // and autoMergeRequest (present ⇔ armed; expectedHeadOid = the PR's final
+      // head GitHub will merge — the head-pin comparison operand). Used by the
+      // act-time pre-arm gate AND the armed-episode reconciliation read.
+      const r = await exec(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'title,labels,isDraft,headRefOid,state,mergeCommitOid,autoMergeRequest']);
       if (r.code !== 0) return null;
       try {
         const j = JSON.parse(r.stdout);
+        const amr = j.autoMergeRequest && typeof j.autoMergeRequest === 'object'
+          ? { enabledAt: j.autoMergeRequest.enabledAt ?? null, expectedHeadOid: j.autoMergeRequest.expectedHeadOid ?? null }
+          : null;
         return {
           title: String(j.title ?? ''),
           labels: Array.isArray(j.labels) ? j.labels.map((l: { name?: string }) => l.name ?? '') : [],
           isDraft: !!j.isDraft,
           headRefOid: String(j.headRefOid ?? ''),
           state: String(j.state ?? 'UNKNOWN'),
+          mergeCommitOid: j.mergeCommitOid != null ? String(j.mergeCommitOid) : null,
+          autoMergeRequest: amr,
         };
       } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ return null; }
+    },
+    disarmArmedEpisodes: async (pr: number) => {
+      // gh pr merge <pr> --disable-auto. Confirmed-disabled ⇔ the command
+      // succeeds AND an independent re-read shows autoMergeRequest absent.
+      const r = await exec(['pr', 'merge', String(pr), '--repo', opts.repo, '--disable-auto']);
+      if (r.code !== 0) {
+        // An "already disabled / not armed" stderr is a confirmed not-armed state.
+        if (/not.*auto.?merge|auto.?merge.*not|no auto-?merge/i.test(r.stderr)) return true;
+        return false;
+      }
+      try {
+        const v = await exec(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'autoMergeRequest']);
+        if (v.code !== 0) return false;
+        const j = JSON.parse(v.stdout);
+        return !j.autoMergeRequest;
+      } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — could not confirm disable → honest FAILED, never claim success */ return false; }
     },
     resolveGhLogin: async () => {
       const r = await exec(['api', 'user', '--jq', '.login']);
@@ -255,19 +317,31 @@ function mapPr(row: Record<string, unknown>): PrSummary {
     headRefOid: String(row.headRefOid ?? ''),
     mergeable: String(row.mergeable ?? 'UNKNOWN'),
     statusRollup: deriveRollup(rollup),
+    // mergerunner-auto-arm-handoff Blocker 4: GitHub-side armed state, derived
+    // from the autoMergeRequest field of the widened pr-list projection.
+    autoMergeArmed: !!row.autoMergeRequest,
+    // red-pr-watchdog: the latest-run-per-check FAILING checks (no new gh call —
+    // derived from the same rollup the list projection already fetched).
+    failingChecks: failingChecksFromRollup(rollup),
   };
 }
 
-/** Derive a single SUCCESS|PENDING|FAILURE from the statusCheckRollup array. */
+/**
+ * Derive a single SUCCESS|PENDING|FAILURE from the statusCheckRollup array.
+ *
+ * red-pr-watchdog correctness fix: dedup to the LATEST run per check name BEFORE
+ * collapsing. Previously a stale FAILED run superseded by a passing rerun still
+ * short-circuited to 'FAILURE' (the 2026-07-08 bug). latestRunPerCheck keeps only
+ * the newest run of each check, so a green rerun correctly reads SUCCESS.
+ */
 export function deriveRollup(rollup: unknown): string | null {
   if (!Array.isArray(rollup)) return typeof rollup === 'string' ? rollup : null;
   let sawPending = false;
-  for (const c of rollup as Array<Record<string, unknown>>) {
-    const state = String(c.state ?? c.conclusion ?? '').toUpperCase();
-    const status = String(c.status ?? '').toUpperCase();
-    if (status && status !== 'COMPLETED') { sawPending = true; continue; }
-    if (state === 'FAILURE' || state === 'ERROR' || state === 'CANCELLED' || state === 'TIMED_OUT') return 'FAILURE';
-    if (state === 'PENDING' || state === 'EXPECTED' || state === 'IN_PROGRESS' || state === 'QUEUED') sawPending = true;
+  for (const c of latestRunPerCheck(rollup)) {
+    // A check whose latest run has not COMPLETED (an in-progress rerun) is pending.
+    if (c.status && c.status !== 'COMPLETED') { sawPending = true; continue; }
+    if (FAILING_CONCLUSIONS.has(c.conclusion)) return 'FAILURE';
+    if (c.conclusion === 'PENDING' || c.conclusion === 'EXPECTED' || c.conclusion === 'IN_PROGRESS' || c.conclusion === 'QUEUED') sawPending = true;
   }
   return sawPending ? 'PENDING' : 'SUCCESS';
 }

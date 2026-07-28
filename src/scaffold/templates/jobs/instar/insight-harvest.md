@@ -14,7 +14,11 @@ toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
 ---
-Harvest and synthesize learnings: curl -s http://localhost:${INSTAR_PORT:-4042}/evolution/learnings?applied=false
+AUTH="${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
+PORT="${INSTAR_PORT:-4042}"
+
+Harvest and synthesize learnings: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/learnings?applied=false"
 
 Review unapplied learnings and look for:
 1. **Patterns**: Multiple learnings pointing to the same conclusion
@@ -22,10 +26,10 @@ Review unapplied learnings and look for:
 3. **Cross-domain connections**: Insights from one area that apply to another
 
 For each actionable pattern found, create an evolution proposal:
-curl -s -X POST http://localhost:${INSTAR_PORT:-4042}/evolution/proposals -H 'Content-Type: application/json' -d '{"title":"...","source":"insight-harvest from LRN-XXX","description":"...","type":"...","impact":"...","effort":"..."}'
+curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/proposals -H 'Content-Type: application/json' -d '{"title":"...","source":"insight-harvest from LRN-XXX","description":"...","type":"...","impact":"...","effort":"..."}'
 
 Then mark the relevant learnings as applied:
-curl -s -X PATCH http://localhost:${INSTAR_PORT:-4042}/evolution/learnings/LRN-XXX/apply -H 'Content-Type: application/json' -d '{"appliedTo":"EVO-XXX"}'
+curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/learnings/LRN-XXX/apply -H 'Content-Type: application/json' -d '{"appliedTo":"EVO-XXX"}'
 
 Also update MEMORY.md with any patterns worth preserving long-term.
 

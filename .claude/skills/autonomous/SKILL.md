@@ -104,6 +104,11 @@ Write this content:
      when set, the stop-hook RUNS it on a met:true verdict and only allows the exit if it ALSO
      passes (fail/timeout → keep working). This sentinel is the PostUpdateMigrator marker that
      re-deploys this SKILL.md to existing agents. Spec: autonomous-completion-real-checks.md -->
+<!-- SCOPE_ACCRETION — scope-accretion completion discipline: register the run server-side
+     (POST /autonomous/register) and record the returned run_id in the frontmatter; the server
+     then holds completion while deliverables THIS run creates sit unbuilt, uncorroborated, and
+     unratified. This sentinel is the PostUpdateMigrator marker that re-deploys this SKILL.md to
+     existing agents. Spec: autonomous-scope-accretion-completion.md -->
 
 ```markdown
 ---
@@ -124,6 +129,7 @@ completion_mode: condition         # "condition" (default) | "promise-fallback"
 promise_fallback_reason: ""         # one line, REQUIRED iff completion_mode == promise-fallback
 completion_promise: "ALL_TASKS_COMPLETE"   # retained as the fallback token
 hard_blocker_nonce: "{a random per-run token — get via: openssl rand -hex 8}"
+run_id: "{the runId returned by POST /autonomous/register — see step 2b-2 below}"
 # OPTIONAL real-check (ACT-152): a command that must exit 0 before the run may stop. When set, a
 # met:true verdict RUNS it and gates the exit on it (fail/timeout → keep working). Omit if the
 # goal isn't checkable by a single command. work_dir is captured by setup so a relative command
@@ -171,6 +177,27 @@ echo $CLAUDE_CODE_SESSION_ID
 ```
 Then include the output in the `session_id:` field. This ensures session isolation works.
 
+**2b-2. Register the run server-side (SCOPE_ACCRETION — MANDATORY when a report topic exists).**
+The server takes the start snapshot (config, condition, declared deliverables, git base-root
+SHAs), mints the `runId`, and from then on the completion judge structurally HOLDS "done" while
+deliverables this run itself creates (specs, audits, runbooks, scripts) sit unbuilt without
+corroboration (a merged PR / a converged report) or explicit operator ratification:
+
+```bash
+PORT=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))")
+AUTH=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))")
+jq -nc --arg t "TOPIC_ID" --arg c "YOUR completion_condition text" --arg w "$(pwd)" \
+  --arg s "STARTED_AT_ISO" --arg e "END_AT_ISO" --arg sid "$CLAUDE_CODE_SESSION_ID" \
+  '{topicId:$t,condition:$c,workDir:$w,startedAt:$s,endAt:$e,sessionId:$sid,declaredDeliverables:[]}' \
+  | curl -s -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' \
+    --data-binary @- "http://localhost:${PORT}/autonomous/register"
+```
+
+Write the returned `runId` into the state file's `run_id:` frontmatter field. If the mission is
+GENUINELY draft-only (the operator asked for drafts, not builds), list those exact repo-relative
+paths in `declaredDeliverables` — that list is operator-visible at setup and immutable mid-run.
+If the server is unreachable, leave `run_id` empty and continue — the gate degrades honestly.
+
 **WHY NOT bash script?** Running `bash setup-autonomous.sh` creates a subprocess that does NOT inherit `CLAUDE_CODE_SESSION_ID`. The state file ends up with an empty session_id, which causes the hook to leak into all sessions. Always write the state file from within Claude Code's context.
 
 **SESSION ISOLATION**: The stop hook checks `session_id` — it only blocks the session that activated autonomous mode. Other sessions on the same machine pass through unaffected.
@@ -206,6 +233,28 @@ The stop hook will catch every attempt to exit and feed your task list back. Eac
 4. Verify it works (compile, test where practical)
 5. Move to next task
 6. Send progress reports at the configured interval
+
+### Scope Accretion — work YOU create joins YOUR completion bar (Layer A duty)
+
+The completion bar is NOT frozen at session start. When you discover new in-scope work and
+draft it (a spec, an audit, a runbook, a script), that artifact joins your bar: the server's
+git-truth sweep sees it regardless of HOW it was written (Write tool, Bash heredoc, `tee`, a
+subagent), and the judge will HOLD "done" until it is built+corroborated (merged PR / converged
+report), was declared at setup, or the operator ratifies deferring it. "The documented stretch
+(out of completion condition)" is the exact anti-pattern this closes — Deferral = Deletion.
+
+**Your recording duty (Layer A):** the moment you create a deliverable, append to the state
+file's task list:
+
+```
+- [ ] ACCRETED(<ISO date>): <repo-relative path> — build/converge/deliver, or obtain operator ratification
+```
+
+This is a willpower-assist for the honest case and carries zero safety weight — the server-side
+sweep is the enforcement. If deferral is genuinely right, ASK the operator in the topic (say
+"ratify deferral of <paths>?"); a server-authored enumeration message will list the exact set,
+and only the verified operator's reply binds it. The operator can also ratify from the dashboard
+(PIN-gated).
 
 ### The Defer-to-Future-Self Trap
 

@@ -92,12 +92,13 @@ describe('WS2.4 KnowledgeManager emit seam (source touchpoints)', () => {
 });
 
 describe('WS2.4 ConfigDefaults + awareness', () => {
-  it('ConfigDefaults ships the knowledge stateSync dark default (enabled:false, dryRun:true)', () => {
+  it('ConfigDefaults ships the knowledge stateSync dev-gated posture (OMITS enabled, dryRun:false — operator directive 2026-06-13)', () => {
     const defaultsSrc = read('src/config/ConfigDefaults.ts');
-    expect(defaultsSrc).toMatch(/knowledge:\s*\{\s*\n\s*enabled:\s*false,\s*\n\s*dryRun:\s*true,/);
+    expect(defaultsSrc).toMatch(/knowledge:\s*\{\s*\n\s*dryRun:\s*false,\s*\n\s*\},/);
+    expect(defaultsSrc).not.toMatch(/knowledge:\s*\{\s*\n\s*enabled:\s*false/);
   });
 
-  it('the dev-gate dark exclusion classifies the knowledge path', () => {
+  it('the dev-gate classifies the knowledge path as DEV_GATED (live-on-dev), not a dark exclusion', () => {
     const devGated = read('src/core/devGatedFeatures.ts');
     expect(devGated).toContain("configPath: 'multiMachine.stateSync.knowledge.enabled'");
   });

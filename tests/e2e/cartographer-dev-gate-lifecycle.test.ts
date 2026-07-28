@@ -110,7 +110,7 @@ describe('Cartographer dev-gate — feature is alive (Tier 3 E2E, production ini
     // job), the same route serves real counts — the full aliveness proof.
     const t = new CartographerTree({ projectDir: repo, stateDir });
     t.scaffold();
-    const r = runDetect({
+    const r = await runDetect({
       indexPath: t.indexFilePath(), projectDir: repo, maxIndexBytes: 256 * 1024 * 1024,
       maxCandidates: 100, maxNodesPerPass: 25, maxDeferredPasses: 5, revalidateSamplePerPass: 0,
       graceMs: 0, gitMaxBuffer: 64 * 1024 * 1024, snapshotSampleMax: 500, nowMs: Date.now(),

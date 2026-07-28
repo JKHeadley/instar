@@ -136,7 +136,7 @@ describe('Pre-push gate integration — malformed NEXT.md', () => {
     // script would still see the production __dirname and walk the production
     // tree — making the integration test sensitive to unrelated changes in
     // the rest of the repo. Copying isolates the test to its scratch dir.
-    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
+    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'release-relevant-paths.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
       fs.copyFileSync(
         path.join(ROOT, 'scripts', file),
         path.join(scratch, 'scripts', file),
@@ -314,7 +314,7 @@ describe('Pre-push gate integration — release-note fragments', () => {
       path.join(scratch, 'package.json'),
       JSON.stringify({ name: 'instar-test', version: '0.28.999' }),
     );
-    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
+    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'release-relevant-paths.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
       fs.copyFileSync(path.join(ROOT, 'scripts', file), path.join(scratch, 'scripts', file));
     }
   });
@@ -408,5 +408,115 @@ describe('Pre-push gate integration — release-note fragments', () => {
     const { status, stdout } = runGate();
     expect(status).not.toBe(0);
     expect(stdout).toContain('Release-note fragments are malformed');
+  });
+
+  // ── post-release-cut state (the three-time recurrence) ────────────────────
+  //
+  // After a release cut the tree has: upgrades/<version>.md (the frozen guide for
+  // the version that just shipped), no fragments, and NO
+  // upgrades/side-effects/<version>.md — because side-effects artifacts are named
+  // per change slug and the release flow never creates a version-named one.
+  //
+  // The gate used to fall back to that frozen guide and demand exactly that
+  // impossible filename, refusing EVERY push from a clean post-release tree. The
+  // recurrence is documented in the repo itself: upgrades/side-effects/1.3.492.md
+  // and 1.3.802.md are hand-written placeholders whose own text says they exist
+  // only to satisfy this check.
+
+  function writeFrozenGuideClaimingAFix(version: string) {
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', `${version}.md`),
+      [
+        `# Upgrade Guide — v${version}`,
+        '',
+        '## What Changed',
+        '',
+        'Fixes a bug in the scheduler.',
+        '',
+        '## Evidence',
+        '',
+        'Reproduced first: with the old code the scheduler skipped every job whose cron',
+        'expression contained a step value, so a job set to every 15 minutes never ran at',
+        'all. Observed 0 runs across a 2 hour window. After the fix the same job ran 8',
+        'times in the same window. Reverting the one-line change reproduced the failure',
+        'again, which is how the cause was confirmed rather than assumed.',
+        '',
+        '## What to Tell Your User',
+        '',
+        'Your agent picked up a small repair. Nothing changes about how it talks to you.',
+        '',
+        '## Summary of New Capabilities',
+        '',
+        '| Capability | How to Use |',
+        '|-----------|-----------|',
+        '| Repair | automatic |',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  it('ACCEPTS a post-release-cut tree with no fragment and no version-named artifact', () => {
+    // package.json is pinned to 0.28.999 by beforeEach; the frozen guide for THAT
+    // version is what the cut leaves behind.
+    writeFrozenGuideClaimingAFix('0.28.999');
+    // Deliberately NO upgrades/next/*.md and NO upgrades/side-effects/0.28.999.md.
+    expect(fs.existsSync(path.join(scratch, 'upgrades', 'side-effects', '0.28.999.md'))).toBe(false);
+
+    const { status, stdout } = runGate();
+    expect(status).toBe(0);
+    expect(stdout).not.toContain('side-effects review artifact');
+  });
+
+  it('does not demand a version-named side-effects artifact even when one has never existed', () => {
+    writeFrozenGuideClaimingAFix('0.28.999');
+
+    const { stdout } = runGate();
+    // The old message named upgrades/side-effects/<version>.md as the remedy,
+    // which is what taught three placeholder files into the repo. Assert the
+    // gate never asks for a version-named artifact again. (The frozen guide's own
+    // FILENAME may still appear in unrelated content-validation messages — what
+    // must not appear is the side-effects artifact demand.)
+    expect(stdout).not.toContain('side-effects review artifact');
+    expect(stdout).not.toContain('side-effects/0.28.999.md');
+  });
+
+  it('STILL refuses an in-flight fix-claiming fragment with no fresh side-effects artifact', () => {
+    // The check is not removed — it is scoped to the notes this push is actually
+    // shipping. With a fragment present and no artifact, it must still refuse,
+    // otherwise this fix would have traded a false positive for a false negative.
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', 'next', 'a-real-fix.md'),
+      [
+        '# Upgrade Guide — vNEXT',
+        '',
+        '<!-- bump: patch -->',
+        '',
+        '## What Changed',
+        '',
+        'Fixes a crash in the relay.',
+        '',
+        '## Evidence',
+        '',
+        'Reproduced the crash, applied the fix, confirmed it no longer reproduces.',
+        '',
+        '## What to Tell Your User',
+        '',
+        'Your agent no longer drops messages when the relay restarts.',
+        '',
+        '## Summary of New Capabilities',
+        '',
+        '| Capability | How to Use |',
+        '|-----------|-----------|',
+        '| Repair | automatic |',
+        '',
+      ].join('\n'),
+    );
+    // side-effects dir exists but is empty — no fresh artifact.
+
+    const { status, stdout } = runGate();
+    expect(status).not.toBe(0);
+    expect(stdout).toContain('side-effects review artifact was written in the last 24h');
+    // And the remedy it names must be the slug form, never a version-named file.
+    expect(stdout).toContain('upgrades/side-effects/<slug>.md');
   });
 });

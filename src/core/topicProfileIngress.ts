@@ -30,7 +30,7 @@
  *        metadata never matches ANY ingress recognition, round-5).
  */
 
-import type { EffortLevel, ProfilePatchInput, ThinkingMode } from './topicProfileValidation.js';
+import type { EffortLevel, ProfilePatchInput } from './topicProfileValidation.js';
 
 // ── trigger grammar ─────────────────────────────────────────────────────────
 
@@ -43,18 +43,6 @@ export type ProfileTrigger =
   | { kind: 'switch-now' }
   | { kind: 'confirm' };
 
-const FRAMEWORK_WORDS: Record<string, string> = {
-  codex: 'codex-cli',
-  'codex-cli': 'codex-cli',
-  claude: 'claude-code',
-  'claude-code': 'claude-code',
-  gemini: 'gemini-cli',
-  'gemini-cli': 'gemini-cli',
-  pi: 'pi-cli',
-  'pi-cli': 'pi-cli',
-};
-
-const THINKING_WORDS = ['off', 'low', 'medium', 'high', 'max'];
 const EFFORT_WORDS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
@@ -63,40 +51,26 @@ const EFFORT_WORDS = ['low', 'medium', 'high', 'xhigh', 'max'];
  * to the session normally (the agent may propose via the §10.1
  * propose-confirm lane). Deterministic and anchored: a trigger is the WHOLE
  * message (trailing punctuation tolerated), never a substring match inside
- * prose — quoting someone else's "use codex here" mid-paragraph must not
- * fire a write.
+ * prose.
+ *
+ * The FRAMEWORK / MODEL / THINKING write decision NO LONGER lives here — it was
+ * the keyword-intent audit's offender #1 (2026-07-03): anchored NL regexes
+ * deciding "does this message mean change this topic's framework/model/thinking?"
+ * A regex cannot tell "use codex here" (a command) from "should we use codex
+ * here?" (a question). Per the constitutional standard "Intelligence Infers,
+ * Keywords Only Guard", that judgment is now inferred by the
+ * `ProfileIntentClassifier` (LLM over the message + recent conversation,
+ * structured-enum output, fail-open). This parser retains only the NON-inference
+ * grammar: `effort` + `escalationOverride` (explicit CLI-flag / mandate forms
+ * out of the framework/model/thinking scope) and the command kinds (readout /
+ * undo / clear / reapply / switch-now / confirm), whose meaning is structural,
+ * not a judgment about intent.
  */
 export function parseProfileTrigger(text: string): ProfileTrigger | null {
   const t = text.trim().replace(/[.!]+$/, '').trim().toLowerCase();
   if (t.length === 0 || t.length > 120) return null;
 
-  // framework switch: "use codex here" / "use codex for this topic" /
-  // "switch this topic to codex" / "switch to codex here"
-  let m = t.match(/^use (codex|codex-cli|claude|claude-code|gemini|gemini-cli|pi|pi-cli) (?:here|for this topic|in this topic)$/);
-  if (!m) m = t.match(/^switch this topic to (codex|codex-cli|claude|claude-code|gemini|gemini-cli|pi|pi-cli)$/);
-  if (!m) m = t.match(/^switch to (codex|codex-cli|claude|claude-code|gemini|gemini-cli|pi|pi-cli) (?:here|for this topic)$/);
-  if (m) return { kind: 'write', patch: { framework: FRAMEWORK_WORDS[m[1]] ?? m[1] } };
-
-  // model pin: "pin this topic to <id>" / "use model <id> here".
-  // <id> is the literal id charset only — names ("Fable") are out-of-grammar
-  // by design and ride propose-confirm (Tier 0: no alias resolution here).
-  m = t.match(/^pin this topic to ([a-z0-9._-]{1,64})$/);
-  if (!m) m = t.match(/^use model ([a-z0-9._-]{1,64}) (?:here|for this topic)$/);
-  if (m) {
-    if (m[1] === 'default' || m[1] === 'escalated') {
-      return { kind: 'write', patch: { modelTier: m[1], model: null } };
-    }
-    return { kind: 'write', patch: { model: m[1], modelTier: null } };
-  }
-
-  // thinking mode: "set high thinking on this topic" / "set thinking to high
-  // on this topic" / "use high thinking here"
-  m = t.match(/^set (off|low|medium|high|max) thinking (?:on this topic|here)$/);
-  if (!m) m = t.match(/^set thinking to (off|low|medium|high|max)(?: on this topic| here)?$/);
-  if (!m) m = t.match(/^use (off|low|medium|high|max) thinking (?:here|on this topic)$/);
-  if (m && THINKING_WORDS.includes(m[1])) {
-    return { kind: 'write', patch: { thinkingMode: m[1] as ThinkingMode } };
-  }
+  let m: RegExpMatchArray | null;
 
   // effort level: "set high effort on this topic" / "set effort to xhigh on
   // this topic" / "use max effort here". A DIRECT Claude `--effort` pin (the

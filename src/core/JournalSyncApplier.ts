@@ -65,7 +65,13 @@ import {
   type AutonomousAction,
   type PlacementReason,
   type SessionStatus,
+  REPLICATED_RECORD_MAX_ENTRY_BYTES,
 } from './CoherenceJournal.js';
+import {
+  validateReplicatedEnvelope,
+  type ReplicatedKindRegistry,
+  type EnvelopeValidationCounters,
+} from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ---- tunables (§3.4) -------------------------------------------------------
@@ -196,6 +202,21 @@ export interface JournalSyncApplierConfig {
   fsImpl?: JournalFs;
   /** Per-entry size cap override. Default APPLIER_MAX_ENTRY_BYTES. */
   maxEntryBytes?: number;
+  /**
+   * The replicated-kind registry (WS2 send-side receive half). Injected so the
+   * applier can VALIDATE + APPLY a registered `*-record` kind a peer serves —
+   * without it, a peer's learning-record would be marked `invalid` and
+   * suspect-flag the stream (the receive-only gap). ABSENT ⇒ unchanged behavior
+   * (only the 5 lifecycle kinds validate). The registry is the SAME instance the
+   * journal writer + the stateSyncReceive advert read (one source of truth).
+   */
+  replicatedRegistry?: ReplicatedKindRegistry;
+  /**
+   * Optional derived-index observer for replicated records. Called only after a
+   * peer replica batch has been written and fdatasync has returned, so the index
+   * tracks durable bytes, never uncommitted inbound data.
+   */
+  onReplicatedRecordsCommitted?: (senderMachineId: string, kind: JournalKind, entries: JournalEntry[]) => void;
 }
 
 function realFs(): JournalFs {
@@ -227,6 +248,11 @@ export class JournalSyncApplier {
   private readonly logger?: (msg: string) => void;
   private readonly io: JournalFs;
   private readonly maxEntryBytes: number;
+  /** The replicated-kind registry (WS2 send-side receive half). Settable because the
+   *  applier is constructed before the registry is populated (server.ts boot order);
+   *  the config option is for tests that have the registry up front. */
+  private replicatedRegistry?: ReplicatedKindRegistry;
+  private replicatedCommitObserver?: (senderMachineId: string, kind: JournalKind, entries: JournalEntry[]) => void;
 
   /** In-memory meta cache per peer machine (keyed by RAW machineId). */
   private metaCache = new Map<string, PeerMeta>();
@@ -252,10 +278,37 @@ export class JournalSyncApplier {
     this.logger = config.logger;
     this.io = config.fsImpl ?? realFs();
     this.maxEntryBytes = config.maxEntryBytes ?? APPLIER_MAX_ENTRY_BYTES;
+    this.replicatedRegistry = config.replicatedRegistry;
+    this.replicatedCommitObserver = config.onReplicatedRecordsCommitted;
+  }
+
+  /** The per-entry byte cap for a kind — RAISED for replicated `*-record` kinds so
+   *  a fat-but-legal record the writer emitted is not rejected as oversize on
+   *  receive (must match CoherenceJournal.maxEntryBytesForKind). */
+  private maxEntryBytesForKind(kind: JournalKind): number {
+    return this.replicatedRegistry?.isReplicatedKind(kind)
+      ? REPLICATED_RECORD_MAX_ENTRY_BYTES
+      : this.maxEntryBytes;
   }
 
   getDegradation(): Readonly<ApplierDegradation> {
     return { ...this.degradation };
+  }
+
+  /** Inject the replicated-kind registry (WS2 send-side). Called once at wiring time
+   *  after the concrete stores register, so a peer's registered `*-record` kind
+   *  validates + applies instead of suspect-flagging the stream. Idempotent. */
+  setReplicatedKindRegistry(registry: ReplicatedKindRegistry | undefined): void {
+    this.replicatedRegistry = registry;
+  }
+
+  /**
+   * Attach/replace the derived-index observer after boot wiring has constructed
+   * the peer-stream reader. The replica files remain authoritative; this observer
+   * is only an incremental cache update.
+   */
+  setReplicatedRecordCommitObserver(observer: ((senderMachineId: string, kind: JournalKind, entries: JournalEntry[]) => void) | undefined): void {
+    this.replicatedCommitObserver = observer;
   }
 
   // ---- advert state (for delta requests) ---------------------------------
@@ -495,7 +548,7 @@ export class JournalSyncApplier {
     } catch {
       return 'invalid';
     }
-    if (Buffer.byteLength(line, 'utf-8') > this.maxEntryBytes) return 'invalid';
+    if (Buffer.byteLength(line, 'utf-8') > this.maxEntryBytesForKind(kind)) return 'invalid';
 
     // kind binding — the entry must belong to the stream slice it arrived in.
     if (entry.kind !== kind) return 'invalid';
@@ -533,13 +586,45 @@ export class JournalSyncApplier {
     const raw = data as Record<string, unknown>;
     const keys = Object.keys(raw);
 
+    // WS2 send-side receive half: a registered replicated `*-record` kind
+    // validates through the GENERIC envelope validator + its store schema — the
+    // SAME strict discipline the writer applied (reject free text / unknown fields,
+    // jail path-shaped fields, validate hlc + observed). Without this branch a
+    // peer's learning-record would be `invalid` ⇒ suspect-flag the stream (the
+    // receive-only gap). The counters are a no-op here — the applier surfaces
+    // receive degradation via its own ApplierDegradation counters / suspect status,
+    // not these per-field bumps; we only need the boolean verdict.
+    const reg = this.replicatedRegistry?.getByKind(kind);
+    if (reg) {
+      const noopCounters: EnvelopeValidationCounters = {
+        bumpSchemaReject: () => {},
+        bumpDroppedField: () => {},
+        bumpJailReject: () => {},
+      };
+      return validateReplicatedEnvelope(raw, reg.schema, noopCounters).ok;
+    }
+
     if (kind === 'topic-placement') {
-      const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move'];
+      // KEEP IN SYNC with CoherenceJournal.validate() topic-placement branch (the
+      // emit-side source of truth). WS1.3/Fix #3 (#1311) added the 'reconcile' reason
+      // AND the cooperative-handoff fields (status/transferTo/timestamp/drainInFlight)
+      // on the emit side but NOT here — so a real cross-machine transferring record
+      // failed receive-validation, marked the peer stream `suspect`, and halted
+      // replication so the target never claimed (live two-machine proof catch,
+      // 2026-06-30; in-process tests covered emit + applier-materialize, never this
+      // receive-validation path). Mirror EXACTLY.
+      const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move', 'reconcile'];
       if (typeof raw.owner !== 'string' || !raw.owner) return false;
       if (typeof raw.epoch !== 'number' || !Number.isFinite(raw.epoch)) return false;
       if (typeof raw.reason !== 'string' || !reasons.includes(raw.reason as PlacementReason)) return false;
       if (raw.prevOwner !== undefined && typeof raw.prevOwner !== 'string') return false;
-      const known = ['owner', 'epoch', 'reason', 'prevOwner'];
+      // Fix #3 OPTIONAL handoff fields. Back-compat: an absent `status` is `active`.
+      // A present-but-malformed field rejects the record (never a silent partial accept).
+      if (raw.status !== undefined && raw.status !== 'active' && raw.status !== 'transferring') return false;
+      if (raw.transferTo !== undefined && typeof raw.transferTo !== 'string') return false;
+      if (raw.timestamp !== undefined && (typeof raw.timestamp !== 'number' || !Number.isFinite(raw.timestamp))) return false;
+      if (raw.drainInFlight !== undefined && typeof raw.drainInFlight !== 'boolean') return false;
+      const known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight'];
       return keys.every((k) => known.includes(k));
     }
     if (kind === 'session-lifecycle') {
@@ -583,6 +668,14 @@ export class JournalSyncApplier {
       if (raw.reason !== undefined && typeof raw.reason !== 'string') return false;
       const known = ['latchKind', 'latchId', 'action', 'epoch', 'seq', 'reason'];
       return keys.every((k) => known.includes(k));
+    }
+    if (kind === 'ssh-direction-proof') {
+      const stringFields = ['sourceMachineId', 'targetMachineId', 'observerBootId', 'endpointId', 'targetHostKeyFingerprint', 'verifiedAt', 'expiresAt', 'challengeDigest', 'machineSignature'];
+      if (!stringFields.every(field => typeof raw[field] === 'string' && String(raw[field]).length >= 1 && String(raw[field]).length <= 512)) return false;
+      const numberFields = ['pairingEpoch', 'sourceClientKeyGeneration', 'targetHostKeyGeneration'];
+      if (!numberFields.every(field => Number.isSafeInteger(raw[field]) && Number(raw[field]) >= 1)) return false;
+      if (Number.isNaN(Date.parse(String(raw.verifiedAt))) || Number.isNaN(Date.parse(String(raw.expiresAt)))) return false;
+      return keys.every(key => stringFields.includes(key) || numberFields.includes(key));
     }
     return false;
   }
@@ -762,8 +855,27 @@ export class JournalSyncApplier {
     if (committed > 0) {
       this.degradation.applied += committed;
       result.applied += committed;
+      this.notifyReplicatedRecordsCommitted(senderMachineId, kind, lines.slice(0, committed));
     }
     return committed;
+  }
+
+  private notifyReplicatedRecordsCommitted(senderMachineId: string, kind: JournalKind, lines: string[]): void {
+    if (!this.replicatedRegistry?.isReplicatedKind(kind) || !this.replicatedCommitObserver) return;
+    const entries: JournalEntry[] = [];
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as JournalEntry;
+        if (entry && entry.kind === kind && typeof entry.seq === 'number') entries.push(entry);
+      } catch { /* @silent-fallback-ok: observer notification is derived-index maintenance; replica files remain authoritative and rebuildable. */
+      }
+    }
+    if (entries.length === 0) return;
+    try {
+      this.replicatedCommitObserver(senderMachineId, kind, entries);
+    } catch (e) { /* @silent-fallback-ok: derived-index observer failure must never endanger replica durability or ack accounting; parity/rebuild falls back to disk. */
+      this.log('replicated-commit-observer', `[journal-sync] replicated commit observer failed for ${kind}: ${(e as Error)?.message}`);
+    }
   }
 
   // ---- SERVE side (§3.4 rule 5/7 — own stream only, durably-flushed only) -

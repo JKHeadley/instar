@@ -79,3 +79,28 @@ build — the one step that isn't autonomous, by design. The design is converged
 **Approving authorizes the BUILD only** (worktree → PR → CI → merge, shipping dark/off). Turning
 it ON to actually start re-seating credentials stays a separate, later decision that's entirely
 yours.
+
+## Amendment (2026-06-13) — not dark for development agents
+
+The operator directed that this should not be dark for development agents. So the gating
+changed: on a **development agent** the feature now runs **live — but in dry-run**. That means
+the `/credentials/*` levers return real data and the balancer runs its full decision loop and
+shows every move it WOULD make, while a separate safety switch (`dryRun`, on by default) keeps it
+from actually moving any credential. The wider fleet stays fully dark. Actually moving logins
+between accounts still needs a deliberate, operator-controlled flip (`dryRun:false`), gated behind
+running the livetest battery first. So: alive and observable for dogfooding on a dev agent, with
+**zero real credential moves** until you say go.
+
+## Amendment (2026-06-16) — the scheduled identity audit is now BUILT (§2.4.1)
+
+The design always called for an "always-on scheduled identity audit," but it was never actually
+implemented — and that turned out to be the reason the optimizer never did anything. In plain terms:
+before the balancer will move work onto an account, it insists that account was **identity-checked
+recently** (within 6 hours). Nothing re-checked them after the first setup, so a few hours later every
+account read as "not recently checked," the balancer found nothing it was allowed to touch, and it sat
+idle forever — even with an account about to reset and waste its quota. This change adds the missing
+background re-check: every so often it re-confirms each account's slot and stamps it fresh, and it
+auto-clears an account that was set aside once its identity re-confirms. It is deliberately careful —
+a momentary check failure **holds** a healthy account in place rather than knocking it offline — and
+it moves **zero** credentials; it only keeps the balancer's view fresh so it CAN act. Still dark on
+the fleet, still dry-run on a dev agent.

@@ -1,7 +1,7 @@
 ---
 title: "Build plan — Increment A (live credential re-pointing)"
 spec: "docs/specs/live-credential-repointing-rebalancer.md"
-status: building (approved 2026-06-12 by Justin, CMT-1372)
+status: complete — all steps merged to JKHeadley/main, shipping dark/dry-run (approved 2026-06-12 by Justin, CMT-1372; build complete 2026-06-14; live-writes promotion = CMT-1494, operator's call)
 increment: "A (swap-primitive + ledger + identity-oracle + manual levers); ships dark"
 grounding-base: "v1.3.488 (7526bb5ea), worktree echo/live-cred-repoint"
 ---
@@ -234,18 +234,41 @@ drain (CMT-1335 full) is Increment B.
   flagged, real tree clean, closed allowlist). tsc clean, full `npm run lint` clean, 208/208 unit green.
 - Second-pass review: CONCUR (independent reviewer subagent) — see the side-effects artifact.
 
-### NEXT (resume here)
-- Step 5: `CredentialSwapExecutor` (spec §2.3) — the staged exchange that actually MOVES a credential between
-  two slots: preconditions (exact ledger membership BEFORE path expansion; reject `../`/`~`/abs) → §2.3.1a
-  source-slot CAS re-read before each destructive write (adopt newer same-tenant blob) → staging escrow (COPY,
-  disjoint `instar-credential-swap-staging-*` namespace, journal `begin`) → exchange (keychain first, config
-  second; DEFAULT slot config = `~/.claude.json` home-root) → verify on ACCOUNT IDENTITY (oracle); unavailable →
-  quarantine-never-repair → commit (staging RETAINED) → delayed re-verify ~90s → delete staging, journal `done`.
-  All `security` calls async `execFile` + 10s timeout. Boot recovery acquires the single-mover mutex; balancer
-  first pass gated on a recovery-complete barrier WITH a hang-timeout. It uses `credentialWriteFunnel`'s
-  `withSlotLocks` + `withSingleMover`. Crash-at-every-boundary + clobber-race + permutation-property +
-  identity-verify/adopt/repair/quarantine tests. Second-pass review.
-- Then steps 6–9 (census re-routing, routes + audit scrub, provenance gate, migration) + Step 10 livetest.
+### 2026-06-13/14 — BUILD COMPLETE — all steps merged to JKHeadley/main, shipping dark/dry-run
+
+The full build (Increment A + Increment B) is DONE and in canonical main. Do NOT re-attempt any step
+below — they are all merged. The only open items are the operator's `dryRun:false` promotion decision
+(CMT-1494) and a minor explicit-default-account-config nicety (tracked, enablement-time).
+
+**Increment A — merged, ships dark:**
+- Steps 1–4a — dark-gate foundation, `CredentialLocationLedger`, `CredentialIdentityOracle`,
+  `CredentialWriteFunnel` primitive (PR #1114).
+- Step 4b — funnel-route the credential writers + forbidding lint (PR #1126).
+- Step 5 — `CredentialSwapExecutor` staged exchange (PR #1128).
+- Step 6 — census consumer re-routing (PR #1130).
+- Step 7 — `/credentials/*` levers + the `CredentialAuditEmit` scrub chokepoint (PR #1132).
+- Step 8 — `credentialSource` provenance flag + `CredentialEnvTokenGate` (PR #1133).
+- Step 9 — migration parity + CLAUDE.md awareness (PR #1134).
+- Step 10 — `CredentialRepointingLivetest` battery harness (PR #1135).
+
+**Re-gate (operator directive 2026-06-13) — merged:** moved from `DARK_GATE_EXCLUSIONS` to the
+developmentAgent gate → live-on-dev in dry-run, dark fleet; the destructive write stays behind the
+separate `dryRun:true` canary (PR #1140; spec §2.8 amendment).
+
+**Increment B — the autonomous balancer — merged, ships dark/dry-run:**
+- B1 decision core (`CredentialRebalancerPolicy`) + B2 dead-default eviction + correlated-outage
+  floor + B3a orchestrator (`CredentialRebalancer`) + P19 breaker + snapshot mappers (PR #1137).
+- B3b — wired into the server (gated, reentrancy-guarded `setInterval` pass) + live
+  `GET /credentials/rebalancer` status (PR #1142). The balancer runs its dry-run loop on the dev
+  agent now.
+- B4 — `POST /credentials/livetest` reachable promotion gate, double-gated (armed + dryRun:false) (PR #1143).
+- Busyness refinement — drain targets the busiest slot from the live session count (PR #1144).
+
+Every step cleared the full `/instar-dev` gate; the autonomous-write pieces (env-token gate, swap
+executor, the re-gate, both credential-action routes, the server wiring) were independently
+second-pass reviewed; CI green on each PR. Zero real credentials have been moved (dry-run/dark).
+
+### Historical resume note (superseded by the COMPLETE record above — retained for provenance)
 - Step 5: `CredentialSwapExecutor` (staged exchange, §2.3.1a source-slot CAS, identity-verify,
   quarantine-never-repair, crash-boundary journal). Second-pass review.
 - Then steps 6–9 per the plan. Commit-gate notes: when committing, pass `--spec docs/specs/live-credential-repointing-rebalancer.md` (now `approved:true`); the no-deferrals pre-commit scan will flag the spec's legit Increment-B scoping language ("deferred", "follow-up") — add `<!-- tracked: 20905 -->` (or a CMT id) markers within 200 chars of each, or move the deferral into Increment B's own section, before the first commit.

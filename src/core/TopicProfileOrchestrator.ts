@@ -160,6 +160,8 @@ export interface OrchTopicSession {
 export interface RespawnSpawnOutcome {
   ok: boolean;
   failureClass?: ProfileSpawnFailureClass;
+  /** Profile observed on the newly-created session, after launch defaults. */
+  applied?: AppliedProfile;
 }
 
 /** The narrow session surface the orchestrator is allowed to touch. */
@@ -1054,13 +1056,14 @@ export class TopicProfileOrchestrator {
 
     const outcome = await this.deps.sessions.spawn(key, resolved, { method, resumeId });
     if (outcome.ok) {
-      this.recordApplied(key, resolvedToApplied(resolved));
+      const applied = outcome.applied ?? resolvedToApplied(resolved);
+      this.recordApplied(key, applied);
       this.clearSuppression(key);
       if (resolved.framework === 'codex-cli') {
         const cwd = this.deps.sessions.getSessionForTopic(key)?.cwd ?? session.cwd;
         this.codexFenceWindows.set(cwd, this.now() + RESPAWN_PHASE_TTL_MS);
       }
-      this.discloseTerminal(key, slot, resolved, method, lossNote);
+      this.discloseTerminal(key, slot, appliedToResolvedForDisclosure(resolved, applied), method, lossNote);
       this.audit_({ type: 'respawn-applied', topic: key, method, fresh, breakerRevert: task.breakerRevert });
     } else {
       this.recordSpawnFailureInternal(key, outcome.failureClass ?? 'unknown');
@@ -1122,9 +1125,12 @@ export class TopicProfileOrchestrator {
         `was: ${was} → now: ${now} (${slot.changeCount} changes, origins: ${[...slot.origins].join(', ')})`,
       );
     }
+    parts.push(
+      `Now driving this topic: ${renderDoor(resolved.framework)} door, ${resolved.model ?? 'account-default'} model.`,
+    );
     if (method === 'continuation') {
       parts.push(
-        `Switching this topic to ${resolved.framework}. The full transcript can't follow across that boundary, so I'm carrying recent history + memory — continuing from there.`,
+        `The full transcript can't follow across that boundary, so I'm carrying recent history + memory — continuing from there.`,
       );
     }
     if (lossNote) parts.push(lossNote);
@@ -1799,6 +1805,27 @@ function resolvedToPseudo(resolved: ResolvedTopicProfile): TopicProfile {
     updatedAt: '',
     updatedBy: '',
   };
+}
+
+function appliedToResolvedForDisclosure(
+  resolved: ResolvedTopicProfile,
+  applied: AppliedProfile,
+): ResolvedTopicProfile {
+  return {
+    ...resolved,
+    framework: applied.framework,
+    model: applied.model ?? undefined,
+    modelTier: applied.modelTier,
+    thinkingMode: applied.thinkingMode ?? undefined,
+    effort: applied.effort ?? undefined,
+  };
+}
+
+function renderDoor(framework: IntelligenceFramework): string {
+  if (framework === 'codex-cli') return 'Codex';
+  if (framework === 'claude-code') return 'Claude';
+  if (framework === 'gemini-cli') return 'Gemini';
+  return 'Pi';
 }
 
 /** The characteristics a spawn against this resolution applies. */

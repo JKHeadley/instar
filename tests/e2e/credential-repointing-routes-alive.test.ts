@@ -30,6 +30,8 @@ import { CredentialWriteFunnel } from '../../src/core/CredentialWriteFunnel.js';
 import { claudeCredentialService } from '../../src/core/OAuthRefresher.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { CredentialRebalancer } from '../../src/core/CredentialRebalancer.js';
+import { mapSlots, mapAccounts, resolveRebalancerConfig } from '../../src/core/CredentialRebalancerSnapshot.js';
 
 const AUTH = 'test-e2e-cred-step7';
 const SLOT_A = '/h/.claude';
@@ -65,7 +67,9 @@ function memKeychain(): KeychainCredentialExec {
   map.set(claudeCredentialService(SLOT_B), JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-dddd4444eeee5555ffff6666', refreshToken: 'sk-ant-ort01-rrrr2222' } }));
   return { async readService(s) { return map.get(s) ?? null; }, async writeService(s, v) { map.set(s, v); }, async deleteService(s) { map.delete(s); } };
 }
-const resolveAllow: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_B : ACC_A });
+// Dry-run still proves the exact live preflight a real write would require, so
+// the fixture must describe the seeded pre-swap tenants (not the post-swap state).
+const resolveAllow: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_A : ACC_B });
 
 function buildRepointing(
   stateDir: string,
@@ -84,7 +88,17 @@ function buildRepointing(
     getAnthropicApiKey: () => envTokenOpts?.anthropicApiKey ?? '',
     listSessions: () => envTokenOpts?.fleet ?? [],
   });
-  return { ledger, swapExecutor, resolveIdentity: resolveAllow, audit, levers: new CredentialManualLevers(), envTokenGate };
+  // B3b — wire a real CredentialRebalancer just as the server composition root does, so the
+  // route's `balancerWired`/`rebalancer` surface is exercised on the production-shaped bundle.
+  const rebalancer = new CredentialRebalancer({
+    isEnabled: () => enabled && !envTokenGate.evaluate().refused,
+    isDryRun: () => true,
+    listSlots: () => mapSlots(ledger.getAssignments(), { defaultSlot: SLOT_A }),
+    listAccounts: () => mapAccounts([], Date.now()),
+    resolveConfig: () => resolveRebalancerConfig({ slotCount: 2, desiredDefaultAccountId: ledger.tenantOf(SLOT_A) ?? null }),
+    swap: async (a, b) => { const r = await swapExecutor.swap(a, b); return { ok: r.outcome === 'swapped' || r.outcome === 'dry-run', detail: r.reason }; },
+  });
+  return { ledger, swapExecutor, resolveIdentity: resolveAllow, audit, levers: new CredentialManualLevers(), envTokenGate, rebalancer };
 }
 
 describe('WS5.2 Step 7 /credentials/* E2E lifecycle (feature is alive)', () => {
@@ -152,6 +166,12 @@ describe('WS5.2 Step 7 /credentials/* E2E lifecycle (feature is alive)', () => {
     expect(loc.status).toBe(200);
     expect(loc.body.enabled).toBe(true);
     expect(loc.body.mode).toBe('active');
+
+    // B3c: the identity-audit surface is ALIVE on the production-shaped bundle (the freshness-keeper
+    // that prevents the rebalancer decaying to inert). The field is present (null until a pass runs).
+    const reb = await request(enabledApp).get('/credentials/rebalancer').set(auth());
+    expect(reb.status).toBe(200);
+    expect(reb.body).toHaveProperty('identityAudit');
   });
 
   it('(b) DARK: every POST lever 503s; rebalancer 503; locations reports dark (strict no-op)', async () => {
@@ -182,7 +202,12 @@ describe('WS5.2 Step 7 /credentials/* E2E lifecycle (feature is alive)', () => {
     const r = await request(enabledApp).get('/credentials/rebalancer').set(auth());
     expect(r.status).toBe(200);
     expect(r.body.enabled).toBe(true);
-    expect(r.body.balancerWired).toBe(false); // the autonomous balancer is Increment B
+    // B3b: the balancer is now WIRED — its status surfaces (last pass + breaker).
+    expect(r.body.balancerWired).toBe(true);
+    expect(r.body.rebalancer).toBeTruthy();
+    expect(r.body.rebalancer.enabled).toBe(true);
+    expect(r.body.rebalancer.breaker.open).toBe(false);
+    expect(r.body.rebalancer.breaker.threshold).toBeGreaterThan(0);
     expect(r.body.envTokenGate.refused).toBe(false);
   });
 

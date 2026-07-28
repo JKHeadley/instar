@@ -330,6 +330,20 @@ export class ThreadlineClient extends EventEmitter {
   }
 
   /**
+   * Whether the ENCRYPTED+SIGNED send path is available for a recipient — i.e. we
+   * know its keys so `send()`/`sendAuto()` would use MessageEncryptor.encrypt rather
+   * than the plaintext fallback. Mirrors the exact key check in `sendAuto`.
+   *
+   * Used by the credential-share gate (Secure A2A Verified Pairing §3.5): a credential
+   * must NEVER traverse the plaintext fallback, so the outbound chokepoint refuses a
+   * credential-bearing send when this returns false.
+   */
+  hasEncryptedSendPath(recipientId: AgentFingerprint): boolean {
+    const known = this.knownAgents.get(recipientId);
+    return Boolean(known?.publicKey && known?.x25519PublicKey);
+  }
+
+  /**
    * Discover agents on the relay.
    */
   async discover(filter?: {
@@ -390,6 +404,11 @@ export class ThreadlineClient extends EventEmitter {
       return nameOrId as AgentFingerprint;
     }
 
+    // 1b. Bare fingerprint-prefix match — see findAgentByFingerprintPrefix. This is
+    // the address `threadline_discover` actually hands callers, so it must resolve.
+    const byPrefix = this.findAgentByFingerprintPrefix(nameOrId);
+    if (byPrefix) return byPrefix.agentId;
+
     // 2. Parse disambiguation syntax: "name:fingerprintPrefix"
     const { name, fingerprintPrefix } = this.parseAgentAddress(nameOrId);
 
@@ -411,14 +430,65 @@ export class ThreadlineClient extends EventEmitter {
       return byName.agentId;
     }
 
-    // 4. Cache miss — re-discover and try again
+    // 4. Cache miss — re-discover and try again. The prefix retry matters as much as
+    // the name retry: on a cold cache the first prefix attempt has nothing to match.
     if (this.relayClient) {
       await this.autoDiscover();
+      const byPrefixRetry = this.findAgentByFingerprintPrefix(nameOrId);
+      if (byPrefixRetry) return byPrefixRetry.agentId;
       const byNameRetry = this.findAgentByName(name, fingerprintPrefix);
       if (byNameRetry) return byNameRetry.agentId;
     }
 
     return null;
+  }
+
+  /**
+   * Match a BARE fingerprint prefix (no "name:" syntax) against known agents.
+   *
+   * `threadline_discover` emits each agent's fingerprint TRUNCATED to 8 hex chars,
+   * and the send tool's own parameter docs advertise exactly that form
+   * ("fd9268c2..."), so a bare prefix is the address callers actually hold. Before
+   * this branch existed such an input fell through to name matching, matched no agent
+   * NAMED "7970149e", and resolved to null — so the documented discover-then-send
+   * workflow could not work at all. Two healthy, correctly-configured agents would
+   * simply never connect, because the address one tool returns was an address the
+   * other tool refused.
+   *
+   * Requires a UNIQUE match. This is an addressing function: silently picking one of
+   * several candidates would deliver the message to the WRONG agent, which is worse
+   * than not delivering it. Ambiguity is an explicit error naming the candidates,
+   * matching the convention in findAgentByName.
+   *
+   * Returns undefined — never throws — when the input is not a bare hex string or
+   * matches nothing, so ordinary name resolution still runs unchanged. An agent whose
+   * NAME happens to be hex-like is therefore unaffected: with no fingerprint match
+   * this falls through and the name path resolves it as before.
+   */
+  private findAgentByFingerprintPrefix(input: string): KnownAgent | undefined {
+    // 4 hex chars is the same floor parseAgentAddress already accepts for the
+    // "name:prefix" form — enough entropy to read as a deliberate address.
+    if (!/^[0-9a-f]{4,64}$/i.test(input)) return undefined;
+    const prefix = input.toLowerCase();
+
+    const matches: KnownAgent[] = [];
+    for (const agent of this.knownAgents.values()) {
+      if (agent.agentId.toLowerCase().startsWith(prefix)) matches.push(agent);
+    }
+
+    if (matches.length === 0) return undefined;
+    if (matches.length === 1) return matches[0];
+
+    // Same live-vs-dead twin allowance as name resolution: if exactly one matching
+    // row is live, the stale duplicate does not make the address ambiguous.
+    const onlinePick = this.pickSingleOnline(matches);
+    if (onlinePick) return onlinePick;
+
+    const options = matches.map(a => `  ${a.name} (${a.agentId})`).join('\n');
+    throw new Error(
+      `Ambiguous fingerprint prefix "${input}" — ${matches.length} agents match. ` +
+      `Use the full fingerprint to disambiguate:\n${options}`,
+    );
   }
 
   /**

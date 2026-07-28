@@ -1,0 +1,29 @@
+{
+  "ts": "2026-07-23T17:40:42.741Z",
+  "slug": "context-wall-recovery-robustness",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 262,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The context detector already persisted a true-only latch, but recovery recorded an attempt before its active-child veto. Long-lived helper processes therefore consumed retries without any recovery action and could defer forever. Resume maps were cleared only on the existing recovery route rather than at every inbound spawn chokepoint, and PresenceProxy trusted a live process/pane tail after the original context banner scrolled away. The fix makes positive transcript growth the work receipt, preserves deferrals outside attempt accounting, bounds ambiguity, and carries the durable latch through fresh-spawn and honest-status surfaces."
+  },
+  "classClosure": {
+    "failureClass": "Context-wall episodes can be indefinitely deferred or falsely reported as active because helper-process existence is mistaken for model work.",
+    "closure": "All recovery decisions use transcript growth or a bounded ceiling; every inbound respawn consults the latch; standby status consults the same durable state; legacy latch state migrates safely.",
+    "regressionProof": [
+      "transcript growth defers without consuming an attempt",
+      "static transcript recovers despite helper processes",
+      "unknown evidence forces recovery after 30 minutes",
+      "legacy true-only latches survive reload",
+      "PresenceProxy reports a durable latch instead of active work"
+    ]
+  },
+  "verdict": "pass"
+}

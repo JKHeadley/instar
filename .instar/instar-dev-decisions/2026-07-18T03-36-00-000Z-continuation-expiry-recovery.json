@@ -1,0 +1,19 @@
+{
+  "ts": "2026-07-18T03:36:00.000Z",
+  "slug": "continuation-expiry-recovery",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 98,
+  "causalAutopsy": {
+    "defect": "An expired Codex continuation ledger could only be recovered by recreating its task list, and the continuation CLI could not authenticate after token externalization.",
+    "rootCause": "The API exposed start/complete/stop but no generation-ordered renewal primitive, while the CLI assumed authToken was an inline string.",
+    "fix": "Add an explicit audited renew operation that preserves checklist state, expose expiry timestamps, and resolve INSTAR_AUTH_TOKEN before config fallback.",
+    "prevention": "Unit coverage pins renewal after expiry, completed-task preservation, fresh session binding, and successful continuation of the new generation."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

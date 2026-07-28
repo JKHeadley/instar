@@ -183,6 +183,73 @@ describe('spawnCodexExecJson — stream mechanics', () => {
   });
 });
 
+// ── early-terminal-settle (codex 0.144 shutdown-linger regression) ──────────
+//
+// codex 0.144 `exec --json` emits the agent_message + turn.completed, then
+// LINGERS ~16-30s (writing --output-last-message + exiting only at shutdown).
+// spawnCodexExecJson settles on the terminal line + reaps the lingering child
+// instead of stalling the caller's timeout on an already-completed call.
+describe('spawnCodexExecJson — early-terminal-settle (codex 0.144 linger)', () => {
+  it('settles BEFORE the linger and reaps the child when settleOnTerminalLine fires', async () => {
+    // Emit the two terminal events, then linger for 5s (the shutdown-linger).
+    const script = writeScript(
+      'linger.sh',
+      `printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"HELLO"}}'\n` +
+        `printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}'\n` +
+        `sleep 5\nexit 0`,
+    );
+    const lines: string[] = [];
+    let sawMsg = false;
+    let sawTurn = false;
+    const started = Date.now();
+    const res = await spawnCodexExecJson(SH, [script], {
+      timeoutMs: 30000,
+      env: process.env,
+      prompt: 'p',
+      onLine: (l) => {
+        lines.push(l);
+        if (l.includes('agent_message')) sawMsg = true;
+        if (l.includes('turn.completed')) sawTurn = true;
+      },
+      settleOnTerminalLine: () => sawMsg && sawTurn,
+      terminalSettleGraceMs: 150,
+    });
+    const elapsed = Date.now() - started;
+    // Settled well before the 5s linger (grace 150ms + event latency).
+    expect(elapsed).toBeLessThan(2500);
+    expect(res.terminalCompletion).toBe(true);
+    // Both terminal events reached onLine BEFORE settlement (usage-parse safety).
+    expect(lines.some((l) => l.includes('turn.completed'))).toBe(true);
+    expect(lines.some((l) => l.includes('agent_message'))).toBe(true);
+  }, 15000);
+
+  it('does NOT early-settle when the child exits promptly (no linger) — terminalCompletion stays false', async () => {
+    // Same terminal events, but exit IMMEDIATELY (no linger): the close path
+    // wins the grace race, so behavior is byte-for-byte the normal exit.
+    const script = writeScript(
+      'promptexit.sh',
+      `printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"HELLO"}}'\n` +
+        `printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}'\n` +
+        `exit 0`,
+    );
+    let sawMsg = false;
+    let sawTurn = false;
+    const res = await spawnCodexExecJson(SH, [script], {
+      timeoutMs: 5000,
+      env: process.env,
+      prompt: 'p',
+      onLine: (l) => {
+        if (l.includes('agent_message')) sawMsg = true;
+        if (l.includes('turn.completed')) sawTurn = true;
+      },
+      settleOnTerminalLine: () => sawMsg && sawTurn,
+      terminalSettleGraceMs: 2000,
+    });
+    expect(res.exitCode).toBe(0);
+    expect(res.terminalCompletion).toBeFalsy();
+  }, 10000);
+});
+
 describe('out-dir lifecycle + bounded stale sweep', () => {
   beforeEach(() => {
     _codexOutDirInternals.resetSweepClock();

@@ -17,6 +17,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { PermissionDecisionLedger } from '../../src/permissions/PermissionDecisionLedger.js';
 import { RelationshipBehaviorStore } from '../../src/permissions/RelationshipBehaviorStore.js';
 import { buildSliceZeroGate, CAST } from '../../src/permissions/testing/SlackScenarioHarness.js';
+import { allowTestIdentities } from '../helpers/allow-test-identities.js';
 
 let tmp: string | null = null;
 
@@ -195,6 +196,9 @@ describe('GET /permissions/baselines (integration — Pillar 3)', () => {
 
 describe('GET /permissions/users (integration) — the grant form person picker', () => {
   function seedUsers(stateDir: string, users: unknown[]): void {
+    // These fixtures use known test-identity ids (U_MIA/U_ADAM); enable the
+    // double-keyed test escape so they load in this throwaway state dir.
+    allowTestIdentities(stateDir);
     fs.writeFileSync(path.join(stateDir, 'users.json'), JSON.stringify(users, null, 2));
   }
 

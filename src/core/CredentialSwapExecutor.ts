@@ -380,9 +380,91 @@ export class CredentialSwapExecutor {
     return inner.value as SwapResult;
   }
 
+  /**
+   * Consolidate two independently confirmed copies of the SAME account. The
+   * labelled/retained home stays readable; the impostor copy is staged through
+   * the normal escrow namespace, then vacated under the same mover + slot locks.
+   */
+  async vacateDuplicate(impostorSlot: string, retainedSlot: string, accountId: string): Promise<SwapResult> {
+    if (!this.config.enabled) return { outcome: 'disabled', reason: 'credential re-pointing is disabled' };
+    if (impostorSlot === retainedSlot) return { outcome: 'precondition-failed', reason: 'duplicate slots are identical' };
+    const members = new Set(this.ledger.getAssignments().map((a) => a.slot));
+    if (!members.has(impostorSlot) || !members.has(retainedSlot)) {
+      return { outcome: 'precondition-failed', reason: 'duplicate vacate requires known ledger slots' };
+    }
+    const swapId = this.swapIdFactory();
+    const mover = await this.funnel.withSingleMover(() =>
+      this.funnel.withSlotLocks([credentialSlotKey(impostorSlot), credentialSlotKey(retainedSlot)], async () => {
+        const [impostorIdentity, retainedIdentity] = await Promise.all([
+          this.resolveIdentity(impostorSlot), this.resolveIdentity(retainedSlot),
+        ]);
+        if ('unavailable' in impostorIdentity || 'unavailable' in retainedIdentity ||
+            impostorIdentity.accountId !== accountId || retainedIdentity.accountId !== accountId) {
+          this.ledger.quarantineSlot(impostorSlot, 'duplicate vacate live identity pre-flight refused');
+          return { outcome: 'precondition-failed', reason: 'duplicate vacate identity pre-flight refused', swapId, quarantinedSlots: [impostorSlot] } as SwapResult;
+        }
+        const blob = await this.readBlob(impostorSlot);
+        if (!blob) return { outcome: 'precondition-failed', reason: 'duplicate impostor blob unreadable', swapId } as SwapResult;
+        if (this.config.dryRun) {
+          this.audit(swapId, 'duplicate-vacate-dry-run', impostorSlot, retainedSlot, `account=${accountId}`);
+          return { outcome: 'dry-run', reason: 'dry-run — duplicate impostor would be staged then vacated', swapId } as SwapResult;
+        }
+        const staging = this.stagingService(swapId);
+        await this.keychain.writeService(staging, blob.raw);
+        this.ledger.appendJournal({ op: 'swap', phase: 'begin', slots: [impostorSlot, retainedSlot], detail: `swapId=${swapId} duplicate-vacate staged` });
+        await this.keychain.deleteService(claudeCredentialService(impostorSlot));
+        const retainedAfter = await this.resolveIdentity(retainedSlot);
+        const impostorAfter = await this.keychain.readService(claudeCredentialService(impostorSlot));
+        if ('unavailable' in retainedAfter || retainedAfter.accountId !== accountId || impostorAfter !== null) {
+          await this.keychain.writeService(claudeCredentialService(impostorSlot), blob.raw);
+          this.ledger.appendJournal({ op: 'swap', phase: 'aborted', slots: [impostorSlot, retainedSlot], detail: `swapId=${swapId} duplicate-vacate restored-after-failed-verify` });
+          await this.keychain.deleteService(staging);
+          this.ledger.quarantineSlot(impostorSlot, 'duplicate vacate post-write verification failed');
+          return { outcome: 'quarantined', reason: 'duplicate vacate post-write verification failed; impostor restored and quarantined', swapId, quarantinedSlots: [impostorSlot] } as SwapResult;
+        }
+        this.ledger.quarantineSlot(impostorSlot, `duplicate of ${accountId} vacated; owner re-login slot`);
+        this.ledger.appendJournal({ op: 'swap', phase: 'done', slots: [impostorSlot, retainedSlot], detail: `swapId=${swapId} duplicate-vacated account=${accountId}` });
+        await this.keychain.deleteService(staging);
+        this.notifySlotsChanged([impostorSlot, retainedSlot]);
+        this.audit(swapId, 'duplicate-vacated', impostorSlot, retainedSlot, `account=${accountId}`);
+        return { outcome: 'swapped', reason: 'duplicate impostor credential vacated; retained home identity-confirmed', swapId } as SwapResult;
+      }),
+    );
+    if (!mover.ran) return { outcome: 'skipped', reason: mover.skippedReason ?? 'funnel busy' };
+    const inner = mover.value as { ran: boolean; value?: SwapResult; skippedReason?: string };
+    return inner.ran ? inner.value! : { outcome: 'skipped', reason: inner.skippedReason ?? 'slot lock busy' };
+  }
+
   /** Runs under the single-mover mutex + both slot locks. */
   private async swapLocked(slotA: string, slotB: string, expectA: string, expectB: string): Promise<SwapResult> {
     const swapId = this.swapIdFactory();
+
+    // Operator invariant: a swap may never begin from a fictional ledger label.
+    // Probe BOTH source/target slots live while holding their locks, before staging
+    // or writing anything. This deliberately bypasses any periodic identity cache:
+    // swap authority requires present-tense identity, not a six-hour-old audit.
+    for (const [slot, expected] of [[slotA, expectA], [slotB, expectB]] as const) {
+      const identity = await this.resolveIdentity(slot);
+      if ('unavailable' in identity) {
+        this.audit(swapId, 'preflight-refused', slotA, slotB, `slot=${slot} identity unavailable`);
+        return {
+          outcome: 'precondition-failed',
+          reason: `live identity pre-flight unavailable for '${slot}' — swap refused`,
+          swapId,
+        };
+      }
+      if (!expected || identity.accountId !== expected) {
+        this.audit(swapId, 'preflight-refused', slotA, slotB, `slot=${slot} ledger=${expected || 'none'} live=${identity.accountId}`);
+        this.ledger.quarantineSlot(slot, `swap pre-flight identity mismatch (ledger=${expected || 'none'}, live=${identity.accountId})`);
+        return {
+          outcome: 'precondition-failed',
+          reason: `live identity pre-flight disagreed with the ledger for '${slot}' — quarantined; swap refused`,
+          swapId,
+          quarantinedSlots: [slot],
+        };
+      }
+      this.ledger.markVerified(slot, this.nowIso());
+    }
 
     // Step 1 (continued): re-read both blobs fresh; they must parse + carry refresh tokens.
     const read1A = await this.readBlob(slotA);
@@ -689,6 +771,25 @@ export class CredentialSwapExecutor {
     // ran iff the swap committed); for an in-flight entry we resolve by reading the live identity
     // of each slot and quarantining anything we cannot confirm. We never guess a tenant.
     const staging = this.stagingService(entry.swapId);
+    const journalDetail = this.ledger.getJournal().filter((e) => parseSwapId(e.detail) === entry.swapId).at(-1)?.detail ?? '';
+    if (journalDetail.includes('duplicate-vacate')) {
+      const staged = await this.keychain.readService(staging);
+      if (!staged) {
+        this.ledger.quarantineSlot(slotA, 'boot-recovery: duplicate-vacate escrow missing');
+        return;
+      }
+      const liveRaw = await this.keychain.readService(claudeCredentialService(slotA));
+      if (liveRaw === null) await this.keychain.writeService(claudeCredentialService(slotA), staged);
+      const restored = await this.resolveIdentity(slotA);
+      if ('unavailable' in restored) {
+        this.ledger.quarantineSlot(slotA, 'boot-recovery: duplicate-vacate restore unverified');
+        return;
+      }
+      await this.keychain.deleteService(staging);
+      this.ledger.appendJournal({ op: 'swap', phase: 'aborted', slots: entry.slots, detail: `swapId=${entry.swapId} duplicate-vacate recovered-restored` });
+      this.audit(entry.swapId, 'duplicate-vacate-recovered', slotA, slotB, `account=${restored.accountId}`);
+      return;
+    }
     let allConfirmed = true;
     for (const slot of [slotA, slotB]) {
       const id = await this.resolveIdentity(slot);

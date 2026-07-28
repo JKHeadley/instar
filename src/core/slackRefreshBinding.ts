@@ -81,22 +81,48 @@ export function parseSlackConversationKey(key: string): string | null {
 /**
  * Stable negative synthetic topic id for a Slack routing key.
  *
- * IDENTICAL hash to `server.ts:slackChannelToSyntheticId` and the inline copy
- * in `routes.ts` (build-event heartbeat) — sum-shift char hash, negated so it
- * can never collide with a (positive) Telegram topic id. RefreshResult keeps
- * a numeric `topicId` for back-compat consumers (e.g. the restart-all log
- * line reads result.topicId); Slack results carry this synthetic id so those
+ * §4 (durable-conversation-identity, increment 2): the hash copy this module
+ * carried is RETIRED — this is a re-export of `candidateIdForRoutingKey` from
+ * the ONE consolidated identity surface, value-identical by golden parity
+ * (§10). It is the mint CANDIDATE, no longer an identity authority (the
+ * ConversationRegistry is the collision authority). RefreshResult keeps a
+ * numeric `topicId` for back-compat consumers (e.g. the restart-all log line
+ * reads result.topicId); Slack results carry this candidate id so those
  * consumers stay type- and meaning-compatible with the rest of the system's
  * Slack↔numeric bridging (PresenceProxy, resume heartbeat).
- *
- * NOTE for the integrating session: this is now the THIRD copy of the hash —
- * consolidating server.ts + routes.ts onto this export is a wiring follow-up
- * (both files are owned by other builders in this round).
  */
-export function slackRoutingKeySyntheticId(routingKey: string): number {
-  let hash = 0;
-  for (let i = 0; i < routingKey.length; i++) {
-    hash = ((hash << 5) - hash + routingKey.charCodeAt(i)) | 0;
+export { candidateIdForRoutingKey as slackRoutingKeySyntheticId } from './conversationIdentity.js';
+
+/**
+ * slack-respawn-bind-token fix: resolve the `bootstrapConversationIds` for a Slack
+ * session RESPAWN (the /sessions/refresh, quota-swap, restart, restart-all paths, all
+ * funneling through SessionRefresh → slackRespawner) from its `routingKey`.
+ *
+ * A FRESH Slack spawn passes `bootstrapConversationIds: [conversationId]` so the session
+ * mints `INSTAR_BIND_TOKEN` + `INSTAR_CONVERSATION_ID` (durable-conversation-identity §7)
+ * and can open durable state (a commitment) bound to its minted conversation id. The
+ * respawn path previously OMITTED it, so a refreshed/quota-swapped Slack session came up
+ * token-less and its durable binds were refused (fail-closed) → the follow-through fell
+ * back to a fragile session-local timer that dies on the next restart (the live-proven
+ * S7 gap). This restores parity. `mintForInbound` is an idempotent get-or-create, so it
+ * returns the SAME id the fresh dispatch resolved for this key.
+ *
+ * Fail-toward-respawn: any resolution error → `undefined` (the prior token-less
+ * behavior), NEVER throws — a refresh must never be blocked by id resolution.
+ */
+export function slackRespawnBootstrapIds(
+  routingKey: string,
+  mintForInbound: (key: string) => { id: number | null },
+): number[] | undefined {
+  try {
+    const id = mintForInbound(routingKey).id;
+    return typeof id === 'number' ? [id] : undefined;
+  } catch {
+    /* @silent-fallback-ok: fail-toward-respawn — id resolution must NEVER block a Slack
+       session refresh/quota-swap/restart; a resolution error degrades to `undefined`
+       (the prior token-less behavior), exactly the safe direction. The absence of a bind
+       token only means this respawned session can't open durable state until its next
+       clean spawn — never a lost refresh. */
+    return undefined;
   }
-  return -(Math.abs(hash) + 1); // always negative, never 0
 }

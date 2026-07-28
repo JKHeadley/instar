@@ -136,6 +136,88 @@ describe('MachinePoolRegistry', () => {
     expect(reg.isPlacementEligible('m_a')).toBe(true);
   });
 
+  // ── COARSE heartbeat (file-based, git-synced) must NOT drive the clock-skew FSM ──
+  // Regression suite for the permanent false-positive quarantine (live Laptop↔Mini,
+  // 2026-06-30): refreshPool fed each peer's 30-min-old file `lastHeartbeatAt` into
+  // the 5-min clock-skew check, stranding the peer in suspect-clock-removed forever.
+  describe('coarse heartbeat (clock-skew abstention)', () => {
+    it('a coarse beat with a STALE timestamp never quarantines (the fix)', () => {
+      let now = 1_000_000;
+      const onQ = vi.fn();
+      const reg = mk(() => now, onQ);
+      // Two consecutive coarse beats, each 30 min stale (would be divergent if live).
+      reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now - 1_800_000).toISOString(), coarseHeartbeat: true });
+      now += 1000;
+      reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now - 1_800_000).toISOString(), coarseHeartbeat: true });
+      expect(reg.clockSkewStatus('m_a')).toBe('ok');
+      expect(reg.isPlacementEligible('m_a')).toBe(true);
+      expect(onQ).not.toHaveBeenCalled();
+    });
+
+    it('the LIVE path still quarantines a stale-timestamp peer (no regression)', () => {
+      let now = 1_000_000;
+      const onQ = vi.fn();
+      const reg = mk(() => now, onQ);
+      // Same stale timestamps but NOT marked coarse → the live FSM still fires.
+      reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now - 1_800_000).toISOString() });
+      now += 1000;
+      reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now - 1_800_000).toISOString() });
+      expect(reg.clockSkewStatus('m_a')).toBe('suspect-clock-removed');
+      expect(onQ).toHaveBeenCalledTimes(1);
+    });
+
+    it('interleaved fresh-live + stale-coarse beats stay eligible (the exact Laptop↔Mini bug)', () => {
+      let now = 1_000_000;
+      const onQ = vi.fn();
+      const reg = mk(() => now, onQ);
+      // The real scenario: PeerPresencePuller fresh beats interleave with refreshPool's
+      // 30s coarse file beats. Before the fix, the coarse beat re-diverged the FSM so the
+      // fresh beats never reached the 2 clean beats to re-admit → permanent quarantine.
+      for (let i = 0; i < 6; i++) {
+        reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now).toISOString() }); // fresh live
+        now += 1000;
+        reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now - 1_800_000).toISOString(), coarseHeartbeat: true }); // stale coarse
+        now += 1000;
+      }
+      expect(reg.clockSkewStatus('m_a')).toBe('ok');
+      expect(reg.isPlacementEligible('m_a')).toBe(true);
+      expect(onQ).not.toHaveBeenCalled();
+    });
+
+    it('a coarse beat still refreshes liveness (online)', () => {
+      let now = 1_000_000;
+      const reg = mk(() => now);
+      reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now - 1_800_000).toISOString(), coarseHeartbeat: true });
+      expect(reg.getCapacity('m_a')!.online).toBe(true); // liveness from routerReceivedAt, unaffected
+    });
+
+    it('a coarse stale beat does not stomp a fresher live selfReportedLastSeen', () => {
+      let now = 1_000_000;
+      const reg = mk(() => now);
+      const freshIso = new Date(now).toISOString();
+      reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: freshIso }); // live, fresh
+      now += 1000;
+      reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now - 1_800_000).toISOString(), coarseHeartbeat: true }); // coarse, older
+      expect(reg.getCapacity('m_a')!.selfReportedLastSeen).toBe(freshIso); // fresher live ts preserved
+    });
+
+    it('a coarse beat does not falsely re-admit a genuinely quarantined peer', () => {
+      let now = 1_000_000;
+      const reg = mk(() => now);
+      // Quarantine via live divergent beats.
+      reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now + 600_000).toISOString() });
+      now += 1000;
+      reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now + 600_000).toISOString() });
+      expect(reg.clockSkewStatus('m_a')).toBe('suspect-clock-removed');
+      // A coarse in-tolerance beat must NOT count toward re-admission (it abstains).
+      now += 1000;
+      reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now).toISOString(), coarseHeartbeat: true });
+      now += 1000;
+      reg.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date(now).toISOString(), coarseHeartbeat: true });
+      expect(reg.clockSkewStatus('m_a')).toBe('suspect-clock-removed'); // still quarantined — only LIVE clean beats re-admit
+    });
+  });
+
   it('getCapacities returns every known machine; unseen machine is offline + ok', () => {
     const now = 1_000_000;
     const reg = mk(() => now);
@@ -177,5 +259,113 @@ describe('MachinePoolRegistry — quotaState passthrough (quota-aware placement)
     now += 1000;
     reg.recordHeartbeat({ machineId: 'm1', selfReportedLastSeen: new Date(now).toISOString(), loadAvg: 1.2 });
     expect(reg.getCapacity('m1')?.quotaState).toBeUndefined();
+  });
+});
+
+// STATESYNC-PEER-ADVERT-PROPAGATION-FIX (root-caused live Laptop↔Mini, 2026-06-14):
+// the HTTP-pulled stateSyncReceive advert was being WIPED every 30s by refreshPool's
+// sparse `{machineId,selfReportedLastSeen}` liveness echo (recordHeartbeat replaced obs
+// wholesale), so the flag-coherence gate falsely read "peer cannot receive" and blocked
+// cross-machine replication. recordHeartbeat now carries seamlessnessFlags forward across
+// a beat that OMITS it — the same pattern guardPosture already uses — while a genuine
+// withdrawal (a present object with the flag flipped) still propagates.
+describe('MachinePoolRegistry — seamlessnessFlags carry-forward (light-beat clobber fix)', () => {
+  const machines = [
+    { machineId: 'm_mini', nickname: 'Mac Mini' },
+    { machineId: 'm_laptop', nickname: 'Laptop' },
+  ];
+  function mk(now: () => number) {
+    return new MachinePoolRegistry({
+      listMachines: () => machines,
+      clockSkewToleranceMs: 300_000,
+      failoverThresholdMs: 120_000,
+      now,
+    });
+  }
+
+  it('a SPARSE liveness beat does NOT wipe a previously-pulled seamlessnessFlags (carry-forward)', () => {
+    let now = 1_000_000;
+    const reg = mk(() => now);
+    // Rich pull: the peer advertised it can receive these stores.
+    reg.recordHeartbeat({
+      machineId: 'm_mini',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      loadAvg: 1.0,
+      seamlessnessFlags: { ws11DeliverReceive: true, stateSyncReceive: { learnings: true, knowledge: true } },
+    });
+    expect(reg.getCapacity('m_mini')?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true, knowledge: true });
+
+    // 30s sparse liveness echo (refreshPool L14095) — carries NO seamlessnessFlags.
+    now += 30_000;
+    reg.recordHeartbeat({ machineId: 'm_mini', selfReportedLastSeen: new Date(now).toISOString() });
+
+    // The pulled advert SURVIVES (was wiped before the fix → peer read as "cannot receive").
+    const cap = reg.getCapacity('m_mini');
+    expect(cap?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true, knowledge: true });
+    expect(cap?.online).toBe(true);
+  });
+
+  it('a GENUINE withdrawal (present object, flag flipped) PROPAGATES — no false carry-forward', () => {
+    let now = 1_000_000;
+    const reg = mk(() => now);
+    reg.recordHeartbeat({
+      machineId: 'm_mini',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      seamlessnessFlags: { stateSyncReceive: { learnings: true } },
+    });
+    // The peer DISABLED the learnings store: it still emits a PRESENT object with the
+    // store removed (a rich beat ALWAYS builds the object — server.ts L14071). This is
+    // a real withdrawal and must NOT be masked by carry-forward.
+    now += 30_000;
+    reg.recordHeartbeat({
+      machineId: 'm_mini',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      seamlessnessFlags: { stateSyncReceive: {} },
+    });
+    expect(reg.getCapacity('m_mini')?.seamlessnessFlags?.stateSyncReceive).toEqual({});
+  });
+
+  it('carry-forward is SCOPED to seamlessnessFlags — quotaState still clears on a sparse beat (fail-open preserved)', () => {
+    let now = 1_000_000;
+    const reg = mk(() => now);
+    reg.recordHeartbeat({
+      machineId: 'm_mini',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      quotaState: { blocked: true, reason: 'busy' },
+      seamlessnessFlags: { stateSyncReceive: { learnings: true } },
+    });
+    now += 30_000;
+    reg.recordHeartbeat({ machineId: 'm_mini', selfReportedLastSeen: new Date(now).toISOString() });
+    const cap = reg.getCapacity('m_mini');
+    // seamlessnessFlags (fail-CLOSED) is carried forward; quotaState (fail-OPEN) is NOT.
+    expect(cap?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true });
+    expect(cap?.quotaState).toBeUndefined();
+  });
+
+  it('carry-forward is PER-PEER (correct for N ≥ 1) — a sparse beat for one peer does not touch another', () => {
+    let now = 1_000_000;
+    const reg = mk(() => now);
+    reg.recordHeartbeat({
+      machineId: 'm_mini',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      seamlessnessFlags: { stateSyncReceive: { learnings: true } },
+    });
+    reg.recordHeartbeat({
+      machineId: 'm_laptop',
+      selfReportedLastSeen: new Date(now).toISOString(),
+      seamlessnessFlags: { stateSyncReceive: { knowledge: true } },
+    });
+    // A sparse beat for m_mini only.
+    now += 30_000;
+    reg.recordHeartbeat({ machineId: 'm_mini', selfReportedLastSeen: new Date(now).toISOString() });
+    expect(reg.getCapacity('m_mini')?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true });
+    expect(reg.getCapacity('m_laptop')?.seamlessnessFlags?.stateSyncReceive).toEqual({ knowledge: true });
+  });
+
+  it('no prior pull → a sparse beat does NOT fabricate a seamlessnessFlags (nothing to carry)', () => {
+    const now = 1_000_000;
+    const reg = mk(() => now);
+    reg.recordHeartbeat({ machineId: 'm_mini', selfReportedLastSeen: new Date(now).toISOString() });
+    expect(reg.getCapacity('m_mini')?.seamlessnessFlags).toBeUndefined();
   });
 });

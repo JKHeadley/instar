@@ -53,6 +53,14 @@ export interface ReapEvent {
   midWork?: boolean;
   /** Clamped work-evidence names behind midWork. */
   workEvidence?: string[];
+  /** Notifier-stamped (NOT emitter-supplied): set at ingest when an `age-limit`
+   *  reap targets a session whose topic has an ACTIVE autonomous run — the recycle
+   *  is a continuation (the run respawns on its next turn), not a death. The
+   *  honest-recycle copy (honest-session-recycle-spec) keys on this instead of
+   *  the "reached its maximum allowed runtime" death template. */
+  autonomousRunActive?: boolean;
+  /** Notifier-stamped: seconds left on that autonomous run, read at reap time. */
+  runRemainingSeconds?: number;
 }
 
 export interface ReapNotifierDeps {
@@ -83,6 +91,11 @@ export interface ReapNotifierDeps {
   /** True when a resume-queue entry is QUEUED for this session AND the queue is
    *  LIVE (not dry-run) — gates the "resume queued" line (R1.2). */
   resumeQueuedFor?: (tmuxSession: string) => boolean;
+  /** Resolve whether `tmuxSession`'s topic has an ACTIVE autonomous run, and how
+   *  many seconds remain on it, read at reap time. Returns null when there is no
+   *  active run (or on any error — the safe direction is the legacy death copy,
+   *  never silence). Honest-recycle (honest-session-recycle-spec). */
+  autonomousRunActiveFor?: (tmuxSession: string) => { active: boolean; remainingSeconds?: number } | null;
   /** Loud degradation surface for enqueue failures (aggregated upstream). */
   reportDegradation?: (reason: string, impact: string) => void;
   now?: () => number;
@@ -142,6 +155,29 @@ function literal(value: string): string {
   return '`' + String(value).replace(/`/g, "'") + '`';
 }
 
+/** Humanize a remaining-seconds count as "11h 42m" / "42m" / "" (when absent). */
+export function formatRunRemaining(seconds: number | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return '';
+  const total = Math.round(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  if (m > 0) return `${m}m`;
+  return 'under a minute';
+}
+
+/** Per-session detail clause — honest about an autonomous-run recycle (a
+ *  continuation) vs a terminal reap. Used in the aggregate bullet lists. */
+function reapDetailClause(ev: ReapEvent): string {
+  if (ev.autonomousRunActive) {
+    const left = formatRunRemaining(ev.runRemainingSeconds);
+    return left
+      ? `recycled at its lifetime cap — its autonomous run has ${left} left`
+      : `recycled at its lifetime cap — its autonomous run is still active`;
+  }
+  return plainEnglishReason(ev.reason);
+}
+
 interface TopicAggregate {
   count: number;
   midWorkCount: number;
@@ -176,6 +212,20 @@ export class ReapNotifier {
     // the user already knows about their own operator kill.
     if ((event.disposition ?? 'terminal') !== 'terminal') return;
     if (event.origin === 'operator') return;
+
+    // Honest-recycle stamp (honest-session-recycle-spec): an age-limit reap of a
+    // session whose topic has an ACTIVE autonomous run is a RECYCLE (the run
+    // respawns on its next turn), not a death. Read the run state NOW — it is
+    // accurate at reap time, whereas the SUMMARY release can be up to ~30 min
+    // later. We never SILENCE the notice (a genuinely-stopped run still surfaces
+    // loudly) — only tell the truth in its wording. Fail toward the legacy death
+    // copy (safe direction).
+    if (event.reason === 'age-limit') {
+      const recycle = this.safeAutonomousRunActive(event.session.tmuxSession);
+      if (recycle?.active) {
+        event = { ...event, autonomousRunActive: true, runRemainingSeconds: recycle.remainingSeconds };
+      }
+    }
 
     this.windowCount++;
     this.buffer.push(event);
@@ -236,6 +286,17 @@ export class ReapNotifier {
     } catch {
       // @silent-fallback-ok — null = "unbound": the session is routed to the
       // lifeline index line instead; a notice is never dropped on this path.
+      return null;
+    }
+  }
+
+  private safeAutonomousRunActive(tmuxSession: string): { active: boolean; remainingSeconds?: number } | null {
+    try {
+      return this.deps.autonomousRunActiveFor?.(tmuxSession) ?? null;
+    } catch {
+      // @silent-fallback-ok — fail toward the legacy "shut down" copy: a read
+      // error must never silence the notice, only forgo the gentler recycle
+      // wording. The session still gets its (terminal-worded) notice.
       return null;
     }
   }
@@ -428,7 +489,16 @@ export class ReapNotifier {
     const lines: string[] = [];
     if (agg.count === 1 && agg.detail.length === 1) {
       const ev = agg.detail[0];
-      lines.push(`🪦 Your session ${literal(ev.session.name)} was shut down — ${plainEnglishReason(ev.reason)}.`);
+      if (ev.autonomousRunActive) {
+        const left = formatRunRemaining(ev.runRemainingSeconds);
+        lines.push(
+          `🔄 Your session ${literal(ev.session.name)} was recycled at its per-session lifetime cap` +
+            (left ? ` — your autonomous run has ${left} left` : ` — your autonomous run is still active`) +
+            `, so no work was lost. I'll pick it back up on my next turn — send a message if I stay quiet.`,
+        );
+      } else {
+        lines.push(`🪦 Your session ${literal(ev.session.name)} was shut down — ${plainEnglishReason(ev.reason)}.`);
+      }
       if (ev.midWork) {
         lines.push(`It was in the middle of work when it was stopped.`);
       }
@@ -443,7 +513,7 @@ export class ReapNotifier {
       : `🪦 ${agg.count} of this topic's sessions were shut down (details were trimmed in a busy window — every shutdown is still recorded).`;
     lines.push(header);
     for (const ev of agg.detail.slice(-5)) {
-      lines.push(`• ${literal(ev.session.name)} — ${plainEnglishReason(ev.reason)}${ev.midWork ? ' (mid-work)' : ''}`);
+      lines.push(`• ${literal(ev.session.name)} — ${reapDetailClause(ev)}${ev.midWork ? ' (mid-work)' : ''}`);
     }
     if (agg.detail.length > 5) {
       lines.push(`(showing the latest 5 of ${agg.detail.length})`);
@@ -460,7 +530,7 @@ export class ReapNotifier {
   private formatUnboundNotice(unbound: TopicAggregate): string {
     const lines = [`🪦 ${unbound.count} background session${unbound.count === 1 ? ' was' : 's were'} shut down:`];
     for (const ev of unbound.detail.slice(-5)) {
-      lines.push(`• ${literal(ev.session.name)} — ${plainEnglishReason(ev.reason)}${ev.midWork ? ' (mid-work)' : ''}`);
+      lines.push(`• ${literal(ev.session.name)} — ${reapDetailClause(ev)}${ev.midWork ? ' (mid-work)' : ''}`);
     }
     if (unbound.count > unbound.detail.length) {
       lines.push(`(showing ${Math.min(5, unbound.detail.length)} of ${unbound.count})`);
@@ -479,6 +549,12 @@ export class ReapNotifier {
   // ── Legacy formatting (byte-compatible) ──────────────────────────────
 
   private formatSingleLegacy(ev: ReapEvent): string {
+    if (ev.autonomousRunActive) {
+      const left = formatRunRemaining(ev.runRemainingSeconds);
+      return `🔄 Session ${literal(ev.session.name)} was recycled at its lifetime cap`
+        + (left ? ` — its autonomous run has ${left} left` : ` — its autonomous run is still active`)
+        + `; no work was lost — it resumes on its next turn.`;
+    }
     return `🪦 Session ${literal(ev.session.name)} was shut down — ${literal(ev.reason)}. `
       + `See the reap-log (\`GET /sessions/reap-log\`) for the full record.`;
   }

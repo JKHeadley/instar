@@ -76,6 +76,23 @@ export interface MergeRunnerConfig {
   mergeTimeoutMs: number;
   mergeKillGraceMs: number;
   expectedContractVersion: number;
+  /**
+   * Explicit per-agent GitHub child environment. Null means the act path is
+   * unavailable; the runner must not fall back to the machine-global gh seat.
+   */
+  resolveGitHubEnv: () => NodeJS.ProcessEnv | null;
+  /**
+   * Merge strategy (mergerunner-auto-arm-handoff). `auto` (default) arms GitHub
+   * native auto-merge via `safe-merge … --auto` and returns in seconds; `admin`
+   * is the legacy synchronous poll+merge via `--admin`. Absent → 'auto'.
+   */
+  mergeStrategy?: 'auto' | 'admin';
+  /**
+   * The `--auto` spawn deadline (default ~60s). Arming is a single API call, so
+   * the 25-min `mergeTimeoutMs` is vestigial on the auto path — a hung arm
+   * should trip in minutes, not ~26 min. The admin path keeps `mergeTimeoutMs`.
+   */
+  armTimeoutMs?: number;
   /** node executable (default process.execPath). */
   nodePath?: string;
 }
@@ -120,14 +137,26 @@ export class DefaultMergeRunner implements MergeRunner {
     this.now = deps.now ?? (() => Date.now());
   }
 
+  /**
+   * The resolved merge strategy the runner will spawn with (mergerunner-auto-arm-
+   * handoff M2). Read-only — exposed so the wiring-integrity test can prove the
+   * config survived `config → GreenPrAutoMergerConfig → buildGreenPrDeps →
+   * MergeRunnerConfig` and the runner is no longer hardcoded to `--admin`.
+   */
+  get resolvedStrategy(): 'auto' | 'admin' { return this.cfg.mergeStrategy ?? 'auto'; }
+  /** The resolved `--auto` spawn deadline (M2 wiring-integrity surface). */
+  get resolvedArmTimeoutMs(): number { return this.cfg.armTimeoutMs ?? 60_000; }
+
   // ---- contract probe -----------------------------------------------------
 
   async probeContract(): Promise<{ ok: boolean; version?: number }> {
     try {
+      const githubEnv = this.cfg.resolveGitHubEnv();
+      if (!githubEnv) return { ok: false };
       const out = await this.spawn({
         command: this.cfg.nodePath ?? process.execPath,
         args: [this.cfg.safeMergePath, '--capabilities'],
-        env: process.env,
+        env: githubEnv,
         deadlineMs: 30_000,
       });
       if (out.status !== 0) return { ok: false };
@@ -161,6 +190,11 @@ export class DefaultMergeRunner implements MergeRunner {
       this.log(`safe-merge hash changed between probe and exec — refusing (${attempt.pr})`);
       return { outcome: 'skipped:safe-merge-contract', confirmedMerged: false };
     }
+    const githubEnv = this.cfg.resolveGitHubEnv();
+    if (!githubEnv) {
+      this.log(`explicit GitHub runtime unavailable — refusing (${attempt.pr})`);
+      return { outcome: 'skipped:github-runtime-unavailable', confirmedMerged: false };
+    }
 
     const attemptToken = crypto.randomBytes(8).toString('hex');
     // Phase 1: durable intent record BEFORE the spawn.
@@ -170,18 +204,28 @@ export class DefaultMergeRunner implements MergeRunner {
     };
     this.writeInFlight(record);
 
+    // Strategy select (mergerunner-auto-arm-handoff). The default arm path spawns
+    // `safe-merge … --auto` (GitHub native auto-merge; returns in seconds) with a
+    // SHORT armTimeoutMs deadline; the legacy admin path keeps `--admin` + the
+    // 25-min mergeTimeoutMs deadline.
+    const strategy = this.cfg.mergeStrategy ?? 'auto';
+    const strategyFlag = strategy === 'admin' ? '--admin' : '--auto';
+    const pathTimeoutMs = strategy === 'admin'
+      ? this.cfg.mergeTimeoutMs
+      : (this.cfg.armTimeoutMs ?? 60_000);
+
     let out: SpawnOutcome;
     try {
       out = await this.spawn({
         command: this.cfg.nodePath ?? process.execPath,
         args: [
           this.cfg.safeMergePath, String(attempt.pr),
-          '--repo', this.cfg.repo, '--squash', '--delete-branch', '--admin',
+          '--repo', this.cfg.repo, '--squash', '--delete-branch', strategyFlag,
           '--match-head-commit', attempt.headRefOid,
-          '--deadline-ms', String(this.cfg.mergeTimeoutMs),
+          '--deadline-ms', String(pathTimeoutMs),
         ],
-        env: { ...process.env, GREEN_PR_ATTEMPT_TOKEN: attemptToken },
-        deadlineMs: this.cfg.mergeTimeoutMs + this.cfg.mergeKillGraceMs,
+        env: { ...githubEnv, GREEN_PR_ATTEMPT_TOKEN: attemptToken },
+        deadlineMs: pathTimeoutMs + this.cfg.mergeKillGraceMs,
         onPid: (pid) => {
           // Phase 2: patch pid/pgid (the child's pid IS its pgid when detached).
           record.pid = pid;
@@ -194,14 +238,24 @@ export class DefaultMergeRunner implements MergeRunner {
       return { outcome: `error:spawn-${String((e as Error)?.message).slice(0, 40)}`, confirmedMerged: false };
     }
 
-    const outcome = parseResultLine(out.stdout) ?? (out.deadlineKilled ? 'refused:checks-timeout' : 'error:no-result-line');
+    const raw = parseResultLine(out.stdout) ?? (out.deadlineKilled ? 'refused:checks-timeout' : 'error:no-result-line');
+    // Map safe-merge's `--auto` classification → orchestrator outcome.
+    //   auto-merge-armed (exit 5) → 'armed' (terminal-success-pending; carry head)
+    //   merged (exit 0, immediate-green) → 'merged' (synchronous B10 confirm below)
+    //   everything else (refused:* / error:auto-arm-* / closed / already-merged) → as-is
+    const outcome = raw === 'auto-merge-armed' ? 'armed' : raw;
+
     let confirmedMerged = false;
     if (outcome === 'merged') {
+      // B10 unchanged for the synchronous merge (immediate-green, or the admin
+      // path). The armed outcome is confirmed LATER by reconciliation, never here.
       try { confirmedMerged = await this.deps.confirmMerged(attempt.pr, this.cfg.repo); }
       catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ confirmedMerged = false; }
     }
     this.clearInFlight();
-    return { outcome, confirmedMerged, deadlineKilled: out.deadlineKilled };
+    const result: MergeRunResult = { outcome, confirmedMerged, deadlineKilled: out.deadlineKilled };
+    if (outcome === 'armed') result.armedHead = attempt.headRefOid;
+    return result;
   }
 
   // ---- orphan reap (boot/warm-up) ----------------------------------------

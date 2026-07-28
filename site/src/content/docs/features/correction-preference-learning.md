@@ -35,6 +35,29 @@ The recurrence watcher in `CorrectionAnalyzer` then closes the loop: if the same
 
 The same watcher runs on the infra-gap path with a longer window (14 days vs. 7): if the friction recurs after a `/feedback` proposal, it reopens; but because an infra-gap fix is the upstream project's to ship — the agent cannot prove its own proposal caused the fix — silence is marked *inconclusive*, never a "verified" the agent didn't earn.
 
+## Class review before an instance fix
+
+Development agents can also run every correction through a durable standards-and-process review immediately at record time. `CorrectionClassReview` first asks whether an existing standard covers the class, needs an upgrade, or does not apply, and independently asks what development-process gap admitted it. `ClassReviewStore` persists the shell before intelligence work and retains the outcome so correction-derived work has an exact correspondence record. `CorrectionInstanceFixGate` checks that correspondence before a correction-derived Action or Commitment is admitted. Low-value corrections still receive an explicit `not-applicable` disposition; they do not linger as silent pending shells.
+
+`ClassReviewReplicatedStore` unifies scrubbed reviews by their machine-independent correction key. Filled state advances monotonically, observations merge additively, and remote lifecycle outcomes remain advisory because operator disposition is single-writer local authority. A daily `correction-class-review-backstop` job catches any record-time gaps and retries due reviews within a bounded batch.
+
+The authenticated review surfaces are:
+
+- `GET /class-reviews` — list scrubbed lifecycle records.
+- `GET /class-reviews/:dedupeKey` — inspect one exact correspondence record.
+- `POST /class-reviews/backfill` — run the bounded anti-join and aging pass.
+- `PATCH /class-reviews/:dedupeKey/outcome` — PIN-bound standard or process disposition.
+- `PATCH /class-reviews/:dedupeKey/lifecycle` — PIN-bound reopen or audited supersession.
+
+## Verify Before Done
+
+Verify Before Done adds an advisory check for claims such as pushed, merged, sent, or deployed. `TurnEvidence` extracts only a bounded structural vocabulary from the current turn. `ClaimClauseArbiter` classifies mixed messages clause by clause so a completed-action assertion and a future promise do not race through two independent detectors. `CompletionClaimVerifier` compares same-turn assertions with the evidence and records a would-flag verdict and content-free metrics; it never blocks or rewrites the response. The pre-existing future-commitment sentinel keeps its exact behavior when the verifier is dark, dry-run, unavailable, or uncertain.
+
+- `POST /completion-claim/observe` — enqueue structural evidence and return immediately with an advisory, never-blocking result.
+- `GET /completion-claim/audit` — read the bounded local audit; `?scope=pool` returns a field-clamped proxied view from credential-safe peers.
+
+Class-review lifecycle and completion observations appear on the existing Preferences dashboard tab. Both mechanisms ship dark on the fleet and enabled in dry-run on development agents.
+
 ## Surviving a throttle (the capture backlog)
 
 A correction is most likely to arrive exactly when the agent is busy — and a busy agent is exactly when the shared LLM circuit breaker is open or the distill budget is spent. The original loop dropped any capture it could not distill in that moment, so a sustained rate-limit could leave the ledger empty even while corrections were being detected.

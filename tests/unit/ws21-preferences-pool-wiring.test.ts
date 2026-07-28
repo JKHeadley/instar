@@ -59,7 +59,11 @@ describe('WS2.1 preferences-pool wiring (source touchpoints)', () => {
     expect(serverSrc).toContain('drivePreferencesSync: async (machineId, url, advert)');
     expect(serverSrc).toContain("{ type: 'preferences-sync', request: { sinceSeq: since");
     // The #930/A2 narrowing lesson — the advert must survive the fetch return.
-    expect(serverSrc).toContain('cap.preferencesAdvert ? { preferencesAdvert: cap.preferencesAdvert }');
+    // The narrowing is now the SHARED `narrowSessionStatusToPeerCapacity` helper
+    // (STATESYNC-PEER-ADVERT-PROPAGATION-FIX extracted it so production + the
+    // round-trip test run ONE mapping); server.ts delegates to it.
+    expect(serverSrc).toContain('narrowSessionStatusToPeerCapacity');
+    expect(pullerSrc).toContain('cap.preferencesAdvert !== undefined ? { preferencesAdvert: cap.preferencesAdvert }');
     // And the session-status advert must be emitted.
     expect(serverSrc).toContain('preferencesAdvert ? { preferencesAdvert }');
   });

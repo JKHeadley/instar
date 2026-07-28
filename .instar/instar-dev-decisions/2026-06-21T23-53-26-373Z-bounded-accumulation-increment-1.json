@@ -1,0 +1,18 @@
+{
+  "ts": "2026-06-21T23:53:26.373Z",
+  "slug": "bounded-accumulation-increment-1",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 593,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The 'avoid single accumulation points' efficiency value existed as design lore but was enforced by nothing — a latent Structure-beats-Willpower gap (the storage twin of the compute-mass gap Bounded Blast Radius named). It surfaced on 2026-06-21 when Echo's .instar/ reached a 256MB token-ledger + 91MB cartographer index + a dozen unbounded JSONLs, and whole-file synchronous reads of those snapshots were a direct cause of recurring event-loop stalls. This increment gives the value structural teeth."
+  },
+  "verdict": "pass"
+}

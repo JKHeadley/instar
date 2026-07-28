@@ -21,6 +21,7 @@ import { CodexCliIntelligenceProvider } from './CodexCliIntelligenceProvider.js'
 import { GeminiCliIntelligenceProvider } from './GeminiCliIntelligenceProvider.js';
 import { PiCliIntelligenceProvider } from './PiCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker } from './CircuitBreakingIntelligenceProvider.js';
+import { wrapIntelligenceWithSpawnCap } from './SpawnCapIntelligenceProvider.js';
 import type { LlmCircuitBreaker } from './LlmCircuitBreaker.js';
 import {
   AnthropicSubscriptionRouter,
@@ -128,15 +129,36 @@ export interface BuildIntelligenceProviderOptions {
  *     console.warn('Codex CLI not found — LLM-backed paths disabled.');
  *   }
  */
+/**
+ * Apply the two universal funnel wrappers in the correct order: the spawn cap
+ * INSIDE the circuit breaker (so a breaker-open shed never holds a spawn slot),
+ * then the breaker OUTSIDE. Both are per-`evaluate()` wrappers, so the acquire
+ * is per-call — load-bearing for CoherenceGate's shared-instance fan-out.
+ * No-ops on null (passes a possibly-null factory result through unchanged).
+ */
+function wrapForFunnel(
+  provider: IntelligenceProvider | null,
+  breaker: LlmCircuitBreaker | undefined,
+): IntelligenceProvider | null {
+  return wrapIntelligenceWithCircuitBreaker(wrapIntelligenceWithSpawnCap(provider), breaker);
+}
+
 export function buildIntelligenceProvider(
   options: BuildIntelligenceProviderOptions = {},
 ): IntelligenceProvider | null {
   const framework = options.framework ?? 'claude-code';
 
-  // Every provider the factory hands out is wrapped with the account-global
-  // LLM circuit breaker (CircuitBreakingIntelligenceProvider). A closed breaker
-  // is a transparent passthrough, so this is always safe; it only acts when the
-  // provider reports a usage/rate limit. See LlmCircuitBreaker for the why.
+  // Every provider the factory hands out is wrapped with TWO universal funnels
+  // (Structure > Willpower — every consumer inherits both from one place):
+  //   1. the host-wide SPAWN CAP (SpawnCapIntelligenceProvider) — the SIMPLE
+  //      fork-bomb prevention P1 chokepoint. Layered INSIDE the breaker so a
+  //      breaker-open shed never even reaches the spawn-cap acquire (no slot is
+  //      held for a call that won't spawn); the cap binds the ACTUAL spawn.
+  //   2. the account-global LLM circuit breaker (CircuitBreakingIntelligenceProvider).
+  //      A closed breaker is a transparent passthrough; it only acts on a
+  //      usage/rate limit. See LlmCircuitBreaker for the why.
+  // `wrapForFunnel` applies both in the correct order at EVERY return arm so a
+  // new framework case can't accidentally ship un-capped.
   switch (framework) {
     case 'claude-code': {
       const path = options.binaryPath ?? detectClaudePath();
@@ -160,14 +182,14 @@ export function buildIntelligenceProvider(
           ...(sp.onRoute ? { onRoute: sp.onRoute } : {}),
           ...(sp.onDegrade ? { onDegrade: sp.onDegrade } : {}),
         });
-        return wrapIntelligenceWithCircuitBreaker(routed, options.breaker);
+        return wrapForFunnel(routed, options.breaker);
       }
-      return wrapIntelligenceWithCircuitBreaker(headless, options.breaker);
+      return wrapForFunnel(headless, options.breaker);
     }
     case 'codex-cli': {
       const path = options.binaryPath ?? detectCodexPath();
       if (!path) return null;
-      return wrapIntelligenceWithCircuitBreaker(
+      return wrapForFunnel(
         new CodexCliIntelligenceProvider({
           codexPath: path,
           ...(options.workingDirectory ? { workingDirectory: options.workingDirectory } : {}),
@@ -179,7 +201,7 @@ export function buildIntelligenceProvider(
     case 'gemini-cli': {
       const path = options.binaryPath ?? detectGeminiPath();
       if (!path) return null;
-      return wrapIntelligenceWithCircuitBreaker(
+      return wrapForFunnel(
         new GeminiCliIntelligenceProvider({
           geminiPath: path,
           ...(options.workingDirectory ? { workingDirectory: options.workingDirectory } : {}),
@@ -206,7 +228,7 @@ export function buildIntelligenceProvider(
         return null;
       }
       try {
-        return wrapIntelligenceWithCircuitBreaker(
+        return wrapForFunnel(
           new PiCliIntelligenceProvider({
             piPath: path,
             model: options.piModel,

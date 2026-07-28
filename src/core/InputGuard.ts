@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceProvider } from './types.js';
+import { isCapacityUnavailable } from './SpawnCapIntelligenceProvider.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -332,14 +333,27 @@ Respond with ONLY valid JSON (no markdown, no explanation):
       ]);
       return this.parseReviewResponse(rawText);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logDegradation(`LLM review failed: ${msg}`);
+      this.trackErrors();
+      // Fork-bomb P3 fail-CLOSED (forkbomb-prevention-simple §D-DISPOSITION):
+      // a capacity shed (host spawn cap saturated) must NOT auto-pass as
+      // 'coherent'. Return 'suspicious' so the caller surfaces the do-not-auto-
+      // pass warning (this is warn-only at the action layer, so the message
+      // still reaches the session, but flagged rather than silently coherent).
+      if (isCapacityUnavailable(err)) {
+        return {
+          verdict: 'suspicious',
+          reason: 'Topic-coherence review unavailable (spawn capacity saturated) — flagged (fail-closed) instead of auto-coherent',
+          confidence: 0,
+          layer: 'topic-coherence',
+        };
+      }
       // Transport flake (timeout, network, subprocess failure) — fail open at the
       // transport boundary so routine infrastructure hiccups don't produce warn-spam.
       // Authority-level dissent (suspicious verdict) would have come through the
       // parse path above. Degradation logging + error tracking surfaces persistent
       // transport failure via the attention queue.
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logDegradation(`LLM review failed: ${msg}`);
-      this.trackErrors();
       return { verdict: 'coherent', reason: `Review failed: ${msg} — fail open`, confidence: 0, layer: 'topic-coherence' };
     }
   }

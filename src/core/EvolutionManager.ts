@@ -17,6 +17,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type {
   EvolutionProposal,
   EvolutionType,
@@ -249,9 +250,58 @@ export class EvolutionManager {
    */
   private actionReplication: EvolutionActionReplicationEmitter | null = null;
 
+  /**
+   * Standby-write-wedge fix (2026-07-10): the last-emitted content fingerprint per
+   * record id, so a save re-emits ONLY records whose content actually changed. Without
+   * this, saveActions/saveLearnings re-emitted EVERY surviving record on EVERY write, and
+   * each emit's `loadWitness` re-scans the whole journal — turning one write into
+   * O(records × journalBytes) SYNCHRONOUS fs reads on the event loop. On a real agent this
+   * bloated the evolution-action journal to ~53MB / 61k records over 632 keys (each key
+   * re-emitted ~112×) and made ONE `POST /evolution/actions` do tens of GB of synchronous
+   * reads — starving the event loop until the supervisor killed the process. Skipping the
+   * re-emit of an UNCHANGED record preserves the load-bearing "a status change re-emits so a
+   * peer sees it" property (a changed record's fingerprint differs ⇒ it still emits) while
+   * removing the redundant re-emits that caused both the wedge AND the journal bloat.
+   * Seeded from the on-disk state when the emitter is attached (so a restart with a
+   * populated queue does not re-emit everything once on its first write). A false "unchanged"
+   * is bounded by the peer-pull backstop, so a compact non-cryptographic digest is safe.
+   */
+  private lastEmittedActionFp = new Map<string, string>();
+  private lastEmittedLearningFp = new Map<string, string>();
+  /* @self-action-controller: evolution-action-expiry-sweep */
+  private actionAutoExpiryTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(config: EvolutionManagerConfig) {
     this.config = config;
     this.stateDir = config.stateDir;
+    if (config.autoExpiry?.enabled === true) {
+      const intervalMs = Math.max(60_000, config.autoExpiry.sweepIntervalMs ?? 21_600_000);
+      setImmediate(() => { this.runActionAutoExpirySweep(); });
+      this.actionAutoExpiryTimer = setInterval(() => { this.runActionAutoExpirySweep(); }, intervalMs);
+      this.actionAutoExpiryTimer.unref();
+    }
+  }
+
+  /**
+   * Content fingerprint for the replication-emit change-detector. Stable across
+   * re-serializations (object keys sorted recursively) so a re-parsed-but-identical record
+   * yields the SAME fingerprint and is skipped. NOT a security hash — collision-resistance
+   * is not required here (a false "unchanged" only skips a redundant re-emit, and the
+   * peer-pull path is the backstop). Kept private + local to the manager so this fix never
+   * touches the generic replication machinery (journal / emitter / reader).
+   */
+  private emitFingerprint(record: unknown): string {
+    const stable = JSON.stringify(record, (_k, val) =>
+      val && typeof val === 'object' && !Array.isArray(val)
+        ? Object.keys(val as Record<string, unknown>)
+            .sort()
+            .reduce((acc: Record<string, unknown>, k) => {
+              acc[k] = (val as Record<string, unknown>)[k];
+              return acc;
+            }, {})
+        : val,
+    );
+    return createHash('sha1').update(stable ?? 'null').digest('hex');
   }
 
   /**
@@ -262,6 +312,16 @@ export class EvolutionManager {
    */
   setLearningReplicationEmitter(emitter: LearningReplicationEmitter | null | undefined): void {
     this.learningReplication = emitter ?? null;
+    // Seed the change-detector from the on-disk state so a restart with a populated
+    // registry does NOT re-emit everything on the first save (the cold-start wedge). The
+    // records in the persisted registry were already emitted by a prior session; a genuine
+    // divergence from the journal is caught by the peer-pull backstop, never a lost write.
+    this.lastEmittedLearningFp.clear();
+    if (this.learningReplication) {
+      for (const l of this.loadLearnings().learnings) {
+        this.lastEmittedLearningFp.set(l.id, this.emitFingerprint(l));
+      }
+    }
   }
 
   /**
@@ -272,6 +332,15 @@ export class EvolutionManager {
    */
   setEvolutionActionReplicationEmitter(emitter: EvolutionActionReplicationEmitter | null | undefined): void {
     this.actionReplication = emitter ?? null;
+    // Seed the change-detector from the on-disk queue so a restart with a populated queue
+    // does NOT re-emit every action on the first save (the cold-start wedge). See
+    // lastEmittedActionFp for the full rationale.
+    this.lastEmittedActionFp.clear();
+    if (this.actionReplication) {
+      for (const a of this.loadActions().actions) {
+        this.lastEmittedActionFp.set(a.id, this.emitFingerprint(a));
+      }
+    }
   }
 
   // ── TaskFlow wiring ─────────────────────────────────────────────
@@ -994,13 +1063,21 @@ export class EvolutionManager {
           // above. The emitter counts its own failures internally; this guard only
           // ensures a throw from the seam cannot propagate into the local write path.
         }
+        this.lastEmittedLearningFp.delete(pruned.id);
       }
+      // Standby-write-wedge fix (see saveActions): re-emit ONLY changed learnings. The old
+      // "re-emit every survivor" made each write O(records × journalBytes) synchronous
+      // journal scans; a status/applied change alters the fingerprint so it still re-emits.
       for (const l of state.learnings) {
+        const fp = this.emitFingerprint(l);
+        if (this.lastEmittedLearningFp.get(l.id) === fp) continue; // unchanged ⇒ skip re-emit
         try {
           emitter.emitPut(l);
+          this.lastEmittedLearningFp.set(l.id, fp);
         } catch {
           // @silent-fallback-ok: see the emitDelete guard above — replication is
-          // best-effort and must never break the local write.
+          // best-effort and must never break the local write. The fingerprint is NOT
+          // recorded on a throw so the next save retries this record.
         }
       }
     }
@@ -1171,7 +1248,41 @@ export class EvolutionManager {
     });
   }
 
-  private saveActions(state: ActionState): void {
+  /**
+   * Expire only stale, ordinary PENDING actions. Removal is coalesced through one
+   * saveActions call, which also emits the existing replication tombstones for
+   * every removed record (the no-resurrection path).
+   */
+  runActionAutoExpirySweep(): { scanned: number; eligible: number; expired: number; dryRun: boolean } {
+    const cfg = this.config.autoExpiry;
+    const dryRun = cfg?.dryRun ?? true;
+    const state = this.loadActions();
+    const maxAgeDays = Math.max(1, cfg?.maxAgeDays ?? 21);
+    const cutoff = Date.now() - maxAgeDays * 86_400_000;
+    const eligibleIds = new Set<string>();
+    for (const action of state.actions) {
+      if (action.status !== 'pending') continue;
+      if (action.priority === 'critical') continue;
+      if (action.tags?.some((tag) => tag.toLowerCase() === 'pinned')) continue;
+      if (action.dueBy) {
+        const due = Date.parse(action.dueBy);
+        if (!Number.isFinite(due) || due > Date.now()) continue;
+      }
+      const created = Date.parse(action.createdAt);
+      if (!Number.isFinite(created) || created >= cutoff) continue;
+      eligibleIds.add(action.id);
+    }
+    if (!dryRun && eligibleIds.size > 0) {
+      const expiredActions = state.actions.filter((action) => eligibleIds.has(action.id));
+      state.actions = state.actions.filter((action) => !eligibleIds.has(action.id));
+      this.saveActions(state, expiredActions); // ONE durable write + existing tombstone funnel.
+    }
+    const expired = dryRun ? 0 : eligibleIds.size;
+    console.log(`[EvolutionManager] Action auto-expiry sweep: scanned=${state.actions.length + expired} eligible=${eligibleIds.size} expired=${expired} dryRun=${dryRun} maxAgeDays=${maxAgeDays}`);
+    return { scanned: state.actions.length + expired, eligible: eligibleIds.size, expired, dryRun };
+  }
+
+  private saveActions(state: ActionState, explicitlyRemoved: ActionItem[] = []): void {
     let pending = 0, completed = 0, overdue = 0;
     const now = new Date();
     for (const a of state.actions) {
@@ -1213,7 +1324,10 @@ export class EvolutionManager {
     if (emitter) {
       const survivors = new Set(state.actions.map(a => a.id));
       const deletedAt = this.now();
-      for (const pruned of beforePrune) {
+      const removedCandidates = new Map(
+        [...beforePrune, ...explicitlyRemoved].map(action => [action.id, action]),
+      );
+      for (const pruned of removedCandidates.values()) {
         if (survivors.has(pruned.id)) continue;
         try {
           emitter.emitDelete(pruned.title, pruned.commitTo, pruned.createdAt, deletedAt);
@@ -1223,13 +1337,25 @@ export class EvolutionManager {
           // emitter counts its own failures internally; this guard only ensures a throw from
           // the seam cannot propagate into the local write path.
         }
+        // A pruned id is gone from the queue; forget its fingerprint so the map does not
+        // grow unbounded and a future id-reuse re-emits.
+        this.lastEmittedActionFp.delete(pruned.id);
       }
+      // Standby-write-wedge fix: re-emit ONLY records whose content changed since their last
+      // emit. Re-emitting every unchanged survivor (the old behavior) turned each write into
+      // O(records × journalBytes) synchronous journal scans (loadWitness materializes the
+      // whole store per emit) — the event-loop wedge. A status change alters the fingerprint,
+      // so the load-bearing "a peer sees the latest status" property is preserved.
       for (const a of state.actions) {
+        const fp = this.emitFingerprint(a);
+        if (this.lastEmittedActionFp.get(a.id) === fp) continue; // unchanged ⇒ skip re-emit
         try {
           emitter.emitPut(a);
+          this.lastEmittedActionFp.set(a.id, fp); // record only after a successful emit
         } catch {
           // @silent-fallback-ok: see the emitDelete guard above — replication is best-effort
-          // and must never break the local write.
+          // and must never break the local write. The fingerprint is NOT recorded on a throw
+          // so the next save retries this record.
         }
       }
     }

@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "sessionId": "ux-first-inc1",
+  "timestamp": "2026-07-25T00:04:24.673Z",
+  "artifactPath": "upgrades/side-effects/ux-first-enforcement-inc1.md",
+  "artifactSha256": "65b6b8e8b56cdef8078cb06601d9da2bf50a6dce4fa347a76af91c20a89083ad",
+  "specPath": "docs/specs/ux-first-enforcement-inc1.eli16.md",
+  "coveredFiles": [
+    "scripts/ux-impact-lint.mjs",
+    ".github/workflows/ux-impact-pr-gate.yml"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {
+    "verdict": "clear",
+    "cause": null,
+    "causes": [],
+    "degraded": true,
+    "degradedSources": [
+      "ledger-unresolvable"
+    ],
+    "substrateIntroducing": false,
+    "evidence": [],
+    "notes": [
+      "agent home not resolvable — sibling ledger not scanned",
+      "degraded NON-substrate scan → clear with a degraded audit flag (§3.3)"
+    ],
+    "specSlug": "ux-first-enforcement-inc1-eli16",
+    "specPath": "docs/specs/ux-first-enforcement-inc1.eli16.md",
+    "specTitle": "UX-First Enforcement Increment 1",
+    "targets": [],
+    "mainRef": "origin/main",
+    "mainSha": "38b808eff98a57c4a91db5ab553807cf5b674f60",
+    "phase": "build-start",
+    "cached": false,
+    "checkedAt": "2026-07-24T23:55:37.958Z",
+    "durationMs": 2277,
+    "disposition": {
+      "decision": "proceed",
+      "reason": "UX-first increment is the converged next stage; existing helpers/workflows do not implement this L1/L2 contract.",
+      "acknowledgedEvidenceIds": [],
+      "recordedAt": "2026-07-24T23:55:37.999Z"
+    }
+  }
+}

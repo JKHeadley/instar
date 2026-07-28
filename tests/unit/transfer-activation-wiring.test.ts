@@ -16,25 +16,42 @@ import path from 'node:path';
 describe('server-boot wiring: transfer-by-nickname activation (§L4)', () => {
   const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
 
-  it('constructs the TopicPlacementPinStore + recognizer/planner imports', () => {
+  it('constructs the TopicPlacementPinStore + classifier/planner imports', () => {
     expect(src).toContain("import('../core/TopicPlacementPinStore.js')");
     expect(src).toContain('new pinMod.TopicPlacementPinStore(');
-    expect(src).toContain("import('../core/NicknameCommand.js')");
+    // The keyword recognizer is REPLACED by the LLM move-intent classifier
+    // (docs/specs/nickname-move-intent-llm-rebuild.md). NicknameCommand.js now
+    // only carries the type; the decision comes from MoveIntentClassifier.
+    expect(src).toContain("import('../core/MoveIntentClassifier.js')");
     expect(src).toContain("import('../core/TransferByNickname.js')");
+    // The keyword verb-list decision is GONE from the inbound path (the standard).
+    expect(src).not.toContain('nickMod.recognizeNicknameCommand(');
   });
 
-  it('recognizes the command on inbound + plans the transfer (recognizer → planner)', () => {
-    expect(src).toContain('nickMod.recognizeNicknameCommand(text, knownNicknames)');
+  it('classifies intent via LLM on inbound + plans the transfer (classifier → planner)', () => {
+    expect(src).toContain('moveIntentMod.classifyRelocationIntent(');
+    expect(src).toContain('moveIntentMod.toNicknameCommand(');
     expect(src).toContain('transferMod.planTransferByNickname(');
+  });
+
+  it('is dev-gated + dry-run-first + fail-open (the classifier never hijacks under uncertainty)', () => {
+    // The dev-agent gate resolves the recognizer live-on-dev / dark-fleet.
+    expect(src).toContain('resolveDevAgentGate(_moveIntentCfg?.enabled, config)');
+    // Dark or dry-run → the message passes through untouched.
+    expect(src).toContain('if (!_moveIntentEnabled) return { handled: false };');
+    expect(src).toContain('const _willAct = moveResult.isCommand && !_moveIntentDryRun;');
+    expect(src).toContain('if (!_willAct) return { handled: false };');
   });
 
   it('applies a transfer plan: sets the pin AND releases local ownership so it re-places', () => {
     const idx = src.indexOf('transferMod.planTransferByNickname(');
-    // Window 3600 (was 1600): the WS1.4 autonomousRunActive consent dep
-    // (MULTI-MACHINE-SEAMLESSNESS-SPEC) grew the planner-state construction,
-    // pushing the pin-set (~2520) and release (~2890) further in.
-    const block = src.slice(idx, idx + 3600);
-    expect(block).toContain('_topicPinStore!.set(sessionKey, target');
+    // Window 4800 (was 3600): U4.1 §2B replaced the raw `_topicPinStore!.set(...)`
+    // with the ONE-HLC mutation funnel (`pinMutationMod.setPinWithOneHlc` — the
+    // same stamp on the replicated PUT and the local set) + §2F pinnedBy
+    // provenance resolution, growing the arm; the release CAS follows it.
+    const block = src.slice(idx, idx + 4800);
+    expect(block).toContain('pinMutationMod.setPinWithOneHlc(');
+    expect(block).toContain('_topicPinStore!'); // the funnel writes THROUGH the real local store
     expect(block).toContain("type: 'release'"); // release local ownership so route() re-places to the pin
   });
 
@@ -49,8 +66,11 @@ describe('server-boot wiring: transfer-by-nickname activation (§L4)', () => {
 
   it('passes the pin into route() as topicMetadata so placement honors it', () => {
     const routeIdx = src.indexOf('await _sessionRouter.route({');
-    const block = src.slice(routeIdx, routeIdx + 320);
-    expect(block).toContain('topicMetadata: _topicPinStore?.asTopicMetadata(String(topicId))');
+    const block = src.slice(routeIdx, routeIdx + 480);
+    // U4.1 §2D: seeding resolves local pin ⊕ fold winner by HLC when the fold is
+    // wired (`_pinPlacementMetadata`), degrading to the plain local-store read —
+    // both arms must stay present (the fallback IS today's behavior).
+    expect(block).toContain('_pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId))');
   });
 
   it('is dark-gated (the relocation only fires when the rollout stage is past dark)', () => {

@@ -500,6 +500,59 @@ export class MachineIdentityManager {
   }
 
   /**
+   * multi-transport-mesh-comms — write this machine's advertised endpoint set into
+   * its registry entry. Rides the SAME authenticated registry-sync path as
+   * lastKnownUrl (syncSequence + authoredUnderEpoch + per-author replay guards),
+   * so a peer can only advertise endpoints under its own verified identity. The
+   * accept-ack's responder-identity verification is the load-bearing defense: a
+   * spoofed/bogus endpoint becomes a FAILED rope, never a trusted one.
+   */
+  updateMachineEndpoints(machineId: string, endpoints: import('./types.js').MeshEndpoint[]): void {
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) throw new Error(ERRORS.MACHINE_NOT_FOUND(machineId));
+    entry.endpoints = endpoints;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+  }
+
+  /** multi-transport-mesh-comms — read a machine's advertised endpoint set (or undefined). */
+  getMachineEndpoints(machineId: string): import('./types.js').MeshEndpoint[] | undefined {
+    const registry = this.loadRegistry();
+    return registry.machines[machineId]?.endpoints;
+  }
+
+  /**
+   * routing-control-room-spend Increment C (FD-6 rung 2, pool half) — publish
+   * this machine's created/adopted "💰 Routing & Spend Alerts" topic id as a
+   * content-free field on its registry entry (rides the SAME replicated
+   * registry-sync path as lastKnownUrl/endpoints).
+   */
+  updateRoutingSpendAlertTopic(machineId: string, topicId: number): void {
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) throw new Error(ERRORS.MACHINE_NOT_FOUND(machineId));
+    entry.routingSpendAlertTopicId = topicId;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+  }
+
+  /**
+   * Read the pool-published alerts-topic id from ANY (non-revoked) machine
+   * entry — first hit wins; a new serving-lease holder INHERITS the id instead
+   * of re-creating. Returns undefined when no machine has published one.
+   */
+  readAnyRoutingSpendAlertTopic(): number | undefined {
+    const registry = this.loadRegistry();
+    for (const entry of Object.values(registry.machines)) {
+      if (entry.revokedAt) continue;
+      const id = entry.routingSpendAlertTopicId;
+      if (typeof id === 'number' && Number.isFinite(id)) return id;
+    }
+    return undefined;
+  }
+
+  /**
    * Revoke a machine. Marks it as revoked with reason.
    * Does NOT handle external secret rotation — caller must do that.
    */
@@ -663,6 +716,8 @@ const GITIGNORE_ENTRIES = [
   '.instar/pairing/',
   '# Sandbox-safe worktrees (per-machine; multi-GB foreign-repo contents)',
   '.worktrees/',
+  '# Judgment-call provenance rows (machine-local decision context — never commit)',
+  'state/judgment-provenance/',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

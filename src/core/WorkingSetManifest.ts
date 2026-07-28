@@ -113,6 +113,11 @@ export interface ComputeWorkingSetOpts {
   fsImpl?: WorkingSetFs;
   /** Secret-content scan seam; defaults to the versioned credential-shape enum. */
   secretScan?: (content: Buffer) => boolean;
+  /** Source 3 (intelligent-working-set-lazy-sync): relPaths of files the agent wrote
+   *  INTERACTIVELY under the `.instar/` jail (the case the computed sources miss). Injected
+   *  by the caller from the WorkingSetArtifactManager's READY rows for this topic; re-jailed +
+   *  secret-scanned + capped here exactly like the other sources (no jail widening). */
+  interactiveArtifactRelPaths?: string[];
 }
 
 function realFs(): WorkingSetFs {
@@ -149,8 +154,12 @@ export function computeWorkingSet(opts: ComputeWorkingSetOpts): WorkingSetManife
   } catch { /* @silent-fallback-ok: a not-yet-existing stateDir keeps its lexical path; containment still bounds it (WORKING-SET-HANDOFF-SPEC §3.1) */
   }
   const conventionDir = path.join(stateDir, 'autonomous');
+  // Scope-accretion server run records (autonomous-scope-accretion-completion.md
+  // §4 multi-machine posture): the server run record + advisory ledger ride the
+  // working-set carrier on transfer. Archived records are excluded below.
+  const serverRecordDir = path.join(stateDir, 'state', 'autonomous-server');
   // Same roots as the journal writer's artifactRoots default (§3.1).
-  const jailRoots = [conventionDir, stateDir];
+  const jailRoots = [conventionDir, serverRecordDir, stateDir];
 
   let jailRejected = 0;
   let goneFromDisk = 0;
@@ -175,10 +184,39 @@ export function computeWorkingSet(opts: ComputeWorkingSetOpts): WorkingSetManife
     });
   }
 
+  // Source 1b: scope-accretion SERVER run records (`<topic>.<runId>.json` +
+  // `<topic>.<runId>.artifacts.jsonl`) — same bounded, non-recursive readdir,
+  // same `<topic>.` prefix rule. Archived records (`.archived.json`) are
+  // EXCLUDED from carrier nomination (R28).
+  let serverNames: string[] = [];
+  try {
+    serverNames = io.readdirSync(serverRecordDir);
+  } catch { /* @silent-fallback-ok: server-record dir absent = no scope-accretion records; the convention + journal sources still apply */
+    serverNames = [];
+  }
+  for (const name of serverNames) {
+    if (!name.startsWith(prefix)) continue;
+    if (name.endsWith('.archived.json') || name.endsWith('.tmp')) continue;
+    candidates.set(path.join(serverRecordDir, name), {
+      abs: path.join(serverRecordDir, name),
+      fromJournal: false,
+    });
+  }
+
   // Source 2: journal evidence (already write-time jailed; re-jailed below).
   for (const p of opts.runs.artifactPaths) {
     const abs = path.isAbsolute(p) ? path.resolve(p) : path.resolve(stateDir, p);
     if (!candidates.has(abs)) candidates.set(abs, { abs, fromJournal: true });
+  }
+
+  // Source 3: interactive-artifact records (intelligent-working-set-lazy-sync) — files the
+  // agent wrote INTERACTIVELY under the .instar/ jail. Treated as fresh local candidates
+  // (fromJournal:false) so they flow through the IDENTICAL jail + secret-scan + caps pipeline
+  // below — the "re-jail + cred-scan at the serve boundary; only ready rows nominate; caps
+  // unchanged" contract (the caller passes ONLY ready-row relPaths).
+  for (const rel of opts.interactiveArtifactRelPaths ?? []) {
+    const abs = path.isAbsolute(rel) ? path.resolve(rel) : path.resolve(stateDir, rel);
+    if (!candidates.has(abs)) candidates.set(abs, { abs, fromJournal: false });
   }
 
   // ---- jail + stat + hash + scan -------------------------------------------

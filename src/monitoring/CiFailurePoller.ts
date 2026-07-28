@@ -22,7 +22,10 @@
  * filedBy is the constant `source:ci` (§5) so CI failures share one analyzer
  * "session" identity → they can never alone satisfy the diversity gate.
  */
-import { execFileSync } from 'node:child_process';
+import {
+  createAuthenticatedGhSyncExec,
+  type AuthenticatedGitHubCliRuntime,
+} from '../core/githubRuntime.js';
 import type { FailureLedger, FailureCategory } from './FailureLedger.js';
 // scrubSecrets moved to a shared module (spec §3.3 — the Correction & Preference
 // Learning Sentinel applies the SAME pass on both sides of its LLM hop). Still
@@ -44,8 +47,12 @@ export interface CiFailurePollerOptions {
   resolveByMergeCommit: (oid: string) => CiInitiativeRef | undefined;
   /** Resolve the `owner/name` repo (validated by the poller). Return null if none. */
   resolveRepo: () => string | null;
-  /** Injectable gh runner (args array). Default: execFileSync('gh', args). */
+  /** Per-agent state root containing the encrypted GitHub token vault. */
+  stateDir?: string;
+  /** Injectable gh runner (args array). Default: shared explicit-auth helper. */
   runGh?: (args: string[]) => string;
+  /** Test seam: shared explicit GitHub runtime resolver. */
+  githubRuntime?: () => AuthenticatedGitHubCliRuntime;
   /** Only poll when this returns true (fenced-lease holder). Default: always. */
   isLeaseHolder?: () => boolean;
   /** Poll interval (ms). Default 6h. */
@@ -112,7 +119,10 @@ export class CiFailurePoller {
     this.resolveRepo = opts.resolveRepo;
     this.runGh =
       opts.runGh ??
-      ((args) => execFileSync('gh', args, { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }));
+      createAuthenticatedGhSyncExec({
+        stateDir: opts.stateDir,
+        resolveRuntime: opts.githubRuntime,
+      });
     this.isLeaseHolder = opts.isLeaseHolder ?? (() => true);
     this.intervalMs = opts.intervalMs && opts.intervalMs > 0 ? opts.intervalMs : 6 * 60 * 60 * 1000;
     this.maxRunsPerTick = opts.maxRunsPerTick && opts.maxRunsPerTick > 0 ? opts.maxRunsPerTick : 50;
@@ -188,4 +198,3 @@ export class CiFailurePoller {
     return filed;
   }
 }
-

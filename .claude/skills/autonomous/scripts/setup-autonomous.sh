@@ -18,6 +18,9 @@ COMPLETION_CONDITION=""   # verifiable end-state; an independent judge decides "
 REPORT_INTERVAL="30m"
 VERIFICATION_COMMAND=""   # opt-in real check (ACT-152): the stop-hook RUNS this on a met:true verdict and gates the exit on exit-0.
 VERIFICATION_CWD=""       # directory the verification command runs in (resolves verification_cwd → work_dir → agent home).
+DECLARED_DELIVERABLES=""  # SCOPE_ACCRETION: comma-separated repo-relative paths the run is EXPECTED to
+                          # produce as drafts (the escape for genuinely draft-only missions — operator-
+                          # confirmed at setup). Recorded server-side at registration; immutable mid-run.
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -59,6 +62,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --verification-cwd)
       VERIFICATION_CWD="$2"
+      shift 2
+      ;;
+    --declared-deliverables)
+      DECLARED_DELIVERABLES="$2"
       shift 2
       ;;
     --report-interval)
@@ -183,6 +190,46 @@ $VERIFICATION_FIELDS"
 fi
 if [[ -n "$VERIFICATION_CWD" ]]; then
   VERIFICATION_FIELDS="verification_cwd: \"$VERIFICATION_CWD\"
+$VERIFICATION_FIELDS"
+fi
+
+# ── SCOPE_ACCRETION — server-side run registration (spec: autonomous-scope-
+# accretion-completion.md R30). The SERVER mints the runId, snapshots the
+# scopeAccretion config + the sweep base roots with their start-SHAs, and clamps
+# endAt — so mid-run edits to config/state-file change nothing the completion
+# chokepoint reads. The runId is written into the frontmatter so the stop hook
+# can echo it on every evaluate-completion / run-end call. Best-effort: an
+# unreachable server leaves run_id empty (the gate degrades honestly server-side;
+# the run still starts — registration is a discipline layer, not a start gate).
+RUN_ID=""
+if [[ -n "$REPORT_TOPIC" ]]; then
+  REG_PORT=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
+  REG_AUTH=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  # Comma-separated → JSON array (empty string → []).
+  REG_DECLARED=$(printf '%s' "$DECLARED_DELIVERABLES" | python3 -c "import sys,json
+print(json.dumps([p.strip() for p in sys.stdin.read().split(',') if p.strip()]))" 2>/dev/null || echo '[]')
+  REG_END_AT="$END_AT"
+  [[ "$REG_END_AT" == "unknown" || "$REG_END_AT" == "unlimited" ]] && REG_END_AT=""
+  REG_RESP=$(jq -nc \
+    --arg t "$REPORT_TOPIC" --arg c "$COMPLETION_CONDITION" --arg w "$WORK_DIR" \
+    --arg s "$STARTED_AT" --arg e "$REG_END_AT" --arg sid "${CLAUDE_CODE_SESSION_ID:-}" \
+    --argjson d "$REG_DECLARED" \
+    '{topicId:$t,condition:$c,workDir:$w,declaredDeliverables:$d,startedAt:$s}
+     + (if $e != "" then {endAt:$e} else {} end)
+     + (if $sid != "" then {sessionId:$sid} else {} end)' 2>/dev/null \
+    | curl -s -m 8 -H "Authorization: Bearer $REG_AUTH" -H 'Content-Type: application/json' \
+      --data-binary @- "http://localhost:${REG_PORT}/autonomous/register" 2>/dev/null || echo "")
+  RUN_ID=$(printf '%s' "$REG_RESP" | python3 -c "import sys,json
+try: print(json.load(sys.stdin).get('runId',''))
+except Exception: print('')" 2>/dev/null || echo "")
+  if [[ -n "$RUN_ID" ]]; then
+    echo "  Scope-accretion: run registered server-side (runId $RUN_ID)"
+  else
+    echo "  Scope-accretion: server registration unavailable — accretion gate degrades honestly (run still bounded by duration)"
+  fi
+fi
+if [[ -n "$RUN_ID" ]]; then
+  VERIFICATION_FIELDS="run_id: \"$RUN_ID\"
 $VERIFICATION_FIELDS"
 fi
 

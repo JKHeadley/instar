@@ -54,6 +54,19 @@ const LONG_LIVED_STORES = [
   // Durable Inbound Message Queue (CMT-1118): the custody store registers its
   // handle in the constructor (registerSqliteHandle), process-lifetime.
   'src/core/PendingInboundStore.ts',
+  // routing-control-room-spend Layer 1c (CMT-1929): the provider-report store
+  // registers its handle in the constructor (registerSqliteHandle), process-
+  // lifetime, closed once at shutdown like FeatureMetricsLedger beside it.
+  'src/monitoring/ProviderCostReportStore.ts',
+  // Correction-class review is durable process-lifetime state and registers
+  // its handle in the constructor like the other monitoring stores above.
+  'src/monitoring/ClassReviewStore.ts',
+  'src/monitoring/BlockerLifecycleLedger.ts',
+  // Feedback Factory's operated drain is process-lifetime durable state and
+  // participates in the same close-on-exit registry as the other stores.
+  'src/feedback-factory/drain/FeedbackDrainStore.ts',
+  // Self-heal episode state may remain open for governor queue continuation.
+  'src/core/SelfHealGate.ts',
 ];
 
 /**

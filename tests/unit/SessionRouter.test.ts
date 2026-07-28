@@ -302,3 +302,39 @@ describe('SessionRouter — ownerSupportsForward skew gate (WS1.1)', () => {
     expect(out).toMatchObject({ action: 'forwarded' });
   });
 });
+
+describe('SessionRouter — channel-scope threading (placement-platform-workspace-aware, WIRING-INTEGRITY)', () => {
+  it('threads msg.channel into decide() (the failover bug path: a Slack channel must carry its workspace into placement)', async () => {
+    const decideSpy = vi.fn(() => ({ chosenMachine: SELF, score: 1, reason: 'least-loaded', outcome: 'placed' as const }));
+    const { router } = makeRouter({
+      placement: { decide: decideSpy } as unknown as PlacementExecutor,
+      resolveOwnership: () => ({ owner: null, epoch: 0, status: null }) as OwnershipView,
+    });
+    await router.route(msg({ channel: { platform: 'slack', workspaceId: 'W-live', channelId: 'C1' } }));
+    expect(decideSpy).toHaveBeenCalled();
+    const req = decideSpy.mock.calls[0][0] as { channel?: unknown };
+    expect(req.channel).toEqual({ platform: 'slack', workspaceId: 'W-live', channelId: 'C1' });
+  });
+
+  it('behavioral: a Slack channel places on the machine connected to its workspace, not the cheaper non-serving one (the live-test bug)', async () => {
+    const registry = [
+      cap(SELF, { servesChannels: { slack: { workspaceIds: ['W-other'] } }, loadAvg: 0 }),       // cheaper, WRONG workspace
+      cap('m_remote', { servesChannels: { slack: { workspaceIds: ['W-live'] } }, loadAvg: 5 }),   // costlier, serves W-live
+    ];
+    const { deps, router } = makeRouter({ resolveOwnership: () => ({ owner: null, epoch: 0, status: null }) as OwnershipView }, registry);
+    await router.route(msg({ channel: { platform: 'slack', workspaceId: 'W-live', channelId: 'C1' } }));
+    // placement must choose m_remote (serves W-live) over the cheaper SELF (wrong workspace) → claimed there.
+    expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', expect.any(Number));
+  });
+
+  it('no channel (telegram/shared or legacy) → decide() gets no channel → fail-open (unchanged routing)', async () => {
+    const decideSpy = vi.fn(() => ({ chosenMachine: SELF, score: 1, reason: 'least-loaded', outcome: 'placed' as const }));
+    const { router } = makeRouter({
+      placement: { decide: decideSpy } as unknown as PlacementExecutor,
+      resolveOwnership: () => ({ owner: null, epoch: 0, status: null }) as OwnershipView,
+    });
+    await router.route(msg()); // no channel
+    const req = decideSpy.mock.calls[0][0] as { channel?: unknown };
+    expect(req.channel).toBeUndefined();
+  });
+});

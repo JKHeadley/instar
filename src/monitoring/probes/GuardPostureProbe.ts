@@ -39,6 +39,14 @@ import type {
   GuardInventoryResult,
   HeartbeatGuardPosture,
 } from '../guardPostureView.js';
+import { GUARD_MANIFEST } from '../guardManifest.js';
+
+/** Local, fleet-uniform manifest lookup: guardKey → criticalPath. A peer's
+ *  criticalPath (heartbeat gaps carry only the key) is looked up here — the
+ *  manifest ships atomic with the code, so it is valid fleet-wide (spec §2.3/§4). */
+const CRITICAL_PATH_BY_KEY: ReadonlyMap<string, string> = new Map(
+  GUARD_MANIFEST.filter((e) => e.loadBearing && e.criticalPath).map((e) => [e.key, e.criticalPath!]),
+);
 
 export const __verifyScope = ['guard-posture'] as const satisfies ProbeVerifyScope;
 
@@ -52,6 +60,11 @@ export const FLAP_WINDOW_TICKS = 10;
 export const STALE_POSTURE_AGE_MS = 15 * 60_000;
 /** Stable episode healthKey — same across episodes so the attention layer dedups per-episode. */
 export const GUARD_POSTURE_HEALTH_KEY = 'guard-posture-anomalies';
+/** G3: the load-bearing-gap track's healthKey. NB: guard-posture items carry no
+ *  `lane:'agent-health'`, so healthKey is INERT for them (the agent-health lane's
+ *  same-key suppression never runs) — the separate ITEM-ID namespace (episode
+ *  track) is the real de-masking lever, NOT this key (spec §2.3/§2.5). */
+export const GUARD_POSTURE_LOADBEARING_HEALTH_KEY = 'guard-posture-loadbearing-gaps';
 
 export type GuardAnomalyClass =
   | 'diverged-from-default'
@@ -59,7 +72,11 @@ export type GuardAnomalyClass =
   | 'on-stale'
   | 'missing'
   | 'errored'
-  | 'flapping';
+  | 'flapping'
+  // G3: a load-bearing critical path silently unguarded past its soak window.
+  // A DESIGNED long-lived anomaly (the graduate/accept decision takes days) — so
+  // it runs on its OWN episode track, never masking an acute load-shed (§2.3).
+  | 'load-bearing-gap';
 
 export interface PeerPostureRead {
   machineId: string;
@@ -91,11 +108,17 @@ export interface GuardPostureProbeDeps {
    * null or stale. NEVER called for offline peers (spec §2.4).
    */
   deepReadPeer?: (machineId: string) => Promise<unknown>;
-  /** Aggregated emit funnel (P17) — ONE item per episode. */
+  /** Aggregated emit funnel (P17) — ONE item per episode, per track. */
   emitAttention: (item: GuardPostureAttentionItem) => Promise<void>;
   /** Episode state persists at `<stateDir>/state/guard-posture-episodes.json`. */
   stateDir: string;
   now?: () => number;
+  /** G3 rollout sub-flag (§6): gate the load-bearing-gap ATTENTION alert only.
+   *  Default-on (soak-gated is automatic — soak windows are manifest constants).
+   *  When false, /guards still classifies loadBearingGap; the probe just doesn't
+   *  raise the load-bearing-gap attention item (rollback lever). The ACUTE track
+   *  is unaffected. */
+  alertLoadBearingGaps?: boolean;
 }
 
 // ────────────────────────────── durable state ──────────────────────────────
@@ -114,11 +137,17 @@ interface GuardFlipRecord {
 interface EpisodeState {
   version: 1;
   tick: number;
+  // ── ACUTE track (the load-shed signature classes; legacy field names kept) ──
   episodeCounter: number;
   openEpisodeId: string | null;
   /** Whether the open episode's aggregated item was successfully emitted. */
   episodeEmitted: boolean;
   anomalies: Record<string, AnomalyEpisodeRecord>;
+  // ── G3 LOAD-BEARING-GAP track (independent lifecycle + item-id namespace) ──
+  lbEpisodeCounter: number;
+  lbOpenEpisodeId: string | null;
+  lbEpisodeEmitted: boolean;
+  lbAnomalies: Record<string, AnomalyEpisodeRecord>;
   guardHistory: Record<string, GuardFlipRecord>;
   updatedAt: number;
 }
@@ -131,6 +160,10 @@ function freshState(now: number): EpisodeState {
     openEpisodeId: null,
     episodeEmitted: false,
     anomalies: {},
+    lbEpisodeCounter: 0,
+    lbOpenEpisodeId: null,
+    lbEpisodeEmitted: false,
+    lbAnomalies: {},
     guardHistory: {},
     updatedAt: now,
   };
@@ -159,6 +192,15 @@ function loadState(stateDir: string, now: number): EpisodeState {
         openEpisodeId: typeof parsed.openEpisodeId === 'string' ? parsed.openEpisodeId : null,
         episodeEmitted: parsed.episodeEmitted === true,
         anomalies: parsed.anomalies as Record<string, AnomalyEpisodeRecord>,
+        // G3 lb-track fields — absent on a pre-G3 state file: default to a fresh
+        // (closed) track rather than crashing (back-compat, the safe direction).
+        lbEpisodeCounter: typeof parsed.lbEpisodeCounter === 'number' ? parsed.lbEpisodeCounter : 0,
+        lbOpenEpisodeId: typeof parsed.lbOpenEpisodeId === 'string' ? parsed.lbOpenEpisodeId : null,
+        lbEpisodeEmitted: parsed.lbEpisodeEmitted === true,
+        lbAnomalies:
+          parsed.lbAnomalies !== null && typeof parsed.lbAnomalies === 'object'
+            ? (parsed.lbAnomalies as Record<string, AnomalyEpisodeRecord>)
+            : {},
         guardHistory: parsed.guardHistory as Record<string, GuardFlipRecord>,
         updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : now,
       };
@@ -190,6 +232,9 @@ interface CurrentAnomaly {
   guardKey?: string;
   /** Count-only classes (heartbeat-sourced peers) carry a count, no keys. */
   count?: number;
+  /** G3 (§2.3): the load-bearing critical path — rides ANY anomaly of a
+   *  load-bearing guard, so a loud class reads "a LOAD-BEARING path (X) is down." */
+  criticalPath?: string;
 }
 
 function anomalyKey(machineId: string, cls: GuardAnomalyClass, guardKey?: string): string {
@@ -215,15 +260,18 @@ function evaluateInventory(
     const signature = g.effective === 'off' ? `off:${g.offClass ?? 'unknown'}` : g.effective;
     postures.set(`${machineId}${HISTORY_SEP}${g.key}`, signature);
 
+    // G3: criticalPath rides ANY anomaly of a load-bearing guard (§2.3).
+    const cp = g.criticalPath;
+
     switch (g.effective) {
       case 'off':
         if (g.offClass === 'diverged-from-default') {
           anomalies.push({
             key: anomalyKey(machineId, 'diverged-from-default', g.key),
-            machineId, label, cls: 'diverged-from-default', guardKey: g.key,
+            machineId, label, cls: 'diverged-from-default', guardKey: g.key, criticalPath: cp,
           });
         }
-        // dark-default offs are quiet — never anomalies.
+        // dark-default offs are quiet — EXCEPT a load-bearing one past soak (below).
         break;
       case 'off-runtime-divergent':
       case 'on-stale':
@@ -231,11 +279,22 @@ function evaluateInventory(
       case 'errored':
         anomalies.push({
           key: anomalyKey(machineId, g.effective, g.key),
-          machineId, label, cls: g.effective, guardKey: g.key,
+          machineId, label, cls: g.effective, guardKey: g.key, criticalPath: cp,
         });
         break;
       default:
         break;
+    }
+
+    // G3 (§2.3): a load-bearing guard silently unguarded past its soak window
+    // (dark-default off OR on-dry-run) hits `case 'off'` (only pushes on
+    // diverged-from-default) or `default:break` — so the explicit loadBearingGap
+    // check is REQUIRED. Loud classes above already alarm (no double-alarm).
+    if (g.loadBearingGap) {
+      anomalies.push({
+        key: anomalyKey(machineId, 'load-bearing-gap', g.key),
+        machineId, label, cls: 'load-bearing-gap', guardKey: g.key, criticalPath: cp,
+      });
     }
   }
 }
@@ -255,11 +314,16 @@ function evaluateHeartbeat(
 ): void {
   const offDeviant = new Set(Array.isArray(hb.offDeviantKeys) ? hb.offDeviantKeys : []);
   const offRuntime = new Set(Array.isArray(hb.offRuntimeDivergentKeys) ? hb.offRuntimeDivergentKeys : []);
+  // G3: a peer's load-bearing-gap keys (Array.isArray-guarded — an un-upgraded
+  // peer omits the field → empty). criticalPath is looked up from the LOCAL
+  // fleet-uniform manifest (§2.3/§4).
+  const loadBearingGap = new Set(Array.isArray(hb.loadBearingGapKeys) ? hb.loadBearingGapKeys : []);
 
   for (const key of offDeviant) {
     anomalies.push({
       key: anomalyKey(machineId, 'diverged-from-default', key),
       machineId, label, cls: 'diverged-from-default', guardKey: key,
+      criticalPath: CRITICAL_PATH_BY_KEY.get(key),
     });
     postures.set(`${machineId}${HISTORY_SEP}${key}`, 'off:diverged-from-default');
   }
@@ -267,8 +331,17 @@ function evaluateHeartbeat(
     anomalies.push({
       key: anomalyKey(machineId, 'off-runtime-divergent', key),
       machineId, label, cls: 'off-runtime-divergent', guardKey: key,
+      criticalPath: CRITICAL_PATH_BY_KEY.get(key),
     });
     postures.set(`${machineId}${HISTORY_SEP}${key}`, 'off-runtime-divergent');
+  }
+  for (const key of loadBearingGap) {
+    anomalies.push({
+      key: anomalyKey(machineId, 'load-bearing-gap', key),
+      machineId, label, cls: 'load-bearing-gap', guardKey: key,
+      criticalPath: CRITICAL_PATH_BY_KEY.get(key),
+    });
+    postures.set(`${machineId}${HISTORY_SEP}${key}`, 'load-bearing-gap');
   }
 
   // Previously-tracked keys that are no longer in either list record a
@@ -304,8 +377,11 @@ function interpretDeepRead(
 }
 
 function formatAnomaly(a: CurrentAnomaly): string {
-  if (a.guardKey) return `[${a.label}] ${a.guardKey}: ${a.cls}`;
-  return `[${a.label}] ${a.count ?? '?'} guard(s) ${a.cls} (count-only via heartbeat)`;
+  // G3: a load-bearing anomaly names its critical path, so a gap reads
+  // "a LOAD-BEARING critical path (X) is down," never a bare row (§2.3).
+  const cp = a.criticalPath ? ` — LOAD-BEARING critical path: ${a.criticalPath}` : '';
+  if (a.guardKey) return `[${a.label}] ${a.guardKey}: ${a.cls}${cp}`;
+  return `[${a.label}] ${a.count ?? '?'} guard(s) ${a.cls} (count-only via heartbeat)${cp}`;
 }
 
 // ───────────────────────────────── probe ───────────────────────────────────
@@ -386,50 +462,70 @@ export function createGuardPostureProbes(deps: GuardPostureProbeDeps): Probe[] {
       }
       state.guardHistory = nextHistory;
 
-      // ── Persistence accounting (≥2 consecutive ticks before alerting) ──
-      const nextAnomalies: Record<string, AnomalyEpisodeRecord> = {};
-      for (const a of current) {
-        const prev = state.anomalies[a.key];
-        if (prev && prev.lastSeenTick === tick - 1) {
-          nextAnomalies[a.key] = { firstSeenTick: prev.firstSeenTick, lastSeenTick: tick };
-        } else {
-          nextAnomalies[a.key] = { firstSeenTick: tick, lastSeenTick: tick };
+      // ── G3: partition the anomaly stream into TWO independent tracks (§2.3) ──
+      // The load-bearing-gap track and the acute track run separate episode
+      // lifecycles so a long-lived designed gap can NEVER hold an episode open in
+      // a way that masks an acute load-shed. `load-bearing-gap` and the acute
+      // classes are mutually exclusive per guard (a load-bearing loud class pushes
+      // the acute anomaly, NOT a gap), so a clean partition by class is exact.
+      // The lb-alert sub-flag (§6) gates ONLY the lb track — /guards classification
+      // is a separate route, unaffected. When off, the lb track closes + never emits.
+      const lbAlertEnabled = deps.alertLoadBearingGaps !== false;
+      const currentAcute = current.filter((a) => a.cls !== 'load-bearing-gap');
+      const currentLb = lbAlertEnabled ? current.filter((a) => a.cls === 'load-bearing-gap') : [];
+
+      // ── Persistence accounting (≥2 consecutive ticks) — one map PER track ──
+      const accrue = (
+        subset: CurrentAnomaly[],
+        prior: Record<string, AnomalyEpisodeRecord>,
+      ): Record<string, AnomalyEpisodeRecord> => {
+        const next: Record<string, AnomalyEpisodeRecord> = {};
+        for (const a of subset) {
+          const prev = prior[a.key];
+          next[a.key] = prev && prev.lastSeenTick === tick - 1
+            ? { firstSeenTick: prev.firstSeenTick, lastSeenTick: tick }
+            : { firstSeenTick: tick, lastSeenTick: tick };
         }
-      }
-      state.anomalies = nextAnomalies;
+        return next;
+      };
+      const nextAcute = accrue(currentAcute, state.anomalies);
+      const nextLb = accrue(currentLb, state.lbAnomalies);
+      state.anomalies = nextAcute;
+      state.lbAnomalies = nextLb;
 
-      // Flapping is alertable on sight: its >K flips were, by construction,
-      // recorded across multiple prior ticks — the persistence intent is
-      // already satisfied (each sighting may look settled, that's the point).
-      const alertable = current.filter((a) => {
+      const persisted = (a: CurrentAnomaly, recs: Record<string, AnomalyEpisodeRecord>): boolean => {
+        // Flapping is alertable on sight: its >K flips were, by construction,
+        // recorded across multiple prior ticks — the persistence intent is met.
         if (a.cls === 'flapping') return true;
-        const rec = nextAnomalies[a.key];
-        return rec.lastSeenTick - rec.firstSeenTick + 1 >= PERSISTENCE_TICKS;
-      });
+        const rec = recs[a.key];
+        return !!rec && rec.lastSeenTick - rec.firstSeenTick + 1 >= PERSISTENCE_TICKS;
+      };
+      const alertableAcute = currentAcute.filter((a) => persisted(a, nextAcute));
+      const alertableLb = currentLb.filter((a) => persisted(a, nextLb));
 
-      // ── Episode lifecycle ──
-      let emittedThisTick = false;
-      if (current.length === 0) {
-        // An episode ends ONLY when ALL anomalies clear.
+      // ── Episode lifecycle — run each track independently ──
+      // CRITICAL COUPLING (§2.3): the acute track's CLOSE condition tests
+      // currentAcute (its own subset), NOT the shared `current` — else a
+      // long-lived load-bearing gap keeps `current.length>0` and re-masks acute.
+      let acuteEmitted = false;
+      let lbEmitted = false;
+
+      // Acute track (`guard-posture:ep-N`).
+      if (currentAcute.length === 0) {
         state.openEpisodeId = null;
         state.episodeEmitted = false;
-      } else if (alertable.length > 0) {
+      } else if (alertableAcute.length > 0) {
         if (!state.openEpisodeId) {
-          // Cleared-then-recurring = NEW episode: new id suffix, same healthKey.
           state.episodeCounter += 1;
           state.openEpisodeId = `ep-${state.episodeCounter}`;
           state.episodeEmitted = false;
         }
         if (!state.episodeEmitted) {
-          // ONE aggregated item per episode listing all current anomalies
-          // across all machines (P17) — never one item per anomaly.
-          const lines = [...current]
-            .sort((x, y) => x.key.localeCompare(y.key))
-            .map(formatAnomaly);
+          const lines = [...currentAcute].sort((x, y) => x.key.localeCompare(y.key)).map(formatAnomaly);
           try {
             await deps.emitAttention({
               id: `guard-posture:${state.openEpisodeId}`,
-              title: `Guard posture anomalies (${current.length})`,
+              title: `Guard posture anomalies (${currentAcute.length})`,
               summary:
                 `Guard-posture anomalies persisting across probe ticks:\n` +
                 lines.map((l) => `- ${l}`).join('\n'),
@@ -439,14 +535,51 @@ export function createGuardPostureProbes(deps: GuardPostureProbeDeps): Probe[] {
               healthKey: GUARD_POSTURE_HEALTH_KEY,
             });
             state.episodeEmitted = true;
-            emittedThisTick = true;
+            acuteEmitted = true;
           } catch {
-            // Emit failed — keep episodeEmitted=false so the next tick retries
-            // (still ONE item per episode: same id, attention-layer dedup backstop).
+            // Emit failed — keep episodeEmitted=false so the next tick retries.
           }
         }
-        // Episode already open + emitted: do NOT re-emit while it persists.
       }
+
+      // Load-bearing-gap track (`guard-posture-loadbearing:ep-N`) — separate
+      // item-id namespace + separate open/emit state, so it cannot mask the acute
+      // track. Soaking pushes NO anomaly (§2.3), so it can never open this track.
+      if (currentLb.length === 0) {
+        state.lbOpenEpisodeId = null;
+        state.lbEpisodeEmitted = false;
+      } else if (alertableLb.length > 0) {
+        if (!state.lbOpenEpisodeId) {
+          state.lbEpisodeCounter += 1;
+          state.lbOpenEpisodeId = `ep-${state.lbEpisodeCounter}`;
+          state.lbEpisodeEmitted = false;
+        }
+        if (!state.lbEpisodeEmitted) {
+          const lines = [...currentLb].sort((x, y) => x.key.localeCompare(y.key)).map(formatAnomaly);
+          try {
+            await deps.emitAttention({
+              id: `guard-posture-loadbearing:${state.lbOpenEpisodeId}`,
+              title: `Load-bearing guard gap (${currentLb.length})`,
+              summary:
+                `A LOAD-BEARING critical path depends on a guard that is silently ` +
+                `unguarded (past its soak window, not accepted). Graduate it, let it ` +
+                `soak, OR record an owned accepted-fallback (PIN):\n` +
+                lines.map((l) => `- ${l}`).join('\n'),
+              category: 'guard-posture',
+              priority: 'HIGH',
+              sourceContext: 'guard-posture-probe-loadbearing',
+              healthKey: GUARD_POSTURE_LOADBEARING_HEALTH_KEY,
+            });
+            state.lbEpisodeEmitted = true;
+            lbEmitted = true;
+          } catch {
+            // Emit failed — retry next tick (same id, attention-layer dedup backstop).
+          }
+        }
+      }
+
+      const alertable = [...alertableAcute, ...alertableLb];
+      const emittedThisTick = acuteEmitted || lbEmitted;
 
       state.tick = tick;
       state.updatedAt = now();
@@ -457,6 +590,7 @@ export function createGuardPostureProbes(deps: GuardPostureProbeDeps): Probe[] {
         currentAnomalies: current.length,
         alertable: alertable.length,
         openEpisode: state.openEpisodeId,
+        loadBearingGapEpisode: state.lbOpenEpisodeId,
         emittedThisTick,
       };
 
@@ -468,12 +602,13 @@ export function createGuardPostureProbes(deps: GuardPostureProbeDeps): Probe[] {
           ...base,
           passed: false,
           description: `Guard-posture anomalies persisting (${alertable.length}): ${lines.join('; ')}`,
-          error: `Episode ${state.openEpisodeId}: ${alertable.length} anomaly(ies) across machines`,
+          error: `Episode ${state.openEpisodeId ?? state.lbOpenEpisodeId}: ${alertable.length} anomaly(ies) across machines`,
           diagnostics,
           remediation: [
             'Read GET /guards?scope=pool for the full per-machine posture',
             'A diverged-from-default off is the load-shed signature — re-enable deliberately (send the FULL config block; PATCH /config merges one level deep)',
             'off-runtime-divergent means the live runtime contradicts an on-config — restart the component or its server',
+            'A load-bearing-gap means a critical path depends on a dark guard — graduate it, let it soak, OR record an owned accept: POST /guards/:key/accept-fallback {reason, owner} (dashboard PIN)',
           ],
         };
       }

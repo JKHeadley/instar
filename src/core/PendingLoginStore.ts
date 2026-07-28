@@ -57,6 +57,11 @@ export interface PendingLogin {
    *  Claude two-code sequence (email-verification code first, then the sign-in code).
    *  Surfaced on the pending-login so the operator knows what to expect. */
   notice?: string;
+  /** WS5.2 §5.3/S7 — the account email the operator EXPECTED to enroll (the mandate's
+   *  account). On a follow-me completion the freshly-minted login's email is validated
+   *  against this before the account becomes selectable; a surprise email is held, not
+   *  auto-used. Absent for a plain (non-follow-me) enrollment. Never a secret. */
+  expectedEmail?: string;
   /** ISO timestamp the code/URL expires. */
   ttlExpiresAt: string;
   status: PendingLoginStatus;
@@ -89,8 +94,11 @@ export interface IssueLoginInput {
   configHome?: string;
   verificationUrl: string;
   userCode?: string;
-  /** Operator-facing flow heads-up (e.g. the Claude two-code sequence). */
+  /** Operator-facing flow heads-up (optional; no built-in flow populates it today). */
   notice?: string;
+  /** WS5.2 §5.3/S7 — the operator-expected account email (a follow-me login carries it
+   *  so completion can validate the minted account against operator expectation). */
+  expectedEmail?: string;
   /** TTL in ms from now (default 15 min — the observed Codex device-code TTL). */
   ttlMs?: number;
 }
@@ -153,8 +161,18 @@ export class PendingLoginStore {
     const id = (input.id ?? '').trim();
     if (!id) throw new ValidationError('id is required');
     if (!ID_RE.test(id)) throw new ValidationError('id must match ^[a-z0-9-]+$');
-    if (this.store.logins.some((l) => l.id === id)) {
-      throw new ValidationError(`pending login ${id} already exists`);
+    const dupIdx = this.store.logins.findIndex((l) => l.id === id);
+    if (dupIdx !== -1) {
+      // A still-live PENDING record with this id is a genuine in-flight duplicate —
+      // refuse it. But a TERMINAL (completed/abandoned) or live-EXPIRED record is
+      // stale: replace it so the account can be RE-enrolled. Follow-me reuses the
+      // accountId as the login id, so an operator who cancels a cell (→ abandoned)
+      // and re-taps it must not hit "already exists". The stale login pane, if any,
+      // is pre-cleaned by enroll-start's own spawn-time kill-session.
+      if (this.withLiveStatus(this.store.logins[dupIdx]).status === 'pending') {
+        throw new ValidationError(`pending login ${id} already exists`);
+      }
+      this.store.logins.splice(dupIdx, 1);
     }
     if (!input.label?.trim()) throw new ValidationError('label is required');
     if (!input.verificationUrl?.trim()) throw new ValidationError('verificationUrl is required');
@@ -172,6 +190,7 @@ export class PendingLoginStore {
       verificationUrl: input.verificationUrl.trim(),
       ...(input.userCode ? { userCode: input.userCode.trim() } : {}),
       ...(input.notice?.trim() ? { notice: input.notice.trim() } : {}),
+      ...(input.expectedEmail?.trim() ? { expectedEmail: input.expectedEmail.trim() } : {}),
       ttlExpiresAt: new Date(this.now() + (input.ttlMs ?? DEFAULT_TTL_MS)).toISOString(),
       status: 'pending',
       reissueCount: 0,
@@ -221,6 +240,15 @@ export class PendingLoginStore {
   private transition(id: string, to: PendingLoginStatus): PendingLogin | null {
     const login = this.store.logins.find((l) => l.id === id);
     if (!login) return null;
+    // Terminal guard (defense in depth): completed/abandoned are terminal. Never
+    // re-transition a terminal record — a cancel landing a moment after a login
+    // COMPLETES must NOT clobber the successful enrollment back to abandoned. Also
+    // idempotent: a record already in the requested state is a no-op. This makes
+    // the cancel route's terminal-state correctness enforced at the store, not only
+    // in the route.
+    if (login.status === 'completed' || login.status === 'abandoned' || login.status === to) {
+      return { ...login };
+    }
     login.status = to;
     login.updatedAt = new Date(this.now()).toISOString();
     login.version += 1;

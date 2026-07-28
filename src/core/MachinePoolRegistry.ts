@@ -102,6 +102,27 @@ export interface HeartbeatObservation {
   machineId: string;
   /** The machine's own timestamp from its heartbeat (ISO) — advisory. */
   selfReportedLastSeen?: string;
+  /**
+   * COARSE liveness beat (e.g. the git-synced file-based MachineHeartbeat, written
+   * every ~30min and tolerant of 48h staleness). When true, the clock-skew FSM is
+   * NOT driven from this beat: `selfReportedLastSeen` here is a coarse, possibly
+   * 30-min-old file timestamp, NOT a live clock reading, so comparing it against the
+   * 5-min clock-skew tolerance produces a PERMANENT false-positive quarantine that
+   * the fresh live (PeerPresencePuller) beats can never undo (root-caused live
+   * Laptop↔Mini, 2026-06-30: a stale file ts re-diverged before the 2 clean beats
+   * needed to re-admit, stranding the peer in suspect-clock-removed forever). A
+   * coarse beat still refreshes liveness (routerReceivedAt) — it only abstains from
+   * the precise clock-skew judgement, which belongs to the live beat path. Absent =
+   * a live beat = the skew FSM runs as before. */
+  coarseHeartbeat?: boolean;
+  /**
+   * B5 (multimachine-lease-poll-robustness, Decision 11) — whether this machine's
+   * LIFELINE is ACTUALLY polling Telegram (sourced from its lifeline-poll-active
+   * file, the truth — not the server's intent). Absent = an older peer that
+   * doesn't emit it yet → the exactly-one-listener guard treats it as UNKNOWN
+   * (→ indeterminate, never a false silence/dual alarm). Fail-open.
+   */
+  pollingActive?: boolean;
   loadAvg?: number;
   memPressure?: MachineCapacity['memPressure'];
   activeSessionCount?: number;
@@ -109,6 +130,10 @@ export interface HeartbeatObservation {
   /** The machine's self-reported LLM-account quota state (quota-aware placement,
    *  2026-06-05). Absent = unknown (older heartbeats) = treated as not blocked. */
   quotaState?: MachineCapacity['quotaState'];
+  /** Platform/workspace reachability (placement-platform-workspace-aware) — which
+   *  channels this machine's adapters are connected to; consumed by placement so a
+   *  channel is never owned by a machine that can't reach it. Absent = older heartbeat. */
+  servesChannels?: MachineCapacity['servesChannels'];
   /** WS1.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC invariant 5): the machine's
    *  self-advertised seamlessness capabilities. Absent = pre-spec peer or
    *  feature dark = non-participant (the conservative side). */
@@ -118,6 +143,14 @@ export interface HeartbeatObservation {
    *  field is the peer's self-reported DATA, never its identity. Absent =
    *  older peer / no posture (renders "unknown"). */
   guardPosture?: MachineCapacity['guardPosture'];
+  /** Machine-coherence advert (machine-coherence-guard §3.2), ALREADY
+   *  clamp-passed by the puller's narrowing step (M4). Absent = a sparse
+   *  liveness beat (carry the last advert forward WITHOUT refreshing its
+   *  receipt time — M5) or a pre-guard peer. */
+  coherenceAdvert?: MachineCapacity['coherenceAdvert'];
+  /** Clamp-rejection marker (M4): the peer sent an advert that FAILED the
+   *  receive clamp. Replaces the stored advert for evaluation purposes. */
+  coherenceAdvertRejected?: { atMs: number; reason: string };
   /** Durable Inbound Message Queue heartbeat fields (spec §5.1). Absent =
    *  older peer / queue dark — depth honestly unknown. */
   inboundQueue?: MachineCapacity['inboundQueue'];
@@ -169,6 +202,15 @@ export class MachinePoolRegistry {
        *  posture-less beat carries the old block forward without refreshing
        *  its age (the age must reflect when the POSTURE was received). */
       posture?: { block: NonNullable<MachineCapacity['guardPosture']>; receivedAtMs: number };
+      /** Coherence-advert receipt, tracked SEPARATELY like posture (spec M5):
+       *  `receivedAtMs` stamps ONLY when a beat actually CARRIES an advert —
+       *  carry-forward must never impersonate freshness (git beats refresh
+       *  liveness without an advert; the evaluator needs the REAL advert age). */
+      coherence?: { advert: NonNullable<MachineCapacity['coherenceAdvert']>; receivedAtMs: number };
+      /** Clamp-rejection marker (spec M4): REPLACES the advert for evaluation
+       *  purposes while set (the last good advert above is retained for
+       *  forensics only); cleared by the next clean advert. */
+      coherenceRejected?: { atMs: number; reason: string };
     }
   >();
 
@@ -184,14 +226,23 @@ export class MachinePoolRegistry {
   recordHeartbeat(obs: HeartbeatObservation): ClockSkewSideEffect {
     const nowMs = this.now();
     const prev = this.observed.get(obs.machineId);
+    // COARSE beats (the git-synced file MachineHeartbeat) NEVER drive the clock-skew
+    // FSM: their `selfReportedLastSeen` is a coarse, possibly-30-min-old file timestamp,
+    // not a live clock reading, so judging it against the 5-min tolerance is a category
+    // error that produces a permanent false-positive quarantine (the live Laptop↔Mini
+    // bug, 2026-06-30). A coarse beat carries the prior skew state forward untouched and
+    // only refreshes liveness (routerReceivedAt, below).
     let divergent = false;
-    if (obs.selfReportedLastSeen) {
+    if (!obs.coarseHeartbeat && obs.selfReportedLastSeen) {
       const selfMs = Date.parse(obs.selfReportedLastSeen);
       if (Number.isFinite(selfMs)) {
         divergent = Math.abs(selfMs - nowMs) > this.d.clockSkewToleranceMs;
       }
     }
-    const { next, sideEffect } = clockSkewTransition(prev?.skew ?? INITIAL_CLOCK_SKEW_STATE, divergent);
+    const { next, sideEffect }: { next: ClockSkewFsmState; sideEffect: ClockSkewSideEffect } =
+      obs.coarseHeartbeat
+        ? { next: prev?.skew ?? INITIAL_CLOCK_SKEW_STATE, sideEffect: 'none' }
+        : clockSkewTransition(prev?.skew ?? INITIAL_CLOCK_SKEW_STATE, divergent);
     // Posture handling (GUARD-POSTURE-ENDPOINT-SPEC §2.3): a beat WITH a block
     // stamps a fresh receiver-side receipt time and persists durably; a beat
     // WITHOUT one (older peer / lighter beat) carries the previous block
@@ -202,7 +253,50 @@ export class MachinePoolRegistry {
       posture = { block: obs.guardPosture, receivedAtMs: nowMs };
       this.d.postureStore?.record(obs.machineId, obs.guardPosture, nowMs);
     }
-    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs, skew: next, posture });
+    // Coherence-advert handling (machine-coherence-guard §3.2 M4/M5, the same
+    // separate-receipt pattern as posture above): a beat WITH a clamp-passed
+    // advert stamps a fresh receipt AND clears any standing rejection; a beat
+    // WITH a rejection marker records it (replacing the advert for evaluation —
+    // the last good advert is retained for forensics only); a beat with NEITHER
+    // carries both forward UNCHANGED — including the original receipt time, so
+    // carry-forward can never impersonate freshness (M5).
+    let coherence = prev?.coherence;
+    let coherenceRejected = prev?.coherenceRejected;
+    if (obs.coherenceAdvert) {
+      coherence = { advert: obs.coherenceAdvert, receivedAtMs: nowMs };
+      coherenceRejected = undefined;
+    } else if (obs.coherenceAdvertRejected) {
+      coherenceRejected = obs.coherenceAdvertRejected;
+    }
+    // seamlessnessFlags carry-forward (the SAME pattern as `posture` above): a
+    // LIGHT/liveness beat that OMITS seamlessnessFlags (e.g. refreshPool's 30s
+    // sparse `{machineId, selfReportedLastSeen}` echo) must NOT erase a peer's
+    // last pulled capability — otherwise the HTTP-pulled stateSyncReceive advert
+    // is wiped every 30s and the flag-coherence gate falsely reads "peer cannot
+    // receive", blocking cross-machine replication (root-caused live Laptop↔Mini,
+    // 2026-06-14). A GENUINE rich beat ALWAYS builds the object (server.ts
+    // ~L14071) — a withdrawn sub-capability flips its boolean to false INSIDE a
+    // present object, never omitting it — so carry-forward preserves a real
+    // capability across our own synthetic beats and never strands a withdrawn
+    // one. Field-specific (not a generic deep-merge) by design: merging stale
+    // fail-OPEN fields like quotaState forward would regress placement. A fully
+    // offline peer still ages out via routerReceivedAtMs → online:false.
+    let obsToStore: HeartbeatObservation =
+      obs.seamlessnessFlags === undefined && prev?.obs.seamlessnessFlags !== undefined
+        ? { ...obs, seamlessnessFlags: prev.obs.seamlessnessFlags }
+        : obs;
+    // selfReportedLastSeen carry-forward for COARSE beats: a coarse (stale, git-synced
+    // file) beat must NOT overwrite a FRESHER live `selfReportedLastSeen` from the
+    // PeerPresencePuller path — keep the newer of the two so the displayed last-seen
+    // stays honest and a coarse beat can't visually "age" a peer that is live.
+    if (obs.coarseHeartbeat && obs.selfReportedLastSeen && prev?.obs.selfReportedLastSeen) {
+      const coarseMs = Date.parse(obs.selfReportedLastSeen);
+      const prevMs = Date.parse(prev.obs.selfReportedLastSeen);
+      if (Number.isFinite(coarseMs) && Number.isFinite(prevMs) && prevMs > coarseMs) {
+        obsToStore = { ...obsToStore, selfReportedLastSeen: prev.obs.selfReportedLastSeen };
+      }
+    }
+    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs: obsToStore, skew: next, posture, coherence, coherenceRejected });
     if (sideEffect === 'removed') {
       this.d.onClockQuarantine?.(
         obs.machineId,
@@ -266,11 +360,31 @@ export class MachinePoolRegistry {
       hardware: known.hardware,
       clockSkewStatus: live?.skew.status ?? 'ok',
       quotaState: live?.obs.quotaState,
+      pollingActive: live?.obs.pollingActive,
+      servesChannels: live?.obs.servesChannels,
       inboundQueue: live?.obs.inboundQueue,
-      // WS1.1: capability advertisement passthrough. LIVE observation only —
-      // a peer that goes dark stops advertising (no durable fallback), which
-      // is the safe direction: senders queue instead of forwarding blind.
+      // WS1.1: capability advertisement passthrough. Memory-only (lost on a
+      // local restart, like posture's in-memory half — no durable disk
+      // fallback): a peer that goes dark stops advertising and ages out of
+      // `online`, the safe direction. recordHeartbeat carries the last pulled
+      // value forward across our OWN sparse liveness beats (see its
+      // carry-forward note), so a 30s `{machineId,selfReportedLastSeen}` echo no
+      // longer erases an HTTP-pulled stateSyncReceive advert. A genuine
+      // withdrawal flips a boolean inside a still-present object and DOES
+      // propagate.
       seamlessnessFlags: live?.obs.seamlessnessFlags,
+      // Machine-coherence advert (§3.2): rejection REPLACES the advert for
+      // evaluation purposes (M4 — rejected ≠ absent; the evaluator classifies
+      // `advert-rejected`, a loud named condition). The receipt time is the
+      // ADVERT's own receipt, never the beat's (M5 carry-forward honesty).
+      ...(live?.coherenceRejected
+        ? { coherenceAdvertRejected: live.coherenceRejected }
+        : live?.coherence
+          ? {
+              coherenceAdvert: live.coherence.advert,
+              coherenceAdvertReceivedAt: new Date(live.coherence.receivedAtMs).toISOString(),
+            }
+          : {}),
       // Guard posture: live observation first, durable last-known second —
       // a machine with no posture EVER received carries neither field
       // (renders "guards: unknown", never "0 on / 0 off").

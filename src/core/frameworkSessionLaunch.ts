@@ -78,7 +78,7 @@ export function resolveModelForFramework(
     // gemini-2.5-flash is the verified one-shot default (v0.25.2, cached-OAuth).
     if (key === 'fast' || key === 'haiku') return 'gemini-2.5-flash';
     if (key === 'balanced' || key === 'sonnet') return 'gemini-2.5-flash';
-    if (key === 'capable' || key === 'opus') return 'gemini-2.5-pro';
+    if (key === 'capable' || key === 'opus') return 'gemini-3.1-pro-preview';
     return modelOrTier;
   }
   if (framework === 'pi-cli') {
@@ -93,6 +93,26 @@ export function resolveModelForFramework(
     return modelOrTier;
   }
   return modelOrTier;
+}
+
+/**
+ * Concrete model an interactive launch will use after applying the builder's
+ * own default. Keep user-facing post-spawn reporting on this same seam so a
+ * defaulted model is never guessed independently from the argv builder.
+ */
+export function resolveInteractiveLaunchModel(
+  framework: IntelligenceFramework,
+  configuredModel: string | undefined,
+  codexLocalProvider?: 'ollama' | 'lmstudio',
+): string | undefined {
+  if (framework === 'codex-cli') {
+    if (codexLocalProvider) return configuredModel ?? 'llama3.2:latest';
+    return resolveModelForFramework(framework, configuredModel) ?? 'gpt-5.5';
+  }
+  if (framework === 'gemini-cli') {
+    return resolveModelForFramework(framework, configuredModel) ?? 'gemini-2.5-flash';
+  }
+  return resolveModelForFramework(framework, configuredModel);
 }
 
 /**
@@ -176,6 +196,17 @@ export interface InteractiveLaunchOptions {
    * non-claude frameworks. NEVER a token — just the login location.
    */
   configHome?: string;
+  /**
+   * Dynamic MCP Lifecycle (claude-code only): the MCP-config CLI flags this
+   * session should launch with — e.g. `['--strict-mcp-config', '--mcp-config',
+   * '<filtered.json>']` to launch with only a lean subset of `.mcp.json`. Built
+   * by `SessionManager.buildSessionMcpFlags` (state-file/baseline resolution,
+   * fail-safe to `[]`). An empty/absent array ⇒ no flags ⇒ Claude reads the full
+   * project `.mcp.json` exactly as today (the dark default). No effect on
+   * non-claude frameworks (their builders ignore it — MCP `--mcp-config` is
+   * Claude-Code-specific). See DYNAMIC-MCP-LIFECYCLE-SPEC.
+   */
+  mcpFlags?: string[];
   /**
    * Topic Profile §6 — per-topic thinking mode. Mapped per framework:
    *  - claude-code: `--effort <low|medium|high|max>` (the live CLI's verified
@@ -268,6 +299,13 @@ const claudeCodeBuilder: Builder = (options) => {
   if (options.configHome) {
     envOverrides.CLAUDE_CONFIG_DIR = options.configHome;
   }
+  // Dynamic MCP Lifecycle (claude-code only): launch with a lean/explicit MCP set
+  // when SessionManager.buildSessionMcpFlags resolved one. Empty/absent ⇒ no flags
+  // ⇒ full project .mcp.json (the dark default). The caller already fail-safed to
+  // [] on any error, so a bad resolution can never strand the launch here.
+  if (Array.isArray(options.mcpFlags) && options.mcpFlags.length > 0) {
+    argv.push(...options.mcpFlags);
+  }
   return { argv, envOverrides };
 };
 
@@ -304,9 +342,11 @@ const codexCliBuilder: Builder = (options) => {
   // vocabulary) and pass the model verbatim. Builder also appends
   // --oss --local-provider <p> below.
   const isLocal = options.codexLocalProvider !== undefined;
-  const resolvedModel = isLocal
-    ? (options.defaultModel ?? 'llama3.2:latest')
-    : (resolveModelForFramework('codex-cli', options.defaultModel) ?? 'gpt-5.5');
+  const resolvedModel = resolveInteractiveLaunchModel(
+    'codex-cli',
+    options.defaultModel,
+    options.codexLocalProvider,
+  )!;
 
   // Codex's `resume` is a subcommand (`codex resume <SESSION_ID>`), not a
   // flag. When resuming, insert it as the first argument after the binary
@@ -380,8 +420,7 @@ const geminiCliBuilder: Builder = (options) => {
   // (`--approval-mode default`, no tools) lives ONLY on the one-shot
   // intelligence-provider EVALUATION path (GeminiCliIntelligenceProvider —
   // the analog of `codex exec --sandbox read-only`), never here.
-  const resolvedModel =
-    resolveModelForFramework('gemini-cli', options.defaultModel) ?? 'gemini-2.5-flash';
+  const resolvedModel = resolveInteractiveLaunchModel('gemini-cli', options.defaultModel)!;
   const argv: string[] = [options.binaryPath, '-m', resolvedModel, '--yolo'];
   if (options.resumeSessionId) {
     // Gemini resumes by `latest` or a numeric index. The tracked resume id is
@@ -537,6 +576,10 @@ export interface HeadlessLaunchOptions {
    * frameworks.
    */
   effort?: EffortLevel;
+  /** Claude Code dynamic-workflow opt-in. Claude deliberately does not expose
+   * ultracode as a `--effort` value; the supported programmatic surface is the
+   * `ultracode` prompt keyword. Strict no-op on non-Claude frameworks. */
+  ultracode?: boolean;
 }
 
 export interface HeadlessLaunchSpec {
@@ -552,6 +595,10 @@ export interface HeadlessLaunchSpec {
 
 type HeadlessBuilder = (options: HeadlessLaunchOptions) => HeadlessLaunchSpec;
 
+export function withClaudeUltracodePrompt(prompt: string, enabled?: boolean): string {
+  return enabled ? `ultracode\n\n${prompt}` : prompt;
+}
+
 const claudeCodeHeadlessBuilder: HeadlessBuilder = (options) => {
   const argv: string[] = [options.binaryPath, '--dangerously-skip-permissions'];
   const resolved = resolveModelForFramework('claude-code', options.model);
@@ -565,7 +612,7 @@ const claudeCodeHeadlessBuilder: HeadlessBuilder = (options) => {
   if (headlessEffort) {
     argv.push('--effort', headlessEffort);
   }
-  argv.push('-p', options.prompt);
+  argv.push('-p', withClaudeUltracodePrompt(options.prompt, options.ultracode));
   return {
     argv,
     envOverrides: {

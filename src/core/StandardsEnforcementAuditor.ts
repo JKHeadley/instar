@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { loadStandardsRegistry, type StandardArticle } from './StandardsRegistryParser.js';
+import { parseStandardsRegistryDetailed, runRegistryCanary } from './StandardsRegistryParser.js';
 import { extractEnforcementRefs, flattenRefs, type EnforcementRef } from './StandardEnforcementExtractor.js';
 
 export type EnforcementKind = 'ratchet' | 'gate' | 'lint' | 'spec-only' | 'documented-only';
@@ -51,15 +51,93 @@ export interface StandardCoverage {
   classifiedAt: string;
 }
 
+/**
+ * What the audit's own inputs looked like, so a reader can tell an assessment
+ * over the WHOLE constitution apart from one over a fragment of it.
+ *
+ * Born from honest-denominators instance 4 (2026-07-25): this auditor reported
+ * `enforcedRatio: 0.0455` over 22 standards while the registry on disk carried
+ * 81. Reading the same registry in full gives 0.5375. The ratio was not wrong
+ * arithmetic — it was arithmetic over a denominator nobody could see, and the
+ * result was a figure 12× more alarming than reality, quoted onward as fact.
+ */
+export interface RegistryProvenance {
+  /** Absolute path of the registry file this pass actually read. */
+  path: string;
+  /** Bytes read — a 46KB copy where the source carries 248KB is a staleness tell. */
+  bytes: number;
+  /** Article headings found inside detected standards families — the parse denominator. */
+  articleHeadings: number;
+  /** Headings that parsed into an article. */
+  parsed: number;
+  /** Headings inside a family that carried no `**Rule.**` and were dropped. */
+  droppedHeadings: string[];
+  /** Families detected structurally. */
+  families: string[];
+  /** Registry-parse canary verdict — false means the numbers below are NOT trustworthy. */
+  canaryOk: boolean;
+  canaryFailures: string[];
+}
+
 export interface CoverageSummary {
   total: number;
   byKind: Record<EnforcementKind, number>;
-  /** (ratchet + gate + lint) / total — the fraction of standards with a verified structural guard. */
-  enforcedRatio: number;
+  /**
+   * (ratchet + gate + lint) / total — the fraction of standards with a verified
+   * structural guard. **`null` when `total` is 0**: with nothing to divide by
+   * there is no ratio, and reporting one (either the flattering 1 or the
+   * damning 0) states a measurement that was never taken. Callers must render
+   * null as "not assessed", never coerce it to a number.
+   */
+  enforcedRatio: number | null;
   /** Names of `documented-only` standards (the gaps). */
   gaps: string[];
   /** Total dangling refs across all standards. */
   danglingCount: number;
+  /**
+   * How much this assessment has actually EARNED, in three states rather than a
+   * boolean that overclaims.
+   *
+   *   'untrustworthy' — a check actively failed (nothing parsed, or the canary
+   *                     objected). Every figure here describes a fragment or a
+   *                     drifted parse.
+   *   'unverified'    — the internal checks passed, but there was NO EXTERNAL
+   *                     EXPECTATION to check the registry against, so this pass
+   *                     cannot tell whether it read the CURRENT constitution or a
+   *                     coherent old copy of it. The figures are arithmetic over
+   *                     whatever was on disk.
+   *   'verified'      — internal checks passed AND an external expectation
+   *                     confirmed the registry is the one this build ships.
+   *
+   * WHY THE TRI-STATE EXISTS (found 2026-07-25, two hours after shipping the
+   * boolean): the live agent-home registry carries 22 articles where the source
+   * carries 81 — and it passes every internal check, because it is a perfectly
+   * self-consistent document that merely happens to be a quarter of the real one.
+   * 22 headings, 22 parsed, nothing dropped, anchors present, above the floor. So
+   * `assessmentTrustworthy: true` was asserting trust over exactly the defect the
+   * field was added to expose.
+   *
+   * The lesson, which the spec review had already given me and I applied only to
+   * the spec: nothing INSIDE a 22-rule document says it should have 81.
+   * Trustworthiness is not obtainable by looking harder at the file; it requires an
+   * outside expectation. Until one exists, the honest verdict is 'unverified' —
+   * NOT 'true', because "my internal checks passed" and "this assessment is
+   * trustworthy" are different claims, and conflating them is the failure this
+   * whole instrument was fixed to stop.
+   */
+  assessmentConfidence: 'verified' | 'unverified' | 'untrustworthy';
+  /** Plain-English reason for the confidence verdict — always populated. */
+  confidenceReason: string;
+  /**
+   * @deprecated Reads as a claim of trust the audit has not earned. Retained for
+   * one release so no consumer breaks; TRUE only when
+   * `assessmentConfidence === 'verified'`, which today means never — there is no
+   * expectation mechanism yet (it is the blocked
+   * `standards-registry-snapshot-refresh` spec). Prefer `assessmentConfidence`.
+   */
+  assessmentTrustworthy: boolean;
+  /** Provenance of the registry this pass read. */
+  registry: RegistryProvenance;
 }
 
 export interface CoverageReport {
@@ -82,7 +160,7 @@ const KIND_RANK: Record<Exclude<EnforcementKind, 'documented-only'>, number> = {
 };
 
 /** Classify a VERIFIED file ref into its guard weight. */
-function classifyFileGuard(ref: string): Exclude<EnforcementKind, 'documented-only'> {
+export function classifyFileGuard(ref: string): Exclude<EnforcementKind, 'documented-only'> {
   const base = ref.split('/').pop() ?? ref;
   // Ratchet: a CI test that fails on regression — `*.test.ts`, a `no-*` guard, a
   // `*-coverage` script.
@@ -101,6 +179,60 @@ function classifyFileGuard(ref: string): Exclude<EnforcementKind, 'documented-on
   // A src/** guard file (a gate/marker module) → gate-strength.
   if (ref.startsWith('src/')) return 'gate';
   return 'spec-only';
+}
+
+/**
+ * Grade a SINGLE guard citation (a path, a `METHOD /route`, or a symbol/marker)
+ * against a repo checkout — the library form the class-closure gate's lint invokes
+ * (docs/specs/class-closure-gate.md → Piece 1 `guardEvidence`). Returns the
+ * enforcement strength AS GRADED by the same deterministic rules the standards
+ * coverage audit uses (`classifyFileGuard`), plus whether the citation actually
+ * RESOLVES on disk / in the route table / in src.
+ *
+ * The caller's rule (stated normatively in the spec): a citation that does not
+ * resolve to a live enforcing guard — `resolved: false`, or a resolved kind of
+ * `spec-only` (a dark/spec-only artifact guards nothing, G3) — downgrades the
+ * closure declaration to `gap`. Only `ratchet` / `gate` / `lint` count as a live
+ * enforcing guard.
+ *
+ * Pure over the repo checkout (fs reads only) — NEVER the agent-runtime
+ * conformance route (which ships dark and 503s).
+ */
+export function gradeGuardCitation(
+  projectDir: string,
+  citation: string,
+): { resolved: boolean; kind: EnforcementKind | null; citation: string } {
+  const raw = (citation ?? '').trim();
+  if (!raw) return { resolved: false, kind: null, citation: raw };
+
+  // Route citation, e.g. "GET /class-closure".
+  const routeMatch = /^(GET|POST|PUT|DELETE|PATCH)\s+(\/\S+)$/i.exec(raw);
+  if (routeMatch) {
+    const token = `${routeMatch[1].toUpperCase()} ${routeMatch[2]}`;
+    const resolved = loadRouteTable(projectDir).has(token);
+    return { resolved, kind: resolved ? 'gate' : null, citation: raw };
+  }
+
+  // File-path citation (contains a slash). Strip a `#symbol` or `:line` suffix
+  // before existence-checking the path.
+  if (raw.includes('/')) {
+    const filePart = raw.split('#')[0].split(':')[0];
+    let resolved = false;
+    try {
+      resolved = fs.existsSync(path.join(projectDir, filePart));
+    } catch {
+      // @silent-fallback-ok: an unresolvable path is a real dangling-ref finding, not a
+      // degraded result — fail-closed to `resolved:false` so the closure declaration
+      // downgrades guard->gap (the intended, surfaced outcome). Mirrors line 236 above.
+      resolved = false;
+    }
+    return { resolved, kind: resolved ? classifyFileGuard(filePart) : null, citation: raw };
+  }
+
+  // Bare symbol / marker citation.
+  const found = buildSymbolIndex(projectDir, new Set([raw]));
+  const resolved = found.has(raw);
+  return { resolved, kind: resolved ? 'gate' : null, citation: raw };
 }
 
 /**
@@ -238,10 +370,79 @@ function repoStructureSignal(projectDir: string): string {
 
 /** Compute the input hash that drives the recompute short-circuit. */
 export function computeInputHash(opts: AuditorOptions): string {
-  let registry = '';
-  try { registry = fs.readFileSync(opts.registryPath, 'utf-8'); } catch { registry = ''; }
-  const regHash = crypto.createHash('sha256').update(registry).digest('hex').slice(0, 16);
+  // An UNREADABLE registry must not hash identically to an empty-but-present one:
+  // that conflation is the honest-denominators shape at the cache layer, where a
+  // missing constitution would share a cache slot with a genuinely blank one.
+  // `computeCoverage` throws on an unreadable registry (the correct loud failure);
+  // this marker only keeps the short-circuit from confusing the two states.
+  let registryDigestInput: string;
+  try {
+    registryDigestInput = fs.readFileSync(opts.registryPath, 'utf-8');
+  } catch (err) {
+    registryDigestInput = `\u0000unreadable:${opts.registryPath}:${err instanceof Error ? err.message : String(err)}`;
+  }
+  const regHash = crypto.createHash('sha256').update(registryDigestInput).digest('hex').slice(0, 16);
   return `${regHash}.${repoStructureSignal(opts.projectDir)}`;
+}
+
+/**
+ * Derive how much the assessment has EARNED. Extracted as a function on purpose:
+ * inline, TypeScript's flow analysis proved `'verified'` unreachable and rejected the
+ * comparison that derives the deprecated boolean — which is TRUE today and is exactly
+ * the point. Keeping the return type as the full union documents that `'verified'`
+ * becomes reachable the moment a same-build expectation ships beside the registry,
+ * without pretending it is reachable now.
+ *
+ * Order matters and mirrors how a reader asks it: did anything FAIL, and if not, did we
+ * have anything to CHECK AGAINST?
+ */
+export function deriveAssessmentConfidence(
+  total: number,
+  registry: RegistryProvenance,
+  /**
+   * A same-build expectation (article count + sha256) to check the registry against.
+   * Absent today — the mechanism is the `standards-registry-snapshot-refresh` spec.
+   * Passing one that MATCHES is the only route to `'verified'`.
+   */
+  expectation?: { articleCount: number; sha256: string; observedSha256: string },
+): { confidence: CoverageSummary['assessmentConfidence']; reason: string } {
+  if (total === 0) {
+    return {
+      confidence: 'untrustworthy',
+      reason: 'no standards parsed from the registry — nothing was measured',
+    };
+  }
+  if (!registry.canaryOk) {
+    return {
+      confidence: 'untrustworthy',
+      reason: `the registry-parse canary objected: ${registry.canaryFailures.join('; ')}`,
+    };
+  }
+  if (expectation) {
+    if (expectation.sha256 !== expectation.observedSha256) {
+      return {
+        confidence: 'untrustworthy',
+        reason:
+          `the registry does not match the expectation shipped beside it ` +
+          `(expected sha ${expectation.sha256.slice(0, 12)}, read ${expectation.observedSha256.slice(0, 12)})`,
+      };
+    }
+    return {
+      confidence: 'verified',
+      reason:
+        `${total} standards parsed from ${registry.path}, confirmed against the expectation ` +
+        `shipped in the same build (sha ${expectation.sha256.slice(0, 12)}, ` +
+        `${expectation.articleCount} articles)`,
+    };
+  }
+  return {
+    confidence: 'unverified',
+    reason:
+      `internal checks passed over ${total} standards parsed from ${registry.path} ` +
+      `(${registry.bytes} bytes), but NO external expectation exists to confirm this is the ` +
+      `CURRENT constitution rather than a coherent older copy — a stale registry passes every ` +
+      `internal check by construction`,
+  };
 }
 
 /**
@@ -261,7 +462,21 @@ export function computeCoverage(
     return prior;
   }
 
-  const articles: StandardArticle[] = loadStandardsRegistry(opts.registryPath);
+  // Read ONCE and keep what the parse saw: the audit must be able to state the
+  // denominator it computed over (honest-denominators instance 4).
+  const registryMarkdown = fs.readFileSync(opts.registryPath, 'utf-8');
+  const { articles, diagnostics } = parseStandardsRegistryDetailed(registryMarkdown);
+  const canary = runRegistryCanary(articles, diagnostics);
+  const registry: RegistryProvenance = {
+    path: opts.registryPath,
+    bytes: Buffer.byteLength(registryMarkdown, 'utf-8'),
+    articleHeadings: diagnostics.articleHeadings,
+    parsed: diagnostics.parsed,
+    droppedHeadings: diagnostics.droppedHeadings,
+    families: diagnostics.families,
+    canaryOk: canary.ok,
+    canaryFailures: canary.failures,
+  };
   const routeTable = loadRouteTable(opts.projectDir);
 
   // Collect every wanted marker across all articles → ONE bounded src walk.
@@ -285,15 +500,32 @@ export function computeCoverage(
   for (const s of standards) byKind[s.enforcementKind] += 1;
   const total = standards.length;
   const enforced = byKind.ratchet + byKind.gate + byKind.lint;
-  const enforcedRatio = total === 0 ? 0 : Number((enforced / total).toFixed(4));
+  // No denominator → no ratio. Returning 0 here (the previous behaviour) reads on
+  // a dashboard as "0% of our standards are enforced" — a measurement, and an
+  // alarming one — when the truth is that nothing was measured at all.
+  const enforcedRatio = total === 0 ? null : Number((enforced / total).toFixed(4));
   const gaps = standards.filter((s) => s.enforcementKind === 'documented-only').map((s) => s.standard);
   const danglingCount = standards.reduce((n, s) => n + s.danglingRefs.length, 0);
+
+  const { confidence: assessmentConfidence, reason: confidenceReason } =
+    deriveAssessmentConfidence(total, registry);
 
   return {
     generatedAt: classifiedAt,
     inputHash,
     standards,
-    summary: { total, byKind, enforcedRatio, gaps, danglingCount },
+    summary: {
+      total,
+      byKind,
+      enforcedRatio,
+      gaps,
+      danglingCount,
+      assessmentConfidence,
+      confidenceReason,
+      // Deprecated boolean: only a 'verified' verdict may present as trustworthy.
+      assessmentTrustworthy: assessmentConfidence === 'verified',
+      registry,
+    },
   };
 }
 

@@ -42,7 +42,8 @@ approval first, not for the operator to do the work.)
 ## Wiring (agent-side, once tokens exist)
 
 1. Add the Slack messaging block to `.instar/config.json` with the tokens, the cast's
-   Slack user IDs in `authorizedUserIds`, and the gate in observe-only:
+   Slack user IDs in `authorizedUserIds`, the gate in observe-only, AND the cast's
+   roles in the **test-workspace principal source** (`permissionGate.testCast`):
    ```json
    {
      "type": "slack", "enabled": true,
@@ -50,18 +51,68 @@ approval first, not for the operator to do the work.)
        "botToken": "xoxb-…", "appToken": "xapp-…",
        "workspaceMode": "shared",
        "authorizedUserIds": ["U_OWNER","U_ADMIN","U_MEMBER","U_CONTRIB"],
-       "permissionGate": { "observeOnly": true }
+       "permissionGate": {
+         "observeOnly": true,
+         "testCast": {
+           "testWorkspace": true,
+           "workspaceId": "T_LIVETEST_WORKSPACE",
+           "principals": [
+             { "slackUserId": "U_OWNER",   "name": "Owner Seat",       "orgRole": "owner" },
+             { "slackUserId": "U_ADMIN",   "name": "Admin Seat",       "orgRole": "admin" },
+             { "slackUserId": "U_MEMBER",  "name": "Member Seat",      "orgRole": "member" },
+             { "slackUserId": "U_CONTRIB", "name": "Contributor Seat", "orgRole": "contributor" }
+           ]
+         }
+       }
      }
    }
    ```
    `observeOnly: true` means the gate **logs** every verdict and **blocks nothing** —
    the safe default for a demo. (`enforce: true` is a later phase, gated on a good
    observed false-positive rate; do NOT set it for the first demo.)
-2. Seed the cast's roles in `users.json` (until the Phase-1 conversational registration
-   UX exists): one `UserProfile` per cast member with `slackUserId` + `orgRole`
-   (`owner`/`admin`/`member`/`contributor`). The outsider is simply **not** registered.
+
+2. **DO NOT seed the cast's roles in `users.json`.** (Superseded — the July-2026 fix.)
+   The cast's roles are resolved by the `permissionGate.testCast` block above, NOT by
+   the production user registry. Two hard reasons the naive `users.json` seed is wrong:
+   - The **fixture-identity guard** (`users/testIdentityMarkers.ts`, silent-loss
+     §2.D "Test Identity Never Enters Production State") REFUSES the cast's ids at
+     both the write and load layers of `users.json` — a seed either throws or is
+     silently skipped on load.
+   - Even if it were allowed, a **registry rebuild silently drops the seed**. That is
+     exactly the 2026-07-01 incident: the silent-loss repair rebuilt `users.json`,
+     the five Slack test-cast principals went with it, and every Slack sender then
+     resolved as an unregistered guest — the FP that this runbook step exists to
+     prevent from ever recurring.
+
+   The `testCast` block avoids BOTH: it lives in the same config as the workspace
+   tokens (so a `users.json` rebuild can't touch it), it admits ONLY fixture-marker
+   ids (the partition invariant), and it is **workspace-scoped** — it resolves the
+   cast ONLY while the adapter's VERIFIED connected team id (`auth.test`) equals
+   `workspaceId`, so it can never leak roles into a production workspace. The required
+   `testWorkspace: true` self-declaration is a deliberate opt-in: without it the block
+   is ignored entirely (zero principals, one loud log line, no production effect). The
+   outsider seat is simply **not** listed → it resolves to an unregistered guest.
+
 3. Restart the agent's server so the Slack adapter picks up the config (a running
    session keeps the config it was spawned with).
+
+### Re-provision checklist (do this every time you rebuild the cast or the registry)
+
+Principal resolution for the live-test cast lives ONLY in `permissionGate.testCast`.
+So whenever you re-provision the workspace, rotate ids, or a `users.json` repair/rebuild
+runs, re-verify the block — a registry rebuild can no longer silently break the gate,
+but a stale/absent `testCast` block still can:
+
+- [ ] `permissionGate.testCast.workspaceId` equals the workspace's REAL team id (the
+      `team_id` Slack returns from `auth.test`; the boot log prints it as `(team T…)`).
+- [ ] `testWorkspace: true` is present (without it the whole block is ignored — watch
+      for the `TestWorkspacePrincipalSource IGNORED … missing … "testWorkspace": true`
+      warning in `logs/server.log`).
+- [ ] Every cast `slackUserId` is a fixture-marker id (registered in
+      `users/testIdentityMarkers.ts`); the boot log reports `N seat(s) admitted, M refused`.
+- [ ] After the restart, run one observe round and confirm the owner seat resolves
+      `owner, registered:true` in `GET /permissions/decisions` (the exact check that
+      catches a lost/mis-scoped cast before `enforce: true` is ever flipped).
 
 ## Running the demonstration
 

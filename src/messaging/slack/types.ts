@@ -1,5 +1,9 @@
 /**
  * Slack adapter types — configuration, messages, events, and rate limit tiers.
+ *
+ * CONTRACT-EVIDENCE: EXEMPT — this change is type-only (adds the optional
+ * `permissionGate.testCast` config shape); it touches NO Slack Web-API request
+ * or response contract, so no live-API contract test applies.
  */
 
 // ── Configuration ──
@@ -50,6 +54,17 @@ export interface SlackConfig {
    * DMs always use "all" mode regardless of this setting.
    */
   respondMode?: SlackRespondMode;
+  /**
+   * Outbound GFM→mrkdwn formatter mode (roadmap 0.1). Default `'mrkdwn'` —
+   * agent-authored GitHub-flavored markdown is converted to native Slack
+   * mrkdwn at the outbound chokepoint (so `**bold**` renders bold instead of
+   * as literal asterisks). Flip to `'legacy-passthrough'` for byte-for-byte
+   * pre-formatter behavior (the rollback lever, mirroring
+   * `telegramFormatMode`). Callers that already author mrkdwn opt out
+   * per-call via `sendToChannel(..., { formatMode: 'legacy-passthrough' })`.
+   * See src/messaging/slack/SlackMrkdwnFormatter.ts.
+   */
+  formatMode?: 'mrkdwn' | 'legacy-passthrough';
   /** Audio file transcription provider */
   audioTranscriptionProvider?: 'groq' | 'openai';
   /** Stall detection timeout in minutes (default: 5) */
@@ -79,22 +94,55 @@ export interface SlackConfig {
   permissionGate?: {
     observeOnly?: boolean;
     enforce?: boolean;
+    /**
+     * Sanctioned live-test-workspace scenario cast (roadmap 0.3 entry condition).
+     * The July-2026 lesson: the cast must NEVER live in the production user
+     * registry (`users.json`) — the fixture-identity guard refuses it there, and
+     * a registry rebuild silently dropped it once already. Carried HERE, in the
+     * same config block as the workspace tokens, the cast shares the workspace
+     * config's lifecycle: a users.json rebuild can never remove it again.
+     *
+     * Scope (fail-closed): entries resolve ONLY while the adapter's VERIFIED
+     * connected team id (`auth.test`) equals `workspaceId`. Partition invariant:
+     * each `slackUserId` MUST match the fixture-identity markers
+     * (`users/testIdentityMarkers.ts`) — a non-fixture UID is refused at load.
+     * The production registry always takes precedence on resolution.
+     *
+     * Self-declaration (fail-closed): the block MUST set `testWorkspace: true` —
+     * without it the whole cast is IGNORED (zero principals, one loud log line,
+     * no production effect). Sanctioning a live-test cast is a deliberate opt-in,
+     * never an implicit side effect of the block being present.
+     */
+    testCast?: {
+      /**
+       * Required self-declaration. The cast loads NOTHING unless this is `true`
+       * (fail-closed to ignoring the block; the production registry is unaffected).
+       */
+      testWorkspace?: boolean;
+      /** The live-test workspace/team id (T…) the cast is scoped to. */
+      workspaceId?: string;
+      /** The cast seats (max 12). `slackUserId` must be a fixture-marker id. */
+      principals?: Array<{ slackUserId: string; name?: string; orgRole: string }>;
+    };
   };
   /**
    * Conservative ambient "should I speak?" gate (Slack considered/ambient mode,
    * §5.2). DARK by default — when unset OR `enabledChannelIds` is empty, NO gate is
    * attached and undirected messages are dropped exactly as today (mention-only).
-   * The gate runs ONLY for an explicitly-opted-in channel and can only ever make the
-   * agent quieter (fail-to-silence). See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §5.2.
+   * The gate runs ONLY for an explicitly-opted-in channel and fails to silence.
+   * It may add the fixed `eyes` reaction, meaning only “seen and considered” — never
+   * ownership, approval, or a promise of follow-up. Do not opt in a channel where
+   * that reaction convention would imply commitment.
+   * See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §5.2.
    */
   ambientContribution?: {
     /** Channel IDs (C…) explicitly opted into proactive contribution. Default: none. */
     enabledChannelIds?: string[];
-    /** Hard cap on unsolicited messages per channel per window. Conservative default: 1. */
+    /** Hard shared cap on unsolicited messages/reactions per channel per window. Default: 1. */
     maxProactivePerChannel?: number;
     /** Rolling rate-limit window in ms. Default: 1800000 (30 min). */
     windowMs?: number;
-    /** Conservative confidence floor (0-1) for an LLM "speak" verdict. Default: 0.85. */
+    /** Conservative confidence floor (0-1) for an LLM speak/react verdict. Default: 0.85. */
     minConfidence?: number;
   };
   /**

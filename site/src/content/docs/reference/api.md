@@ -89,6 +89,7 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | POST | `/intent/journal` | Record a decision |
 | GET | `/intent/drift` | Detect behavioral drift |
 | GET | `/intent/alignment` | Alignment score |
+| GET | `/goal-realignment` | Bounded dry-run `GoalRealignment` status: priority intake, source completeness, and latest review verdict (development agents only) |
 | GET | `/project-map` | Auto-generated project territory map |
 | POST | `/coherence/check` | Pre-action coherence verification |
 
@@ -127,6 +128,8 @@ The endpoints behind the [EXO 3.0 Alignment](/features/exo3/) capabilities. See 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/capabilities` | Feature guide and metadata |
+| GET | `/capability-registry` | Read the advisory local capability projection; distinguishes dark, unavailable, unobserved, stale, and classified evidence |
+| GET | `/capability-registry/health` | Read advisory capability-registry observation counts and status measurements |
 | GET | `/events` | Query events (`?limit=50&since=24&type=`) |
 | GET | `/quota` | Quota usage + recommendation |
 | GET | `/agents` | List all agents on this machine |
@@ -253,6 +256,15 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `GET /attention/:id`
 - `PATCH /attention/:id`
 - `POST /attention`
+- `POST /attention/:id/remote-ack` — durable operator-bound ack for a pooled attention item owned by ANOTHER machine (WS4.1 follow-up). Delivers immediately when the owner is reachable, else persists the intent (bound to the authenticated operator) and re-delivers when the owner returns; the owner revalidates at apply time and rejects a stale resolve against a since-escalated HIGH/URGENT item. Ships dark behind `multiMachine.seamlessness.ws41DurableAck`.
+- `GET /attention/_remote-ack/pending` — list still-pending durable remote-acks (observability).
+- `POST /attention/_remote-ack/drain` — manually drain pending durable remote-acks to their owning machines.
+
+## /autonomous
+- `POST /autonomous/register` — server-side start snapshot for an autonomous run (scope-accretion R30): the server mints the runId, snapshots the `scopeAccretion` config + sweep base-root start-SHAs, and clamps `endAt` to `now + maxDurationMs`. One registration per active run (409 while the existing record is active).
+- `POST /autonomous/:topic/run-end` — every exit surface reports here (scope-accretion R44): runs the non-blocking advisory sweep and enumerates any unbuilt accreted work loudly; marks the run record ended.
+- `POST /autonomous/:topic/ratify-deferral` — dashboard-PIN-gated operator ratification of deferred accreted artifacts (`{"artifacts": [...]}` or `{"all": true}`; the response echoes exactly what was ratified).
+- `POST /autonomous/:topic/scope-accretion-override` — dashboard-PIN-gated live mid-run lever (`{"enabled": false, "reason": "…"}`): overrides the registration-time snapshot for the running session; audited.
 
 ## /autonomy
 - `GET /autonomy`
@@ -338,6 +350,15 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /context/active-job`
 - `GET /context/dispatch`
 - `GET /context/working-memory`
+
+## /decision-quality
+- `GET /decision-quality`
+- `POST /decision-quality/grade-pass`
+
+## /benchmark-divergence
+- `GET /benchmark-divergence`
+- `POST /benchmark-divergence/analyze`
+- `GET /benchmark-divergence/rollup-aggregates`
 
 ## /delivery-queue
 - `GET /delivery-queue`
@@ -506,6 +527,7 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /internal/stop-gate/evaluate`
 - `POST /internal/stop-gate/kill-switch`
 - `POST /internal/stop-gate/mode`
+- `POST /internal/stop-gate/reset-breaker` — clear the authenticated authority breaker after provider repair.
 - `POST /internal/telegram-callback`
 - `POST /internal/telegram-forward`
 
@@ -600,6 +622,24 @@ never the agent. With no mandate issued, every evaluation denies. Every decision
 
 ## /ping
 - `GET /ping`
+
+## /pool
+- `GET /pool` — the machine pool: router, nicknames, hardware, online status, load, quota state
+- `GET /pool/placement` — which machine owns a topic + the reason (`pinned`/`placed`/`unowned`) + the U4.1 verified pin state (`pinState`: `actuated`/`pending`/`diverged`/`suspended-pending-owner-return`, `pinHeldSince`, `pendingReason`, `pinnedBy`)
+- `POST /pool/transfer` — deterministic topic move to a nickname/machineId (the validated planner)
+- `POST /pool/unpin` — deliberately clear a topic's placement pin; the clear replicates as a tombstone so a stale copy can never re-pin it (U4.1)
+- `GET /pool/pin-quarantine` — the sticky skew-quarantine set (clock-skewed pin records excluded from pin resolution) + fold status (503 when pin replication is dark)
+- `POST /pool/pin-quarantine/readmit` — the deliberate, explicit per-record re-admission of a quarantined pin record (dismissing the alert never re-admits)
+- `GET /pool/queue` — durable inbound-queue counts + hold/flap state (503 while dark)
+- `GET /pool/reconciler` — WS1.3 ownership reconciler status (+ `?topic=N` per-topic explain)
+- `GET /pool/stale-owner-release` — U4.2 stale-owner release telemetry: attempts, would-claims (dry-run), refusals by reason, evidence classes, P19 give-ups, probe-breaker state, open episodes (503 when dark; see [Multi-machine](/features/multi-machine/))
+- `GET /pool/lease-handback` — U4.4 lease hand-back reconciler status: state, hysteresis window, operator-latch visibility, last episode, counters (503 when the mesh is dark)
+- `POST /pool/lease-handback/latch` — write the operator-flip latch marker (the captain-flip playbook's POST step; suppresses automated hand-back — the human always wins)
+- `DELETE /pool/lease-handback/latch` — clear the latch early (PIN-gated: re-enables automation against a human decision, so the dashboard PIN is required)
+- `GET /pool/poll-cache` — the shared per-peer pool-scope poll cache (WS4.4(f))
+- `GET /pool/duplicate-reconciler` — ownership-gated-spawn unified status: duplicate-reconciler posture + substrate readiness, owner-dark notice episodes, spawn-admission counters, breaker state, audit-log locations (503 while dark; see [Ownership-Gated Spawn](/features/ownership-gated-spawn/))
+- `GET /pool/ownership-view?key=<topic>` — THIS machine's own ownership record for a conversation (proxy-free; the reconciler's peer-echo verification read)
+- `GET /judgment-provenance` — redacted judgment-provenance decision rows (`?limit=`, `?sinceHours=`, `?scope=pool` merges peers' redacted rows as clamped untrusted data; full context never leaves the deciding machine)
 
 ## /project-map
 - `GET /project-map`
@@ -925,8 +965,24 @@ user-usable.
 | POST | `/subscription-pool/proactive-swap/check` | Run one proactive pass now (refresh the poll if near the wall, then pre-emptively swap at-pressure sessions). The deterministic "show me it works" lever. |
 | POST | `/subscription-pool/enroll` | Start a mobile-first new-account login. Body: `id`, `label`, `provider`, `framework`, optional `kind`, `configHome`. Returns the pending login (public code/URL + TTL — never a token). |
 | GET | `/subscription-pool/pending-logins` | The "Pending Logins" surface — active logins awaiting approval (code/URL + TTL). |
+| POST | `/subscription-pool/enroll/:id/cancel` | Safely abandon a pending or expired login and best-effort stop its waiting login pane. Completed/already-abandoned logins return idempotently; an in-flight completion returns `409`. |
 | POST | `/subscription-pool/enroll/:id/complete` | Mark a login completed once the operator approved + the account enrolled. |
 | POST | `/subscription-pool/enroll/reissue-expired` | Sweep + auto-reissue every expired login with a fresh code/URL (the background tick calls the same path). |
+| GET | `/subscription-pool/in-use` | Which pooled accounts are currently serving a live session. |
+
+### Account follow-me / account×machine matrix (WS5.2)
+
+Cross-machine account setup from the dashboard's Subscriptions-tab grid. Dark behind `multiMachine.accountFollowMe`. Each machine re-mints its OWN login (no token is copied between machines).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/subscription-pool/matrix/start-cell` | PIN-gated orchestrator: the grid's "Set up" tap. Issues the per-(account, targetMachine) `account-follow-me` mandate, then drives the enroll/start chain (self → loopback; peer → deliver the signed mandate + remote enroll). Body: `accountId`, `machineId`, `pin`. |
+| POST | `/subscription-pool/follow-me/enroll/start` | Mandate-gated: re-mint the login on THIS target machine (Mechanism B). Spawns the waiting `claude auth login` pane + records a pending login. Body: `mandateId`, `accountId`. |
+| POST | `/subscription-pool/follow-me/enroll/:id/submit-code` | Target-local: type the operator's verification code into the waiting login pane, then drive to a real outcome (S7 email-gate complete → add to pool). |
+| POST | `/subscription-pool/follow-me/submit-code` | Fronting relay for the above — the operator's single dashboard hop; self → loopback, peer → forward. Body: `machineId`, `id`, `code`. |
+| POST | `/subscription-pool/follow-me/enroll/:id/cancel` | Target-local: cancel a mis-tapped in-flight cell — abandon the pending login + tear down its login pane (raw `tmux kill-session`). Idempotent on a terminal record (200 `alreadyTerminal`); unknown/malformed id → 404; stands aside (409) while a code is mid-submit. Bearer-only. |
+| POST | `/subscription-pool/follow-me/cancel` | Fronting relay for cancel — dispatches to self/peer by `machineId` (offline peer → 502). The route the dashboard Cancel button calls. Body: `machineId`, `id`. |
+| POST | `/subscription-pool/follow-me/enroll/:id/complete` | Mark a follow-me login completed once the freshly-minted account passes the S7 email-gate. |
 
 The quota-aware scheduler picks accounts reset-date-optimally ("use before reset")
 and guarantees a long-lived session that hits its account's quota resumes on
@@ -1008,3 +1064,10 @@ The Slack org permission gate (dark/observe-only by default — these routes are
 ## /whoami
 - `GET /whoami`
 
+## /work-queue
+
+The unified work-intake and prioritization registry (`WorkQueue` — see the Work Intake &
+Prioritization Queue feature page). Development-agent gated; 503 when dark.
+
+- `GET /work-queue` — the current deterministic ranked list of normalized work items.
+- `POST /work-queue/rescore` — recompute the ranking from live sources (pure compute, no durable writes).

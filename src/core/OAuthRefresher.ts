@@ -41,12 +41,25 @@
  * network, and a deterministic clock in tests.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { CredentialWriteFunnel, credentialWriteFunnel } from './CredentialWriteFunnel.js';
+
+/** Promisified async exec for the non-blocking keychain read (mirrors the sync `security` spawn). */
+const execFileAsync = promisify(execFile);
+
+/**
+ * Bounds any `security` keychain spawn so a slow/contended `securityd` can never freeze the event
+ * loop indefinitely. The macOS keychain read/write is an out-of-process spawn; under multi-agent
+ * `securityd` contention an un-timeout'd SYNC spawn blocked the event loop 4–13s every cycle
+ * (the dashboard-flap / false-sleep incident). 3s is generous for a healthy keychain and a hard
+ * ceiling for a wedged one. The sibling CredentialProvider keychain spawns already set a timeout.
+ */
+const KEYCHAIN_TIMEOUT_MS = 3000;
 
 /** Public Claude Code OAuth token endpoint (from the official client binary). */
 export const CLAUDE_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
@@ -77,6 +90,10 @@ export interface ClaudeOauth {
   [k: string]: unknown;
 }
 
+export type ClaudeOauthReadResult =
+  | { ok: true; oauth: ClaudeOauth }
+  | { ok: false; reason: 'missing-or-unreadable' | 'unparseable' | 'missing-oauth-block' };
+
 /**
  * A credential store for one config home. `read` returns the RAW JSON string of
  * the stored entry (so the refresher can merge-preserve every field); `write`
@@ -85,6 +102,23 @@ export interface ClaudeOauth {
 export interface CredentialStore {
   read(configHome: string): string | null;
   write(configHome: string, rawJson: string): boolean;
+  /**
+   * Optional NON-BLOCKING read. When present, callers on the event-loop hot path (e.g. the
+   * sequential credential-audit loop) should prefer this so a slow/contended `securityd` keychain
+   * read yields the event loop instead of freezing it. Optional so existing mocks that only
+   * implement the sync `read` keep compiling; `readClaudeOauthAsync` falls back to `read` when a
+   * store omits it.
+   */
+  readAsync?(configHome: string): Promise<string | null>;
+  /**
+   * Optional NON-BLOCKING write. Mirror of `readAsync` for the write half of the refresh
+   * read-merge-write: a slow/contended `securityd` keychain WRITE (`add-generic-password`) is an
+   * out-of-process spawn that, run synchronously, blocked the event loop just like the read — and
+   * the refresh path issues a read AND a write per cycle. When present, `refreshClaudeToken` prefers
+   * this so the write yields the loop instead of freezing it. Optional so existing mocks that only
+   * implement the sync `write` keep compiling; the refresher falls back to `write` when omitted.
+   */
+  writeAsync?(configHome: string, rawJson: string): Promise<boolean>;
 }
 
 /** POST-capable fetch surface (distinct from QuotaPoller's GET-only FetchImpl). */
@@ -154,16 +188,46 @@ export const defaultCredentialStore: CredentialStore = {
         const raw = execFileSync(
           'security',
           ['find-generic-password', '-s', claudeCredentialService(configHome), '-w'],
-          { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+          { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: KEYCHAIN_TIMEOUT_MS },
         ).trim();
         return raw || null;
       } catch {
-        return null; // @silent-fallback-ok: no keychain entry → unreadable
+        return null; // @silent-fallback-ok: no keychain entry / timeout → unreadable (caller retries → needs-reauth)
       }
     }
     try {
       const p = claudeCredentialFilePath(configHome);
       return fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : null;
+    } catch {
+      return null; // @silent-fallback-ok: missing/unreadable creds file
+    }
+  },
+  /**
+   * NON-BLOCKING read: the same lookup as `read` but off the event loop. On darwin it uses the
+   * PROMISIFIED async `execFile` (so a slow `securityd` yields instead of freezing the loop); on
+   * non-darwin it uses `fs.promises.readFile`. Same `find-generic-password` args + same 3s timeout
+   * + same null-on-error semantics as the sync read.
+   */
+  async readAsync(configHome: string): Promise<string | null> {
+    if (process.platform === 'darwin') {
+      try {
+        // Promisified `execFile` captures stdout/stderr into buffers (no `stdio` option — stderr is
+        // captured then ignored, matching the sync read's stderr suppression). encoding:'utf-8'
+        // gives a string stdout.
+        const { stdout } = await execFileAsync(
+          'security',
+          ['find-generic-password', '-s', claudeCredentialService(configHome), '-w'],
+          { encoding: 'utf-8', timeout: KEYCHAIN_TIMEOUT_MS },
+        );
+        const raw = stdout.trim();
+        return raw || null;
+      } catch {
+        return null; // @silent-fallback-ok: no keychain entry / timeout → unreadable (caller retries → needs-reauth)
+      }
+    }
+    try {
+      const p = claudeCredentialFilePath(configHome);
+      return await fs.promises.readFile(p, 'utf-8');
     } catch {
       return null; // @silent-fallback-ok: missing/unreadable creds file
     }
@@ -183,17 +247,54 @@ export const defaultCredentialStore: CredentialStore = {
             '-w',
             rawJson,
           ],
-          { stdio: ['ignore', 'ignore', 'ignore'] },
+          { stdio: ['ignore', 'ignore', 'ignore'], timeout: KEYCHAIN_TIMEOUT_MS },
         );
         return true;
       } catch {
-        return false; // @silent-fallback-ok: keychain write failed → caller falls to needs-reauth
+        return false; // @silent-fallback-ok: keychain write failed / timeout → caller falls to needs-reauth
       }
     }
     try {
       const p = claudeCredentialFilePath(configHome);
       fs.mkdirSync(path.dirname(p), { recursive: true });
       fs.writeFileSync(p, rawJson, { mode: 0o600 });
+      return true;
+    } catch {
+      return false; // @silent-fallback-ok: file write failed
+    }
+  },
+  /**
+   * NON-BLOCKING write: the same `add-generic-password` keychain write as `write` but off the event
+   * loop (PROMISIFIED `execFile` on darwin, `fs.promises` on non-darwin). Same args, same 3s timeout,
+   * same false-on-error semantics. Lets the refresh write yield a slow `securityd` instead of freezing
+   * the loop — the write half of the read-merge-write the QuotaPoller's refresher runs per cycle.
+   */
+  async writeAsync(configHome: string, rawJson: string): Promise<boolean> {
+    if (process.platform === 'darwin') {
+      try {
+        await execFileAsync(
+          'security',
+          [
+            'add-generic-password',
+            '-U', // update the existing entry in place
+            '-a',
+            os.userInfo().username,
+            '-s',
+            claudeCredentialService(configHome),
+            '-w',
+            rawJson,
+          ],
+          { timeout: KEYCHAIN_TIMEOUT_MS },
+        );
+        return true;
+      } catch {
+        return false; // @silent-fallback-ok: keychain write failed / timeout → caller falls to needs-reauth
+      }
+    }
+    try {
+      const p = claudeCredentialFilePath(configHome);
+      await fs.promises.mkdir(path.dirname(p), { recursive: true });
+      await fs.promises.writeFile(p, rawJson, { mode: 0o600 });
       return true;
     } catch {
       return false; // @silent-fallback-ok: file write failed
@@ -218,6 +319,42 @@ export function readClaudeOauth(
 }
 
 /**
+ * NON-BLOCKING mirror of `readClaudeOauth`: identical parse logic, but reads the raw blob via the
+ * store's optional `readAsync` (off the event loop) when available, falling back to the sync `read`
+ * for any store that doesn't implement it (backward-compatible). This is the read callers on the
+ * event-loop hot path (e.g. the sequential credential-audit loop) should use so a slow/contended
+ * `securityd` keychain read yields the loop instead of freezing it.
+ */
+export async function readClaudeOauthAsync(
+  configHome: string,
+  store: CredentialStore = defaultCredentialStore,
+): Promise<ClaudeOauth | null> {
+  const result = await readClaudeOauthAsyncDetailed(configHome, store);
+  return result.ok ? result.oauth : null;
+}
+
+/**
+ * Detailed non-blocking read for callers that must distinguish malformed
+ * credential JSON from an absent login. Failure never returns raw material.
+ */
+export async function readClaudeOauthAsyncDetailed(
+  configHome: string,
+  store: CredentialStore = defaultCredentialStore,
+): Promise<ClaudeOauthReadResult> {
+  const raw = store.readAsync ? await store.readAsync(configHome) : store.read(configHome);
+  if (!raw) return { ok: false, reason: 'missing-or-unreadable' };
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const oauth = parsed?.claudeAiOauth;
+    return oauth && typeof oauth === 'object'
+      ? { ok: true, oauth: oauth as ClaudeOauth }
+      : { ok: false, reason: 'missing-oauth-block' };
+  } catch {
+    return { ok: false, reason: 'unparseable' };
+  }
+}
+
+/**
  * Refresh a config home's Claude Code access token from its stored refresh token.
  * Returns the new access token + expiry on success; otherwise a typed failure
  * reason the caller maps to its `needs-reauth` decision. Writes NOTHING on any
@@ -236,7 +373,10 @@ export async function refreshClaudeToken(
   const clientId = deps.clientId ?? CLAUDE_CODE_CLIENT_ID;
   const funnel = deps.funnel ?? credentialWriteFunnel;
 
-  const raw = store.read(configHome);
+  // NON-BLOCKING read: prefer the store's async keychain read so a slow/contended `securityd`
+  // yields the event loop instead of freezing it (this runs per-account on the QuotaPoller timer).
+  // Falls back to the sync `read` for any store that doesn't implement `readAsync` (test mocks).
+  const raw = store.readAsync ? await store.readAsync(configHome) : store.read(configHome);
   if (!raw) return { ok: false, reason: 'read-failed' };
   let parsed: Record<string, unknown>;
   try {
@@ -307,8 +447,14 @@ export async function refreshClaudeToken(
   // NOT a corruption — it is "busy, retry": surface 'write-skipped' so the QuotaPoller treats it
   // as no-snapshot-this-cycle, NEVER needs-reauth. The exchange already succeeded; the existing
   // (still-valid) credential is untouched.
+  // NON-BLOCKING write: prefer the store's async keychain write (off the event loop) so the write
+  // half of this read-merge-write yields a slow `securityd` instead of freezing the loop. Falls back
+  // to the sync `write` for any store that doesn't implement `writeAsync` (test mocks). The funnel's
+  // per-slot lock already serializes against a concurrent swap/refresh on the SAME slot regardless.
   const writeOutcome = await funnel.withSlotLock(credentialSlotKey(configHome), () =>
-    store.write(configHome, JSON.stringify(updatedRaw)),
+    store.writeAsync
+      ? store.writeAsync(configHome, JSON.stringify(updatedRaw))
+      : store.write(configHome, JSON.stringify(updatedRaw)),
   );
   if (!writeOutcome.ran) {
     return { ok: false, reason: 'write-skipped' };

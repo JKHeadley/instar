@@ -16,8 +16,6 @@ import { ExecutionJournal } from '../core/ExecutionJournal.js';
 import { JobReflector } from '../core/JobReflector.js';
 import { PatternAnalyzer } from '../core/PatternAnalyzer.js';
 import { ReflectionConsolidator } from '../core/ReflectionConsolidator.js';
-import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProvider.js';
-import { wrapIntelligenceWithCircuitBreaker } from '../core/CircuitBreakingIntelligenceProvider.js';
 import type { IntelligenceProvider } from '../core/types.js';
 import type { DetectedPattern, PatternReport } from '../core/PatternAnalyzer.js';
 import { createRequire } from 'node:module';
@@ -376,7 +374,13 @@ function resolveIntelligence(claudePath?: string): IntelligenceProvider | null {
   // can never apply here. Volume is operator-invoked (not background), so
   // the post-June-15 SDK-pot exposure is negligible and visible to the
   // human running it.
-  if (claudePath) return wrapIntelligenceWithCircuitBreaker(new ClaudeCliIntelligenceProvider(claudePath));
+  //
+  // Fork-bomb-prevention (forkbomb-prevention-simple §P1): route this raw
+  // fallback THROUGH the factory (binaryPath-pinned) so it inherits the
+  // host-wide spawn-cap funnel exactly like every other provider. The factory
+  // applies both the spawn cap and the circuit breaker, so no callsite can
+  // construct an un-capped ClaudeCliIntelligenceProvider directly.
+  if (claudePath) return buildIntelligenceProvider({ framework: 'claude-code', binaryPath: claudePath });
   return null;
 }
 

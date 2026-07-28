@@ -128,6 +128,17 @@ export class BitwardenProvider {
   }
 
   /**
+   * The live session key held in memory (set by a successful `unlock()`/`login()`,
+   * or read from the environment). Returns null when no session is held. This is
+   * the canonical way to read the freshly-unlocked session — `unlock()` stores it
+   * in a private field, it is NOT exported to `process.env.BW_SESSION`. NEVER log
+   * the returned value.
+   */
+  getSessionKey(): string | null {
+    return this.sessionKey;
+  }
+
+  /**
    * Log in with email and master password.
    * Returns true if successful.
    */

@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-21T10:08:32.054Z",
+  "slug": "commitment-tracker-verify-batches-saves",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 61,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Two latent event-loop wedges surfaced on Echo 2026-06-21. (1) CommitmentTracker.verify() saved the whole store per-commitment. (2) DegradationReporter.gateHealthAlert ran the tone gate, which routes through the IntelligenceRouter; an unavailable configured framework (pi-cli, not installed) degraded inside the gate and re-entered reportEvent unbounded, hanging a JSON.stringify of the growing events array."
+  },
+  "verdict": "pass"
+}

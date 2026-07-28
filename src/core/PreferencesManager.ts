@@ -181,11 +181,35 @@ export function formatPreferencesForSessionStart(
 
 // ── Main Class ───────────────────────────────────────────────────────
 
+/**
+ * WS2.1 preferences-record replication emit seam (injected, dark by default). server.ts
+ * constructs the journal/clock AFTER the manager, so this is late-bound. PUT-ONLY by
+ * construction — recordPreference is the only writer and it upserts (keyed on dedupeKey);
+ * there is no delete path, so there is no emitDelete. Absent ⇒ strict single-machine no-op.
+ */
+export interface PreferenceReplicationEmitter {
+  /** Emit a `put` for a freshly upserted preference entry (called from recordPreference). */
+  emitPut(entry: PreferenceEntry): void;
+}
+
 export class PreferencesManager {
   private preferencesPath: string;
 
+  /** WS2.1 preferences-record replication emitter (injected, dark by default). Absent ⇒ no-op. */
+  private replication: PreferenceReplicationEmitter | null = null;
+
   constructor(private stateDir: string) {
     this.preferencesPath = path.join(stateDir, 'preferences.json');
+  }
+
+  /**
+   * Late-bind the WS2.1 preferences-record replication emitter (server.ts constructs the
+   * journal/clock AFTER the manager). Idempotent; passing undefined/null detaches (back to
+   * single-machine no-op). The emit funnel checks `this.replication` per write, so attaching
+   * mid-life takes effect on the next recordPreference.
+   */
+  setReplicationEmitter(emitter: PreferenceReplicationEmitter | null | undefined): void {
+    this.replication = emitter ?? null;
   }
 
   /** Absolute path to the backing file (for tests / observability). */
@@ -342,6 +366,20 @@ export class PreferencesManager {
 
     store.schemaVersion = PREFERENCES_SCHEMA_VERSION;
     this.writeAtomic(store);
+
+    // WS2.1 — best-effort preferences-record replication emission (dark by default; the
+    // emitter is only injected when multiMachine.stateSync.preferences.enabled is true).
+    // PUT-ONLY: recordPreference is the sole writer and upserts on dedupeKey, so a put on
+    // the upserted entry carries the latest state (a peer SEES the refreshed learning +
+    // bumped confidence). The emitter swallows its own errors, but we wrap defensively so a
+    // replication fault can NEVER break or roll back a local preference write — the durable
+    // on-disk state is already persisted above.
+    try {
+      this.replication?.emitPut(result);
+    } catch {
+      // @silent-fallback-ok: replication is best-effort and must never break the local write.
+      // The emitter counts its own failures internally.
+    }
     return result;
   }
 

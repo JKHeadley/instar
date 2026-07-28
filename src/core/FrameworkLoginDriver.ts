@@ -25,6 +25,20 @@
 import type { LoginArtifact, LoginDriver } from './EnrollmentWizard.js';
 import type { LoginFlowKind, LoginProvider } from './PendingLoginStore.js';
 
+/**
+ * The tmux session name an enrollment login pane runs under. SINGLE SOURCE OF TRUTH —
+ * both the spawn (server.ts) and any consumer that needs to reach the live pane
+ * (e.g. WS5.2 code paste-back submit-code in routes.ts) MUST derive the name through
+ * this helper, so the two can never drift apart or collide differently. The slug is
+ * the configHome (the per-credential slot, unique by construction) normalized + tail-
+ * clamped; framework is included so two providers in the same slot can't collide.
+ * (ws52-code-paste-back — codex cross-model review finding #1.)
+ */
+export function enrollPaneSessionName(framework: string, configHome?: string): string {
+  const slug = (configHome ?? framework).replace(/[^a-zA-Z0-9]+/g, '-').slice(-24);
+  return `instar-enroll-${framework}-${slug}`;
+}
+
 /** A login flow we know how to launch + scrape. */
 export interface FrameworkLoginRequest {
   provider: LoginProvider;
@@ -32,6 +46,15 @@ export interface FrameworkLoginRequest {
   kind: LoginFlowKind;
   /** The account's CLAUDE_CONFIG_DIR — isolates this login to its own slot. */
   configHome?: string;
+  /** False for background renewal; production must suppress browser launch. */
+  openBrowser?: boolean;
+}
+
+/** Environment prefix used by login commands when no operator initiated this drive.
+ * Claude Code honors BROWSER as its opener; `true` accepts the open request without
+ * launching an application while the CLI still prints the URL for capture. */
+export function enrollmentBrowserEnv(openBrowser: boolean | undefined): Record<string, string> {
+  return openBrowser === false ? { BROWSER: 'true' } : {};
 }
 
 /** Injected I/O so the driver is decoupled + hermetically testable. */
@@ -84,7 +107,14 @@ export class FrameworkLoginDriver {
    */
   static parseArtifact(paneText: string, kind: LoginFlowKind): LoginArtifact | null {
     if (!paneText) return null;
-    const urlMatch = paneText.match(URL_RE);
+    // A long verification URL HARD-WRAPS across tmux pane lines with no inserted
+    // space (e.g. "...authorize?code=t\nrue&client_id=...\nri=https%3A..."). A naive
+    // single-line URL_RE truncates at the first wrap (the 2026-06-18 "code=t" bug:
+    // the real URL was "...?code=true&client_id=..."). De-wrap first so the FULL URL
+    // is matched. (The capture is ALSO switched to `tmux capture-pane -J`; this is the
+    // pure, unit-tested defense so a wrapped capture still parses correctly.)
+    const dewrapped = dewrapWrappedUrls(paneText);
+    const urlMatch = dewrapped.match(URL_RE);
     if (!urlMatch) return null;
     const verificationUrl = stripTrailingPunctuation(urlMatch[1]);
 
@@ -103,20 +133,33 @@ export class FrameworkLoginDriver {
    * Drive a framework login: spawn it under the target config home, poll the
    * pane until the public artifact appears (or timeout), and return it. Throws
    * on timeout so the wizard logs + leaves the login for the next sweep.
+   *
+   * `scrapeTimeoutMs` (per-call) overrides the constructor default for THIS
+   * drive only — WS5.2 R6b uses it to give a remote/cloud enrollment a larger
+   * budget (cloud→provider latency + the two-code Claude window) without
+   * rebuilding the shared production driver. Omitted ⇒ the constructor default
+   * (the local-LAN budget) is unchanged. A non-finite/≤0 value is ignored.
    */
   async drive(req: {
     provider: LoginProvider;
     framework: FrameworkLoginRequest['framework'];
     kind: LoginFlowKind;
     configHome?: string;
+    scrapeTimeoutMs?: number;
+    openBrowser?: boolean;
   }): Promise<LoginArtifact> {
     const { session } = await this.deps.spawn({
       provider: req.provider,
       framework: req.framework,
       kind: req.kind,
       configHome: req.configHome,
+      openBrowser: req.openBrowser,
     });
-    const deadline = this.now() + this.scrapeTimeoutMs;
+    const budgetMs =
+      typeof req.scrapeTimeoutMs === 'number' && Number.isFinite(req.scrapeTimeoutMs) && req.scrapeTimeoutMs > 0
+        ? req.scrapeTimeoutMs
+        : this.scrapeTimeoutMs;
+    const deadline = this.now() + budgetMs;
     let lastText = '';
     while (this.now() < deadline) {
       lastText = await this.deps.capture(session);
@@ -130,10 +173,10 @@ export class FrameworkLoginDriver {
       await this.sleep(this.pollIntervalMs);
     }
     this.logger.warn(
-      `[FrameworkLoginDriver] timed out scraping ${req.kind} login for ${req.provider}/${req.framework}`,
+      `[FrameworkLoginDriver] timed out scraping ${req.kind} login for ${req.provider}/${req.framework} (budget ${budgetMs}ms)`,
     );
     throw new Error(
-      `login artifact not found for ${req.provider}/${req.framework} within ${this.scrapeTimeoutMs}ms`,
+      `login artifact not found for ${req.provider}/${req.framework} within ${budgetMs}ms`,
     );
   }
 
@@ -145,6 +188,32 @@ export class FrameworkLoginDriver {
 
 function stripTrailingPunctuation(url: string): string {
   return url.replace(/[.,;:'")\]]+$/, '');
+}
+
+/**
+ * Re-join a verification URL that a terminal HARD-WRAPPED across pane lines. tmux
+ * wraps a long line at the pane width by inserting a newline with NO space — so a
+ * URL becomes "...?code=t\nrue&client_id=...\nri=...". We reassemble it: find the
+ * line bearing the first http(s) URL, then append each following line that is a pure
+ * URL-continuation fragment (non-empty and containing NO whitespace), stopping at the
+ * first blank line or a line with internal whitespace (real output, e.g. a prompt).
+ * Only that one URL region is joined; the rest of the text is left untouched so the
+ * code/TTL parses stay line-accurate. Idempotent on already-unwrapped text.
+ */
+function dewrapWrappedUrls(text: string): string {
+  const lines = text.split('\n');
+  const i = lines.findIndex((l) => /https?:\/\//i.test(l));
+  if (i === -1) return text;
+  let joined = lines[i].replace(/\s+$/, '');
+  let j = i + 1;
+  for (; j < lines.length; j++) {
+    const ln = lines[j];
+    if (ln.trim() === '') break;          // blank line ends the URL
+    if (/\s/.test(ln.trim())) break;       // internal whitespace ⇒ real output, not a wrap fragment
+    joined += ln.replace(/\s+$/, '');
+  }
+  // Rebuild: lines before the URL, the rejoined URL line, then the remaining lines.
+  return [...lines.slice(0, i), joined, ...lines.slice(j)].join('\n');
 }
 
 function parseTtlMs(text: string): number | undefined {

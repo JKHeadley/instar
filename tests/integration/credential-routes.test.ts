@@ -70,14 +70,16 @@ function buildLedger(stateDir: string): CredentialLocationLedger {
 }
 
 /** Identity resolver mapping the in-memory blob's token → its account (commit-side ALLOW). */
-const resolveAllow: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_B : ACC_A });
+const resolveCurrent: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_A : ACC_B });
+const resolveDrifted: ResolveSlotIdentity = async (slot) => ({ accountId: slot === SLOT_A ? ACC_B : ACC_A });
 
 function makeApp(opts: {
   enabled: boolean;
   manualLeversEnabled?: boolean;
   anthropicApiKey?: string;
   fleet?: EnvTokenFleetSession[];
-}): { app: express.Express; stateDir: string; auditLines: string[] } {
+  identityDrifted?: boolean;
+}): { app: express.Express; stateDir: string; auditLines: string[]; ledger: CredentialLocationLedger } {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cred-routes-'));
   fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
   const ledger = buildLedger(stateDir);
@@ -88,14 +90,14 @@ function makeApp(opts: {
     funnel: new CredentialWriteFunnel(),
     ledger,
     keychain: km,
-    resolveIdentity: resolveAllow,
+    resolveIdentity: opts.identityDrifted ? resolveDrifted : resolveCurrent,
     config: { enabled: opts.enabled, dryRun: true }, // dry-run so the route exercises the live path without real writes
     reverifyDelayMs: 5,
   });
   const credentialRepointing = {
     ledger,
     swapExecutor,
-    resolveIdentity: resolveAllow,
+    resolveIdentity: opts.identityDrifted ? resolveDrifted : resolveCurrent,
     audit,
     levers: new CredentialManualLevers(),
     envTokenGate: new CredentialEnvTokenGate({
@@ -108,6 +110,21 @@ function makeApp(opts: {
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       return { raw, oauth: (parsed.claudeAiOauth ?? null) as never };
     },
+    repairPlan: async () => ({
+      moves: [{ slotA: SLOT_A, slotB: SLOT_B, accountA: ACC_A, accountB: ACC_B, reason: 'restore-labelled-home' as const }],
+      vacates: [], quarantineSlots: [], ownerReloginAccountIds: [], duplicateAccountIds: [], complete: true,
+    }),
+    executeRepairPlan: async () => ({
+      plan: {
+        moves: [{ slotA: SLOT_A, slotB: SLOT_B, accountA: ACC_A, accountB: ACC_B, reason: 'restore-labelled-home' as const }],
+        vacates: [], quarantineSlots: [], ownerReloginAccountIds: [], duplicateAccountIds: [], complete: true,
+      },
+      results: [{
+        move: { slotA: SLOT_A, slotB: SLOT_B, accountA: ACC_A, accountB: ACC_B, reason: 'restore-labelled-home' as const },
+        outcome: 'dry-run', reason: 'dry-run',
+      }],
+      vacateResults: [],
+    }),
   };
   const app = express();
   app.use(express.json());
@@ -118,7 +135,7 @@ function makeApp(opts: {
     credentialRepointing,
   } as never;
   app.use(createRoutes(ctx));
-  return { app, stateDir, auditLines };
+  return { app, stateDir, auditLines, ledger };
 }
 
 describe('/credentials/* routes (integration)', () => {
@@ -193,6 +210,27 @@ describe('/credentials/* routes (integration)', () => {
     expect(r.body.envTokenGate.refused).toBe(false);
   });
 
+  it('B3c: rebalancer surfaces the identity-audit last pass (null before a run, real counts after)', async () => {
+    const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    // Before any audit pass: the field is present and null (route reads getLastAuditReport live).
+    const before = await api('/credentials/rebalancer');
+    expect(before.status).toBe(200);
+    expect(before.body).toHaveProperty('identityAudit');
+    expect(before.body.identityAudit).toBeNull();
+    // Run one audit. The test ledger has 2 healthy slots + a noop oracle (always unavailable), so the
+    // safe direction must HOLD both (never quarantine on a transient probe failure) — proven end-to-end.
+    const report = await built.ledger.auditIdentities();
+    expect(report.outcomes.length).toBe(2);
+    expect(report.refreshed).toBe(0);
+    expect(report.quarantined).toBe(0); // a healthy slot is NEVER demoted by an unavailable probe
+    const after = await api('/credentials/rebalancer');
+    expect(after.status).toBe(200);
+    expect(after.body.identityAudit).not.toBeNull();
+    expect(after.body.identityAudit.unresolved).toBe(2);
+    expect(after.body.identityAudit.refreshed).toBe(0);
+  });
+
   it('LIVE (flag on): POST /credentials/swap executes the executor; response carries NO token', async () => {
     const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
     server = await listen(built.app);
@@ -204,6 +242,17 @@ describe('/credentials/* routes (integration)', () => {
     expect(JSON.stringify(r.body)).not.toContain('LeAkMe1234567890');
     // The audit jsonl also carries no token.
     expect(built.auditLines.join('')).not.toContain('LeAkMe1234567890');
+  });
+
+  it('Tier-2: repair plan is readable first and execution reuses the dry-run staged executor', async () => {
+    const built = makeApp({ enabled: true, identityDrifted: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    const dry = await api('/credentials/repair-plan');
+    expect(dry).toMatchObject({ status: 200, body: { enabled: true, dryRun: true } });
+    expect(dry.body.plan.moves).toHaveLength(1);
+    const executed = await api('/credentials/repair-plan/execute', { method: 'POST', body: '{}' });
+    expect(executed.status).toBe(200);
+    expect(executed.body.results[0].outcome).toBe('dry-run');
   });
 
   it('param-validate: unknown slot → 400 (never reaches a keychain write)', async () => {
@@ -220,9 +269,9 @@ describe('/credentials/* routes (integration)', () => {
   });
 
   it('restore-enrollment parks an incoherent slot one-directionally (never exchanged)', async () => {
-    const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    const built = makeApp({ enabled: true, identityDrifted: true }); stateDir = built.stateDir; cleanup.push(stateDir);
     server = await listen(built.app);
-    // The oracle resolver (resolveAllow) returns ACC_B for SLOT_A but the ledger lineage is ACC_A
+    // The drifted resolver returns ACC_B for SLOT_A but the ledger lineage is ACC_A
     // → identity-incoherent → parked. (SLOT_B: ACC_A vs lineage ACC_B → also parked.)
     const r = await api('/credentials/restore-enrollment', { method: 'POST', body: '{}' });
     expect(r.status).toBe(200);
@@ -239,5 +288,51 @@ describe('/credentials/* routes (integration)', () => {
     expect(await noauth('/credentials/set-default', { method: 'POST', body: JSON.stringify({ accountId: ACC_A }) })).toBe(401);
     expect(await noauth('/credentials/restore-enrollment', { method: 'POST', body: '{}' })).toBe(401);
     expect(await noauth('/credentials/locations')).toBe(401);
+  });
+
+  // ── B4 — the §5 livetest battery entrypoint (the dry-run→live promotion gate) ──
+  it('B4 livetest: DARK → POST /credentials/livetest 503 (no-op)', async () => {
+    const built = makeApp({ enabled: false }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    expect((await api('/credentials/livetest', { method: 'POST', body: '{}' })).status).toBe(503);
+  });
+
+  it('B4 livetest: ENABLED + NOT armed → refused report, ZERO swaps', async () => {
+    const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    const r = await api('/credentials/livetest', {
+      method: 'POST',
+      body: JSON.stringify({ enrolledPair: { slotA: SLOT_A, slotB: SLOT_B }, defaultSlotPair: { defaultSlot: SLOT_A, enrolledSlot: SLOT_B } }),
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.armed).toBe(false);
+    expect(r.body.refusedReason).toMatch(/PROMOTION gate/);
+    expect(r.body.steps).toEqual([]);
+    expect(Array.isArray(r.body.manualSteps)).toBe(true);
+    expect(r.body.manualSteps.length).toBeGreaterThan(0);
+  });
+
+  it('B4 livetest: ENABLED + armed → runs the battery (armed report, steps present)', async () => {
+    const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    const r = await api('/credentials/livetest', {
+      method: 'POST',
+      body: JSON.stringify({ armed: true, enrolledPair: { slotA: SLOT_A, slotB: SLOT_B }, defaultSlotPair: { defaultSlot: SLOT_A, enrolledSlot: SLOT_B } }),
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.armed).toBe(true);
+    expect(Array.isArray(r.body.steps)).toBe(true);
+    expect(r.body.steps.length).toBe(2); // (a) enrolled + (b) default round-trips
+    expect(r.body.promotable).toBe(false); // manual items remain outstanding
+  });
+
+  it('B4 livetest: unknown slot → 400 (no harness run)', async () => {
+    const built = makeApp({ enabled: true }); stateDir = built.stateDir; cleanup.push(stateDir);
+    server = await listen(built.app);
+    const r = await api('/credentials/livetest', {
+      method: 'POST',
+      body: JSON.stringify({ enrolledPair: { slotA: '~/.does-not-exist', slotB: SLOT_B }, defaultSlotPair: { defaultSlot: SLOT_A, enrolledSlot: SLOT_B } }),
+    });
+    expect(r.status).toBe(400);
   });
 });

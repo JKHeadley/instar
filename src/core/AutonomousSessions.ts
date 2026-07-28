@@ -95,6 +95,85 @@ export function activeAutonomousJobs(stateDir: string): AutonomousJobSummary[] {
   return listAutonomousJobs(stateDir).filter((j) => j.active && !j.paused);
 }
 
+/**
+ * Honest-recycle helper (honest-session-recycle-spec): the ACTIVE autonomous run
+ * for `topic` with the seconds remaining on its window — or null when there is no
+ * active run for the topic, or its window is already over. This is the single
+ * place the run-window remaining is computed, so the recycle copy (and any future
+ * caller) agree on "is this an in-flight run, and how long is left?". The reaper's
+ * per-session age cap is a SEPARATE, shorter clock; this answers the run clock.
+ */
+export function autonomousRunRemainingForTopic(
+  stateDir: string,
+  topic: string | number,
+  nowMs: number = Date.now(),
+): { active: true; remainingSeconds: number } | null {
+  const topicStr = String(topic);
+  const job = activeAutonomousJobs(stateDir).find(
+    (j) => j.topic != null && String(j.topic) === topicStr,
+  );
+  if (!job || !job.active || !job.startedAt || !job.durationSeconds) return null;
+  const startedMs = new Date(job.startedAt).getTime();
+  if (!Number.isFinite(startedMs)) return null;
+  const remainingSeconds = Math.max(
+    0,
+    Math.round(job.durationSeconds - (nowMs - startedMs) / 1000),
+  );
+  // A run already past its own window is NOT a continuation — the terminal death
+  // copy should stand for it.
+  if (remainingSeconds <= 0) return null;
+  return { active: true, remainingSeconds };
+}
+
+/**
+ * Run-state markers the AutonomousProgressHeartbeat reads for its cheap-first
+ * predicates (autonomous-progress-heartbeat spec §predicates #2 + #3):
+ *   - `movedTo` / `moveSuspendedAt`: a mid-handoff marker (predicate #2 — this
+ *     machine must stay silent on a run about to fire from the destination).
+ *   - `startedAtMs`: the run's start wall-clock (predicate #3 — destination
+ *     warmup elapsed when the run has been active ON THIS MACHINE ≥ one window).
+ *
+ * Returns null when there is no per-topic run file (the heartbeat already
+ * gates on `autonomousRunRemainingForTopic` first; this is a SECOND read of the
+ * same file's markers, isolated here so all run-state file-format knowledge
+ * stays in this module). Reading fails CLOSED via the caller: a null return on
+ * a topic the run-active predicate already passed means the markers couldn't be
+ * read → the heartbeat suppresses.
+ */
+export interface AutonomousRunMarkers {
+  /** The target machine of an in-flight move, or null when not mid-move. */
+  movedTo: string | null;
+  /** Whether a `move_suspended_at` breadcrumb is present (mid-handoff). */
+  moveSuspended: boolean;
+  /** started_at parsed to epoch ms, or null when absent/unparseable. */
+  startedAtMs: number | null;
+}
+
+export function readAutonomousRunMarkers(
+  stateDir: string,
+  topic: string | number,
+): AutonomousRunMarkers | null {
+  const f = path.join(autonomousDir(stateDir), `${String(topic)}.local.md`);
+  let content: string;
+  try {
+    content = fs.readFileSync(f, 'utf8');
+  } catch {
+    // @silent-fallback-ok: a missing/unreadable `<topic>.local.md` is the EXPECTED case
+    // (no autonomous run for this topic). null is normal control flow, not degradation —
+    // callers (per readAutonomousRunMarkers' contract above) treat "couldn't read markers"
+    // as the conservative path (the heartbeat suppresses), so this is fail-safe, not silent.
+    return null;
+  }
+  const movedTo = readField(content, 'moved_to');
+  const startedAt = readField(content, 'started_at');
+  const startedMs = startedAt ? new Date(startedAt).getTime() : NaN;
+  return {
+    movedTo: movedTo && movedTo.length > 0 ? movedTo : null,
+    moveSuspended: /^move_suspended_at:/m.test(content),
+    startedAtMs: Number.isFinite(startedMs) ? startedMs : null,
+  };
+}
+
 export interface CanStartDeps {
   stateDir: string;
   maxConcurrent: number;

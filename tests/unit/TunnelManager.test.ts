@@ -129,7 +129,9 @@ describe('TunnelManager (provider/tier architecture)', () => {
         stateDir: project.stateDir,
         ...configOverrides,
       },
-      { providers, fetch: fetcher },
+      // 1ms probe-retry delays: keep the reachability grace window
+      // (probe retries) semantically intact without real sleeps.
+      { providers, fetch: fetcher, reachabilityRetryDelaysMs: [1] },
     );
     // EventEmitter throws on unhandled 'error' — every failure path
     // emits it, so absorb by default; tests assert via rejections.

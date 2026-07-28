@@ -33,6 +33,8 @@ const EXPECTED_BASH_FILENAMES = [
   'self-stop-guard.js',
   'external-communication-guard.js',
   'post-action-reflection.js',
+  'pr-hand-lease-guard.js',
+  'doorway-scan-guard.js',
 ];
 
 const cmd = (file: string, runner: 'bash' | 'node' = 'node') =>

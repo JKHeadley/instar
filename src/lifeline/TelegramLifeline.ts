@@ -61,11 +61,15 @@ import {
 import { decideReplay, type ForwardOutcome } from './replayPolicy.js';
 import { writeStartupMarker } from './startupMarker.js';
 import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
+import { decidePollAction, type PollOverride } from './pollDecision.js';
+import { readPollIntent, effectivePollIntent, writePollActive, pidAlive } from '../core/pollIntent.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { writeLease as writePollOwnerLease } from './TelegramPollOwnerLease.js';
 import { RestartOrchestrator } from './RestartOrchestrator.js';
 import { writeWakeRequestIfSlept } from './agentSleepWake.js';
 import { detectLaunchdSupervised } from './detectLaunchdSupervised.js';
 import { LifelineDriftPromoter, DRIFT_RESTART_PENDING_NOTICE_FILE } from './LifelineDriftPromoter.js';
+import { buildQueuedNotice } from './queuedNotice.js';
 import {
   LifelineHealthWatchdog,
   DEFAULT_WATCHDOG_THRESHOLDS,
@@ -264,6 +268,13 @@ export class TelegramLifeline {
   private lockPath: string;
   private consecutive409s = 0;
   private consecutive429s = 0;
+  /**
+   * B1 (multimachine-lease-poll-robustness, Decision 4) — the monotonic ms at
+   * which the lease intent first became "awake" while we were NOT yet polling,
+   * for the START debounce (intent must be stably awake before we start, to ride
+   * out a flap). Reset to 0 whenever the intent is not awake / we already poll.
+   */
+  private pollIntentAwakeSinceMs = 0;
   private pollBackoffMs = 2000; // Grows on 409/429 errors
 
   // Doctor session tracking (Crash Recovery UX)
@@ -293,6 +304,17 @@ export class TelegramLifeline {
       projectName: this.projectConfig.projectName,
       port: this.projectConfig.port,
       stateDir: this.projectConfig.stateDir,
+      // Amplifier #2 (spec §A.5): the supervisor defers a restart while an in-flight
+      // sync-op marker is set. The supervisor is config-less, so the developmentAgent
+      // dark-gate is resolved HERE (TelegramLifeline has projectConfig) and passed as a
+      // plain boolean. Ships dark on the fleet / live on a dev agent; an explicit
+      // monitoring.tmuxResilience.inFlightMarker.enabled in config always wins.
+      // `stateDir` above lets the supervisor's default inflightMarkerProvider bind to
+      // the right mirror file.
+      inflightDeferEnabled: resolveDevAgentGate(
+        this.projectConfig.monitoring?.tmuxResilience?.inFlightMarker?.enabled,
+        this.projectConfig,
+      ),
     });
 
     // Load persisted rate limit state (survives process restarts)
@@ -489,7 +511,13 @@ export class TelegramLifeline {
       if (this.supervisor.healthy && this.queue.length > 0) {
         this.replayQueue();
       }
+      // B1 — reconcile poll-ownership to the lease intent (no-op unless
+      // pollFollowsLease is on; DRY-RUN by default — see reconcilePolling).
+      this.reconcilePolling();
     }, 15_000);
+    // B1 — one immediate reconcile so the poll-active truth file + the would-action
+    // log appear at boot, not only after the first 15s tick.
+    this.reconcilePolling();
 
     // Coordinated restart channel: every 30s, check for a lifeline-restart
     // signal written by the AutoUpdater (major.minor crossing), the server
@@ -963,6 +991,89 @@ export class TelegramLifeline {
 
   // ── Telegram Polling ──────────────────────────────────────
 
+  /**
+   * B1 (multimachine-lease-poll-robustness, Decisions 4/5/6) — reconcile the
+   * Telegram poll to the fenced-lease intent the server publishes. Runs on the
+   * existing 15s loop. Ships DRY-RUN by default (even on a dev agent): it reads
+   * the intent, computes the start/stop/hold action, LOGS it, and writes the
+   * lifeline-poll-active.json truth source for B5 — but it does NOT start/stop the
+   * real poll until `pollFollowsLease.dryRun:false`. The live flip is gated on the
+   * Phase-4 two-host proof (and Decision 12: B2+B5 live), so this can never
+   * disturb the Phase-0 stabilization on the live agent.
+   */
+  private reconcilePolling(): void {
+    const mm = (this.projectConfig as { multiMachine?: {
+      pollFollowsLease?: { enabled?: boolean; dryRun?: boolean };
+      telegramPolling?: boolean;
+      pollOverride?: string;
+      developmentAgent?: boolean;
+    }; developmentAgent?: boolean }).multiMachine;
+    const enabled = resolveDevAgentGate(mm?.pollFollowsLease?.enabled, this.projectConfig as { developmentAgent?: boolean });
+    if (!enabled) return; // static-flag behavior unchanged
+    const dryRun = mm?.pollFollowsLease?.dryRun !== false; // default DRY-RUN even on dev
+
+    const stateDir = this.projectConfig.stateDir;
+    // Always publish the TRUTH (our real poll state) for B5 — safe, observe-only.
+    try { writePollActive(stateDir, this.polling); } catch { /* advisory */ }
+
+    // Effective intent (freshness/dead-writer gated → null = no opinion → HOLD).
+    const rec = readPollIntent(stateDir);
+    const intentShouldPoll = effectivePollIntent(rec, {
+      nowMs: Date.now(),
+      maxStaleMs: 90_000,
+      serverPidAlive: rec ? pidAlive(rec.serverPid) : false,
+    });
+
+    // Operator override (LOCAL config floor; Phase-0 telegramPolling:false survives
+    // as force-mute; force-poll needs the explicit pollOverride).
+    let override: PollOverride = null;
+    if (mm?.pollOverride === 'force-poll') override = 'force-poll';
+    else if (mm?.pollOverride === 'force-mute' || mm?.telegramPolling === false) override = 'force-mute';
+
+    // START debounce bookkeeping (intent stably awake while not polling).
+    const now = Date.now();
+    if (intentShouldPoll === true && !this.polling) {
+      if (this.pollIntentAwakeSinceMs === 0) this.pollIntentAwakeSinceMs = now;
+    } else {
+      this.pollIntentAwakeSinceMs = 0;
+    }
+    const POLL_START_DEBOUNCE_MS = 20_000;
+    const startDebounceElapsed =
+      this.pollIntentAwakeSinceMs > 0 && now - this.pollIntentAwakeSinceMs >= POLL_START_DEBOUNCE_MS;
+
+    const action = decidePollAction({
+      currentlyPolling: this.polling,
+      intentShouldPoll,
+      override,
+      // Peer poll-state cross-check (B5 surface) is a follow-up; the 409 signal is
+      // the partition-immune backstop and peerPresumedGone stays conservative
+      // (false → START always rides the debounce, never an unsafe fast-path here).
+      anotherMachinePolling: this.consecutive409s > 0,
+      recentLocal409: this.consecutive409s > 0,
+      startDebounceElapsed,
+      peerPresumedGone: false,
+    });
+
+    if (action === 'hold') return;
+    if (dryRun) {
+      // A start/stop is an infrequent real transition — log each (not spammy).
+      console.log(`[Lifeline] [poll-follows-lease] would ${action} polling (intent=${intentShouldPoll}, currentlyPolling=${this.polling}, dry-run)`);
+      return;
+    }
+    // LIVE (dryRun:false) — apply. STOP is immediate; START flushes first.
+    if (action === 'stop') {
+      this.polling = false;
+      console.log('[Lifeline] [poll-follows-lease] stopping poll (lost the lease)');
+    } else if (action === 'start') {
+      void this.flushStaleConnection().then(() => {
+        this.polling = true;
+        void this.poll();
+        console.log('[Lifeline] [poll-follows-lease] starting poll (became the awake holder)');
+      });
+    }
+    try { writePollActive(stateDir, this.polling); } catch { /* advisory */ }
+  }
+
   private async poll(): Promise<void> {
     if (!this.polling) return;
 
@@ -1101,7 +1212,8 @@ export class TelegramLifeline {
         await this.sendToTopic(topicId, '✓ Delivered');
         return;
       }
-      // Server appears healthy but forward failed — queue with accurate message
+      // Server appears healthy but forward failed — queue and tell the user we
+      // are reconnecting (NOT that the server is restarting: it is confirmed up).
       this.queue.enqueue({
         id: `tg-${msg.message_id}`,
         topicId,
@@ -1113,7 +1225,7 @@ export class TelegramLifeline {
       });
       if (this.shouldSendQueueAck(topicId)) {
         await this.sendToTopic(topicId,
-          `Server is restarting. Your message has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
+          buildQueuedNotice('message', this.queue.length, /* serverHealthy */ true)
         );
       }
       return;
@@ -1133,7 +1245,7 @@ export class TelegramLifeline {
     // Notify user that message is queued (rate-limited to prevent spam during restart loops)
     if (this.shouldSendQueueAck(topicId)) {
       await this.sendToTopic(topicId,
-        `Server is temporarily down. Your message has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
+        buildQueuedNotice('message', this.queue.length, /* serverHealthy */ false)
       );
     }
   }
@@ -1181,15 +1293,9 @@ export class TelegramLifeline {
     });
 
     if (this.shouldSendQueueAck(topicId)) {
-      if (this.supervisor.healthy) {
-        await this.sendToTopic(topicId,
-          `Server is restarting. Your photo has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      } else {
-        await this.sendToTopic(topicId,
-          `Server is temporarily down. Your photo has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      }
+      await this.sendToTopic(topicId,
+        buildQueuedNotice('photo', this.queue.length, this.supervisor.healthy)
+      );
     }
   }
 
@@ -1293,15 +1399,9 @@ export class TelegramLifeline {
     });
 
     if (this.shouldSendQueueAck(topicId)) {
-      if (this.supervisor.healthy) {
-        await this.sendToTopic(topicId,
-          `Server is restarting. Your file has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      } else {
-        await this.sendToTopic(topicId,
-          `Server is temporarily down. Your file has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      }
+      await this.sendToTopic(topicId,
+        buildQueuedNotice('file', this.queue.length, this.supervisor.healthy)
+      );
     }
   }
 
@@ -1440,6 +1540,14 @@ export class TelegramLifeline {
     const rawForward = rawMsg as unknown as Record<string, unknown>;
     const isForwarded = Boolean(rawForward.forward_origin || rawForward.forward_from || rawForward.forward_date);
 
+    // Scope-accretion ratification (spec autonomous-scope-accretion-completion.md
+    // R38/R45): carry reply_to_message_id across the lifeline hop so a
+    // reply-anchored confirmation of a server-authored enumeration works on
+    // lifeline-owned-polling agents. An older server ignores the extra field;
+    // an older lifeline omits it → only the explicit "ratify"-token confirmation
+    // binds (the safe, stricter direction).
+    const replyToMessageId = (rawMsg as { reply_to_message?: { message_id?: number } }).reply_to_message?.message_id;
+
     const buildBody = (includeVersion: boolean): string =>
       JSON.stringify({
         topicId,
@@ -1450,6 +1558,7 @@ export class TelegramLifeline {
         messageId: rawMsg.message_id,
         timestamp: new Date(rawMsg.date * 1000).toISOString(),
         senderIsBot,
+        ...(typeof replyToMessageId === 'number' ? { replyToMessageId } : {}),
         ...(isForwarded ? { forwarded: true } : {}),
         ...(senderChatId !== undefined ? { senderChatId } : {}),
         ...(senderBotId !== undefined ? { senderBotId } : {}),

@@ -52,6 +52,7 @@ export async function sendMessageViaHttp(
         targetAgent: params.targetAgent,
         threadId: params.threadId,
         message: params.message,
+        inReplyTo: params.inReplyTo,
         waitForReply: params.waitForReply,
         timeoutSeconds: params.timeoutSeconds,
         // Forward the originating Telegram topic so the reply can be routed

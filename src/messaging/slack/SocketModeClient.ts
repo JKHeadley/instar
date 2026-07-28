@@ -6,6 +6,11 @@
  * too_many_websockets handling, proactive rotation).
  *
  * Uses Node's built-in WebSocket (Node 22+) or falls back to 'ws' package.
+ *
+ * CONTRACT-EVIDENCE: EXEMPT — dead-silence recovery changes only local socket
+ * lifecycle policy. It removes an undocumented application payload that Slack
+ * ignored and opens a fresh connection through the already-established
+ * apps.connections.open path. No Slack envelope or API request shape changes.
  */
 
 import { SlackApiClient, SlackApiError } from './SlackApiClient.js';
@@ -33,7 +38,7 @@ interface OutboundQueueItem {
 
 const MAX_OUTBOUND_QUEUE = 100;
 const HEARTBEAT_INTERVAL_MS = 30_000;   // Check connection health every 30s
-const DEAD_SILENCE_MS = 300_000;        // 5 min with no events → send liveness probe
+const DEAD_SILENCE_MS = 300_000;        // 5 min with no events → rotate the connection
 const MAX_BACKOFF_MS = 60_000;
 const TOO_MANY_WS_DELAY_MS = 30_000;
 
@@ -107,15 +112,54 @@ export class SocketModeClient {
     }
   }
 
+  /**
+   * The single funnel for EVERY WebSocket send in this client (net #1). A
+   * `send()` on a socket that is not OPEN (CONNECTING / CLOSING / CLOSED) throws
+   * synchronously — `"WebSocket is not open: readyState N"` on the Node 22+
+   * built-in, `"Sent before connected"` on the `ws` polyfill — and these sends
+   * run inside un-awaited event-listener callbacks, where an escaping throw
+   * becomes an uncaughtException / unhandledRejection that can crash the whole
+   * process. `_safeSend` contains that at the source.
+   *
+   * Reads `this.ws` ONCE into a local and sends on THAT local, so the readyState
+   * check and the send target the same socket (no internal TOCTOU). Returns true
+   * iff the frame was handed to the socket.
+   *
+   * - Not-OPEN precheck (the EXPECTED transient state during reconnect): returns
+   *   false silently — no log, no reconnect. A non-OPEN socket short-circuits
+   *   here, so repeated sends against a dead socket can never flood the log.
+   * - A genuine throw on an OPEN socket (a rare race): logged message-only (never
+   *   the payload). Only the liveness path (`reconnectOnFailure`) reconnects, and
+   *   only if the socket we sent on is still current (`this.ws === sock`) — so a
+   *   throw after a teardown-and-replace can never tear down a fresh healthy
+   *   socket. Reuses the existing `_forceReconnect` guard (epoch model, #1076);
+   *   never resurrects a torn-down socket.
+   */
+  private _safeSend(data: string, context: string, reconnectOnFailure = false): boolean {
+    const sock = this.ws;
+    if (!sock || sock.readyState !== WebSocket.OPEN) return false;
+    try {
+      sock.send(data);
+      return true;
+    } catch (err) {
+      console.warn(
+        `[slack-socket] ${context} send failed (readyState=${sock.readyState}): ${(err as Error).message}`,
+      );
+      if (reconnectOnFailure && this.started && !this.reconnecting && this.ws === sock) {
+        this._forceReconnect();
+      }
+      return false;
+    }
+  }
+
   /** Queue an outbound message for sending (or send immediately if connected). */
   queueOutbound(data: string): void {
-    if (this.isConnected && this.ws) {
-      this.ws.send(data);
-    } else {
-      this.outboundQueue.push({ data, enqueuedAt: Date.now() });
-      if (this.outboundQueue.length > MAX_OUTBOUND_QUEUE) {
-        this.outboundQueue.shift(); // Drop oldest
-      }
+    // Send immediately if the socket is OPEN; otherwise (or on a lost TOCTOU
+    // race) enqueue for the next drain instead of dropping the message.
+    if (this._safeSend(data, 'outbound')) return;
+    this.outboundQueue.push({ data, enqueuedAt: Date.now() });
+    if (this.outboundQueue.length > MAX_OUTBOUND_QUEUE) {
+      this.outboundQueue.shift(); // Drop oldest
     }
   }
 
@@ -225,22 +269,17 @@ export class SocketModeClient {
       return;
     }
 
-    // Acknowledge immediately (must be within 3 seconds). Guard the send:
-    // during a reconnect race the socket can be mid-transition (CONNECTING /
-    // CLOSING), and an unguarded ws.send() on a non-OPEN socket throws — which,
-    // uncaught in this async message handler, crashed the whole server (the
-    // observed "Sent before connected" FATAL after a sleep/wake reconnect).
-    // Mirror queueOutbound's readyState guard + the liveness-probe try/catch.
-    if (envelope.envelope_id && this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try {
-        this.ws.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
-      } catch (err) {
-        // Socket changed state between the check and the send (rare race) —
-        // log and move on; Slack will redeliver the unacked event.
-        console.warn(
-          `[slack-socket] Ack send failed (socket mid-transition): ${(err as Error).message}`,
-        );
-      }
+    // Acknowledge immediately (must be within 3 seconds). Route through the
+    // _safeSend funnel: during a reconnect race the socket can be mid-transition
+    // (CONNECTING / CLOSING), and an unguarded send on a non-OPEN socket throws —
+    // which, uncaught in this async message handler, crashed the whole server
+    // (the observed "Sent before connected" FATAL after a sleep/wake reconnect).
+    // No reconnect on a failed ack: a single failed ack does not prove the socket
+    // is dead, and reconnecting per-envelope would risk an epoch-churn storm —
+    // Slack redelivers the unacked event, and the 30s heartbeat is the recovery
+    // bound for a genuinely-dead socket.
+    if (envelope.envelope_id) {
+      this._safeSend(JSON.stringify({ envelope_id: envelope.envelope_id }), 'ack');
     }
 
     // Process event with exception guard (post-ack — Slack won't redeliver)
@@ -308,29 +347,22 @@ export class SocketModeClient {
         return;
       }
 
-      // 2. If no events for DEAD_SILENCE_MS, send a probe to test the connection.
-      //    Slack Socket Mode has no application-level ping/pong — Slack will
-      //    silently ignore any JSON we send. So we test with send(): if it
-      //    throws, the socket is dead at the OS level → force reconnect.
-      //    If send() succeeds, the TCP connection is alive — reset the silence
-      //    timer and check again later.
+      // 2. Slack Socket Mode has no documented application-level ping/pong.
+      //    A successful send of arbitrary JSON proves only that the local TCP
+      //    buffer accepted bytes; it does not prove Slack is still delivering
+      //    events. Bound that half-open state by rotating a silent connection.
+      //    _forceReconnect records the outage before teardown, which lets the
+      //    adapter recover any message that landed during the blind window.
       const sinceLastEvent = Date.now() - this.lastEventAt;
       if (sinceLastEvent > DEAD_SILENCE_MS) {
-        console.log(`[slack-socket] No events for ${Math.round(sinceLastEvent / 60000)}m — sending liveness probe`);
-        try {
-          this.ws?.send('{"type":"ping"}');
-          // send() succeeded → TCP connection is alive. Reset silence timer
-          // so we don't immediately re-probe on the next tick.
-          this.lastEventAt = Date.now();
-        } catch {
-          console.warn('[slack-socket] Liveness probe send failed, forcing reconnect');
-          this._forceReconnect();
-        }
+        console.warn(`[slack-socket] No events for ${Math.round(sinceLastEvent / 60000)}m — rotating connection`);
+        this._forceReconnect('dead silence');
       }
     }, HEARTBEAT_INTERVAL_MS);
   }
 
-  private _forceReconnect(): void {
+  private _forceReconnect(reason = 'forced reconnect'): void {
+    this.handlers.onDisconnected(reason);
     this._teardownSocket(1000, 'force reconnect');
     // Trigger reconnect directly instead of relying on close event — the
     // torn-down socket's close is identity-guarded and will be ignored.
@@ -348,8 +380,17 @@ export class SocketModeClient {
 
   private _drainQueue(): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    for (const item of this.outboundQueue) {
-      this.ws.send(item.data);
+    // Iterate a snapshot by index. If a send fails mid-drain (socket went down),
+    // retain the unsent tail (this item + the rest) for the next 'open' drain
+    // rather than silently dropping it. Remove-only — never grows the queue, so
+    // length stays <= MAX_OUTBOUND_QUEUE. Single-threaded synchronous loop, so
+    // no concurrent queueOutbound can interleave with the reassignment.
+    const pending = this.outboundQueue;
+    for (let k = 0; k < pending.length; k++) {
+      if (!this._safeSend(pending[k].data, 'drain')) {
+        this.outboundQueue = pending.slice(k);
+        return;
+      }
     }
     this.outboundQueue = [];
   }

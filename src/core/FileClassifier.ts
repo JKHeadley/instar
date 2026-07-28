@@ -149,6 +149,29 @@ const DEFAULT_GENERATED_PATTERNS = [
   '.instar/threadline/',
   '.instar/views/',
   '.instar/worktree-monitor/',
+  // Standby-write reconciliation §3.1 (I9 second axis — the wave-1 build
+  // item): these stores are classified MACHINE-LOCAL (per-machine single
+  // writer with a logical convergence story — WS2.5 replication for the
+  // evolution action queue; pool-scope GET merge + WS4.1 for attention), so
+  // their FILES must not ride git-sync: two machines rewriting the same
+  // git-synced file manufacture recurring merge conflicts no matter how the
+  // logical state converges (the round-2 S1 lesson). Deliberately NOT the
+  // whole `.instar/state/` tree — only the paths whose classification names
+  // `git-sync-excluded` as its file-level arm.
+  '.instar/state/attention-items.json',
+  '.instar/state/evolution/',
+  // Context-aware outbound review (§D9.4b) — the review-canary-battery route's
+  // write targets, classified MACHINE-LOCAL with an ephemeral-rebuildable
+  // story: the per-machine topic-memory SQLite (canary fixtures transit its
+  // reserved negative topic ids; a live binary db must never git-sync) and the
+  // D8 decision log (per-machine soak evidence, never converged).
+  '.instar/topic-memory.db',
+  'logs/response-review-decisions.jsonl',
+  // External-hog sentinel arm marker — per-machine PIN consent to LIVE kills
+  // on THIS machine. Classified MACHINE-LOCAL with git-sync-excluded on BOTH
+  // axes: syncing the marker would silently arm a peer's sentinel the operator
+  // never consented to (the silent-re-arm class the armEpoch design prevents).
+  '.instar/state/external-hog-arm.json',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [

@@ -85,7 +85,10 @@ describe('ProactiveSwapMonitor — the core swap decision', () => {
     });
     const r = await monitor.evaluate();
     expect(r.swapped).toEqual(['s-hot']);
-    expect(swap).toHaveBeenCalledWith({ sessionName: 's-hot', exhaustedAccountId: 'hot', nowMs: NOW });
+    // swap-continuity-antithrash: the legacy path now stamps the caller class
+    // (I11 — server-internal provenance) so the SessionRefresh work gate can
+    // classify the kill; the decision shape is otherwise unchanged.
+    expect(swap).toHaveBeenCalledWith({ sessionName: 's-hot', exhaustedAccountId: 'hot', nowMs: NOW, callerClass: 'proactive-swap' });
   });
 
   it('does NOT swap when the account is below the threshold', async () => {
@@ -108,7 +111,7 @@ describe('ProactiveSwapMonitor — the core swap decision', () => {
     });
     const r = await monitor.evaluate();
     expect(r.swapped).toEqual(['interactive']);
-    expect(swap).toHaveBeenCalledWith({ sessionName: 'interactive', exhaustedAccountId: 'hot', nowMs: NOW });
+    expect(swap).toHaveBeenCalledWith({ sessionName: 'interactive', exhaustedAccountId: 'hot', nowMs: NOW, callerClass: 'proactive-swap' });
   });
 
   it('leaves an untagged session alone when the default login is NOT at pressure', async () => {

@@ -1,0 +1,24 @@
+{
+  "ts": "2026-07-18T19:55:25.519Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 16,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Latent since the hook was authored: the probe assumed GNU timeout on PATH. It only manifests on coreutils-less macOS (production Macs without Homebrew coreutils); Linux CI always has timeout, and the error was swallowed by 2>/dev/null || true, so the hook was silently inert rather than failing loudly. Surfaced by the unit test run on such a Mac during the realcheck-utf8 fix cycle."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new self-action: the added kill() is the perl timeout rung reaping its OWN bounded child probe (process hygiene inside a one-shot session-start probe), not a controller emit; the hook's pre-existing refresh action is unchanged and remains hard-bounded by the once-per-(session,failed-set) marker loop-guard"
+  },
+  "verdict": "blocked"
+}

@@ -125,6 +125,34 @@ describe('SessionRouter dispatch over MeshRpc (§L4)', () => {
     expect(processed).toEqual(['evt-100']);
   });
 
+  it('WS1.1 Slack arm: a Slack-shaped routing key forwards to the remote owner just like a Telegram topic key', async () => {
+    // The SessionRouter is sessionKey-agnostic: the Slack inbound path consults it
+    // on a routing key like `C0123ABCD:1716200000.001500`. This proves a Slack key
+    // forwards to the owner over the real transport (the bug was the Slack inbound
+    // path NEVER consulting the router at all — it injected locally regardless).
+    const deps: SessionRouterDeps = {
+      selfMachineId: 'ROUTER',
+      placement: new PlacementExecutor(),
+      machineRegistry: () => [cap('ROUTER'), cap('OWNER')],
+      resolveOwnership: () => ({ owner: 'OWNER', epoch: 5, status: 'active' }) as OwnershipView,
+      isMachineAlive: () => true,
+      casClaimOwnership: (_s, _m, e) => ({ ok: true, epoch: e + 1 }),
+      deliverMessage: makeDeliverDep(owner.url),
+      handleLocally: async () => {},
+      spawnOnMachine: async () => {},
+      queueMessage: () => 'refused' as const,
+      raiseAttention: () => {},
+      sleep: async () => {},
+    };
+    const router = new SessionRouter(deps);
+    const slackKey = 'C0123ABCD:1716200000.001500';
+    const out = await router.route({ sessionKey: slackKey, messageId: 'slack-evt-1', payload: 'hi from slack' });
+
+    expect(out).toMatchObject({ action: 'forwarded', owner: 'OWNER', acked: true });
+    expect(ledger).toEqual(['slack-evt-1']);
+    expect(processed).toEqual(['slack-evt-1']);
+  });
+
   it('redelivering the SAME messageId is ACKed as duplicate and NOT re-processed (ledger dedupe)', async () => {
     const deps: SessionRouterDeps = {
       selfMachineId: 'ROUTER',

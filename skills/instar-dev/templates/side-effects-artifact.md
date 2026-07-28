@@ -73,6 +73,14 @@
 
 ---
 
+## 4b. Judgment-point check (Judgment Within Floors standard)
+
+**Does this change add a static heuristic at a competing-signals decision point? If yes: why is it not a judgment point within a floor?**
+
+[A "competing-signals decision point" is one where multiple live signals (work evidence, liveness, recency, ownership, urgency) can genuinely conflict and the right answer is not statically enumerable. Per the **Judgment Within Floors** standard (`docs/STANDARDS-REGISTRY.md`), a new static heuristic at such a point must state why it is not a judgment point — valid answers include: the domain is enumerable (it's an invariant, name it), the choice is a safety guard on an irreversible action (deterministic by design), or a floor + arbiter is declared in the driving spec's `## Decision points touched` section. "No new static heuristic at a competing-signals decision point" is a valid answer and must be stated explicitly.]
+
+---
+
 ## 5. Interactions
 
 **Does this interact with existing checks, recovery paths, or infrastructure?**
@@ -176,3 +184,49 @@ pool-wide question is answered by a proxied-on-read merged view." Not abstractio
 ## Evidence pointers
 
 [Optional. Links or file paths to the live verification artifacts produced during `/build` — reproduction steps, before/after logs, test output. These feed the "Evidence" section in the upgrade notes if the change is shipping as a release.]
+
+---
+
+## Class-Closure Declaration (display-only mirror)
+
+**REQUIRED whenever this change FIXES a defect in an agent-authored artifact** (an
+LLM prompt, hook, config, skill, or standards text — see
+`docs/specs/class-closure-gate.md`) **— OR adds/modifies a self-triggered
+controller (the `unbounded-self-action` class: a loop, monitor, sentinel,
+reaper, scheduler, or recovery path that fires a restart / swap / respawn /
+spawn / notify / retry / re-drive / kill on its own — see
+`docs/specs/self-action-convergence.md`).** For the self-action case, author the
+convergence argument (control-loop edge + steady-state bound + settling brake)
+INTO `guardEvidence.howCaught`, and cite the ratchet
+`tests/unit/self-action-convergence.test.ts`. This section is the human-readable MIRROR of
+the machine-readable `classClosure` block in the commit's decision-audit entry
+(the host the CI lint validates). **Display-only:** the lint counts the
+decision-audit host ONLY and NEVER sums this mirror — the two are asserted to
+AGREE, never added (C1). If this change fixes no agent-authored-artifact defect,
+state: "No agent-authored-artifact defect — not applicable."
+
+- **`defectClass`** — a class id from `docs/defect-classes.json`, or `novel`. A
+  `novel` class is not a free pass: it REQUIRES a full new registry entry in the
+  same change carrying `nearestExistingClass` + ≥1 `includes` + ≥1 `excludes` +
+  `severity`, and it enters `status: "unconfirmed"` (an unconfirmed class CANNOT
+  satisfy `closure: guard` — its fix carries `closure: gap` until the operator
+  confirms it).
+- **`closure`** — either `guard` (the standard/test/lint that makes the class's
+  recurrence structurally refused or detected, cited by path/symbol) or `gap` (a
+  tracked standards-gap evolution-action id when the class-level guard is out of
+  this fix's scope).
+- **`guardEvidence`** (required with `closure: guard`) — the guard's enforcement
+  type as graded by the coverage audit's grader (`ratchet` / `gate` / `lint`),
+  the citation, and one line on *how this guard would have caught THIS defect*. A
+  citation that does not resolve to a LIVE enforcing guard on disk automatically
+  downgrades the declaration to `closure: gap` (G3 — a dark/spec-only artifact
+  guards nothing).
+- **`gap`** (with `closure: gap`) — the evolution-action id tracking the missing
+  guard. A gap is not fire-and-forget: it counts as escalation evidence and
+  re-surfaces on the evolution-action cadence.
+
+[Fill in the four fields (or "not applicable"). Example: "`defectClass:
+injection-credulity`, `closure: guard`, `guardEvidence: {enforcementType: gate,
+citation: src/core/promptClauses.ts#authorityClause, howCaught: the authority
+clause separates the trusted instruction surface from the quoted untrusted
+transcript excerpt, so the injected instruction is data not command}`."]
