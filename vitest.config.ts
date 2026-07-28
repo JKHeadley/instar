@@ -13,6 +13,14 @@ export default defineConfig(withTestRunnerBound('unit', {
       // is gated on INSTAR_REAL_WORLD_BIG=1 env (see _framework.ts).
       'tests/real-world-state/**/*.test.ts',
     ],
+    // `npm test` is the command the Zero-Failure Standard names, and its `include`
+    // covers tests/integration/** and tests/e2e/** — the production-path blocks that need
+    // the gitignored packed asset. Without this it passes only if the one self-
+    // bootstrapping unit file happens to run first, which is exactly the failure the
+    // globalSetup's own comment names: a per-file bootstrap is invisible to the next file
+    // that needs it. Round 6 caught that `vitest.push` and `vitest.integration` got it and
+    // this config did not.
+    globalSetup: ['tests/setup/build-dist.globalSetup.ts'],
     setupFiles: ['./tests/vitest-setup.ts'],
     environment: 'node',
     testTimeout: 10000,

@@ -36,6 +36,8 @@ function localSlackRelayReadiness(stateDir: string): { ready: true } | { ready: 
   if (!template) return { ready: false, reason: 'packaged Slack reply relay template is unavailable' };
   return slackReplyRelayReadiness(stateDir, template);
 }
+import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
+import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { planInboundLossNotices } from '../core/inboundLossRouting.js';
@@ -17631,10 +17633,28 @@ export async function startServer(options: StartOptions): Promise<void> {
             classReviewStore,
           }),
           standardTitles: () => {
-            try {
-              const registry = fs.readFileSync(path.join(config.projectDir, 'docs', 'STANDARDS-REGISTRY.md'), 'utf8');
-              return [...registry.matchAll(/^###\s+(.+)$/gm)].map((match) => match[1].trim()).slice(0, 100);
-            } catch { return []; }
+            // Second copy of the same defect the AgentServer wiring carried: read
+            // the agent-home snapshot with a private `^###` regex, and swallow the
+            // failure into an empty list. On a deployed agent that file is stale at
+            // best and absent at worst, so this reported "no standards" and nothing
+            // said so. Now resolved + parsed through the shared path.
+            const resolution = resolveStandardsRegistry();
+            if (!resolution.usable) {
+              // NOT silent — see the twin in AgentServer.standardTitles.
+              console.warn(
+                `[standards] standardTitles() returning [] — the packed constitution is unusable ` +
+                `(${resolution.reason}: ${resolution.detail}). BROKEN INSTALL, not an empty constitution.`,
+              );
+              return [];
+            }
+            // Parse the bytes the resolution CARRIES. Re-opening `path` here meant
+            // the integrity check and the parse applied to different reads, and the
+            // trailing `catch { return [] }` then swallowed a read failure into a
+            // silent empty constitution — the same absence-reads-as-presence shape
+            // the branch above was fixed to make loud, still live one line below it.
+            // With the bytes in hand there is nothing left to throw, so the catch is
+            // deleted rather than kept as decoration.
+            return parseStandardsRegistry(resolution.markdown).map((a) => a.name).slice(0, 100);
           },
           createInitiative: async (input) => {
             const created = await initiativeTracker.create({

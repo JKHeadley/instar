@@ -234,6 +234,10 @@ export default defineConfig(withTestRunnerBound('push', {
     include: ['tests/unit/**/*.test.ts', 'tests/integration/**/*.test.ts', 'tests/e2e/**/*.test.ts'],
     exclude: FLAKY_TESTS,
     setupFiles: ['./tests/vitest-setup.ts'],
+    // The push gate runs tests/integration/** too, and some of those exercise the
+    // production registry resolver, which needs the gitignored packed asset. Without
+    // this the shard that happens to contain them fails on a fresh checkout — measured.
+    globalSetup: ['tests/setup/build-dist.globalSetup.ts'],
     environment: 'node',
     testTimeout: 10000,
     fileParallelism: false,

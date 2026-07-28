@@ -24,6 +24,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import { registryMirrorPaths } from './standardsRegistryPath.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { ensureInstarBashPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
 import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion, ensureAgentDataSpotlightExclusion } from './InstarWorktreeManager.js';
@@ -1337,10 +1338,43 @@ export class PostUpdateMigrator {
         prior: priorWriterHashes,
       },
       {
-        label: 'Feature Maturation Path standard',
-        bundled: path.join(bundledRoot, 'docs', 'STANDARDS-REGISTRY.md'),
-        target: path.join(root, 'docs', 'STANDARDS-REGISTRY.md'),
-        prior: new Set(['9b3f2775937598a8c812da3c44042c79bc62202bfc82025821cee96d7c4ee391']),
+        // RESTORED 2026-07-28, repointed and un-gated. The previous entry read
+        // `<bundledRoot>/docs/STANDARDS-REGISTRY.md` — a path present in NO published
+        // install, because `docs/` is not in package.json `files`. It threw on every
+        // fleet run into `result.errors`, where nothing looks. And even given the
+        // file, it gated on ONE hardcoded prior hash (`9b3f2775…`), so every agent
+        // whose copy had drifted — all of them — was classified "customized" and
+        // skipped permanently.
+        //
+        // An intermediate version of this change DELETED the entry outright, on the
+        // reasoning that the machine readers now use the packed asset so no
+        // per-install copy needs maintaining, and that vestigial copies are "left in
+        // place and simply unread." **Review falsified "unread" and it was the
+        // load-bearing word.** The AGENT is the constitution's principal reader, and
+        // every prose pointer shipped to agents — the CLAUDE.md sections this very
+        // migrator writes, plus spec-converge, instar-dev and
+        // iterative-converging-audit, all of which ship in `files` — names
+        // `docs/STANDARDS-REGISTRY.md`. Measured on a live agent while reviewing this
+        // change: 46,606 bytes, **22 articles, dated May 24**, against 81 authored.
+        // Repointing three machine readers while leaving the agent reading a
+        // fourteen-week-old quarter of the rulebook fixes the instrument and not the
+        // thing the instrument exists for.
+        //
+        // So the agent-home copy is now MIRRORED from the packed asset — which, since
+        // this change, genuinely ships. `alwaysOverwrite` is deliberate and follows
+        // the built-in-hooks precedent: shipped content is refreshed on EVERY
+        // migration run, never install-if-missing, because a per-install hash gate on
+        // shipped content is indistinguishable from having no migration at all (the
+        // `hook-event-reporter.js` lesson, and the defect above). The constitution is
+        // instar's artifact, not an operator customization surface; an operator who
+        // wants a local amendment gets it merged upstream, not held as a private fork
+        // that silently stops receiving every other standard.
+        label: 'standards registry (constitution) mirror',
+        // Paths come FROM the resolver module, not from literals here — exactly one
+        // module owns registry location, and a boundary test enforces it.
+        ...registryMirrorPaths(bundledRoot, root),
+        prior: new Set<string>(),
+        alwaysOverwrite: true,
       },
     ];
     const digest = (bytes: Buffer): string => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -1367,6 +1401,11 @@ export class PostUpdateMigrator {
 
     for (const file of files) {
       try {
+        // A mirror entry may name its own refusal (e.g. the target is the AUTHORED
+        // constitution of an instar checkout, where overwriting would revert the
+        // source everything else is generated from). Skipping is RECORDED, never silent.
+        const skip = (file as { skip?: string }).skip;
+        if (skip) { result.skipped.push(`${file.label}: ${skip}`); continue; }
         const target = path.resolve(file.target);
         if (target !== root && !target.startsWith(`${root}${path.sep}`)) throw new Error('target escapes project root');
         const bundled = fs.readFileSync(file.bundled);
@@ -1385,8 +1424,15 @@ export class PostUpdateMigrator {
           result.skipped.push(`${file.label}: already current`);
           continue;
         }
+        // Shipped content (see the constitution-mirror entry) is refreshed
+        // unconditionally. A prior-hash gate over shipped content cannot tell a
+        // customization from ordinary drift, so it classifies every drifted copy as
+        // customized and stops refreshing forever — which is how the constitution
+        // sat at 22 articles on deployed agents for fourteen weeks while the
+        // migration reported itself healthy.
+        const alwaysOverwrite = (file as { alwaysOverwrite?: boolean }).alwaysOverwrite === true;
         const acceptedPrior = new Set([...file.prior, ...(testPriorHashes[file.label] ?? [])]);
-        if (!acceptedPrior.has(currentHash)) {
+        if (!alwaysOverwrite && !acceptedPrior.has(currentHash)) {
           result.skipped.push(`${file.label}: customized (${currentHash.slice(0, 12)}) — left untouched`);
           continue;
         }

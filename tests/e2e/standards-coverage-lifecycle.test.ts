@@ -20,10 +20,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { computeCoverage } from '../../src/core/StandardsEnforcementAuditor.js';
+import { resolveStandardsRegistryFromPath } from '../../src/core/standardsRegistryPath.js';
 import { parseStandardsRegistryDetailed } from '../../src/core/StandardsRegistryParser.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { CartographerTree } from '../../src/core/CartographerTree.js';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const AUTH = 'test-bearer-token';
 const REAL_REGISTRY = path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md');
@@ -99,6 +103,8 @@ describe('Standards Enforcement-Coverage Audit — feature is alive (Tier 3 E2E)
     a.use(express.json());
     a.use(authMiddleware(() => AUTH, 'test'));
     a.use('/', createRoutes({
+    // Explicit test injection: PART C truncates this fixture on purpose.
+    standardsRegistryResolutionOverride: resolveStandardsRegistryFromPath(path.join(repo, 'docs', 'STANDARDS-REGISTRY.md')),
       config: {
         projectName: 't', projectDir: repo, stateDir, port: 0, authToken: AUTH,
         sessions: {} as unknown, scheduler: {} as unknown,
@@ -110,6 +116,41 @@ describe('Standards Enforcement-Coverage Audit — feature is alive (Tier 3 E2E)
     return a;
   }
   const bearer = (r: request.Test) => r.set('Authorization', `Bearer ${AUTH}`);
+
+  /**
+   * PART D WAS HERE, AND WAS REMOVED IN ROUND 10. Read this before adding it back.
+   *
+   * It drove the PRODUCTION resolver (no fixture override) and asserted a `registryCurrent`
+   * verdict over the real packed constitution. The intent was right and the round-5
+   * conformance finding that prompted it was right: the fixture path was the harness default,
+   * so "the production path is covered" was an assumption nothing could falsify.
+   *
+   * WHY IT IS GONE. The e2e config deliberately builds no `dist` (a compiled `dist/cli.js`
+   * wakes dormant tests that spawn `pnpm`, absent on the CI e2e runner), so this block needed
+   * its own asset bootstrap. That bootstrap produced a DESIGN defect in each of four
+   * consecutive review rounds:
+   *
+   *   r7  the asset call sat below a freshness return keyed on an unrelated artifact
+   *   r8  the fix hoisted it above `tsc` — the generator imports from `dist`, so on CI
+   *       (`npm ci`, no build) it exited 1 and aborted every unit+integration shard
+   *   r9  the fix emitted ESM with no declared module type — aborting the whole e2e shard
+   *       on Node 20.12–20.18, inside our own `engines` range
+   *   r10 the setup file was untracked while the tracked config required it (e2e could not
+   *       start at all); its emit-path assertion was bypassed by `tsc` exiting first; and
+   *       the module-format fix had no guard, on a Node range CI never runs
+   *
+   * Four rounds, four defects, one component — whose only job was DUPLICATING coverage the
+   * INTEGRATION tier already provides and which needs no bootstrap, because that config
+   * builds `dist` anyway. `tests/integration/standards-coverage-route.test.ts` carries the
+   * production-path block (added round 4, no override, asserts the same flags against the
+   * same shipped derivation).
+   *
+   * This is a removal, not a softening: every round-10 finding against that machinery is
+   * conceded in full. What is genuinely lost is e2e-TIER production coverage — the
+   * integration tier proves the same wiring one layer down. If someone restores this, restore
+   * the bootstrap WITH a Node-20.12 CI matrix entry and a guard that fails without the module
+   * declaration, or the r8/r9/r10 defects come back with it.
+   */
 
   it('PART B: GET /conformance/coverage/health is alive (200, not 503) when enabled', async () => {
     const res = await bearer(request(app()).get('/conformance/coverage/health')).set('X-Instar-Request', '1');
