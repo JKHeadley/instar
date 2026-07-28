@@ -167,6 +167,11 @@ const DEFAULT_GENERATED_PATTERNS = [
   // D8 decision log (per-machine soak evidence, never converged).
   '.instar/topic-memory.db',
   'logs/response-review-decisions.jsonl',
+  // External-hog sentinel arm marker — per-machine PIN consent to LIVE kills
+  // on THIS machine. Classified MACHINE-LOCAL with git-sync-excluded on BOTH
+  // axes: syncing the marker would silently arm a peer's sentinel the operator
+  // never consented to (the silent-re-arm class the armEpoch design prevents).
+  '.instar/state/external-hog-arm.json',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [

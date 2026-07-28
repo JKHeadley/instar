@@ -144,6 +144,32 @@ describe('cartographer event-loop safety — REAL dist worker (fix instar#1069)'
     expect(r.detectStatus).toBe('timeout');
   });
 
+  it('worker timeout explicitly reaps a hung streaming git child', async () => {
+    const t = tree();
+    writeLargeIndex(t, 100);
+    const bin = path.join(repo, 'fake-bin');
+    const pidFile = path.join(repo, 'hung-git.pid');
+    fs.mkdirSync(bin);
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    const fakeGit = path.join(bin, 'git');
+    fs.writeFileSync(fakeGit, `#!/bin/sh\nif [ "$1" = "ls-tree" ]; then\n  echo $$ > "${pidFile}"\n  exec sleep 60\nfi\nexec "${realGit}" "$@"\n`);
+    fs.chmodSync(fakeGit, 0o755);
+    const priorPath = process.env.PATH;
+    process.env.PATH = `${bin}:${priorPath ?? ''}`;
+    try {
+      const r = await engineFor(t, { detectTimeoutMs: 1000 }).runPass();
+      expect(r.refused).toBe(true);
+      expect(r.refusalReason).toBe('detect-timeout');
+      expect(fs.existsSync(pidFile)).toBe(true);
+      const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+    }
+  });
+
   it('rollback (detectInWorker:false) runs the SAME bounded module synchronously', async () => {
     const t = tree();
     writeLargeIndex(t, 5000);

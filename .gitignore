@@ -46,6 +46,14 @@ dist/
 .instar/task-flows.db
 .instar/task-flows.db-*
 
+# Duplicate-build guard (docs/specs/duplicate-build-guard.md) — worktree-local
+# state: the check stub + disposition, the run-once gate marker, the verdict
+# cache, and the append-only audit trail. Runtime state, never source.
+.instar/dup-build-check.json
+.instar/dup-build-gate.marker.json
+.instar/dup-build-cache.json
+/logs/
+
 # OS
 .DS_Store
 Thumbs.db

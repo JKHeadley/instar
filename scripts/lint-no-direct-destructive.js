@@ -126,6 +126,18 @@ const ALLOWLIST = new Set([
   // Worktree-related git hooks — run before TS is compiled.
   'scripts/worktree-precommit-gate.js',
   'scripts/worktree-commit-msg-hook.js',
+  // audit-convergence-enforcement: the audit-report validator runs pre-compile
+  // (imported by the precommit hook), so it can't depend on the TS SafeGitExecutor
+  // funnel. All its git calls are READ-ONLY: `git rev-parse --show-toplevel` (repo
+  // root), `git ls-files --error-unmatch` (standing-guard tracked check), `git
+  // diff --cached --name-only` (staged set). Never a destructive git op.
+  'scripts/write-audit-convergence.mjs',
+  // audit-convergence tests: read-only `git rev-parse --show-toplevel` / `git
+  // ls-files` to resolve the repo root for reading committed files. No mutation.
+  'tests/unit/write-audit-convergence.test.ts',
+  'tests/unit/audit-convergence-reports.test.ts',
+  'tests/unit/audit-convergence-standard-conformance.test.ts',
+  'tests/unit/iterative-converging-audit-skill-single-source.test.ts',
   // Pre-command shim that wraps git invocations from outside the safe
   // executor — bootstraps the safety check, can't be inside the funnel.
   'scripts/destructive-command-shim.js',

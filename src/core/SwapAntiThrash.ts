@@ -184,6 +184,9 @@ export interface ProactiveIntentInput {
   /** Deferral bookkeeping stamped onto refusal rows when this intent is a deferred retry. */
   deferralAgeMs?: number;
   deferCount?: number;
+  /** Login loss bypasses only the source-pressure arithmetic. Every target,
+   * work, dwell, breaker, freshness, and execution-boundary guard still binds. */
+  sourceTrigger?: 'quota-pressure' | 'login-loss';
 }
 
 export type BrakeVerdict =
@@ -514,7 +517,7 @@ export class SwapAntiThrashEngine {
   sourceEligible(acct: SubscriptionAccount, nowMs: number): boolean {
     const k = this.getKnobs();
     const v = readingValidity(acct, nowMs, k.quotaFreshnessMs);
-    return v.valid && v.utilPct >= k.thresholdPct;
+    return isLocallyExecutable(acct) && v.valid && v.utilPct >= k.thresholdPct;
   }
 
   /** Is the session inside re-intent backoff after a ceiling drop (§4.2)? */
@@ -565,8 +568,12 @@ export class SwapAntiThrashEngine {
     // 4. FILTER (§3.3 normative order): validity gate (bound 0) + absolute
     // ceiling (bound 1) over the alternate set, minus this tick's used targets.
     const ceiling = k.thresholdPct - k.targetHeadroomPct;
+    const sourceFramework = input.accounts.find((a) => a.id === input.fromAccountId)?.framework;
     const alternates = input.accounts.filter(
-      (a) => a.id !== input.fromAccountId && isLocallyExecutable(a),
+      (a) =>
+        a.id !== input.fromAccountId &&
+        isLocallyExecutable(a) &&
+        (sourceFramework === undefined || a.framework === sourceFramework),
     );
     let unmeasuredAlternates = 0;
     const filtered: Array<{ acct: SubscriptionAccount; utilPct: number }> = [];
@@ -612,19 +619,25 @@ export class SwapAntiThrashEngine {
     // A refusal state this session was in has ended (a target survived) —
     // endTick() will emit the leave row because we do not touch stateRows here.
 
-    // 5. SCORE with the existing use-before-reset scoring — over the FILTERED
-    // cool set ONLY (§3.3: the scoring was never the bug; applying it over
-    // the hot band was).
+    // 5. Prefer the freshest eligible target (lowest binding utilization).
+    // Existing use-before-reset score breaks exact utilization ties, followed
+    // by stable account id for deterministic selection.
     let best: { acct: SubscriptionAccount; utilPct: number; score: number } | null = null;
     for (const f of filtered) {
       const s = scoreAccount(f.acct, nowMs);
-      if (!best || s > best.score) best = { acct: f.acct, utilPct: f.utilPct, score: s };
+      if (
+        !best ||
+        f.utilPct < best.utilPct ||
+        (f.utilPct === best.utilPct && (s > best.score || (s === best.score && f.acct.id < best.acct.id)))
+      ) {
+        best = { acct: f.acct, utilPct: f.utilPct, score: s };
+      }
     }
     const target = best!;
 
     // 6. VERIFY the survivor against bound 2 (relative improvement).
     const fromUtil = sourceValidity.utilPct;
-    if (fromUtil - target.utilPct < k.minImprovementPct) {
+    if (input.sourceTrigger !== 'login-loss' && fromUtil - target.utilPct < k.minImprovementPct) {
       this.recordSimpleRefusal(input, 'no-material-target', nowMs, {
         to: target.acct.id,
         fromUtilPct: fromUtil,
@@ -677,7 +690,9 @@ export class SwapAntiThrashEngine {
     deferralAgeMs?: number;
     deferCount?: number;
     defaultAccountChanged?: boolean;
+    sourceWasUntagged?: boolean;
     dryRun?: boolean;
+    sourceTrigger?: 'quota-pressure' | 'login-loss';
   }): void {
     const k = this.getKnobs();
     const row: SwapLedgerRow = {
@@ -694,6 +709,8 @@ export class SwapAntiThrashEngine {
       ...(args.deferralAgeMs !== undefined ? { deferralAgeMs: args.deferralAgeMs } : {}),
       ...(args.deferCount !== undefined ? { deferCount: args.deferCount } : {}),
       ...(args.defaultAccountChanged ? { defaultAccountChanged: true } : {}),
+      ...(args.sourceWasUntagged ? { sourceWasUntagged: true } : {}),
+      ...(args.sourceTrigger ? { sourceTrigger: args.sourceTrigger } : {}),
       ...(args.dryRun ? { dryRun: true } : {}),
     };
 

@@ -143,6 +143,14 @@ export interface HeartbeatObservation {
    *  field is the peer's self-reported DATA, never its identity. Absent =
    *  older peer / no posture (renders "unknown"). */
   guardPosture?: MachineCapacity['guardPosture'];
+  /** Machine-coherence advert (machine-coherence-guard §3.2), ALREADY
+   *  clamp-passed by the puller's narrowing step (M4). Absent = a sparse
+   *  liveness beat (carry the last advert forward WITHOUT refreshing its
+   *  receipt time — M5) or a pre-guard peer. */
+  coherenceAdvert?: MachineCapacity['coherenceAdvert'];
+  /** Clamp-rejection marker (M4): the peer sent an advert that FAILED the
+   *  receive clamp. Replaces the stored advert for evaluation purposes. */
+  coherenceAdvertRejected?: { atMs: number; reason: string };
   /** Durable Inbound Message Queue heartbeat fields (spec §5.1). Absent =
    *  older peer / queue dark — depth honestly unknown. */
   inboundQueue?: MachineCapacity['inboundQueue'];
@@ -194,6 +202,15 @@ export class MachinePoolRegistry {
        *  posture-less beat carries the old block forward without refreshing
        *  its age (the age must reflect when the POSTURE was received). */
       posture?: { block: NonNullable<MachineCapacity['guardPosture']>; receivedAtMs: number };
+      /** Coherence-advert receipt, tracked SEPARATELY like posture (spec M5):
+       *  `receivedAtMs` stamps ONLY when a beat actually CARRIES an advert —
+       *  carry-forward must never impersonate freshness (git beats refresh
+       *  liveness without an advert; the evaluator needs the REAL advert age). */
+      coherence?: { advert: NonNullable<MachineCapacity['coherenceAdvert']>; receivedAtMs: number };
+      /** Clamp-rejection marker (spec M4): REPLACES the advert for evaluation
+       *  purposes while set (the last good advert above is retained for
+       *  forensics only); cleared by the next clean advert. */
+      coherenceRejected?: { atMs: number; reason: string };
     }
   >();
 
@@ -236,6 +253,21 @@ export class MachinePoolRegistry {
       posture = { block: obs.guardPosture, receivedAtMs: nowMs };
       this.d.postureStore?.record(obs.machineId, obs.guardPosture, nowMs);
     }
+    // Coherence-advert handling (machine-coherence-guard §3.2 M4/M5, the same
+    // separate-receipt pattern as posture above): a beat WITH a clamp-passed
+    // advert stamps a fresh receipt AND clears any standing rejection; a beat
+    // WITH a rejection marker records it (replacing the advert for evaluation —
+    // the last good advert is retained for forensics only); a beat with NEITHER
+    // carries both forward UNCHANGED — including the original receipt time, so
+    // carry-forward can never impersonate freshness (M5).
+    let coherence = prev?.coherence;
+    let coherenceRejected = prev?.coherenceRejected;
+    if (obs.coherenceAdvert) {
+      coherence = { advert: obs.coherenceAdvert, receivedAtMs: nowMs };
+      coherenceRejected = undefined;
+    } else if (obs.coherenceAdvertRejected) {
+      coherenceRejected = obs.coherenceAdvertRejected;
+    }
     // seamlessnessFlags carry-forward (the SAME pattern as `posture` above): a
     // LIGHT/liveness beat that OMITS seamlessnessFlags (e.g. refreshPool's 30s
     // sparse `{machineId, selfReportedLastSeen}` echo) must NOT erase a peer's
@@ -264,7 +296,7 @@ export class MachinePoolRegistry {
         obsToStore = { ...obsToStore, selfReportedLastSeen: prev.obs.selfReportedLastSeen };
       }
     }
-    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs: obsToStore, skew: next, posture });
+    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs: obsToStore, skew: next, posture, coherence, coherenceRejected });
     if (sideEffect === 'removed') {
       this.d.onClockQuarantine?.(
         obs.machineId,
@@ -341,6 +373,18 @@ export class MachinePoolRegistry {
       // withdrawal flips a boolean inside a still-present object and DOES
       // propagate.
       seamlessnessFlags: live?.obs.seamlessnessFlags,
+      // Machine-coherence advert (§3.2): rejection REPLACES the advert for
+      // evaluation purposes (M4 — rejected ≠ absent; the evaluator classifies
+      // `advert-rejected`, a loud named condition). The receipt time is the
+      // ADVERT's own receipt, never the beat's (M5 carry-forward honesty).
+      ...(live?.coherenceRejected
+        ? { coherenceAdvertRejected: live.coherenceRejected }
+        : live?.coherence
+          ? {
+              coherenceAdvert: live.coherence.advert,
+              coherenceAdvertReceivedAt: new Date(live.coherence.receivedAtMs).toISOString(),
+            }
+          : {}),
       // Guard posture: live observation first, durable last-known second —
       // a machine with no posture EVER received carries neither field
       // (renders "guards: unknown", never "0 on / 0 off").

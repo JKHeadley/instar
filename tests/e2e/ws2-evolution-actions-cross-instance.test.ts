@@ -14,7 +14,7 @@
  * the enumerated content projection crosses — never the local ACT-NNN id (fork #1).
  * Identity across machines = the content fingerprint (title + commitTo + createdAt).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -67,7 +67,10 @@ function makeInstance(machineId: string, label: string): Instance {
   journal.setReplicatedKindRegistry(registry);
   const applier = new JournalSyncApplier({ stateDir: dir, replicatedRegistry: registry });
   const reader = new ReplicatedPeerStreamReader({ stateDir: dir, registry, selfMachineId: machineId });
-  const evolution = new EvolutionManager({ stateDir: dir });
+  const evolution = new EvolutionManager({
+    stateDir: dir,
+    autoExpiry: { enabled: false, maxAgeDays: 21, dryRun: false },
+  });
 
   // Emitter (the SEND wiring) — emission ENABLED for evolutionActions.
   const emitter = new ReplicatedRecordEmitter({
@@ -156,5 +159,29 @@ describe('E2E — an evolution action raised on A is readable on B (WS2.5 send-s
 
     // B now SEES the action is completed elsewhere — so it will not redo it.
     expect(b.unionReader.read(EVOLUTION_ACTION_STORE_KEY, rk).value!.data.status).toBe('completed');
+  });
+
+  it('an expired action tombstone survives a full peer resync and cannot resurrect', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      const action = a.evolution.addAction({ title: 'stale replicated action', description: 'old', priority: 'medium' });
+      const rk = deriveEvolutionActionRecordKey(action.title, action.commitTo, action.createdAt)!;
+      let cursor = replicate(a, A, b, 0);
+      expect(b.unionReader.read(EVOLUTION_ACTION_STORE_KEY, rk).value).not.toBeNull();
+
+      vi.setSystemTime(new Date('2026-02-01T00:00:00.000Z'));
+      expect(a.evolution.runActionAutoExpirySweep()).toMatchObject({ eligible: 1, expired: 1 });
+      cursor = replicate(a, A, b, cursor);
+      expect(cursor).toBeGreaterThan(0);
+      expect(b.unionReader.read(EVOLUTION_ACTION_STORE_KEY, rk).value).toBeNull();
+
+      // Re-applying the whole origin stream models a peer resync from cursor zero. The
+      // later tombstone must still win over the earlier put.
+      replicate(a, A, b, 0);
+      expect(b.unionReader.read(EVOLUTION_ACTION_STORE_KEY, rk).value).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-24T02:18:28.775Z",
+  "slug": "zombie-classify-baseline.side-effects",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 26,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Latent from the moment the pair was enrolled as a decision point without ever being benched — a real analyze pass returned exactly one finding, byVerdict {precondition-failed: 1}, and had been doing so silently since enrollment. Half the enrolled surface measured nothing while the detector reported correctly and nobody read it. Back-filling from the prior battery was impossible: it had been scored against a prompt of a different shape (2029 chars vs 1373 live) and against a case set feeding the model an identity tuple the live prompt deliberately withholds."
+  },
+  "classClosure": null,
+  "verdict": "blocked"
+}

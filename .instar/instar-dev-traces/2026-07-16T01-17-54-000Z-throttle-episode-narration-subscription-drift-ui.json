@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "sessionId": "telegram-458-tier-1-6",
+  "timestamp": "2026-07-16T01:17:54.000Z",
+  "artifactPath": "upgrades/side-effects/throttle-episode-narration-and-subscription-drift-ui.md",
+  "artifactSha256": "ee06ad839a236d458a43481dc4f450cfae59501e0c8c2d967a03ef61a7b5127f",
+  "specPath": "docs/specs/calm-transient-episode-alerting.md",
+  "coveredFiles": [
+    "src/monitoring/BurnThrottleRunbook.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Tier 2: narrows an existing autonomous throttle authority to one bounded episode and corrects a display-only credential-health projection.",
+  "secondPass": "true",
+  "reviewerConcurred": false,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [1465],
+    "notes": "Post-#1465 API evidence made credential drift visible to the dashboard, while live Telegram evidence showed the older burn runbook narrated detector ticks instead of throttle state transitions."
+  },
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "local",
+      "verified": true
+    }
+  }
+}

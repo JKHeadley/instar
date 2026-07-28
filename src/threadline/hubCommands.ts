@@ -1,10 +1,20 @@
 /**
- * Threadline hub commands — deterministic "open this" / "tie this to <topic>"
- * (CMT-529). Both the `POST /threadline/hub/bind` route AND the structural
- * intercept in `telegram.onTopicMessage` use `bindHubConversation`, so the
- * behavior is identical regardless of how the message arrived. `parseHubCommand`
- * is a pure, tightly-anchored matcher so ordinary hub chat falls through to the
- * agent.
+ * Threadline hub commands — "open this" / "tie this to <topic>" (CMT-529). Both
+ * the `POST /threadline/hub/bind` route AND the structural intercept in
+ * `telegram.onTopicMessage` use `bindHubConversation`, so the behavior is
+ * identical regardless of how the message arrived.
+ *
+ * The DECISION of "does this hub message mean bind-this-conversation?" is NO
+ * LONGER a keyword/regex matcher. It moved to an LLM-with-context classifier
+ * (`HubIntentClassifier.classifyHubIntent`) per the constitutional standard
+ * "Intelligence Infers, Keywords Only Guard" — Conversion #3 of
+ * docs/specs/keyword-intent-conversions-1-and-3.md. The old anchored regexes
+ * (`/^open(?:\s+this)?…/`, `/^(?:tie|bind)\s+this\s+to\s+(.+?)…/`) SWALLOWED the
+ * message before the agent saw it, and a misread silently EATS a real message.
+ * The classifier fails OPEN on any uncertainty (never swallows) and constrains a
+ * `tie` target to a structured enum of real topics. This module now owns only the
+ * `HubCommand` shape + the authoritative binder; the recognizer lives in
+ * `HubIntentClassifier.ts` and adapts a positive result via `toHubCommand()`.
  */
 
 import type { CollaborationSurfacer } from './CollaborationSurfacer.js';
@@ -15,28 +25,6 @@ import { generateConversationBrief, type BriefDeps } from './openConversationBri
 export type HubCommand =
   | { action: 'open' }
   | { action: 'tie'; targetTopicId?: number; targetTopicName?: string };
-
-/**
- * Deterministically classify a hub-topic message. Returns null for anything
- * that isn't *only* a hub command, so "can you open this and explain it?" is
- * left to the conversational agent.
- */
-export function parseHubCommand(text: string): HubCommand | null {
-  const t = (text ?? '').trim();
-  if (!t) return null;
-  // "open this" / "open" / "Open This." — the message must be only the command.
-  if (/^open(?:\s+this)?\s*[.!]?$/i.test(t)) return { action: 'open' };
-  // "tie this to <topic>" / "bind this to <topic>"
-  const tie = t.match(/^(?:tie|bind)\s+this\s+to\s+(.+?)\s*[.!]?$/i);
-  if (tie) {
-    const target = tie[1].trim();
-    // "#1234" or a bare number → topic id; else a topic name (verbatim).
-    const idMatch = target.match(/^#?(\d{1,15})$/);
-    if (idMatch) return { action: 'tie', targetTopicId: Number(idMatch[1]) };
-    return { action: 'tie', targetTopicName: target };
-  }
-  return null;
-}
 
 export interface HubBindDeps {
   collaborationSurfacer: CollaborationSurfacer;

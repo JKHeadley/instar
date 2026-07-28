@@ -43,12 +43,17 @@ describe('AgeKillBackoff', () => {
     b.recordVeto('s3', now); b.reset('s3');  expect(b.shouldRequest('s3', now)).toBe(true);
   });
 
-  it('backoffMs:0 disables back-off entirely (legacy every-tick behavior)', () => {
+  it('backoffMs:0 imposes no cooldown window (shouldRequest always true)', () => {
+    // Generalized VetoedKillBackoff semantics (R4-5): cooldownMs:0 is
+    // "enabled-but-no-cooldown" — shouldRequest is always true (no gate), so the
+    // age-gate re-requests every tick exactly as the legacy backoffMs:0 disable did.
+    // The ledger DOES record the veto now (episode-count/log-once/breaker still
+    // work), but with no cooldown the gate never suppresses anything.
     const b = new AgeKillBackoff({ backoffMs: 0 });
     const now = 4_000_000;
     b.recordVeto('s1', now);
-    expect(b.shouldRequest('s1', now)).toBe(true);       // never suppressed
-    expect(b.trackedCount).toBe(0);                      // and records nothing
+    expect(b.shouldRequest('s1', now)).toBe(true);       // never suppressed (no cooldown)
+    expect(b.shouldRequest('s1', now + 5_000)).toBe(true);
   });
 
   it('is memory-bounded: evicts oldest beyond maxTracked', () => {

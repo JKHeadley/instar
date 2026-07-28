@@ -83,6 +83,19 @@ export interface RequestIntent {
    * request is never authorized.
    */
   directed: boolean;
+  /**
+   * True iff this is a recognized HARMLESS CONVERSATIONAL self-post — the bot
+   * authoring a note / check-in / reminder / status update into the CURRENT
+   * conversation, carrying NO floor signal and NO organizational-write or external
+   * side-effect (a ticket, a record, another channel, a calendar hold, an email).
+   * Such a request is conversational, not an authority-requiring org action, so it
+   * is classified at the read/draft tier (T1) rather than the low-write tier (T2)
+   * — an ordinary member may direct it. This is set DETERMINISTICALLY by the
+   * heuristic (floor detection still runs first and always wins) and, like the
+   * floor, is NOT subject to upward re-classification by the LLM judgment band
+   * (see LlmIntentClassifier). Absent/false for everything else.
+   */
+  conversational?: boolean;
 }
 
 /** Relationship/behavioral anomaly assessment for this principal+request. */

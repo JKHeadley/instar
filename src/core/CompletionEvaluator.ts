@@ -18,7 +18,9 @@
  *   - docs/specs/AUTONOMOUS-COMPLETION-DISCIPLINE.md (signal extension §2b.4)
  */
 
+import { createHash } from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
+import { DP_COMPLETION_EVALUATE, DP_COMPLETION_STOP_RATIONALE } from '../data/provenanceCoverage.js';
 
 /**
  * Protocol version stamped on EVERY P13 response (allow / block / error). A
@@ -74,6 +76,14 @@ export interface CompletionVerdict {
   met: boolean;
   /** One-line reason — fed back as next-turn guidance when not met. */
   reason: string;
+  /**
+   * The router-minted decision correlation id for THIS judgment (LLM-Decision
+   * Quality Meter §5.1/§5.3) — present when the enrollment seam fired
+   * `onCorrelationId` (router-routed call), absent on a router-bypassed path.
+   * ADDITIVE: existing callers ignore it; the autonomous route persists it into
+   * the run-state record so the realcheck path can annotate ground truth later.
+   */
+  correlationId?: string;
 }
 
 /**
@@ -95,12 +105,42 @@ export interface StopRationaleVerdict {
    * to need → keep working). Absent for non-hard-blocker requests.
    */
   classifiedBlocker?: 'external' | 'buildable';
+  /** Same contract as CompletionVerdict.correlationId (additive, §5.1/§5.3). */
+  correlationId?: string;
+}
+
+/** The (topicId, runId) identity of the registered autonomous run a judgment
+ * belongs to — supplied by the route that resolved the armed record (§5.3). */
+export interface AutonomousRunRef {
+  topicId: string;
+  runId: string;
+}
+
+/** Which of the two enrolled decision points a correlation id belongs to. */
+export type CompletionDecisionKind = 'completion' | 'stop-rationale';
+
+/**
+ * The durable run-state writer the evaluator persists correlation ids through
+ * (LLM-Decision Quality Meter §5.3: "the correlation id is persisted in the
+ * autonomous run-state file"). `AutonomousRunStore.recordDecisionCorrelation`
+ * satisfies this structurally — the indirection avoids coupling the evaluator
+ * to the store module.
+ */
+export interface CompletionCorrelationSink {
+  recordDecisionCorrelation(topicId: string, runId: string, kind: CompletionDecisionKind, correlationId: string): void;
 }
 
 export interface CompletionEvaluatorDeps {
   intelligence: IntelligenceProvider;
   /** Override model tier (default 'fast' — matches /goal's small-fast evaluator). */
   modelTier?: 'fast' | 'balanced' | 'capable';
+  /**
+   * Optional durable sink for decision correlation ids (§5.3). When both this
+   * AND a per-call `runRef` are present, the router-minted correlation id is
+   * persisted into the run-state record at mint time (including calls that
+   * subsequently throw) so the realcheck path can annotate the decision later.
+   */
+  runCorrelationSink?: CompletionCorrelationSink;
 }
 
 // Bumped from 'completion-eval-v1' for the signal extension (objective-signals
@@ -110,8 +150,19 @@ export interface CompletionEvaluatorDeps {
 // v3: the scope-accretion CONTEXT block (spec autonomous-scope-accretion-
 // completion.md §2.8 step 3) — gated on field presence, so a payload without
 // the new fields renders a byte-identical v2 prompt (rollback byte-identity).
+//
+// These constants ALSO serve as the provenance `promptId` for the two enrolled
+// decision points (llm-decision-quality-meter §5.2/§5.3) — a stable, clamp-safe
+// (^[a-zA-Z0-9_-]{1,64}$) version tag. BUMP ON ANY PROMPT CHANGE: grade-by-
+// promptId aggregates must never silently mix prompt semantics.
 const PROMPT_VERSION = 'completion-eval-v3';
 const STOP_RATIONALE_PROMPT_VERSION = 'stop-rationale-v2';
+
+// The bounded verdict spaces the two judges actually emit (parse()/
+// parseStopRationale() first-line tokens) — declared as `optionsPresented` on
+// the provenance enrollment (§5.2: static, code-authored, enum-like labels).
+const COMPLETION_OPTIONS_PRESENTED = ['MET', 'NOT_MET'] as const;
+const STOP_RATIONALE_OPTIONS_PRESENTED = ['STOP_OK', 'STOP_BLOCKED'] as const;
 
 // Instruction-inert data fence for the agent-authored transcript (anti-injection,
 // spec §3 item 2). The judge is told everything between the fences is DATA.
@@ -121,10 +172,12 @@ const FENCE_CLOSE = '<<<END_AGENT_TRANSCRIPT_DATA>>>';
 export class CompletionEvaluator {
   private readonly intelligence: IntelligenceProvider;
   private readonly modelTier: 'fast' | 'balanced' | 'capable';
+  private readonly runCorrelationSink?: CompletionCorrelationSink;
 
   constructor(deps: CompletionEvaluatorDeps) {
     this.intelligence = deps.intelligence;
     this.modelTier = deps.modelTier ?? 'fast';
+    this.runCorrelationSink = deps.runCorrelationSink;
   }
 
   /**
@@ -136,9 +189,19 @@ export class CompletionEvaluator {
    * `signals` (optional) folds the milestone/buildable-work scrutiny into the
    * completion prompt so the condition path runs a SINGLE critical-path LLM
    * call (spec §2b.2). Absent → identical to the pre-change behavior.
+   *
+   * `runRef` (optional) identifies the registered autonomous run this judgment
+   * belongs to (§5.3): with a sink configured, the decision correlation id is
+   * persisted into the run-state record at mint time.
    */
-  async evaluate(condition: string, transcriptTail: string, signals?: StopSignals): Promise<CompletionVerdict> {
+  async evaluate(
+    condition: string,
+    transcriptTail: string,
+    signals?: StopSignals,
+    runRef?: AutonomousRunRef,
+  ): Promise<CompletionVerdict> {
     const prompt = this.buildPrompt(condition, transcriptTail, signals);
+    let correlationId: string | undefined;
     let raw: string;
     try {
       raw = await this.intelligence.evaluate(prompt, {
@@ -147,11 +210,93 @@ export class CompletionEvaluator {
         maxTokens: 200,
         timeoutMs: 30_000,
         attribution: { component: 'CompletionEvaluator' },
+        // LLM-Decision Quality Meter §5.1.4/§5.3 Layer-B enrollment (decision
+        // point `completion-evaluate`, volumeClass full, content-bearing —
+        // transcript-slice IDENTITY only, never transcript text).
+        provenance: {
+          decisionPoint: DP_COMPLETION_EVALUATE,
+          context: this.buildDecisionContext(condition, transcriptTail, signals),
+          optionsPresented: [...COMPLETION_OPTIONS_PRESENTED],
+          promptId: PROMPT_VERSION,
+          onCorrelationId: (id: string) => {
+            correlationId = id;
+            this.persistCorrelation('completion', id, runRef);
+          },
+        },
       });
     } catch (err) {
-      return { met: false, reason: `evaluator error (keep working): ${err instanceof Error ? err.message : String(err)}` };
+      return {
+        met: false,
+        reason: `evaluator error (keep working): ${err instanceof Error ? err.message : String(err)}`,
+        ...(correlationId ? { correlationId } : {}),
+      };
     }
-    return this.parse(raw);
+    const verdict = this.parse(raw);
+    if (correlationId) verdict.correlationId = correlationId;
+    return verdict;
+  }
+
+  /**
+   * Persist the router-minted correlation id into the durable run-state (§5.3)
+   * — fired at MINT (before the model answers), so even a judgment that later
+   * throws stays annotatable. Failures are contained: correlation persistence
+   * must never break the judgment path it observes.
+   */
+  private persistCorrelation(kind: CompletionDecisionKind, id: string, runRef?: AutonomousRunRef): void {
+    if (!runRef || !this.runCorrelationSink) return;
+    try {
+      this.runCorrelationSink.recordDecisionCorrelation(runRef.topicId, runRef.runId, kind, id);
+    } catch {
+      /* @silent-fallback-ok — a sink write failure degrades later outcome
+         annotation to age-out-unknown (honest); the verdict path is untouched. */
+    }
+  }
+
+  /**
+   * The §5.2 content-bearing decision-context envelope for both judges:
+   * transcript-slice IDENTITY (hash + bounds) + the code-derived StopSignals
+   * corroboration block — NEVER transcript/condition text (the provenance
+   * store must not become a second transcript archive). Scope-accretion facts
+   * are reduced to counts (identity + features discipline; the path LISTS stay
+   * out of the row). TODO(P3-handoff): swap to the code-provided content-class
+   * envelope builder once the §5.2 builders module lands — one-line follow-up.
+   */
+  private buildDecisionContext(
+    condition: string | null,
+    transcriptTail: string,
+    signals?: StopSignals,
+  ): Record<string, unknown> {
+    const sha256 = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex');
+    const ctx: Record<string, unknown> = {
+      transcriptSlice: {
+        sha256: sha256(transcriptTail),
+        bytes: Buffer.byteLength(transcriptTail, 'utf8'),
+        chars: transcriptTail.length,
+      },
+    };
+    if (condition !== null) {
+      ctx.condition = { sha256: sha256(condition), bytes: Buffer.byteLength(condition, 'utf8') };
+    }
+    if (signals) {
+      ctx.signals = {
+        completionConditionMet: signals.completionConditionMet ?? null,
+        uncheckedTaskCount: signals.uncheckedTaskCount ?? null,
+        taskStructure: signals.taskStructure ?? null,
+        milestoneRationalizationDetected: signals.milestoneRationalizationDetected ?? null,
+        injectionSuspected: signals.injectionSuspected ?? null,
+        stopKind: signals.stopKind ?? null,
+        scopeAccretionSuspected: signals.scopeAccretionSuspected ?? null,
+        scopeAccretion: signals.scopeAccretion
+          ? {
+              unbuiltCount: signals.scopeAccretion.unbuilt.length,
+              deletedCount: signals.scopeAccretion.deleted.length,
+              ratifiedCount: signals.scopeAccretion.ratifiedCount,
+              corroborationDegraded: signals.scopeAccretion.corroborationDegraded,
+            }
+          : null,
+      };
+    }
+    return ctx;
   }
 
   private buildPrompt(condition: string, transcriptTail: string, signals?: StopSignals): string {
@@ -222,10 +367,18 @@ export class CompletionEvaluator {
    * Fails OPEN (stopAllowed:true) on error or ambiguity: this is a SECONDARY guard
    * on top of the completion check, so an evaluator hiccup must never TRAP a
    * genuine completion — the primary completion authority still governs.
+   *
+   * `runRef` (optional): same §5.3 correlation-id persistence as `evaluate()`,
+   * recorded under the distinct `stop-rationale` kind.
    */
-  async evaluateStopRationale(transcriptTail: string, signals?: StopSignals): Promise<StopRationaleVerdict> {
+  async evaluateStopRationale(
+    transcriptTail: string,
+    signals?: StopSignals,
+    runRef?: AutonomousRunRef,
+  ): Promise<StopRationaleVerdict> {
     const prompt = this.buildStopRationalePrompt(transcriptTail, signals);
     const isHardBlocker = signals?.stopKind === 'hard-blocker';
+    let correlationId: string | undefined;
     let raw: string;
     try {
       raw = await this.intelligence.evaluate(prompt, {
@@ -234,15 +387,30 @@ export class CompletionEvaluator {
         maxTokens: 200,
         timeoutMs: 30_000,
         attribution: { component: 'CompletionEvaluator/P13' },
+        // LLM-Decision Quality Meter §5.1.4/§5.3 Layer-B enrollment (decision
+        // point `completion-stop-rationale` — the P13 judge's OWN point, distinct
+        // from completion-evaluate; same transcript-slice-identity envelope).
+        provenance: {
+          decisionPoint: DP_COMPLETION_STOP_RATIONALE,
+          context: this.buildDecisionContext(null, transcriptTail, signals),
+          optionsPresented: [...STOP_RATIONALE_OPTIONS_PRESENTED],
+          promptId: STOP_RATIONALE_PROMPT_VERSION,
+          onCorrelationId: (id: string) => {
+            correlationId = id;
+            this.persistCorrelation('stop-rationale', id, runRef);
+          },
+        },
       });
     } catch {
       // Fail OPEN — never trap a legitimate completion on an evaluator error.
       // On the hard-blocker path the hook treats the absence of an explicit
       // `external` classification as NOT-a-clean-allow, so a fail-open here does
       // NOT auto-pass an `(a)` exit (the hook's three-case detection owns that).
-      return { stopAllowed: true, guidance: '' };
+      return { stopAllowed: true, guidance: '', ...(correlationId ? { correlationId } : {}) };
     }
-    return this.parseStopRationale(raw, isHardBlocker);
+    const verdict = this.parseStopRationale(raw, isHardBlocker);
+    if (correlationId) verdict.correlationId = correlationId;
+    return verdict;
   }
 
   private buildStopRationalePrompt(transcriptTail: string, signals?: StopSignals): string {

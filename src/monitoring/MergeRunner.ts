@@ -77,6 +77,11 @@ export interface MergeRunnerConfig {
   mergeKillGraceMs: number;
   expectedContractVersion: number;
   /**
+   * Explicit per-agent GitHub child environment. Null means the act path is
+   * unavailable; the runner must not fall back to the machine-global gh seat.
+   */
+  resolveGitHubEnv: () => NodeJS.ProcessEnv | null;
+  /**
    * Merge strategy (mergerunner-auto-arm-handoff). `auto` (default) arms GitHub
    * native auto-merge via `safe-merge … --auto` and returns in seconds; `admin`
    * is the legacy synchronous poll+merge via `--admin`. Absent → 'auto'.
@@ -146,10 +151,12 @@ export class DefaultMergeRunner implements MergeRunner {
 
   async probeContract(): Promise<{ ok: boolean; version?: number }> {
     try {
+      const githubEnv = this.cfg.resolveGitHubEnv();
+      if (!githubEnv) return { ok: false };
       const out = await this.spawn({
         command: this.cfg.nodePath ?? process.execPath,
         args: [this.cfg.safeMergePath, '--capabilities'],
-        env: process.env,
+        env: githubEnv,
         deadlineMs: 30_000,
       });
       if (out.status !== 0) return { ok: false };
@@ -183,6 +190,11 @@ export class DefaultMergeRunner implements MergeRunner {
       this.log(`safe-merge hash changed between probe and exec — refusing (${attempt.pr})`);
       return { outcome: 'skipped:safe-merge-contract', confirmedMerged: false };
     }
+    const githubEnv = this.cfg.resolveGitHubEnv();
+    if (!githubEnv) {
+      this.log(`explicit GitHub runtime unavailable — refusing (${attempt.pr})`);
+      return { outcome: 'skipped:github-runtime-unavailable', confirmedMerged: false };
+    }
 
     const attemptToken = crypto.randomBytes(8).toString('hex');
     // Phase 1: durable intent record BEFORE the spawn.
@@ -212,7 +224,7 @@ export class DefaultMergeRunner implements MergeRunner {
           '--match-head-commit', attempt.headRefOid,
           '--deadline-ms', String(pathTimeoutMs),
         ],
-        env: { ...process.env, GREEN_PR_ATTEMPT_TOKEN: attemptToken },
+        env: { ...githubEnv, GREEN_PR_ATTEMPT_TOKEN: attemptToken },
         deadlineMs: pathTimeoutMs + this.cfg.mergeKillGraceMs,
         onPid: (pid) => {
           // Phase 2: patch pid/pgid (the child's pid IS its pgid when detached).

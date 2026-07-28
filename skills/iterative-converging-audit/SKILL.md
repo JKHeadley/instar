@@ -57,19 +57,21 @@ Sweep again — the FULL surface, not just what you touched. Two things happen o
 
 Record any NEW findings. If there are new findings → back to Step 2. If a re-sweep finds **nothing not already in the ledger** → **converged**.
 
-### Step 4 — Declare convergence (honestly)
+### Step 4 — Declare convergence (honestly, and MACHINE-EARNED where possible)
 
 Only now may you say the audit is complete — and you state it as: "Converged after K rounds; round K surfaced no new findings. Ledger: X total, Y fixed, Z accepted-advisory (each with a reason)." If you stopped for any reason OTHER than a clean re-sweep (ran out of time, budget, patience), say so explicitly — that is an INCOMPLETE audit, not a converged one. Never dress up an exhausted audit as a thorough one.
 
+**In a repo that carries the validator** (the instar source tree, or any repo vendoring `scripts/write-audit-convergence.mjs`), the `converged` claim is EARNED, not asserted: write the canonical report at `docs/audits/<slug>.md` (see The Ledger below) and run `node scripts/write-audit-convergence.mjs --audit docs/audits/<slug>.md`. The validator refuses the stamp unless the ledger genuinely shows ≥2 rounds ending in a zeroed final round, every finding closed, and a standing guard (or a closed-enum exemption). A hand-typed `converged:` is rejected at commit and re-checked in CI. In a repo WITHOUT the validator, still write the canonical report and self-check against the shape — but never fabricate a machine stamp you cannot earn.
+
 ### Step 5 — Leave a standing guard (so it stays converged)
 
-A converged audit decays the moment new code lands. Where possible, encode the target pattern as a **ratchet** (a test/lint that fails when a new instance appears) so the audit does not silently un-converge. The ledger of accepted findings becomes the ratchet's allowlist. (Example: the `no-silent-llm-fallback` test is the standing guard for the LLM-fallback audit.)
+A converged audit decays the moment new code lands. Where possible, encode the target pattern as a **ratchet** (a test/lint that fails when a new instance appears) so the audit does not silently un-converge. The ledger of accepted findings becomes the ratchet's allowlist. (Example: the `no-silent-llm-fallback` test is the standing guard for the LLM-fallback audit.) Name the ratchet in the report's `standing-guard:` field — or, if the pattern genuinely is not CI-expressible, record a closed-enum `exemption:` (`non-ci-expressible` | `external-system` | `one-time-human-review`) with a real rationale.
 
 ---
 
-## The Ledger (the durable artifact)
+## The Ledger (the durable artifact) — canonical at `docs/audits/<slug>.md`
 
-Keep a written ledger for the audit — a markdown table or a structured file — with one row per finding: `location | round-found | behavior | bucket | disposition (fixed → commit / accepted → reason)`. The ledger is what makes "converged after K rounds" a verifiable claim instead of a feeling. Track the per-round count; a healthy audit shows the new-findings-per-round curve falling to zero.
+The audit ledger IS a canonical report at `docs/audits/<slug>.md` with frontmatter (`audit`, `target-pattern`, `search-surface`, `converged` [stamped by the validator only], `standing-guard` XOR `exemption`) and one `## Round N` section per pass. Each round records the **search angles run**, the **surface delta** since the prior round, a findings table (`location | behavior | bucket | disposition`), and a `New findings this round: <count>` line. Dispositions are closed: `fixed:<commit/PR>`, `accepted:<reason>`, or `deferred:<tracking-ref>`. **Reference each finding by path+line — NEVER paste the offending secret/credential material into the ledger** (the commit gate scans audit reports for credentials and will block). The report is what makes "converged after K rounds" a machine-verifiable claim instead of a feeling; the new-findings-per-round count falling to zero is the convergence signal.
 
 ---
 

@@ -27,6 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const DECISIONS_REL = path.join('.instar', 'instar-dev-decisions');
+const TRACES_REL = path.join('.instar', 'instar-dev-traces');
 
 /** Parse `--key value` / `--flag` pairs into a plain object. */
 export function parseArgs(argv) {
@@ -67,10 +68,20 @@ export function buildClassClosureBlock(args) {
   if (!args.class || typeof args.class !== 'string') throw new Error('--class <id|novel> is required');
   block.defectClass = args.class;
   const closure = args.closure;
-  if (closure !== 'guard' && closure !== 'gap') throw new Error("--closure must be 'guard' or 'gap'");
+  // 'n/a' is the NEGATIVE declaration (docs/specs/self-action-convergence.md →
+  // E3): a genuine one-shot / user-driven action, not a self-triggered loop —
+  // the trace-level analog of the D4 lint's allowlist entry. Requires a reason.
+  if (closure !== 'guard' && closure !== 'gap' && closure !== 'n/a') {
+    throw new Error("--closure must be 'guard', 'gap', or 'n/a' (negative declaration)");
+  }
   block.closure = closure;
 
-  if (closure === 'guard') {
+  if (closure === 'n/a') {
+    if (!args.reason || typeof args.reason !== 'string') {
+      throw new Error("closure 'n/a' (negative declaration) requires --reason \"<why this is a one-shot / user-driven action, not a loop>\"");
+    }
+    block.reason = args.reason;
+  } else if (closure === 'guard') {
     if (!args.citation || typeof args.citation !== 'string') throw new Error("closure 'guard' requires --citation <path|route|symbol>");
     block.guardEvidence = {
       enforcementType: typeof args.enforcement === 'string' ? args.enforcement : undefined,
@@ -166,11 +177,65 @@ export function applyDeclaration(repoRoot, block) {
   return { changed: true, file: target.file, block };
 }
 
+/** Find the most-recent instar-dev TRACE file (by mtime). */
+export function findMostRecentTrace(repoRoot) {
+  const dir = path.join(repoRoot, TRACES_REL);
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return null;
+  }
+  if (files.length === 0) return null;
+  let best = null;
+  for (const f of files) {
+    const full = path.join(dir, f);
+    let mtime;
+    try {
+      mtime = fs.statSync(full).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (best === null || mtime > best.mtime) best = { file: full, mtime };
+  }
+  if (!best) return null;
+  let entry;
+  try {
+    entry = JSON.parse(fs.readFileSync(best.file, 'utf-8'));
+  } catch {
+    return null;
+  }
+  return { file: best.file, entry };
+}
+
+/**
+ * Merge the block into the most-recent instar-dev TRACE (the E3 declaration
+ * host — the same place `specPath`/`tier`/`causalAutopsy` live, authored BEFORE
+ * the commit). Idempotent. The precommit's writeDecisionAudit then persists it
+ * into the machine-readable decision-audit entry.
+ * @returns {{ changed: boolean, file: string, block: object }}
+ */
+export function applyDeclarationToTrace(repoRoot, block) {
+  const target = findMostRecentTrace(repoRoot);
+  if (!target) {
+    throw new Error(`no instar-dev trace found under ${TRACES_REL} to attach the declaration to (run the /instar-dev skill first)`);
+  }
+  const before = JSON.stringify(target.entry.classClosure ?? null);
+  const after = JSON.stringify(block);
+  if (before === after) {
+    return { changed: false, file: target.file, block };
+  }
+  target.entry.classClosure = block;
+  fs.writeFileSync(target.file, `${JSON.stringify(target.entry, null, 2)}\n`, 'utf-8');
+  return { changed: true, file: target.file, block };
+}
+
 // ── CLI entrypoint ──────────────────────────────────────────────────────────
 const invokedDirectly = process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop());
 if (invokedDirectly) {
   const repoRoot = process.env.CLASS_CLOSURE_REPO_ROOT || process.cwd();
   const args = parseArgs(process.argv.slice(2));
+  const toTrace = args['to-trace'] === true;
   let block;
   try {
     block = buildClassClosureBlock(args);
@@ -180,12 +245,12 @@ if (invokedDirectly) {
   }
   let result;
   try {
-    result = applyDeclaration(repoRoot, block);
+    result = toTrace ? applyDeclarationToTrace(repoRoot, block) : applyDeclaration(repoRoot, block);
   } catch (err) {
     console.error(`class-closure-declare: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(2);
   }
-  console.log(`class-closure-declare: ${result.changed ? 'wrote' : 'no change (idempotent)'} classClosure into ${path.relative(repoRoot, result.file)}`);
+  console.log(`class-closure-declare: ${result.changed ? 'wrote' : 'no change (idempotent)'} classClosure into ${path.relative(repoRoot, result.file)}${toTrace ? ' (trace host)' : ''}`);
   console.log(JSON.stringify(result.block, null, 2));
   process.exit(0);
 }

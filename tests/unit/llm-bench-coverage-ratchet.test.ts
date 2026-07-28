@@ -27,20 +27,42 @@ import { LLM_BENCH_COVERAGE } from '../../src/data/llmBenchCoverage.js';
 const PENDING_BASELINE = [
   // Wave-3 only — the wave-2 set graduated to covered/exempt on 2026-07-02
   // (INSTAR-Bench v2 wave-2 authoring: 19 task batteries + 5 argued exemptions).
-  'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
+  'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
   'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
-  'PreCompactionFlush', 'RelationshipManager', 'SelfKnowledgeTree',
+  'PreCompactionFlush', 'ProfileIntentClassifier', 'RelationshipManager',
+  'SelfKnowledgeTree', 'GoalPriorityExtractor',
   'StandardsConformanceReviewer', 'StandardsCoverageEnrichment',
   'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',
-  'crossModelReviewer', 'mentor-stage-b', 'openConversationBrief',
+  'completion-claim-verify', 'correction-class-review', 'crossModelReviewer',
+  'mentor-stage-b', 'openConversationBrief',
 ].sort();
 
 const EXEMPT_BASELINE = [
   'InteractivePoolCanaryJudge',
+  // MoveIntentClassifier (2026-07-04): ships its OWN dedicated discrimination
+  // benchmark (tests/unit/move-intent-discrimination.test.ts — deterministic
+  // corpus + opt-in INSTAR_LIVE_MOVE_INTENT real-model accuracy, the graduation
+  // gate). Same rationale as InteractivePoolCanaryJudge: the co-located
+  // benchmark IS the benchmark; a generic harness task would re-test it less
+  // precisely. Argued in src/data/llmBenchCoverage.ts.
+  'MoveIntentClassifier',
+  // HubIntentClassifier (2026-07-04): ships its OWN dedicated discrimination
+  // benchmark (tests/unit/hub-intent-discrimination.test.ts — deterministic
+  // corpus + opt-in INSTAR_LIVE_HUB_INTENT real-model accuracy, the graduation
+  // gate). Same rationale as MoveIntentClassifier; argued in
+  // src/data/llmBenchCoverage.ts.
+  'HubIntentClassifier',
   // Wave-2 argued exemptions (2026-07-02) — each argues a real reason in
   // src/data/llmBenchCoverage.ts; evidence trail in the bench harness's
   // tasks-wave2/SKIPPED.md (grep-verified delegation/alias/unwired claims).
   'IntegrationGate', 'CoherenceGate', 'AutoApprover', 'InputDetector', 'PromiseBeacon',
+  // DashboardInsightEngine (2026-07-09): awareness-only dashboard read surface
+  // (docs/specs/dashboard-live-insights.md). Its LLM insight is never a gate and
+  // always degrades to a deterministic per-page one-liner floor, so its LLM
+  // quality is not safety-load-bearing. NOT in LLM_ROUTING_NATURE (cite-the-bench
+  // forbids a nature row for an exempt component); it rides the shared router's
+  // fast tier. Argued in src/data/llmBenchCoverage.ts.
+  'DashboardInsightEngine',
 ].sort();
 
 describe('llm-bench-coverage ratchet', () => {

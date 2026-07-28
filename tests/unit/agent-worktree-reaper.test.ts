@@ -32,6 +32,8 @@ function deps(over: Partial<AgentWorktreeReaperDeps> = {}): AgentWorktreeReaperD
     isClean: () => true,
     isMerged: () => true,
     isInUse: () => false,
+    currentBranch: () => 'echo/feature', // matches wt() default → reclaim race guard passes
+    hasActiveBuildMarker: () => false,
     removeWorktree: vi.fn(),
     now: () => NOW,
     ...over,
@@ -96,6 +98,62 @@ describe('AgentWorktreeReaper.reap — dry-run + blast radius', () => {
     expect(res.dryRun).toBe(false);
     expect(res.reaped).toHaveLength(2); // capped
     expect(removeWorktree).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('AgentWorktreeReaper.reap — exec-time re-validation closes the enumerate→reclaim TOCTOU', () => {
+  const liveReap = (d: Partial<AgentWorktreeReaperDeps>) =>
+    new AgentWorktreeReaper(deps({ ...d }), { enabled: true, dryRun: false });
+
+  it('(a) branch changed since eval (builder checked out a new unmerged branch) → KEEP, not reaped', async () => {
+    // eval sees info.branch='echo/feature' merged/clean/idle ⇒ reap-eligible; at reclaim the
+    // LIVE branch is a DIFFERENT one, so isMerged(info) is stale and must not authorize a delete.
+    const removeWorktree = vi.fn();
+    const res = await liveReap({ removeWorktree, currentBranch: () => 'echo/dashboard-f5f8' }).reap();
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(res.reaped).toEqual([]);
+    expect(res.evaluations[0].verdict).toBe('keep');
+    expect(res.evaluations[0].reason).toBe('raced-changed-since-eval');
+  });
+
+  it('(b) worktree went dirty between eval and reclaim → KEEP', async () => {
+    const removeWorktree = vi.fn();
+    // clean at eval (1st call), dirty at the reclaim re-check (2nd)
+    const isClean = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    const res = await liveReap({ removeWorktree, isClean }).reap();
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(res.evaluations[0].reason).toBe('raced-now-dirty');
+  });
+
+  it('(c) worktree became in-use between eval and reclaim → KEEP', async () => {
+    const removeWorktree = vi.fn();
+    // idle at eval (1st), in-use at reclaim re-check (2nd)
+    const isInUse = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const res = await liveReap({ removeWorktree, isInUse }).reap();
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(res.evaluations[0].reason).toBe('raced-now-in-use');
+  });
+
+  it('(d) an .instar-build-active marker at reclaim time → KEEP (builder claim honored)', async () => {
+    const removeWorktree = vi.fn();
+    const res = await liveReap({ removeWorktree, hasActiveBuildMarker: () => true }).reap();
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(res.evaluations[0].reason).toBe('raced-build-active-marker');
+  });
+
+  it('(e) genuinely still merged-clean-idle-unchanged at reclaim → REAPS (unchanged happy path)', async () => {
+    const removeWorktree = vi.fn();
+    const res = await liveReap({ removeWorktree }).reap(); // defaults: branch matches, no marker
+    expect(removeWorktree).toHaveBeenCalledTimes(1);
+    expect(res.reaped).toHaveLength(1);
+    expect(res.evaluations[0].verdict).toBe('reap-eligible');
+  });
+
+  it('fail-closed: currentBranch read error (returns null) ≠ info.branch → KEEP, never reap on an unreadable branch', async () => {
+    const removeWorktree = vi.fn();
+    const res = await liveReap({ removeWorktree, currentBranch: () => null }).reap();
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(res.evaluations[0].reason).toBe('raced-changed-since-eval');
   });
 
   it('snapshot reports the reclaimable count without side effects', () => {

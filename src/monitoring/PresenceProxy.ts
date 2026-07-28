@@ -119,6 +119,10 @@ export interface PresenceProxyConfig {
 
   // Optional: context exhaustion auto-recovery
   recoverContextExhaustion?: (topicId: number, sessionName: string) => Promise<{ recovered: boolean }>;
+  /** Durable context-wall latch, used when the original pane banner has
+   * scrolled away. Signal-only for Tier 1/2; Tier 3 may invoke the existing
+   * recovery callback exactly as it does for a live-tail context match. */
+  hasContextExhaustionLatch?: (topicId: number) => boolean;
 
   /**
    * Honest turn-receipts: when a recovery sentinel (ContextWedgeSentinel,
@@ -1107,11 +1111,21 @@ export class PresenceProxy {
   // No-leak: emits ONLY `StuckClassification.message` verbatim with the tier
   // prefix — never concatenates pane-derived text.
   private maybeStuckMessage(
+    topicId: number,
     snapshot: string | null,
     sessionName: string,
     tierLabel: 1 | 2,
   ): string | typeof PRESENCE_SUPPRESS | null {
     if (!this.config.standbyHonestyTiers) return null;
+    if (this.config.hasContextExhaustionLatch?.(topicId)) {
+      if (this.config.isStuckRecoveryActive?.(sessionName)) {
+        return PRESENCE_SUPPRESS;
+      }
+      const prefix = tierLabel === 1
+        ? `${this.prefix} `
+        : `${this.prefix} 2-minute update — `;
+      return `${prefix}This conversation is latched at its context limit and cannot produce another reply until recovery starts.`;
+    }
     if (!snapshot) return null;
     let stuck;
     try {
@@ -1208,7 +1222,7 @@ export class PresenceProxy {
     // not only Tier 3. Substitutes the message string only; scheduling is
     // unchanged below. SUPPRESS = a recovery sentinel owns the voice → send
     // nothing this fire, but still schedule Tier 2.
-    const honest1 = this.maybeStuckMessage(snapshot, state.sessionName, 1);
+    const honest1 = this.maybeStuckMessage(topicId, snapshot, state.sessionName, 1);
     if (honest1 === PRESENCE_SUPPRESS) {
       if (state.cancelled) return;
       state.tier1FiredAt = Date.now();
@@ -1326,7 +1340,7 @@ export class PresenceProxy {
     // Same lift as Tier 1: surface the REAL reason instead of "is still
     // working" at the 2-minute mark. Substitutes the message string only;
     // Tier 3 is still scheduled below in every branch (never gated).
-    const honest2 = this.maybeStuckMessage(snapshot, state.sessionName, 2);
+    const honest2 = this.maybeStuckMessage(topicId, snapshot, state.sessionName, 2);
     if (honest2 === PRESENCE_SUPPRESS) {
       if (state.cancelled) return;
       state.tier2FiredAt = Date.now();
@@ -1476,6 +1490,46 @@ export class PresenceProxy {
       }
     }
 
+    // A durable context-wall latch outranks the pane tail. The original banner
+    // can scroll away while the session remains unable to answer; reporting
+    // "actively working" in that state is the exact standby-honesty failure.
+    if (this.config.hasContextExhaustionLatch?.(topicId)) {
+      if (this.config.isStuckRecoveryActive?.(state.sessionName)) {
+        this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+        this.persistState(topicId, state);
+        return;
+      }
+      if (this.config.recoverContextExhaustion) {
+        const result = await this.config.recoverContextExhaustion(topicId, state.sessionName);
+        if (result.recovered) {
+          state.tier3FiredAt = Date.now();
+          state.tier3Assessment = 'waiting';
+          state.tier3Summary = 'Latched context exhaustion — auto-recovered';
+          await this.sendProxyMessage(
+            topicId,
+            '🔄 The session was latched at its context limit — recovery has started with recent history.',
+            3,
+          );
+          this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+          this.persistState(topicId, state);
+          this.cleanupState(topicId);
+          return;
+        }
+      }
+      state.tier3FiredAt = Date.now();
+      state.tier3Assessment = 'dead';
+      state.tier3Summary = 'Latched context exhaustion';
+      await this.sendProxyMessage(
+        topicId,
+        `${this.prefix} 5-minute check — This conversation is latched at its context limit and cannot produce another reply until recovery succeeds.`,
+        3,
+      );
+      this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+      this.persistState(topicId, state);
+      this.cleanupState(topicId);
+      return;
+    }
+
     // ── Honest turn-receipts: classify a live-but-failing session ──
     // A session can be ALIVE (child process running) yet failing every turn:
     // rate-limited, policy-wedged, context-wedged, or out of context window.
@@ -1592,8 +1646,20 @@ export class PresenceProxy {
       // Active child processes = working
       assessment = 'working';
       summary = 'Active child processes detected.';
+    } else if (
+      snapshot
+      && looksActivelyWorking(snapshot, this.config.agentFramework)
+      && state.tier2SnapshotHash !== crypto.createHash('sha256').update(snapshot).digest('hex')
+    ) {
+      // An affirmative live framework signal is stronger than an interpretive
+      // model verdict. In-process Codex work has no child process to discover,
+      // so allowing tier 3 to override fresh terminal evidence created false
+      // "stuck" alarms. A frozen live-looking marker is not freshness proof;
+      // unchanged output still proceeds to the stall assessment below.
+      assessment = 'working';
+      summary = 'The session still shows an active-work signal.';
     } else {
-      // No active processes — use LLM to assess
+      // No active processes or deterministic live signal — use LLM to assess.
       try {
         const llmResult = await this.callLlm(
           this.buildTier3Prompt(state, snapshot, processes),

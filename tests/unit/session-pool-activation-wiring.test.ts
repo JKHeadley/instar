@@ -72,6 +72,36 @@ describe('Session Pool activation wiring (§L4)', () => {
     expect(src).toContain('_sessionRouter = new routerMod.SessionRouter(');
   });
 
+  it('confirms a self-placement only after the local delivery tail succeeds', () => {
+    expect(src).toContain('let _confirmLocalSessionPoolClaim: ((sessionKey: string) => boolean) | null = null');
+    expect(src).toContain('return confirmLocalPlacementAfterDelivery({');
+    expect(src).toContain('local claim confirmation errored for topic ${topicId}; ownership outcome will be re-read');
+
+    const liveInject = src.indexOf('const injected = sessionManager.injectTelegramMessage(\n          targetSession');
+    const liveConfirm = src.indexOf('if (injected) confirmLocalSessionPoolClaim();', liveInject);
+    expect(liveInject).toBeGreaterThan(0);
+    expect(liveConfirm).toBeGreaterThan(liveInject);
+
+    const coldSpawn = src.indexOf('spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text');
+    const coldThen = src.indexOf('.then((newSessionName) => {', coldSpawn);
+    const coldConfirm = src.indexOf('confirmLocalSessionPoolClaim();', coldThen);
+    const coldCatch = src.indexOf('}).catch((err) => {', coldThen);
+    expect(coldConfirm).toBeGreaterThan(coldThen);
+    expect(coldConfirm).toBeLessThan(coldCatch);
+  });
+
+  it('does not confirm a self-placement when local respawn rejects', () => {
+    for (const callsite of ['telegram-respawn-context-exhausted', 'telegram-respawn-dead']) {
+      const gate = src.indexOf(`admitLocalSpawn('${callsite}')`);
+      const respawn = src.indexOf('respawnSessionForTopic(', gate);
+      const thenConfirm = src.indexOf('.then(() => confirmLocalSessionPoolClaim())', respawn);
+      const reject = src.indexOf('.catch(err => {', respawn);
+      expect(respawn).toBeGreaterThan(gate);
+      expect(thenConfirm).toBeGreaterThan(respawn);
+      expect(thenConfirm).toBeLessThan(reject);
+    }
+  });
+
   it('the owner-side bridge resumes the local session on a forwarded message, gated + fail-safe', () => {
     const idx = src.indexOf('onAccepted: (cmd) => {');
     expect(idx).toBeGreaterThan(0);

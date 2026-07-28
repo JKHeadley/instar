@@ -32,6 +32,15 @@ export type MeshCommand =
   | { type: 'transfer'; session: string; target: MachineId }
   | { type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number }
   | {
+      /** Signed cross-machine carrier into the existing A2A inbox accept boundary. */
+      type: 'a2a-inbox-deliver';
+      targetAgent: string;
+      text: string;
+      topicId: number;
+      senderAgent: string;
+      senderBotId: string;
+    }
+  | {
       // WS1.2 drain signal (MULTI-MACHINE-SEAMLESSNESS-SPEC): the transfer
       // planner (router authority) tells the CURRENT owner of `session` to
       // drain its live session because a transfer to `target` is in flight.
@@ -72,6 +81,8 @@ export type MeshCommand =
   | { type: 'capacity-report' }
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
+  | { type: 'ssh-bootstrap-advert'; advert: import('./SshBootstrapAdvert.js').SshBootstrapAdvert }
+  | { type: 'ssh-proof-publish'; proof: import('./MutualSshVerifier.js').DirectionalSshProof }
   | {
       // WS5.2 R7a/R7(c) — per-account SPEND-SLICE renewal (account follow-me).
       // OPERATOR-MANDATE-GATED with its OWN `checkCommandRBAC` case — deliberately
@@ -433,6 +444,14 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'state-snapshot':
     case 'pool-view-fetch':
     case 'secret-share':
+    case 'ssh-bootstrap-advert':
+    case 'ssh-proof-publish':
+    case 'a2a-inbox-deliver':
+      // Registered-peer class — any caller here has already passed signed,
+      // recipient-bound, replay-safe machine authentication. a2a-inbox-deliver
+      // gains NO content authority here: the recipient handler re-validates the
+      // target agent and dispatches through the existing A2A marker/role/bot-id
+      // allowlist boundary before accepting it.
       // Read/observe class (or e2e-encrypted) — any registered peer (already
       // proven a registered peer by verifyEnvelope). journal-sync joins this
       // class: it serves/applies own-stream coherence-journal deltas, which are

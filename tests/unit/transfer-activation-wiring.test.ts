@@ -16,16 +16,31 @@ import path from 'node:path';
 describe('server-boot wiring: transfer-by-nickname activation (§L4)', () => {
   const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
 
-  it('constructs the TopicPlacementPinStore + recognizer/planner imports', () => {
+  it('constructs the TopicPlacementPinStore + classifier/planner imports', () => {
     expect(src).toContain("import('../core/TopicPlacementPinStore.js')");
     expect(src).toContain('new pinMod.TopicPlacementPinStore(');
-    expect(src).toContain("import('../core/NicknameCommand.js')");
+    // The keyword recognizer is REPLACED by the LLM move-intent classifier
+    // (docs/specs/nickname-move-intent-llm-rebuild.md). NicknameCommand.js now
+    // only carries the type; the decision comes from MoveIntentClassifier.
+    expect(src).toContain("import('../core/MoveIntentClassifier.js')");
     expect(src).toContain("import('../core/TransferByNickname.js')");
+    // The keyword verb-list decision is GONE from the inbound path (the standard).
+    expect(src).not.toContain('nickMod.recognizeNicknameCommand(');
   });
 
-  it('recognizes the command on inbound + plans the transfer (recognizer → planner)', () => {
-    expect(src).toContain('nickMod.recognizeNicknameCommand(text, knownNicknames)');
+  it('classifies intent via LLM on inbound + plans the transfer (classifier → planner)', () => {
+    expect(src).toContain('moveIntentMod.classifyRelocationIntent(');
+    expect(src).toContain('moveIntentMod.toNicknameCommand(');
     expect(src).toContain('transferMod.planTransferByNickname(');
+  });
+
+  it('is dev-gated + dry-run-first + fail-open (the classifier never hijacks under uncertainty)', () => {
+    // The dev-agent gate resolves the recognizer live-on-dev / dark-fleet.
+    expect(src).toContain('resolveDevAgentGate(_moveIntentCfg?.enabled, config)');
+    // Dark or dry-run → the message passes through untouched.
+    expect(src).toContain('if (!_moveIntentEnabled) return { handled: false };');
+    expect(src).toContain('const _willAct = moveResult.isCommand && !_moveIntentDryRun;');
+    expect(src).toContain('if (!_willAct) return { handled: false };');
   });
 
   it('applies a transfer plan: sets the pin AND releases local ownership so it re-places', () => {

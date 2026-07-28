@@ -170,7 +170,7 @@ export function conflictId(recordKey: string, versions: HlcTimestamp[]): string 
     .map((h) => serializeHlcKey(h));
   const h = createHash('sha256');
   h.update(recordKey);
-  h.update(' ');
+  h.update('\u0000');
   h.update(sortedKeys.join(''));
   return h.digest('hex').slice(0, 32);
 }

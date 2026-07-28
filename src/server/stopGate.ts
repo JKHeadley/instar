@@ -231,6 +231,14 @@ export interface HotPathState {
    * state where manual merging is recreated manual work.
    */
   greenPrBlock?: GreenPrBlock | null;
+  /**
+   * Turn-End Self-Deferral Guard (Phase A) — whether the dev-gated
+   * `monitoring.selfDeferralGuard` guard is on for this agent. Set by the
+   * hot-path ROUTE (which holds the config), NOT by getHotPathState. The
+   * stop-gate hook reads this to decide whether to do the (otherwise wasted)
+   * transcript tail-read for user-turn context; when false it skips it entirely.
+   */
+  selfDeferralGuardOn?: boolean;
 }
 
 export interface GreenPrBlock {

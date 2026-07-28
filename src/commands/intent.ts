@@ -429,6 +429,19 @@ export async function intentDrift(options: IntentDriftOptions): Promise<void> {
 
   // Alignment score
   const alignment = detector.alignmentScore();
+
+  if (!alignment.assessable) {
+    // Nothing was measured, so print the reason instead of a fabricated grade.
+    // This branch exists because the previous code rendered the empty case as a
+    // red "0/100 (F)" and dropped `summary` — which read as "assessed, and
+    // catastrophic" rather than "no data". The journal was empty for its entire
+    // life, so that red F was the only thing this surface had ever shown.
+    console.log(`  Alignment Score: ${pc.dim('not assessed')}`);
+    console.log(`    ${pc.dim(alignment.summary)}`);
+    console.log();
+    return;
+  }
+
   const gradeColor = alignment.grade === 'A' ? pc.green
     : alignment.grade === 'B' ? pc.cyan
       : alignment.grade === 'C' ? pc.yellow

@@ -1,0 +1,20 @@
+{
+  "ts": "2026-07-25T07:49:03.369Z",
+  "slug": "tone-gate-advisory-migration",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/TelegramRelay.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 1099,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

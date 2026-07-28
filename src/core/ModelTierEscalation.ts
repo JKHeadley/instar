@@ -174,6 +174,13 @@ export const KNOWN_CODEX_MODEL_IDS = [
   'gpt-5.4',
   'gpt-5.4-mini',
   'gpt-5.5',
+  // GPT-5.6 family — GA on the codex subscription 2026-07-09, live-verified on
+  // codex CLI >= 0.144.0 (older CLIs 400 with "requires a newer version"). The
+  // -pro variants are deliberately EXCLUDED (plan-gated + pricier — future
+  // follow-up). Keep in lockstep with CODEX_MODELS_SUBSCRIPTION (routes.ts).
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
 ] as const;
 
 export const KNOWN_MODEL_IDS: Record<EscalationFramework, readonly string[]> = {

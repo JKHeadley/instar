@@ -1,11 +1,12 @@
 /**
- * QuotaCollector — TypeScript module for collecting Claude Code quota data.
+ * QuotaCollector — TypeScript module for collecting framework quota data.
  *
  * Replaces the Python quota-collector.py with a native TypeScript implementation
- * suitable for the Instar npm package. Two-source strategy:
+ * suitable for the Instar npm package. Framework strategy:
  *
  *   1. PRIMARY: Anthropic OAuth API (/api/oauth/usage + /api/oauth/profile)
  *   2. FALLBACK: JSONL conversation file parsing (estimated, cannot trigger migrations)
+ *   3. CODEX: authoritative primary/secondary windows from local rollout data
  *
  * Features:
  * - Retry/backoff with jitter for API resilience
@@ -40,6 +41,10 @@ import type { CredentialProvider, ClaudeCredentials } from './CredentialProvider
 import { redactToken, redactEmail } from './CredentialProvider.js';
 import type { QuotaTracker } from './QuotaTracker.js';
 import { DegradationReporter } from './DegradationReporter.js';
+import {
+  readLatestCodexUsage,
+  type CodexUsageSnapshot,
+} from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -51,6 +56,10 @@ export interface RetryConfig {
 }
 
 export interface CollectorConfig {
+  /** Framework-specific collection path. Defaults to Claude for compatibility. */
+  framework?: 'claude-code' | 'codex-cli';
+  /** Injectable Codex rollout reader for deterministic tests. */
+  codexUsageReader?: () => Promise<CodexUsageSnapshot | null>;
   /** Account registry path (for multi-account polling) */
   registryPath?: string;
   /** Enable OAuth API collection (default: true) */
@@ -117,7 +126,7 @@ export interface OAuthProfileResponse {
 
 export interface CollectionResult {
   success: boolean;
-  dataSource: 'oauth' | 'jsonl-fallback' | 'none';
+  dataSource: 'oauth' | 'jsonl-fallback' | 'codex-rollout' | 'none';
   dataConfidence: 'authoritative' | 'estimated' | 'none';
   state: QuotaState | null;
   oauth?: {
@@ -529,7 +538,7 @@ export class JsonlParser {
 // ── QuotaCollector ───────────────────────────────────────────────────
 
 export class QuotaCollector extends EventEmitter {
-  private provider: CredentialProvider;
+  private provider: CredentialProvider | null;
   private tracker: QuotaTracker;
   private config: Required<Pick<CollectorConfig, 'oauthEnabled' | 'staleAfterMs' | 'concurrencyLimit' | 'requestBudgetPer5Min'>> & CollectorConfig;
   private retryConfig: RetryConfig;
@@ -550,7 +559,7 @@ export class QuotaCollector extends EventEmitter {
   private static readonly OAUTH_BACKOFF_MS = 30 * 60 * 1000; // 30 minutes
 
   constructor(
-    provider: CredentialProvider,
+    provider: CredentialProvider | null,
     tracker: QuotaTracker,
     config: CollectorConfig = {},
   ) {
@@ -594,7 +603,69 @@ export class QuotaCollector extends EventEmitter {
     };
 
     try {
+      if (this.config.framework === 'codex-cli') {
+        let usage: CodexUsageSnapshot | null = null;
+        try {
+          usage = await (this.config.codexUsageReader ?? readLatestCodexUsage)();
+        } catch (err) {
+          errors.push(`Codex rollout quota read failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        const capturedAtMs = usage?.capturedAt ? new Date(usage.capturedAt).getTime() : NaN;
+        const now = Date.now();
+        const capturedAtTrustworthy = Number.isFinite(capturedAtMs) &&
+          capturedAtMs <= now + 5 * 60 * 1000 &&
+          now - capturedAtMs <= this.config.staleAfterMs;
+        if (usage?.primary && usage.secondary && capturedAtTrustworthy) {
+          const state: QuotaState = {
+            usagePercent: usage.rateLimitReachedType === 'secondary'
+              ? 100
+              : usage.secondary.usedPercent,
+            fiveHourPercent: usage.rateLimitReachedType === 'primary'
+              ? 100
+              : usage.primary.usedPercent,
+            source: 'codex-rollout',
+            model: usage.model ?? undefined,
+            blockReason: usage.rateLimitReachedType
+              ? `Codex rate limit reached: ${usage.rateLimitReachedType}`
+              : undefined,
+            lastUpdated: usage.capturedAt!,
+            recommendation: usage.rateLimitReachedType ? 'stop' : undefined,
+          };
+          result = {
+            ...result,
+            success: true,
+            dataSource: 'codex-rollout',
+            dataConfidence: 'authoritative',
+            state,
+          };
+          this.tracker.updateState(state);
+          this.poller.update(state.usagePercent, state.fiveHourPercent);
+        } else {
+          if (usage && !capturedAtTrustworthy) errors.push('Codex rollout quota reading has no trustworthy capture time');
+          else if (usage) errors.push('Codex rollout quota reading is incomplete');
+          else if (errors.length === 0) errors.push('Codex rollout quota reading unavailable');
+          // Persist uncertainty so a previously healthy cached/file snapshot
+          // cannot keep the solo Codex agent fail-open after the reader breaks.
+          const state: QuotaState = {
+            usagePercent: 0,
+            source: 'codex-rollout',
+            quotaUnknown: true,
+            blockReason: errors[errors.length - 1],
+            lastUpdated: new Date().toISOString(),
+            recommendation: 'stop',
+          };
+          result.state = state;
+          this.tracker.updateState(state);
+        }
+        result.durationMs = Date.now() - startTime;
+        result.errors = errors;
+        this.lastCollectionAt = new Date();
+        this.lastCollectionDurationMs = result.durationMs;
+        return result;
+      }
+
       // Step 1: Read credentials
+      if (!this.provider) throw new Error('Claude credential provider unavailable');
       const creds = await this.provider.readCredentials();
       const tokenState = classifyToken(creds);
 

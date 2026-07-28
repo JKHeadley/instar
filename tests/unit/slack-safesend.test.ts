@@ -263,11 +263,11 @@ describe('Wiring-integrity ratchet — every raw socket send funnels through _sa
     ).toEqual([]);
   });
 
-  it('all four logical callsites reference _safeSend', () => {
-    // queueOutbound, the ack, the liveness probe, and the drain.
+  it('all three logical send callsites reference _safeSend', () => {
+    // queueOutbound, the ack, and the drain. Dead-silence recovery reconnects
+    // instead of sending an undocumented application-level ping.
     expect(socketClientSource).toMatch(/queueOutbound\(data: string\): void \{[\s\S]*?this\._safeSend\(data, 'outbound'\)/);
     expect(socketClientSource).toMatch(/this\._safeSend\(JSON\.stringify\(\{ envelope_id: envelope\.envelope_id \}\), 'ack'\)/);
-    expect(socketClientSource).toMatch(/this\._safeSend\('\{"type":"ping"\}', 'liveness-probe', true\)/);
     expect(socketClientSource).toMatch(/_drainQueue\(\): void \{[\s\S]*?this\._safeSend\(pending\[k\]\.data, 'drain'\)/);
   });
 });

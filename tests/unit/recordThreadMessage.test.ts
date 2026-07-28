@@ -10,6 +10,8 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
+
+// canonical-migration-validator: threadline-inbound-canonical-store@1
 import os from 'node:os';
 import path from 'node:path';
 import { ThreadLog } from '../../src/threadline/ThreadLog.js';

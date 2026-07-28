@@ -89,6 +89,7 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | POST | `/intent/journal` | Record a decision |
 | GET | `/intent/drift` | Detect behavioral drift |
 | GET | `/intent/alignment` | Alignment score |
+| GET | `/goal-realignment` | Bounded dry-run `GoalRealignment` status: priority intake, source completeness, and latest review verdict (development agents only) |
 | GET | `/project-map` | Auto-generated project territory map |
 | POST | `/coherence/check` | Pre-action coherence verification |
 
@@ -127,6 +128,8 @@ The endpoints behind the [EXO 3.0 Alignment](/features/exo3/) capabilities. See 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/capabilities` | Feature guide and metadata |
+| GET | `/capability-registry` | Read the advisory local capability projection; distinguishes dark, unavailable, unobserved, stale, and classified evidence |
+| GET | `/capability-registry/health` | Read advisory capability-registry observation counts and status measurements |
 | GET | `/events` | Query events (`?limit=50&since=24&type=`) |
 | GET | `/quota` | Quota usage + recommendation |
 | GET | `/agents` | List all agents on this machine |
@@ -348,6 +351,15 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /context/dispatch`
 - `GET /context/working-memory`
 
+## /decision-quality
+- `GET /decision-quality`
+- `POST /decision-quality/grade-pass`
+
+## /benchmark-divergence
+- `GET /benchmark-divergence`
+- `POST /benchmark-divergence/analyze`
+- `GET /benchmark-divergence/rollup-aggregates`
+
 ## /delivery-queue
 - `GET /delivery-queue`
 
@@ -515,6 +527,7 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /internal/stop-gate/evaluate`
 - `POST /internal/stop-gate/kill-switch`
 - `POST /internal/stop-gate/mode`
+- `POST /internal/stop-gate/reset-breaker` — clear the authenticated authority breaker after provider repair.
 - `POST /internal/telegram-callback`
 - `POST /internal/telegram-forward`
 
@@ -624,6 +637,9 @@ never the agent. With no mandate issued, every evaluation denies. Every decision
 - `POST /pool/lease-handback/latch` — write the operator-flip latch marker (the captain-flip playbook's POST step; suppresses automated hand-back — the human always wins)
 - `DELETE /pool/lease-handback/latch` — clear the latch early (PIN-gated: re-enables automation against a human decision, so the dashboard PIN is required)
 - `GET /pool/poll-cache` — the shared per-peer pool-scope poll cache (WS4.4(f))
+- `GET /pool/duplicate-reconciler` — ownership-gated-spawn unified status: duplicate-reconciler posture + substrate readiness, owner-dark notice episodes, spawn-admission counters, breaker state, audit-log locations (503 while dark; see [Ownership-Gated Spawn](/features/ownership-gated-spawn/))
+- `GET /pool/ownership-view?key=<topic>` — THIS machine's own ownership record for a conversation (proxy-free; the reconciler's peer-echo verification read)
+- `GET /judgment-provenance` — redacted judgment-provenance decision rows (`?limit=`, `?sinceHours=`, `?scope=pool` merges peers' redacted rows as clamped untrusted data; full context never leaves the deciding machine)
 
 ## /project-map
 - `GET /project-map`
@@ -949,6 +965,7 @@ user-usable.
 | POST | `/subscription-pool/proactive-swap/check` | Run one proactive pass now (refresh the poll if near the wall, then pre-emptively swap at-pressure sessions). The deterministic "show me it works" lever. |
 | POST | `/subscription-pool/enroll` | Start a mobile-first new-account login. Body: `id`, `label`, `provider`, `framework`, optional `kind`, `configHome`. Returns the pending login (public code/URL + TTL — never a token). |
 | GET | `/subscription-pool/pending-logins` | The "Pending Logins" surface — active logins awaiting approval (code/URL + TTL). |
+| POST | `/subscription-pool/enroll/:id/cancel` | Safely abandon a pending or expired login and best-effort stop its waiting login pane. Completed/already-abandoned logins return idempotently; an in-flight completion returns `409`. |
 | POST | `/subscription-pool/enroll/:id/complete` | Mark a login completed once the operator approved + the account enrolled. |
 | POST | `/subscription-pool/enroll/reissue-expired` | Sweep + auto-reissue every expired login with a fresh code/URL (the background tick calls the same path). |
 | GET | `/subscription-pool/in-use` | Which pooled accounts are currently serving a live session. |
@@ -1047,3 +1064,10 @@ The Slack org permission gate (dark/observe-only by default — these routes are
 ## /whoami
 - `GET /whoami`
 
+## /work-queue
+
+The unified work-intake and prioritization registry (`WorkQueue` — see the Work Intake &
+Prioritization Queue feature page). Development-agent gated; 503 when dark.
+
+- `GET /work-queue` — the current deterministic ranked list of normalized work items.
+- `POST /work-queue/rescore` — recompute the ranking from live sources (pure compute, no durable writes).

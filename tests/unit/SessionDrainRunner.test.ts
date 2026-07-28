@@ -67,6 +67,7 @@ describe('SessionDrainRunner — WS1.2 owner-side bounded drain', () => {
     const h = harness({ quietAfterPolls: 2 });
     const out = await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
     expect(out.status).toBe('drained');
+    expect(out.claimLanded).toBe(true);
     expect(out.autonomousRunSuspended).toBe(true);
     expect(h.casCalls[0]).toEqual({ type: 'transfer', to: 'm_mini', drain: true });
     expect(h.suspend).toHaveBeenCalledWith('13481', 'm_mini');
@@ -104,6 +105,25 @@ describe('SessionDrainRunner — WS1.2 owner-side bounded drain', () => {
     const out = await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
     expect(out.status).toBe('aborted-emergency-stop');
     expect(h.terminate).not.toHaveBeenCalled();
+  });
+
+  it('emergency stop arriving during terminate aborts before the target claim', async () => {
+    let stopped = false;
+    const h = harness({
+      quietAfterPolls: 0,
+      deps: {
+        emergencyStopActive: () => stopped,
+        terminateSession: vi.fn(async () => {
+          stopped = true;
+          return { terminated: true };
+        }),
+      },
+    });
+    const out = await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
+    expect(out.status).toBe('aborted-emergency-stop');
+    expect(h.casCalls.at(-1)).toEqual({ type: 'abort-transfer', machineId: 'm_self' });
+    expect(h.casCalls.some(a => a.type === 'claim')).toBe(false);
+    expect(out.claimLanded).not.toBe(true);
   });
 
   it('refuses when this machine is not the owner', async () => {

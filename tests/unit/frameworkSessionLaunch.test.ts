@@ -15,6 +15,7 @@ import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
   resolveInteractiveFramework,
+  resolveInteractiveLaunchModel,
   resolveModelForFramework,
 } from '../../src/core/frameworkSessionLaunch.js';
 import { __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
@@ -151,6 +152,12 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
   });
 
   describe('codex-cli', () => {
+    it('reports the same concrete default model the interactive builder launches', () => {
+      expect(resolveInteractiveLaunchModel('codex-cli', undefined)).toBe('gpt-5.5');
+      expect(resolveInteractiveLaunchModel('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
+      expect(resolveInteractiveLaunchModel('codex-cli', undefined, 'ollama')).toBe('llama3.2:latest');
+    });
+
     it('passes --model gpt-5.5 + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
       const spec = buildInteractiveLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',

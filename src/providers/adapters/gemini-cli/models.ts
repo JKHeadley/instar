@@ -8,10 +8,11 @@
  * `~/.gemini` OAuth):
  *   - `gemini -m gemini-2.5-flash "<prompt>"` → clean stdout, exit 0. This
  *     is the verified-working default and the `fast`/`balanced` tier.
- *   - `gemini-2.5-pro` is the capable/heavy tier (the `route.ts` KNOWN_MODELS
- *     list already names it). It is NOT re-probed here — the exact ids beyond
- *     the verified `gemini-2.5-flash` are a §6 build-time discovery item, kept
- *     in sync with `resolveModelForFramework('gemini-cli', …)`.
+ *   - `gemini-3.1-pro-preview` is the capable/heavy tier (current top usable Pro,
+ *     verified reachable 2026-07-03 via the gemini CLI / OpenRouter / paid key).
+ *     `gemini-2.5-pro` remains a recognized model id — still spawnable and a
+ *     capacity fallback — kept in sync with the model-registry freshness manifest
+ *     and `resolveModelForFramework('gemini-cli', …)`.
  *
  * Drift risk: model availability changes per Gemini version. This map is a
  * Rule-3 surface; the authoritative-name check belongs in a dedicated canary
@@ -23,6 +24,7 @@ import type { ModelTier } from '../../types.js';
 export const KNOWN_GEMINI_MODELS = [
   'gemini-2.5-flash',
   'gemini-2.5-pro',
+  'gemini-3.1-pro-preview',
 ] as const;
 
 export type KnownGeminiModel = typeof KNOWN_GEMINI_MODELS[number];
@@ -37,7 +39,7 @@ const TIER_TO_MODEL: Record<ModelTier, KnownGeminiModel> = {
   // medium — balanced; same flash model (verified one-shot path).
   balanced: 'gemini-2.5-flash',
   // heavy — frontier; the pro tier for hard problems + main chat.
-  capable: 'gemini-2.5-pro',
+  capable: 'gemini-3.1-pro-preview',
 };
 
 /** The default model when no tier or id is supplied. */

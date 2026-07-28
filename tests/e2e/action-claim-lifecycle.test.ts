@@ -68,3 +68,66 @@ describe('POST /action-claim/observe — (E2E over HTTP)', () => {
     expect(tracker.getActive()).toHaveLength(0);
   });
 });
+
+// slack-followthrough-generalization §9.3 — the Slack (minted-id) lane is ALIVE on
+// the production-init path: a time-boxed promise on a NEGATIVE minted id, with a
+// valid spawn-env bind token, opens a durably-bound, beacon-armed commitment.
+describe('POST /action-claim/observe — Slack minted-id lane is ALIVE (E2E over HTTP)', () => {
+  let server: TestServer;
+  let tmpDir: string;
+  let tracker: CommitmentTracker;
+  let token: string;
+  const MINTED = -4242;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acl-slack-e2e-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'config.json'),
+      JSON.stringify({ authToken: 'test', port: 0, developmentAgent: true, messaging: { actionClaim: { enabled: true, slack: { dryRun: false } } } }),
+    );
+    const liveConfig = new LiveConfig(tmpDir);
+    const conversationBinder = {
+      bind: (id: number) => ({ ok: true as const, boundTuple: { platform: 'slack' as const, channelId: 'C_TEST', threadTs: String(id) } }),
+      release: () => {},
+    };
+    tracker = new CommitmentTracker({ stateDir: tmpDir, liveConfig, originMachineId: 'm_owner', conversationBinder });
+    const { createConversationBindAuth } = await import('../../src/core/conversationBindToken.js');
+    const auth = createConversationBindAuth(tmpDir);
+    token = auth.mint('agent-slack-thread', [MINTED]);
+    const app = express();
+    app.use(express.json());
+    const ctx: any = {
+      config: { authToken: 'test', stateDir: tmpDir, port: 0, developmentAgent: true },
+      liveConfig, commitmentTracker: tracker, conversationBindAuth: auth, telegram: null, startTime: new Date(),
+    };
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+  });
+  afterEach(async () => { await server?.close(); fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('FEATURE IS ALIVE: a minted-id time-promise + valid token opens a bound, beacon-armed commitment', async () => {
+    const res = await fetch(server.url + '/action-claim/observe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test', 'X-Instar-Bind-Token': token },
+      body: JSON.stringify({ message: "I'll post the check-in note here in about 5 minutes.", topicId: MINTED }),
+    });
+    expect(res.status).toBe(200); // not 404/503 — alive
+    const body = await res.json();
+    expect(body).toMatchObject({ observed: true, registered: true, lane: 'time', beaconEnabled: true });
+    const open = tracker.getActive().filter((c) => c.topicId === MINTED);
+    expect(open).toHaveLength(1);
+    expect(open[0].externalKey).toMatch(/^timepromise:/);
+    expect(open[0].boundTuple).toBeTruthy();
+    expect(open[0].beaconEnabled).toBe(true);
+  });
+
+  it('the same minted-id promise WITHOUT a token is refused 403 (fail-closed), no row', async () => {
+    const res = await fetch(server.url + '/action-claim/observe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test' },
+      body: JSON.stringify({ message: "I'll post the note here in about 5 minutes.", topicId: MINTED }),
+    });
+    expect(res.status).toBe(403);
+    expect(tracker.getActive()).toHaveLength(0);
+  });
+});

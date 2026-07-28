@@ -62,8 +62,10 @@ describe('Verified Pairing — verification-failed burst invariant (production-d
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vp-burst-'));
-    // No guard config — pin the SHIPPED defaults.
-    adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100 }, tmpDir);
+    // LEGACY per-item mode — these tests pin the per-item guard semantics
+    // (per-peer topics + HIGH never coalesced). Under the shipped single-topic
+    // default, every alert lands in the ONE "🔔 Attention" hub instead.
+    adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, attentionRouting: { mode: 'per-item' } }, tmpDir);
   });
   afterEach(async () => {
     await adapter.stop();

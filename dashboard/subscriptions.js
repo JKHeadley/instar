@@ -71,6 +71,14 @@ export function friendlyStatus(status) {
   return STATUS_WORDS[typeof status === 'string' ? status : ''] || 'Unknown';
 }
 
+/** Credential identity is authoritative over enrollment bookkeeping. */
+export function effectiveAccountStatus(account) {
+  if (account && (account.identityDrifted === true || account.identityDrift?.repairState === 'owner-relogin-required')) {
+    return 'needs-reauth';
+  }
+  return account && account.status;
+}
+
 const PROVIDER_WORDS = { anthropic: 'Claude', openai: 'Codex', 'github-copilot': 'Copilot', google: 'Gemini' };
 export function friendlyProvider(provider) {
   return PROVIDER_WORDS[typeof provider === 'string' ? provider : ''] || sanitizeForDisplay(provider, 'label');
@@ -88,6 +96,63 @@ export function countdown(iso, now = Date.now(), { expiredWord = 'expired' } = {
   if (hr >= 1) return `${hr}h ${min}m`;
   if (min >= 1) return `${min}m`;
   return `${sec}s`;
+}
+
+// ── Interaction-hold (Dashboard UX Standard F9) ─────────────────────────────
+// THE RULE (topic 29836 case study D1): a background refresh must NEVER replace a
+// surface with an open interaction. An open interaction is (a) an element marked
+// data-interaction-open (an enrollment episode the controller is driving), (b) a
+// focused text-entry element, or (c) a dirty (partially-typed) field. While one is
+// open, the periodic poll MERGES server state into the view (countdowns, status
+// lines) instead of rebuilding the DOM out from under the operator's fingers. The
+// hold releases when the flow reaches a terminal state (verified / failed /
+// cancelled / expired) or the operator backs out.
+export function hasOpenInteraction(doc, root) {
+  if (!root || typeof root.querySelector !== 'function') return false;
+  if (root.querySelector('[data-interaction-open]')) return true;
+  const active = doc && doc.activeElement;
+  if (active && root.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName || '')) return true;
+  for (const field of root.querySelectorAll('input, textarea')) {
+    if (typeof field.value === 'string' && field.value !== '') return true;
+  }
+  return false;
+}
+
+/** The F9 merge arm: patch every countdown element ([data-ttl-expires]) under `root`
+ *  from the live clock WITHOUT rebuilding anything. Safe on held and unheld DOM.
+ *  Returns the number of elements patched. */
+export function updateCountdowns(doc, root, now = Date.now()) {
+  if (!root || typeof root.querySelectorAll !== 'function') return 0;
+  let patched = 0;
+  for (const node of root.querySelectorAll('[data-ttl-expires]')) {
+    const left = countdown(node.getAttribute('data-ttl-expires'), now);
+    node.textContent = left === 'expired'
+      ? 'Sign-in link expired — start again'
+      : (left ? `Link expires in ${left}` : '');
+    patched++;
+  }
+  return patched;
+}
+
+/** Plain-language explanation for a HELD (identity-refused) enrollment, naming BOTH
+ *  accounts when the gate verdict carries them (topic 29836 D3). Fail-closed reasons
+ *  (oracle unavailable / no expected email) get honest "couldn't confirm" copy. */
+export function heldExplanation(expected, got, reason, { short = false } = {}) {
+  const exp = sanitizeForDisplay(expected, 'label');
+  const g = sanitizeForDisplay(got, 'label');
+  if (exp && g) {
+    return short
+      ? `That sign-in was ${g} — this slot needs ${exp}.`
+      : `That code signed in ${g} — this slot needs ${exp}. The account was NOT enrolled; sign in again with the right account.`;
+  }
+  if (reason === 'missing-completed-email') {
+    return short
+      ? 'Couldn’t confirm which account that was — not enrolled.'
+      : 'Signed in, but I couldn’t confirm which account that sign-in belongs to — so it was NOT enrolled (fail-closed). Try again, or check the attention queue.';
+  }
+  return short
+    ? 'The account didn’t verify — not enrolled.'
+    : 'Signed in, but the account couldn’t be verified against what you approved — so it was NOT enrolled.';
 }
 
 /** A coarse "N ago" for a PAST ISO timestamp (token-refresh recency). '' if invalid. */
@@ -147,7 +212,7 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     const head = el(doc, 'div', 'sub-account-head');
     head.appendChild(el(doc, 'span', 'sub-account-nick', sanitizeForDisplay(a && a.nickname, 'label')));
     if (inUse) head.appendChild(el(doc, 'span', 'sub-account-inuse-badge', '● In use now'));
-    head.appendChild(el(doc, 'span', 'sub-account-status', friendlyStatus(a && a.status)));
+    head.appendChild(el(doc, 'span', 'sub-account-status', friendlyStatus(effectiveAccountStatus(a))));
     card.appendChild(head);
     card.appendChild(el(doc, 'div', 'sub-account-meta',
       `${friendlyProvider(a && a.provider)} · ${sanitizeForDisplay(a && a.framework, 'label')}`));
@@ -155,9 +220,10 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
       card.appendChild(el(doc, 'div', 'sub-account-email', sanitizeForDisplay(a.email, 'label')));
     }
     const q = (a && a.lastQuota) || null;
-    if (q && (q.fiveHour || q.sevenDay)) {
+    if (q && (q.fiveHour || q.sevenDay || q.fable)) {
       if (q.fiveHour) card.appendChild(quotaBar(doc, '5-hour', q.fiveHour.utilizationPct, q.fiveHour.resetsAt, now));
       if (q.sevenDay) card.appendChild(quotaBar(doc, 'Weekly', q.sevenDay.utilizationPct, q.sevenDay.resetsAt, now));
+      if (q.fable) card.appendChild(quotaBar(doc, 'Fable 5', q.fable.utilizationPct, q.fable.resetsAt, now));
     } else {
       card.appendChild(el(doc, 'div', 'sub-account-noquota', 'No quota reading yet.'));
     }
@@ -262,11 +328,38 @@ function trustedLoginUrl(raw) {
   } catch { return null; }
 }
 
-export function renderPendingLogins(doc, target, logins, now = Date.now()) {
+/** Explicit terminal-outcome card for the pending panel (topic 29836 D4 — completion
+ *  must never be a vanishing line). `o` is a client-recorded outcome:
+ *  { kind:'validated'|'held'|'expired', accountId, machineId, machineNickname?, email?,
+ *    expected?, got?, reason? }. Static glyphs are literals (never dynamic data). */
+export function renderOutcomeCard(doc, o) {
+  const isDone = o && o.kind === 'validated';
+  const row = el(doc, 'div', isDone ? 'sub-pending sub-pending-done' : 'sub-pending sub-pending-failed');
+  const who = sanitizeForDisplay((o && (o.email || o.accountId)) || 'The account', 'label');
+  const machine = sanitizeForDisplay((o && (o.machineNickname || o.machineId)) || 'the machine', 'label');
+  if (isDone) {
+    row.appendChild(el(doc, 'div', 'sub-pending-done-head', '✓ Done'));
+    row.appendChild(el(doc, 'div', 'sub-pending-outcome-body', `${who} is now set up on ${machine}.`));
+  } else if (o && o.kind === 'held') {
+    row.appendChild(el(doc, 'div', 'sub-pending-failed-head', '✗ Not enrolled — the account didn’t match'));
+    row.appendChild(el(doc, 'div', 'sub-pending-outcome-body', heldExplanation(o.expected, o.got, o.reason)));
+  } else {
+    row.appendChild(el(doc, 'div', 'sub-pending-failed-head', '✗ Sign-in link expired'));
+    row.appendChild(el(doc, 'div', 'sub-pending-outcome-body',
+      `The sign-in for ${who} on ${machine} expired before it finished — start it again from the grid above.`));
+  }
+  return row;
+}
+
+export function renderPendingLogins(doc, target, logins, now = Date.now(), outcomes = []) {
   if (!target) return;
   target.replaceChildren();
+  // Client-observed terminal outcomes lead the panel (explicit completed/failed cards —
+  // never a vanishing line; topic 29836 D4). Newest first, capped by the controller.
+  const cards = Array.isArray(outcomes) ? outcomes : [];
+  for (const o of cards) target.appendChild(renderOutcomeCard(doc, o));
   if (!Array.isArray(logins) || logins.length === 0) {
-    target.appendChild(el(doc, 'div', 'sub-empty', 'No logins waiting for approval.'));
+    if (cards.length === 0) target.appendChild(el(doc, 'div', 'sub-empty', 'No logins waiting for approval.'));
     return;
   }
   for (const l of logins) {
@@ -275,13 +368,37 @@ export function renderPendingLogins(doc, target, logins, now = Date.now()) {
     row.setAttribute('data-login-id', sanitizeForDisplay(l && l.id, 'label'));
     if (l && (l.machineId || l.machineNickname)) row.setAttribute('data-machine-id', sanitizeForDisplay(l.machineId, 'label'));
 
-    // Lead with a plain-language headline naming what to do + where (machine).
-    const machine = sanitizeForDisplay(l && (l.machineNickname || l.machineId), 'label');
-    const who = sanitizeForDisplay(l && l.label, 'label');
+    // Lead with a plain-language headline naming what to do + where. Wording floors (D5):
+    // the ACCOUNT is shown by its email when known (the label can be an internal nickname
+    // like "Justin"); the MACHINE by nickname, NEVER a raw m_<hex> machine id.
+    const machine = friendlyMachine(l && l.machineNickname, l && l.machineId);
+    const who = sanitizeForDisplay(l && (l.expectedEmail || l.email || l.label), 'label');
+
+    // D5 record ⟂ pane liveness: a login whose sign-in window is GONE (paneAlive === false)
+    // must not present as submittable — no link, no code input; an explicit needs-restart
+    // card pointing at the working restart affordance (the grid's Retry) instead.
+    if (l && l.paneAlive === false) {
+      row.setAttribute('class', 'sub-pending sub-pending-failed');
+      row.appendChild(el(doc, 'div', 'sub-pending-failed-head',
+        machine ? `✗ This sign-in can’t finish — its window on ${machine} closed` : '✗ This sign-in can’t finish — its window closed'));
+      row.appendChild(el(doc, 'div', 'sub-pending-outcome-body',
+        `Start ${who || 'it'} again from the “Accounts on each machine” grid above — tapping Retry starts a fresh sign-in.`));
+      target.appendChild(row);
+      continue;
+    }
+
     const headline = machine
       ? `Sign in to finish setting up ${who} on ${machine}`
       : `Sign in to finish setting up ${who}`;
     row.appendChild(el(doc, 'div', 'sub-pending-headline', headline));
+
+    // Wrong-account hazard (topic 29836 D3): state prominently, BEFORE the link, which
+    // account the provider's OAuth page MUST show — the page opens in whatever login
+    // state the browser already has, and nothing else warns.
+    if (l && l.expectedEmail) {
+      row.appendChild(el(doc, 'div', 'sub-pending-expected',
+        `The sign-in page must show ${sanitizeForDisplay(l.expectedEmail, 'label')} — if it shows a different account, tap “Switch account” first.`));
+    }
 
     // The PRIMARY action: one tappable "Sign in" link to the provider's own OAuth URL.
     // Falls back to copy-text only if the URL isn't a trusted provider sign-in host.
@@ -319,9 +436,14 @@ export function renderPendingLogins(doc, target, logins, now = Date.now()) {
       row.appendChild(submit);
     }
 
-    // One short secondary line: the TTL, and the flow notice only if present (trimmed).
+    // One short secondary line: the TTL (patched live by updateCountdowns between
+    // rebuilds — the F9 merge arm), and the flow notice only if present (trimmed).
     const ttl = l && l.ttlExpiresAt ? countdown(l.ttlExpiresAt, now) : '';
-    if (ttl) row.appendChild(el(doc, 'div', 'sub-pending-ttl', `Link expires in ${ttl}`));
+    if (ttl) {
+      const ttlEl = el(doc, 'div', 'sub-pending-ttl', ttl === 'expired' ? 'Sign-in link expired — start again' : `Link expires in ${ttl}`);
+      ttlEl.setAttribute('data-ttl-expires', sanitizeForDisplay(l.ttlExpiresAt, 'label'));
+      row.appendChild(ttlEl);
+    }
     if (l && l.notice) {
       row.appendChild(el(doc, 'div', 'sub-pending-notice', sanitizeForDisplay(l.notice, 'summary')));
     }
@@ -349,6 +471,7 @@ export function renderPendingLogins(doc, target, logins, now = Date.now()) {
 /** Pivot the pool-scope + pending-scope bodies into a grid model. Pure + testable. */
 export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
   const accountRows = (poolScope && Array.isArray(poolScope.accounts)) ? poolScope.accounts : [];
+  const gapRows = (poolScope && Array.isArray(poolScope.emailGaps)) ? poolScope.emailGaps : [];
   const pendingRows = (pendingScope && Array.isArray(pendingScope.logins)) ? pendingScope.logins : [];
   const failed = (poolScope && poolScope.pool && Array.isArray(poolScope.pool.failed)) ? poolScope.pool.failed : [];
   const selfMachineId = (poolScope && poolScope.pool && poolScope.pool.selfMachineId) || null;
@@ -362,6 +485,15 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     const mid = a && a.machineId;
     if (!mid || offlineMachineIds.has(mid)) continue;
     if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: (a.machineNickname || mid), offline: false });
+  }
+  for (const gap of gapRows) {
+    const mid = gap && gap.machineId;
+    if (!mid || offlineMachineIds.has(mid)) continue;
+    if (!machines.has(mid)) machines.set(mid, {
+      machineId: mid,
+      nickname: gap.machineNickname || mid,
+      offline: false,
+    });
   }
   for (const f of failed) {
     const mid = f && f.machineId;
@@ -378,6 +510,13 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     if (!accounts.has(id)) accounts.set(id, { accountId: id, email: a.email || id });
     else if (!accounts.get(id).email && a.email) accounts.get(id).email = a.email;
   }
+  for (const gap of gapRows) {
+    const id = gap && gap.accountId;
+    if (id && !accounts.has(id)) accounts.set(id, {
+      accountId: id,
+      email: gap.nickname || id,
+    });
+  }
   // A pending matrix login can reference an account not yet in any pool row — surface its row too.
   for (const l of pendingRows) {
     const id = l && l.id;
@@ -389,13 +528,29 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
   for (const a of accountRows) {
     const mid = a && a.machineId;
     if (!a || !a.id || !mid || offlineMachineIds.has(mid)) continue;
-    cellStatus.set(`${a.id}::${mid}`, a.status === 'needs-reauth' ? 'needs-reauth' : (a.status === 'active' ? 'active' : 'other'));
+    const status = effectiveAccountStatus(a);
+    const key = `${a.id}::${mid}`;
+    const next = status === 'needs-reauth' ? 'needs-reauth' : (status === 'active' ? 'active' : 'other');
+    // Pool reads may contain more than one observation for the same account/machine.
+    // Safety state is monotonic within a render: a later stale Active row must never
+    // overwrite a live identity-drift verdict.
+    const prior = cellStatus.get(key);
+    cellStatus.set(key, prior === 'needs-reauth' || next === 'needs-reauth' ? 'needs-reauth' : next);
   }
   // (accountId, machineId) in-progress, correlated on (login.id === accountId, machineId) (FD6 r3 #2).
-  const inProgress = new Set();
+  // The MAP carries the pending-login RECORD so the in-progress cell can render the COMPLETE
+  // sign-in flow (link, expected email, code input, TTL, notice) from SERVER state — the flow
+  // must never exist only in the bottom panel (topic 29836 D2), and a rebuild mid-flow renders
+  // the same step back instead of losing it (D1 defense-in-depth).
+  const inProgress = new Map();
   for (const l of pendingRows) {
-    if (l && l.id && l.machineId) inProgress.add(`${l.id}::${l.machineId}`);
+    if (l && l.id && l.machineId) inProgress.set(`${l.id}::${l.machineId}`, l);
   }
+  const emailMissing = new Set(
+    gapRows
+      .filter((gap) => gap && gap.accountId && gap.machineId)
+      .map((gap) => `${gap.accountId}::${gap.machineId}`),
+  );
 
   const machineList = Array.from(machines.values());
   const accountList = Array.from(accounts.values());
@@ -404,15 +559,48 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     const rowCells = [];
     for (const m of machineList) {
       const key = `${acct.accountId}::${m.machineId}`;
+      const t = transient[key] || null;
+      // OPTIMISTIC CANCEL (issue #1428): a confirmed cancel (2xx) drops a `cancelled`
+      // transient so the cell resets AT CLICK TIME instead of showing the stale
+      // in-flight flow for one poll cycle (~40s). It SUPPRESSES the cached
+      // pending-login (which the next poll hasn't dropped yet), letting the cell fall
+      // through to its true underlying state ("Sign in" / "Set up"). The transient is
+      // cleared on the very next poll (purgeTransients), so if the cancel actually
+      // FAILED server-side the fresh pending-login re-shows the flow — the poll stays
+      // the authority.
+      const cancelled = t && t.state === 'cancelled';
+      const pendingLogin = cancelled ? null : (inProgress.get(key) || null);
       let state;
       if (m.offline) state = 'offline';                              // whole column offline (FD6)
-      else if (transient[key] && transient[key].state === 'held') state = 'held';
-      else if (transient[key] && transient[key].state === 'cant-resolve') state = 'cant-resolve';
-      else if (inProgress.has(key)) state = 'in-progress';
-      else if (cellStatus.get(key) === 'active') state = 'active';
+      else if (t && t.state === 'held') state = 'held';
+      else if (t && t.state === 'cant-resolve') state = 'cant-resolve';
+      else if (emailMissing.has(key) || (t && t.state === 'email-missing')) state = 'email-missing';
+      // Durable pending state wins over enrollment bookkeeping after restart: the
+      // full flow rehydrates into its cell even if the pool row still says Active.
+      // broken (D5): the server says this attempt's sign-in pane is DEAD (record ⟂ pane
+      // reconciliation) — or the client just watched a code-submit refuse with pane-dead.
+      // Presenting it as submittable would be a lie; it gets an explicit needs-restart
+      // presentation with a working Retry (start-cell supersedes the zombie atomically).
+      else if (cellStatus.get(key) === 'needs-reauth' && pendingLogin && pendingLogin.paneAlive === false) state = 'broken';
+      else if (cellStatus.get(key) === 'needs-reauth' && pendingLogin) state = 'in-progress';
+      else if (t && t.state === 'expired') state = 'expired';
+      // A validated completion is newer evidence than the pool snapshot that
+      // still says needs-reauth/identity-drifted. Keep the success ceremony
+      // visible while the targeted post-login verification catches the row up.
+      else if (t && t.state === 'just-verified' && cellStatus.get(key) === 'needs-reauth') state = 'just-verified';
       else if (cellStatus.get(key) === 'needs-reauth') state = 'needs-reauth';
+      else if (cellStatus.get(key) === 'active') state = 'active';
+      else if ((pendingLogin && pendingLogin.paneAlive === false) || (t && t.state === 'broken')) state = 'broken';
+      else if (pendingLogin) state = 'in-progress';
+      // just-verified bridges the short interval before the pool row becomes active.
+      // Once active, keep state=active and carry this transient as the highlight detail.
+      else if (t && t.state === 'just-verified') state = 'just-verified';
       else state = 'empty';                                          // → "Set up" button
-      rowCells.push({ accountId: acct.accountId, machineId: m.machineId, state });
+      rowCells.push({
+        accountId: acct.accountId, machineId: m.machineId, state,
+        login: state === 'in-progress' ? pendingLogin : null,
+        detail: t,
+      });
     }
     cells.push({ account: acct, cells: rowCells });
   }
@@ -421,11 +609,85 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
 
 const MATRIX_CELL_GLYPH = {
   active: '✓', 'needs-reauth': '⟳', 'in-progress': '◷', offline: '—', held: '⚠', 'cant-resolve': '✗',
+  'email-missing': '⚠', expired: '✗', 'just-verified': '✓', broken: '✗',
 };
 const MATRIX_CELL_WORD = {
   active: 'Active', 'needs-reauth': 'Needs sign-in', 'in-progress': 'Signing in…',
   offline: 'Machine offline', held: 'Didn’t match — re-try', 'cant-resolve': 'Can’t set up', other: 'Set up',
+  'email-missing': 'Account record is missing its email', expired: 'Sign-in link expired',
+  'just-verified': 'Set up complete', broken: 'Sign-in needs a restart',
 };
+
+/** D5 wording floor: never show a raw internal machine id (m_<hex>) to the operator —
+ *  a nickname, or nothing. Exported for the floor test. */
+export function friendlyMachine(nickname, machineId) {
+  const nick = sanitizeForDisplay(nickname, 'label');
+  if (nick) return nick;
+  const id = typeof machineId === 'string' ? machineId : '';
+  if (/^m_[0-9a-f]{8,}$/i.test(id)) return '';
+  return sanitizeForDisplay(id, 'label');
+}
+
+/**
+ * Append the COMPLETE in-cell sign-in flow (topic 29836 D2): the sign-in link, the
+ * expected-account warning (D3 UI layer), the paste-back code input, the live TTL
+ * countdown, the flow notice (two-codes heads-up), and a Cancel. Shared by the
+ * in-progress matrix cell (rendered from SERVER pending-login state, so the step
+ * survives reloads and rebuilds) and the controller's immediate post-start render.
+ * `flow` = { accountId, machineId, loginId, verificationUrl, expectedEmail,
+ *            ttlExpiresAt, notice, kind, userCode }.
+ */
+export function appendCellSignInFlow(doc, cell, flow, now = Date.now()) {
+  cell.appendChild(el(doc, 'div', 'sub-matrix-flow-step', 'Open the sign-in link, then paste the code it gives you below.'));
+  if (flow && flow.expectedEmail) {
+    cell.appendChild(el(doc, 'div', 'sub-matrix-expected',
+      `The sign-in page must show ${sanitizeForDisplay(flow.expectedEmail, 'label')} — if it shows a different account, tap “Switch account” first.`));
+  }
+  const href = trustedLoginUrl(flow && flow.verificationUrl);
+  if (href) {
+    const a = doc.createElement('a');
+    a.setAttribute('href', href);
+    a.setAttribute('target', '_blank');
+    a.setAttribute('rel', 'noopener noreferrer');
+    a.setAttribute('class', 'sub-matrix-signin');
+    a.textContent = 'Sign in';
+    cell.appendChild(a);
+  } else if (flow && flow.verificationUrl) {
+    cell.appendChild(el(doc, 'div', 'sub-matrix-url', sanitizeForDisplay(flow.verificationUrl, 'url')));
+  }
+  if (flow && flow.userCode) {
+    cell.appendChild(el(doc, 'div', 'sub-pending-code', `Code: ${sanitizeForDisplay(flow.userCode, 'code')}`));
+  }
+  if (!flow || flow.kind !== 'device-code') {
+    const code = doc.createElement('input');
+    code.setAttribute('type', 'text');
+    code.setAttribute('class', 'sub-matrix-code-input');
+    code.setAttribute('placeholder', 'Paste your sign-in code');
+    code.setAttribute('autocomplete', 'off');
+    cell.appendChild(code);
+    const submit = el(doc, 'button', 'sub-matrix-code-submit', 'Submit');
+    submit.setAttribute('data-matrix-code-submit', '1');
+    submit.setAttribute('data-account-id', sanitizeForDisplay(flow && flow.accountId, 'label'));
+    submit.setAttribute('data-machine-id', sanitizeForDisplay(flow && flow.machineId, 'label'));
+    submit.setAttribute('data-login-id', sanitizeForDisplay((flow && (flow.loginId || flow.accountId)) || '', 'label'));
+    cell.appendChild(submit);
+  }
+  if (flow && flow.notice) {
+    cell.appendChild(el(doc, 'div', 'sub-matrix-notice', sanitizeForDisplay(flow.notice, 'summary')));
+  }
+  if (flow && flow.ttlExpiresAt) {
+    const left = countdown(flow.ttlExpiresAt, now);
+    const ttl = el(doc, 'div', 'sub-matrix-ttl',
+      left === 'expired' ? 'Sign-in link expired — start again' : (left ? `Link expires in ${left}` : ''));
+    ttl.setAttribute('data-ttl-expires', sanitizeForDisplay(flow.ttlExpiresAt, 'label'));
+    cell.appendChild(ttl);
+  }
+  const cancelBtn = el(doc, 'button', 'sub-matrix-cancel', 'Cancel');
+  cancelBtn.setAttribute('data-matrix-cancel', '1');
+  cancelBtn.setAttribute('data-account-id', sanitizeForDisplay(flow && flow.accountId, 'label'));
+  cancelBtn.setAttribute('data-machine-id', sanitizeForDisplay(flow && flow.machineId, 'label'));
+  cell.appendChild(cancelBtn);
+}
 
 /** Render the account × machine grid. `target` is replaced. Each empty (reachable) cell
  *  gets a "Set up" button carrying its (accountId, machineId) as data-* attributes for the
@@ -452,30 +714,71 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
   table.appendChild(thead);
 
   const tbody = doc.createElement('tbody');
+  const now = Date.now();
   for (const row of model.rows) {
     const tr = doc.createElement('tr');
     tr.appendChild(el(doc, 'th', 'sub-matrix-acct', sanitizeForDisplay(row.account.email, 'label')));
     for (const c of row.cells) {
-      const td = el(doc, 'td', `sub-matrix-cell sub-matrix-${c.state}`);
-      if (c.state === 'empty' || c.state === 'needs-reauth' || c.state === 'held' || c.state === 'cant-resolve') {
+      // just-verified rides a transient highlight on an otherwise-active cell (D4 ceremony).
+      const justVerified = c.state === 'just-verified' || (c.state === 'active' && c.detail && c.detail.state === 'just-verified');
+      const td = el(doc, 'td', `sub-matrix-cell sub-matrix-${c.state}${justVerified && c.state !== 'just-verified' ? ' sub-matrix-just-verified' : ''}`);
+      // Stable cell identity for the interaction-hold rule + targeted merge updates (F9).
+      td.setAttribute('data-cell-key', sanitizeForDisplay(`${c.accountId}::${c.machineId}`, 'url'));
+      if (c.state === 'empty' || c.state === 'needs-reauth' || c.state === 'held' || c.state === 'cant-resolve' || c.state === 'email-missing' || c.state === 'expired' || c.state === 'broken') {
         // An actionable cell → a button that runs the SAME in-dashboard sign-in flow (PIN → link →
         // paste code). empty → "Set up"; needs-reauth (an existing account whose login expired) →
-        // "Sign in"; held/cant-resolve → "Retry". A needs-reauth account already resolves to its
-        // email, so the start-cell orchestrator drives a real re-auth — never a cosmetic button.
-        const label = c.state === 'empty' ? 'Set up' : (c.state === 'needs-reauth' ? 'Sign in' : 'Retry');
+        // "Sign in"; held/cant-resolve/expired/broken → "Retry". A needs-reauth account already
+        // resolves to its email, so the start-cell orchestrator drives a real re-auth — never a
+        // cosmetic button, and a broken (dead-pane) attempt is superseded server-side on Retry.
+        const label = c.state === 'empty' ? 'Set up'
+          : c.state === 'needs-reauth' ? 'Sign in'
+          : c.state === 'email-missing' ? 'Repair identity'
+          : 'Retry';
         const btn = el(doc, 'button', 'sub-matrix-setup', label);
         btn.setAttribute('data-matrix-setup', '1');
         btn.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
         btn.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+        if (c.state === 'email-missing') btn.setAttribute('data-email-repair', '1');
         if (c.state !== 'empty') {
           // Show the status word ("⟳ Needs sign-in" / "⚠ Didn't match…") ABOVE the button.
           td.appendChild(el(doc, 'div', 'sub-matrix-glyph', `${MATRIX_CELL_GLYPH[c.state]} ${MATRIX_CELL_WORD[c.state]}`));
         }
+        // A held cell with the gate verdict's both-account detail names BOTH accounts in
+        // plain language (topic 29836 D3) — never just a bare "didn't match".
+        if (c.state === 'held' && c.detail) {
+          td.appendChild(el(doc, 'div', 'sub-matrix-held-detail',
+            heldExplanation(c.detail.expected, c.detail.got, c.detail.reason, { short: true })));
+        }
+        // A broken cell says WHY in plain words (D5): the attempt's sign-in window is gone.
+        if (c.state === 'broken') {
+          td.appendChild(el(doc, 'div', 'sub-matrix-held-detail',
+            'Its sign-in window closed before finishing — tap Retry to start a fresh sign-in.'));
+        }
+        if (c.state === 'expired') {
+          td.appendChild(el(doc, 'div', 'sub-matrix-outcome sub-matrix-outcome-failed',
+            'Didn’t finish — the sign-in link expired before this account was set up.'));
+        }
         td.appendChild(btn);
+      } else if (c.state === 'in-progress' && c.login && c.login.verificationUrl) {
+        // The cell carries the COMPLETE flow, rebuilt from SERVER pending-login state
+        // (topic 29836 D2): a poll rebuild mid-flow renders the same step back — the
+        // "flips to ◷ before the code can be pasted" defect is structurally impossible.
+        td.appendChild(el(doc, 'div', 'sub-matrix-glyph', '◷ Signing in'));
+        appendCellSignInFlow(doc, td, {
+          accountId: c.accountId, machineId: c.machineId, loginId: c.login.id,
+          verificationUrl: c.login.verificationUrl, expectedEmail: c.login.expectedEmail,
+          ttlExpiresAt: c.login.ttlExpiresAt, notice: c.login.notice, kind: c.login.kind,
+          userCode: c.login.userCode,
+        }, now);
       } else {
-        const word = c.state === 'offline' ? 'unknown' : MATRIX_CELL_WORD[c.state];
+        const word = c.state === 'offline' ? 'unknown'
+          : (justVerified && c.state === 'active' ? 'Active — just set up' : MATRIX_CELL_WORD[c.state]);
         const glyph = MATRIX_CELL_GLYPH[c.state] || '';
         td.appendChild(el(doc, 'span', 'sub-matrix-glyph', `${glyph} ${word}`.trim()));
+        if (justVerified) {
+          td.appendChild(el(doc, 'div', 'sub-matrix-outcome sub-matrix-outcome-done',
+            'Done — this account is set up on this machine.'));
+        }
         // An in-progress (◷) cell gets a tappable Cancel so a mis-tapped setup can be
         // reversed (abandon the login + tear down its pane). Emitted on the DURABLE
         // re-rendered cell (not just the live sign-in DOM) so it survives the poll loop.
@@ -534,9 +837,20 @@ export function createController(opts) {
   } = opts;
 
   // matrixTransient: client-side last-attempt state per `${accountId}::${machineId}` cell (FD6 —
-  // held / cant-resolve are known only to the client from the response it just got).
+  // held / cant-resolve / expired / just-verified are known only to the client from the
+  // response it just got or from an episode it drove).
+  // matrixEpisodes: enrollment episodes THIS client started (start-cell succeeded) — used to
+  // detect a server-side expiry (pending login vanished without a terminal outcome) and to
+  // add the D4 ceremony when the episode lands. recentOutcomes: client-observed terminal
+  // outcomes rendered as explicit cards in the pending panel (D4 — never a vanishing line).
   const state = { timerId: null, active: false, inFlight: null, offers: [], approveWired: false,
-    matrixWired: false, matrixTransient: {}, lastPoolBody: null, lastPendingBody: null };
+    matrixWired: false, matrixTransient: {}, lastPoolBody: null, lastPendingBody: null,
+    matrixEpisodes: {}, recentOutcomes: [] };
+
+  const JUST_VERIFIED_TTL_MS = 5 * 60_000;   // highlight ceremony window
+  const EXPIRED_TTL_MS = 60 * 60_000;        // explicit expired presentation window
+  const OUTCOME_TTL_MS = 15 * 60_000;        // pending-panel outcome cards window
+  const MAX_OUTCOME_CARDS = 5;
 
   async function fetchJson(url, controller) {
     const resp = await fetchImpl(url, { signal: controller.signal });
@@ -594,26 +908,152 @@ export function createController(opts) {
     reschedule();
   }
 
+  // ── Episode + outcome bookkeeping (D1/D4/D5) ───────────────────────────────
+  function purgeTransients() {
+    const t = now();
+    for (const key of Object.keys(state.matrixTransient)) {
+      const entry = state.matrixTransient[key];
+      if (!entry || typeof entry.at !== 'number') continue;
+      if (entry.state === 'just-verified' && t - entry.at > JUST_VERIFIED_TTL_MS) delete state.matrixTransient[key];
+      if ((entry.state === 'expired' || entry.state === 'broken') && t - entry.at > EXPIRED_TTL_MS) delete state.matrixTransient[key];
+      // The optimistic `cancelled` bridge (issue #1428) lives for exactly one poll:
+      // purgeTransients runs inside render() with the FRESH server bodies in hand, so
+      // clearing it here hands authority back to the poll — a still-pending login
+      // (cancel actually failed) re-derives 'in-progress' on this same render.
+      if (entry.state === 'cancelled') delete state.matrixTransient[key];
+    }
+    state.recentOutcomes = state.recentOutcomes
+      .filter((o) => o && typeof o.at === 'number' && now() - o.at <= OUTCOME_TTL_MS)
+      .slice(0, MAX_OUTCOME_CARDS);
+  }
+
+  /** Resolve a machine's operator-facing name from the cached bodies ('' if unknown —
+   *  never a raw m_<hex> id; D5 wording floor). */
+  function machineNick(machineId) {
+    const accounts = state.lastPoolBody && Array.isArray(state.lastPoolBody.accounts) ? state.lastPoolBody.accounts : [];
+    const hit = accounts.find((a) => a && a.machineId === machineId && a.machineNickname);
+    if (hit) return hit.machineNickname;
+    const logins = state.lastPendingBody && Array.isArray(state.lastPendingBody.logins) ? state.lastPendingBody.logins : [];
+    const l = logins.find((x) => x && x.machineId === machineId && x.machineNickname);
+    return l ? l.machineNickname : '';
+  }
+
+  /** One chokepoint for a client-observed terminal submit outcome — records the panel
+   *  card (D4), the matrix transient (so BOTH surfaces flip together), and ends the
+   *  episode. Used by the in-cell submit AND the pending-panel submit. */
+  function recordSubmitOutcome(kind, ids, body) {
+    const { accountId, machineId } = ids;
+    const key = accountId && machineId ? `${accountId}::${machineId}` : null;
+    if (key) delete state.matrixEpisodes[key];
+    const base = { accountId, machineId, machineNickname: machineNick(machineId), at: now() };
+    if (kind === 'validated') {
+      if (key) state.matrixTransient[key] = { state: 'just-verified', at: now() };
+      state.recentOutcomes.unshift({ ...base, kind, email: (body && body.email) || null });
+    } else if (kind === 'held') {
+      if (key) {
+        state.matrixTransient[key] = {
+          state: 'held', at: now(),
+          expected: (body && body.expected) || null, got: (body && body.got) || null, reason: (body && body.reason) || null,
+        };
+      }
+      state.recentOutcomes.unshift({ ...base, kind, expected: (body && body.expected) || null, got: (body && body.got) || null, reason: (body && body.reason) || null });
+    } else if (kind === 'broken') {
+      if (key) state.matrixTransient[key] = { state: 'broken', at: now() };
+    }
+    state.recentOutcomes = state.recentOutcomes.slice(0, MAX_OUTCOME_CARDS);
+  }
+
+  /** Episode reconciliation (D5/D4): an episode this client started whose pending login
+   *  VANISHED server-side resolves to a terminal state — active pool row → just-verified
+   *  ceremony; gone without any outcome → explicit expired (never a silent revert to a
+   *  bare "Set up" button). Runs on every tick with the fresh bodies. */
+  function reconcileEpisodes(poolBody, pendingBody) {
+    const accounts = poolBody && Array.isArray(poolBody.accounts) ? poolBody.accounts : [];
+    const logins = pendingBody && Array.isArray(pendingBody.logins) ? pendingBody.logins : [];
+    for (const key of Object.keys(state.matrixEpisodes)) {
+      const sep = key.indexOf('::');
+      const accountId = key.slice(0, sep);
+      const machineId = key.slice(sep + 2);
+      const active = accounts.some((a) => a && a.id === accountId && a.machineId === machineId && a.status === 'active');
+      const stillPending = logins.some((l) => l && l.id === accountId && l.machineId === machineId);
+      if (active) {
+        delete state.matrixEpisodes[key];
+        const t = state.matrixTransient[key];
+        if (!t || (t.state !== 'held' && t.state !== 'just-verified')) {
+          state.matrixTransient[key] = { state: 'just-verified', at: now() };
+        }
+        releaseCellHold(key);
+      } else if (!stillPending) {
+        delete state.matrixEpisodes[key];
+        const t = state.matrixTransient[key];
+        if (!t || (t.state !== 'held' && t.state !== 'cant-resolve' && t.state !== 'just-verified' && t.state !== 'broken')) {
+          state.matrixTransient[key] = { state: 'expired', at: now() };
+          state.recentOutcomes.unshift({ kind: 'expired', accountId, machineId, machineNickname: machineNick(machineId), at: now() });
+        }
+        releaseCellHold(key);
+      }
+    }
+  }
+
+  /** The episode is over server-side — release the cell's open-interaction marker so
+   *  the guarded rebuild may replace it with the terminal presentation. */
+  function releaseCellHold(key) {
+    if (!els.matrix || typeof els.matrix.querySelectorAll !== 'function') return;
+    for (const cell of els.matrix.querySelectorAll('[data-interaction-open]')) {
+      if (cell.getAttribute && cell.getAttribute('data-cell-key') === key) cell.removeAttribute('data-interaction-open');
+    }
+  }
+
+  /** Guarded matrix rebuild from the cached bodies — used by handlers that just flipped a
+   *  cell terminal so the explicit presentation shows immediately (not 30s later). Respects
+   *  the F9 hold: skipped while any OTHER interaction is open (the next tick catches up). */
+  function rerenderMatrixFromCache() {
+    if (!els.matrix || !state.lastPoolBody) return;
+    if (hasOpenInteraction(doc, els.matrix)) return;
+    renderAccountMatrix(doc, els.matrix, state.lastPoolBody, state.lastPendingBody, state.matrixTransient);
+  }
+
   function render(accountsBody, pendingBody, inUseBody, poolBody) {
     const accounts = accountsBody && Array.isArray(accountsBody.accounts) ? accountsBody.accounts : [];
     const logins = pendingBody && Array.isArray(pendingBody.logins) ? pendingBody.logins : [];
     const inUseAccountId = inUseBody && inUseBody.activeAccountId ? inUseBody.activeAccountId : null;
     renderAccounts(doc, els.accounts, accounts, now(), inUseAccountId);
-    renderPendingLogins(doc, els.pending, logins, now());
-    wireCodeSubmit();
+    purgeTransients();
+    // Episode reconciliation runs FIRST so a terminal transition it derives (expired /
+    // landed) is visible to BOTH surfaces on this same tick (the panel card + the cell).
+    state.lastPoolBody = poolBody || null;
+    state.lastPendingBody = pendingBody || null;
+    if (els.matrix) reconcileEpisodes(poolBody, pendingBody);
+    // F9 (Dashboard UX Standard): every surface that can hold an operator interaction is
+    // rebuilt ONLY while no interaction is open; a held surface gets targeted merge updates
+    // (live countdowns) instead. This is the structural fix for the topic 29836 D1 defect
+    // (the poll reverting a PIN input / swapping the code step out mid-paste).
+    if (els.pending) {
+      if (!hasOpenInteraction(doc, els.pending)) {
+        renderPendingLogins(doc, els.pending, logins, now(), state.recentOutcomes);
+      } else {
+        updateCountdowns(doc, els.pending, now());
+      }
+      wireCodeSubmit();
+    }
     // The account × machine matrix (account-machine-matrix) — built from the pool-scope read +
     // the (already pool-scope) pending logins. Hidden when the pool-scope read is unavailable.
     if (els.matrix) {
-      state.lastPoolBody = poolBody || null;
-      state.lastPendingBody = pendingBody || null;
-      renderAccountMatrix(doc, els.matrix, poolBody, pendingBody, state.matrixTransient);
+      if (!hasOpenInteraction(doc, els.matrix)) {
+        renderAccountMatrix(doc, els.matrix, poolBody, pendingBody, state.matrixTransient);
+      } else {
+        updateCountdowns(doc, els.matrix, now());
+      }
       wireMatrixSetup();
     }
     // The one-tap follow-me Approve card(s) — rendered into els.followMe from the scan offers
     // (ws52-operator-tap-not-text Part A). Silent when there are none. The Approve click is wired
-    // once (delegated) so re-renders never stack listeners.
+    // once (delegated) so re-renders never stack listeners. Same F9 hold: a half-typed PIN on an
+    // Approve card is an open interaction the poll must not clobber.
     if (els.followMe) {
-      renderFollowMeOffers(doc, els.followMe, state.offers);
+      if (!hasOpenInteraction(doc, els.followMe)) {
+        renderFollowMeOffers(doc, els.followMe, state.offers);
+      }
       wireApprove();
     }
   }
@@ -681,25 +1121,58 @@ export function createController(opts) {
       if (!id) { setRowStatus(row, 'Couldn’t identify this login — please refresh.'); return; }
       setRowStatus(row, 'Sending your code…');
       btn.setAttribute('disabled', '1');
+      // F9: the row is an open interaction while the submit is in flight — a poll rebuild
+      // would detach the very node the outcome is about to be written into.
+      row.setAttribute('data-interaction-open', 'submitting');
       void (async () => {
         try {
           const r = await postJson(URLS.submitCode, { machineId, id, code });
           if (r.ok && r.json && r.json.outcome === 'validated') {
-            setRowStatus(row, 'Done — this machine is set up with the account.');
             if (input) input.value = '';
+            row.removeAttribute('data-interaction-open');
+            recordSubmitOutcome('validated', { accountId: id, machineId }, r.json);
+            // Explicit terminal presentation in place (D4) — the next rebuild shows the
+            // durable ✓ Done card from recentOutcomes.
+            row.setAttribute('class', 'sub-pending sub-pending-done');
+            setRowStatus(row, `✓ Done — ${r.json.email ? r.json.email + ' is' : 'this account is'} set up on this machine.`);
+            rerenderMatrixFromCache();
           } else if (r.ok && r.json && r.json.outcome === 'submitted') {
             setRowStatus(row, 'Code sent — finishing sign-in…');
             if (input) input.value = '';
+            row.removeAttribute('data-interaction-open');
           } else if (r.ok && r.json && r.json.outcome === 'held') {
-            setRowStatus(row, 'Signed in, but the account didn’t match what was approved — check with the operator.');
+            if (input) input.value = '';
+            row.removeAttribute('data-interaction-open');
+            recordSubmitOutcome('held', { accountId: id, machineId }, r.json);
+            row.setAttribute('class', 'sub-pending sub-pending-failed');
+            // Plain language naming BOTH accounts (D3) — never a bare "didn't match".
+            setRowStatus(row, `✗ ${heldExplanation(r.json.expected, r.json.got, r.json.reason)}`);
+            rerenderMatrixFromCache();
             btn.removeAttribute('disabled');
+          } else if (r.json && r.json.code === 'login-expired-fresh-ready') {
+            row.removeAttribute('data-interaction-open');
+            setRowStatus(row, 'That code belonged to an expired sign-in. A fresh sign-in is ready now.');
+            await tick();
+          } else if (r.json && r.json.code === 'login-expired') {
+            row.removeAttribute('data-interaction-open');
+            row.setAttribute('class', 'sub-pending sub-pending-failed');
+            setRowStatus(row, `✗ ${r.json.error || 'That sign-in expired — start a fresh one from its grid cell.'}`);
+          } else if (r.json && r.json.code === 'pane-dead') {
+            // D5: the attempt's window is gone — flip to the explicit needs-restart state.
+            row.removeAttribute('data-interaction-open');
+            recordSubmitOutcome('broken', { accountId: id, machineId }, r.json);
+            row.setAttribute('class', 'sub-pending sub-pending-failed');
+            setRowStatus(row, `✗ ${r.json.error || 'This sign-in’s window is gone — start it again from the grid above.'}`);
+            rerenderMatrixFromCache();
           } else {
             const msg = (r.json && (r.json.error || r.json.reason)) ? (r.json.error || r.json.reason) : `failed (${r.status})`;
             setRowStatus(row, `Couldn’t submit the code: ${msg}`);
+            row.removeAttribute('data-interaction-open');
             btn.removeAttribute('disabled');
           }
         } catch (e) {
           setRowStatus(row, 'Couldn’t reach the server — try again.');
+          row.removeAttribute('data-interaction-open');
           btn.removeAttribute('disabled');
         }
       })();
@@ -730,6 +1203,8 @@ export function createController(opts) {
       if (codeBtn && els.matrix.contains(codeBtn)) { onCodeTap(codeBtn); return; }
       const cancelBtn = t.closest('[data-matrix-cancel]');
       if (cancelBtn && els.matrix.contains(cancelBtn)) { onCancelTap(cancelBtn); return; }
+      const collapseBtn = t.closest('[data-matrix-collapse]');
+      if (collapseBtn && els.matrix.contains(collapseBtn)) { onCollapseTap(collapseBtn); return; }
     });
   }
 
@@ -743,12 +1218,18 @@ export function createController(opts) {
   }
 
   // Expand the cell into a PIN input + Confirm (replacing the "Set up"/"Retry" button).
+  // The cell becomes an OPEN INTERACTION the moment it expands (F9): the marker holds it
+  // through the poll until the flow reaches a terminal state or the operator backs out.
   function onSetupTap(btn) {
     const cell = matrixCellOf(btn);
     if (!cell) return;
     const accountId = btn.getAttribute('data-account-id');
     const machineId = btn.getAttribute('data-machine-id');
+    const emailRepair = btn.getAttribute('data-email-repair') === '1';
     if (!accountId || !machineId) return;
+    // A retry clears the previous attempt's terminal presentation for this cell.
+    delete state.matrixTransient[`${accountId}::${machineId}`];
+    cell.setAttribute('data-interaction-open', 'pin-entry');
     btn.remove();
     const pin = doc.createElement('input');
     pin.setAttribute('type', 'password');
@@ -760,15 +1241,33 @@ export function createController(opts) {
     confirm.setAttribute('data-matrix-confirm', '1');
     confirm.setAttribute('data-account-id', accountId);
     confirm.setAttribute('data-machine-id', machineId);
+    if (emailRepair) confirm.setAttribute('data-email-repair', '1');
     cell.appendChild(confirm);
+    // An explicit way OUT of the interaction (the hold would otherwise pin the cell
+    // forever if the operator changes their mind) — client-side only, nothing started yet.
+    const back = el(doc, 'button', 'sub-matrix-collapse', 'Back');
+    back.setAttribute('data-matrix-collapse', '1');
+    cell.appendChild(back);
   }
 
-  // Confirm → POST the PIN-gated start-cell; render the auth link + code input on success.
+  // Back out of an un-started PIN entry: release the hold and restore the cell from cache.
+  function onCollapseTap(btn) {
+    const cell = matrixCellOf(btn);
+    if (!cell) return;
+    cell.removeAttribute('data-interaction-open');
+    const pin = cell.querySelector('.sub-matrix-pin');
+    if (pin) pin.value = '';
+    rerenderMatrixFromCache();
+  }
+
+  // Confirm → POST the PIN-gated start-cell; render the COMPLETE in-cell sign-in flow on
+  // success (link + expected-account warning + code input + TTL + notice + Cancel — D2).
   function onConfirmTap(btn) {
     const cell = matrixCellOf(btn);
     if (!cell) return;
     const accountId = btn.getAttribute('data-account-id');
     const machineId = btn.getAttribute('data-machine-id');
+    const emailRepair = btn.getAttribute('data-email-repair') === '1';
     const pinInput = cell.querySelector('.sub-matrix-pin');
     const pin = pinInput ? pinInput.value.trim() : '';
     if (!accountId || !machineId) { setCellStatus(cell, 'Couldn’t prepare this — please refresh.'); return; }
@@ -777,13 +1276,43 @@ export function createController(opts) {
     btn.setAttribute('disabled', '1');
     void (async () => {
       try {
+        if (emailRepair) {
+          const r = await postJson(`/subscription-pool/${encodeURIComponent(accountId)}/repair-email`, { pin });
+          if (pinInput) pinInput.value = '';
+          if (r.ok) {
+            cell.removeAttribute('data-interaction-open');
+            setCellStatus(cell, '✓ Account identity repaired.');
+            await tick();
+            return;
+          }
+          const msg = r.json && r.json.error
+            ? r.json.error
+            : 'Couldn’t verify this account from its signed-in credential.';
+          setCellStatus(cell, msg);
+          btn.removeAttribute('disabled');
+          return;
+        }
         const r = await postJson(URLS.startCell, { accountId, machineId, pin });
         if (pinInput) pinInput.value = ''; // PIN is memory-only — clear it immediately
         if (r.ok && r.json && r.json.verificationUrl) {
-          renderCellSignIn(cell, accountId, machineId, r.json.verificationUrl, r.json.loginId || accountId);
+          // Episode opens: the enrollment is live server-side; the reconciler now owns
+          // detecting its expiry / landing when the client misses the terminal response.
+          state.matrixEpisodes[`${accountId}::${machineId}`] = { loginId: r.json.loginId || accountId, at: now() };
+          renderCellSignIn(cell, {
+            accountId, machineId, loginId: r.json.loginId || accountId,
+            verificationUrl: r.json.verificationUrl, expectedEmail: r.json.expectedEmail,
+            ttlExpiresAt: r.json.ttlExpiresAt, notice: r.json.notice, kind: r.json.kind,
+          });
         } else if (r.status === 409) {
-          state.matrixTransient[`${accountId}::${machineId}`] = { state: 'cant-resolve' };
-          setCellStatus(cell, 'Can’t set this account up here — its details couldn’t be resolved.');
+          const code = r.json && r.json.code;
+          state.matrixTransient[`${accountId}::${machineId}`] = {
+            state: code === 'account-record-missing-email' ? 'email-missing' : 'cant-resolve',
+            at: now(),
+          };
+          const message = r.json && r.json.error
+            ? r.json.error
+            : 'Can’t set this account up here — its identity details could not be verified.';
+          setCellStatus(cell, message);
           btn.removeAttribute('disabled');
         } else {
           const msg = (r.json && (r.json.error || r.json.reason)) ? (r.json.error || r.json.reason) : `failed (${r.status})`;
@@ -797,36 +1326,16 @@ export function createController(opts) {
     })();
   }
 
-  // After start-cell: show the sign-in link (operator opens it) + a code input + Submit.
-  function renderCellSignIn(cell, accountId, machineId, verificationUrl, loginId) {
-    // Clear the PIN/Confirm UI, keep the status line.
+  // After start-cell: the immediate in-cell render of the complete flow (the SAME structure
+  // the poll rebuilds from server state, via the shared appendCellSignInFlow — D2 coherence:
+  // one live attempt, one URL, on every surface).
+  function renderCellSignIn(cell, flow) {
     const pin = cell.querySelector('.sub-matrix-pin'); if (pin) pin.remove();
     const confirm = cell.querySelector('[data-matrix-confirm]'); if (confirm) confirm.remove();
-    setCellStatus(cell, 'Open the sign-in link, then paste the code below.');
-    const href = trustedLoginUrl(verificationUrl);
-    if (href) {
-      const a = doc.createElement('a');
-      a.setAttribute('href', href);
-      a.setAttribute('target', '_blank');
-      a.setAttribute('rel', 'noopener noreferrer');
-      a.setAttribute('class', 'sub-matrix-signin');
-      a.textContent = 'Sign in';
-      cell.appendChild(a);
-    } else {
-      cell.appendChild(el(doc, 'div', 'sub-matrix-url', sanitizeForDisplay(verificationUrl, 'url')));
-    }
-    const code = doc.createElement('input');
-    code.setAttribute('type', 'text');
-    code.setAttribute('class', 'sub-matrix-code-input');
-    code.setAttribute('placeholder', 'Paste your sign-in code');
-    code.setAttribute('autocomplete', 'off');
-    cell.appendChild(code);
-    const submit = el(doc, 'button', 'sub-matrix-code-submit', 'Submit');
-    submit.setAttribute('data-matrix-code-submit', '1');
-    submit.setAttribute('data-account-id', accountId);
-    submit.setAttribute('data-machine-id', machineId);
-    submit.setAttribute('data-login-id', loginId);
-    cell.appendChild(submit);
+    const back = cell.querySelector('[data-matrix-collapse]'); if (back) back.remove();
+    const status = cell.querySelector('.sub-matrix-status'); if (status) status.remove();
+    cell.setAttribute('data-interaction-open', 'signing-in');
+    appendCellSignInFlow(doc, cell, flow, now());
   }
 
   // Submit the pasted code via the SHIPPED submit-code relay (unchanged contract).
@@ -841,30 +1350,74 @@ export function createController(opts) {
     if (!code) { setCellStatus(cell, 'Paste the code the sign-in page gave you, then tap Submit.'); return; }
     setCellStatus(cell, 'Sending your code…');
     btn.setAttribute('disabled', '1');
+    cell.setAttribute('data-interaction-open', 'submitting');
     void (async () => {
       try {
         const r = await postJson(URLS.submitCode, { machineId, id: loginId, code });
         if (input) input.value = ''; // code is memory-only — cleared after use
-        const key = `${accountId}::${machineId}`;
         if (r.ok && r.json && r.json.outcome === 'validated') {
-          delete state.matrixTransient[key];
-          setCellStatus(cell, 'Done — this machine is set up with the account.');
+          // TERMINAL SUCCESS (D4): unmistakable in-cell presentation the moment the
+          // enrollment verifies; the transient keeps the ceremony on the next rebuilds.
+          cell.removeAttribute('data-interaction-open');
+          recordSubmitOutcome('validated', { accountId, machineId }, r.json);
+          renderCellDone(cell, r.json.email || null);
         } else if (r.ok && r.json && r.json.outcome === 'submitted') {
           setCellStatus(cell, 'Code sent — finishing sign-in…');
+          cell.removeAttribute('data-interaction-open');
         } else if (r.ok && r.json && r.json.outcome === 'held') {
-          state.matrixTransient[key] = { state: 'held' };
-          setCellStatus(cell, 'Signed in, but the account didn’t match what was approved — re-try with the right account.');
-          btn.removeAttribute('disabled');
+          // TERMINAL REFUSAL (D3): the identity gate held the enrollment — name BOTH
+          // accounts in plain language; the wrong account was NOT enrolled.
+          cell.removeAttribute('data-interaction-open');
+          recordSubmitOutcome('held', { accountId, machineId }, r.json);
+          renderCellHeld(cell, accountId, machineId, r.json);
+        } else if (r.json && r.json.code === 'login-expired-fresh-ready') {
+          cell.removeAttribute('data-interaction-open');
+          setCellStatus(cell, 'That code belonged to an expired sign-in. A fresh sign-in is ready now.');
+          await tick();
+        } else if (r.json && r.json.code === 'login-expired') {
+          cell.removeAttribute('data-interaction-open');
+          recordSubmitOutcome('broken', { accountId, machineId }, r.json);
+          rerenderMatrixFromCache();
+        } else if (r.json && r.json.code === 'pane-dead') {
+          // TERMINAL (D5): the sign-in window is gone — explicit needs-restart state.
+          cell.removeAttribute('data-interaction-open');
+          recordSubmitOutcome('broken', { accountId, machineId }, r.json);
+          rerenderMatrixFromCache();
         } else {
           const msg = (r.json && (r.json.error || r.json.reason)) ? (r.json.error || r.json.reason) : `failed (${r.status})`;
           setCellStatus(cell, `Couldn’t submit the code: ${msg}`);
+          cell.setAttribute('data-interaction-open', 'signing-in');
           btn.removeAttribute('disabled');
         }
       } catch (e) {
         setCellStatus(cell, 'Couldn’t reach the server — try again.');
+        cell.setAttribute('data-interaction-open', 'signing-in');
         btn.removeAttribute('disabled');
       }
     })();
+  }
+
+  // The in-cell terminal SUCCESS presentation (D4): unmistakable, named, highlighted.
+  function renderCellDone(cell, email) {
+    cell.replaceChildren();
+    cell.setAttribute('class', 'sub-matrix-cell sub-matrix-just-verified sub-matrix-done');
+    cell.appendChild(el(doc, 'div', 'sub-matrix-glyph', '✓ All set'));
+    cell.appendChild(el(doc, 'div', 'sub-matrix-done-detail',
+      email ? `${sanitizeForDisplay(email, 'label')} is signed in on this machine.` : 'The account is signed in on this machine.'));
+  }
+
+  // The in-cell terminal HELD presentation (D3): both accounts named + a working Retry.
+  function renderCellHeld(cell, accountId, machineId, body) {
+    cell.replaceChildren();
+    cell.setAttribute('class', 'sub-matrix-cell sub-matrix-held');
+    cell.appendChild(el(doc, 'div', 'sub-matrix-glyph', `${MATRIX_CELL_GLYPH.held} ${MATRIX_CELL_WORD.held}`));
+    cell.appendChild(el(doc, 'div', 'sub-matrix-held-detail',
+      heldExplanation(body && body.expected, body && body.got, body && body.reason, { short: true })));
+    const btn = el(doc, 'button', 'sub-matrix-setup', 'Retry');
+    btn.setAttribute('data-matrix-setup', '1');
+    btn.setAttribute('data-account-id', sanitizeForDisplay(accountId, 'label'));
+    btn.setAttribute('data-machine-id', sanitizeForDisplay(machineId, 'label'));
+    cell.appendChild(btn);
   }
 
   // Cancel an in-flight cell: POST the Bearer-only cancel relay (self/peer), abandoning
@@ -889,8 +1442,19 @@ export function createController(opts) {
       try {
         const r = await postJson(URLS.cancel, { machineId, id: accountId });
         if (r.ok && r.json && (r.json.cancelled || r.json.alreadyTerminal)) {
-          delete state.matrixTransient[`${accountId}::${machineId}`];
+          // TERMINAL (cancelled): the episode is over. OPTIMISTIC RESET (issue #1428):
+          // drop a `cancelled` transient + release the hold, then rebuild the cell NOW
+          // from cache so the operator sees the in-flight flow disappear immediately —
+          // not after the next ~40s poll. The transient suppresses the stale cached
+          // pending-login until the next real poll reconciles (and stays authority if
+          // the cancel actually failed). Keep a status line as the fallback for the
+          // rare case where another open interaction defers the full rebuild.
+          const key = `${accountId}::${machineId}`;
+          delete state.matrixEpisodes[key];
+          state.matrixTransient[key] = { state: 'cancelled', at: now() };
+          cell.removeAttribute('data-interaction-open');
           setCellStatus(cell, 'Cancelled — you can set this up again.');
+          rerenderMatrixFromCache();
         } else {
           const msg = (r.json && (r.json.error || r.json.reason)) ? (r.json.error || r.json.reason) : `failed (${r.status})`;
           setCellStatus(cell, `Couldn’t cancel: ${msg}`);
@@ -926,5 +1490,7 @@ if (typeof window !== 'undefined') {
     createController, sanitizeForDisplay, renderAccounts, renderPendingLogins,
     renderFollowMeOffers, renderFollowMeApproveCard, buildFollowMeIssuePayload,
     renderAccountMatrix, buildMatrixModel,
+    hasOpenInteraction, updateCountdowns, heldExplanation, appendCellSignInFlow,
+    renderOutcomeCard, friendlyMachine,
   };
 }

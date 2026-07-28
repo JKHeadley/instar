@@ -19,6 +19,8 @@ The rule is now: **nothing — not the background job, not any web endpoint — 
 3. **A build-time lint** makes it impossible to accidentally reintroduce a whole-map operation on a web route — so this exact bug can't sneak back in.
 4. **The config knob that picks which (non-Claude, non-billed-to-you) model writes the cards now actually works** — it used to be decorative, which is part of why the bug hid for a while.
 
+The deferred Git-listing upgrade is now complete too: the worker reads Git's NUL-separated tree records as they arrive instead of holding the entire command output in a fixed-size buffer. It accepts the result only after Git exits cleanly, and worker timeout teardown explicitly reaps the Git child. The scaffold-writer and index-storage follow-ups in #1073 remain separate items.
+
 ## What changes for you
 
 Nothing visible day-to-day, except the server stops dying when the sweep is on. The sweep stays **off** until this ships and I can re-enable it and finally give you the real cost-per-pass numbers you're owed. The trade-off: the health/stale endpoints now show last-known numbers with an age stamp rather than always-live numbers — a deliberate swap of "perfectly live" for "never freezes the server."

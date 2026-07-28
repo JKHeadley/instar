@@ -113,7 +113,50 @@ const STATE_DETECTION_PATTERNS = [
 const RULE3_EXEMPT_COMMENT_RE = /RULE\s*3\s*:\s*EXEMPT/i;
 const RULE3_RATIONALE_COMMENT_RE = /RULE\s*3\.1\s*RATIONALE/i;
 
+/**
+ * The incoming ref, if a merge is in progress. `MERGE_HEAD` exists only between
+ * `git merge` starting and the merge commit being written — exactly the window
+ * this hook runs in.
+ */
+function mergeHeadIfMerging() {
+  try {
+    const out = execSync('git rev-parse -q --verify MERGE_HEAD', {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out.trim() || null;
+  } catch {
+    return null; // not a merge — `rev-parse -q --verify` exits non-zero
+  }
+}
+
 function getStagedFiles() {
+  // During a MERGE the index holds every file that differs between the branch
+  // base and the incoming ref — i.e. effectively all of the incoming branch.
+  // Judging that as the committer's work makes anyone merging `main` into an
+  // older branch the author of all of `main`, so they are refused for
+  // pre-existing violations that are absent from their own diff and that they
+  // did not write. That refusal names a file they cannot see, so the natural
+  // responses are to edit someone else's code or reach for --no-verify.
+  //
+  // A committer's real contribution to a merge is what differs from the
+  // INCOMING ref: a file taken verbatim from MERGE_HEAD was not authored here.
+  // A conflict resolution DOES differ from MERGE_HEAD, so genuinely authored
+  // content is still evaluated — see the merge-semantics tests, which assert
+  // both directions.
+  const mergeHead = mergeHeadIfMerging();
+  if (mergeHead) {
+    try {
+      const out = execSync(
+        `git diff --cached --name-only --diff-filter=ACMR ${mergeHead}`,
+        { encoding: 'utf-8' },
+      );
+      return out.split('\n').filter((l) => l.trim().length > 0);
+    } catch {
+      // Fall through to the full staged list — the STRICTER reading, so a
+      // failure here can only over-report, never silently let code past.
+    }
+  }
   try {
     const out = execSync('git diff --cached --name-only --diff-filter=ACMR', {
       encoding: 'utf-8',
@@ -149,9 +192,22 @@ function readRegistry() {
 }
 
 function isInRegistry(filepath, registryContent) {
-  // Strip src/ prefix; the registry uses paths relative to src/.
-  const stripped = filepath.replace(/^src\//, '');
-  return registryContent.includes(stripped);
+  // The registry's Location column is SECTION-relative, not uniformly relative
+  // to src/. Most sections write paths relative to src/, but the provider
+  // substrate section ("Provider substrate (`src/providers/`)") writes them
+  // relative to src/providers/ — 21 of its 23 rows, measured on main.
+  //
+  // Stripping only `src/` therefore looked for `providers/adapters/X.ts` while
+  // the row said `adapters/X.ts`, so no provider file could ever match. A file
+  // listed in three registry rows was still refused for a "missing registry
+  // entry", which told the author to add a row that already existed.
+  if (registryContent.includes(filepath.replace(/^src\//, ''))) return true;
+  // Only widen for genuine provider paths, so no other file gains a match it
+  // would not otherwise have had.
+  if (filepath.startsWith('src/providers/')) {
+    return registryContent.includes(filepath.replace(/^src\/providers\//, ''));
+  }
+  return false;
 }
 
 function hasMatchingCanary(stagedFiles, filepath) {

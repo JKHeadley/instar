@@ -218,4 +218,95 @@ describe('subscriptions controller — follow-me card wiring', () => {
     expect(h.calls.find((c) => c.url === '/subscription-pool/matrix/start-cell')).toBeUndefined();
     expect(h.els.matrix.textContent.toLowerCase()).toContain('pin');
   });
+
+  // ── #1428: a confirmed cancel resets the cell OPTIMISTICALLY (at click time) ──
+  function makeCancelHarness(cancelResponse) {
+    const dom = new JSDOM('<!doctype html><body><div id="fm"></div><div id="mx"></div></body>');
+    const doc = dom.window.document;
+    dom.window.confirm = () => true; // approve the "Cancel this in-progress setup?" guard
+    const els = {
+      accounts: doc.createElement('div'), pending: doc.createElement('div'),
+      followMe: doc.getElementById('fm'), matrix: doc.getElementById('mx'),
+    };
+    const calls = [];
+    const fetchImpl = (url, o = {}) => {
+      calls.push({ url, method: o.method || 'GET', body: o.body ? JSON.parse(o.body) : undefined });
+      const ok = (json, status = 200) => Promise.resolve({ ok: true, status, json: () => Promise.resolve(json) });
+      if (url === '/subscription-pool') return ok({ enabled: true, accounts: [] });
+      if (url === '/subscription-pool?scope=pool') return ok({
+        enabled: true, scope: 'pool',
+        // a1 needs-reauth on m1 → after a confirmed cancel the cell returns to "Sign in".
+        accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+        pool: { selfMachineId: 'm1', failed: [] },
+      });
+      // A still-cached pending login for a1 × m1 → the cell renders the in-flight flow + Cancel.
+      if (url.startsWith('/subscription-pool/pending-logins')) return ok({ enabled: true, logins: [
+        { id: 'a1', machineId: 'm1', verificationUrl: 'https://claude.com/oauth', ttlExpiresAt: '2999-01-01T00:00:00Z' },
+      ] });
+      if (url === '/subscription-pool/in-use') return ok({ activeAccountId: null });
+      if (url === '/subscription-pool/follow-me/scan') return ok({ enabled: true, offered: [] });
+      if (url === '/subscription-pool/follow-me/cancel') return ok(cancelResponse);
+      return ok({});
+    };
+    const ctrl = createController({ doc, els, fetchImpl, schedule: () => 0, cancel: () => {} });
+    ctrl._state.active = true;
+    return { doc, els, calls, ctrl };
+  }
+
+  it('a confirmed cancel (2xx {cancelled}) resets the cell to "Sign in" AT CLICK TIME (no ~40s stale window)', async () => {
+    const h = makeCancelHarness({ cancelled: true });
+    await h.ctrl.tick();
+    // the in-flight cell rendered with a Cancel button
+    const cancel = Array.from(h.els.matrix.querySelectorAll('[data-matrix-cancel]'))
+      .find((b) => b.getAttribute('data-account-id') === 'a1' && b.getAttribute('data-machine-id') === 'm1');
+    expect(cancel, 'the in-progress cell shows a Cancel affordance').toBeTruthy();
+    expect(h.els.matrix.querySelector('.sub-matrix-in-progress')).toBeTruthy();
+
+    cancel.click();
+    await flush();
+
+    // the cancel relay was POSTed…
+    const cancelCall = h.calls.find((c) => c.url === '/subscription-pool/follow-me/cancel');
+    expect(cancelCall?.method).toBe('POST');
+    expect(cancelCall?.body).toMatchObject({ id: 'a1', machineId: 'm1' });
+    // …and the cell reset IMMEDIATELY: no more in-flight flow, an actionable "Sign in" instead.
+    expect(h.els.matrix.querySelector('.sub-matrix-in-progress'), 'flow gone at click time').toBeNull();
+    const signIn = Array.from(h.els.matrix.querySelectorAll('.sub-matrix-setup'))
+      .find((b) => b.getAttribute('data-account-id') === 'a1' && b.getAttribute('data-machine-id') === 'm1');
+    expect(signIn?.textContent).toBe('Sign in');
+  });
+
+  it('a FAILED cancel (non-2xx) leaves the flow in place and surfaces the reason (poll stays authority)', async () => {
+    const dom = new JSDOM('<!doctype html><body><div id="mx"></div></body>');
+    const doc = dom.window.document;
+    dom.window.confirm = () => true;
+    const els = { accounts: doc.createElement('div'), pending: doc.createElement('div'), matrix: doc.getElementById('mx') };
+    const calls = [];
+    const fetchImpl = (url, o = {}) => {
+      calls.push({ url, method: o.method || 'GET', body: o.body ? JSON.parse(o.body) : undefined });
+      const ok = (json, status = 200) => Promise.resolve({ ok: true, status, json: () => Promise.resolve(json) });
+      if (url === '/subscription-pool?scope=pool') return ok({
+        enabled: true, scope: 'pool',
+        accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+        pool: { selfMachineId: 'm1', failed: [] },
+      });
+      if (url.startsWith('/subscription-pool/pending-logins')) return ok({ enabled: true, logins: [
+        { id: 'a1', machineId: 'm1', verificationUrl: 'https://claude.com/oauth', ttlExpiresAt: '2999-01-01T00:00:00Z' },
+      ] });
+      if (url === '/subscription-pool') return ok({ enabled: true, accounts: [] });
+      if (url === '/subscription-pool/in-use') return ok({ activeAccountId: null });
+      if (url === '/subscription-pool/follow-me/scan') return ok({ enabled: true, offered: [] });
+      if (url === '/subscription-pool/follow-me/cancel') return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ error: 'relay down' }) });
+      return ok({});
+    };
+    const ctrl = createController({ doc, els, fetchImpl, schedule: () => 0, cancel: () => {} });
+    ctrl._state.active = true;
+    await ctrl.tick();
+    const cancel = els.matrix.querySelector('[data-matrix-cancel]');
+    cancel.click();
+    await flush();
+    // The flow is NOT reset optimistically on a failed cancel — the in-progress cell stays.
+    expect(els.matrix.querySelector('.sub-matrix-in-progress')).toBeTruthy();
+    expect(els.matrix.textContent.toLowerCase()).toContain('couldn’t cancel');
+  });
 });

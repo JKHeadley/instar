@@ -65,6 +65,19 @@ export interface SingleInstanceLockDeps {
   handoffGraceMs?: number;
   /** Poll interval (ms) while waiting for handoff. Default 250. */
   pollIntervalMs?: number;
+  /**
+   * SINGLE-HOST-RENAME AUTO-HEAL (2026-07-08 hostname-flap wedge). When true, a
+   * FOREIGN-hostname lock whose holder pid is DEAD, whose state dir is `df -P`
+   * host-local, and whose heartbeat is older than `staleHostRenameMs` is treated
+   * as THIS host under a previous name (an `os.hostname()` flap, e.g. mac.lan ↔
+   * Justins-MacBook-Pro-99) and RECLAIMED instead of refused — the flap otherwise
+   * wedges every boot. Fail-closed: any unmet condition → the normal refuse-loud.
+   * Dev-agent-gated at the construction site (mirrors ResumeQueue.autoHealStaleHostLock).
+   * Default false.
+   */
+  autoHealStaleHostRename?: boolean;
+  /** Heartbeat-staleness floor (ms) for the rename auto-heal. Default 300000 (5 min). */
+  staleHostRenameMs?: number;
   /** Awaitable delay (tests override). */
   sleep?: (ms: number) => Promise<void>;
   /** Override env read (tests inject). Default `process.env`. */
@@ -103,6 +116,8 @@ export class SingleInstanceLock {
   private readonly isStateDirHostLocal: (stateDir: string) => boolean;
   private readonly handoffGraceMs: number;
   private readonly pollIntervalMs: number;
+  private readonly autoHealStaleHostRename: boolean;
+  private readonly staleHostRenameMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly env: NodeJS.ProcessEnv;
   private readonly log: (msg: string) => void;
@@ -116,6 +131,8 @@ export class SingleInstanceLock {
     this.isStateDirHostLocal = deps.isStateDirHostLocal ?? isStateDirHostLocalForLock;
     this.handoffGraceMs = deps.handoffGraceMs ?? 8000;
     this.pollIntervalMs = deps.pollIntervalMs ?? 250;
+    this.autoHealStaleHostRename = deps.autoHealStaleHostRename ?? false;
+    this.staleHostRenameMs = deps.staleHostRenameMs ?? 300_000;
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.env = deps.env ?? process.env;
     this.log = deps.log ?? ((m) => console.error(m));
@@ -158,20 +175,49 @@ export class SingleInstanceLock {
         continue;
       }
 
-      // FOREIGN-host lock → NEVER reclaim (refuse-loud). A standby on another
-      // host with its own non-shared state dir boots freely; this branch only
-      // fires when two hosts SHARE a state dir (a misconfiguration we refuse
-      // rather than corrupt).
+      // FOREIGN-host lock → normally NEVER reclaim (refuse-loud). A standby on
+      // another host with its own non-shared state dir boots freely; this branch
+      // only fires when two hosts SHARE a state dir (a misconfiguration we refuse
+      // rather than corrupt) — OR when THIS host's `os.hostname()` FLAPPED and a
+      // dead-holder lock stamped with the old name now looks foreign (the
+      // 2026-07-08 wedge: mac.lan ↔ Justins-MacBook-Pro-99 crash-looped every boot).
       if (existing.hostname && existing.hostname !== this.host) {
-        this.log(
-          `[single-instance] lock held by FOREIGN host "${existing.hostname}" (this host "${this.host}"). ` +
-          `Refusing — the state dir must be host-local; a shared volume is unsupported. ` +
-          `If this is a deliberate second instance, set INSTAR_ALLOW_SECOND_INSTANCE=1.`,
-        );
-        return { acquired: false, reason: 'foreign-host-conflict', currentHolder: existing };
+        // SINGLE-HOST-RENAME AUTO-HEAL (dev-agent-gated). A "foreign" lock is
+        // provably THIS host under a previous name — NOT a shared volume — iff
+        // ALL hold: the flag is on, the holder pid is DEAD on this host, the
+        // heartbeat is genuinely STALE, and the state dir is `df -P` host-local
+        // (the load-bearing guard: a host-local disk cannot be shared by a second
+        // host). Fail-closed: any unmet condition falls through to refuse-loud.
+        const holderDead = !this.pidAlive(existing.pid);
+        const hbStale =
+          typeof existing.heartbeat === 'number' &&
+          existing.heartbeat > 0 &&
+          this.now() - existing.heartbeat > this.staleHostRenameMs;
+        if (
+          this.autoHealStaleHostRename &&
+          holderDead &&
+          hbStale &&
+          this.isStateDirHostLocal(this.stateDir)
+        ) {
+          this.log(
+            `[single-instance] AUTO-HEAL single-host rename: lock hostname "${existing.hostname}" != this host ` +
+            `"${this.host}", but the state dir is host-local (df -P), holder pid ${existing.pid} is dead, and its ` +
+            `heartbeat is ${this.now() - existing.heartbeat}ms stale — treating as an os.hostname() flap on THIS ` +
+            `host and reclaiming the stale lock (NOT a shared-volume conflict).`,
+          );
+          // Fall through to the same-host-DEAD reclaim path below (it re-verifies
+          // dead + host-local, then unlinks + rewrites) — no duplicated logic.
+        } else {
+          this.log(
+            `[single-instance] lock held by FOREIGN host "${existing.hostname}" (this host "${this.host}"). ` +
+            `Refusing — the state dir must be host-local; a shared volume is unsupported. ` +
+            `If this is a deliberate second instance, set INSTAR_ALLOW_SECOND_INSTANCE=1.`,
+          );
+          return { acquired: false, reason: 'foreign-host-conflict', currentHolder: existing };
+        }
       }
 
-      // Same-host lock. Is the holder still alive?
+      // Same-host lock (or an auto-heal-approved single-host rename). Is the holder alive?
       if (this.pidAlive(existing.pid)) {
         // A LIVE same-host holder. Could be a normal restart's outgoing instance
         // (it will exit + release shortly) OR a genuine duplicate. Wait a bounded

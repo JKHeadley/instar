@@ -70,6 +70,13 @@ export interface LeaseTransport {
   pullPeer?(peer: { machineId: string; url: string }): Promise<LeaseRecord | null>;
   /** Best-effort fan-out pull of every peer's lease. Optional (see pullPeer). */
   pullAllPeers?(): Promise<void>;
+  /**
+   * Per-peer lease-observation view (machine-coherence-guard §5b): what each
+   * peer most recently disclosed as its lease view + when it was observed.
+   * Optional — a git-only mesh has no pull-capable transport. Advisory data
+   * (L4/SEC-4): feeds the awakeMachineCount counting rule, never demotion.
+   */
+  observedByPeer?(): Map<string, { lease: LeaseRecord | null; observedAtMs: number }>;
 }
 
 export interface LeaseCoordinatorDeps {
@@ -152,6 +159,15 @@ export class LeaseCoordinator {
   private lastRenewOkMonoMs = 0;
   private lastObservedEpoch = 0;
   private suspended = false;
+  /**
+   * Epoch acquired from a PEER through the normal fenced takeover authority.
+   * When this machine is the preferred captain, this is positive evidence that
+   * it may keep that exact epoch alive while the peer remains unreachable:
+   * acquisition already proved expired/dead/non-renewing and won the CAS.
+   * Process-local and epoch-bound by design; restart forgets it (fail-closed)
+   * and any higher observed epoch makes it inapplicable.
+   */
+  private peerTakeoverAuthorizedEpoch: number | null = null;
   /**
    * The freshest lease THIS machine has signed (acquisition or renewal). It is
    * the authoritative low-latency copy of our own holding — we broadcast it
@@ -253,6 +269,14 @@ export class LeaseCoordinator {
         }
       }
     }
+    // A higher accepted epoch permanently consumes any process-local solo-hold
+    // authorization for our older takeover. Do this BEFORE selfIssued folding:
+    // if the transport later forgets/removes that peer observation, the old
+    // epoch must never resurrect authority merely because it becomes the max
+    // visible record again.
+    if (this.peerTakeoverAuthorizedEpoch !== null && epoch > this.peerTakeoverAuthorizedEpoch) {
+      this.peerTakeoverAuthorizedEpoch = null;
+    }
     // Fold in our own freshest self-issued lease (a renewal's new expiry lives
     // here, not in coarse git). Only while not superseded by a higher epoch.
     if (this.selfIssued && this.selfIssued.holder === this.selfMachineId && this.selfIssued.epoch >= epoch) {
@@ -320,8 +344,8 @@ export class LeaseCoordinator {
    * ALL must hold (each is an EXISTING signal, never authority invented here):
    *  (1) the feature is enabled (DARK by default);
    *  (2) this machine is the F4-AGREED preferred-awake machine;
-   *  (3) EVERY peer is presumed-gone by liveness-silence (aged out, not merely
-   *      unreachable this tick) — the load-bearing "absent vs unreachable" gate;
+   *  (3) EVERY peer is presumed-gone by liveness-silence, OR this exact epoch
+   *      was acquired from a peer through the fenced takeover authority;
    *  (4) no higher epoch than ours is observed (a real takeover always wins).
    * Fail-closed: a missing dep ⇒ not eligible (today's self-suspend).
    */
@@ -329,7 +353,8 @@ export class LeaseCoordinator {
     const cfg = this.d.soloCaptainHold?.();
     if (!cfg?.enabled) return false;
     if (!this.d.isPreferredAwakeAgreed?.()) return false;
-    if (!this.d.allPeersPresumedGone?.()) return false;
+    const authorizedByPeerTakeover = this.peerTakeoverAuthorizedEpoch === ourEpoch;
+    if (!authorizedByPeerTakeover && !this.d.allPeersPresumedGone?.()) return false;
     // No higher epoch observed than the one we hold (a real takeover dominates).
     const view = this.effectiveView();
     if (view.epoch > ourEpoch) return false;
@@ -478,6 +503,60 @@ export class LeaseCoordinator {
   }
 
   /**
+   * Per-peer lease observations (machine-coherence-guard §5b): the map behind
+   * the lease-live awakeMachineCount derivation — each online peer's most
+   * recently disclosed lease view with its observation time, keyed on the
+   * machine-auth-verified peer id. Empty map when the transport has no pull
+   * capability (a git-only mesh — the counting rule degrades to the legacy
+   * 'registry-roles' source there).
+   */
+  peerLeaseObservations(): Map<string, { lease: LeaseRecord | null; observedAtMs: number }> {
+    return this.d.tunnel?.observedByPeer?.() ?? new Map();
+  }
+
+  /**
+   * machine-coherence-guard §5b — the LEASE-LIVE `awakeMachineCount` derivation
+   * (the fix for "awakeMachineCount:0 while both machines are online and a peer
+   * holds the lease"). The count is derived from the AUTHORITATIVE lease signal,
+   * NOT the laggy git-synced registry role field:
+   *
+   *   awakeMachineCount = (self holdsLease() ? 1 : 0)
+   *                     + #{ distinct online peers P whose most-recent observation
+   *                         satisfies ALL of }:
+   *       (i)  FRESHNESS — observed within `staleMs` (a stale claim contributes
+   *            nothing; the post-failover stale-claim overcount dies here);
+   *       (ii) LIVENESS  — the observed lease is NOT expired on OUR clock (an
+   *            expired lease carries no authority — the same rule the supersede
+   *            gate enforces);
+   *       (iii) SELF-CLAIM — `lease.holder === P`. A pulled lease naming a THIRD
+   *            machine is that peer's HEARSAY about someone else and contributes
+   *            nothing (the third machine's own self-claim is counted when IT is
+   *            pulled).
+   *
+   * Duplicate ids are impossible (map keying); observations are keyed on the
+   * machine-auth-verified DIALED peer id (never a response-body holder claim) and
+   * never include self, so `holder === P ≠ self` means self can never be
+   * double-counted. ADVISORY only (L4/SEC-4) — this count NEVER drives an
+   * automatic demotion; it feeds observability + the human-decision flow.
+   *
+   * Clock assumption (R2-N5): lease liveness is judged on the OBSERVER's clock;
+   * the freshness bound caps how long any one misjudged observation can distort
+   * the count, and the pool registry's clock-skew gate is the mesh-wide backstop.
+   */
+  deriveLiveAwakeCount(staleMs: number): number {
+    let count = this.holdsLease() ? 1 : 0;
+    const now = this.now();
+    for (const [peerId, rec] of this.peerLeaseObservations()) {
+      if (!rec.lease) continue; // an honest "no lease" — the peer is not awake
+      if (now - rec.observedAtMs > staleMs) continue; // (i) freshness
+      if (this.fl.isExpired(rec.lease, now)) continue; // (ii) liveness
+      if (rec.lease.holder !== peerId) continue; // (iii) self-claim (no hearsay)
+      count++;
+    }
+    return count;
+  }
+
+  /**
    * Whether the most-recently OBSERVED peer lease genuinely SUPERSEDES ours and
    * may therefore drive a pull-loop demotion. True ONLY when that peer lease is
    * LIVE (not expired) AND at a STRICTLY HIGHER epoch than our own self-issued
@@ -510,6 +589,25 @@ export class LeaseCoordinator {
   }
 
   /**
+   * Whether the current peer-held effective lease is takeable by the normal
+   * fenced acquisition rules right now. This is a scheduling hint only: callers
+   * still invoke acquireIfEligible(), which re-evaluates the same decision and
+   * owns the CAS. Exposing the hint lets the fast anti-blinding pull loop wake
+   * acquisition exactly when an expired/dead/non-renewing holder becomes
+   * eligible without turning every pull into a noisy acquisition attempt.
+   */
+  peerTakeoverEligible(): boolean {
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder === this.selfMachineId) return false;
+    return this.fl.canAcquire(
+      view.lease,
+      this.d.presumedDeadHolders(),
+      this.now(),
+      this.staleHolderOpts(view.lease),
+    ).can;
+  }
+
+  /**
    * Attempt to acquire (or self-renew) the lease if eligible. Returns true if
    * THIS machine holds the lease afterward. Implements the bounded-retry CAS
    * with livelock backoff.
@@ -537,6 +635,17 @@ export class LeaseCoordinator {
       const res = this.d.store.casWrite(candidate);
       if (res.ok) {
         this.selfIssued = candidate;
+        if (
+          view.lease &&
+          view.lease.holder !== this.selfMachineId &&
+          (
+            decision.reason === 'current-lease-expired' ||
+            decision.reason.startsWith('holder-presumed-dead') ||
+            decision.reason.startsWith('holder-not-renewing')
+          )
+        ) {
+          this.peerTakeoverAuthorizedEpoch = candidate.epoch;
+        }
         await this.broadcast(candidate);
         this.markRenewOk();
         this.emitEpoch(candidate.epoch);

@@ -48,7 +48,7 @@ const MAX_FREETEXT = 256;
 const PROVIDERS = ['anthropic', 'openai', 'github-copilot', 'google'] as const;
 const FRAMEWORKS = ['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli'] as const;
 const STATUSES = ['active', 'warming', 'rate-limited', 'needs-reauth', 'disabled'] as const;
-const QUOTA_SOURCES = ['claude-code-usage-screen', 'oauth-usage-endpoint-fallback'] as const;
+const QUOTA_SOURCES = ['claude-code-usage-screen', 'oauth-usage-endpoint-fallback', 'codex-rollout'] as const;
 const ID_RE = /^[a-z0-9-]+$/;
 
 const VALUE_FIELDS = ['id', 'nickname', 'email', 'provider', 'framework', 'status', 'quota'] as const;
@@ -80,10 +80,10 @@ function validateQuota(v: unknown): Record<string, unknown> | null | undefined {
   if (typeof v !== 'object' || Array.isArray(v)) return null;
   const q = v as Record<string, unknown>;
   const out: Record<string, unknown> = {};
-  const knownQuota = ['fiveHour', 'sevenDay', 'perModel', 'extraUsage', 'source', 'measuredAt'];
+  const knownQuota = ['fiveHour', 'sevenDay', 'fable', 'perModel', 'extraUsage', 'source', 'measuredAt'];
   for (const k of Object.keys(q)) if (!knownQuota.includes(k)) return null; // extra key → reject
 
-  for (const win of ['fiveHour', 'sevenDay'] as const) {
+  for (const win of ['fiveHour', 'sevenDay', 'fable'] as const) {
     if (q[win] !== undefined) {
       const w = q[win];
       if (typeof w !== 'object' || w === null || Array.isArray(w)) return null;

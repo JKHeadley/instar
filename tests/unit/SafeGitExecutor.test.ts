@@ -168,6 +168,55 @@ describe('SafeGitExecutor.execSync — source-tree guard', () => {
   });
 });
 
+describe('SafeGitExecutor.readStream — read-only funnel', () => {
+  let sandbox: string;
+  beforeEach(() => {
+    sandbox = mkSandbox('sge-read-stream-');
+    initRepo(sandbox);
+  });
+  afterEach(() => rmrf(sandbox));
+
+  it('streams stdout for a classified read-only verb', async () => {
+    const child = SafeGitExecutor.readStream(['ls-tree', '-r', '-z', 'HEAD'], {
+      cwd: sandbox,
+      operation: 'test-read-stream',
+    });
+    let stdout = '';
+    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
+    await new Promise<void>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code) => code === 0 ? resolve() : reject(new Error(`exit ${code}`)));
+    });
+    expect(stdout).toContain('\tseed\0');
+  });
+
+  it('rejects a destructive verb before spawn', () => {
+    expect(() => SafeGitExecutor.readStream(['reset', '--hard'], {
+      cwd: sandbox,
+      operation: 'test-read-stream-block',
+    })).toThrow(SafeGitExecutorError);
+  });
+
+  it('kills a hung read-only stream at the requested timeout', async () => {
+    const bin = path.join(sandbox, 'bin');
+    fs.mkdirSync(bin);
+    const fakeGit = path.join(bin, 'git');
+    fs.writeFileSync(fakeGit, '#!/bin/sh\nexec sleep 60\n');
+    fs.chmodSync(fakeGit, 0o755);
+    const child = SafeGitExecutor.readStream(['ls-tree', '-z', 'HEAD'], {
+      cwd: sandbox,
+      operation: 'test-read-stream-timeout',
+      timeout: 25,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
+    });
+    const signal = await new Promise<NodeJS.Signals | null>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (_code, sig) => resolve(sig));
+    });
+    expect(signal).toBe('SIGKILL');
+  });
+});
+
 // ── env handling ──────────────────────────────────────────────────
 
 describe('SafeGitExecutor — env denylist', () => {

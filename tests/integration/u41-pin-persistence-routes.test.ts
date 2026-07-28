@@ -123,7 +123,7 @@ describe('U4.1 pin-persistence routes', () => {
       config: { authToken: 'test', stateDir: dir, port: 0 },
       stateDir: dir,
       coordinator: {
-        getSyncStatus: () => ({ enabled: true, role: 'awake', leaseHolder: SELF, leaseEpoch: 3, holdsLease: true, splitBrainState: 'clear', protocolVersion: 1, awakeMachineCount: 1 }),
+        getSyncStatus: () => ({ enabled: true, role: 'awake', leaseHolder: SELF, leaseEpoch: 3, holdsLease: true, splitBrainState: 'clear', protocolVersion: 1, awakeMachineCount: 1, awakeMachineCountSource: 'lease-live' }),
         managers: { identityManager: idMgr },
       },
       machinePoolRegistry: registry,

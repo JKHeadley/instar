@@ -26,13 +26,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkEli16Overview, MIN_ELI16_CHARS } from './eli16-overview-check.mjs';
 import { verifyProposalDerivedRunbooks } from '../skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs';
 import { classifyTier, decideRequirementSet } from './lib/classify-tier.mjs';
 import { recognizeConvergence } from './lib/convergence-recognition.mjs';
 import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality, isAuthorizationSurfaceFile, artifactAddressesAgentProposesApproves, operatorSurfaceRequiresRawInput } from './lib/operator-surface.mjs';
+import { selfActionDeclarationVerdict } from './lib/self-action-detect.mjs';
+import { validateAuditReport, parseFrontmatter } from './write-audit-convergence.mjs';
+import { scanForSecrets } from './audit-secret-patterns.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
 // The precommit reads NO config file and runs pre-compile, so it cannot import
@@ -126,6 +129,74 @@ if (staged.length === 0) {
   process.exit(0);
 }
 
+// ─── Step 1.5: audit-convergence gate ─────────────────────────────────────
+// (audit-convergence-enforcement §2). Placed BEFORE the in-scope early-exit so
+// it fires for docs-only audit commits (a `docs/audits/*.md` commit is exactly
+// the dominant case and would be dead code after the in-scope filter). Validates
+// the STAGED blob (`git show :<path>`), never the worktree copy. FAIL-CLOSED on
+// any validator crash — the honest escape is to drop the `converged:` line.
+function stagedBlob(file) {
+  try {
+    return execSync(`git show :${JSON.stringify(file)}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+  } catch {
+    return null; // deleted/renamed away — nothing to validate
+  }
+}
+function frontmatterHas(content, key) {
+  try { return !!parseFrontmatter(content).fields[key]; } catch { return false; }
+}
+const auditReports = staged.filter((f) => /^docs\/audits\/.+\.md$/.test(f));
+const otherDocsMd = staged.filter((f) => /^docs\/.+\.md$/.test(f) && !/^docs\/audits\//.test(f));
+
+// Canonical-path-only: a `converged:` audit stamp is legitimate ONLY under
+// docs/audits/. A staged docs/**/*.md OUTSIDE it carrying an `audit:` key is a
+// misplaced (or rogue) audit report — block. (Keyed on `audit:`, not a bare
+// `converged:`, to avoid colliding with generic doc vocabulary — codex-R3.)
+for (const f of otherDocsMd) {
+  const content = stagedBlob(f);
+  if (content && frontmatterHas(content, 'audit')) {
+    console.error(`[instar-dev-precommit] BLOCKED: ${f} carries an \`audit:\` frontmatter key outside docs/audits/.`);
+    console.error('  → an audit report + its `converged:` stamp are legitimate only at docs/audits/<slug>.md.');
+    process.exit(1);
+  }
+}
+
+for (const f of auditReports) {
+  const content = stagedBlob(f);
+  if (!content) continue;
+
+  // (1) secret scan — the one hard block (irreversible: git history + push).
+  const secrets = scanForSecrets(content);
+  if (secrets.length) {
+    console.error(`[instar-dev-precommit] BLOCKED: ${f} appears to contain credential material:`);
+    for (const s of secrets) console.error(`    line ${s.line}: matches ${s.name} — reference path+line, NEVER quote the secret`);
+    process.exit(1);
+  }
+
+  // (2) convergence validation — only when the report CLAIMS converged.
+  if (frontmatterHas(content, 'converged')) {
+    let result;
+    try {
+      const stagedNames = new Set(staged);
+      result = validateAuditReport(content, {
+        root: ROOT,
+        stagedSet: stagedNames,
+        basenameSlug: path.basename(f, '.md'),
+      });
+    } catch (err) {
+      // fail-CLOSED — never let a validator crash pass a stamp.
+      console.error(`[instar-dev-precommit] BLOCKED (fail-closed): validator crashed on ${f}: ${err.message}`);
+      console.error('  → honest escape: remove the `converged:` line and commit the audit as honestly-incomplete.');
+      process.exit(1);
+    }
+    if (!result.ok) {
+      console.error(`[instar-dev-precommit] BLOCKED: ${f} claims \`converged:\` but the ledger does not earn it: ${result.reason}`);
+      console.error('  → an honestly-incomplete audit is fine to commit; it just cannot carry a `converged:` stamp.');
+      process.exit(1);
+    }
+  }
+}
+
 // ─── Step 2: classify staged files ───────────────────────────────────────
 
 function inScope(file) {
@@ -180,10 +251,14 @@ if (bootstrapTrigger) {
 
 let tierSignal = { suggestedTier: 2, sizeTier: 2, riskFloor: 1, reasons: [] };
 let totalChangedLoc = 0;
+// Hoisted to module scope (docs/specs/self-action-convergence.md → E3 impl
+// note): addedDiffText is computed in the Step-3.5 block but consumed later by
+// assertSelfActionDeclared at BOTH the enforceTier1 and Tier-2 pass-through call
+// sites. It must outlive the block.
+let addedDiffText = '';
 {
   let addedLines = 0;
   let deletedLines = 0;
-  let addedDiffText = '';
   try {
     const numstat = execSync(
       `git diff --cached --numstat -- ${inScopeFiles.map((f) => JSON.stringify(f)).join(' ')}`,
@@ -262,8 +337,11 @@ if (traceEntries.length === 0) {
 }
 
 // ─── Step 4.5: read the agent's DECLARED tier + branch ───────────────────
-// The agent records its tier in the trace JSON. We peek the freshest fresh
-// trace to read `trace.tier` (1|2|3). decideRequirementSet() factors the pure
+// The agent records its tier in the trace JSON. Select the freshest trace that
+// actually covers THIS staged change before reading its identity or tier. A
+// merely-newer trace from another worktree/task must never label this decision
+// audit (the feedback-class failure behind fb-2b24aa04-540).
+// decideRequirementSet() factors the pure
 // enforcement decision:
 //   - tier 1            → 'tier1-lite'  (ELI16 + side-effects staged; no spec)
 //   - tier 2 / 3        → 'tier2-full'  (the EXISTING full validation, unchanged)
@@ -272,8 +350,28 @@ if (traceEntries.length === 0) {
 let declaredTier = null;
 let tierReasoning = '';
 let freshestTrace = null;
+let freshestTraceEntry = null;
+for (const entry of traceEntries) {
+  try {
+    const candidate = JSON.parse(fs.readFileSync(entry.file, 'utf8'));
+    const covered = new Set(candidate?.coveredFiles || []);
+    if (candidate?.phase === 'complete' && inScopeFiles.every((f) => covered.has(f))) {
+      freshestTrace = candidate;
+      freshestTraceEntry = entry;
+      break;
+    }
+  } catch {
+    // The full validation path below reports malformed attempts. They are not
+    // eligible to provide identity/tier metadata for this staged change.
+  }
+}
+if (!freshestTrace || !freshestTraceEntry) {
+  blockCommit(
+    inScopeFiles,
+    'No fresh complete trace covers this staged change. Run the /instar-dev skill for the files being committed.',
+  );
+}
 try {
-  freshestTrace = JSON.parse(fs.readFileSync(traceEntries[0].file, 'utf8'));
   if (freshestTrace && (freshestTrace.tier === 1 || freshestTrace.tier === 2 || freshestTrace.tier === 3)) {
     declaredTier = freshestTrace.tier;
   }
@@ -285,7 +383,13 @@ try {
   // path (the existing Step 5 loop will surface the malformed-JSON attempt).
 }
 
-const slug = (freshestTrace && (freshestTrace.slug || freshestTrace.name)) || 'unknown';
+const slug = (freshestTrace && (
+  freshestTrace.slug ||
+  freshestTrace.name ||
+  (typeof freshestTrace.artifactPath === 'string'
+    ? path.basename(freshestTrace.artifactPath, path.extname(freshestTrace.artifactPath))
+    : null)
+)) || 'unknown';
 const decision = decideRequirementSet(declaredTier);
 
 // ─── Step 4.55: causal autopsy (directive 2026-06-05) ───────────────────
@@ -337,6 +441,7 @@ const decisionEntryPath = writeDecisionAudit({
   files: inScopeFiles.length,
   loc: totalChangedLoc,
   causalAutopsy,
+  classClosure: (freshestTrace && typeof freshestTrace.classClosure === 'object' && freshestTrace.classClosure) || null,
 });
 // Malformed autopsy blocks AFTER the audit write — the blocked attempt is
 // recorded (verdict 'blocked' via the exit handler), same as every gate
@@ -404,7 +509,7 @@ if (belowFloor) {
 // (The tests/lint requirement from the spec lives in the pre-PUSH gate, not
 // here: this pre-COMMIT hook checks ARTIFACTS only.)
 if (decision.requirementSet === 'tier1-lite') {
-  enforceTier1(freshestTrace, traceEntries[0].file);
+  enforceTier1(freshestTrace, freshestTraceEntry.file);
   // enforceTier1 either passes through (process.exit(0)) or blockCommit()s.
 }
 
@@ -886,12 +991,15 @@ if (!promotionGateResult.ok) {
 
 assertFrameworkGenerality(inScopeFiles, validTrace.trace);
 assertOperatorSurfaceQuality(staged, validTrace.trace);
+assertSelfActionDeclared(addedDiffText, inScopeFiles, validTrace.trace);
+enforceDuplicateBuildBackstop(validTrace.trace);
 
 console.error(
   `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved` +
     `${REQUIRE_CONVERGENCE_REPORT ? ` + report-backed (${convergenceReportRel})` : ''}` +
     ` [cross-model: ${crossModelReview}], ELI16 overview ${eli16Rel} present (${eli16Result.charCount} chars), promotion-gate: ${promotionGateResult.reason}.`,
 );
+removeDupBuildMarkerOnCommitSuccess();
 process.exit(0);
 
 // Framework-generality review gate. Changes to the session launch/inject
@@ -1035,6 +1143,183 @@ function assertOperatorSurfaceQuality(stagedFiles, trace) {
   }
 }
 
+// Self-Action Convergence gate (docs/specs/self-action-convergence.md → E3).
+// The light (Tier-1) path is where #1035 (swap-thrash) slipped through with no
+// adversarial reviewer. When an ADDED diff introduces/modifies a self-action
+// emit (restart|swap|respawn|spawn|notify|retry|re-drive|kill) AND a src/ file
+// is touched, the change must declare the `unbounded-self-action` class in the
+// TRACE — either a real classClosure declaration (guard|gap) OR an explicit
+// negative declaration (closure:'n/a' + reason) — the trace-level analog of the
+// D4 lint's allowlist. A genuine one-shot user-driven call costs one attested
+// line, never an unescapable block.
+//
+// FAIL-OPEN on tooling failure (the safe asymmetry): empty addedDiffText, no
+// src/ file, or an unreadable artifact does NOT fire — a false-negative here is
+// backstopped by the E2 CI lint; a false-positive that blocked all commits
+// would sever the developer's ability to ship. Called at BOTH pass-through
+// points (enforceTier1 + the Tier-2 fall-through) — the both-call-sites detail
+// is load-bearing (the light path is where #1035 escaped).
+function assertSelfActionDeclared(addedDiffText, inScopeFilesArg, trace) {
+  const verdict = selfActionDeclarationVerdict({
+    addedDiffText,
+    inScopeFiles: inScopeFilesArg,
+    classClosure: trace && trace.classClosure,
+  });
+  if (!verdict.required) return; // fail-open / not a self-action change
+
+  if (!verdict.satisfied) {
+    blockCommit(
+      inScopeFilesArg,
+      [
+        'Self-Action Convergence gate:',
+        '  This change ADDS or modifies a self-triggered action in src/ (a',
+        '  restart / swap / respawn / spawn / notify / retry / re-drive / kill),',
+        '  but the trace carries no `unbounded-self-action` class declaration.',
+        '',
+        '  A self-triggered action must be proven to CONVERGE under sustained',
+        '  pressure (not just be individually correct). Declare it in your trace:',
+        '',
+        '  • If it is a self-triggered controller — register it in',
+        '    src/testing/selfActionRegistry.ts (so tests/unit/self-action-convergence.test.ts',
+        '    proves it settles) and declare closure:"guard" citing that ratchet:',
+        '      node scripts/class-closure-declare.mjs --to-trace \\',
+        '        --class unbounded-self-action --closure guard \\',
+        '        --citation tests/unit/self-action-convergence.test.ts \\',
+        '        --enforcement ratchet --how-caught "<convergence argument: steady-state bound + settling brake>"',
+        '',
+        '  • If the guard is out of THIS change\'s scope — closure:"gap" with a',
+        '    tracked evolution-action id (--closure gap --gap-item <id>).',
+        '',
+        '  • If it is genuinely a ONE-SHOT / user-driven action (not a',
+        '    self-triggered loop) — an explicit negative declaration:',
+        '      { "defectClass": "unbounded-self-action", "closure": "n/a",',
+        '        "reason": "one-shot user-driven action, not a self-triggered loop" }',
+        '',
+        '  (Standard: docs/STANDARDS-REGISTRY.md → "Capacity Safety — No Unbounded',
+        '  Self-Action". Spec: docs/specs/self-action-convergence.md → Part E3.)',
+      ].join('\n'),
+    );
+  }
+
+  // Mirror check (the display-only human mirror — the two hosts #1347 uses).
+  // Fail-OPEN if the artifact is unreadable.
+  const artifactRel = trace && (trace.sideEffectsPath || trace.artifactPath);
+  if (artifactRel) {
+    const abs = path.resolve(ROOT, artifactRel);
+    if (fs.existsSync(abs)) {
+      const content = fs.readFileSync(abs, 'utf8');
+      if (!/unbounded-self-action/.test(content)) {
+        blockCommit(
+          inScopeFilesArg,
+          [
+            'Self-Action Convergence gate (mirror):',
+            '  The trace declares the unbounded-self-action class, but the staged',
+            `  side-effects artifact (${artifactRel}) never mentions it — the`,
+            '  display-only human mirror must AGREE with the machine-readable trace',
+            '  declaration (the two hosts #1347 uses).',
+            '',
+            '  Add the class-closure declaration to the side-effects artifact\'s',
+            '  "## Class-Closure Declaration" section.',
+          ].join('\n'),
+        );
+      }
+    }
+  }
+}
+
+// Duplicate-build guard — precommit PRESENCE backstop
+// (docs/specs/duplicate-build-guard.md §3.4, second enforced moment).
+// PRESENCE-ONLY: it gates on the trace FIELD existing, never on the verdict's
+// VALUE — it MUST accept decision:"proceed" on a likely-duplicate (the human
+// is the authority; a value-gate would make this validator a meaning-authority,
+// forbidden by docs/signal-vs-authority.md; the "hard-invariant validation"
+// carve-out is exactly what a structural field-validator is). It DOES
+// distinguish the §3.4 `check-errored` auto-stub from an author disposition:
+// the stub satisfies presence (never wedges the commit) but WARNS loudly.
+//
+// Rollout scoping (spec §5 + first-ship compatibility): the backstop only
+// REFUSES a missing field when the guard is provably live for THIS build —
+// either INSTAR_DUP_BUILD_CHECK is explicitly on, or the build-start check
+// actually ran here (its stub exists in this worktree, so the trace SHOULD
+// carry the field — re-running write-trace.mjs folds it in). Traces written
+// before the guard existed (env unset, no stub) get a loud WARN, never a
+// refusal. INSTAR_DUP_BUILD_CHECK=off no-ops the whole backstop.
+// §3.2 terminal lifecycle: at commit success the build's in-flight ledger
+// marker is REMOVED (mirrors PendingInjectStore "recorded at spawn, cleared
+// after"). Fail-open: any error is swallowed — marker cleanup must never
+// block a commit; a leaked marker self-heals via liveness + compaction.
+function removeDupBuildMarkerOnCommitSuccess() {
+  try {
+    const mode = String(process.env.INSTAR_DUP_BUILD_CHECK ?? '').toLowerCase();
+    if (mode === 'off' || mode === '0' || mode === 'false') return;
+    if (!fs.existsSync(path.join(ROOT, '.instar', 'dup-build-check.json'))) return;
+    execFileSync('node', [path.join(ROOT, 'scripts', 'lib', 'duplicate-build-check.mjs'), '--remove-marker'], {
+      cwd: ROOT,
+      timeout: 3000,
+      stdio: 'ignore',
+    });
+  } catch { /* fail-open — never block the commit on cleanup */ }
+}
+
+function enforceDuplicateBuildBackstop(trace) {
+  try {
+    const mode = String(process.env.INSTAR_DUP_BUILD_CHECK ?? '').toLowerCase();
+    if (mode === 'off' || mode === '0' || mode === 'false') return;
+    const explicitlyOn = mode === 'on' || mode === '1' || mode === 'true';
+
+    const field = trace && trace.duplicateBuildCheck;
+    if (field && typeof field === 'object' && !Array.isArray(field)) {
+      if (field.verdict === 'check-errored') {
+        // Presence satisfied — but a build that ran on a FAILED check is a
+        // visible second-look signal, not silently indistinguishable from an
+        // author-reviewed proceed (§3.4). WARN, never block.
+        console.error('');
+        console.error('┌──────────────────────────────────────────────────────────────────┐');
+        console.error('│  ⚠ DUPLICATE-BUILD CHECK ERRORED (fail-open auto-stub).           │');
+        console.error('│    This build proceeded WITHOUT a working duplicate-build check.  │');
+        console.error('│    NOT blocked — but give the overlap question a second look:     │');
+        console.error('│    node scripts/lib/duplicate-build-check.mjs <specPath>          │');
+        console.error('└──────────────────────────────────────────────────────────────────┘');
+        console.error('');
+      }
+      return; // presence-only — the verdict's VALUE is never gated on.
+    }
+
+    const stubExists = fs.existsSync(path.join(ROOT, '.instar', 'dup-build-check.json'));
+    if (explicitlyOn || stubExists) {
+      blockCommit(
+        inScopeFiles,
+        [
+          'Duplicate-build backstop: the trace carries no duplicateBuildCheck field.',
+          '',
+          'The duplicate-build guard is live for this build' +
+            (stubExists ? ' (its check stub exists at .instar/dup-build-check.json)' : ' (INSTAR_DUP_BUILD_CHECK is on)') + ',',
+          'so the trace must record the check verdict + your proceed/abandon disposition.',
+          '',
+          'Fix:',
+          '  1. Run the check (if you have not): node scripts/lib/duplicate-build-check.mjs <specPath>',
+          '  2. On a verify/likely-duplicate verdict, record your disposition:',
+          '     node scripts/lib/duplicate-build-check.mjs --record-disposition --decision proceed --reason "…" [--ack EV-1]',
+          '  3. Re-run write-trace.mjs (it folds the stub into the trace) and commit fresh.',
+          '',
+          'This backstop is PRESENCE-ONLY: it never gates on the verdict value —',
+          'a recorded proceed-on-likely-duplicate passes (you are the authority).',
+          '(docs/specs/duplicate-build-guard.md §3.4; off-switch: INSTAR_DUP_BUILD_CHECK=off)',
+        ].join('\n'),
+      );
+    } else {
+      // Guard not yet live for this build — advisory only (a trace written
+      // before the guard existed must not be refused retroactively).
+      console.error(
+        '[instar-dev-precommit] note: trace has no duplicateBuildCheck field (duplicate-build guard not live for this build — advisory only).',
+      );
+    }
+  } catch {
+    // Fail-open (FD5): the backstop must never crash the gate on its own bug.
+    // (blockCommit exits the process directly, so a real refusal never lands here.)
+  }
+}
+
 function blockCommit(files, reason) {
   console.error('');
   console.error('╔════════════════════════════════════════════════════════════════════╗');
@@ -1065,7 +1350,7 @@ function blockCommit(files, reason) {
 // fire, the line just evaporated with the worktree). If the commit is later
 // blocked by the gate, the staged line simply rides the retry commit — both
 // lines describe real gate evaluations.
-function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc, causalAutopsy = null }) {
+function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc, causalAutopsy = null, classClosure = null }) {
   try {
     fs.mkdirSync(DECISIONS_DIR, { recursive: true });
     const ts = new Date().toISOString();
@@ -1097,6 +1382,12 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
       // This is THE meta-analysis substrate: convergence vs whack-a-mole is
       // a query over these entries, not archaeology.
       causalAutopsy,
+      // Class-closure declaration (docs/specs/class-closure-gate.md +
+      // self-action-convergence.md → E3): persisted from the instar-dev TRACE
+      // into the machine-readable decision-audit host the CI class-closure lint
+      // reads — closing the chicken-and-egg (the trace is authored before the
+      // commit; the entry is written by this hook). null = not declared.
+      classClosure,
       // Finalized by the process exit handler below: 'pass' when the gate
       // allowed the commit, 'blocked' otherwise. The riding-the-retry design
       // (a blocked evaluation's entry rides the next successful commit, see
@@ -1231,11 +1522,14 @@ function enforceTier1(trace, traceFile) {
 
   assertFrameworkGenerality(inScopeFiles, trace);
   assertOperatorSurfaceQuality(staged, trace);
+  assertSelfActionDeclared(addedDiffText, inScopeFiles, trace);
+  enforceDuplicateBuildBackstop(trace);
 
   console.error(
     `[instar-dev-precommit] OK (Tier 1) — trace ${traceName} covers ${inScopeFiles.length} in-scope file(s), ` +
       `ELI16 ${eli16Rel} (${eli16Content.trim().length} chars) + side-effects ${sideEffectsRel} staged & verified. ` +
       `No converged spec required for Tier 1.`,
   );
+  removeDupBuildMarkerOnCommitSuccess();
   process.exit(0);
 }

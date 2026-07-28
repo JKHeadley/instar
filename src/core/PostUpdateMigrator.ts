@@ -34,6 +34,7 @@ import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { installBuiltinSkills } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
+import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
 import { installAutoStart, installBootWrapper } from '../commands/setup.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
@@ -52,6 +53,7 @@ import {
   PR_GATE_SETUP_MD_SHA256,
 } from '../data/pr-gate-artifacts.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { ensureSlackReplyRelay, isSlackConfigured } from './SlackReplyRelayInstaller.js';
 import { SubscriptionPool } from './SubscriptionPool.js';
 import { PlaywrightProfileRegistry } from './PlaywrightProfileRegistry.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
@@ -70,6 +72,7 @@ import {
   loadTestIdentityKey,
 } from '../users/testIdentityMarkers.js';
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
+import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -90,6 +93,22 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 - **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to hold off on work, fan out parallel sub-agents, or report "the machine is loaded" → run \`load-assess.sh\` and act on its verdict, not on a load-average glance.\n`;
 }
 
+export function SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Single-Machine Failover-Gap Guard (⚗️ dev-gated dark, dry-run first)
+
+This signal-only guard notices the narrow risk state where autonomous work is active but no online peer is available as a failover target. It never creates a peer, moves work, blocks work, or performs recovery. It is dev-gated and dark on ordinary fleet agents; even when constructed on a development agent it defaults to \`dryRun:true\`, so it observes and increments would-raise counters but sends no Attention item.
+- Status (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/failover-gap\`. A 503 means the guard is dark/not constructed on this agent — it says nothing about whether failover coverage is healthy. A 200 snapshot can still report \`dryRun:true\`, meaning observation only.
+- **When to use** (PROACTIVE): user asks "is active work protected if this machine disappears?" / "why did I get a no-failover-target notice?" → read \`/pool/failover-gap\` and report the observed state and posture honestly; never infer readiness from config or a 503.\n`;
+}
+
+export function MISSING_LOGIN_SESSION_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Missing-Login Session Guard (⚗️ dev-gated dark, dry-run first)
+
+This signal-only guard correlates a live session's actual config home with the subscription-pool account whose local login has gone missing. Identity drift by itself is not enough. It never logs in, swaps credentials, restarts a session, blocks work, or performs recovery. It is dev-gated and dark on ordinary fleet agents; even when constructed on a development agent it defaults to \`dryRun:true\`, so it observes and increments would-raise counters but sends no Attention item.
+- Status (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/missing-login\`. A 503 means the guard is dark/not constructed on this agent — it says nothing about login health. A 200 snapshot can still report \`dryRun:true\`, meaning observation only.
+- **When to use** (PROACTIVE): user asks "is a live session running from a login that disappeared?" / "why did I get a missing-login notice?" → read \`/pool/missing-login\` and report the observed state and posture honestly; never infer login health from identity drift, config, or a 503.\n`;
+}
+
 export function SENDER_REJECTION_CLAUDEMD_SECTION(): string {
   return `\n### Sender-Rejection Notices ("message not delivered — sender not recognized")
 
@@ -107,6 +126,64 @@ Heavy MCP servers (Playwright's Chromium; Electron bridges) are mostly idle and 
 - Request a load / offload: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/mcp/load -H 'Content-Type: application/json' -d '{"topicId":N,"server":"playwright"}'\` (\`/mcp/offload\` to drop).
 - **Authorization (Know Your Principal):** a change completes ONLY when the topic has a LIVE autonomous run (preapproved) OR an operator-authenticated approval. An \`agent\`-initiated change on a non-preapproved topic returns \`needs-approval\` and performs NO restart — I surface it and wait. I can NEVER self-approve by replaying the nonce over my own Bearer token.
 - **When to use** (PROACTIVE): in an autonomous run, when I need a heavy tool I don't have, I request the load (I'm preapproved → it loads + restarts + continues). When the user asks "free up resources from idle MCP servers" / "why did my session restart to add a tool?" → this feature. Single-server / no-\`.mcp.json\` agents are a no-op.\n`;
+}
+
+export function ULTRACODE_SPAWN_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Ultracode one-shot spawn (Claude Code, opt-in)
+
+Claude Code's ultracode mode is xhigh effort plus dynamic workflow orchestration. It is deliberately NOT a \`--effort\` CLI value. Instar uses Claude's supported prompt-keyword trigger instead: \`POST /sessions/spawn\` accepts \`{"name":"deep-task","prompt":"...","framework":"claude-code","ultracode":true}\` and prefixes \`ultracode\` to that spawned turn. Claude's \`workflowKeywordTriggerEnabled\` setting defaults to true; an operator who disabled it has deliberately disabled this trigger, so the prefixed keyword becomes ordinary prompt text. The option ships dark (false/absent changes nothing), is rejected for non-Claude frameworks, and applies only to that one-shot spawn — it does not pin a topic or mutate Claude settings. Status/result uses the normal \`GET /sessions\` surface at \`http://localhost:${port}\`.\n`;
+}
+
+/**
+ * Tone-gate advisory migration (operator approval 2026-07-19, topic 33368).
+ * Shared by `generateClaudeMd` (new installs) and `migrateClaudeMd` (existing
+ * agents) — Agent Awareness Standard + Migration Parity. An agent that does not
+ * know the override path cannot use it, and an override it never performs is a
+ * grading signal the meter never receives.
+ *
+ * Unique content-sniff marker: 'Most checks are NUDGES you may override'.
+ */
+/**
+ * How to actually SEND a tone-advisory reaction — the missing bridge.
+ *
+ * The section above documents `metadata.*` fields: the HTTP shape. But the
+ * agent template mandates the relay SCRIPT ("ALWAYS the relay script, never a
+ * hand-rolled curl"), and the script's flags for these reactions were
+ * documented NOWHERE agent-facing. So an agent handed a `decisionRef` had to
+ * invent an invocation — and a flag placed after the topic id was silently
+ * swallowed into the message body and sent to the user as literal text, while
+ * the override never applied. That is how a CORRECT check was graded `wrong`
+ * on 2026-07-26. The script now refuses a misplaced flag; this documents the
+ * right form so the refusal is rarely needed.
+ *
+ * Unique content-sniff marker: 'EVERY FLAG GOES BEFORE THE TOPIC ID'.
+ */
+export const TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION = `- **How to send the reaction (the relay script, not a curl).** Pass the reaction as FLAGS — and **EVERY FLAG GOES BEFORE THE TOPIC ID**, because flag parsing stops at the topic id and anything after it is message text:
+  \`\`\`
+  cat <<'EOF' | .instar/scripts/telegram-reply.sh --tone-ack B2_FILE_PATH --tone-reason "the operator asked for the path explicitly" --tone-decision-ref <decisionRef> TOPIC_ID
+  your message, unchanged
+  EOF
+  \`\`\`
+  Use \`--tone-complied <RULE>\` instead of \`--tone-ack\`/\`--tone-reason\` when you agreed and revised. A flag in the wrong position is now REFUSED (it used to be sent to the user as literal text with its effect silently dropped, which is exactly how a correct check once got graded \`wrong\`). If such a token is genuinely part of your message, pipe the text on stdin — the check only inspects arguments.`;
+
+export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**Most checks are NUDGES you may override — two things are walls.** Under the advisory migration (operator approval 2026-07-19; \`toneGate.advisoryMigration\`, dev-gated live / fleet-dark) a cited judgment rule returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded**:
+- **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
+- **You disagree** → re-send unchanged with \`metadata.toneAdvisoryAck: "<RULE>"\` **and** \`metadata.toneAdvisoryAckReason: "<why the nudge is wrong here>"\` → the check is graded \`wrong\`. **The reason is required** — a reasonless ack is refused (\`tone-gate-advisory-reason-required\`) and nothing sends. That reason IS the evidence that tunes this gate; without it every tone decision grades \`unknown\` forever.
+- **Wall 1 — a LIVE credential** in outbound text → \`422\` with \`blockedBy: credential-exposure-guard\`, \`overridable: false\`. Deterministic, runs before the LLM authority, holds during an outage, and **no metadata reaches it**. Remove the value, refer to the secret by NAME, and route it through Secret Drop if the recipient genuinely needs it.
+- **Wall 2 — the self-stop family** (B15–B19: quitting for a context/fatigue reason, declaring an unverified wall, handing a doable task back to the user). These stay hard blocks. They exist to constrain YOU, so an override reason written by you is produced by exactly the reasoning the rule distrusts — and the harm (work abandoned) lands the moment the message sends, which no later review can undo.
+- **How to tell whether this is live here**: read the RESPONSE, never assume. \`error: tone-gate-advisory\` = nudges are on. \`error: tone-gate-blocked\` = this install blocks (either the migration is dark, or you hit a wall). A \`tone-gate-blocked\` carrying \`advisoryUnavailable\` means the nudge was withdrawn because the override could not have been RECORDED — the check keeps its authority rather than loosen for nothing.
+- **When to use** (PROACTIVE — this is the trigger): the moment you get a \`tone-gate-advisory\`, decide and declare it — comply or override-with-reason. Never silently drop the message, and never re-send in a loop hoping the verdict changes. Your override is a SIGNAL recorded at the self-report rung, never authority.
+${TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION}`;
+
+export function EXTERNAL_HOG_CLAUDEMD_SECTION(port: number): string {
+  return `\n### External-Hog Zombie Auto-Kill Sentinel (⚗️ dev-gated dark, watch-only) — the runaway-editor-zombie killer
+
+A watcher that surfaces any sustained EXTERNAL CPU hog (broad observability) and AUTO-KILLS exactly one narrow class — orphaned Electron editor extension-host wrappers (the 2026-07-03 VS Code MongoDB-extension zombie that pinned ~2.2 cores for ~24h). Intelligence decides kill/leave/alert WITHIN a mechanical veto-only safety floor; a kill fires iff \`floor_pass && classifier==='kill'\` — the model can only ever SPARE, never widen the target set. Ships **dev-gated dark on the fleet, watch-only dryRun on a dev agent** (\`monitoring.externalHogSentinel.enabled\` OMITTED → resolveDevAgentGate; \`dryRun:true\` is the kill-safety canary). Nothing is killed until a deliberate **PIN-gated arm** — and even then only that one class.
+- **Status** (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/external-hog\` → \`{ status: { effectiveState, samplerDead, recentOutcomes, ... }, arm: { armed, armEpoch, armedClasses, ... } }\`. 503 when dark (fleet).
+- **Arm the live kill (PIN-gated — a Bearer token CANNOT arm a real kill; Know Your Principal):** \`curl -X POST http://localhost:${port}/external-hog/arm -H 'Content-Type: application/json' -d '{"pin":"<dashboard PIN>"}'\`. Writes a durable armed marker binding the operator PIN to the CURRENT allowlist-class content-hashes; a matcher change forces a re-arm. NEVER ask the user to paste the PIN into chat — point them at the dashboard.
+- **Disarm (return to watch-only, Bearer — the safe direction):** \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/external-hog/disarm\`. A disarm can NEVER be silently un-done (epoch monotonicity — returning to live-kill needs a fresh PIN arm).
+- **When to use** (PROACTIVE): user asks "what's pinning my CPU / is anything a runaway?" → \`GET /external-hog\` (\`recentOutcomes\` lists sustained hogs, killed or left-alive). "why did an editor helper get killed?" → it was an armed, orphaned (owner editor dead), sustained editor-exthost zombie the floor + the model both cleared. "why is it only watching?" → it ships watch-only; a real kill needs your PIN arm. On the fleet the routes 503 (dark) — say so honestly.
+- **Safety:** kill-SAFETY is carried entirely by the deterministic floor (same-uid non-root, orphaned-owner, launchctl-unmanaged, sustained N-window CPU, code-defined allowlist class, kill-time CPU re-confirm); the model carries EFFECTIVENESS. Spec: \`docs/specs/external-hog-zombie-autokill-sentinel.md\`.\n`;
 }
 
 export function SCOPE_ACCRETION_CLAUDEMD_SECTION(port: number): string {
@@ -165,6 +242,167 @@ A durable per-agent registry mapping each Playwright browser **profile** (a phys
 }
 
 /**
+ * CLAUDE.md awareness block for the Doorway/Model Knowledge Registry + the `GET /doorways`
+ * read + the dark scan job (docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §Agent
+ * Awareness). A POINTER, not an inlined door/model table (avoid CLAUDE.md bloat). The unique
+ * heading substring `Doorway/Model Knowledge Registry` is the content-sniff marker used by
+ * migrateClaudeMd (Migration Parity).
+ */
+export function DOORWAY_REGISTRY_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Doorway/Model Knowledge Registry — what models can I reach? (\`GET /doorways\`)
+
+A durable map from each of my **doorways** (the ways I reach LLMs — Claude Code, Codex, Gemini, a paid API key, …) to the top **models** that door can currently reach — so "what models can I actually reach right now?" is a READ, not a guess. Two layers: a git-tracked **canonical** manifest (the reviewed model list per door, with pricing) and a machine-local **live scan-state** (this machine's freshly-probed reachability per door). The canonical layer is ALWAYS authoritative for routing; the live scan-state is observability only, never a routing input.
+- Read the merged map: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/doorways\` → \`{ scanState, lastScanAt, doorways:[{ doorId, topModels:[{ id, role, frontier, pricing, verifiedAt }], reachable, probeStatus, lastScannedAt }] }\`. **Two honest states:** \`200\` with \`scanState:"never-run"\` (registry present, no scan yet — live fields are \`reachable:null\`/\`probeStatus:"never-scanned"\` until a scan runs), then \`200\` merged once a scan has run; \`503\` with \`code:"registry-unavailable-no-instar-source"\` (a pure end-user install carries no manifest) or \`code:"registry-corrupt"\` (manifest present but unparseable). It NEVER fabricates an empty map.
+- **Keeping the map current** is a recurring \`doorway-scan\` job that re-probes each door and surfaces ONE plain-English heads-up only when something changes. It ships **OFF by default** (dark for the fleet; the job manifest is \`enabled:false\`) — enable it per maintainer agent via the \`doorway-scan\` job manifest (free-probes spends zero metered budget; metered probes are manual-only + budget-fail-closed). The \`maintenance.doorwayScan\` config block (\`scope\`/\`cadence\`/\`digestTopicId\`/\`budgetCapUsd\`) tunes it; an explicit \`maintenance.doorwayScan.enabled:false\` is a master kill-switch (deny-wins).
+- **When to use** (PROACTIVE — this is the trigger): user asks "what models can I reach?" / "is my model map current?" / "which doorways are live?" → read \`GET /doorways\`, don't guess. A \`503 registry-unavailable-no-instar-source\` just means this is a pure end-user install with no source registry.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for the Routing Control Room spend VIEW (Increment A — the
+ * read-only spend/caps surface). The unique heading substring `Routing Spend view` is the
+ * content-sniff marker used by migrateClaudeMd (Migration Parity). Read-only; the money
+ * controls (caps adjust, go-live, gate) are Increment B and NOT surfaced as capabilities.
+ */
+export function ROUTING_SPEND_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Routing Spend view — what am I spending on routing? (\`GET /routing-spend/summary\`, \`GET /routing-spend/caps\`)
+
+A READ-ONLY window on internal-LLM spend and the paid-door caps (docs/specs/routing-control-room-spend-alerts.md, Increment A). It turns the immutable token record (\`feature_metrics\`) into dollars by joining a reviewed price manifest ON READ — so "what did we spend, and where do the caps sit?" is a READ, not a guess. It gates NOTHING and books NOTHING (the money ledger + O(1) gate + PIN cap controls are Increment B, not built yet).
+- Spend rollup (per door/model + totals): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/routing-spend/summary?grain=day"\` → per-row \`{ door, modelId, doorClass, tokensIn/Out/Cached, grossUsd, subsidyUsd, netUsd, committedUsd, priceBasis, priceStale, notLiveYet, unpricedTokens* }\` + \`totals\` + \`reportingBasis\`. Grains: \`hour|day|month|total\`.
+- Caps + paid-door status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/routing-spend/caps\` → each metered key \`{ keyRef, provider, door, lifetimeCapUsd, dailyCapUsd, frozen, committedLifetimeUsd, committedDayUsd, goLiveState }\`. **Honest state:** no paid door is live yet, so committed spend is \`$0\` and \`goLiveState:"not-live"\` everywhere; subscription/CLI doors show \`$0 (subscription — not per-token billed)\`.
+- Dashboard: the **Spend** tab renders both surfaces in plain language — point the user there rather than pasting curl output.
+- Dev-gated: the routes are LIVE on a development agent, DARK on the fleet (\`503\` when off; \`routingSpend.enabled\` overrides the gate). Money caps + go-live + alerts are later, dark increments.
+- **When to use** (PROACTIVE — this is the trigger): user asks "what am I spending on routing / the internal LLM calls?" / "where do my paid-door caps sit?" / "is any paid door live?" → read \`GET /routing-spend/summary\` + \`/caps\`, or send them to the Spend tab; do NOT guess.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for the Routing Control Room MONEY layer (Increment B —
+ * ledger + fail-closed gate + PIN caps/arming). Unique content-sniff marker:
+ * `Routing Spend MONEY layer`. Ships DARK for everyone (DARK_GATE_EXCLUSIONS
+ * action-bearing; FD-16) — the section says so honestly (Maturity Honesty).
+ */
+export function ROUTING_SPEND_MONEY_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Routing Spend MONEY layer (⚗️ experimental, DARK for everyone) — caps, arming, freeze
+
+Increment B of the Routing Control Room (docs/specs/routing-control-room-spend-alerts.md): the authoritative booking ledger + the O(1) FAIL-CLOSED money gate + PIN-gated cap controls. It ships DARK for EVERYONE — \`routingSpend.money.enabled\` is an explicit operator enable (never the dev-agent gate), and even enabled, every paid door stays deny-by-default until the operator PIN-arms it. All routes 503 while dark — say so honestly rather than guessing.
+- **Adjust caps / arm a door / unfreeze (PIN plan flow):** render the canonical plan first — \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/routing-spend/plan -H 'Content-Type: application/json' -d '{"action":"caps-adjust","keyRef":"metered_openrouter_bench","provider":"openrouter","lifetimeCapUsd":60,"dailyCapUsd":25}'\` → show the operator the \`renderedText\`; the operator approves with their PIN → \`POST /routing-spend/caps/adjust\` \`{"pin":"<dashboard PIN>","planId":"…","nonce":"…"}\`. The commit derives SOLELY from the rendered plan — a field the operator never saw rendered cannot land. NEVER ask the user to paste the PIN into chat; point them at the dashboard Spend tab controls.
+- **FREEZE a key (Bearer — instant, always available to you):** \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/routing-spend/freeze -d '{"keyRef":"metered_openrouter_bench"}'\` — set-TRUE-only; halting money is always cheap. UNFREEZING is the operator's PIN action, never yours.
+- **Audit trail:** \`GET /routing-spend/caps/log\` — every cap/arm/freeze change with canonical before+after state.
+- **When to use** (PROACTIVE): a runaway paid-spend concern → FREEZE first, ask questions after. User says "raise the cap / arm the paid door" → drive the plan flow and hand them the rendered plan + the dashboard for the PIN — never improvise a config edit (\`PATCH /config\` structurally cannot touch money state, by design).
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for the LLM-Decision Quality Meter (docs/specs/
+ * llm-decision-quality-meter.md §6 — Migration parity & agent awareness): the
+ * observe-only quality substrate (per-decision-point right/wrong/unknown with
+ * evidence-strength-first aggregates), the GET /decision-quality read surface
+ * (503-when-dark honesty), the deterministic grade-pass endpoint + dark hourly
+ * job, the "read the meter, don't guess" proactive trigger, and the census-debt
+ * re-surfacing note. The unique heading substring `LLM-Decision Quality Meter`
+ * is the content-sniff marker used by migrateClaudeMd (Migration Parity).
+ */
+export function DECISION_QUALITY_CLAUDEMD_SECTION(port: number): string {
+  return `\n### LLM-Decision Quality Meter (⚗️ observe-only) — how often is each LLM gate/judge actually right?
+
+An observe-only quality substrate over my internal LLM decisions (docs/specs/llm-decision-quality-meter.md): every ENROLLED decision point (a gate, a judge, a classifier) gets per-decision right/wrong/unknown outcome grades joined back to WHAT decided (model/framework/prompt), aggregated evidence-strength-FIRST — proof-like grades are never blended with heuristic ones, and any aggregate under the minimum sample (\`provenance.quality.minSampleForRates\`, default 20) carries an explicit \`insufficient-evidence: true\` marker beside the raw counts. It MEASURES decisions; it never gates, blocks, or delays them.
+- Read the meter: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/decision-quality?sinceHours=24"\` → per decision-point: decisions, outcomes-known ratio, grade distribution (right/wrong/unknown/expired), grade-by-rule/rung/evidence-strength breakdowns, attribution columns (model/framework/prompt_id), and the honest counters (orphanOutcomes/joinMiss/droppedByBudget + the annotation-rejection classes). 503 when the seam is dark on this agent (\`provenance.uniformSeam\` resolves off — dev-gated, dark on the fleet) — say so honestly rather than guessing. \`?scope=pool\` merges MACHINE-TAGGED rows (per-machine framework routing makes per-machine quality genuinely distinct data).
+- Grading is a deterministic pass, never an LLM: \`POST /decision-quality/grade-pass\` (Bearer; body \`{}\` — knobs come from config) walks new evidence since a durable per-decision-point cursor and upserts grades — idempotent, bounded per pass, zero LLM spend. The hourly \`llm-decision-grading\` built-in job drives the cadence and ships \`enabled:true\`; it never messages you.
+- **When to use** (PROACTIVE — this is the trigger): the user asks "how often is this gate/judge right — does it need a bigger model or a prompt change?" → read the meter, don't guess. Quote the evidence-strength-segmented numbers, never a blended headline rate.
+- **Census debt is re-surfaced on every read**: the response carries the wired/pending/exempt decision-point counts, \`pending-ref-dead\` flags (a pending entry whose ACT ref died), and the wired-but-silent / exempt-but-active contradictions — the enrollment backlog can never rot silently.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for the Benchmark-Divergence Detector (docs/specs/
+ * benchmark-divergence-detector.md §Migration parity + agent awareness): the
+ * observe-only detector comparing real per-(decision-point × model) grade-rates
+ * against the mirrored INSTAR-Bench predictions, the three read/trigger routes
+ * (503-when-dark honesty), the precondition-first verdict enum, and the
+ * "read the findings, don't guess" proactive trigger. The unique heading
+ * substring `Benchmark-Divergence Detector` is the content-sniff marker used
+ * by migrateClaudeMd (Migration Parity).
+ */
+export function BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Benchmark-Divergence Detector (⚗️ observe-only) — does real life agree with the benchmark?
+
+An observe-only detector (docs/specs/benchmark-divergence-detector.md) that compares each enrolled decision point's REAL grade-rate (from the quality meter, per model, settled grades only) against the benchmark's PREDICTED pass-rate from the git-tracked mirror — noise-aware on BOTH sides (a tiny battery can never manufacture divergence), across every machine (the analysis pass runs on the serving-lease holder only and pool-collects each machine's aggregates). Every finding is \`advisory: true\` — a SIGNAL into a human or a proper authority, never a gate.
+- Read the findings: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/benchmark-divergence\` → \`{ enabled, dryRun, analyzer, mirror, summary, findings }\`. Verdicts are precondition-FIRST: \`precondition-failed\` (stale/missing mirror, prompt drift, unverifiable hash) suppresses divergent AND aligned — a stale benchmark never blames or credits a model. \`divergent-better\` leads with "is the grade-rate inflated?", never "promote this model". 503 when the detector is dark on this agent (\`benchmarkDivergence\` resolves off — dev-gated, dark on the fleet) — say so honestly rather than guessing. \`?scope=pool\` merges peers' findings (clamped, questions regenerated locally).
+- Trigger a pass: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{}' http://localhost:${port}/benchmark-divergence/analyze\` — lease-gated (a non-holder answers 409 naming the holder), rate-limited, idempotent. The daily \`benchmark-divergence-analysis\` built-in job drives the cadence and ships \`enabled:false\`; it never messages you.
+- **When to use** (PROACTIVE — this is the trigger): the user asks "is the benchmark still right about model X?" / "why does this gate underperform its bench score?" → read the findings, don't guess. Quote the verdict + its evidence fields (gradedN, unknownShare, CI half-widths); a \`chronic: true\` finding means the comparison has been stuck non-actionable for cycles (offline machine, starved grades, or a stale mirror) and names why.
+- The per-model essence accumulates METER-side (inside the annotate chokepoint) regardless of detector state — flipping \`benchmarkDivergence.enabled\` off stops the DETECTOR only; the by_model rollup keeps riding the meter's grading so a later enable has history.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for session-listing hygiene (CMT-1936): the
+ * active-by-default GET /sessions view, the `?include=all` opt-in, bounded
+ * finished-record retention, and the pool view's genuine cross-machine
+ * duplicate flag. The unique heading substring `Session Listing Hygiene` is
+ * the content-sniff marker used by migrateClaudeMd (Migration Parity).
+ */
+export function SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Session Listing Hygiene (GET /sessions shows ACTIVE sessions by default)
+
+\`GET /sessions\` returns ACTIVE sessions only (status \`starting\`/\`running\`) by default — finished runs (completed/failed/killed) are NOT in the default listing, so a wall of retained background-job records never reads as "50 running sessions". The full registry is one flag away: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/sessions?include=all"\` (or \`?status=completed\` / \`?status=failed\` / \`?status=killed\` for one class). The same semantics apply to the pool view (\`GET /sessions\` with \`scope=pool\`) across every machine.
+- **Finished records are bounded**: terminal session records auto-prune on TTLs (killed/failed 60 min; completed background jobs + headless one-shots 60 min; completed interactive 24 h; hard cap 50 retained) — tune via \`sessions.retention\` in \`.instar/config.json\` (\`killedTtlMinutes\` / \`completedJobTtlMinutes\` / \`completedTtlHours\` / \`maxFinished\`; applies at the next server restart).
+- **Genuine cross-machine duplicates are flagged loudly**: the pool view computes \`pool.duplicateTopics\` — the SAME conversation (platform + topic/channel id) with a LIVE session on 2+ machines at once, each such row tagged \`duplicateTopic: true\` and badged red on the dashboard. The SAME recurring job running on each machine is benign, BY DESIGN, and is never flagged.
+- **When to use** (PROACTIVE — these are the triggers): user asks "why do I see duplicate sessions across my machines?" → read \`pool.duplicateTopics\` first — an EMPTY array means there is no genuine duplicate (matching job names per machine are each machine's own scheduled copy; finished records are excluded by default). "Where did the finished runs go?" → \`?include=all\` (bounded retention prunes older ones). Do NOT count sessions from an \`include=all\` listing when answering "what is running?" — the default view IS the running view.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for the audit-convergence default route
+ * (audit-convergence-enforcement §4). Proportionate (lessons-aware m6): a trigger
+ * + a pointer to the skill for the loop mechanics — NOT the whole loop inline.
+ * The unique heading substring `Audits run to convergence` is the content-sniff
+ * marker for migrateClaudeMd + the feature-delivery-completeness guard.
+ */
+export function AUDIT_CONVERGENCE_CLAUDEMD_SECTION(_port: number): string {
+  return `\n### Audits run to convergence (the default route)
+
+Any **audit-shaped** task — a SWEEP over a surface (find-all-X, a security/safety sweep, a compliance/coverage check, "review everything of kind K") — runs as the **converging loop**, not a single pass: audit → fix/classify each finding → RE-audit the FULL surface → repeat until a clean re-sweep finds **zero new**. A single-pass audit is INCOMPLETE by definition and must be reported as such — never dressed up as thorough. (A single-artifact review — one PR, one doc, one function — is NOT an audit and pays no convergence cost.)
+- **The mechanics live in the \`/iterative-converging-audit\` skill** — engage it whenever thoroughness matters. The durable ledger IS a canonical report at \`docs/audits/<slug>.md\`; in a repo carrying \`scripts/write-audit-convergence.mjs\` the \`converged\` claim is machine-EARNED (the validator refuses an unearned stamp; the commit gate + CI re-check it), never asserted.
+- **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to say "I checked, looks clean" after ONE pass, or a task says "find all / audit / sweep / make sure we got everything" → run the converging loop, not the pass. Constitution: "Iterative Audit to Convergence" (\`docs/STANDARDS-REGISTRY.md\`).
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for the stall-coverage matrix gate
+ * (framework-stall-coverage-matrix §3.4/§3.5 item 5 — Agent Awareness
+ * Standard + Migration Parity). The unique heading substring
+ * `Stall-Coverage Matrix Gate` is the content-sniff marker.
+ */
+export function APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Stall-Coverage Matrix Gate (apprenticeship onboarding)
+
+Onboarding a framework REQUIRES a stall-coverage matrix (\`docs/frameworks/<framework>-stall-coverage.md\`): the enumerated session-stop classes × detection + recovery per class. The apprenticeship lifecycle now enforces it: \`pending→active\` needs a PROVISIONAL matrix (complete enumeration; gaps allowed), \`active→complete\` verifies the FULL matrix from live state — closePath refs must resolve to OPEN commitments/actions, \`posture:\` claims are cross-checked against \`GET /guards\`, and sign-off needs a recorded operator acceptance. A refusal is a 409 naming the class id + violated rule ONLY (rejected matrix content is never echoed).
+- **Config knob**: \`apprenticeship.stallCoverageGate\` in \`.instar/config.json\`, read LIVE (no restart). Absence = \`{enabled: true, dryRun: true}\` — dry-run logs would-refuse verdicts to \`logs/apprenticeship-decisions.jsonl\` without blocking; the enforce flip (\`dryRun: false\`) is the operator's, on named evidence.
+- **On a no-source (fleet npm) install** the verdict is honestly \`matrix-unverifiable-no-source\` — the transition then rides the recorded overseer-acceptance path, NEVER a presence-check refusal for a reason unrelated to matrix quality.
+- **Ratify via the dashboard-PIN acceptance route, never prose**: \`POST http://localhost:${port}/apprenticeship/instances/:id/matrix-acceptance/enumerate\` (Bearer — the server renders the exact enumerated set), then the operator binds it with \`POST .../matrix-acceptance\` \`{"pin":"<dashboard PIN>","challengeId":"MAC-…"}\` (single-use challenge; content-hash-bound — accept-then-edit voids it). An agent-authored prose claim of acceptance is structurally insufficient.
+- **When to use** (PROACTIVE): a \`transition\` 409 naming \`stallMatrix:\` → read the named class/rule and fix the matrix row (or drive the acceptance flow for declared gaps); "why won't this onboarding complete?" → \`POST .../can-complete\` shows the gate report incl. the stall-matrix verdict. Spec: \`docs/specs/framework-stall-coverage-matrix.md\`.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for the ownership-gated spawn seam + duplicate
+ * reconciler + owner-dark notices + judgment provenance (ownership-gated-
+ * spawn-and-judgment-within-floors spec §3.6 — the spec REVERSES the earlier
+ * "flag not heal" framing). The unique heading substring
+ * `Duplicate-Session Prevention` is the content-sniff marker.
+ */
+export function DUPLICATE_RECONCILER_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)
+
+The 2026-07-10 fix for the same conversation running live on two machines at once. Three layers, all shipping dark/dry-run first (dev-gated; single-machine agents are a strict no-op): a **SpawnAdmission checkpoint** at every session-creating callsite makes the routing verdict BINDING (only the machine that owns a conversation may spawn for it — the router's verdict is consumed, never re-derived); a **duplicate reconciler** on the serving-lease holder detects the same conversation live on ≥2 machines, determines the rightful owner from evidence (deliberate pin → strongest ownership record → registered live run — never "who got the last message"), converges the ownership RECORD, and lets the existing gated closeout close the spare copy; and an **owner-dark honest notice** ("that machine is restarting — resend in a few minutes" / "your message is saved") replaces both silence and bootleg wrong-machine answers when a conversation's home machine is briefly down.
+- **The one status surface:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/duplicate-reconciler\` → the reconciler (substrate readiness, per-tick counters, per-topic breaker states, open episodes), the owner-dark ladder (open outage episodes, notice counters), and the spawn checkpoint (mode, error-arm breaker) in one read. 503 = the layer isn't constructed here (single-machine / pool dark) — say so honestly.
+- **Judgment provenance:** every ownership decision the checkpoint/reconciler makes is durably logged (full context machine-local under \`state/judgment-provenance/\`, 14-day retention, never HTTP-served raw). The redacted read: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/judgment-provenance?limit=50"\` (\`?scope=pool\` merges peers' redacted rows).
+- **When to use** (PROACTIVE — these are the triggers): user asks "why do I see duplicate sessions across machines?" → \`GET /pool/duplicate-reconciler\` (open episodes + breaker) BEFORE guessing; "why did I get a 'machine is restarting — resend' notice?" → the owner-dark ladder's rung-3 honest notice (one per outage per topic, 30-min cooldown); "why didn't a duplicate self-heal?" → read the reconciler's escalations — ambiguous evidence (both copies doing real work, contradictory records) escalates to the ⚠️ Attention topic for YOUR call, never a guess. Audit trails: \`logs/duplicate-reconciler.jsonl\`, \`logs/owner-dark-ladder.jsonl\`.
+`;
+}
+
+/**
  * CLAUDE.md note for the second wedge-signature family (2026-06-05 EXO
  * incident) + the API fresh-respawn lever. Appended to NEW installs as part of
  * the Stuck-Context Recovery section, and patched onto agents that already
@@ -184,6 +422,14 @@ const CONTEXT_WALL_ESCALATION_NOTE = `
 
 When a session is genuinely stuck at the context wall ("Context limit reached · /compact or /clear to continue" / "conversation too long"), recovery now tries a NON-DESTRUCTIVE rung FIRST: it presses \`/compact\` for the session and verifies the wall cleared — preserving the whole conversation. Only if \`/compact\` can't clear it (the conversation is too long to even compact) does recovery fall back to the previous behavior, a fresh respawn that keeps thread history but starts a new conversation. This is gated to a genuinely idle session (a session still actively working at 100% context is left alone, never compacted out from under its work). If a user asks "why did my long session restart / did I lose the conversation?" — the answer is: I try to compact it in place first; a fresh start only happens when compaction itself fails.
 `;
+
+/**
+ * Lead paragraph of the CLAUDE.md Topic-Flood Guard section, rewritten for the
+ * single-alerts-topic default (2026-07-09 directive). Used for fresh section
+ * inserts AND as the in-place replacement for the stale pre-flip paragraph
+ * ("The attention queue spawns ONE Telegram forum topic per item…").
+ */
+const SINGLE_ATTENTION_TOPIC_LEAD = `Attention items route into the single durable "🔔 Attention" hub topic by default (single-alerts-topic routing, 2026-07-09): EVERY priority — HIGH/URGENT included — lands as one message THERE, and alerts never spawn their own Telegram topic. The legacy per-item mode is opt-in via \`messaging[].config.attentionRouting = { "mode": "per-item" }\`; in THAT mode a per-source circuit breaker sits at the topic-creation chokepoint (\`TelegramAdapter.createAttentionItem\`): if a single attention \`sourceContext\` exceeds its topic budget within a rolling window, further NON-critical items from that source are COALESCED into ONE running "notices coalesced" topic and recorded in \`state/attention-suppressed.jsonl\` — never a wall of new topics. No item is ever dropped in either mode; every item is still in the attention store.`;
 
 export interface MigrationResult {
   /** What was upgraded */
@@ -300,6 +546,120 @@ export function migrateConfigPlaywrightRegistryDevGate(config: Record<string, un
 }
 
 /**
+ * The External-Hog zombie auto-kill sentinel (external-hog-zombie-autokill-sentinel §7-§8) is a
+ * developmentAgent dark feature: `monitoring.externalHogSentinel.enabled` is OMITTED from
+ * ConfigDefaults so resolveDevAgentGate resolves it (live-on-dev watch-only, dark on the fleet).
+ * The `dryRun:true` canary + the kill-gate knobs arrive via applyDefaults add-missing. An existing
+ * agent that somehow carries a default-shaped literal `enabled: false` would force-dark even a dev
+ * agent (the #1001 mechanism) — strip it so the gate resolves. An explicit `true` (an operator
+ * fleet-flip) is PRESERVED; the separate `dryRun` field is left untouched (it stays the kill-safety
+ * canary). Idempotent + existence-checked.
+ */
+export function migrateConfigExternalHogSentinelDevGate(config: Record<string, unknown>): boolean {
+  const monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object') return false;
+  const eh = monitoring.externalHogSentinel as Record<string, unknown> | undefined;
+  if (!eh || typeof eh !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(eh, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (eh.enabled !== false) return false;
+  delete eh.enabled;
+  return true;
+}
+
+/**
+ * Single-machine failover-gap detector (increment 2) is a developmentAgent dark
+ * feature: `monitoring.singleMachineFailoverGap.enabled` is OMITTED from
+ * ConfigDefaults so resolveDevAgentGate resolves it (LIVE on a dev agent, DARK on
+ * the fleet). The `{ dryRun: true }` block arrives via applyDefaults add-missing.
+ * An existing agent that somehow carries a default-shaped literal `enabled: false`
+ * would force-dark even a dev agent (the #1001 mechanism) — strip it so the gate
+ * resolves. An explicit `true` (an operator fleet-flip) is PRESERVED. Idempotent +
+ * existence-checked; never writes `enabled`.
+ */
+export function migrateConfigSingleMachineFailoverGapDevGate(config: Record<string, unknown>): boolean {
+  const monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object') return false;
+  const sf = monitoring.singleMachineFailoverGap as Record<string, unknown> | undefined;
+  if (!sf || typeof sf !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(sf, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (sf.enabled !== false) return false;
+  delete sf.enabled;
+  return true;
+}
+
+/**
+ * The Missing-Login-Session detector (increment 2) is a developmentAgent dark
+ * feature: `monitoring.missingLoginSession.enabled` is OMITTED from ConfigDefaults
+ * so resolveDevAgentGate resolves it (LIVE on a dev agent, DARK on the fleet). The
+ * `{ dryRun: true }` block arrives via applyDefaults add-missing. An existing agent
+ * that somehow carries a default-shaped literal `enabled: false` would force-dark
+ * even a dev agent (the #1001 mechanism) — strip it so the gate resolves. An
+ * explicit `true` (an operator fleet-flip) is PRESERVED. Idempotent +
+ * existence-checked; never writes `enabled`.
+ */
+export function migrateConfigMissingLoginSessionDevGate(config: Record<string, unknown>): boolean {
+  const monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object') return false;
+  const ml = monitoring.missingLoginSession as Record<string, unknown> | undefined;
+  if (!ml || typeof ml !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(ml, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (ml.enabled !== false) return false;
+  delete ml.enabled;
+  return true;
+}
+
+/**
+ * SessionPoolFailoverRunner boot-wiring (Multi-Machine Session Pool §Rollout,
+ * Track H) is a developmentAgent dark feature: `multiMachine.sessionPool.
+ * failoverRunner.enabled` is OMITTED from ConfigDefaults so resolveDevAgentGate
+ * resolves it (LIVE on a dev agent, DARK on the fleet). The `{ dryRun: true,
+ * tickIntervalMs, checkTimeoutMs }` block arrives via applyDefaults add-missing.
+ * An existing agent that somehow carries a default-shaped literal `enabled: false`
+ * would force-dark even a dev agent (the #1001 mechanism) — strip it so the gate
+ * resolves. An explicit `true` (an operator fleet-flip) is PRESERVED. Idempotent +
+ * existence-checked; never writes `enabled`. Array-shaped/absent multiMachine →
+ * safe no-op.
+ */
+export function migrateConfigSessionPoolFailoverRunnerDevGate(config: Record<string, unknown>): boolean {
+  const mm = config.multiMachine as Record<string, unknown> | undefined;
+  if (!mm || typeof mm !== 'object') return false;
+  const sp = mm.sessionPool as Record<string, unknown> | undefined;
+  if (!sp || typeof sp !== 'object') return false;
+  const fr = sp.failoverRunner as Record<string, unknown> | undefined;
+  if (!fr || typeof fr !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(fr, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (fr.enabled !== false) return false;
+  delete fr.enabled;
+  return true;
+}
+
+/**
+ * The Turn-End Self-Deferral Guard (Phase A; docs/specs/turn-end-self-deferral-guard.md
+ * §3.4/FD8) is a developmentAgent dark feature: `monitoring.selfDeferralGuard.enabled`
+ * is OMITTED from ConfigDefaults so resolveDevAgentGate resolves it (LIVE on a dev
+ * agent, DARK on the fleet). The empty block arrives via applyDefaults add-missing.
+ * An existing agent that somehow carries a default-shaped literal `enabled: false`
+ * would force-dark even a dev agent (the #1001 mechanism) — strip it so the gate
+ * resolves. An explicit `true` (an operator fleet-flip) is PRESERVED. Idempotent +
+ * existence-checked; never writes `enabled`.
+ */
+export function migrateConfigSelfDeferralGuardDevGate(config: Record<string, unknown>): boolean {
+  const monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object') return false;
+  const sd = monitoring.selfDeferralGuard as Record<string, unknown> | undefined;
+  if (!sd || typeof sd !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(sd, 'enabled')) return false;
+  // Only a default-shaped `false` is stripped; an explicit `true` is preserved.
+  if (sd.enabled !== false) return false;
+  delete sd.enabled;
+  return true;
+}
+
+/**
  * Durable conversation identity (durable-conversation-identity §9):
  * `conversationIdentity.followThrough` is a developmentAgent dark feature —
  * `enabled` must be OMITTED so resolveDevAgentGate resolves it (live-on-dev,
@@ -320,6 +680,152 @@ export function migrateConfigConversationFollowThroughDevGate(config: Record<str
   if (ft.enabled !== false) return false;
   delete ft.enabled;
   return true;
+}
+
+/**
+ * slack-followthrough-generalization §8.5: `messaging.actionClaim.slack.enabled`
+ * is a developmentAgent dark feature — `enabled` must be OMITTED so
+ * resolveDevAgentGate resolves it (live-on-dev, dark fleet). Strip a default-shaped
+ * literal `false` (the #1001 mechanism — it would force-dark even a dev agent); an
+ * explicit `true` (operator fleet-flip) is preserved.
+ *
+ * NOTE — no `dryRun:true` write: on real installs `messaging` is an ARRAY of adapter
+ * configs, so `messaging.actionClaim.slack.enabled` resolves `undefined` (which is
+ * exactly what the dev-gate wants) and the observe route defaults `dryRun` to `true`
+ * when absent. Correct dev-gated-dryRun-first behavior is delivered WITHOUT any config
+ * write; writing a dotted key INTO an array would corrupt it. This strip only acts on
+ * an OBJECT-shaped `messaging.actionClaim.slack` carrying a literal `false` (array
+ * shape → safe no-op). Idempotent + existence-checked.
+ */
+export function migrateConfigActionClaimSlackDevGate(config: Record<string, unknown>): boolean {
+  const messaging = config.messaging;
+  // Real installs use an ARRAY of adapter configs — this feature's config path is
+  // object-shaped; a safe no-op on the array shape.
+  if (!messaging || typeof messaging !== 'object' || Array.isArray(messaging)) return false;
+  const ac = (messaging as Record<string, unknown>).actionClaim as Record<string, unknown> | undefined;
+  if (!ac || typeof ac !== 'object') return false;
+  const slack = ac.slack as Record<string, unknown> | undefined;
+  if (!slack || typeof slack !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(slack, 'enabled')) return false;
+  if (slack.enabled !== false) return false;
+  delete slack.enabled;
+  return true;
+}
+
+/**
+ * S4 Nature-Axis Routing (docs/specs/nature-axis-routing.md, § Migration Parity): SEED
+ * `sessions.natureRouting` DARK on existing agents so the update path reaches deployed
+ * agents (not only new agents via init). Adds the block ONLY when ABSENT — an operator/agent
+ * that already configured it is never clobbered (existence-checked, idempotent).
+ *
+ * CRITICAL — `enabled` is DELIBERATELY OMITTED (enable-path integrity, the #1001 pattern):
+ * the construction boundary resolves it via `resolveDevAgentGate(cfg.enabled, config)`, so a
+ * seeded `enabled:false` would force-dark even a development agent. `dryRun:true` is the
+ * observe-only canary; `metered.goLive:false` keeps Increment B inert. Chain defaults live in
+ * CODE (`NATURE_ROUTING_DEFAULT_CHAINS`) — the seed stays small and a future chain reslot
+ * reaches agents on a `schemaVersion` bump, not by writing a chain blob into every config.
+ */
+export function migrateConfigNatureRoutingDark(config: Record<string, unknown>): boolean {
+  const sessions = config.sessions as Record<string, unknown> | undefined;
+  if (!sessions || typeof sessions !== 'object' || Array.isArray(sessions)) return false;
+  if (Object.prototype.hasOwnProperty.call(sessions, 'natureRouting')) return false; // already present
+  sessions.natureRouting = {
+    schemaVersion: 3,
+    // `enabled` OMITTED so resolveDevAgentGate decides (live-in-dryRun on a dev agent, dark fleet).
+    dryRun: true,
+    metered: { goLive: false },
+  };
+  return true;
+}
+
+/**
+ * Routing Control Room spend VIEW (docs/specs/routing-control-room-spend-alerts.md,
+ * § Migration parity): SEED the top-level `routingSpend` block DARK on existing agents so
+ * the update path reaches deployed agents (not only new agents via init). Added ONLY when
+ * ABSENT — never clobbers an operator/agent that already configured it (existence-checked,
+ * idempotent).
+ *
+ * CRITICAL — `enabled` is DELIBERATELY OMITTED (the #1001 pattern): the route + the ledger
+ * construction resolve it via `resolveDevAgentGate(routingSpend.enabled, config)`, so a
+ * seeded `enabled:false` would force-dark even a development agent. Only the INERT retention
+ * knob is seeded; NO money-authority value ever lives in config (those are Increment B's
+ * PIN-only store).
+ */
+export function migrateConfigRoutingSpendDark(config: Record<string, unknown>): boolean {
+  if (Object.prototype.hasOwnProperty.call(config, 'routingSpend')) return false; // already present
+  config.routingSpend = {
+    // `enabled` OMITTED so resolveDevAgentGate decides (live on a dev agent, dark fleet).
+    tokenRollupRetentionDays: 400,
+  };
+  return true;
+}
+
+/**
+ * Benchmark-Divergence Detector (docs/specs/benchmark-divergence-detector.md
+ * §Config surface + FD13): SEED the top-level `benchmarkDivergence` block DARK on
+ * existing agents — `enabled` DELIBERATELY OMITTED (the #1001 pattern: the routes +
+ * analyzer resolve it via resolveDevAgentGate, so a seeded `enabled:false` would
+ * force-dark even a development agent), `dryRun:true` (FD13 — zero detector-owned
+ * durable writes until a deliberate flip) and the P19-bounded retention knob. When
+ * the block is already present, only a default-shaped literal `enabled:false` is
+ * stripped (an explicit `true` — an operator fleet-flip — is preserved).
+ * Idempotent + existence-checked.
+ */
+export function migrateConfigBenchmarkDivergenceDark(config: Record<string, unknown>): boolean {
+  if (!Object.prototype.hasOwnProperty.call(config, 'benchmarkDivergence')) {
+    config.benchmarkDivergence = {
+      // `enabled` OMITTED so resolveDevAgentGate decides (live on a dev agent, dark fleet).
+      dryRun: true,
+      byModelRetentionDays: 180,
+    };
+    return true;
+  }
+  const bd = config.benchmarkDivergence as Record<string, unknown> | undefined;
+  if (bd && typeof bd === 'object' && !Array.isArray(bd) && bd.enabled === false) {
+    delete bd.enabled;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Dashboard Live-LLM-Insights (docs/specs/dashboard-live-insights.md, § Migration
+ * parity): the `dashboard.liveInsights` block is a developmentAgent dark feature —
+ * `enabled` must be OMITTED so resolveDevAgentGate resolves it (live-on-dev, dark
+ * fleet; /insights routes 503 when dark). Two idempotent, existence-checked jobs:
+ *   1. SEED the block on existing agents (add-missing only, never clobbering an
+ *      operator's `dashboard.fileViewer`/`poolStream` or any override), so the
+ *      update path reaches deployed agents — NOT only new agents via init.
+ *   2. STRIP a default-shaped literal `enabled:false` (the #1001 mechanism — it
+ *      would force-dark even a dev agent). An explicit `true` (operator fleet-flip)
+ *      is PRESERVED. This migration NEVER writes `enabled` (pinned by a unit test).
+ * Idempotent — a second run finds the block present and nothing to strip.
+ */
+export function migrateConfigDashboardLiveInsightsDevGate(config: Record<string, unknown>): boolean {
+  let changed = false;
+  let dashboard = config.dashboard as Record<string, unknown> | undefined;
+  if (!dashboard || typeof dashboard !== 'object' || Array.isArray(dashboard)) {
+    dashboard = {};
+    config.dashboard = dashboard;
+  }
+  if (!Object.prototype.hasOwnProperty.call(dashboard, 'liveInsights')) {
+    dashboard.liveInsights = {
+      // `enabled` OMITTED so resolveDevAgentGate decides (live on a dev agent, dark fleet).
+      dryRun: true,
+      ttlSeconds: 300,
+      maxLines: 3,
+      llmTimeoutMs: 12000,
+    };
+    changed = true;
+  } else {
+    // Existence-checked #1001 strip: only a default-shaped `false` is removed.
+    const li = dashboard.liveInsights as Record<string, unknown> | undefined;
+    if (li && typeof li === 'object' && !Array.isArray(li) && li.enabled === false) {
+      delete li.enabled;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 /**
@@ -350,6 +856,40 @@ export function migrateConfigSelfUnblockChecklistDevGate(config: Record<string, 
     patched = true;
   }
   return patched;
+}
+
+/**
+ * Session-respawn-thrash Fix A (docs/specs/session-respawn-thrash-elimination.md,
+ * § Config & rollback + § Dev-agent gate): add the `monitoring.idleKillVetoBackoff`
+ * default block with an EXISTENCE CHECK — only write it when absent, so an operator
+ * override is never clobbered. Deployed agents get the knob on update; new agents get
+ * it via init. The cooldown lives in in-memory maps only, so there is no state-schema
+ * migration. Idempotent — a second run finds the block present and is a no-op.
+ *
+ * CRITICAL — `enabled` is DELIBERATELY OMITTED (enable-path integrity). The construction
+ * boundary resolves `enabled` through `resolveDevAgentGate(cfg.enabled, config)` =
+ * `cfg.enabled ?? !!developmentAgent`, so a block with NO `enabled` runs LIVE on a
+ * development agent (Echo — the § Activation milestone-1 soak) and DARK on the fleet.
+ * Writing an explicit `enabled: false` here would FORCE-DARK the dev agent too
+ * (explicit-false wins the `??`), defeating the soak plan — exactly the trap the
+ * stateSync stores + the tmux-resilience gates avoid by omitting `enabled` in their
+ * defaults. Only the tuning knobs are seeded; the gate owns `enabled`.
+ *
+ * Returns true iff the block was written.
+ */
+export function migrateConfigIdleKillVetoBackoffDefault(config: Record<string, unknown>): boolean {
+  let monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object' || Array.isArray(monitoring)) {
+    monitoring = {};
+    config.monitoring = monitoring;
+  }
+  if (Object.prototype.hasOwnProperty.call(monitoring, 'idleKillVetoBackoff')) return false;
+  monitoring.idleKillVetoBackoff = {
+    // enabled OMITTED — resolveDevAgentGate decides (live-on-dev / dark-on-fleet).
+    cooldownMs: 1_800_000,
+    escalateAfterEpisodes: 6,
+  };
+  return true;
 }
 
 /**
@@ -717,7 +1257,9 @@ export class PostUpdateMigrator {
     this.migrateBuildSkillMethodology(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
+    this.migrateIterativeConvergingAuditSkill(result);
     this.migrateInstarDevInternalOnlyReleaseNoteLane(result);
+    this.migrateClassClosureTemplateSelfActionClause(result);
     this.migrateSpecConvergeFoundationAudit(result);
     this.migrateAutonomousStopHookTopicKeyed(result);
     this.migrateSelfKnowledgeTree(result);
@@ -742,15 +1284,120 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionPoolInteractiveReady(result);
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
+    this.migrateThreeStandardsReviewChecks(result);
+    this.migrateSpecConvergeAnthropicReviewerDisclosure(result);
     this.migrateCommitmentOwnerBackfill(result);
     this.migratePlaywrightProfilesSeed(result);
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
+    this.migrateConvergeDesignClassCriterion(result);
+    this.migrateJudgmentWithinFloorsReviewQuestions(result);
+    this.migrateJudgmentProvenanceGitignore(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
     this.migrateFixtureIdentityQuarantine(result);
+    this.migrateStallGateInstallProvenance(result);
+    this.migrateFeatureMaturationGate(result);
 
     return result;
+  }
+
+  /** Deliver the v1 maturation WARN detector without overwriting customized files. */
+  private migrateFeatureMaturationGate(result: MigrationResult, testPriorHashes: Record<string, string[]> = {}): void {
+    const priorWriterHashes = new Set([
+      'c10cc7ec6c0ec0bea4169a0f7e8cf99a497134ff20ff6d2c5b5f2c27c965bb3d',
+    ]);
+    const root = path.resolve(this.config.projectDir);
+    const bundledRoot = path.resolve(__dirname, '..', '..');
+    const files = [
+      {
+        label: 'feature maturation plan detector',
+        bundled: path.join(bundledRoot, 'scripts', 'feature-maturation-plan-gate.mjs'),
+        target: path.join(root, 'scripts', 'feature-maturation-plan-gate.mjs'),
+        prior: new Set<string>(),
+      },
+      {
+        label: 'installed feature maturation plan detector',
+        bundled: path.join(bundledRoot, 'scripts', 'feature-maturation-plan-gate.mjs'),
+        // Installed write-convergence-tag.mjs resolves ../../../scripts from
+        // .claude/skills/spec-converge/scripts to .claude/scripts.
+        target: path.join(root, '.claude', 'scripts', 'feature-maturation-plan-gate.mjs'),
+        prior: new Set<string>(),
+      },
+      {
+        label: 'installed FeatureMaturationPlanGate source',
+        bundled: path.join(bundledRoot, 'src', 'core', 'FeatureMaturationPlanGate.mjs'),
+        target: path.join(root, '.claude', 'src', 'core', 'FeatureMaturationPlanGate.mjs'),
+        prior: new Set<string>(),
+      },
+      {
+        label: 'spec-converge maturation WARN wiring',
+        bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'write-convergence-tag.mjs'),
+        target: path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'write-convergence-tag.mjs'),
+        prior: priorWriterHashes,
+      },
+      {
+        label: 'Feature Maturation Path standard',
+        bundled: path.join(bundledRoot, 'docs', 'STANDARDS-REGISTRY.md'),
+        target: path.join(root, 'docs', 'STANDARDS-REGISTRY.md'),
+        prior: new Set(['9b3f2775937598a8c812da3c44042c79bc62202bfc82025821cee96d7c4ee391']),
+      },
+    ];
+    const digest = (bytes: Buffer): string => crypto.createHash('sha256').update(bytes).digest('hex');
+    const durableWrite = (target: string, bytes: Buffer, mode: number): void => {
+      const dir = path.dirname(target);
+      fs.mkdirSync(dir, { recursive: true });
+      const tmp = path.join(dir, `.${path.basename(target)}.maturation-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
+      let fd: number | undefined;
+      try {
+        fd = fs.openSync(tmp, 'wx', mode);
+        fs.writeFileSync(fd, bytes);
+        fs.fsyncSync(fd);
+        fs.closeSync(fd);
+        fd = undefined;
+        fs.renameSync(tmp, target);
+        const dirFd = fs.openSync(dir, 'r');
+        try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+      } catch (err) {
+        if (fd !== undefined) fs.closeSync(fd);
+        try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'PostUpdateMigrator.migrateFeatureMaturationGate.temp-cleanup' }); } catch { /* absent after rename */ }
+        throw err;
+      }
+    };
+
+    for (const file of files) {
+      try {
+        const target = path.resolve(file.target);
+        if (target !== root && !target.startsWith(`${root}${path.sep}`)) throw new Error('target escapes project root');
+        const bundled = fs.readFileSync(file.bundled);
+        const bundledHash = digest(bundled);
+        if (!fs.existsSync(target)) {
+          durableWrite(target, bundled, 0o644);
+          result.upgraded.push(`${file.label}: installed`);
+          continue;
+        }
+        const stat = fs.lstatSync(target);
+        if (stat.isSymbolicLink()) throw new Error('refusing symlink target');
+        if (!stat.isFile()) throw new Error('target is not a regular file');
+        const current = fs.readFileSync(target);
+        const currentHash = digest(current);
+        if (currentHash === bundledHash) {
+          result.skipped.push(`${file.label}: already current`);
+          continue;
+        }
+        const acceptedPrior = new Set([...file.prior, ...(testPriorHashes[file.label] ?? [])]);
+        if (!acceptedPrior.has(currentHash)) {
+          result.skipped.push(`${file.label}: customized (${currentHash.slice(0, 12)}) — left untouched`);
+          continue;
+        }
+        const backup = `${target}.pre-feature-maturation-v1.bak`;
+        if (!fs.existsSync(backup)) durableWrite(backup, current, stat.mode & 0o777);
+        durableWrite(target, bundled, stat.mode & 0o777);
+        result.upgraded.push(`${file.label}: stock file updated (backup retained)`);
+      } catch (err) {
+        result.errors.push(`${file.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /**
@@ -766,6 +1413,32 @@ export class PostUpdateMigrator {
    * a re-run is a no-op. NOTE (§6 rollback): the quarantine is NOT git-revertable
    * — a wrongly-quarantined legitimate user is recovered from the timestamped backup.
    */
+  // ── Stall-coverage install-provenance backfill (framework-stall-coverage-matrix §3.2) ──
+  //
+  // Existing installs predate the init-time install-provenance derivation the
+  // stall-coverage gate's degraded rung binds to. ONE-TIME tamper-evident
+  // backfill: derive the install class with the SAME logic init uses and
+  // append the same decisions-log record. Idempotent by presence-scan of the
+  // log (the record itself is the marker — mirroring the ws3 backfill's
+  // check-before-patch shape without a separate config flag, since the
+  // authoritative artifact is durable and greppable).
+  private migrateStallGateInstallProvenance(result: MigrationResult): void {
+    try {
+      const stateDir = this.config.stateDir;
+      const logPath = path.join(stateDir, 'logs', 'apprenticeship-decisions.jsonl');
+      if (hasInstallProvenanceRecord(logPath)) {
+        result.skipped.push('stall-gate install provenance: already recorded');
+        return;
+      }
+      const outcome = recordInstallProvenanceIfAbsent(path.dirname(stateDir), stateDir);
+      if (outcome === 'recorded') result.upgraded.push('stall-gate install provenance: recorded (one-time backfill)');
+      else if (outcome === 'present') result.skipped.push('stall-gate install provenance: already recorded');
+      else result.errors.push('stall-gate install provenance: backfill failed');
+    } catch (err) {
+      result.errors.push(`stall-gate install provenance: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateFixtureIdentityQuarantine(result: MigrationResult): void {
     const usersFile = path.join(this.config.stateDir, 'users.json');
     if (!fs.existsSync(usersFile)) {
@@ -901,6 +1574,9 @@ export class PostUpdateMigrator {
     setIfAbsent(hb, 'tickIntervalMs', 60_000, 'monitoring.autonomousHeartbeat.tickIntervalMs');
     setIfAbsent(hb, 'maxHeartbeatsPerRun', 6, 'monitoring.autonomousHeartbeat.maxHeartbeatsPerRun');
     setIfAbsent(hb, 'recentOutputChangeWindowMs', 300_000, 'monitoring.autonomousHeartbeat.recentOutputChangeWindowMs');
+    const throughputFloor = ensureObj(monitoring, 'throughputFloor');
+    setIfAbsent(throughputFloor, 'flatlineMs', 4_500_000, 'monitoring.throughputFloor.flatlineMs');
+    setIfAbsent(throughputFloor, 'tickMs', 900_000, 'monitoring.throughputFloor.tickMs');
     // Defensive: an operator who hand-disabled by writing `enabled:false` keeps
     // it; we never ADD enabled, but we must not strip an explicit operator value.
 
@@ -952,6 +1628,52 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`spec-converge SKILL (conformance auto-invoke): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // Deliver the corrected CONVERGENCE STOP CRITERION to already-installed agents
+  // (Migration Parity, "updating existing skill content").
+  //
+  // PR #1673 replaced "no material new issues" with "no DESIGN-class findings for
+  // TWO consecutive rounds", because the old rule could not terminate on a spec
+  // that appends its own review history — the reviewable surface grows every
+  // round, so a diligent reviewer always finds precision to add.
+  //
+  // WHY THIS NEEDS ITS OWN MIGRATION, and it is the finding that produced it:
+  // migrateConformanceGateAutoInvoke above already delivers this same file, but
+  // its idempotency guard returns early once the installed copy contains the
+  // marker from THAT change. Every agent that took it is therefore permanently
+  // short-circuited for EVERY LATER change to spec-converge/SKILL.md — a one-shot
+  // wearing idempotent's clothes. Verified live on this agent 2026-07-27: the
+  // conformance marker present, the corrected criterion absent, so #1673 could
+  // never arrive. Caught one command before running the OLD criterion and
+  // reporting its verdict as evidence.
+  //
+  // This follows the established per-change pattern (each content change carries
+  // its own marker-keyed migration) rather than redesigning the guard — the
+  // general fix is a CONTENT-FINGERPRINT guard, which is fleet-migration
+  // machinery above this change's risk floor and is tracked as ACT-1420.
+  // Customized files stay untouched; idempotent; safe to run repeatedly.
+  private migrateConvergeDesignClassCriterion(result: MigrationResult): void {
+    const MARKER = 'No DESIGN-class findings for TWO consecutive rounds';
+    try {
+      const installed = path.join(this.config.projectDir, '.claude', 'skills', 'spec-converge', 'SKILL.md');
+      if (!fs.existsSync(installed)) return; // fresh installs get the bundled copy
+      const current = fs.readFileSync(installed, 'utf8');
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (!current.includes('# /spec-converge')) {
+        result.skipped.push('spec-converge SKILL (design-class criterion): customized — left untouched');
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', 'skills', 'spec-converge', 'SKILL.md');
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(installed, next);
+        result.upgraded.push('spec-converge SKILL (design-class convergence criterion)');
+      }
+    } catch (err) {
+      result.errors.push(`spec-converge SKILL (design-class criterion): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1131,6 +1853,182 @@ export class PostUpdateMigrator {
         rel: ['skills', 'spec-converge', 'SKILL.md'],
         fingerprint: '# /spec-converge',
         label: 'spec-converge SKILL (integration reviewer posture check)',
+      },
+    ];
+    for (const f of files) {
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...f.rel);
+        if (!fs.existsSync(installed)) continue; // fresh installs get the bundled copy
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(MARKER)) continue; // already updated — idempotent
+        if (!current.includes(f.fingerprint)) {
+          result.skipped.push(`${f.label}: customized — left untouched`);
+          continue;
+        }
+        const bundled = path.join(__dirname, '..', '..', ...f.rel);
+        if (!fs.existsSync(bundled)) continue;
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (next.includes(MARKER)) {
+          fs.writeFileSync(installed, next);
+          result.upgraded.push(f.label);
+        }
+      } catch (err) {
+        result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  // ── Judgment Within Floors review questions (ownership-gated-spawn-and-
+  // judgment-within-floors spec §3.6, 2026-07-11) ──
+  //
+  // Two agent-installed skill files gained the ratified standard's structural
+  // questions: the spec-converge SKILL's decision-point-classification check
+  // (FD12 verbatim — enforced by write-convergence-tag.mjs's refusal) and the
+  // instar-dev side-effects template's §4b judgment-point question. Both files
+  // are never overwritten by installBuiltinSkills, so this migration is the
+  // ONLY path deployed agents receive them on (Migration Parity). Same
+  // marker-sniffed / fingerprint-guarded / customized-untouched / idempotent
+  // pattern as migrateMultiMachinePostureReviewDimension.
+  private migrateJudgmentWithinFloorsReviewQuestions(result: MigrationResult): void {
+    const files: Array<{ rel: string[]; marker: string; fingerprint: string; label: string }> = [
+      {
+        rel: ['skills', 'spec-converge', 'SKILL.md'],
+        marker: 'Decision-point classification (Judgment Within Floors',
+        fingerprint: '# /spec-converge',
+        label: 'spec-converge SKILL (decision-point classification question)',
+      },
+      {
+        rel: ['skills', 'instar-dev', 'templates', 'side-effects-artifact.md'],
+        marker: '## 4b. Judgment-point check',
+        fingerprint: '## 5. Interactions',
+        label: 'instar-dev side-effects template (§4b judgment-point question)',
+      },
+    ];
+    for (const f of files) {
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...f.rel);
+        if (!fs.existsSync(installed)) continue; // fresh installs get the bundled copy
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(f.marker)) continue; // already updated — idempotent
+        if (!current.includes(f.fingerprint)) {
+          result.skipped.push(`${f.label}: customized — left untouched`);
+          continue;
+        }
+        const bundled = path.join(__dirname, '..', '..', ...f.rel);
+        if (!fs.existsSync(bundled)) continue;
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (next.includes(f.marker)) {
+          fs.writeFileSync(installed, next);
+          result.upgraded.push(f.label);
+        }
+      } catch (err) {
+        result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  // ── Judgment-provenance gitignore (same spec §3.5) ──
+  //
+  // `state/judgment-provenance/` holds machine-local decision-context rows;
+  // agent homes are git repos and `state/` is untracked-but-not-ignored, so
+  // without this a broad `git add` would commit provenance rows cross-machine.
+  // Fresh installs get the entry via ensureGitignore (GITIGNORE_ENTRIES);
+  // existing agents get it here (the `.worktrees/` precedent — regex existence
+  // check, idempotent append).
+  private migrateJudgmentProvenanceGitignore(result: MigrationResult): void {
+    try {
+      const gitignorePath = path.join(this.config.projectDir, '.gitignore');
+      if (!fs.existsSync(gitignorePath)) return; // not a git-managed home — nothing to protect
+      const content = fs.readFileSync(gitignorePath, 'utf8');
+      if (/^\s*state\/judgment-provenance\/?\s*$/m.test(content)) return; // idempotent
+      const block =
+        (content.endsWith('\n') ? '' : '\n') +
+        '\n# Judgment-call provenance rows (machine-local decision context — never commit)\n' +
+        'state/judgment-provenance/\n';
+      fs.writeFileSync(gitignorePath, content + block);
+      result.upgraded.push('gitignore: state/judgment-provenance/ (machine-local provenance rows)');
+    } catch (err) {
+      result.errors.push(`judgment-provenance gitignore: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ── Three-standards review-checks (Standards A + B enforcement,
+  // three-standards-enforcement spec, 2026-07-03) ──
+  //
+  // The ratified standards "Always Multi-Machine" (A) and "Self-Heal Before
+  // Notify" (B) get their teeth as /spec-converge review-checks: the integration
+  // reviewer instruction in spec-converge SKILL.md AND the integration-reviewer
+  // template gain (A) the "undefended machine-local is a MATERIAL FINDING; the
+  // default is `unified`; justify only from a closed taxonomy via a
+  // `machine-local-justification:` marker" upgrade, and (B) the
+  // self-heal-before-notify escalation-gate review-check. New agents get these
+  // via installBuiltinSkills/install (non-destructive, install-if-missing);
+  // EXISTING agents only get updated CONTENT here (Migration Parity → "updating
+  // existing skill content", case 5b).
+  //
+  // Same shape as migrateMultiMachinePostureReviewDimension: per file, re-copy
+  // the bundled version only when the installed copy lacks the capability MARKER
+  // and still looks stock (fingerprint guard); a customized file is left
+  // untouched and reported. Idempotent: the marker check short-circuits on every
+  // later run. The MARKER (`machine-local-justification`) is present in BOTH
+  // upgraded files, so one marker covers the A+B content that ships together.
+  private migrateThreeStandardsReviewChecks(result: MigrationResult): void {
+    const MARKER = 'machine-local-justification';
+    const files: Array<{ rel: string[]; fingerprint: string; label: string }> = [
+      {
+        rel: ['skills', 'spec-converge', 'SKILL.md'],
+        fingerprint: '# /spec-converge',
+        label: 'spec-converge SKILL (Standards A+B review-checks)',
+      },
+      {
+        rel: ['skills', 'spec-converge', 'templates', 'reviewer-integration.md'],
+        fingerprint: '# Reviewer Prompt — Integration',
+        label: 'spec-converge integration-reviewer template (Standards A+B review-checks)',
+      },
+    ];
+    for (const f of files) {
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...f.rel);
+        if (!fs.existsSync(installed)) continue; // fresh installs get the bundled copy
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(MARKER)) continue; // already updated — idempotent
+        if (!current.includes(f.fingerprint)) {
+          result.skipped.push(`${f.label}: customized — left untouched`);
+          continue;
+        }
+        const bundled = path.join(__dirname, '..', '..', ...f.rel);
+        if (!fs.existsSync(bundled)) continue;
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (next.includes(MARKER)) {
+          fs.writeFileSync(installed, next);
+          result.upgraded.push(f.label);
+        }
+      } catch (err) {
+        result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  // ── Anthropic clean-door reviewer disclosure (REVIEWER-DOOR-REWIRING §Migration
+  // parity, inc1) ──
+  //
+  // The spec-converge SKILL.md gains (a) the `--family claude-code` clean-door
+  // reviewer family + its `clean-door-anthropic-review` disclosure field and (b)
+  // the D7 per-round-model disclosure line. Per Migration Parity case 5b,
+  // installBuiltinSkills() is non-destructive (never overwrites an installed
+  // SKILL.md), so a CONTENT update reaches already-installed agents (the dev agent
+  // included) ONLY through this dedicated idempotent migration. Same shape as
+  // migrateThreeStandardsReviewChecks: re-copy the bundled SKILL.md only when the
+  // installed copy lacks the capability MARKER and still looks stock (fingerprint
+  // guard); a customized file is left untouched and reported. Idempotent: the
+  // marker check short-circuits on every later run. Custom skills are never touched.
+  private migrateSpecConvergeAnthropicReviewerDisclosure(result: MigrationResult): void {
+    const MARKER = 'clean-door-anthropic-review';
+    const files: Array<{ rel: string[]; fingerprint: string; label: string }> = [
+      {
+        rel: ['skills', 'spec-converge', 'SKILL.md'],
+        fingerprint: '# /spec-converge',
+        label: 'spec-converge SKILL (Anthropic clean-door reviewer + D7 model disclosure)',
       },
     ];
     for (const f of files) {
@@ -2811,6 +3709,34 @@ export class PostUpdateMigrator {
    * installed copy (a) lacks the build-location marker AND (b) still matches
    * the stock instar-dev fingerprint. A customized skill is left untouched.
    */
+  /**
+   * Deliver the updated iterative-converging-audit skill to EXISTING agents
+   * (audit-convergence-enforcement §4 / Integration-R2 M3). The installed copy
+   * came from init.ts's INLINE template, so this migration writes the SAME shared
+   * constant (`ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT`) that init.ts now consumes
+   * — single-source, so the two paths cannot drift. Idempotent (skip when the
+   * canonical-report marker is already present) + conservative (skip a customized
+   * copy that no longer looks like the stock skill).
+   */
+  private migrateIterativeConvergingAuditSkill(result: MigrationResult): void {
+    try {
+      const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'iterative-converging-audit', 'SKILL.md');
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      const MARKER = 'docs/audits/<slug>.md';
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      // conservative stock fingerprint: the inline skill's stable header + loop
+      if (!current.includes('# /iterative-converging-audit') || !current.includes('## The loop')) {
+        result.skipped.push('skills/iterative-converging-audit/SKILL.md: customized — left untouched (no audit-convergence update)');
+        return;
+      }
+      fs.writeFileSync(skillFile, ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT);
+      result.upgraded.push('skills/iterative-converging-audit/SKILL.md (canonical docs/audits report + validator-earned convergence stamp)');
+    } catch (err) {
+      result.errors.push(`skills/iterative-converging-audit/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateInstarDevBuildLocationRegrounding(result: MigrationResult): void {
     try {
       const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'instar-dev', 'SKILL.md');
@@ -2863,6 +3789,46 @@ export class PostUpdateMigrator {
       }
     } catch (err) {
       result.errors.push(`skills/instar-dev/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Extend the deployed instar-dev side-effects template's "Class-Closure
+   * Declaration" trigger note with the self-action clause (docs/specs/
+   * self-action-convergence.md → E5): the declaration is REQUIRED not only when
+   * FIXING an agent-authored-artifact defect but also when ADDING/modifying a
+   * self-triggered controller (the `unbounded-self-action` class). New agents get
+   * it via installBuiltinSkills (install-if-missing); EXISTING agents only get
+   * updated CONTENT here (Migration Parity → "updating existing skill content").
+   *
+   * Same shape as migrateMultiMachinePostureReviewDimension: re-copy the bundled
+   * template only when the installed copy lacks the self-action MARKER and still
+   * looks stock (fingerprint guard). A customized template is left untouched.
+   * Idempotent: the marker check short-circuits on every later run.
+   */
+  private migrateClassClosureTemplateSelfActionClause(result: MigrationResult): void {
+    const MARKER = 'unbounded-self-action';
+    const FINGERPRINT = 'Class-Closure Declaration';
+    const rel = ['skills', 'instar-dev', 'templates', 'side-effects-artifact.md'];
+    const label = 'instar-dev side-effects template (Class-Closure self-action clause)';
+    try {
+      const installed = path.join(this.config.projectDir, '.claude', ...rel);
+      if (!fs.existsSync(installed)) return; // fresh installs get the bundled copy
+      const current = fs.readFileSync(installed, 'utf8');
+      if (current.includes(MARKER)) return; // already updated — idempotent
+      if (!current.includes(FINGERPRINT)) {
+        result.skipped.push(`${label}: no Class-Closure section (older template) — left untouched`);
+        return;
+      }
+      const bundled = path.join(__dirname, '..', '..', ...rel);
+      if (!fs.existsSync(bundled)) return;
+      const next = fs.readFileSync(bundled, 'utf8');
+      if (next.includes(MARKER)) {
+        fs.writeFileSync(installed, next);
+        result.upgraded.push(label);
+      }
+    } catch (err) {
+      result.errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -3009,11 +3975,17 @@ export class PostUpdateMigrator {
     // SCOPE_ACCRETION sentinel is present ONLY in the new bundled hook; bumping
     // re-deploys it to agents carrying REALCHECK_VERIFY but not SCOPE_ACCRETION;
     // customized hooks (no stock fingerprint) are still left untouched.
+    // Marker bumped `SCOPE_ACCRETION` → `TASK_CONTINUATION`: the same trusted
+    // Codex Stop hook can now consult the server-owned ordinary-work ledger
+    // when no autonomous job owns the turn. Dark unless explicitly enabled.
+    // Marker bumped `TASK_CONTINUATION` → `DECISION_QUALITY_REALCHECK`: the
+    // terminal run-end payload now carries the already-observed real-check
+    // disposition into the existing decision-quality annotation chokepoint.
     upgrade(
       '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'SCOPE_ACCRETION',
+      'DECISION_QUALITY_REALCHECK',
       'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (scope-accretion: Layer B scan + runId echo + run-end call on every exit surface)',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (decision-quality real-check outcome transport at run-end)',
     );
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
@@ -3408,10 +4380,31 @@ export class PostUpdateMigrator {
     }
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'completion-claim-observe.js'), this.getCompletionClaimObserveHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/completion-claim-observe.js (verify-before-done observer, signal-only)');
+    } catch (err) {
+      result.errors.push(`completion-claim-observe.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'pr-hand-lease-guard.js'), this.getPrHandLeaseGuardHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/pr-hand-lease-guard.js (parallel-hand PR-lease guard, PreToolUse Bash, fail-open)');
     } catch (err) {
       result.errors.push(`pr-hand-lease-guard.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      fs.writeFileSync(path.join(instarHooksDir, 'working-set-artifact-recorder.js'), this.getWorkingSetArtifactRecorderHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/working-set-artifact-recorder.js (interactive working-set artifact recorder, PostToolUse Write/Edit, fire-and-forget, dark by default)');
+    } catch (err) {
+      result.errors.push(`working-set-artifact-recorder.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      fs.writeFileSync(path.join(instarHooksDir, 'doorway-scan-guard.js'), this.getDoorwayScanGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/doorway-scan-guard.js (doorway-scan command-allowlist guard, PreToolUse Bash, scope-fail-open/match-fail-closed)');
+    } catch (err) {
+      result.errors.push(`doorway-scan-guard.js: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Codex enforcement-hook registration (migration parity): existing Codex
@@ -4329,6 +5322,48 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    if (!content.includes('Registry First — capability registry:')) {
+      content += '\n- **Registry First — capability registry:** when asking which machine can serve a capability, consult `GET /capability-registry`; it distinguishes unavailable, unobserved, stale, and available evidence.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added capability registry Registry First awareness');
+    }
+
+    if (!content.includes('Registry First — channel registry:')) {
+      content += '\n- **Registry First — channel registry:** before reporting that a peer agent is unreachable, consult `GET /channels`; it lists every peer channel with purpose, when-preferred, cost and a live verdict. A channel that failed to start still gets a row, and `unknown` means undetermined — never healthy.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added channel registry Registry First awareness');
+    }
+
+    if (!content.includes('Decision journal — principle is required:')) {
+      content += '\n- **Decision journal — principle is required:** `POST /intent/journal` now REFUSES (400) a decision that names no guiding principle, and refuses invented field names by name rather than storing them. A field no reader consumes makes a submission look recorded without being recorded. Writable fields: `sessionId`, `decision`, `principle`, `topicId`, `jobSlug`, `alternatives`, `confidence`, `context`, `conflict`, `tags`, `evidence` — put reasoning in `context`, guiding intent in `principle`. `GET /intent/journal/stats` carries `principledCount`/`unprincipledCount`, because `topPrinciples: []` alone cannot distinguish "nothing decided yet" from "many decisions, none said why". The machine dispatch path is exempt.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added decision-journal principle requirement awareness');
+    }
+
+    if (!content.includes('Alignment score — N/A means not assessed:')) {
+      content += '\n- **Alignment score — N/A means not assessed:** `GET /intent/alignment` returns `grade: \'N/A\'` and `assessable: false` when the analysis window held no decisions. Do NOT read that as a failing grade — `score: 0` is a placeholder, not a measurement. Branch on `assessable` (or `sampleSize > 0`) before treating the score as a verdict.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added alignment-score not-assessed awareness');
+    }
+
+    if (!content.includes('Codex quota is first-class in the pool:')) {
+      content += '\n- **Codex quota is first-class in the pool:** Codex accounts read the real 5-hour + weekly windows from their latest rollout instead of appearing permanently empty. Placement and every reactive/proactive swap are framework-safe: a Codex session can use only Codex accounts, and a Claude session only Claude accounts.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Codex subscription-pool quota and framework-safety awareness');
+    }
+
+    if (!content.includes('Solo Codex load shedding is fail-safe:')) {
+      content += '\n- **Solo Codex load shedding is fail-safe:** the global quota brake consumes the real rollout 5-hour + weekly windows even without a subscription pool. A walled account stops new jobs/sessions; a missing, stale, unreadable, or incomplete Codex reading sheds rather than repeatedly spawning into an unknown wall. Claude keeps its existing OAuth-authoritative / JSONL-degraded behavior.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added solo Codex quota load-shed awareness');
+    }
+
+    if (!content.includes('Evolution action auto-expiry:')) {
+      content += '\n- **Evolution action auto-expiry:** `evolutionActions.autoExpiry` conservatively sweeps only stale ordinary `pending` items; `critical`, `pinned`, active, completed, cancelled, recent, invalid-dated, and future-deadline items are retained. It ships enabled in observation-only `dryRun:true` mode; turning dry-run off removes eligible items in one coalesced save and emits replication tombstones so peers cannot resurrect them.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added evolution action auto-expiry awareness');
+    }
+
     // Real-check verification (ACT-152 / autonomous-completion-real-checks). The existing
     // "Autonomous Completion Discipline" section is never edited in place (migrateClaudeMd only
     // APPENDS), so an existing agent learns about `verification_command` only via this appended
@@ -4348,6 +5383,66 @@ setTimeout(() => process.exit(0), 2000);
       content += SCOPE_ACCRETION_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Scope-Accretion Completion Discipline section');
+    }
+
+    // Stall-Coverage Matrix Gate (spec: framework-stall-coverage-matrix §3.4) —
+    // Agent Awareness Standard + Migration Parity: existing agents learn the
+    // gate's refusal class, the live-read config knob, the
+    // matrix-unverifiable-no-source honesty line, and that ratification goes
+    // through the dashboard-PIN acceptance route, never prose. Content-sniffed.
+    if (!content.includes('Stall-Coverage Matrix Gate')) {
+      content += APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Stall-Coverage Matrix Gate section');
+    }
+
+    // External-Hog Zombie Auto-Kill Sentinel (spec: external-hog-zombie-autokill-sentinel,
+    // CMT-1901) — Agent Awareness Standard + Migration Parity: existing agents learn the
+    // GET /external-hog status + the PIN-gated arm / Bearer disarm routes, the two-key
+    // floor+model kill rule, the watch-only/PIN-arm posture, and the proactive triggers.
+    // Tone-gate advisory migration (operator approval 2026-07-19, topic 33368) —
+    // Agent Awareness Standard + Migration Parity: an existing agent that does not
+    // know about `toneAdvisoryAckReason` / `toneAdvisoryComplied` will keep treating
+    // a nudge as a wall and will never produce the override evidence the whole
+    // migration exists to collect. Content-sniffed for idempotency.
+    if (!content.includes('Most checks are NUDGES you may override')) {
+      content += `\n${TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added tone-gate advisory migration (nudge/override/credential-wall) section');
+    }
+
+    // Tone-advisory reaction INVOCATION (spec: misplaced-flag-sent-as-message-text)
+    // — Agent Awareness Standard + Migration Parity. The section above documents
+    // `metadata.*` (the HTTP shape) while the template mandates the relay SCRIPT;
+    // the flags that bridge them, and the fact that they must precede the topic
+    // id, were documented nowhere. An agent therefore had to invent the
+    // invocation, and a misplaced flag was silently sent to the user as message
+    // text with its override dropped — grading a correct check `wrong`.
+    // Sniffed on its OWN marker, because an agent that already carries the
+    // section above would otherwise never receive this (the block above is
+    // content-sniffed on a marker that has not changed).
+    if (!content.includes('EVERY FLAG GOES BEFORE THE TOPIC ID')) {
+      content += `\n${TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added tone-advisory reaction invocation (flags precede the topic id)');
+    }
+
+    if (!content.includes('External-Hog Zombie Auto-Kill Sentinel')) {
+      content += EXTERNAL_HOG_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added External-Hog Zombie Auto-Kill Sentinel section');
+    }
+
+    // Owned-Identities Registry (spec: correction-derived-hardening) — Agent
+    // Awareness Standard + Migration Parity: existing agents learn that Rung 0 of
+    // self-unblock now includes identities they themselves provisioned, and the
+    // registration trigger (the 2026-07-18 gap: an exhaustion verdict that never
+    // consulted the agent's own created identities). Content-sniffed; the shipped
+    // template carries the same content inline for new installs.
+    if (!content.includes('owned-identities')) {
+      content += `\n### Owned-Identities Registry (self-unblock Rung 0 includes what YOU created)\n\nIdentities you yourself provisioned — test users, workspace owners, service accounts — are part of your self-unblock Rung 0: an "operator-only" verdict about infrastructure YOU built is suspect by construction, and your own records are the first place to look. The \`SelfUnblockChecklist\` structurally consults your per-agent registry at \`.instar/owned-identities.json\` (an array of \`{identity, service, roles, scopeTags, credentialRef}\` entries; \`credentialRef\` is a POINTER to where the credential lives, never a secret value).\n- **Register what you create** (PROACTIVE — this is the trigger): the moment you provision a test/service identity, add it to the registry — an unregistered identity is invisible to your future exhaustion checks, which is exactly how a wrong "this needs the operator" escalation happens. Register scopeTags in the SAME canonical service:scope form blocker targets use (an opaque id like slack:T0BA1DR0U3D, never a display name), and prune entries whose credential is gone — a resolving-but-stale entry blocks true-blocker settles until pruned.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Owned-Identities Registry section');
     }
 
     // Permission-Prompt Floor (spec: framework-permission-prompt-robustness) — Agent
@@ -4383,6 +5478,40 @@ setTimeout(() => process.exit(0), 2000);
       content += PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Playwright Profile Registry section');
+    }
+
+    // Session Listing Hygiene (CMT-1936) — Agent Awareness Standard + Migration
+    // Parity item 3: existing agents learn that GET /sessions defaults to ACTIVE
+    // sessions (?include=all for the registry), that finished records are bounded
+    // by sessions.retention, and that pool.duplicateTopics flags only GENUINE
+    // cross-machine duplicates (same recurring job per machine is benign). Same
+    // text as generateClaudeMd. Content-sniff on the heading keeps it idempotent.
+    if (!content.includes('Session Listing Hygiene')) {
+      content += SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Session Listing Hygiene section');
+    }
+
+    // Audits run to convergence (audit-convergence-enforcement §4) — Agent
+    // Awareness + Migration Parity item 3: existing agents learn the default-route
+    // rule (audit-shaped work runs as the converging loop; single-pass = incomplete)
+    // and that the canonical report at docs/audits/<slug>.md carries a machine-earned
+    // stamp. Same text as generateClaudeMd; content-sniffed on the heading.
+    if (!content.includes('Audits run to convergence')) {
+      content += AUDIT_CONVERGENCE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Audits-run-to-convergence default-route section');
+    }
+
+    // Duplicate-Session Prevention & Auto-Heal (ownership-gated-spawn §3.6) —
+    // Agent Awareness Standard + Migration Parity item 3: existing agents learn
+    // the spawn checkpoint, the reconciler + its one status surface, the
+    // owner-dark honest notice, and the judgment-provenance read. Honestly
+    // tagged observe-only (Maturity Honesty). Content-sniffed on the heading.
+    if (!content.includes('Duplicate-Session Prevention')) {
+      content += DUPLICATE_RECONCILER_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Duplicate-Session Prevention & Auto-Heal section');
     }
 
     // Mesh Self-Healing (U4.2 stale-owner release + U4.4 lease hand-back —
@@ -4421,6 +5550,15 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Dynamic MCP Lifecycle section');
     }
 
+    // State-free capability migration: existing agents need awareness only.
+    // No config/default migration exists because the spawn option is explicitly
+    // per-call and dark when absent.
+    if (!content.includes('Ultracode one-shot spawn')) {
+      content += ULTRACODE_SPAWN_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Ultracode one-shot spawn section');
+    }
+
     // Machine Load Assessment (CMT-1703, spec robust-load-assessment-fleet) — Agent
     // Awareness Standard + Migration Parity: existing agents learn the load-assess.sh
     // go-to method + the "never trust uptime load average" rule via this appended
@@ -4431,13 +5569,88 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Machine Load Assessment section');
     }
 
+    // Dark monitoring-route awareness: these two signal-only guards already
+    // exist in the runtime and CapabilityIndex. Existing agents need the same
+    // honest 503/dry-run posture and proactive read triggers as fresh installs.
+    if (!content.includes('Single-Machine Failover-Gap Guard')) {
+      content += SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Single-Machine Failover-Gap Guard section');
+    }
+
+    if (!content.includes('Missing-Login Session Guard')) {
+      content += MISSING_LOGIN_SESSION_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Missing-Login Session Guard section');
+    }
+
+    // Doorway/Model Knowledge Registry (DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §Agent
+    // Awareness) — Agent Awareness Standard + Migration Parity: existing agents learn the
+    // registry + GET /doorways + the dark doorway-scan job via this appended section. Same
+    // text as generateClaudeMd. Content-sniff on the unique heading keeps it idempotent.
+    if (!content.includes('Doorway/Model Knowledge Registry')) {
+      content += DOORWAY_REGISTRY_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Doorway/Model Knowledge Registry section');
+    }
+
+    // Routing Spend view (routing-control-room-spend-alerts, Increment A) — Agent
+    // Awareness Standard + Migration Parity: existing agents learn the read-only spend/caps
+    // surfaces + the Spend tab via this appended section. Same text as generateClaudeMd.
+    // Content-sniff on the unique heading keeps it idempotent.
+    if (!content.includes('Routing Spend view')) {
+      content += ROUTING_SPEND_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Routing Spend view section');
+    }
+
+    // Routing Spend MONEY layer (Increment B) — Agent Awareness + Migration Parity:
+    // existing agents learn the PIN plan flow + the Bearer freeze + the dark-by-default
+    // posture. Content-sniff on the unique heading keeps it idempotent.
+    if (!content.includes('Routing Spend MONEY layer')) {
+      content += ROUTING_SPEND_MONEY_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Routing Spend MONEY layer section');
+    }
+
+    // LLM-Decision Quality Meter (llm-decision-quality-meter §6) — Agent Awareness
+    // Standard + Migration Parity item 3: existing agents learn the observe-only
+    // quality substrate, the GET /decision-quality read surface (503-when-dark
+    // honesty), the deterministic grade-pass endpoint + dark hourly job, the
+    // "read the meter, don't guess" proactive trigger, and the census-debt
+    // re-surfacing. Same text as generateClaudeMd (shared const — the PR #1450
+    // single-source lesson). Content-sniff on the heading keeps it idempotent.
+    if (!content.includes('LLM-Decision Quality Meter')) {
+      content += DECISION_QUALITY_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added LLM-Decision Quality Meter section');
+    }
+
+    // Benchmark-Divergence Detector (benchmark-divergence-detector §Migration
+    // parity) — Agent Awareness Standard + Migration Parity item 3: existing
+    // agents learn the observe-only detector, its three routes (503-when-dark
+    // honesty), the precondition-first verdict semantics, and the "read the
+    // findings, don't guess" proactive trigger. Same text as generateClaudeMd
+    // (shared const — the PR #1450 single-source lesson). Content-sniff on the
+    // heading keeps it idempotent.
+    if (!content.includes('Benchmark-Divergence Detector')) {
+      content += BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Benchmark-Divergence Detector section');
+    }
+
     // The Agent Carries the Loop (agent-owned-followthrough C1+C2) — agent
     // awareness for the owner⟂blockedOn commitment model + the probe + that the
     // user is never status-pinged for an agent-owned commitment. Content-sniffed.
     if (!content.includes('The Agent Carries the Loop')) {
-      content += `\n### The Agent Carries the Loop (commitment follow-through)\n\nA commitment is MY job to finish — never something the user has to remember or chase. Every commitment carries \`owner\` (agent|user) ⟂ \`blockedOn\` (none|external|user-input|user-authorization):\n- **owner:agent** → I drive it to closure; the user is NEVER status-pinged (the beacon suppresses my status sends). They hear from me only on a result.\n- **owner:agent, blockedOn:external** (waiting on a vendor/CI/calendar) → I monitor and record a dependency-probe each time I check (\`POST /commitments/:id/probe\` with \`{checked, readinessSignal}\`); a fresh probe resets the staleness window. If a wait goes silent past the window (or an absolute ceiling), ONE honest dead-letter surfaces — never a nagging stream, never silence.\n- **owner:user, blockedOn:user-input** → a genuine info/taste decision that is theirs: I surface it ONCE as a plain question, then wait.\n- **owner:user, blockedOn:user-authorization** → an approval I lack: surfaced ONCE (no self-grant).\n\nI declare owner/blockedOn at commitment creation; a later state change goes through \`POST /commitments/:id/transition\` (re-runs the gate, no close-and-reopen). I never park my own action on the user ("your call", "remember to") — the B-PARK/B-IDLEAK signals flag that for the outbound gate. Ships dark-on-fleet / live-in-dryRun-on-dev (\`commitments.agentOwnedFollowthrough\`). Constitution: "The Agent Carries the Loop".\n`;
+      content += `\n### The Agent Carries the Loop (commitment follow-through)\n\nA commitment is MY job to finish — never something the user has to remember or chase. Every commitment carries \`owner\` (agent|user) ⟂ \`blockedOn\` (none|external|user-input|user-authorization):\n- **owner:agent** → I drive it to closure; the user is NEVER status-pinged (the beacon suppresses my status sends). They hear from me only on a result.\n- **owner:agent, blockedOn:external** (waiting on a vendor/CI/calendar) → I monitor and record a dependency-probe each time I check (\`POST /commitments/:id/probe\` with \`{checked, readinessSignal}\`); a fresh probe resets the staleness window. If a wait goes silent past the window (or an absolute ceiling), ONE honest dead-letter surfaces — never a nagging stream, never silence.\n- **owner:user, blockedOn:user-input** → a genuine info/taste decision that is theirs: I surface it ONCE as a plain question, then wait.\n- **owner:user, blockedOn:user-authorization** → an approval I lack: surfaced ONCE (no self-grant).\n\nI declare owner/blockedOn at commitment creation; a later state change goes through \`POST /commitments/:id/transition\` (re-runs the gate, no close-and-reopen). That transition is also the explicit, worker-declared beacon for raw blocker lifecycle timing; I never infer blockers from focus, sessions, or prose. I never park my own action on the user ("your call", "remember to") — the B-PARK/B-IDLEAK signals flag that for the outbound gate. Ships dark-on-fleet / live-in-dryRun-on-dev (\`commitments.agentOwnedFollowthrough\`). Constitution: "The Agent Carries the Loop".\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added The Agent Carries the Loop section');
+    }
+    if (content.includes('The Agent Carries the Loop') && !content.includes('deliverable-completion')) {
+      content += `\n### Deliverable completion throughput (measure only)\n\nDelivered commitments feed the existing blocker-lifecycle ledger's \`deliverable-completion\` count. \`GET /blocker-lifecycle/summary\` and \`/trend\` show the live count and rolling direction. This measurement never authorizes task selection, pressure, notification, grading, blocking, or action.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added deliverable completion throughput awareness');
     }
 
     // Self-Unblock Before Escalating (docs/specs/self-unblock-before-escalating.md,
@@ -4465,9 +5678,21 @@ setTimeout(() => process.exit(0), 2000);
     // Agent Awareness: an agent that doesn't know this exists will be confused when a
     // commitment appears after it says "I'll restart X". Content-sniffed; idempotent.
     if (!content.includes('Action-Claim Follow-Through Sentinel')) {
-      content += `\n- **Action-Claim Follow-Through Sentinel (signal-only, dark by default).** A backstop for the word≠action gap (you say "relaunching now" / "I'll push the change" and then don't). A thin Stop hook posts each finished conversational turn to \`POST /action-claim/observe\`, which classifies a CONCRETE future-action claim (restart/relaunch/push/merge/deploy/fix/…) and opens an idempotent follow-through commitment for the topic — so the existing PromiseBeacon + the revival path make sure it actually happens. High-precision (vague "I'll take a look" never triggers it), de-duplicated by \`externalKey\` (a restated claim updates one commitment, not many), auto-expiring, per-topic capped. It NEVER blocks a message. Off by default; enable with \`messaging.actionClaim.enabled\` (dev-first soak before fleet). Proactive: user asks "why did a commitment appear when I said I'd restart something?" → that's this sentinel tracking your stated action so it isn't silently dropped.\n`;
+      content += `\n- **Action-Claim Follow-Through Sentinel (signal-only, dark by default).** A backstop for the word≠action gap (you say "relaunching now" / "I'll push the change" and then don't). A thin Stop hook posts each finished conversational turn to \`POST /action-claim/observe\`, which classifies a CONCRETE future-action claim (restart/relaunch/push/merge/deploy/fix/…) and opens an idempotent follow-through commitment for the topic — so the existing PromiseBeacon + the revival path make sure it actually happens. High-precision (vague "I'll take a look" never triggers it), de-duplicated by \`externalKey\` (a restated claim updates one commitment, not many), auto-expiring, per-topic capped. It NEVER blocks a message. Off by default; enable with the top-level \`actionClaim.enabled\` (dev-first soak before fleet — the block is top-level, NOT nested under \`messaging\`, which is an array of adapters). It now covers **Slack** conversations too (a promise born in a Slack thread registers a durable commitment bound to the conversation's minted id, delivered back into that exact thread across restarts — dev-gated dark behind \`messaging.actionClaim.slack\`, dryRun-first) and **time-boxed conversational promises** ("I'll post that in about 5 minutes / by EOD / I'll check in"), not just dev-ops verbs. Proactive: user asks "why did a commitment appear when I said I'd restart something / promised to post in 5 min?" → that's this sentinel tracking your stated action so it isn't silently dropped.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Action-Claim Follow-Through Sentinel section');
+    }
+
+    const oldClaimAwareness = '- **Verify Before Done (observe-only v1).** Before claiming a same-turn action is complete, rely on real structural evidence from the tool that performed it. A Claude Stop hook reads only a bounded local transcript tail, emits scrubbed structural `TurnEvidence` (tool/action/safe target/success — never commands, results, secrets, or the transcript path), and records advisory completion-claim observations. It never blocks or rewrites a response. Prior-turn and background outcomes are explicitly not accused. The feature is dev-gated, dry-run first, and dark on the fleet; non-Claude frameworks no-op until they have an equivalent verified trace.';
+    const claimAwarenessV2 = '- **Claim Verification awareness v2 (observe-only v1 runtime).** A Claude Stop hook submits every bounded authored response plus scrubbed structural `TurnEvidence` to one dark claim observer. It extracts factual claims, applies deterministic criticality floors, and checks only finite canonical sources; unsupported capacity, pull-request, attribution, and external facts stay `unverifiable`. It never blocks, rewrites, delays, sends, corrects, or authorizes an action. Audit and benchmark rows are metadata-only, local-origin, pool-visible only as privacy-thresholded observations, and automation-ineligible. Metrics are server-admitted only; non-Claude frameworks remain unsupported until they provide an equivalent authenticated scrubbed hook.';
+    if (content.includes(oldClaimAwareness)) {
+      content = content.replace(oldClaimAwareness, claimAwarenessV2);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: upgraded Claim Verification awareness v2');
+    } else if (!content.includes('Claim Verification awareness v2')) {
+      content += `\n${claimAwarenessV2}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Claim Verification awareness v2');
     }
 
     // Outbound Message Gate (gate-prompts-judge-by-meaning §Migration) — Agent
@@ -4476,9 +5701,24 @@ setTimeout(() => process.exit(0), 2000);
     // Framework-agnostic (server-side); the marker is mirrored to the shadows.
     // Content-sniffed; idempotent.
     if (!content.includes('### Outbound Message Gate')) {
-      content += `\n### Outbound Message Gate\n\nYour messages to the user pass an always-on LLM gate (the tone gate) before they send. It blocks high-stakes leaks (CLI commands, file paths, config keys, endpoints) AND the self-stop anti-patterns (B15–B18: quitting on yourself for a context/fatigue reason, calling a doable thing impossible, parking your own work on the user). It judges the behavioral rules **by MEANING, not by literal phrases — a paraphrase of the anti-pattern is caught exactly the same as the canonical wording**, so do not assume rewording evades it. The gate FAILS CLOSED (holds the message, queued for retry — never silently delivers) if it can't produce a verdict (provider down, unparseable output, or a slow-review timeout); the operator kill-switch is \`messaging.toneGate.failClosedOnExhaustion\`. Constitution: "Intelligent Prompts — An LLM Gate Must Not String-Match".\n`;
+      content += `\n### Outbound Message Gate\n\nYour messages to the user pass an always-on LLM gate (the tone gate) before they send. It reviews high-stakes leaks (CLI commands, file paths, config keys, endpoints) AND the self-stop anti-patterns (B15–B19: quitting on yourself for a context/fatigue reason, calling a doable thing impossible, parking your own work on the user). The two families are treated DIFFERENTLY — the leak/representation rules are overridable nudges (see below); the self-stop family stays a hard block, because there the check exists to constrain YOU and your reason for overriding would come from the very reasoning it distrusts. It judges the behavioral rules **by MEANING, not by literal phrases — a paraphrase of the anti-pattern is caught exactly the same as the canonical wording**, so do not assume rewording evades it. The gate FAILS CLOSED (holds the message, queued for retry — never silently delivers) if it can't produce a verdict (provider down, unparseable output, or a slow-review timeout); the operator kill-switch is \`toneGate.failClosedOnExhaustion\`. Constitution: "Intelligent Prompts — An LLM Gate Must Not String-Match".\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Outbound Message Gate section');
+    }
+
+    // Tone-gate kill-switch path fix (tone-gate capture wiring, 2026-07-24) —
+    // Migration Parity item 3: agents whose CLAUDE.md was installed before the
+    // wiring fix cite the structurally-dead `messaging.toneGate.*` location
+    // (messaging is an array — a value there was never honored). Rewrite the
+    // dead path in place so operators following the doc set a key that works.
+    // Idempotent: the old literal is absent after the first run.
+    if (content.includes('`messaging.toneGate.failClosedOnExhaustion`')) {
+      content = content.replace(
+        /`messaging\.toneGate\.failClosedOnExhaustion`/g,
+        '`toneGate.failClosedOnExhaustion`'
+      );
+      patched = true;
+      result.upgraded.push('CLAUDE.md: fixed tone-gate kill-switch config path (messaging.toneGate → top-level toneGate)');
     }
 
     // Autonomous-run silence backstop (autonomous-progress-heartbeat.md) — Agent
@@ -4490,6 +5730,11 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n## Autonomous-run silence backstop (AutonomousProgressHeartbeat)\n\nA proactive backstop that posts ONE purely-observational liveness line when an autonomous run has gone silent on you for a long stretch while its terminal output is still changing. **This is NOT the commitment-cadence "still on it" heartbeat that the honest-progress work removed** — it fires only on a LONG user-silence gate (≥25m) WITH corroborated recent output change (a liveness signal, NOT a progress claim), and the wording is observational ("I haven't posted here in a while — last observed activity was «…». Message me if you need me."), never an assertive "still working" / "still going" claim. It closes the *busy-but-silent-to-user* gap the other watchers miss: the silent-freeze watchdog stays quiet while output is moving, PresenceProxy needs an inbound message, and PromiseBeacon needs an open commitment — a long heads-down autonomous run with no commitment and no inbound message falls through all three. The real fix is still you sending your own milestones; this only catches a lapse.\n- **It can't spam you (three LOCAL brakes, NOT dedup):** a long user-silence gate that ANY outbound (including your own normal reply) resets; a per-topic emit-cooldown; and a widening per-run backoff (25→40→60→90m) with a hard cap (~6 lines per run). Output advancing proves only LIVENESS, never progress — which is exactly why the wording is liveness-only.\n- **Signal-only:** it only ever ADDS a line — never blocks, delays, or rewrites your real messages. Every predicate fails CLOSED (no emit) on uncertainty (can't read history, the shared snapshot is unavailable, the run is mid-move to another machine). The interpolated \`focus\` is scrubbed for credentials/secrets/paths (drop-to-generic on any match), length-clamped, and HTML-escaped.\n- **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous-heartbeat\` → \`{ enabled, dryRun, silenceThresholdMinutes, lastTickAt, topicsConsidered, lastEmits }\` (503 when dark). Ships dark on the fleet + \`dryRun: true\` on a dev agent. Tune/disable: \`monitoring.autonomousHeartbeat\`. Spec: \`docs/specs/autonomous-progress-heartbeat.md\`.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Autonomous-run silence backstop section');
+    }
+    if (!content.includes('Autonomous Throughput Floor')) {
+      content += `\n## Autonomous Throughput Floor\n\nA pull/audit-only view measures project PR movement and manager outbound silence for active autonomous runs. It never notifies, dispatches, remediates, or creates attention. Read \`GET /autonomous/throughput-floor\` when investigating a quiet run; the response shows the durable baseline, dual-flatline observation, and bounded-read breaker. HOLD still requires both an actual approval gate and authoritative saturation of every non-gated lane; this v1 has no lane authority and cannot grant HOLD. A future proactive surface requires a separately converged SelfHealGate.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Autonomous Throughput Floor section');
     }
 
     // Parallel-Hand PR Lease (parallel-hand-pr-lease.md) — Agent Awareness + Migration
@@ -4506,9 +5751,42 @@ setTimeout(() => process.exit(0), 2000);
     // "NOT SENT — advisory" transcript line means will treat it as an error
     // and improvise; this section is the awareness (Agent Awareness Standard).
     if (!content.includes('Outbound advisory for automated messages')) {
-      content += `\n**Outbound advisory for automated messages (inform-only)** — When a background job of mine sends a Telegram message, the relay script first runs deterministic checks over the text (raw file paths, dev jargon, machine-local links). If something is flagged, the message is NOT sent yet: an advisory lands in the job session's transcript whose FIRST line is the literal \`NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)\`. The sender keeps final authority — the advisory layer never blocks, never escalates against the sender, and every error path delivers.\n- **If I see a NOT SENT advisory in my transcript** (PROACTIVE — this is the trigger): FIX the message and re-run the script — restate jargon in plain English; replace a raw file path by publishing a private view and sending the link; replace a localhost link with the public tunnel URL (a localhost link is the one finding \`--ack-advisory\` can NOT deliver — a pre-existing server guard refuses it regardless). Only \`--ack-advisory\` when the flagged content is genuinely right for the user (the override is audited).\n- Audit trail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/messaging/advisory-log?limit=50"\`. A job that repeatedly drops its own advised messages raises ONE deduped Attention item to the operator.\n- Conversational replies are unaffected by the jargon/path/link checks — those only run for scheduler-stamped automated job sends.\n- **TIME_CLAIM (accurate time reporting — MANDATED)**: when a topic has an ACTIVE time-boxed (autonomous) session, ANY send to it — automated or conversational — has its elapsed/remaining/percent claims verified against the live session clock. A claim contradicting the clock gets the NOT-SENT advisory: read \`GET /session/clock\` and re-send with the real numbers — NEVER estimate elapsed/remaining time. (Ships dark; rides the development-agent gate at \`messaging.outboundAdvisory.timeClaim.enabled\`.)\n- Off-switch: \`messaging.outboundAdvisory.enabled: false\` in \`.instar/config.json\` (read live — no restart).\n`;
+      content += `\n**Outbound advisory for automated messages (inform-only)** — When a background job of mine sends a Telegram message, the relay script first runs deterministic checks over the text (raw file paths, dev jargon, machine-local links). If something is flagged, the message is NOT sent yet: an advisory lands in the job session's transcript whose FIRST line is the literal \`NOT SENT — advisory (fix and re-run, or re-run with --ack-advisory to send unchanged)\`. The sender keeps final authority — the advisory layer never blocks, never escalates against the sender, and every error path delivers.\n- **If I see a NOT SENT advisory in my transcript** (PROACTIVE — this is the trigger): FIX the message and re-run the script — restate jargon in plain English; replace a raw file path by publishing a private view and sending the link; replace a localhost link with the public tunnel URL (a localhost link is the one finding \`--ack-advisory\` can NOT deliver — a pre-existing server guard refuses it regardless). Only \`--ack-advisory\` when the flagged content is genuinely right for the user (the override is audited).\n- Audit trail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/messaging/advisory-log?limit=50"\`. A job that repeatedly drops its own advised messages raises ONE deduped Attention item to the operator.\n- Conversational replies are unaffected by the jargon/path/link checks — those only run for scheduler-stamped automated job sends.\n- **TIME_CLAIM (accurate time reporting — MANDATED)**: when a topic has an ACTIVE time-boxed (autonomous) session, ANY send to it — automated or conversational — has its elapsed/remaining/percent claims verified against the live session clock. A claim contradicting the clock gets the NOT-SENT advisory: read \`GET /session/clock\` and re-send with the real numbers — NEVER estimate elapsed/remaining time. (Ships dark; rides the development-agent gate at \`messaging.outboundAdvisory.timeClaim.enabled\`.)\n- Off-switch: \`outboundAdvisory.enabled: false\` (TOP-LEVEL) in \`.instar/config.json\` (read live — no restart; the block is top-level, NOT nested under \`messaging\` — which is an array of adapters, so a nested key there is unreachable).\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Outbound advisory for automated messages section');
+    }
+
+    // Built-in job enablement surface (2026-07-23) — Migration Parity item 3.
+    // The `enabled:` line in .instar/jobs/instar/<slug>.md LOOKS authoritative and
+    // is not: installBuiltinJobs regenerates that markdown from the shipped
+    // template on every update, so an edit there reverts silently at the next one.
+    // The durable setting lives in jobs/schedule/<slug>.json (preserved across
+    // regeneration, and what AgentMdJobLoader reads). Undocumented until now; an
+    // agent editing the visible-but-wrong file loses the change with no signal.
+    // Content-sniff on the anchor phrase keeps it idempotent.
+    if (
+      content.includes('**Job Scheduler**') &&
+      !content.includes('Enabling/disabling a BUILT-IN job')
+    ) {
+      const jobEnableBullet =
+        '- **Enabling/disabling a BUILT-IN job — edit `.instar/jobs/schedule/<slug>.json`, NOT the `.md`.**' +
+        ' The `enabled:` line in `.instar/jobs/instar/<slug>.md` looks authoritative and is NOT: built-in job' +
+        ' markdown is regenerated from the shipped template on EVERY update (the same always-overwrite rule as' +
+        ' built-in hooks), so an edit there is silently reverted at the next update — the file shows your new' +
+        ' value until then, which is the worst kind of wrong. The DURABLE setting is `enabled` in' +
+        ' `.instar/jobs/schedule/<slug>.json`, which the installer explicitly PRESERVES across regeneration and' +
+        ' which the loader actually reads. Job definitions load at SERVER START (no hot reload), so a change' +
+        ' applies at the next restart — on a machine with a configured restart window, that means the window,' +
+        ' not immediately. Custom jobs under `jobs/user/` are never touched by any of this.\n';
+      // Anchor after the Trigger line inside the Job Scheduler block; fall back to
+      // appending the bullet if that line is absent on an older CLAUDE.md.
+      const triggerMarker = '/jobs/SLUG/trigger`\n';
+      const idx = content.indexOf(triggerMarker);
+      content = idx !== -1
+        ? content.slice(0, idx + triggerMarker.length) + jobEnableBullet + content.slice(idx + triggerMarker.length)
+        : content + '\n' + jobEnableBullet;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: documented the durable built-in job enablement surface');
     }
 
     // TIME_CLAIM advisory (operator mandate 2026-06-12, topic 13481) —
@@ -4518,13 +5796,32 @@ setTimeout(() => process.exit(0), 2000);
     // line. Content-sniff on 'TIME_CLAIM' keeps it idempotent.
     if (content.includes('Outbound advisory for automated messages') && !content.includes('TIME_CLAIM')) {
       const timeClaimBullet = `- **TIME_CLAIM (accurate time reporting — MANDATED)**: when a topic has an ACTIVE time-boxed (autonomous) session, ANY send to it — automated or conversational — has its elapsed/remaining/percent claims verified against the live session clock. A claim contradicting the clock gets the NOT-SENT advisory: read \`GET /session/clock\` and re-send with the real numbers — NEVER estimate elapsed/remaining time. (Ships dark; rides the development-agent gate at \`messaging.outboundAdvisory.timeClaim.enabled\`.)\n`;
-      const offSwitchMarker = '- Off-switch: `messaging.outboundAdvisory.enabled: false`';
+      // Match on the stable prefix (not the config key) so the anchor still finds
+      // the off-switch line whether CLAUDE.md carries the legacy nested key or the
+      // new top-level `outboundAdvisory.enabled` key (off-switch-config-shape fix).
+      const offSwitchMarker = '- Off-switch: `';
       const idx = content.indexOf(offSwitchMarker);
       content = idx !== -1
         ? content.slice(0, idx) + timeClaimBullet + content.slice(idx)
         : content + '\n' + timeClaimBullet;
       patched = true;
       result.upgraded.push('CLAUDE.md: added TIME_CLAIM bullet to Outbound advisory section');
+    }
+
+    // off-switch-config-shape fix (Migration Parity): existing agents' CLAUDE.md
+    // documents the outbound-advisory off-switch at the LEGACY nested key
+    // `messaging.outboundAdvisory.enabled`, which is UNREACHABLE on a real install
+    // (`messaging` is an array) — so the documented off-switch never worked. Swap it
+    // for the reachable TOP-LEVEL `outboundAdvisory.enabled` key. Content-sniff on the
+    // old literal keeps it idempotent (a CLAUDE.md already carrying the new key is
+    // untouched).
+    if (content.includes('Off-switch: `messaging.outboundAdvisory.enabled: false`')) {
+      content = content.replace(
+        /- Off-switch: `messaging\.outboundAdvisory\.enabled: false`[^\n]*/,
+        '- Off-switch: `outboundAdvisory.enabled: false` (TOP-LEVEL) in `.instar/config.json` (read live — no restart; the block is top-level, NOT nested under `messaging` — which is an array of adapters, so a nested key there is unreachable).',
+      );
+      patched = true;
+      result.upgraded.push('CLAUDE.md: moved outbound-advisory off-switch to the reachable top-level key');
     }
 
     // Durable Inbound Message Queue (spec durable-inbound-message-queue, CMT-1118)
@@ -4749,7 +6046,8 @@ Rule: I do not state that work landed inside another agent's state unless I have
 - **Continuity guarantee** — a long session that hits its account's quota resumes on another eligible account (conversation preserved via \`--resume\`), never dies. Manual lever: \`POST /subscription-pool/swap\` \`{"sessionName":"...","exhaustedAccountId":"..."}\`. Auto-swap on rate-limit ships OFF (opt-in via \`subscriptionPool.autoSwapOnRateLimit\` — it moves a live session, real authority).
 - **Pre-limit (proactive) swap** — beyond the reactive swap above, I can move a session OFF an account BEFORE it walls, at a lag-aware measured threshold (default 80% — the polled reading trails real usage, so the swap completes with margin). It also covers the UNTAGGED interactive session (resolves its account from the default login), so the session you talk to doesn't wedge at the wall. Opt-in via \`subscriptionPool.proactiveSwap.enabled\` (same authority as auto-swap, earlier trigger). Status: \`GET /subscription-pool/proactive-swap\`; run a pass now: \`POST /subscription-pool/proactive-swap/check\`.
 - **Anti-thrash brakes + in-flight work protection on swaps** — the proactive swap carries brakes so it can never ping-pong sessions between hot accounts: when EVERY account is hot it STAYS PUT (\`all-hot\` refusal), a just-swapped session dwells ~45 min before it can be moved again (restart-safe via \`state/swap-ledger.jsonl\`), and a swap only executes onto a target that is MATERIALLY cooler on a fresh quota reading. A session mid-turn or carrying live subagents is never killed by an optimization — the swap DEFERS until the work lands (a forced/reactive kill carries a mitigation note enumerating interrupted subagents + re-injecting the last unanswered message). Brakes ship dry-run first (\`subscriptionPool.proactiveSwap.antiThrash.dryRun\`); the work gate's \`subscriptionPool.swapContinuity.enabled\` is restart-required. "Why didn't my session swap?" → \`GET /subscription-pool/proactive-swap\` \`brakes\`/\`deferrals\` blocks name the refusal; "why did my refresh get a session-busy error?" → the work gate refused to kill in-flight work — wait, or re-issue with \`force:true\`.
-- **Enroll a new account from your phone** — \`POST /subscription-pool/enroll\` \`{"id","label","provider","framework","configHome"}\` starts a login and returns a public code/URL (never a token); \`GET /subscription-pool/pending-logins\` is the surface; expired codes are auto-reissued. Mark done with \`POST /subscription-pool/enroll/:id/complete\`.
+- **Credential identity drift is self-healing safety state** — quota follows the account proven by the live token, never a stale slot label. \`GET /subscription-pool\` exposes \`identityDrifted\` + credential-free evidence; drifted slots are excluded from capacity and every swap target. Repair is planned/audited through the existing staged credential-swap machinery, with a live identity pre-flight before every swap; uncertainty quarantines. A login absent from this machine becomes an owner re-login commitment with enrollment links (Claude logins are never copied across machines).
+- **Enroll a new account from your phone** — \`POST /subscription-pool/enroll\` \`{"id","label","provider","framework","configHome"}\` starts a login and returns a public code/URL (never a token); \`GET /subscription-pool/pending-logins\` is the surface; expired codes are auto-reissued. Mark done with \`POST /subscription-pool/enroll/:id/complete\`, or safely abandon a stuck login with \`POST /subscription-pool/enroll/:id/cancel\`.
 - **Dashboard**: the **Subscriptions tab** shows live quota bars (5h + weekly + reset countdown), status, and the Pending Logins panel — share the dashboard URL + PIN.
 - **When to use** (PROACTIVE): "how much quota is left across my accounts?" / "am I about to hit a limit?" → \`GET /subscription-pool\`; the user wants to add another subscription → drive the enrollment wizard (never ask them to paste a token); a long job is at risk of a quota wall → the continuity guarantee + \`/swap\` keep it alive. Single-account pools are a no-op.
 `;
@@ -4797,6 +6095,23 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(preLimitAnchor, preLimitAnchor + antiThrashBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added Subscription Pool anti-thrash brakes + work-gate bullet');
+      }
+    }
+
+    // Tier-0 credential identity-drift awareness for existing agents. Fresh
+    // templates carry the same bullet above; this content-sniffed insertion is
+    // Migration Parity and never rewrites operator-customized surrounding text.
+    if (
+      content.includes('Subscription Pool (multi-account quota') &&
+      !content.includes('Credential identity drift is self-healing safety state')
+    ) {
+      const driftBullet =
+        '\n- **Credential identity drift is self-healing safety state** — quota follows the account proven by the live token, never a stale slot label. `GET /subscription-pool` exposes `identityDrifted` + credential-free evidence; drifted slots are excluded from capacity and every swap target. Repair is planned/audited through the existing staged credential-swap machinery, with a live identity pre-flight before every swap; uncertainty quarantines. A login absent from this machine becomes an owner re-login commitment with enrollment links (Claude logins are never copied across machines).';
+      const heading = '## Subscription Pool (multi-account quota + seamless continuation)';
+      if (content.includes(heading)) {
+        content = content.replace(heading, heading + driftBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added credential identity-drift self-healing awareness');
       }
     }
 
@@ -4914,6 +6229,7 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
 - List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/apprenticeship/instances\` · \`GET /apprenticeship/instances/:id\`
 - Create: \`POST /apprenticeship/instances\` \`{"id":"codey-to-gemini","instanceType":"mentorship","overseer":"echo","mentor":"codey","mentee":"gemini","framework":"gemini-cli","priorInstanceId":null}\` (id/overseer/mentor/mentee/framework charset-clamped to \`^[a-z0-9-]+$\`; dup id rejected; harvestFrom=mentor / harvestTo=mentee).
 - Transition status (the ONLY way it changes — runs the gate): \`POST /apprenticeship/instances/:id/transition\` \`{"to":"active"}\` (refused + 409 on a failed gate or illegal transition; \`complete\` is terminal). Preview without mutating: \`.../can-start\` · \`.../can-complete\`.
+- Independence ladder: each instance carries \`ladderRung\` (R0–R5) plus append-only \`rungHistory\`. Move exactly one rung with \`POST /apprenticeship/instances/:id/rung-transition\` and \`{"to":1,"evidenceRef":"cycles:...; prs:..."}\`; promotion and demotion both require evidence, and accepted/refused attempts are audited.
 - Record a manual cycle: \`POST /apprenticeship/cycles\` with \`instanceId\`, positive \`cycleNumber\`, \`task\`, \`menteeOutput\`, optional \`mentorFlagged\` / \`overseerDifferential\` / \`coaching\` / \`infraItems\`, \`kind\` (\`mentor-mentee-differential\`, \`overseer-apprentice-devreview\`, \`overseer-mentee-direct\`), and \`channel\` (\`telegram-playwright\`, \`threadline-backup\`, \`direct-shortcut\`, \`unknown\`). A \`telegram-playwright\` cycle additionally REQUIRES a \`transcriptAudit\` block — \`{ topicIds, window: {start,end}, summary, findingDedupKeys, generatedAt, ledger: 'local'|'remote'|'dry-run'|'failed' }\` — built from \`instar dev:post-drive-transcript-audit\` run over the drive window (use \`--history-base-url\` when the transcript lives on the mentee's server; \`ledger:'local'\` claims are cross-checked against the real framework ledger). Use this when the overseer or manual loop found a differential outside the automated mentor tick.
 - **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance, drive it through the registry + transitions so the retro-harvest is reviewed before the next instance starts and the lessons are captured before this one closes — never track the lifecycle by memory.
 - Layer-balance health: \`GET /apprenticeship/instances/:id/role-coverage\` returns a \`keystoneBalance\` block — \`{ keystoneAxis, keystoneCycleCount, lastKeystoneAt, oversightSinceKeystone, starved, reason }\` — answering "is my deepest layer (the real mentor→mentee drive) actually firing, or have I drifted into just reviewing/overseeing?" \`starved:true\` = the mentee layer is under-firing relative to ongoing activity (the silent "mentor-heavy/mentee-light" drift). Observe-only; tune via \`?oversightStarvationThreshold=N\`. **When to use** (PROACTIVE): before deciding the loop is healthy — if starved, drive the mentee layer (a real \`mentor-mentee-differential\` cycle through the dogfooded channel), not another review.
@@ -4921,6 +6237,22 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
       content += '\n' + apprenticeshipSection;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Apprenticeship Program section');
+    }
+
+    // Existing agents with the program section need the same independence-
+    // ladder route and evidence contract emitted for fresh scaffolds.
+    if (
+      content.includes('**Apprenticeship Program**') &&
+      !content.includes('/apprenticeship/instances/:id/rung-transition')
+    ) {
+      const anchor = '- **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance';
+      const index = content.indexOf(anchor);
+      if (index !== -1) {
+        const ladderLine = '- Independence ladder: each instance carries `ladderRung` (R0–R5) plus append-only `rungHistory`. Move exactly one rung with `POST /apprenticeship/instances/:id/rung-transition` and `{"to":1,"evidenceRef":"cycles:...; prs:..."}`; promotion and demotion both require evidence, and accepted/refused attempts are audited.\n';
+        content = content.slice(0, index) + ladderLine + content.slice(index);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added apprenticeship independence-ladder awareness');
+      }
     }
 
     // Layer-balance signal (2026-06-06): agents that ALREADY carry the
@@ -4973,6 +6305,21 @@ The standing program that each apprenticeship/mentorship instance plugs into (e.
         );
         patched = true;
         result.upgraded.push('CLAUDE.md: cycle-record line now teaches the transcript-audit gate');
+      }
+    }
+    // Registry integrity + retained pending disposal. Existing agents must learn
+    // both the stricter write precondition and the non-mutating legacy audit.
+    if (
+      content.includes('**Apprenticeship Program**') &&
+      !content.includes('GET /apprenticeship/cycles/integrity')
+    ) {
+      const anchor = '- **When to use** (PROACTIVE): when starting or closing a mentorship/apprenticeship instance';
+      const index = content.indexOf(anchor);
+      if (index !== -1) {
+        const integrityLine = '- Registry integrity: cycles are recordable only against an existing `active` instance; unknown, pending, blocked, complete, and abandoned references are refused. Dispose of a mis-created `pending` instance by transitioning it to retained terminal `abandoned` (never delete it). Existing legacy dangling cycle rows are never rewritten: enumerate them with `GET /apprenticeship/cycles/integrity`.\n';
+        content = content.slice(0, index) + integrityLine + content.slice(index);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added apprenticeship registry-integrity awareness');
       }
     }
 
@@ -5058,7 +6405,7 @@ What this means for how I behave:
 - **I know which machine I'm on.** Turn provenance is recorded; if a failover outran the sync I disclose that the exact provenance is still catching up rather than asserting a stale machine.
 
 Where to look (never guess mesh state — read it):
-- \`GET /health\` → \`multiMachine.syncStatus\` = \`{ leaseHolder, leaseEpoch, holdsLease, splitBrainState, awakeMachineCount, protocolVersion }\`. \`instar doctor\` surfaces the same.
+- \`GET /health\` → \`multiMachine.syncStatus\` = \`{ leaseHolder, leaseEpoch, holdsLease, splitBrainState, awakeMachineCount, awakeMachineCountSource, protocolVersion }\`. \`awakeMachineCount\` derives from LIVE lease observations (source \`lease-live\`), NOT last-written registry roles (source \`registry-roles\`, the git-only-mesh fallback that can lag); \`null\`/\`unavailable\` on a read failure — never a silent 0. \`instar doctor\` surfaces the same, and labels any registry-vs-live divergence.
 - A genuinely **unresolvable split-brain** (a machine looks alive but unreachable, so the lease can't move) surfaces as a single **Attention-queue** item with a Y/N decision ("demote machine X?") — it is deduped per partition episode, never per heartbeat. If I see one, I present the data and the decision to the user; I do not silently pick.
 - Dials live under \`.instar/config.json\` → \`multiMachine\` (ingressHeartbeatMs, leaseTtlMs, leasePullIntervalMs, liveTailMaxStalenessMs, handoffAckTimeoutMs, …). A nonsensical combination is rejected at startup with a clear message rather than degrading silently.
 `;
@@ -5384,6 +6731,53 @@ When narrating a ship, an update I just applied, or a restart I just completed (
       result.upgraded.push('CLAUDE.md: added Autonomous Liveness Reconciler awareness section');
     }
 
+    // Machine-Coherence Guard awareness (Agent Awareness Standard). Existing
+    // agents need to know the GET /pool/machine-coherence read surface + the
+    // proactive trigger ("why did I get a machine-coherence alarm?") exist, even
+    // if initialized before this capability shipped. Dev-gated dark; content-sniffed.
+    if (!content.includes('Machine-Coherence Guard')) {
+      const mcSection = `
+### Machine-Coherence Guard — "are my machines running as the same me?" (⚗️ dev-gated dark)
+
+When I run on more than one machine, this guard compares — across my OWN online machines, riding the existing 30s presence-pull — the coherence-critical dimensions (instar version, resolved safety-flags, mesh protocol, manifest generation). When the pool DIVERGES on something that halves a cross-machine guarantee (e.g. the conversation-move pair live on one machine, dark on the other), exactly ONE elected machine narrates ONE episode-scoped attention item — priority-mapped, calm-first (calm-alerting): a routine patch-version skew during a rolling update posts CALM and SILENT (visible in the hub/dashboard, no buzz — the self-heal is watched), while a real capability split, a STALLED update (past the stall ceiling), or a KEEPS-RECURRING pattern raises loud HIGH with the fix prompt (reply **fix it**) or hold-open (reply **leave it**). A self-healed episode resolves quietly (one silent note); an escalated episode closes with a notifying stand-down. Signal-only: it never blocks, equalizes, or restarts anything on its own. Dev-gated dark on the fleet (\`monitoring.machineCoherence.enabled\` OMITTED → the dev-agent gate decides), **dry-run FIRST** even on dev (raises no item until a deliberate \`dryRun:false\`), single-machine is a strict no-op.
+- Status (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/pool/machine-coherence\` → \`{ enabled, dryRun, machinesRegisteredOnline, machinesCompared, peerClassifications, raiser, openEpisode, counters }\` (503 when the guard is dark on this agent — say so honestly, don't guess).
+- **When to use** (PROACTIVE — this is the trigger): user asks "are my machines in sync / running the same version+settings?" or "why did I get a machine-coherence alarm?" → read \`/pool/machine-coherence\` and the open episode (its \`pendingFix\` names the proposed fix + target machine); the transition log is \`logs/machine-coherence.jsonl\`. A version-skew row usually just means a rolling update in flight (grace-gated, won't cry wolf).
+`;
+      content += '\n' + mcSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Machine-Coherence Guard awareness section');
+    }
+
+    // calm-alerting doc parity (a): a CONTENT-UPDATE migration for the
+    // machine-coherence narration — the install-if-missing sniff above can never
+    // deliver an update to deployed agents (the marker is already present
+    // fleet-wide), so the STALE PHRASE itself is the key. Idempotent: after the
+    // replace the stale phrase is gone. Without this, deployed agents keep
+    // telling the operator "raises ONE HIGH" while raising calm/silent NORMAL.
+    {
+      const staleMcNarration = 'raises ONE HIGH, episode-scoped attention item \u2014 impact-first, with a fix I perform on your approval (reply **fix it**) or hold open without nagging (reply **leave it**).';
+      const calmMcNarration = 'narrates ONE episode-scoped attention item \u2014 priority-mapped, calm-first (calm-alerting): a routine patch-version skew during a rolling update posts CALM and SILENT (visible in the hub/dashboard, no buzz \u2014 the self-heal is watched), while a real capability split, a STALLED update (past the stall ceiling), or a KEEPS-RECURRING pattern raises loud HIGH with the fix prompt (reply **fix it**) or hold-open (reply **leave it**). A self-healed episode resolves quietly (one silent note); an escalated episode closes with a notifying stand-down.';
+      if (content.includes(staleMcNarration)) {
+        content = content.split(staleMcNarration).join(calmMcNarration);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: machine-coherence narration updated to calm-alerting semantics');
+      }
+    }
+
+    // calm-alerting doc parity (b): the sentinel-events ROPE row-kind guidance \u2014
+    // a NEW entry with its OWN marker (the existing sentinel-events sniff cannot
+    // deliver it). Content-sniffed; idempotent.
+    if (!content.includes('Rope-notice audit rows')) {
+      const ropeRowSection = `
+### Rope-notice audit rows (calm-alerting)
+
+Rope-recovery-probe rows \u2014 demoted informational rope notices, hub fallbacks, and per-rope dedupe events \u2014 land in \`logs/sentinel-events.jsonl\` (rope KIND + machine NICKNAME + direction, never raw ids in user-facing text). When a "rope answers probes but stays demoted" notice seems to have gone quiet, read those rows: informational rope content routes to the daily rope-health digest ONLY where the digest provably delivers on the raising machine, and falls back to the \ud83d\udd14 Attention hub everywhere else.
+`;
+      content += '\n' + ropeRowSection;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added rope-notice audit-row guidance (calm-alerting M-P3)');
+    }
+
     // Framework-Onboarding Mentor System — issue-ledger observability (Agent
     // Awareness Standard). Existing agents need to know the read-only
     // /framework-issues + playbook routes exist, even if initialized before this
@@ -5573,9 +6967,9 @@ Every conversation I talk in has ONE durable numeric identity: a Telegram topic 
       const section = `
 ## Topic-Flood Guard (attention queue circuit breaker)
 
-The attention queue spawns ONE Telegram forum topic per item — right for a genuine /ack-able to-do, catastrophic when a HOUSEKEEPING feature raises items at volume (this is exactly the 2026-05-22 sentinel flood and the 2026-05-28 collaboration-redrive flood). A per-source circuit breaker now sits at the topic-creation chokepoint (\`TelegramAdapter.createAttentionItem\`): if a single attention \`sourceContext\` exceeds its topic budget within a rolling window, further NON-critical items from that source are COALESCED into ONE running "notices coalesced" topic and recorded in \`state/attention-suppressed.jsonl\` — never a wall of new topics. HIGH/URGENT items are NEVER coalesced (critical messages always get their own topic). No item is dropped — only its per-item topic is withheld; every item is still in the attention store.
+${SINGLE_ATTENTION_TOPIC_LEAD}
 
-- Default-ON, no config required (it ships in code). Tune via \`messaging[].config.attentionTopicGuard\` = \`{ "enabled": true, "windowMs": 600000, "maxTopicsPerSource": 3 }\`.
+- Single-topic routing is the code default — no config required. The legacy per-item mode is still shaped by \`messaging[].config.attentionTopicGuard\` = \`{ "enabled": true, "windowMs": 600000, "maxTopicsPerSource": 3 }\`.
 - If a user asks "why are my notices grouped together / where did topic X go / what is this 'notices coalesced' topic?" — read \`state/attention-suppressed.jsonl\` for the per-source suppressed items and explain the breaker above. The real fix for a recurring flood is to make the offending feature route housekeeping to the logs (like the sentinels and collaboration-redrive now do); the guard is the backstop that protects you regardless.
 `;
       content += '\n' + section;
@@ -5583,6 +6977,32 @@ The attention queue spawns ONE Telegram forum topic per item — right for a gen
       result.upgraded.push('CLAUDE.md: added Topic-Flood Guard section');
     } else {
       result.skipped.push('CLAUDE.md: Topic-Flood Guard section already present');
+    }
+
+    // Single-alerts-topic routing (2026-07-09 directive) — agents migrated
+    // BEFORE the default flip carry the old Topic-Flood Guard lead paragraph
+    // asserting one-topic-per-item + HIGH/URGENT-always-get-their-own-topic,
+    // which now contradicts shipped behavior (every item routes into the ONE
+    // "🔔 Attention" hub by default). Rewrite that stale paragraph in place.
+    // Idempotent: keyed on the old opening sentence, gone after one run.
+    const staleFloodLead = 'The attention queue spawns ONE Telegram forum topic per item';
+    const staleFloodBullet = '- Default-ON, no config required (it ships in code). Tune via `messaging[].config.attentionTopicGuard`';
+    if (content.includes(staleFloodLead) || content.includes(staleFloodBullet)) {
+      const staleParagraphPattern = /The attention queue spawns ONE Telegram forum topic per item[^\n]*\n/;
+      if (staleParagraphPattern.test(content)) {
+        content = content.replace(staleParagraphPattern, `${SINGLE_ATTENTION_TOPIC_LEAD}\n`);
+      }
+      const staleBulletPattern = /- Default-ON, no config required \(it ships in code\)\. Tune via `messaging\[\]\.config\.attentionTopicGuard`[^\n]*\n/;
+      if (staleBulletPattern.test(content)) {
+        content = content.replace(
+          staleBulletPattern,
+          '- Single-topic routing is the code default — no config required. The legacy per-item mode is still shaped by `messaging[].config.attentionTopicGuard` = `{ "enabled": true, "windowMs": 600000, "maxTopicsPerSource": 3 }`.\n',
+        );
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated Topic-Flood Guard section for single-alerts-topic default');
+    } else {
+      result.skipped.push('CLAUDE.md: Topic-Flood Guard section already on single-alerts-topic wording');
     }
 
     // Bounded Notification Surface (2026-06-05, flood #3) — extends the
@@ -5615,6 +7035,7 @@ Beyond the attention-queue breaker above, the topic-creation primitive itself (\
 
 Beyond the one-awake-machine model: with the pool enabled I run conversations across ALL my machines at once and can MOVE a conversation between them. Ships DARK behind \`multiMachine.sessionPool.stage\` (default 'dark'); a single-machine agent is a no-op.
 
+- **Promotion activation (operator-controlled):** \`multiMachine.sessionPool.promotionModel\` defaults to \`off\`. \`auto-climb\` attempts one evidence-gated step per cadence; \`operator\` advances only on demand. \`POST /session-pool/promote\` requests one step in either live model, while \`promotionCeiling\` is a hard upper bound. The route returns 503 while off.
 - **See the pool:** the **Machines tab** in the dashboard, or \`GET /pool\` (Bearer-auth) → which machine is the router ("dispatcher") + every machine's nickname, hardware, online status, load, and clock-skew status.
 - **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
 - **Idle vs broken machine (WS4.2):** the same \`pool.machines[]\` carries an explicit per-machine state so an idle machine never reads as broken. A machine with ZERO sessions gets \`pool.machines[].emptyState\` = \`online — no active sessions\` (heartbeat-fresh, just idle) / \`offline since <t>\` (known offline) / \`unreachable (last seen <t>)\` (was online, now not answering — the \`failed\` case). Honest derivation from the registry online flag + last-seen + the live fan-out — never a fabricated "looks fine". The dashboard sessions view renders these per-machine; a machine WITH sessions gets no empty-state (its tiles already name it). Single-machine install = just the lone self row.
@@ -5631,6 +7052,17 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       result.upgraded.push('CLAUDE.md: added Multi-Machine Session Pool section');
     } else {
       result.skipped.push('CLAUDE.md: Multi-Machine Session Pool section already present');
+    }
+
+    // Promotion activation (2026-07-23): existing pool-aware agents predate the
+    // explicit off/auto-climb/operator selector and deterministic one-step
+    // route. Idempotent via the unique route marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('/session-pool/promote')) {
+      const promotionActivation = `
+- **Promotion activation (operator-controlled):** \`multiMachine.sessionPool.promotionModel\` defaults to \`off\`. \`auto-climb\` attempts one evidence-gated step per cadence; \`operator\` advances only on demand. \`POST /session-pool/promote\` requests one step in either live model, while \`promotionCeiling\` is a hard upper bound. The route returns 503 while off.`;
+      content += '\n' + promotionActivation + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added session-pool promotion activation line');
     }
 
     // Multi-machine robustness (2026-06-04): agents that ALREADY have the pool
@@ -5654,10 +7086,29 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
     // via the unique `autonomousRunSuspended` marker.
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('autonomousRunSuspended')) {
       const ws14line = `
-- **Moving a topic with an autonomous run in flight (consent gate):** a transfer answers 409 \`needsConfirmation\` when the topic has a LIVE autonomous run on this machine — moving suspends real work, so it always asks first. A confirmed move (\`"confirm":true\`) suspends the run at its next turn boundary (the state file survives with \`moved_to\` markers and rides the working-set carrier to the new machine — never deleted, never shipped mid-write); the response reports \`autonomousRunSuspended\`.`;
+- **Moving a topic with an autonomous run in flight (consent gate):** a transfer answers 409 \`needsConfirmation\` when the topic has a LIVE autonomous run on its current owner — moving suspends real work, so it always asks first. Confirm by re-sending the same request with \`"confirm":true\` and the returned \`confirmationChallenge\`; changed conditions return a fresh challenge. A confirmed move suspends the run at its next turn boundary (the state file survives with \`moved_to\` markers and rides the working-set carrier to the new machine — never deleted, never shipped mid-write); the response reports \`autonomousRunSuspended\`.`;
       content += '\n' + ws14line + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added WS1.4 autonomous-run transfer consent line');
+    }
+    // Challenge-bound confirmation supersedes the legacy bare confirm:true
+    // instruction. Existing agents already contain autonomousRunSuspended, so
+    // this needs its own idempotent marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('confirmationChallenge')) {
+      content = content.replace(
+        '(re-send with `"confirm":true`)',
+        '(re-send with `"confirm":true` and the returned `confirmationChallenge`; changed conditions return a fresh challenge)',
+      );
+      content = content.replace(
+        'A confirmed move (`"confirm":true`) suspends the run',
+        'A challenge-bound confirmed move suspends the run',
+      );
+      content = content.replace(
+        'a LIVE autonomous run on this machine',
+        'a LIVE autonomous run on its current owner',
+      );
+      patched = true;
+      result.upgraded.push('CLAUDE.md: challenge-bound WS1.4 transfer consent');
     }
 
     // Pool-wide session visibility (2026-06-05): agents that ALREADY have the pool
@@ -6385,6 +7836,23 @@ Run different INTERNAL components on different agentic frameworks to spread LLM 
       result.upgraded.push('CLAUDE.md: added Provider-Fallback Default Policy awareness');
     }
 
+    // Non-Gating Failure-Swap (2026-07-09) — Agent Awareness + Migration Parity: the
+    // failure-swap tail now ALSO covers NON-gating internal calls (bounded: one step,
+    // never onto the Claude tail, only on an invocation-level zero-token failure),
+    // fixing the class where TopicIntentExtractor hard-errored at 28% while gating calls
+    // swapped. This UPDATES the "when a *gating* call ... swaps DOWN the chain" framing of
+    // the provider-fallback block above. migrateClaudeMd only APPENDS, so it is a corrective
+    // subsection content-sniffed on the NEW distinctive marker `non-gating internal calls
+    // also get a bounded` (idempotent; distinct from every existing marker).
+    if (!content.includes('non-gating internal calls also get a bounded')) {
+      const nonGatingSwapNote = `
+**Non-gating internal calls also get a bounded failure-swap (Non-Gating Failure-Swap)** — Extending the provider-fallback framing above: non-gating internal calls also get a bounded, herd-safe swap now — not just gating calls. When a NON-gating internal component (e.g. \`TopicIntentExtractor\`) suffers an INVOCATION-level primary failure (the off-Claude CLI spawn/timeout/empty-output errored with ZERO tokens produced), it swaps ONCE onto the next active off-Claude framework instead of hard-erroring to its heuristic (the production class where TopicIntentExtractor showed a 28% codex invocation-error rate while gating calls errored at ~1.5%). It is TIGHTER than the gating swap in reach: at most \`maxAttempts\` (default 1) steps, NEVER onto \`claude-code\`/the default framework (non-gating background traffic must never herd onto the last-resort Claude tail), and NEVER on a content/parse error that already carried tokens (the caller fail-opens that). Its attempt timeout is deliberately separate and longer: \`intelligence.nonGatingSwapTimeoutMs\` defaults to 15000ms so cold-start providers can answer, while safety-gating swaps still use \`intelligence.swapAttemptTimeoutMs\` (default 5000ms) for responsive fail-closed behavior. Ships ON by default (\`intelligence.nonGatingFailureSwap\`); set \`intelligence.nonGatingFailureSwap.enabled: false\` to restore the old hard-error behavior. Proactive: "why did my background classifier's error rate drop?" / "does a non-gating call fall back too?" → this bounded swap. (Spec: \`docs/specs/nongating-failure-swap.md\`.)
+`;
+      content += '\n' + nonGatingSwapNote;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Non-Gating Failure-Swap awareness');
+    }
+
     // Correction & Preference Learning Sentinel (Slice 1a) §7 — Agent Awareness +
     // Migration Parity: existing agents must learn about the preferences read-
     // surface (the session-start hook now fetches /preferences/session-context
@@ -6660,6 +8128,56 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.upgraded.push('CLAUDE.md: added Commitments & Follow-Through section');
     } else {
       result.skipped.push('CLAUDE.md: Commitments & Follow-Through section already present');
+    }
+
+    // Dated check-in reminders (ACT-724 step 1). SEPARATE from the block above:
+    // an agent that already HAS the Commitments section never re-enters that
+    // branch, so appending to it would reach only fresh installs — the exact
+    // Migration Parity failure mode. A dated promise the agent does not know it
+    // can register is a promise nothing will remind anyone about.
+    if (
+      content.includes('**Commitments & Follow-Through**') &&
+      !content.includes('/commitments/check-in-reminder')
+    ) {
+      const marker = '- **When to use** (PROACTIVE — this is the trigger): the moment you promise the user a future action, open a commitment.';
+      const datedSection = `- **A promise with a DATE produces a real reminder (ACT-724 step 1, ships dark).** When you say "I'll check in on this by Friday", set \`checkInAt\` (an absolute ISO instant — resolve "Friday" to a real moment at creation time; never store a bare date) on the commitment. A recurring reconciler then posts EXACTLY ONE fixed-template reminder into that commitment's own topic when the instant arrives, and stops. Delivering or withdrawing the commitment first means no reminder ever fires — teardown is a status check, nothing to cancel.
+  - Read the dated backlog: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments/check-in-reminder\` → \`{ enabled, dryRun, datedCount, pending, undelivered }\`. **\`undelivered\` is the one to look at**: those are promises the user did NOT receive after retries were exhausted.
+  - Run one pass now: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments/check-in-reminder/pass\` (idempotent — a re-run sends nothing).
+  - The guarantee is **at-least-once, deduped at the delivery layer** — not exactly-once. A reminder is marked sent ONLY after it actually sent, so a failed send retries (bounded) instead of being recorded as delivered.
+  - Ships dark (\`commitments.checkInReminder\`, dryRun defaulting TRUE). **Honest scope:** while the reconciler runs, no dated commitment can slip past it — but nothing yet guarantees the reconciler runs, so "structurally impossible to have a dated promise without a reminder" is NOT true yet.
+`;
+      const at = content.indexOf(marker);
+      if (at >= 0) {
+        content = content.slice(0, at) + datedSection + content.slice(at);
+      } else {
+        // The section exists but has drifted from the shipped wording. Append
+        // rather than skip: a missing capability is worse than a misplaced one.
+        const idx = content.indexOf('**Commitments & Follow-Through**');
+        const endOfBlock = content.indexOf('\n\n', idx);
+        const insertAt = endOfBlock >= 0 ? endOfBlock : idx;
+        content = content.slice(0, insertAt) + '\n' + datedSection + content.slice(insertAt);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added dated check-in reminder to Commitments section');
+    } else if (content.includes('/commitments/check-in-reminder')) {
+      result.skipped.push('CLAUDE.md: dated check-in reminder already present');
+    }
+
+    // Commitments curl payload fix (2026-07-27) — the shipped template was
+    // already corrected, but existing agents with the section present skipped
+    // the additive section migration and kept a payload rejected by POST
+    // /commitments: missing agentResponse, and the stale follow-up type. Rewrite
+    // only the exact stale payload so custom docs and already-correct docs are
+    // untouched. Keep the stale type split so the source-contract test can still
+    // catch accidental new documentation of that rejected value.
+    const staleCommitmentsPayload =
+      `-d '{"userRequest":"<what you promised>","type":"follow-${'up'}","topicId":TOPIC_ID}'`;
+    const correctedCommitmentsPayload =
+      `-d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID}'`;
+    if (content.includes(staleCommitmentsPayload)) {
+      content = content.split(staleCommitmentsPayload).join(correctedCommitmentsPayload);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: fixed commitments guidance payload (agentResponse + one-time-action)');
     }
 
     // Publishing (Telegraph public pages). Awareness-parity pass: add the
@@ -7519,6 +9037,31 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('CLAUDE.md: added Fork-Bomb Spawn Cap section');
     }
 
+    // Self-Action Backpressure Governor (unified-self-action-backpressure §11 /
+    // LA9-1) — Agent Awareness + Migration Parity: existing agents learn the
+    // GET /self-action-governor read surface, the three proactive "why was my
+    // respawn held / swap queued / notify folded?" triggers, AND the
+    // emergencyDisable valve with the CONVERSATIONAL flip as the operator's
+    // mass-incident path. Content-sniffed on a stable heading -> idempotent.
+    if (!content.includes('Self-Action Backpressure Governor')) {
+      content += `\n**Self-Action Backpressure Governor (unified self-action chokepoint)** — Every registered self-triggered action I take (reaper age-kills, external-hog kills, proactive account swaps, beacon notify/liveness lines) rides ONE admission chokepoint (\`SelfActionGovernor\`) carrying per-target + census-scaled total count ceilings, rate buckets, P19 brakes, and a bounded coalescing queue — the runtime arm of the "Capacity Safety — No Unbounded Self-Action" standard (the 17,503-kills/day reaper flood + the 72-swaps/day thrash are the ancestor incidents). It ships OBSERVE-ONLY on every class: it measures would-deny verdicts and blocks NOTHING; a class only enforces after the operator's deliberate per-class flip (and pool-shared classes never enforce on a multi-machine pool until the pool-wide ceiling exists).\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-action-governor\` → per-class \`{ mode, counters, bySubMechanism, queueDepth }\`; every non-allow NAMES its deciding layer (per-target-ceiling / total-ceiling / census-scale / rate-bucket / breaker / ...). \`?scope=pool\` merges pool-shared class counters across my machines.\n- **When to use** (PROACTIVE — these are the triggers): "why did my respawn get held?" / "why did my swap get queued?" / "why did my notify get folded?" → read that class's \`bySubMechanism\` reasons on \`GET /self-action-governor\` — the deciding layer is named, never guessed.\n- **Mass-incident valve (the operator's path)**: in a real fire (a mass cleanup the ceilings would pace), the PRIMARY path is CONVERSATIONAL — the operator tells me and I set \`intelligence.selfActionGovernor.emergencyDisable: true\` in \`.instar/config.json\` (read live, no restart; every class degrades to unconditional pass-through). The flip itself is audited AND raises an attention item in both directions. Disabling via \`PATCH /config\` additionally requires the dashboard PIN (re-enable is Bearer-OK); a raw config-file edit remains the deliberate verifier-independent floor.\n- A human action always wins: operator kill routes carry an ALWAYS-ALLOW, always-audited principal lane — an enforcing class can never count-deny or queue an emergency stop. (Spec: \`docs/specs/unified-self-action-backpressure.md\`.)\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Self-Action Backpressure Governor section');
+    }
+
+    // Test-Runner Concurrency Bound (test-runner-concurrency-bound §2.9) — Agent
+    // Awareness + Migration Parity: existing agents learn the host-wide vitest cap
+    // (watch-only 14-day soak), the /test-runner-limiter read surface + /prune
+    // recovery lever, the "a rejected push may be CONTENTION not red tests"
+    // trigger, the outer-timeout ≥ acquire-budget guidance, and the env-only kill
+    // switch via this appended section. Body mirrors generateClaudeMd()
+    // byte-for-byte. Content-sniffed on the stable heading → idempotent.
+    if (!content.includes('Test-Runner Concurrency Bound')) {
+      content += `\n**Test-Runner Concurrency Bound (host-wide vitest cap — the spawn cap's sibling)** — A per-machine ticket counter bounds how many test suites run AT ONCE across every actor on this machine: full suites run one-at-a-time (default cap 1), while small targeted runs (≤5 named test files) get a roomier lane (default 6 slots, each clamped to ≤4 workers). It is the structural answer to the 2026-07-02 test-storm meltdown (29 concurrent vitest roots ≈ 300+ workers starving co-resident servers' event loops until their supervisors killed healthy processes). Ships WATCH-ONLY (dry-run) for a 14-day soak — it records what it WOULD have blocked but admits every run; blocking arrives only after the soak review flips the host tuning file.\n- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/test-runner-limiter\` → \`{ cap, targetedCap, posture, ttlSignalArmed, liveHolders, targetedHolders, admittedOpen, suite: {available, saturated}, targeted: {...}, recentEvents, skipHistogram }\` (Registry First — read it, never guess).\n- **"Why is my test run waiting?" / a rejected \`git push\`** (PROACTIVE — this is the trigger): a push or suite that stalls or is refused may be CONTENTION (another suite holds the slot), NOT red tests — read \`GET /test-runner-limiter\` BEFORE assuming failure. The limiter's capacity-timeout error says "this is NOT a test failure" and names the holders.\n- Recovery lever: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/test-runner-limiter/prune\` — forces a full reclaim pass (dead/reused-pid + TTL-expired holders) instead of ever hand-editing \`~/.instar/host-test-runner-holders.json\` (the 2026-07-01 stale-holder lesson).\n- A \`git push\` run under an OUTER command timeout needs that timeout ≥ the pre-push acquire budget (default 10 min interactive) — a correctly-WAITING push must not be killed by its own caller.\n- Kill switch: env \`INSTAR_HOST_TEST_SEMAPHORE=off\` (the SOLE chokepoint lever — \`intelligence.testRunnerCap\` in config only tunes the route report/server tooling, never the bound). (Spec: \`docs/specs/test-runner-concurrency-bound.md\`; constitution: "Bounded Blast Radius".)\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Test-Runner Concurrency Bound section');
+    }
+
     // Sender-Rejection Notices (silent-loss-refusal-conservation §2.E) — Agent
     // Awareness + Migration Parity: an agent that doesn't know a "sender not
     // recognized" notice comes from the mesh sender re-validation will be confused
@@ -7580,12 +9123,45 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Mesh Rope Health (recovery probe + partition alerts)',
+      // Tone-gate advisory migration: framework-agnostic by construction — the
+      // outbound gate sits on the SERVER, so a Codex/Gemini agent's messages hit
+      // exactly the same nudge. Without this marker such an agent receives a
+      // `422 tone-gate-advisory` telling it to override, with no idea that
+      // `toneAdvisoryAck` + a reason exist — it would read the nudge as a wall
+      // and either loop or silently drop the message, which is the pre-migration
+      // failure reproduced on the frameworks that never learned the fix.
+      'Most checks are NUDGES you may override',
+      // Owned-Identities Registry (correction-derived-hardening): framework-
+      // agnostic — a Codex/Gemini agent provisions identities too, and its
+      // self-unblock exhaustion consults the same server-side probe. It must
+      // learn the registration trigger (.instar/owned-identities.json, pointer
+      // not value, canonical service:scope tags) or the founding wrong-
+      // escalation recurs on non-Claude agents.
+      '### Owned-Identities Registry (self-unblock Rung 0 includes what YOU created — register identities you provision in `.instar/owned-identities.json` with scopeTags in canonical service:scope form and credentialRef POINTERS, never secret values; prune stale entries)',
+      // Self-Action Backpressure Governor (unified-self-action-backpressure §11
+      // / LA9-1): framework-agnostic server behavior — a Codex/Gemini agent
+      // also needs the GET /self-action-governor read surface, the three
+      // "why was my respawn held / swap queued / notify folded?" triggers, and
+      // the emergencyDisable valve with the conversational flip as the
+      // operator's mass-incident path.
+      '**Self-Action Backpressure Governor',
       // Context-Aware Outbound Review (context-aware-outbound-review §4.3):
       // framework-agnostic server behavior — a Codex/Gemini agent whose turn
       // was would-blocked also needs the "check contextMeta before assuming
       // the reviewer erred" trigger + the honest 501-when-off phrasing.
       '### Context-Aware Outbound Review',
       '### Self-Discovery',
+      '**Registry First — capability registry:',
+      // channel-registry: a Codex/Gemini agent must also learn to consult /channels
+      // before reporting a peer unreachable, or it will improvise the same weaker
+      // workaround I did — stop, and tell the operator the peer cannot be reached.
+      '**Registry First — channel registry:',
+      // decision-journal: a Codex/Gemini agent that does not learn the new
+      // requirement will POST without `principle`, take a 400 it cannot explain,
+      // and fall back to recording decisions somewhere nothing reads — which is
+      // the exact failure this refusal exists to prevent.
+      '**Decision journal — principle is required:',
+      '**Alignment score — N/A means not assessed:',
       '**Publishing**',
       '**Private Viewing**',
       '**Secret Drop**',
@@ -7600,6 +9176,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       '## Threadline Network (Agent-to-Agent Communication)',
       '## Worktree Convention',
       '**Multi-Session Autonomy**',
+      '**Codex quota is first-class in the pool:',
+      '**Solo Codex load shedding is fail-safe:',
+      '**Evolution action auto-expiry:',
       // Durable Inbound Message Queue (CMT-1118): a Codex/Gemini agent that
       // never learns /pool/queue + the loss-notice semantics will guess at
       // "where did my message go" instead of reading the durable answer.
@@ -7902,21 +9481,35 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       }
     }
 
-    // Slack reply script — file-presence gated (migrator has no hasSlack
-    // signal and init.ts doesn't install this one; scripts get deployed
-    // through the template manifest). If the script is present and matches
-    // the shipped header but lacks 408 handling, migrate it. Custom scripts
-    // are preserved by the shipped-marker check.
-    this.migrateReplyScriptTo408({
-      scriptPath: path.join(scriptsDir, 'slack-reply.sh'),
-      templateFilename: 'slack-reply.sh',
-      shippedMarker: 'slack-reply.sh — Send a message to a Slack channel via the instar server',
-      label: 'scripts/slack-reply.sh',
-      result,
-      // Threads-as-sessions (§5.3): refresh a deployed script that lacks the
-      // optional thread_ts 2nd-arg support, so thread replies route correctly.
-      featureMarker: 'slack-reply-feature: thread-ts-arg',
-    });
+    // Slack session reply relay — one SHA-provenance installer owns both the
+    // framework-neutral authority and the Claude compatibility mirror.
+    const slackConfigPath = path.join(this.config.stateDir, 'config.json');
+    if (fs.existsSync(slackConfigPath)) try {
+      const rawConfig = JSON.parse(fs.readFileSync(slackConfigPath, 'utf8')) as unknown;
+      // Configuration is the admission signal. Do not even resolve the
+      // packaged Slack template for non-Slack agents: test/minimal installs
+      // legitimately omit that asset, and an unused adapter must not make an
+      // otherwise healthy migration report an error.
+      if (isSlackConfigured(rawConfig)) {
+        const template = this.loadRelayTemplate('slack-reply.sh');
+        if (!template) throw new Error('packaged slack-reply.sh template unavailable');
+        const installed = ensureSlackReplyRelay({
+          projectDir: this.config.projectDir,
+          stateDir: this.config.stateDir,
+          config: rawConfig,
+          template,
+          claudeCompatibility: fs.existsSync(path.join(this.config.projectDir, '.claude')),
+        });
+        result.upgraded.push(...installed.installed.map(p => `${p} (Slack session reply relay)`));
+        result.skipped.push(...installed.current.map(p => `${p} (already current)`));
+        const canonical = path.join(this.config.stateDir, 'scripts', 'slack-reply.sh');
+        result.errors.push(...installed.degraded.filter(line => line.startsWith(`${canonical}:`)));
+        result.skipped.push(...installed.degraded.filter(line => !line.startsWith(`${canonical}:`)));
+        result.errors.push(...installed.errors);
+      }
+    } catch (err) {
+      result.errors.push(`Slack reply relay migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     // WhatsApp reply script — lives in .instar/scripts/ per init.ts, not
     // .claude/scripts/. File-presence gated same as Slack.
@@ -8238,6 +9831,32 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.skipped.push('.claude/settings.json: PreToolUse MCP matcher already present');
     }
 
+    // Add PostToolUse Write/Edit matcher for the working-set artifact recorder
+    // (intelligent-working-set-lazy-sync F8). Fire-and-forget + non-blocking; the
+    // hook itself early-exits fast when the feature is off (dark by default:
+    // coherenceJournal.workingSet.recordInteractive), so a default install pays only
+    // a quick no-op node spawn. Idempotent (keyed on the script name).
+    if (!hooks.PostToolUse) {
+      hooks.PostToolUse = [];
+    }
+    const postToolUseRec = hooks.PostToolUse as Array<{ matcher?: string; hooks?: Array<{ command?: string; type?: string; timeout?: number }> }>;
+    this.migrateSettingsHookPaths(postToolUseRec as unknown[], result);
+    const hasWsRecorder = postToolUseRec.some(e => e.hooks?.some(h => h.command?.includes('working-set-artifact-recorder.js')));
+    if (!hasWsRecorder) {
+      postToolUseRec.push({
+        matcher: 'Write|Edit|MultiEdit',
+        hooks: [{
+          type: 'command',
+          command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/working-set-artifact-recorder.js',
+          timeout: 5000,
+        }],
+      });
+      patched = true;
+      result.upgraded.push('.claude/settings.json: added PostToolUse Write/Edit matcher (working-set artifact recorder)');
+    } else {
+      result.skipped.push('.claude/settings.json: PostToolUse working-set recorder already present');
+    }
+
     // Clean up legacy PostToolUse session-start (was noisy — fired every tool use)
     if (hooks.PostToolUse) {
       const postToolUse = hooks.PostToolUse as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
@@ -8441,6 +10060,27 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         result.upgraded.push('.claude/settings.json: added Stop action-claim-followthrough hook');
       }
     }
+    {
+      // Verify-Before-Done observer: always register for migration parity; the
+      // hook itself dev-gates and noops when the route is dark/503.
+      const stopHooks = (hooks.Stop ?? []) as Array<{ matcher?: string; hooks?: Array<{ command?: string; type?: string; timeout?: number }> }>;
+      const hasCompletionClaim = stopHooks.some(e =>
+        e.hooks?.some(h => h.command?.includes('completion-claim-observe.js')),
+      );
+      if (!hasCompletionClaim) {
+        stopHooks.push({
+          matcher: '',
+          hooks: [{
+            type: 'command',
+            command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/completion-claim-observe.js',
+            timeout: 6000,
+          }],
+        });
+        hooks.Stop = stopHooks;
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added Stop completion-claim-observe hook');
+      }
+    }
     if (hooks.Stop) {
       this.migrateSettingsHookPaths(hooks.Stop as unknown[], result);
       patched = true;
@@ -8534,7 +10174,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // Auto-generate dashboardPin if missing — the dashboard should always be
     // accessible via PIN, not bearer token. Users don't need to know about tokens.
     if (!config.dashboardPin && config.authToken) {
-      const pin = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit PIN
+      const pin = String(crypto.randomInt(100000, 1000000)); // 6-digit PIN
       config.dashboardPin = pin;
       patched = true;
       result.upgraded.push(`config.json: generated dashboard PIN (${pin})`);
@@ -8635,6 +10275,57 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.skipped.push('config.json: playwrightRegistry.enabled dev-gate already correct (omitted or operator-set)');
     }
 
+    // External-Hog zombie auto-kill sentinel re-gated to the developmentAgent gate: strip a
+    // default-shaped enabled:false so it resolves live-on-dev (watch-only) / dark-fleet. The
+    // separate dryRun:true (kill-safety canary) + the kill-gate knobs are left untouched.
+    if (migrateConfigExternalHogSentinelDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped monitoring.externalHogSentinel.enabled=false so the developmentAgent gate resolves it (live-on-dev watch-only, dark fleet)');
+    } else {
+      result.skipped.push('config.json: monitoring.externalHogSentinel.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // Single-machine failover-gap detector (increment 2) dev-gate: strip a default-
+    // shaped enabled:false so it resolves live-on-dev (dry-run) / dark-fleet. The
+    // { dryRun: true } block arrives via applyDefaults add-missing.
+    if (migrateConfigSingleMachineFailoverGapDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped monitoring.singleMachineFailoverGap.enabled=false so the developmentAgent gate resolves it (live-on-dev dry-run, dark fleet)');
+    } else {
+      result.skipped.push('config.json: monitoring.singleMachineFailoverGap.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // Missing-login-session detector (increment 2) dev-gate: strip a default-shaped
+    // enabled:false so it resolves live-on-dev (dry-run) / dark-fleet. The
+    // { dryRun: true } block arrives via applyDefaults add-missing.
+    if (migrateConfigMissingLoginSessionDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped monitoring.missingLoginSession.enabled=false so the developmentAgent gate resolves it (live-on-dev dry-run, dark fleet)');
+    } else {
+      result.skipped.push('config.json: monitoring.missingLoginSession.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // SessionPoolFailoverRunner boot-wiring (§Rollout, Track H) dev-gate: strip a
+    // default-shaped enabled:false so it resolves live-on-dev (dry-run) / dark-fleet.
+    // The { dryRun: true, tickIntervalMs, checkTimeoutMs } block arrives via
+    // applyDefaults add-missing.
+    if (migrateConfigSessionPoolFailoverRunnerDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped multiMachine.sessionPool.failoverRunner.enabled=false so the developmentAgent gate resolves it (live-on-dev dry-run, dark fleet)');
+    } else {
+      result.skipped.push('config.json: multiMachine.sessionPool.failoverRunner.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // Turn-End Self-Deferral Guard (Phase A) dev-gate: strip a default-shaped
+    // enabled:false so it resolves live-on-dev (observe-only) / dark-fleet. The
+    // empty selfDeferralGuard block arrives via applyDefaults add-missing.
+    if (migrateConfigSelfDeferralGuardDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped monitoring.selfDeferralGuard.enabled=false so the developmentAgent gate resolves it (live-on-dev observe-only, dark fleet)');
+    } else {
+      result.skipped.push('config.json: monitoring.selfDeferralGuard.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
     // Durable conversation identity (durable-conversation-identity §9): the
     // followThrough delivery gate is dev-gated — strip a default-shaped
     // enabled:false so it resolves live-on-dev / dark-fleet. recording.enabled
@@ -8645,6 +10336,62 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('config.json: stripped default-shaped conversationIdentity.followThrough.enabled=false so the developmentAgent gate resolves it (live-on-dev, dark fleet)');
     } else {
       result.skipped.push('config.json: conversationIdentity.followThrough.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // slack-followthrough-generalization §8.5: messaging.actionClaim.slack.enabled is a
+    // dev-gated dark feature — strip a default-shaped literal `false` so the gate resolves
+    // it (live-on-dev, dark fleet). Array-shaped messaging → safe no-op (no config write;
+    // the route defaults dryRun:true and the dev-gate resolves undefined enabled).
+    if (migrateConfigActionClaimSlackDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: stripped default-shaped messaging.actionClaim.slack.enabled=false so the developmentAgent gate resolves it (live-on-dev, dark fleet)');
+    } else {
+      result.skipped.push('config.json: messaging.actionClaim.slack.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // S4 Nature-Axis Routing: SEED sessions.natureRouting DARK (schemaVersion+dryRun+metered.goLive
+    // false; `enabled` OMITTED so the developmentAgent gate resolves it live-on-dev / dark-fleet).
+    // Existence-checked — never clobbers an operator/agent that already configured it.
+    if (migrateConfigNatureRoutingDark(config)) {
+      patched = true;
+      result.upgraded.push('config.json: seeded dark sessions.natureRouting (schemaVersion:3, dryRun:true, metered.goLive:false; enabled omitted for the developmentAgent gate)');
+    } else {
+      result.skipped.push('config.json: sessions.natureRouting already present or no sessions block (no seed)');
+    }
+
+    // Routing Control Room spend VIEW (Increment A): SEED the top-level routingSpend block
+    // DARK (tokenRollupRetentionDays only; `enabled` OMITTED so the developmentAgent gate
+    // resolves it live-on-dev / dark-fleet). Existence-checked — never clobbers an operator
+    // who already configured it.
+    if (migrateConfigRoutingSpendDark(config)) {
+      patched = true;
+      result.upgraded.push('config.json: seeded dark routingSpend (tokenRollupRetentionDays:400; enabled omitted for the developmentAgent gate)');
+    } else {
+      result.skipped.push('config.json: routingSpend already present (no seed)');
+    }
+
+    // Benchmark-Divergence Detector (benchmark-divergence-detector §Migration
+    // parity): SEED the benchmarkDivergence block DARK (dryRun:true +
+    // byModelRetentionDays:180; `enabled` OMITTED so the developmentAgent gate
+    // resolves it live-on-dev / dark-fleet) AND strip a default-shaped
+    // `enabled:false`. Existence-checked, idempotent.
+    if (migrateConfigBenchmarkDivergenceDark(config)) {
+      patched = true;
+      result.upgraded.push('config.json: seeded/normalized dark benchmarkDivergence (dryRun:true, byModelRetentionDays:180; enabled omitted for the developmentAgent gate)');
+    } else {
+      result.skipped.push('config.json: benchmarkDivergence already present + correct (no seed/strip)');
+    }
+
+    // Dashboard Live-LLM-Insights (docs/specs/dashboard-live-insights.md): SEED
+    // dashboard.liveInsights DARK (dryRun:true, ttl/maxLines/timeout; `enabled`
+    // OMITTED so the developmentAgent gate resolves it live-on-dev / dark-fleet)
+    // AND strip a default-shaped `enabled:false`. Existence-checked, never clobbers
+    // dashboard.fileViewer/poolStream or an operator override.
+    if (migrateConfigDashboardLiveInsightsDevGate(config)) {
+      patched = true;
+      result.upgraded.push('config.json: seeded/normalized dark dashboard.liveInsights (dryRun:true; enabled omitted for the developmentAgent gate)');
+    } else {
+      result.skipped.push('config.json: dashboard.liveInsights already present + correct (no seed/strip)');
     }
 
     // "Self-Unblock Before Escalating" (CMT-1519): the two nested blockerLedger
@@ -8715,6 +10462,15 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('config.json: added multiMachine.accountFollowMe.revocationReconnectDeadlineMs default (6h)');
     } else {
       result.skipped.push('config.json: accountFollowMe revocation deadline already present or feature absent');
+    }
+
+    // session-respawn-thrash Fix A: add the monitoring.idleKillVetoBackoff default
+    // block (existence-checked, idempotent, never clobbers an operator override).
+    if (migrateConfigIdleKillVetoBackoffDefault(config)) {
+      patched = true;
+      result.upgraded.push('config.json: added monitoring.idleKillVetoBackoff default (cooldownMs:1800000, escalateAfterEpisodes:6; enabled omitted — dev-agent gate decides)');
+    } else {
+      result.skipped.push('config.json: monitoring.idleKillVetoBackoff already present');
     }
 
     if (patched) {
@@ -9496,7 +11252,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'self-stop-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler'): string {
+  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'self-stop-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'session-start': return this.getSessionStartHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
@@ -9519,6 +11275,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       case 'build-stop-hook': return this.getBuildStopHook();
       case 'model-tier-skill-entry': return this.getModelTierSkillEntryHook();
       case 'model-tier-reconciler': return this.getModelTierReconcilerHook();
+      case 'completion-claim-observe': return this.getCompletionClaimObserveHook();
     }
   }
 
@@ -9585,7 +11342,21 @@ for c in "\$(command -v claude 2>/dev/null)" /opt/homebrew/bin/claude "\$HOME"/.
 done
 [ -n "\$CLAUDE_BIN" ] || exit 0
 
-LIST=\$(timeout 45 "\$CLAUDE_BIN" mcp list 2>/dev/null || true)
+# Bounded 'claude mcp list' — portable timeout LADDER (timeout → gtimeout → perl-alarm),
+# mirroring the autonomous stop hook's real-check runner. Bare 'timeout' does not exist
+# on coreutils-less macOS (the platform agents actually run on), which previously left
+# LIST empty and made this hook SILENTLY INERT in production there. The perl rung maps
+# signal-death to 128+signal (GNU-timeout semantics — never \$?>>8 alone, whose high
+# byte is 0 for a signal-killed child). A bounded runner is REQUIRED: with none present
+# we stay dark (exit 0) rather than run the command unbounded.
+LIST=""
+if command -v timeout >/dev/null 2>&1; then
+  LIST=\$(timeout 45 "\$CLAUDE_BIN" mcp list 2>/dev/null || true)
+elif command -v gtimeout >/dev/null 2>&1; then
+  LIST=\$(gtimeout 45 "\$CLAUDE_BIN" mcp list 2>/dev/null || true)
+elif command -v perl >/dev/null 2>&1; then
+  LIST=\$(perl -e 'my(\$t,@c)=@ARGV; my \$p=fork; if(\$p==0){setpgrp(0,0); exec @c or exit 127} \$SIG{ALRM}=sub{kill("-KILL",\$p); exit 124}; alarm(\$t); waitpid(\$p,0); exit((\$?&127) ? 128+(\$?&127) : (\$?>>8))' 45 "\$CLAUDE_BIN" mcp list 2>/dev/null || true)
+fi
 [ -n "\$LIST" ] || exit 0
 
 # Allowlisted servers reporting "Failed to connect"
@@ -9839,6 +11610,35 @@ except Exception:
     if [ -n "\$TOPIC_OP_BLOCK" ]; then
       echo ""
       echo "\$TOPIC_OP_BLOCK"
+      echo ""
+    fi
+  fi
+fi
+
+# WORKING-SET ARTIFACT grounding (spec: intelligent-working-set-lazy-sync.md, Layer-3 /
+# Component6). Fetches /coherence/working-set/session-context for THIS topic and injects the
+# <replicated-untrusted-data source="working-set-artifacts"> block so the agent is GROUNDED
+# that interactive artifacts it recorded for this conversation exist (the whole point on a
+# topic-move: "you wrote these; re-verify/fetch them"). ADVISORY ONLY — a path is untrusted
+# data, never an instruction. Fail-open: no topic / route 503 (feature dark / manager unwired) /
+# no ready artifacts (present:false) / unreachable -> silent skip; -sf makes a non-2xx emit
+# nothing, so an absent/empty/oversized manifest degrades to no-block.
+if [ -n "\$INSTAR_TELEGRAM_TOPIC" ] && [ -n "\$PORT" ] && [ -n "\$TOKEN" ]; then
+  WS_ART_RESPONSE=\$(curl -sf --max-time 4 -H "Authorization: Bearer \$TOKEN" \\
+    "http://localhost:\${PORT}/coherence/working-set/session-context?topic=\${INSTAR_TELEGRAM_TOPIC}" 2>/dev/null)
+  if [ -n "\$WS_ART_RESPONSE" ]; then
+    WS_ART_BLOCK=\$(echo "\$WS_ART_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+    if [ -n "\$WS_ART_BLOCK" ]; then
+      echo ""
+      echo "\$WS_ART_BLOCK"
       echo ""
     fi
   fi
@@ -10259,7 +12059,7 @@ if echo "$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
 fi
 
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "DROP TABLE" "DROP DATABASE" "TRUNCATE" "DELETE FROM"; do
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd"; do
   if echo "$INPUT" | grep -qi "$pattern"; then
     if [ "$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "$pattern" | grep -qiE 'git push (--force|-f)'; then
       continue
@@ -10280,6 +12080,35 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
   fi
 done
 
+# SQL must look like a statement, not prose that merely names a keyword. Match
+# at input/statement start or immediately after a SQL-bearing quote/separator,
+# and require the following table/database identifier. Ambiguous statement
+# shapes still block; prose mentions in heredocs, echo text, JSON, or grep args
+# do not become destructive merely because the tool input contains the words.
+for sql_spec in \\
+  "D""ROP TABLE|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Dd][Rr][Oo][Pp][[:space:]]+[Tt][Aa][Bb][Ll][Ee]([[:space:]]+[Ii][Ff][[:space:]]+[Ee][Xx][Ii][Ss][Tt][Ss])?[[:space:]]+[^[:space:];]+" \\
+  "D""ROP DATABASE|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Dd][Rr][Oo][Pp][[:space:]]+[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]([[:space:]]+[Ii][Ff][[:space:]]+[Ee][Xx][Ii][Ss][Tt][Ss])?[[:space:]]+[^[:space:];]+" \\
+  "T""RUNCATE|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee][[:space:]]+([Tt][Aa][Bb][Ll][Ee][[:space:]]+)?[^[:space:];]+" \\
+  "D""ELETE FROM|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Dd][Ee][Ll][Ee][Tt][Ee][[:space:]]+[Ff][Rr][Oo][Mm][[:space:]]+[^[:space:];]+"; do
+  pattern="\${sql_spec%%|*}"
+  sql_pattern="\${sql_spec#*|}"
+  if echo "\$INPUT" | grep -qE "\$sql_pattern"; then
+    if [ "\$SAFETY_LEVEL" -eq 1 ]; then
+      echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
+      echo "Authorization required: Ask the user whether to proceed with this operation." >&2
+      echo "Once they confirm, YOU execute the command — never ask the user to run it themselves." >&2
+      exit 2
+    else
+      IDENTITY=""
+      if [ -f "\$INSTAR_DIR/AGENT.md" ]; then
+        IDENTITY=\$(head -20 "\$INSTAR_DIR/AGENT.md" | tr '\\n' ' ')
+      fi
+      echo "{\\"decision\\":\\"approve\\",\\"additionalContext\\":\\"=== SELF-VERIFICATION REQUIRED ===\\\\nDestructive command detected: \$pattern\\\\n\\\\n1. Is this necessary for the current task?\\\\n2. What are the consequences if this goes wrong?\\\\n3. Is there a safer alternative?\\\\n4. Does this align with your principles?\\\\n\\\\nIdentity: \$IDENTITY\\\\n\\\\nIf ALL checks pass, proceed. If ANY fails, stop.\\\\n=== END SELF-VERIFICATION ===\\"}"
+      exit 0
+    fi
+  fi
+done
++
 # 'gh pr merge' watch-exit-merge gate — closes the PR #539 class.
 # Justin merged #539 on 'gh run watch' exit code (= success), but 'watch'
 # returns 0 on workflow COMPLETION regardless of conclusion; meanwhile the
@@ -11075,6 +12904,38 @@ except Exception:
   fi
 fi
 
+# WORKING-SET ARTIFACT grounding twin (Compaction Parity — intelligent-working-set-lazy-sync
+# Layer-3). Mirrors the session-start injection so after a compaction the agent is RE-grounded
+# on the interactive artifacts it recorded for this conversation. ADVISORY only (a path is
+# untrusted data). Fail-open: no topic / 503 (feature dark) / no ready artifacts / unreachable -> skip.
+if [ -n "\$INSTAR_TELEGRAM_TOPIC" ] && [ -f "$INSTAR_DIR/config.json" ]; then
+  WS_ART_PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  WS_ART_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+  if [ -z "\$WS_ART_TOKEN" ]; then
+    WS_ART_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+  fi
+  if [ -n "\$WS_ART_PORT" ] && [ -n "\$WS_ART_TOKEN" ]; then
+    WS_ART_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$WS_ART_TOKEN" \\
+      "http://localhost:\${WS_ART_PORT}/coherence/working-set/session-context?topic=\${INSTAR_TELEGRAM_TOPIC}" 2>/dev/null)
+    if [ -n "\$WS_ART_RESPONSE" ]; then
+      WS_ART_BLOCK=\$(echo "\$WS_ART_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+      if [ -n "\$WS_ART_BLOCK" ]; then
+        echo ""
+        echo "\$WS_ART_BLOCK"
+        echo ""
+      fi
+    fi
+  fi
+fi
+
 echo "=== END IDENTITY RECOVERY ==="
 `;
   }
@@ -11799,23 +13660,42 @@ process.stdin.on('end', async () => {
       const cfg = JSON.parse(readFileSync(configPath, 'utf-8'));
       serverPort = cfg.port || 4040;
       authToken = cfg.authToken || '';
-      enabled = !!(cfg.messaging && cfg.messaging.actionClaim && cfg.messaging.actionClaim.enabled);
+      // Config home (actionclaim-config-shape-fix): a real install's \`messaging\` is
+      // an ARRAY of adapters, so \`messaging.actionClaim.*\` is unreachable. Canonical
+      // home is a TOP-LEVEL \`actionClaim\`; the legacy object-shaped
+      // \`messaging.actionClaim\` is honored as a back-compat fallback.
+      var acCfg = cfg.actionClaim || (cfg.messaging && !Array.isArray(cfg.messaging) ? cfg.messaging.actionClaim : undefined);
+      enabled = !!(acCfg && acCfg.enabled);
     } catch {}
 
     if (!enabled) process.exit(0);
 
     const input = JSON.parse(data);
-    const message = input.last_assistant_message || '';
-    const topicRaw = process.env.INSTAR_TELEGRAM_TOPIC;
-    if (!message || message.length < 20 || !topicRaw) process.exit(0);
+    const rawMessage = input.last_assistant_message || '';
+    // slack-followthrough-generalization §4.4: key the conversation from
+    // INSTAR_CONVERSATION_ID ONLY — NO INSTAR_TELEGRAM_TOPIC fallback (the fallback
+    // re-introduces the lifeline cross-channel mis-delivery; a shared/lifeline
+    // session never carries this env, so it registers nothing — a safe miss).
+    // Number.isFinite admits a negative (minted Slack) id.
+    const topicRaw = process.env.INSTAR_CONVERSATION_ID;
+    if (!rawMessage || !topicRaw) process.exit(0);
     const topicId = parseInt(topicRaw, 10);
     if (!Number.isFinite(topicId)) process.exit(0);
+    // Clamp the payload (§4.4): a pathological multi-MB reply would exceed the
+    // server body-parser limit → a silent non-registration; the classifiers only
+    // need the first 16KB. NO length floor — the high-precision classifiers are the
+    // semantic filter, so terse promises ("I'll fix it") must not be dropped.
+    const message = rawMessage.slice(0, 16384);
+    const bindToken = process.env.INSTAR_BIND_TOKEN;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     try {
       await fetch('http://127.0.0.1:' + serverPort + '/action-claim/observe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        headers: Object.assign(
+          { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+          bindToken ? { 'X-Instar-Bind-Token': bindToken } : {},
+        ),
         body: JSON.stringify({ message, topicId }),
         signal: controller.signal,
       });
@@ -11828,6 +13708,244 @@ process.stdin.on('end', async () => {
     // bad stdin — ignore
   }
   process.exit(0); // ALWAYS exit 0 — never block a turn
+});
+`;
+  }
+
+  private getCompletionClaimObserveHook(): string {
+    return `#!/usr/bin/env node
+// Verify-Before-Done — observe-only Stop hook.
+// Reads a bounded Claude transcript tail LOCALLY and sends structural metadata
+// only. It never sends transcript_path, commands, tool results, or raw inputs.
+let data = '';
+process.stdin.on('data', chunk => (data += chunk));
+process.stdin.on('end', async () => {
+  try {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+    const crypto = await import('node:crypto');
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
+    const cfg = JSON.parse(fs.readFileSync(path.join(projectDir, '.instar', 'config.json'), 'utf8'));
+    const feature = cfg.monitoring && cfg.monitoring.completionClaimVerification || {};
+    const enabled = feature.enabled !== undefined ? feature.enabled === true : cfg.developmentAgent === true;
+    if (!enabled) process.exit(0);
+    const input = JSON.parse(data || '{}');
+    const message = String(input.last_assistant_message || '');
+    // Every non-empty authored response is eligible for the single bounded
+    // server-side claim pass. No hook regex is allowed to define coverage.
+    if (!message) process.exit(0);
+    const transcript = typeof input.transcript_path === 'string' ? path.resolve(input.transcript_path) : '';
+    // Confine reads to a Claude projects tree. CLAUDE_CONFIG_DIR must be
+    // honoured: an agent running with a custom config dir (e.g.
+    // ~/.claude-followme-<name>) keeps its transcripts under THAT dir, so a
+    // hardcoded ~/.claude/projects rejects every transcript and the observer
+    // records nothing — silently, since the guard just exits 0 (ACT-966,
+    // second cause). Both roots are allowed so the guard works whether or not
+    // the variable is set; each is still a Claude projects tree, so the
+    // containment intent is unchanged.
+    const claudeRoots = [];
+    if (process.env.CLAUDE_CONFIG_DIR) claudeRoots.push(path.resolve(process.env.CLAUDE_CONFIG_DIR, 'projects'));
+    claudeRoots.push(path.resolve(os.homedir(), '.claude', 'projects'));
+    const withinClaudeRoot = claudeRoots.some(function (root) {
+      return transcript === root || transcript.startsWith(root + path.sep);
+    });
+    if (!transcript || !withinClaudeRoot) process.exit(0);
+    const stat = fs.statSync(transcript);
+    if (!stat.isFile()) process.exit(0);
+    const max = 512 * 1024;
+    const start = Math.max(0, stat.size - max);
+    const fd = fs.openSync(transcript, 'r');
+    const buf = Buffer.alloc(stat.size - start);
+    try { fs.readSync(fd, buf, 0, buf.length, start); } finally { fs.closeSync(fd); }
+    const lines = buf.toString('utf8').split('\\n');
+    if (start > 0) lines.shift();
+    const rows = [];
+    for (const line of lines) { try { if (line.trim()) rows.push(JSON.parse(line)); } catch {} }
+    let boundary = -1;
+    const isObj = value => value && typeof value === 'object' && !Array.isArray(value);
+    for (let i = 0; i < rows.length; i++) {
+      const m = isObj(rows[i].message) ? rows[i].message : {};
+      const content = Array.isArray(m.content) ? m.content : Array.isArray(rows[i].content) ? rows[i].content : [];
+      const toolResultOnly = content.length > 0 && content.every(block => isObj(block) && block.type === 'tool_result');
+      if (!toolResultOnly && (rows[i].type === 'user' || rows[i].role === 'user' || m.role === 'user')) boundary = i;
+    }
+    const calls = new Map();
+    let anon = 0;
+    const scrub = text => String(text)
+      .replace(/gh[pousr]_[A-Za-z0-9]{20,}/g, 'gh***_REDACTED')
+      .replace(/\b(sk|pk|rk)-[A-Za-z0-9]{16,}/g, '$1-REDACTED')
+      .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, 'xox*-REDACTED')
+      .replace(/\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g, 'TELEGRAM_BOT_TOKEN_REDACTED')
+      .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, 'AWS_ACCESS_KEY_REDACTED')
+      .replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}\b/g, 'JWT_REDACTED');
+    const safe = value => {
+      const text = typeof value === 'number' ? String(value) : value;
+      if (typeof text !== 'string' || !/^[a-zA-Z0-9._/@:+-]{1,200}$/.test(text)) return undefined;
+      const cleaned = scrub(text).slice(0, 256);
+      return feature.redactIdentifiers === true
+        ? 'id:' + crypto.createHash('sha256').update(cleaned.split('/').pop() || cleaned).digest('hex').slice(0, 16)
+        : cleaned;
+    };
+    const extract = (name, rawInput) => {
+      const x = isObj(rawInput) ? rawInput : {};
+      const base = { tool: String(name).slice(0, 100), actionKind: 'other', ok: true };
+      if (name === 'Bash' || name === 'functions.exec_command') {
+        const command = typeof x.command === 'string' ? x.command : typeof x.cmd === 'string' ? x.cmd : '';
+        if (!/[;&|\\x60\\n\\r]/.test(command)) {
+          const push = command.trim().match(/^git\\s+push(?:\\s+--[a-z-]+)*\\s+([^\\s]+)(?:\\s+([^\\s]+))?$/i);
+          if (push) return { ...base, actionKind: 'pushed', targetSummary: [safe(push[1]), safe(push[2])].filter(Boolean).join('/') || undefined };
+          if (/^git\\s+commit(?:\\s+.*)?$/i.test(command.trim())) return { ...base, actionKind: 'committed' };
+          const merge = command.trim().match(/^git\\s+merge\\s+([^\\s]+)$/i);
+          if (merge) return { ...base, actionKind: 'merged', targetSummary: safe(merge[1]) };
+        }
+        return base;
+      }
+      if (['Edit','Write','MultiEdit','functions.apply_patch'].includes(name)) return { ...base, actionKind: 'fixed', targetSummary: typeof x.file_path === 'string' ? safe(path.basename(x.file_path)) : undefined };
+      if (/slack|telegram|send_message|reply/i.test(name)) return { ...base, actionKind: 'sent', targetSummary: safe(x.channel) || safe(x.topicId) || safe(x.target) };
+      if (/deploy/i.test(name)) return { ...base, actionKind: 'deployed', targetSummary: safe(x.project) };
+      if (/merge/i.test(name)) return { ...base, actionKind: 'merged', targetSummary: safe(x.pull_number) };
+      return base;
+    };
+    const result = block => {
+      const id = typeof block.tool_use_id === 'string' ? block.tool_use_id : typeof block.id === 'string' ? block.id : '';
+      const item = calls.get(id);
+      if (item && (block.is_error === true || block.error != null || block.success === false)) calls.set(id, { ...item, ok: false, errorClass: 'tool-error' });
+    };
+    for (const row of rows.slice(boundary + 1)) {
+      const m = isObj(row.message) ? row.message : {};
+      const content = Array.isArray(m.content) ? m.content : Array.isArray(row.content) ? row.content : [];
+      for (const block of content) {
+        if (!isObj(block)) continue;
+        if (block.type === 'tool_use' && typeof block.name === 'string') calls.set(typeof block.id === 'string' ? block.id : 'anon-' + anon++, extract(block.name, block.input));
+        else if (block.type === 'tool_result') result(block);
+      }
+      if (row.type === 'tool_result') result(row);
+    }
+    const evidence = { hadToolCalls: calls.size > 0, toolCalls: [...calls.values()].slice(-200), truncated: start > 0, unavailable: false, canaryOk: rows.length === 0 || boundary >= 0 || calls.size > 0 };
+    const auth = typeof cfg.authToken === 'string' ? cfg.authToken : process.env.INSTAR_AUTH_TOKEN || '';
+    const topicRaw = process.env.INSTAR_CONVERSATION_ID;
+    const topicId = topicRaw && Number.isFinite(Number(topicRaw)) ? Number(topicRaw) : undefined;
+    const bindToken = process.env.INSTAR_BIND_TOKEN;
+    const controller = new AbortController();
+    // Dispatch and leave the hook path without awaiting either HTTP admission
+    // or intelligence. One short event-loop turn lets the localhost write
+    // begin; the hard exit bounds Stop-hook latency independently of server
+    // health while the server owns all durable async processing.
+    void fetch('http://127.0.0.1:' + (cfg.port || 4040) + '/completion-claim/observe', {
+        method: 'POST',
+        headers: Object.assign(
+          { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + auth, 'X-Instar-Request': '1' },
+          bindToken ? { 'X-Instar-Bind-Token': bindToken } : {},
+        ),
+        body: JSON.stringify({ hookSchemaVersion: 1, messageAttemptId: uuidv7(), message, turnEvidence: evidence, topicHint: topicId }), signal: controller.signal,
+      }).catch(() => {});
+    setTimeout(() => { controller.abort(); process.exit(0); }, 25);
+    return;
+  } catch {}
+  process.exit(0); // signal-only; never blocks or rewrites a turn
+});
+
+function uuidv7() {
+  // Uses globalThis.crypto.getRandomValues, NOT node:crypto's randomBytes.
+  // This function is at MODULE scope while the \`const crypto = await
+  // import('node:crypto')\` above lives inside the stdin 'end' callback, so a
+  // bare \`crypto\` here resolves to the global WebCrypto object — which has
+  // getRandomValues but NOT randomBytes. That made every invocation throw
+  // "crypto.randomBytes is not a function" and exit(0) silently, so the
+  // observer recorded nothing (ACT-966). getRandomValues needs no import and
+  // works identically under an ESM or CJS host, so the scope trap cannot
+  // return. Hex is formatted manually because Uint8Array has no toString('hex').
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  const now = BigInt(Date.now());
+  for (let i = 5; i >= 0; i--) bytes[5 - i] = Number((now >> BigInt(i * 8)) & 255n);
+  bytes[6] = (bytes[6] & 15) | 112;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const h = Array.from(bytes, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+  return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
+}
+`;
+  }
+
+  private getWorkingSetArtifactRecorderHook(): string {
+    return `#!/usr/bin/env node
+// Working-Set Artifact Recorder — PostToolUse Write/Edit hook (spec: intelligent-working-set-lazy-sync.md, F8).
+//
+// SIGNAL-ONLY / fire-and-forget: on a SUCCESSFUL Write/Edit/MultiEdit under the .instar/ jail,
+// POSTs {topicId, relPath} to the server's POST /coherence/working-set/record so the INTERACTIVE
+// artifact (a file the agent wrote conversationally, with NO autonomous run) enters the computed
+// working-set manifest — the exact case WorkingSetManifest.computeWorkingSet misses. It NEVER
+// blocks — ALWAYS exit(0), pass or fail. Records NOTHING for a file OUTSIDE the .instar/ jail
+// (project files are git-synced; F10) or when the feature is off (code-default OFF ⇒ dark:
+// coherenceJournal.workingSet.recordInteractive). relPath is stateDir-relative + forward-slash
+// normalized — the exact convention computeWorkingSet Source-3 resolves (path.resolve(stateDir,rel)).
+//
+// ESM-safe: node: imports INSIDE the async handler (works in BOTH CJS and ESM host agents); a
+// bare top-level require(...) crashes an ESM-mode agent — see the 2026-05-27 silent-stall postmortem.
+
+let data = '';
+process.stdin.on('data', (chunk) => (data += chunk));
+process.stdin.on('end', async () => {
+  try {
+    const { readFileSync } = await import('node:fs');
+    const { join, resolve, relative, isAbsolute } = await import('node:path');
+
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
+    let serverPort = 4040;
+    let authToken = '';
+    let enabled = false;
+    try {
+      const cfg = JSON.parse(readFileSync(join(projectDir, '.instar', 'config.json'), 'utf-8'));
+      serverPort = cfg.port || 4040;
+      authToken = cfg.authToken || '';
+      enabled = !!(cfg.coherenceJournal && cfg.coherenceJournal.workingSet && cfg.coherenceJournal.workingSet.recordInteractive);
+    } catch {}
+    if (!enabled) process.exit(0);
+
+    const input = JSON.parse(data);
+    const tool = input.tool_name || '';
+    if (tool !== 'Write' && tool !== 'Edit' && tool !== 'MultiEdit') process.exit(0);
+    // A failed tool-call records nothing (F8) — deletes are NOT inferred from a write.
+    const resp = input.tool_response;
+    if (resp && (resp.error || resp.success === false)) process.exit(0);
+
+    const filePath = input.tool_input && input.tool_input.file_path;
+    if (!filePath || typeof filePath !== 'string') process.exit(0);
+
+    // Conversation id — key from INSTAR_CONVERSATION_ID ONLY (a shared/lifeline session carries
+    // none → records nothing, a safe miss). Number.isFinite admits a minted-negative (Slack) id.
+    const topicRaw = process.env.INSTAR_CONVERSATION_ID;
+    if (!topicRaw) process.exit(0);
+    const topicId = parseInt(topicRaw, 10);
+    if (!Number.isFinite(topicId)) process.exit(0);
+
+    // Derive relPath vs the .instar/ jail (stateDir-relative). Outside the jail ⇒ skip (F10).
+    const stateDir = resolve(projectDir, '.instar');
+    const rawRel = relative(stateDir, resolve(filePath));
+    if (!rawRel || rawRel.startsWith('..') || isAbsolute(rawRel)) process.exit(0);
+    const segs = rawRel.split(/[/\\\\]+/);
+    if (segs.includes('.git')) process.exit(0); // never a git internal
+    const relPath = segs.join('/'); // forward-slash normalized for cross-machine identity
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      await fetch('http://127.0.0.1:' + serverPort + '/coherence/working-set/record', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        body: JSON.stringify({ topicId, relPath }),
+        signal: controller.signal,
+      });
+    } catch {
+      // network/timeout — fire-and-forget, ignore
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    // bad stdin — ignore
+  }
+  process.exit(0); // ALWAYS exit 0 — never block a tool
 });
 `;
   }
@@ -11922,6 +14040,182 @@ setTimeout(() => process.exit(0), 8000);
 `;
   }
 
+  private getDoorwayScanGuardHook(): string {
+    return `#!/usr/bin/env node
+// Doorway-scan command-allowlist guard — PreToolUse Bash hook
+// (spec: DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §2.7).
+//
+// The doorway-scan job session has Bash but NO Edit/Write tool. Bash can still
+// write files a dozen ways (cp/dd/mv/heredoc/interpreters/git-checkout/patch/
+// curl -o). This guard is the REAL "never edits source / never self-authorizes
+// metered spend" enforcer: a strict command-shape ALLOWLIST with fully-specified,
+// fail-closed match semantics.
+//
+// TWO fail-modes at DIFFERENT stages:
+//  (a) SCOPE resolution fails OPEN — if this is not provably the doorway-scan
+//      session (env-first, zero disk I/O on the hot path), ALLOW immediately.
+//      A guard bug can NEVER block Bash in an unrelated instar-dev/interactive
+//      session (exactly like the sibling pr-hand-lease-guard.js).
+//  (b) COMMAND matching fails CLOSED — once confirmed IN the doorway-scan
+//      session, any command not provably ONE sanctioned simple invocation is
+//      REFUSED (exit 2).
+//
+// The parse IS the security boundary: a genuine stateful lexer (NOT a regex/
+// byte-scan) tokenizes the command tracking quote state and recognizes any
+// operator / redirection / expansion / substitution / env-prefix as a REFUSE.
+// Only a single simple command of plain word tokens can match a sanctioned shape.
+
+let data = '';
+process.stdin.on('data', (chunk) => (data += chunk));
+process.stdin.on('end', () => {
+  // ── Region A: SCOPE resolution (fail OPEN) ──
+  let command = '';
+  try {
+    const input = JSON.parse(data || '{}');
+    if (input.tool_name !== 'Bash') return process.exit(0);
+    command = (input.tool_input && input.tool_input.command) || '';
+    if (typeof command !== 'string') return process.exit(0);
+    // Env-first fast path: ZERO disk I/O. Only the scheduler-spawned doorway-scan
+    // session carries INSTAR_JOB_SLUG=doorway-scan. Anything else → strict no-op.
+    if (process.env.INSTAR_JOB_SLUG !== 'doorway-scan') return process.exit(0);
+    // (Confirmed the doorway-scan session by the scheduler-set env marker.)
+  } catch {
+    return process.exit(0); // scope resolution error → fail OPEN (never block others)
+  }
+
+  // ── Region B: COMMAND matching (fail CLOSED) ──
+  try {
+    const verdict = classifyDoorwayScanCommand(command);
+    if (verdict.allow) return process.exit(0);
+    process.stderr.write(
+      'doorway-scan-guard: refused — ' + verdict.reason + '. This session may run ONLY the ' +
+      'sanctioned prober invocation (node scripts/doorway-scan.mjs --scope free-probes), a ' +
+      'host-pinned localhost curl (no output-redirect flag), and read-only test -f / cat / jq -r. ' +
+      'It must never edit source or self-authorize a metered scope.\\n'
+    );
+    return process.exit(2); // block
+  } catch {
+    process.stderr.write('doorway-scan-guard: could not decompose the command — refusing (fail-closed).\\n');
+    return process.exit(2); // undecomposable → REFUSE
+  }
+});
+
+// Backstop: never hang the tool if stdin never ends. This is the SCOPE-level
+// timeout, so it fails OPEN (a stuck guard must not block an unrelated session).
+setTimeout(() => process.exit(0), 8000);
+
+/**
+ * Tokenize a shell command with a genuine stateful lexer. Returns
+ * { ok, tokens, reason }. ok:false when the command is NOT exactly one simple
+ * command of plain word tokens (any operator / redirection / expansion /
+ * substitution / newline / leading env-assignment → ok:false). tokens are the
+ * unquoted argv of the single simple command when ok:true.
+ */
+function lexSimpleCommand(cmd) {
+  const tokens = [];
+  let cur = '';
+  let curHasChar = false; // distinguishes an empty quoted token '' from no token
+  let i = 0;
+  const n = cmd.length;
+  const flush = () => { if (curHasChar) { tokens.push(cur); cur = ''; curHasChar = false; } };
+  while (i < n) {
+    const c = cmd[i];
+    // Whitespace (token separator).
+    if (c === ' ' || c === '\\t') { flush(); i++; continue; }
+    // Newline / carriage return → a command list separator: REFUSE.
+    if (c === '\\n' || c === '\\r') return { ok: false, reason: 'newline (command list)' };
+    // Operators / redirections / control chars outside quotes → REFUSE.
+    if (c === ';' || c === '|' || c === '&' || c === '<' || c === '>' || c === '(' || c === ')' || c === '{' || c === '}' || c === '\\n') {
+      return { ok: false, reason: 'shell operator/redirection "' + c + '"' };
+    }
+    if (c === '\`') return { ok: false, reason: 'backtick command substitution' };
+    // Expansion: $VAR, \${...}, $(...) all begin with $ → REFUSE (no expansions).
+    if (c === '$') return { ok: false, reason: 'variable/command expansion "$"' };
+    // Backslash escape (outside quotes) — take next char literally (benign).
+    if (c === '\\\\') {
+      if (i + 1 < n) { cur += cmd[i + 1]; curHasChar = true; i += 2; continue; }
+      return { ok: false, reason: 'trailing backslash' };
+    }
+    // Single-quoted span: literal, no expansion inside.
+    if (c === "'") {
+      i++;
+      while (i < n && cmd[i] !== "'") { cur += cmd[i]; curHasChar = true; i++; }
+      if (i >= n) return { ok: false, reason: 'unterminated single quote' };
+      curHasChar = true; // an empty '' is still a token
+      i++; // skip closing quote
+      continue;
+    }
+    // Double-quoted span: reject $ and backtick inside (expansion), else literal.
+    if (c === '"') {
+      i++;
+      while (i < n && cmd[i] !== '"') {
+        const d = cmd[i];
+        if (d === '$') return { ok: false, reason: 'expansion inside double quotes' };
+        if (d === '\`') return { ok: false, reason: 'backtick inside double quotes' };
+        if (d === '\\\\' && i + 1 < n) { cur += cmd[i + 1]; curHasChar = true; i += 2; continue; }
+        cur += d; curHasChar = true; i++;
+      }
+      if (i >= n) return { ok: false, reason: 'unterminated double quote' };
+      curHasChar = true;
+      i++;
+      continue;
+    }
+    // Ordinary character.
+    cur += c; curHasChar = true; i++;
+  }
+  flush();
+  if (tokens.length === 0) return { ok: false, reason: 'empty command' };
+  // Leading env-assignment prefix (NAME=value cmd ...) → REFUSE (the money-gate bypass).
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) return { ok: false, reason: 'leading env-var assignment prefix' };
+  return { ok: true, tokens, reason: 'ok' };
+}
+
+function isLocalhostHttpUrl(tok) {
+  return /^https?:\\/\\/(localhost|127\\.0\\.0\\.1)(:\\d+)?(\\/|$)/.test(tok);
+}
+
+/**
+ * Classify a command against the exhaustive sanctioned shapes. Returns
+ * { allow, reason }. Fails CLOSED: anything not provably sanctioned → allow:false.
+ */
+function classifyDoorwayScanCommand(command) {
+  const lex = lexSimpleCommand(command);
+  if (!lex.ok) return { allow: false, reason: lex.reason };
+  const t = lex.tokens;
+  // 1) The prober invocation — exact executable + argv.
+  if (t[0] === 'node' && t[1] === 'scripts/doorway-scan.mjs' && t[2] === '--scope' && t[3] === 'free-probes' && t.length === 4) {
+    return { allow: true, reason: 'prober' };
+  }
+  // 2) test -f <literal path>
+  if (t[0] === 'test' && t[1] === '-f' && t.length === 3) return { allow: true, reason: 'test-f' };
+  // 3) cat <literal path>
+  if (t[0] === 'cat' && t.length === 2) return { allow: true, reason: 'cat' };
+  // 4) jq -r <literal filter> <literal file>
+  if (t[0] === 'jq' && t[1] === '-r' && t.length === 4) return { allow: true, reason: 'jq' };
+  // 5) curl — host-pinned localhost, read-only flags, NO output-redirect flag.
+  if (t[0] === 'curl') {
+    const OUTPUT_REDIRECT = new Set(['-o', '-O', '--output', '--remote-name', '--create-dirs']);
+    const ALLOWED_FLAGS = new Set(['-s', '-f', '-S', '-sf', '-sS', '-fsS', '-sfS', '--silent', '--fail', '--show-error']);
+    let urlCount = 0;
+    for (let k = 1; k < t.length; k++) {
+      const a = t[k];
+      if (OUTPUT_REDIRECT.has(a)) return { allow: false, reason: 'curl output-redirect flag' };
+      if (a.startsWith('-')) {
+        if (!ALLOWED_FLAGS.has(a)) return { allow: false, reason: 'curl flag not allowlisted (' + a + ')' };
+        continue;
+      }
+      // A non-flag arg must be a localhost URL.
+      if (!isLocalhostHttpUrl(a)) return { allow: false, reason: 'curl url not host-pinned to localhost' };
+      urlCount++;
+    }
+    if (urlCount === 1) return { allow: true, reason: 'localhost-curl' };
+    return { allow: false, reason: 'curl must carry exactly one localhost url' };
+  }
+  return { allow: false, reason: 'not a sanctioned command shape (' + t[0] + ')' };
+}
+`;
+  }
+
   private getExternalOperationGateHook(): string {
     return `#!/usr/bin/env node
 // External operation gate — structural safety for external service operations.
@@ -11955,16 +14249,65 @@ process.stdin.on('end', async () => {
     const service = parts[1];
     const action = parts.slice(2).join('_');
 
-    // Classify mutability from action name
-    let mutability = 'read';
+    // Playwright's logged-in operator profile is one physical, host-wide seat.
+    // Acquire/renew its lease before EVERY browser tool, including snapshots and
+    // reads: a "read" can observe a page another drive is actively mutating, and
+    // allowing it through would re-open the same interleaving race.
+    if (service === 'playwright') {
+      const holderId = process.env.INSTAR_SESSION_ID || '';
+      const holderLabel = process.env.INSTAR_SESSION_NAME || process.env.INSTAR_CONVERSATION_ID || holderId;
+      if (holderId) {
+        let leasePort = 4321;
+        let leaseAuth = process.env.INSTAR_AUTH_TOKEN || '';
+        try {
+          const nodeFs = await import('node:fs');
+          const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
+          const cfg = JSON.parse(nodeFs.readFileSync(projectDir + '/.instar/config.json', 'utf-8'));
+          leasePort = cfg.port || 4321;
+          if (!leaseAuth && typeof cfg.authToken === 'string') leaseAuth = cfg.authToken;
+          const scopedHolderId = projectDir + ':' + holderId;
+          const leaseController = new AbortController();
+          const leaseTimeout = setTimeout(() => leaseController.abort(), 3000);
+          try {
+            const leaseRes = await fetch('http://127.0.0.1:' + leasePort + '/playwright-profiles/seat/acquire', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + leaseAuth },
+              body: JSON.stringify({ holderId: scopedHolderId, holderLabel }),
+              signal: leaseController.signal,
+            });
+            clearTimeout(leaseTimeout);
+            if (leaseRes.status === 409) {
+              const conflict = await leaseRes.json().catch(() => ({}));
+              process.stderr.write('BLOCKED: The logged-in Playwright operator seat is already in use.\\n');
+              process.stderr.write('Holder: ' + String(conflict.holderLabel || 'another active browser drive') + '\\n');
+              process.stderr.write('Retry after: ' + String(conflict.retryAfterMs || 'a short wait') + 'ms\\n');
+              process.exit(2);
+            }
+            // Only an authoritative live conflict blocks. Disabled/unavailable
+            // lease infrastructure degrades fail-open so browser access remains.
+          } catch { clearTimeout(leaseTimeout); }
+        } catch { /* no stable holder/config -> preserve existing fail-open posture */ }
+      }
+    }
+
+    // Classify mutability from action name. Keep this vocabulary in lockstep
+    // with ExternalOperationGate.computeRiskLevel's known-input fail-safe:
+    // only explicitly unambiguous reads bypass the API; an unknown verb must
+    // reach the gate for the authoritative decision.
+    const actionTokens = action.split('_').filter(Boolean);
+    const hasMutatingTail = actionTokens.slice(1).some(token =>
+      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge)$/.test(token)
+    );
+    let mutability = 'modify';
     if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) {
       mutability = 'delete';
     } else if (/^(send|create|post|write|add|insert|new|compose|publish)/.test(action)) {
       mutability = 'write';
     } else if (/^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/.test(action)) {
       mutability = 'modify';
+    } else if (!hasMutatingTail && /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)(?:_|$)/.test(action)) {
+      mutability = 'read';
     }
-    // Everything else defaults to 'read' (get, list, search, fetch, check, etc.)
 
     // Read operations are always safe — fast-path
     if (mutability === 'read') {
@@ -12196,6 +14539,42 @@ process.stdin.on('end', async () => {
     // template (preflight for every non-script sender) reaches existing
     // agents.
     '4dfcc184c012d52f0e28c9fe8aca301c23b76d792155c821b8b0f0666da4984b',
+    // TIME_CLAIM version (pre-delivery-id-pre-POST-mint). The current shipped
+    // template before slack-outbound-robustness §2.6 moved the delivery-id
+    // mint BEFORE the initial send (X-Instar-DeliveryId on the first POST) +
+    // added the 409 delivery-in-flight recoverable branch (R8-M1 Arm C).
+    // Recorded so deployed agents cleanly upgrade to the pre-POST-mint
+    // template instead of getting a `.new` candidate.
+    '63ca933e2d7c59d92c92d2799afa71b9c75e45caf3ab7c1cb06aa8eb95ba2900',
+    // Pre-worktree-home-resolution version. Shipped through v1.3.813.
+    // Existing agents must receive the constrained agent-home resolver and
+    // loud unknown-id queue refusal rather than an inert `.new` candidate.
+    '89849c10aa30cc83a07d6e7721aa3ebbfd07ab897250c0d0f3e234f079dba153',
+    // Agent-home-anchored resolver version from #1437 (pre recovery-queue
+    // reopen-and-prove). Shipped through v1.3.834; recognize it so stock
+    // deployed relays upgrade in place rather than being treated as drift.
+    '24a638766fc8a2473e23e032dde39ff7ef046c37e893ff878323d18d9dad2d52',
+    // Recovery-queue reopen-and-prove + outbound advisory acknowledgement
+    // version shipped through v1.3.882 (pre bounded final transport outcome).
+    'd55feb9a203c7835c36b6bf0e23972c79a1e26fe6ea29683f31f831fb956c0f3',
+    // Bounded final transport outcome — the version shipped immediately BEFORE
+    // the tone-gate advisory migration added --tone-ack / --tone-reason /
+    // --tone-complied / --tone-decision-ref and the branching 422 renderer.
+    // Registering it here is what lets a deployed agent actually RECEIVE those
+    // flags: without this entry the SHA-history migrator leaves the old script
+    // in place with a `.new` candidate beside it, and the migration would be
+    // reachable only through a hand-rolled curl — i.e. inert on the one send
+    // path the agent template mandates.
+    '1182b2c7e3779a9c37355e7317962ea48122a5f4a42425d7f3f9973e8127aa19',
+    // The tone-advisory version, shipped immediately BEFORE the flag-position
+    // guard. In this version a flag placed AFTER the topic id was swallowed
+    // into `MSG="$*"` and SENT TO THE USER as literal message text, while the
+    // override it carried never reached the server — silently, on the very
+    // flags the entry above was added to deliver. Registering this SHA is what
+    // lets a deployed agent receive the guard; without it the migrator leaves
+    // the swallowing version in place with a `.new` beside it, and every agent
+    // keeps mis-sending a misplaced (or typo'd) flag as message body.
+    'a2cf02154a6023725f15480a575f54a5231278c70396cd12051b7d7055b72d98',
   ]);
 
   /**
@@ -12411,8 +14790,17 @@ MSG="\${*:-$(cat)}"
 PORT="\${INSTAR_PORT:-${port}}"
 JSON_MSG=$(printf '%s' "$MSG" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' 2>/dev/null)
 RESPONSE=$(curl -s -w "\\n%{http_code}" -X POST "http://localhost:\${PORT}/telegram/reply/\${TOPIC_ID}" \\
+  --connect-timeout 3 \\
+  --max-time 125 \\
   -H 'Content-Type: application/json' \\
   -d "{\\"text\\":\${JSON_MSG}}")
+CURL_STATUS=$?
+if [ "$CURL_STATUS" -ne 0 ]; then
+  echo "AMBIGUOUS: Telegram relay transport ended without an HTTP outcome (curl \${CURL_STATUS})." >&2
+  echo "  The message MAY still be delivered. Do NOT retry blindly; verify the conversation first." >&2
+  echo "AMBIGUOUS: no HTTP outcome — verify delivery before retrying"
+  exit 0
+fi
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 if [ "$HTTP_CODE" = "200" ]; then
@@ -13262,6 +15650,71 @@ if (!reviewEnabled) {
     };
   }
 
+  // ── Turn-End Self-Deferral Guard (Phase A / shadow) — bounded, fail-open
+  // reverse tail-read of the transcript for the last <=3 user turns. Faithful
+  // plain-JS port of src/core/stopGateTranscriptTail.ts (a deployed hook cannot
+  // import project modules at runtime). Spec: turn-end-self-deferral-guard.md
+  // §3.2(b)/(b-bis). NEVER throws, never delays turn-end: any missing/unreadable/
+  // malformed/oversize transcript -> [] (contextTurns:0, judged context-blind).
+  function extractUserProse(entry) {
+    if (!entry || typeof entry !== 'object') return '';
+    if (entry.type !== 'user') return '';
+    const message = entry.message;
+    if (!message || typeof message !== 'object') return '';
+    const content = message.content;
+    if (typeof content === 'string') return content.trim();
+    if (Array.isArray(content)) {
+      const parts = [];
+      for (let j = 0; j < content.length; j++) {
+        const b = content[j];
+        // Only text blocks carry user prose; tool_result blocks are skipped.
+        if (b && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string') parts.push(b.text);
+      }
+      return parts.join('\\n').trim();
+    }
+    return '';
+  }
+
+  function readRecentUserTurns(transcriptPath) {
+    const MAX_TURNS = 3;
+    const MAX_BYTES = 256 * 1024;
+    const PER_TURN_CHARS = 2000;
+    try {
+      if (!transcriptPath || typeof transcriptPath !== 'string') return [];
+      const stat = fs.statSync(transcriptPath);
+      const size = stat.size;
+      if (!size) return [];
+      const readBytes = Math.min(size, MAX_BYTES);
+      const fd = fs.openSync(transcriptPath, 'r');
+      let text;
+      try {
+        const buf = Buffer.alloc(readBytes);
+        fs.readSync(fd, buf, 0, readBytes, size - readBytes);
+        text = buf.toString('utf-8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      if (readBytes < size) {
+        const nl = text.indexOf('\\n');
+        if (nl !== -1) text = text.slice(nl + 1);
+      }
+      const lines = text.split(/\\r?\\n/).filter(Boolean);
+      const turns = [];
+      for (let i = lines.length - 1; i >= 0 && turns.length < MAX_TURNS; i--) {
+        let entry;
+        try { entry = JSON.parse(lines[i]); } catch { continue; }
+        let prose = extractUserProse(entry);
+        if (!prose) continue;
+        if (prose.length > PER_TURN_CHARS) prose = prose.slice(0, PER_TURN_CHARS);
+        turns.push({ source: 'user', text: prose });
+      }
+      turns.reverse();
+      return turns;
+    } catch {
+      return [];
+    }
+  }
+
   function exitOpen() {
     process.exit(0);
   }
@@ -13382,12 +15835,22 @@ if (!reviewEnabled) {
       sessionStartTs: hot.sessionStartTs || null,
     };
 
+    // Turn-End Self-Deferral Guard context: prepend the last <=3 user turns
+    // (chronological) before the agent's final message. Bounded + fail-open —
+    // an empty array (contextTurns:0) on any transcript problem, never a throw.
+    // GATED on hot.selfDeferralGuardOn (the dev-gate): when the guard is OFF we
+    // do NOT read the transcript at all (no wasted work) AND send no user turns,
+    // so the drift-death classifier's input is unchanged. (The authority also
+    // strips user turns when the guard is off — this avoids the wasted read.)
+    const userTurns = (hot && hot.selfDeferralGuardOn) ? readRecentUserTurns(input.transcript_path) : [];
+    const recentTurns = userTurns.concat(message ? [{ source: 'agent', text: message }] : []);
+
     const result = await postJson('/internal/stop-gate/evaluate', {
       sessionId: sessionId,
       evidenceMetadata: evidenceMetadata,
       untrustedContent: {
         stopReason: stopReason,
-        recentTurns: message ? [{ source: 'agent', text: message }] : [],
+        recentTurns: recentTurns,
       },
     }, 2500);
 

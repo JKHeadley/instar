@@ -30,7 +30,7 @@ afterEach(() => {
 
 function poolWithAccount(): SubscriptionPool {
   const pool = new SubscriptionPool({ stateDir: dir });
-  pool.add({
+  pool.addFixture({
     id: 'acct-x',
     nickname: 'SageMind - Justin',
     email: 'justin@example.com',
@@ -207,7 +207,7 @@ describe('deletion-safety guard — never recursively delete a shared/default/ro
     // never touched.
     const protectedHome = path.join(os.homedir(), '.claude');
     const pool = new SubscriptionPool({ stateDir: dir });
-    pool.add({
+    pool.addFixture({
       id: 'acct-default',
       nickname: 'Primary',
       email: 'justin@example.com',

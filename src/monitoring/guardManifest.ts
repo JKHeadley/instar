@@ -65,6 +65,22 @@ export interface GuardManifestEntry {
 }
 
 export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
+  {
+    key: 'multiMachine.peerExecution.enabled',
+    kind: 'config',
+    configPath: 'multiMachine.peerExecution.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'multiMachine.peerExecution.dryRun',
+    expectedTickMs: 60_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'MutualSshRuntime',
+    description: 'Standing peer-machine execution: installs only mutually verified, current-epoch peer keys into this agent home and reports unreachable peers as named readiness blockers.',
+    loadBearing: true,
+    criticalPath: 'autonomous execution on a paired peer machine',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-22',
+  },
   // ── Durable Inbound Message Queue (spec §Observability; keys === configPath) ──
   {
     key: 'multiMachine.sessionPool.inboundQueue.enabled',
@@ -400,6 +416,62 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Always-on floor that auto-answers a framework approval prompt (the cd-redirection wedge); never silently disableable.',
   },
   {
+    key: 'intelligence.selfActionGovernor.enabled',
+    kind: 'config',
+    // SYNTHETIC enabled-polarity key (unified-self-action-backpressure
+    // §Fail-direction deliverable 1 — the PermissionPromptAutoResolver
+    // precedent): the governor's only switch is the INVERTED
+    // `intelligence.selfActionGovernor.emergencyDisable` (true = OFF), so
+    // extractGuardPosture COMPUTES `enabled = emergencyDisable !== true`
+    // (absent => on) under this configPath. A deliberate disable then reads as
+    // enabled->disabled — a tripwire incident, never a silent batch-flip.
+    configPath: 'intelligence.selfActionGovernor.enabled',
+    defaultEnabled: true,
+    // emergencyDisable is read live by the governor (a disk/PATCH change takes
+    // effect with no restart) — diverged-pending-restart would lie.
+    liveConfig: true,
+    expectedTickMs: 60_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'SelfActionGovernor',
+    description:
+      'Unified self-action backpressure chokepoint (observe-only rollout): every registered self-triggered action (kill, swap, notify, respawn) rides admit() for would-deny measurement; per-class enforce is the operator FD8 ladder.',
+    loadBearing: true,
+    criticalPath: 'self-action capacity safety (the runaway self-trigger flood brake: reaper kill storms, swap thrash, notify floods)',
+    // G3 manifest lint: every loadBearing entry declares its soak budget. The
+    // governor ships observe-only BY DESIGN (FD1) and its runtime getter does
+    // not report observe as dryRun (the FD8/FD12 ladder owns per-class
+    // graduation), so the soak window exists to satisfy the uniform G3
+    // contract — the guard's own enabled-state (emergencyDisable inversion)
+    // is what the gap classification watches.
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-10',
+  },
+  {
+    key: 'monitoring.externalHogSentinel.enabled',
+    kind: 'config',
+    configPath: 'monitoring.externalHogSentinel.enabled',
+    // Dev-gated: `enabled` OMITTED from ConfigDefaults (resolveDevAgentGate) —
+    // dark-default on the fleet, live (watch-only dryRun) on a development agent.
+    // dryRun is the kill-safety canary: live-on-dev scans/classifies/LOGS would-kills
+    // but signals NOTHING until a deliberate PIN-gated arm.
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.externalHogSentinel.dryRun',
+    expectedTickMs: 60_000, // scanIntervalMs default
+    // The sentinel self-registers its GuardRegistry getter at boot (commands/server.ts →
+    // guardRegistry.register('monitoring.externalHogSentinel.enabled', () =>
+    // sentinel.guardRuntimeStatus())), so /guards expects a runtime report. lastTickAt is the
+    // sampler heartbeat (last SUCCESSFUL parse) → a blind-but-ticking sentinel reads on-stale.
+    process: 'server',
+    expectRuntime: true,
+    component: 'ExternalHogSentinel',
+    description: 'External-hog zombie auto-kill sentinel — surfaces any sustained EXTERNAL CPU hog (broad observability) and, within a mechanical veto-only floor + an intelligence kill/leave/alert verdict, auto-kills exactly one narrow class (orphaned Electron editor extension-host wrappers). Ships dev-gated dark-on-fleet, watch-only dryRun; a live kill needs a deliberate PIN-gated arm.',
+    // loadBearing FALSE: a new watch-only capability nothing else depends on — a dark
+    // posture just means zombies persist (the status quo), not a broken critical path.
+    // Re-reviewed at fleet graduation.
+    loadBearing: false,
+  },
+  {
     key: 'monitoring.contextWedgeSentinel.enabled',
     kind: 'config',
     configPath: 'monitoring.contextWedgeSentinel.enabled',
@@ -436,6 +508,71 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     expectRuntime: false,
     component: 'AgentWorktreeReaper',
     description: 'Reclaims merged+clean+unused agent worktrees.',
+  },
+  {
+    // Machine-coherence guard (machine-coherence-guard §6/§7, roadmap 4.1
+    // F4/P0-1). `enabled` is deliberately OMITTED from ConfigDefaults — the
+    // runtime resolves it through the developmentAgent dark-feature gate (dark
+    // on the fleet, live on a dev agent; dry-run first). defaultEnabled:false
+    // reflects the fleet default. expectRuntime:true — increment C₁b-i adds the
+    // server-boot construction + guardRegistry.register('monitoring.machineCoherence.enabled')
+    // callsite on the peerPresenceTick path, registered ONLY when the gate
+    // resolves enabled. The `missing` classification requires configEnabled===true
+    // (guardPostureView §precedence), so a dark fleet agent (gate → false) never
+    // constructs, never registers, and is never falsely graded `missing` — the
+    // ws13Reconcile/holdForStability expectRuntime:true precedent.
+    // NOT loadBearing (Frontloaded Decision D6): signal-only, no critical path
+    // consumes it yet, and loadBearing:true would raise G3 gap alarms on every
+    // fleet agent where the guard is deliberately dark.
+    key: 'monitoring.machineCoherence.enabled',
+    kind: 'config',
+    configPath: 'monitoring.machineCoherence.enabled',
+    defaultEnabled: false,
+    expectedTickMs: 30_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'MachineCoherenceSentinel',
+    description: 'Machine-coherence guard evaluator: compares version/resolved-flag/protocol/manifest across the agent\'s own ONLINE machines (the F4 skew class) and will raise ONE episode-scoped attention item from exactly ONE elected machine. Signal-only; MUTATES NOTHING.',
+  },
+  {
+    // `enabled` is deliberately OMITTED from ConfigDefaults — the runtime resolves
+    // it through the developmentAgent dark-feature gate (dark on the fleet, live on
+    // a dev agent). defaultEnabled:false reflects the fleet default. Constructed
+    // ONLY when the gate resolves enabled (a dark fleet agent never constructs,
+    // never registers — never falsely graded `missing`), registering a synchronous
+    // runtime getter (enabled/dryRun + real lastTickAt liveness) — expectRuntime:true.
+    // NOT loadBearing: signal-only, no critical path consumes it, and loadBearing:true
+    // would raise G3 gap alarms on every fleet agent where the guard is deliberately dark.
+    key: 'monitoring.singleMachineFailoverGap.enabled',
+    kind: 'config',
+    configPath: 'monitoring.singleMachineFailoverGap.enabled',
+    dryRunConfigPath: 'monitoring.singleMachineFailoverGap.dryRun',
+    defaultEnabled: false,
+    expectedTickMs: 30_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'SingleMachineFailoverGapDetector',
+    description: 'Single-machine failover-gap detector: raises ONE deduped HIGH attention item when this agent is single-machine (no online mesh peer) WHILE it has active autonomous runs — the "no failover target for active autonomous work" gap. Rides the 30s peerPresenceTick; signal-only, MUTATES NOTHING.',
+  },
+  {
+    // `enabled` is deliberately OMITTED from ConfigDefaults — the runtime resolves
+    // it through the developmentAgent dark-feature gate (dark on the fleet, live on
+    // a dev agent). defaultEnabled:false reflects the fleet default. Constructed
+    // ONLY when the gate resolves enabled (a dark fleet agent never constructs,
+    // never registers — never falsely graded `missing`), registering a synchronous
+    // runtime getter (enabled/dryRun + real lastTickAt liveness) — expectRuntime:true.
+    // NOT loadBearing: signal-only, no critical path consumes it, and loadBearing:true
+    // would raise G3 gap alarms on every fleet agent where the guard is deliberately dark.
+    key: 'monitoring.missingLoginSession.enabled',
+    kind: 'config',
+    configPath: 'monitoring.missingLoginSession.enabled',
+    dryRunConfigPath: 'monitoring.missingLoginSession.dryRun',
+    defaultEnabled: false,
+    expectedTickMs: 30_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'MissingLoginSessionDetector',
+    description: 'Missing-login-session detector: raises ONE deduped HIGH attention item when a live session is running on an account whose local login has gone missing (subscription-pool identity drift owner-relogin-required / missing-local-login) — the "live session about to wall on a missing login" gap. Rides the 30s peerPresenceTick; signal-only, MUTATES NOTHING.',
   },
   {
     // `enabled` is deliberately OMITTED from ConfigDefaults — the runtime resolves
@@ -476,6 +613,29 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     criticalPath: 'inbound message reachability (detects an online-but-unable-to-serve owner so inbound is not silently dead)',
     soakWindowDays: 30,
     declaredLoadBearingAt: '2026-07-01',
+  },
+  {
+    // Durable-Output Hygiene Standard §2 Layer B ("What Persists Must Be Clean",
+    // docs/specs/durable-output-hygiene-standard.md). `enabled` is deliberately
+    // OMITTED from ConfigDefaults — the runtime resolves it through the
+    // developmentAgent dark-feature gate (dark on the fleet, live on a dev
+    // agent); defaultEnabled:false reflects the fleet default. NO expectedTickMs:
+    // it is EVENT-DRIVEN (runs inline at each durable-output persistence write,
+    // not on a tick), so a quiet store is not stale. expectRuntime: false — it is
+    // a pure write-path transform constructed at boot, with no guardRegistry
+    // heartbeat. dryRunConfigPath is the canary arm (dryRun:true computes +
+    // records would-redact metrics but persists the ORIGINAL text; the
+    // dryRun:false flip is the operator's endpoint decision — spec Frontloaded
+    // Decision #4).
+    key: 'monitoring.durableOutputScrub.enabled',
+    kind: 'config',
+    configPath: 'monitoring.durableOutputScrub.enabled',
+    dryRunConfigPath: 'monitoring.durableOutputScrub.dryRun',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'DurableOutputScrubber',
+    description: 'Deterministic credential-SPAN scrub over LLM output at durable-output persistence chokepoints (session summaries first) — redacts known token shapes BEFORE the write, with provenance markers + would-redact telemetry (counts/kind/offset only, never bytes). Content-altering safety floor, never blocking; dark-first + dryRun canary.',
   },
   {
     // tmux Event-Loop Resilience (C). `enabled` is deliberately OMITTED from
@@ -538,6 +698,16 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Boot-time health beacon endpoint (dev-gated, CMT-1438).',
   },
   {
+    key: 'monitoring.blockerLifecycleLedger.enabled',
+    kind: 'config',
+    configPath: 'monitoring.blockerLifecycleLedger.enabled',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: true,
+    component: 'BlockerLifecycleService',
+    description: 'Observe-only blocker lifecycle timing ledger (dev-gated).',
+  },
+  {
     key: 'monitoring.enforcedTermination.enabled',
     kind: 'config',
     configPath: 'monitoring.enforcedTermination.enabled',
@@ -556,6 +726,18 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     expectRuntime: false,
     component: 'RateLimitSentinel',
     description: 'Detects provider rate-limit walls and schedules recovery.',
+  },
+  {
+    key: 'monitoring.proactiveAutonomousCompaction.enabled',
+    kind: 'config',
+    configPath: 'monitoring.proactiveAutonomousCompaction.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.proactiveAutonomousCompaction.dryRun',
+    expectedTickMs: 60_000,
+    process: 'server',
+    expectRuntime: false,
+    component: 'ProactiveCompactionSentinel',
+    description: 'At an idle boundary, proactively compacts explicitly opted-in autonomous Claude sessions before they reach the context wall; ships dark and dry-run first.',
   },
   {
     key: 'monitoring.parallelWorkSentinel.enabled',
@@ -681,6 +863,32 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Correction & preference learning sentinel.',
   },
   {
+    key: 'monitoring.correctionClassReview.enabled',
+    kind: 'config',
+    configPath: 'monitoring.correctionClassReview.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.correctionClassReview.dryRun',
+    process: 'server',
+    expectRuntime: false,
+    component: 'CorrectionClassReview',
+    description: 'Record-time correction class review plus correspondence-bound instance-fix admission.',
+    loadBearing: true,
+    criticalPath: 'correction-derived instance fixes receive a standards and development-process class review first',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-19',
+  },
+  {
+    key: 'monitoring.completionClaimVerification.enabled',
+    kind: 'config',
+    configPath: 'monitoring.completionClaimVerification.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'monitoring.completionClaimVerification.dryRun',
+    process: 'server',
+    expectRuntime: false,
+    component: 'CompletionClaimVerifier',
+    description: 'Observe-only completion-claim corroboration against structural TurnEvidence.',
+  },
+  {
     // Sub-guard: plain-boolean flag INSIDE the correctionLearning block (not
     // `.enabled`-shaped, so the generic extractor cannot see it).
     key: 'monitoring.correctionLearning.selfViolationSignal',
@@ -792,6 +1000,32 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Model-tier escalation policy (COST-INCREASING enable).',
   },
   {
+    // Test-Runner Concurrency Bound (test-runner-concurrency-bound §2.9/§4).
+    // kind 'code-default': the chokepoint (vitest globalSetup) has NO config
+    // enable — its authority is env + the host tuning file, so this row's
+    // runtime getter serves the SERVER-PROCESS view of the resolved posture
+    // (enabled = posture !== 'off'; dryRun = posture !== 'enforcing'), cached
+    // OUTSIDE the getter (the registry contract forbids file I/O in getters).
+    // A host-wide `INSTAR_HOST_TEST_SEMAPHORE=off` therefore grades
+    // off-runtime-divergent — the spec's "sustained off grades diverged".
+    // loadBearing + 14-day soak (§4): while the ratified dry-run soak runs,
+    // the row grades loadBearingSoaking; if the window lapses with no flip
+    // decision it becomes a LOUD load-bearing gap — the soak structurally
+    // cannot drift into dry-run-forever (Close the Loop).
+    key: 'intelligence.testRunnerCap',
+    kind: 'code-default',
+    defaultEnabled: true,
+    expectedTickMs: 60_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'HostTestRunnerSemaphore',
+    description: 'Host-wide test-runner concurrency bound (vitest suite/targeted lanes; watch-only soak, then enforce).',
+    loadBearing: true,
+    criticalPath: 'host CPU protection — the multi-actor test-suite storm (2026-07-02 load-stall kill cascade)',
+    soakWindowDays: 14,
+    declaredLoadBearingAt: '2026-07-03',
+  },
+  {
     // Out-of-process guard (spec §2.1): config-derived states ONLY
     // (`on-unverified` at best) — the sync in-memory getter contract cannot
     // cross processes, so this entry must never carry expectRuntime.
@@ -853,6 +1087,28 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     component: 'TopicCreationBudget',
     description: 'Bounded Notification Surface — last-resort budget on every auto-created topic (default-ON in code).',
   },
+  // ── Stall-coverage matrix gate (framework-stall-coverage-matrix §3.4) ──
+  {
+    key: 'apprenticeship.stallCoverageGate.enabled',
+    kind: 'config',
+    configPath: 'apprenticeship.stallCoverageGate.enabled',
+    defaultEnabled: true,
+    dryRunConfigPath: 'apprenticeship.stallCoverageGate.dryRun',
+    // Read LIVE at the gate callsite (no restart) → diverged-pending-restart
+    // would lie; suppress it.
+    liveConfig: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'ApprenticeshipStallGate',
+    description: 'Stall-coverage matrix gate — apprenticeship onboarding transitions verify the framework stall-coverage matrix (provisional at pending→active; full + liveness/posture/acceptance at active→complete). Ships enabled + dry-run; the enforce flip is operator-owned on named evidence.',
+    // §3.4: while dry-run, the gate registers as load-bearing-SOAKING with a
+    // soak deadline so an unflipped gate lapses into visible debt instead of
+    // rotting ("A Dark Feature Guards Nothing" applies to this gate itself).
+    loadBearing: true,
+    criticalPath: 'apprenticeship onboarding sign-off (stall-coverage matrix gate)',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-07-18',
+  },
 ] as const;
 
 /**
@@ -868,6 +1124,8 @@ export interface NotAGuardEntry {
 }
 
 export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
+  { component: 'SessionPoolPromotionActivation', reason: 'Evidence-gated rollout actuator selected by promotionModel; it delegates every mutation to StageAdvancer and is not itself a protective guard. Its off/operator/auto posture is surfaced by the promotion route and machine-coherence manifest.' },
+  { component: 'DeferralPatternSentinel', reason: 'Increment-1 core only: pure injected-deps detector over the existing judgment-provenance store; NOT boot-constructed and registers no runtime getter yet, so it is absent from the live /guards inventory. It moves to GUARD_MANIFEST when a later increment wires it at boot.' },
   { component: 'rawTextRequestDetector', reason: 'Pure stateless predicate (high-precision pattern match) feeding the observe-only ask-for-access signal in checkOutboundMessage; no enabled flag, no runtime getter, takes no protective action — a detector that produces a signal, never a guard with posture.' },
   { component: 'GuardPostureTripwire', reason: 'The boot-transition detector OVER the guard inventory — meta-layer, not a guard itself; always-on, no enabled flag.' },
   { component: 'GuardRegistry', reason: 'Infrastructure of this feature: the runtime-getter registry the inventory reads; not a guard.' },

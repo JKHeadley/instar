@@ -163,6 +163,16 @@ async function tickPastDebounce(h: Harness): Promise<void> {
 const topicsRespawned = (h: Harness): number[] => h.respawned.map((r) => r.topicId);
 
 describe('AutonomousLivenessReconciler', () => {
+  it('detects dead-active runs while paused but leaves live sessions alone', async () => {
+    const h = build({ dryRun: true, debounceTicks: 1, debounceWindowSec: 0 });
+    h.flags.queuePaused = true;
+    await h.reconciler.tick();
+    expect(h.audit.some((e) => e.event === 'would-respawn-paused' && e.topicId === 100)).toBe(true);
+    h.flags.liveTopics.add(100);
+    await h.reconciler.tick();
+    expect(h.audit.some((e) => e.event === 'would-respawn-paused' && e.topicId === 100)).toBe(true);
+    expect(h.reconciler.status().respawnTotal).toBe(0);
+  });
   describe('happy path — respawns an orphaned active run', () => {
     it('respawns a run that is active+remaining with no live session, after debounce', async () => {
       const h = build();
@@ -333,6 +343,61 @@ describe('AutonomousLivenessReconciler', () => {
       expect(h.respawned).toHaveLength(0);
       expect(h.notices).toHaveLength(0);
       expect(h.audit.some((e) => e.event === 'would-respawn' && e.dryRun === true)).toBe(true);
+    });
+
+    it('links a would-respawn to the next-tick recovered-live outcome', async () => {
+      const h = build({ dryRun: true, debounceTicks: 1, debounceWindowSec: 0 });
+      await h.reconciler.tick();
+      const decision = h.audit.find((e) => e.event === 'would-respawn');
+      h.flags.liveTopics.add(100);
+      h.nowMs.v += 1_000;
+      await h.reconciler.tick();
+      expect(h.audit).toContainEqual(expect.objectContaining({
+        event: 'would-respawn-followup',
+        topicId: 100,
+        decisionId: decision?.decisionId,
+        outcome: 'recovered-live',
+        dryRun: true,
+      }));
+    });
+
+    it('classifies a continuing dry-run opportunity as still-orphaned', async () => {
+      const h = build({ dryRun: true, debounceTicks: 1, debounceWindowSec: 0 });
+      await h.reconciler.tick();
+      const decision = h.audit.find((e) => e.event === 'would-respawn');
+      h.nowMs.v += 1_000;
+      await h.reconciler.tick();
+      expect(h.audit).toContainEqual(expect.objectContaining({
+        event: 'would-respawn-followup',
+        decisionId: decision?.decisionId,
+        outcome: 'still-orphaned',
+      }));
+    });
+
+    it('classifies an operator stop without respawning', async () => {
+      const h = build({ dryRun: true, debounceTicks: 1, debounceWindowSec: 0 });
+      await h.reconciler.tick();
+      h.flags.operatorStopped.add(100);
+      h.nowMs.v += 1_000;
+      await h.reconciler.tick();
+      expect(h.audit).toContainEqual(expect.objectContaining({
+        event: 'would-respawn-followup',
+        outcome: 'operator-stopped',
+      }));
+      expect(h.respawned).toHaveLength(0);
+    });
+
+    it('classifies unreadable follow-up evidence as unknown', async () => {
+      const h = build({ dryRun: true, debounceTicks: 1, debounceWindowSec: 0 });
+      await h.reconciler.tick();
+      const original = h.flags.liveTopics;
+      Object.defineProperty(h.flags, 'liveTopics', { get: () => { throw new Error('snapshot unreadable'); }, configurable: true });
+      h.nowMs.v += 1_000;
+      await h.reconciler.tick();
+      expect(h.audit).toContainEqual(expect.objectContaining({
+        event: 'would-respawn-followup', outcome: 'evidence-unknown',
+      }));
+      Object.defineProperty(h.flags, 'liveTopics', { value: original, writable: true, configurable: true });
     });
 
     it('logs a shadow would-have-capped event in dryRun (adversarial F6)', async () => {

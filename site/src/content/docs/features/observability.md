@@ -9,13 +9,15 @@ These subsystems are mostly invisible until something goes wrong. When they do s
 
 ## Token burn detection
 
-Components: `BurnDetector`, `BurnDetectionSubscriber`, `BurnThrottleRunbook`, `BurnVerifier`, `BurnAlertButtons`.
+Components: `BurnDetector`, `BurnDetectionSubscriber`, `BurnThrottleRunbook`, `BurnVerifier`, `BurnAlertButtons`, `BurnAlertDelivery`.
 
 The burn detector watches token consumption per-session and per-job. If a session burns through tokens at an unusually high rate — measured against the agent's historical pattern — the detector fires a burn-alert. The alert lands in Telegram with action buttons so you can pause the offending session, throttle the responsible job, or acknowledge and continue.
 
 The throttle runbook is automated: once a burn alert escalates past a configured threshold without user response, the runbook engages and reduces job concurrency to a safe rate. This prevents an unattended burn from running the daily cap to zero.
 
 The verifier double-checks the detector's signals. Burn detection is a brittle signal by design (rates can spike legitimately during heavy work); the verifier asks a higher-context check (is this session doing meaningful work, or stuck in a retry loop?) before escalating.
+
+`BurnAlertDelivery` owns terminal delivery state. If Telegram reports that the configured burn-alert topic is permanently gone, it quarantines that destination across restarts and transfers the warning to the durable Attention hub. The original warning remains pending until the hub accepts custody, while temporary network failures remain retryable.
 
 ## LLM rate-limit circuit breaker
 
@@ -81,6 +83,23 @@ Components: `SessionActivitySentinel`, `ActivityPartitioner`.
 Long-running sessions accumulate a lot of activity. The session activity sentinel partitions that activity into meaningful episodes — a coherent unit of work with a beginning and an end — and writes summaries that the memory system can later recall. This is what makes "what did you do yesterday around noon?" actually answerable.
 
 The partitioner is the algorithm that decides where one episode ends and the next begins. It uses signals like topic switches, long pauses, explicit user marking, and job-boundary events.
+
+## Goal re-alignment (Phase 1)
+
+Component: `GoalRealignment`.
+
+On development agents, Phase 1 keeps an append-only ledger of verified operator
+priorities and periodically compares that durable compass with the current run
+focus. Priorities do not expire with age: they remain active until explicitly
+superseded or confirmed addressed. The reviewer is dry-run only. It records
+`aligned`, `diverged`, or `indeterminate` verdicts but cannot inject prompts,
+write planner state, notify the operator, block work, or correct a session.
+
+The authenticated `GET /goal-realignment` route exposes a bounded status view for
+soak analysis: intake counts, source-completeness state, ledger projection
+metadata, and the latest verdict. It never returns raw operator messages or model
+transcripts. Incomplete or conflicting evidence produces `indeterminate` at zero
+confidence rather than a guess.
 
 ## Release readiness (instar-dev / maintainer environments)
 

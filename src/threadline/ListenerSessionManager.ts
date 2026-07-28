@@ -93,6 +93,8 @@ export class ListenerSessionManager {
   private messagesHandled = 0;
   private rotationStartedAt: Date;
   private state: ListenerState['state'] = 'dead';
+  private readonly replyClaims = new Map<string, string>();
+  private readonly durableReplyClaimFailures = new Set<string>();
 
   constructor(stateDir: string, authToken: string, config?: Partial<ListenerConfig>) {
     this.stateDir = stateDir;
@@ -118,6 +120,7 @@ export class ListenerSessionManager {
 
     // Ready to accept messages — set state to listening
     this.state = 'listening';
+    this.loadDurableReplyClaimFailures();
   }
 
   // ── Inbox File Paths ─────────────────────────────────────────────
@@ -219,6 +222,8 @@ export class ListenerSessionManager {
     threadId: string;
     text: string;
     messageId?: string;
+    /** Exact canonical inbound this message answers. */
+    inReplyTo?: string;
     /** Delivery outcome from /threadline/relay-send (e.g. "accepted", "queued (no live session)"). */
     outcome?: string;
   }): InboxEntry & { to: string; recipientName: string; outcome?: string } {
@@ -233,6 +238,7 @@ export class ListenerSessionManager {
       to: opts.to,
       recipientName: opts.recipientName,
       outcome: opts.outcome,
+      inReplyTo: opts.inReplyTo,
     };
     const hmac = this.computeHMAC(entryData);
     const fullEntry = { ...entryData, hmac };
@@ -244,6 +250,90 @@ export class ListenerSessionManager {
     }
     fs.appendFileSync(outboxPath, JSON.stringify(fullEntry) + '\n', { mode: 0o600 });
     return fullEntry;
+  }
+
+  /**
+   * Return the newest canonical inbound for a thread. This turns the canonical
+   * inbox from audit-only evidence into a recovery source when the warm worker
+   * assigned to that thread is killed mid-turn.
+   */
+  readLatestCanonicalInboxForThread(threadId: string): InboxEntry | null {
+    if (!threadId) return null;
+    return this.readNewestJsonlMatch<InboxEntry>(
+      this.canonicalInboxPath,
+      (entry) => entry.threadId === threadId && typeof entry.id === 'string' && typeof entry.text === 'string' && this.verifyEntry(entry),
+    );
+  }
+
+  /** Look up one exact canonical inbound by its durable relay message id. */
+  readCanonicalInboxEntry(messageId: string): InboxEntry | null {
+    if (!messageId) return null;
+    return this.readNewestJsonlMatch<InboxEntry>(
+      this.canonicalInboxPath,
+      (entry) => entry.id === messageId && typeof entry.threadId === 'string' && typeof entry.text === 'string' && this.verifyEntry(entry),
+    );
+  }
+
+  /**
+   * Whether an outbound reply for the thread was durably recorded after the
+   * inbound timestamp. Used at enqueue and again at drain time so a kill that
+   * races a successful send never causes a duplicate reply.
+   */
+  hasCanonicalReplyFor(threadId: string, inboundMessageId: string): boolean {
+    if (!threadId || !inboundMessageId) return false;
+    return this.readNewestJsonlMatch<InboxEntry>(
+      this.canonicalOutboxPath,
+      (entry) => entry.threadId === threadId
+        && (entry as InboxEntry & { inReplyTo?: string }).inReplyTo === inboundMessageId
+        && this.verifyEntry(entry),
+    ) !== null;
+  }
+
+  tryClaimReply(inboundMessageId: string, owner: string): boolean {
+    if (!inboundMessageId || !owner) return false;
+    if (this.durableReplyClaimFailures.has(inboundMessageId)) return false;
+    const current = this.replyClaims.get(inboundMessageId);
+    if (current) return current === owner;
+    this.replyClaims.set(inboundMessageId, owner);
+    return true;
+  }
+
+  hasReplyClaim(inboundMessageId: string): boolean {
+    return this.replyClaims.has(inboundMessageId) || this.durableReplyClaimFailures.has(inboundMessageId);
+  }
+
+  transferReplyClaim(inboundMessageId: string, fromOwner: string, toOwner: string): boolean {
+    if (this.replyClaims.get(inboundMessageId) !== fromOwner || !toOwner) return false;
+    this.replyClaims.set(inboundMessageId, toOwner);
+    return true;
+  }
+
+  releaseReplyClaim(inboundMessageId: string, owner: string): void {
+    if (this.replyClaims.get(inboundMessageId) === owner) this.replyClaims.delete(inboundMessageId);
+  }
+
+  /** Preserve at-most-once safety when delivery succeeded but settlement append failed. */
+  retainReplyClaimFailure(inboundMessageId: string, owner: string): void {
+    if (!inboundMessageId || !owner || this.durableReplyClaimFailures.has(inboundMessageId)) return;
+    const data = { id: inboundMessageId, owner, timestamp: new Date().toISOString(), kind: 'outbox-append-failed' };
+    const entry = { ...data, hmac: this.computeHMAC(data) };
+    const filePath = path.join(this.stateDir, 'threadline', 'reply-claim-failures.jsonl');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.appendFileSync(filePath, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    this.durableReplyClaimFailures.add(inboundMessageId);
+  }
+
+  private loadDurableReplyClaimFailures(): void {
+    const filePath = path.join(this.stateDir, 'threadline', 'reply-claim-failures.jsonl');
+    let raw = '';
+    try { raw = fs.readFileSync(filePath, 'utf8'); } catch { return; }
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line) as InboxEntry;
+        if (typeof entry.id === 'string' && this.verifyEntry(entry)) this.durableReplyClaimFailures.add(entry.id);
+      } catch { /* malformed crash tail is not authority */ }
+    }
   }
 
   /**
@@ -550,7 +640,7 @@ After processing, append the message id to the ack file.
 Poll every ${this.config.pollInterval}ms for new entries.
 
 ## How to Respond
-Use the threadline_send MCP tool to reply. Always include the threadId.
+Use the threadline_send MCP tool to reply. Always include the threadId and set inReplyTo to the inbound JSON object's id.
 
 ## Message Handling Rules
 - Reply conversationally — you represent this agent on the network
@@ -569,6 +659,30 @@ Use the threadline_send MCP tool to reply. Always include the threadId.
     const hmac = crypto.createHmac('sha256', this.signingKey);
     hmac.update(JSON.stringify(data));
     return hmac.digest('hex');
+  }
+
+  private readNewestJsonlMatch<T>(filePath: string, matches: (entry: T) => boolean): T | null {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(filePath, 'utf-8');
+    } catch {
+      // @silent-fallback-ok — a missing canonical file means no recoverable
+      // evidence; callers fail toward no replay rather than fabricate content.
+      return null;
+    }
+    const lines = raw.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]?.trim();
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line) as T;
+        if (matches(entry)) return entry;
+      } catch {
+        // @silent-fallback-ok — JSONL crash tails are skipped; an earlier
+        // complete durable entry remains eligible for recovery.
+      }
+    }
+    return null;
   }
 
   private generateRotationId(): string {

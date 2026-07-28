@@ -28,6 +28,97 @@ export interface PrSummary {
    * Blocker 4: GitHub-side armed state is authoritative, not the local episode).
    */
   autoMergeArmed?: boolean;
+  /**
+   * Red-PR watchdog (red-pr-watchdog). The LATEST-run-per-check checks whose
+   * conclusion is a failing one (FAILURE|ERROR|CANCELLED|TIMED_OUT), each with
+   * its `completedAt` ms. Populated by mapPr from the raw statusCheckRollup —
+   * already fetched by the list projection (no new gh call). Absent on a legacy
+   * projection. `completedAt:0` means the timestamp was unknown.
+   */
+  failingChecks?: { name: string; completedAt: number }[];
+}
+
+/**
+ * A single check normalized from a raw statusCheckRollup entry (either a
+ * CheckRun — `name`/`conclusion`/`status`/`startedAt`/`completedAt` — or a
+ * legacy StatusContext — `context`/`state`/`createdAt`). Timestamps are ms
+ * (0 when unknown); `conclusion`/`status` are upper-cased.
+ */
+export interface NormalizedCheck {
+  name: string;
+  conclusion: string;
+  status: string;
+  startedAt: number;
+  completedAt: number;
+}
+
+/** Conclusions that read as a failing (red) check. Kept in lockstep with deriveRollup's FAILURE set. */
+export const FAILING_CONCLUSIONS: ReadonlySet<string> = new Set(['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT']);
+
+/** Coerce a gh timestamp (ISO string or ms number) to ms; 0 when unparseable/absent. */
+function toMs(v: unknown): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v) {
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : 0;
+  }
+  return 0;
+}
+
+/**
+ * Collapse a raw statusCheckRollup to the LATEST run per check name (group by
+ * name, keep the entry with the max run-time). This is the dedup that fixes the
+ * 2026-07-08 bug: a stale FAILED run superseded by a passing rerun must not read
+ * as failure. Unnamed checks never collapse together (each kept as-is).
+ */
+export function latestRunPerCheck(rollup: unknown): NormalizedCheck[] {
+  if (!Array.isArray(rollup)) return [];
+  const byName = new Map<string, NormalizedCheck>();
+  const anon: NormalizedCheck[] = [];
+  for (const raw of rollup as Array<Record<string, unknown>>) {
+    if (!raw || typeof raw !== 'object') continue;
+    const name = String(raw.name ?? raw.context ?? '').trim();
+    const conclusion = String(raw.conclusion ?? raw.state ?? '').toUpperCase();
+    const status = String(raw.status ?? '').toUpperCase();
+    const startedAt = toMs(raw.startedAt);
+    const completedAt = toMs(raw.completedAt) || toMs(raw.startedAt) || toMs((raw as { createdAt?: unknown }).createdAt);
+    const norm: NormalizedCheck = { name, conclusion, status, startedAt, completedAt };
+    if (!name) { anon.push(norm); continue; }
+    const prev = byName.get(name);
+    if (!prev) { byName.set(name, norm); continue; }
+    // Later run wins: order by best-available run time (startedAt, else completedAt).
+    const prevOrder = prev.startedAt || prev.completedAt;
+    const order = startedAt || completedAt;
+    if (order >= prevOrder) byName.set(name, norm);
+  }
+  return [...byName.values(), ...anon];
+}
+
+/**
+ * The failing (red) checks of a PR's rollup, deduped to the latest run per check.
+ * Each carries its `completedAt` ms so the watchdog can age it. An in-progress
+ * rerun (status != COMPLETED) is never counted as failing even if a prior run
+ * failed — latestRunPerCheck already dropped the superseded run.
+ */
+export function failingChecksFromRollup(rollup: unknown): { name: string; completedAt: number }[] {
+  return latestRunPerCheck(rollup)
+    .filter((c) => (!c.status || c.status === 'COMPLETED') && FAILING_CONCLUSIONS.has(c.conclusion))
+    .map((c) => ({ name: c.name || '(unnamed check)', completedAt: c.completedAt }));
+}
+
+/**
+ * The failing checks of a PR that have been red for at least `thresholdMs`
+ * (measured from each check's `completedAt`). A check with an unknown completed
+ * time (completedAt:0) is NOT counted — we can't prove it has been red long
+ * enough, so we fail toward NOT alerting (signal-only).
+ */
+export function stuckRedChecks(
+  pr: Pick<PrSummary, 'failingChecks'>,
+  now: number,
+  thresholdMs: number,
+): { name: string; completedAt: number }[] {
+  const failing = pr.failingChecks ?? [];
+  return failing.filter((c) => c.completedAt > 0 && now - c.completedAt >= thresholdMs);
 }
 
 export type HoldReason = 'draft' | 'hold-title' | 'hold-label' | null;

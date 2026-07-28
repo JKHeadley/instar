@@ -286,6 +286,34 @@ export function makeAgentWorktreeReaperDeps(opts: {
       return false;
     },
 
+    currentBranch: (p: string): string | null => {
+      // The LIVE checked-out branch, read at RECLAIM time to close the enumerate→reclaim
+      // TOCTOU. Format matches listWorktrees' info.branch (short name, no refs/heads/).
+      // FAIL-CLOSED: any error → null, which cannot equal a real info.branch, so the
+      // reclaimRaceGuard KEEPS (never reap on an unreadable live branch).
+      try {
+        const b = (readGit(['-C', p, 'rev-parse', '--abbrev-ref', 'HEAD'], p) ?? '').trim();
+        return b && b !== 'HEAD' ? b : null; // 'HEAD' = detached → null
+      } catch {
+        // @silent-fallback-ok: fail-closed — an unreadable live branch returns null,
+        // which can never equal a real info.branch, so the reclaim guard KEEPS (never
+        // reaps on an uncertain branch). The delete-safe direction, not a swallowed bug.
+        return null;
+      }
+    },
+
+    hasActiveBuildMarker: (p: string): boolean => {
+      // Belt-and-suspenders: an in-flight builder's explicit "don't reap me" claim.
+      // FAIL-CLOSED: an error reading the marker is treated as PRESENT (KEEP), the
+      // deletion-safe direction.
+      try { return fs.existsSync(path.join(p, '.instar-build-active')); }
+      catch {
+        // @silent-fallback-ok: fail-closed — an fs error reading the marker is treated
+        // as PRESENT (KEEP), the delete-safe direction. Not a swallowed bug.
+        return true;
+      }
+    },
+
     removeWorktree: (p: string): void => {
       // Deliberately NOT --force: the non-forced form refuses to remove a worktree
       // with uncommitted changes or a lock, so it can never destroy in-flight work.

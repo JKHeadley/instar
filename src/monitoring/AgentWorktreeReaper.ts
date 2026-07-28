@@ -101,6 +101,16 @@ export interface AgentWorktreeReaperDeps {
   /** True when the worktree is in use: a live session/index lock OR a running
    *  process whose cwd is inside it. The real "don't yank it" signal. */
   isInUse: (path: string) => boolean;
+  /** The worktree's LIVE currently-checked-out branch, read at RECLAIM time to close
+   *  the enumerate→reclaim TOCTOU: `info.branch` is captured at enumeration, but a
+   *  builder may `git checkout -b <new-unmerged>` before the reaper reaches the
+   *  delete — and `isMerged(info)` would still check the STALE (merged) branch.
+   *  Production: SafeGitExecutor `rev-parse --abbrev-ref HEAD` on the path. */
+  currentBranch: (path: string) => string | null;
+  /** Optional belt-and-suspenders: true when a `.instar-build-active` marker file sits
+   *  at the worktree root — an in-flight builder's explicit "don't reap me" claim.
+   *  Production: fs.existsSync(path/.instar-build-active). */
+  hasActiveBuildMarker?: (path: string) => boolean;
   /** Remove the worktree (git worktree remove). Only called when killsEnabled. */
   removeWorktree: (path: string) => void;
   now?: () => number;
@@ -201,6 +211,18 @@ export class AgentWorktreeReaper extends EventEmitter {
         if (evaln.verdict !== 'reap-eligible') continue;
         if (reaped.length >= this.cfg.maxReapsPerPass) continue; // blast-radius cap
         if (!this.killsEnabled) { continue; } // dry-run: classify, do not delete
+        // EXEC-TIME RE-VALIDATION (close the enumerate→reclaim TOCTOU): `info` was
+        // captured by listWorktrees() at enumeration; a builder may have checked out a
+        // new UNMERGED branch since, yet isMerged(info) checks the STALE branch. Re-read
+        // the LIVE state right before the irreversible delete; on any race, ABORT this
+        // reap (keep) — strictly FEWER reaps, never more (a pure safety tightening).
+        const raceReason = this.reclaimRaceGuard(info);
+        if (raceReason) {
+          evaln.verdict = 'keep';
+          evaln.reason = raceReason;
+          this.emit('reclaim-raced', { path: info.path, reason: raceReason, evaluatedBranch: info.branch });
+          continue;
+        }
         try {
           this.deps.removeWorktree(info.path);
           reaped.push(info.path);
@@ -223,6 +245,35 @@ export class AgentWorktreeReaper extends EventEmitter {
       this.running = false;
     }
     return { ts: this.now(), evaluations, reaped, dryRun: !this.killsEnabled };
+  }
+
+  /**
+   * Re-check the LIVE worktree state at RECLAIM time (after enumeration) to close the
+   * TOCTOU. Returns a KEEP reason string if it raced (a builder changed the branch /
+   * dirtied it / took it in-use / dropped a build marker since evaluation), else null
+   * (safe to reclaim). Fail-closed: any thrown signal → keep('reclaim-recheck-error').
+   * Order mirrors evaluate(): the marker + branch identity first (the load-bearing
+   * TOCTOU checks), then the protect-gates re-confirmed against the STILL-CURRENT branch.
+   */
+  private reclaimRaceGuard(info: WorktreeInfo): string | null {
+    try {
+      if (this.deps.hasActiveBuildMarker?.(info.path)) return 'raced-build-active-marker';
+      // The load-bearing check: has the checked-out branch changed since enumeration?
+      // If so, isMerged(info) (which reads info.branch) is stale and must NOT authorize a delete.
+      const liveBranch = this.deps.currentBranch(info.path);
+      if (liveBranch !== info.branch) return 'raced-changed-since-eval';
+      if (this.deps.isInUse(info.path)) return 'raced-now-in-use';
+      if (!this.deps.isClean(info.path)) return 'raced-now-dirty';
+      // Branch unchanged + clean + idle → info.branch is still current, so re-confirming
+      // isMerged(info) is valid. (Belt: main may have moved, un-merging it.)
+      if (!this.deps.isMerged(info)) return 'raced-now-unmerged';
+      return null;
+    } catch {
+      // @silent-fallback-ok: NOT silent — returns a KEEP reason that is surfaced in the
+      // worktree's verdict/reason (and the reclaim-raced event). Any thrown re-check
+      // signal → keep, the delete-safe direction. Never a swallowed reap.
+      return 'reclaim-recheck-error';
+    }
   }
 
   /** True when this path's removal has failed >= the configured cap (breaker open).

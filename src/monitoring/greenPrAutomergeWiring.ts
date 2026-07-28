@@ -28,8 +28,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 
+import {
+  createAuthenticatedGhExec,
+  createAuthenticatedGitHubCliRuntimeResolver,
+  type AuthenticatedGitHubCliRuntime,
+} from '../core/githubRuntime.js';
 import { GuardLatchStore, type GuardLatchEntry } from './GuardLatchStore.js';
 import { DefaultMergeRunner } from './MergeRunner.js';
 import {
@@ -38,7 +42,7 @@ import {
   type ProtectedPathsVerdict,
   freshState,
 } from './GreenPrAutoMerger.js';
-import type { PrSummary } from './greenPrLogic.js';
+import { latestRunPerCheck, failingChecksFromRollup, FAILING_CONCLUSIONS, type PrSummary } from './greenPrLogic.js';
 
 /** Protected globs (round-4/6): a PR touching these never auto-merges. */
 export const PROTECTED_PATH_PREFIXES = [
@@ -50,6 +54,17 @@ export const PROTECTED_PATH_PREFIXES = [
   'src/monitoring/greenPrLogic.ts',
   'src/monitoring/floorDriftCanary.ts',
   'src/monitoring/greenPrAutomergeWiring.ts',
+  // audit-convergence-enforcement §3: an audit-report PR gets a human eye instead
+  // of auto-merging (the ADV-3 shape≠depth mitigation), AND the validator's own
+  // enforcing machinery is protected from being neutered by an auto-merged PR
+  // (adversarial-R4 finding-2 — same precedent as protecting safe-merge above).
+  // (This is the ARM-TIME protection — the common case: a PR opened WITH the audit
+  // report is routed to the operator. The adversarial arm-then-push TOCTOU hardening
+  // — the gather() re-check + re-adoption — ships as a tracked follow-up: ACT-1192.)
+  'docs/audits/',
+  'scripts/write-audit-convergence.mjs',
+  'scripts/audit-secret-patterns.mjs',
+  'tests/unit/audit-convergence-reports.test.ts',
 ];
 /** Gate scripts the floor contexts execute (extend, never shrink). */
 export const PROTECTED_GATE_SCRIPTS = [
@@ -99,14 +114,8 @@ export interface GreenPrWiringOpts {
   logger?: (msg: string) => void;
   /** Test seam: override the gh exec. */
   ghExec?: (args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
-}
-
-function gh(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((resolve) => {
-    execFile('gh', args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ stdout: stdout ?? '', stderr: stderr ?? '', code: err ? (err as NodeJS.ErrnoException & { code?: number }).code ?? 1 : 0 });
-    });
-  });
+  /** Test seam: explicit GitHub runtime shared by reads and safe-merge. */
+  githubRuntime?: () => AuthenticatedGitHubCliRuntime;
 }
 
 /** Build the GuardLatchStore for this install. */
@@ -124,7 +133,12 @@ export function buildGuardLatchStore(opts: GreenPrWiringOpts): GuardLatchStore {
 
 /** Build the full GreenPrAutoMerger deps (real gh adapters). */
 export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchStore): GreenPrAutoMergerDeps {
-  const exec = opts.ghExec ?? gh;
+  const githubRuntime = opts.githubRuntime
+    ?? createAuthenticatedGitHubCliRuntimeResolver({ stateDir: opts.stateDir });
+  const exec = opts.ghExec ?? createAuthenticatedGhExec({
+    stateDir: opts.stateDir,
+    resolveRuntime: githubRuntime,
+  });
   const now = opts.now ?? (() => Date.now());
 
   const runner = new DefaultMergeRunner(
@@ -135,6 +149,13 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       mergeTimeoutMs: opts.mergeTimeoutMs,
       mergeKillGraceMs: opts.mergeKillGraceMs,
       expectedContractVersion: 2,
+      resolveGitHubEnv: () => {
+        try {
+          return githubRuntime().env;
+        } catch { /* @silent-fallback-ok: missing explicit GitHub identity makes the autonomous act path refuse */
+          return null;
+        }
+      },
       // mergerunner-auto-arm-handoff M2: the runner selects --auto vs --admin and
       // the auto-path deadline from these (config → GreenPrAutoMergerConfig →
       // buildGreenPrDeps → MergeRunnerConfig). Defaults keep the arm path.
@@ -299,19 +320,28 @@ function mapPr(row: Record<string, unknown>): PrSummary {
     // mergerunner-auto-arm-handoff Blocker 4: GitHub-side armed state, derived
     // from the autoMergeRequest field of the widened pr-list projection.
     autoMergeArmed: !!row.autoMergeRequest,
+    // red-pr-watchdog: the latest-run-per-check FAILING checks (no new gh call —
+    // derived from the same rollup the list projection already fetched).
+    failingChecks: failingChecksFromRollup(rollup),
   };
 }
 
-/** Derive a single SUCCESS|PENDING|FAILURE from the statusCheckRollup array. */
+/**
+ * Derive a single SUCCESS|PENDING|FAILURE from the statusCheckRollup array.
+ *
+ * red-pr-watchdog correctness fix: dedup to the LATEST run per check name BEFORE
+ * collapsing. Previously a stale FAILED run superseded by a passing rerun still
+ * short-circuited to 'FAILURE' (the 2026-07-08 bug). latestRunPerCheck keeps only
+ * the newest run of each check, so a green rerun correctly reads SUCCESS.
+ */
 export function deriveRollup(rollup: unknown): string | null {
   if (!Array.isArray(rollup)) return typeof rollup === 'string' ? rollup : null;
   let sawPending = false;
-  for (const c of rollup as Array<Record<string, unknown>>) {
-    const state = String(c.state ?? c.conclusion ?? '').toUpperCase();
-    const status = String(c.status ?? '').toUpperCase();
-    if (status && status !== 'COMPLETED') { sawPending = true; continue; }
-    if (state === 'FAILURE' || state === 'ERROR' || state === 'CANCELLED' || state === 'TIMED_OUT') return 'FAILURE';
-    if (state === 'PENDING' || state === 'EXPECTED' || state === 'IN_PROGRESS' || state === 'QUEUED') sawPending = true;
+  for (const c of latestRunPerCheck(rollup)) {
+    // A check whose latest run has not COMPLETED (an in-progress rerun) is pending.
+    if (c.status && c.status !== 'COMPLETED') { sawPending = true; continue; }
+    if (FAILING_CONCLUSIONS.has(c.conclusion)) return 'FAILURE';
+    if (c.conclusion === 'PENDING' || c.conclusion === 'EXPECTED' || c.conclusion === 'IN_PROGRESS' || c.conclusion === 'QUEUED') sawPending = true;
   }
   return sawPending ? 'PENDING' : 'SUCCESS';
 }

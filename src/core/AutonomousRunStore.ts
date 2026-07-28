@@ -24,6 +24,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash, randomBytes } from 'crypto';
+import lockfile from 'proper-lockfile';
+import { validateStandingDriveExtensionV1, type StandingDriveExtensionV1 } from './StandingDriveSchema.js';
 
 /** Snapshot of the scopeAccretion config sub-object taken at registration (R13). */
 export interface ScopeAccretionSnapshot {
@@ -118,7 +120,37 @@ export interface AutonomousRunRecord {
   lastSweepAt?: string;
   /** Mid-run condition divergence between body and registered text — flagged once (R36). */
   conditionDivergenceFlagged?: boolean;
+  /**
+   * LLM-Decision Quality Meter §5.3: the router-minted correlation id of the
+   * run's LAST completion-judge decision (`completion-evaluate`), persisted at
+   * mint time so the realcheck path can annotate deterministic ground truth
+   * against the decision row later (rule `completion-realcheck-v1`). Rides
+   * this durable record, so it survives restarts. ADDITIVE — absent on
+   * pre-meter records; never read by the accretion gate.
+   */
+  lastCompletionCorrelationId?: string;
+  /** ISO timestamp of the `lastCompletionCorrelationId` write. */
+  lastCompletionCorrelationAt?: string;
+  /** Same as `lastCompletionCorrelationId`, for the P13 `completion-stop-rationale` point. */
+  lastStopRationaleCorrelationId?: string;
+  /** ISO timestamp of the `lastStopRationaleCorrelationId` write. */
+  lastStopRationaleCorrelationAt?: string;
+  /** First accepted real-check observation per completion correlation. The
+   * first outcome is immutable so replay cannot flip deterministic evidence. */
+  realcheckOutcomeByCorrelation?: Record<string, { outcome: 'pass' | 'fail'; observedAtMs: number; applied: boolean }>;
+  /** Optional StandingDrive composition extension. Absent preserves plain-run behavior. */
+  standingDrive?: StandingDriveExtensionV1;
 }
+
+/** Which enrolled completion decision point a correlation id belongs to (§5.3).
+ * Structurally identical to CompletionEvaluator's CompletionDecisionKind —
+ * kept local so the store stays import-free of the evaluator module. */
+export type DecisionCorrelationKind = 'completion' | 'stop-rationale';
+
+/** Correlation ids are seam-minted (`d-`/`b-` prefix + uuid, optionally a
+ * machineId8 segment) — anything outside this shape is refused at the write
+ * (ids arrive via callback plumbing, so jail them like the filename ids). */
+const CORRELATION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 export interface RegisterRunInput {
   topicId: string;
@@ -179,6 +211,23 @@ export class AutonomousRunStore {
     const tmp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(rec, null, 2));
     fs.renameSync(tmp, file);
+  }
+
+  private withRunLock<T>(topicId: string, runId: string, fn: () => T): T {
+    const target = this.recordPath(topicId, runId);
+    if (!fs.existsSync(target)) return fn();
+    let release: (() => void) | undefined;
+    try {
+      release = lockfile.lockSync(target, { stale: 10_000, realpath: false });
+      return fn();
+    } catch (error) {
+      if (error instanceof Error && ((error as NodeJS.ErrnoException).code === 'ELOCKED' || error.message.includes('ELOCKED'))) {
+        throw new Error('standing-drive-mutation-busy');
+      }
+      throw error;
+    } finally {
+      try { release?.(); } catch { /* stale detection recovers a crash-left lock */ }
+    }
   }
 
   private readRecordFile(file: string): AutonomousRunRecord | null {
@@ -319,13 +368,50 @@ export class AutonomousRunStore {
     return { ok: true, runId, endAt, clamped };
   }
 
-  /** Load-modify-save under the single-server assumption (one writer: this process). */
+  /** Load-modify-save serialized with StandingDrive writers; generic updates may not mutate the extension. */
   update(topicId: string, runId: string, mutate: (rec: AutonomousRunRecord) => void): AutonomousRunRecord | null {
-    const rec = this.getByPair(topicId, runId);
-    if (!rec) return null;
-    mutate(rec);
-    this.writeRecord(rec);
-    return rec;
+    return this.withRunLock(topicId, runId, () => {
+      const rec = this.getByPair(topicId, runId);
+      if (!rec) return null;
+      const standingDriveBefore = rec.standingDrive === undefined ? undefined : JSON.stringify(rec.standingDrive);
+      mutate(rec);
+      const standingDriveAfter = rec.standingDrive === undefined ? undefined : JSON.stringify(rec.standingDrive);
+      if (standingDriveAfter !== standingDriveBefore) throw new Error('standing-drive-mutation-requires-cas');
+      this.writeRecord(rec);
+      return rec;
+    });
+  }
+
+  enrollStandingDrive(topicId: string, runId: string, extension: StandingDriveExtensionV1): AutonomousRunRecord {
+    return this.withRunLock(topicId, runId, () => {
+      const rec = this.getByPair(topicId, runId);
+      if (!rec) throw new Error('standing-drive-run-not-found');
+      if (rec.standingDrive) throw new Error('standing-drive-already-enrolled');
+      if (!validateStandingDriveExtensionV1(extension, String(topicId))) throw new Error('standing-drive-invalid-extension');
+      rec.standingDrive = structuredClone(extension);
+      this.writeRecord(rec);
+      return rec;
+    });
+  }
+
+  mutateStandingDrive(
+    topicId: string,
+    runId: string,
+    expectedRevision: number,
+    mutate: (extension: StandingDriveExtensionV1) => StandingDriveExtensionV1,
+  ): AutonomousRunRecord {
+    return this.withRunLock(topicId, runId, () => {
+      const rec = this.getByPair(topicId, runId);
+      if (!rec?.standingDrive) throw new Error('standing-drive-not-enrolled');
+      if (!validateStandingDriveExtensionV1(rec.standingDrive, String(topicId))) throw new Error('standing-drive-corrupt');
+      if (rec.standingDrive.revision !== expectedRevision) throw new Error('standing-drive-revision-conflict');
+      const next = mutate(structuredClone(rec.standingDrive));
+      if (next.revision !== expectedRevision + 1) throw new Error('standing-drive-revision-not-bumped');
+      if (!validateStandingDriveExtensionV1(next, String(topicId))) throw new Error('standing-drive-invalid-extension');
+      rec.standingDrive = next;
+      this.writeRecord(rec);
+      return rec;
+    });
   }
 
   markTerminal(topicId: string, runId: string, status: 'met' | 'ended' | 'expired', reason?: string): AutonomousRunRecord | null {
@@ -383,6 +469,45 @@ export class AutonomousRunStore {
       this.archive(rec);
     }
     return reaped;
+  }
+
+  // ── Decision correlation ids (llm-decision-quality-meter §5.3) ────────
+
+  /**
+   * Persist the router-minted correlation id of a completion/stop-rationale
+   * judgment onto the run record — the durable join key the realcheck path
+   * annotates through (`completion-realcheck-v1`). Satisfies the evaluator's
+   * `CompletionCorrelationSink` structurally. Best-effort by contract: a
+   * refused id or a missing record returns false and mutates nothing (later
+   * annotation then honestly ages out `unknown`); it never throws into the
+   * judgment path.
+   */
+  recordDecisionCorrelation(
+    topicId: string,
+    runId: string,
+    kind: DecisionCorrelationKind,
+    correlationId: string,
+    now: number = Date.now(),
+  ): boolean {
+    if (typeof correlationId !== 'string' || !CORRELATION_ID_RE.test(correlationId)) return false;
+    try {
+      const updated = this.update(topicId, runId, (rec) => {
+        const at = new Date(now).toISOString();
+        if (kind === 'completion') {
+          rec.lastCompletionCorrelationId = correlationId;
+          rec.lastCompletionCorrelationAt = at;
+        } else {
+          rec.lastStopRationaleCorrelationId = correlationId;
+          rec.lastStopRationaleCorrelationAt = at;
+        }
+      });
+      return updated !== null;
+    } catch {
+      /* @silent-fallback-ok — a failed correlation write only degrades later
+         outcome annotation to age-out-unknown (honest, §5.4.6); the judgment
+         path and the accretion gate are untouched. */
+      return false;
+    }
   }
 
   // ── Corroboration persistence (R21/R22) ───────────────────────────────

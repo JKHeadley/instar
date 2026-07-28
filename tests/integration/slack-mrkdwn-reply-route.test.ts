@@ -155,7 +155,9 @@ describe('POST /slack/reply/:channelId — GFM→mrkdwn funnel (integration)', (
     expect(posted[0].params.text).toBe('*in thread*');
   });
 
-  it('/internal/slack-forward rides the same funnel', async () => {
+  it('/internal/slack-forward is a typed refusal (§2.7) — never posts', async () => {
+    // The route's only live semantic was an echo bug; the spec closes it with a
+    // 409 misdirected-route refusal (round-1 M6). No outbound send happens.
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-mrkdwn-reply-'));
     const { adapter, posted } = makeSlack(tmp);
     const app = appWith(adapter, tmp);
@@ -164,7 +166,8 @@ describe('POST /slack/reply/:channelId — GFM→mrkdwn funnel (integration)', (
       .post('/internal/slack-forward')
       .send({ channelId: CH, text: '# Replayed\n**bold**' });
 
-    expect(res.status).toBe(200);
-    expect(posted[0].params.text).toBe('*Replayed*\n*bold*');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('misdirected-route');
+    expect(posted).toHaveLength(0);
   });
 });

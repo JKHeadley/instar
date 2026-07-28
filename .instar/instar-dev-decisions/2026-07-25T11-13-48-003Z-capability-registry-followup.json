@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-25T11:13:48.003Z",
+  "slug": "capability-registry-followup",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 272,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

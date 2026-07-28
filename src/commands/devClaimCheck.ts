@@ -150,6 +150,29 @@ export function readSpecHeads(specsDir: string): Array<{ file: string; head: str
   return out;
 }
 
+/**
+ * RULE 3.1 rationale — criticality x frequency x stability x fallback.
+ *
+ * CRITICALITY: lowest band. This detector answers "is another PR or approved spec already
+ *   claiming these files?" before a build starts. It is ADVISORY — it never gates, blocks,
+ *   or decides. A wrong answer costs a duplicated build (the 2026-06-05 collision this
+ *   command exists to prevent), never a wrong verdict on someone else's change.
+ * FREQUENCY: once per `instar dev:claim-check` invocation, at build start. Not a hot path,
+ *   no loop, no retry amplification.
+ * STABILITY: the highest available for an external read. `gh --json <fields>` is GitHub
+ *   CLI's documented machine-readable contract, not prose scraped from stdout, and the
+ *   fields are requested explicitly — so an upstream format change surfaces as a `gh`
+ *   error rather than as a silently reshaped object. Deterministic parsing is therefore
+ *   acceptable here without a canary or an LLM check.
+ * FALLBACK: asymmetric, and the asymmetry is the reason this rationale is worth reading.
+ *   A THROWN error (gh missing, auth, network, malformed JSON) degrades LOUDLY — the
+ *   caller records `ghDegraded` and reports spec-scan-only, so the user knows the PR half
+ *   of the check did not run. But EMPTY stdout parses to `null`, which the caller's
+ *   `?? []` renders as "zero PRs claim these files" with no degradation flag: a check that
+ *   could not run becomes indistinguishable from one that ran clean. That path is narrow
+ *   (`gh pr list --json` emits `[]` on success, not empty) but real, and it is tracked
+ *   separately rather than papered over here.
+ */
 function defaultGhJson(args: string[]): Promise<unknown> {
   return new Promise((resolve, reject) => {
     execFile('gh', args, { maxBuffer: 32 * 1024 * 1024, timeout: 30_000 }, (err, stdout) => {

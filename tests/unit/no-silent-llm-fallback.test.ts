@@ -56,11 +56,14 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'threadline/WarrantsReplyGate.ts': 'fail-open returns REPLY — gates whether an A2A msg warrants a reply; benign direction (an extra reply, never a harmful action)',
   'threadline/A2ACheckInProxy.ts': 'no catch — advisory A2A check-in proxy; failure propagates to the router',
   'core/TopicIntentArcCheck.ts': 'returns {actsOn:[],contradicts:[]} — advisory intent-arc analysis, no gated action',
-  'core/UnjustifiedStopGate.ts': 'fail-open allows the stop AND emits a degradation report; gates an agent self-stop in the benign direction (let it stop)',
   'core/JobReflector.ts': 'returns null/defaults — advisory post-job reflection',
   'core/TopicIntentCapture.ts': 'returns {status:"degraded"} — explicitly marks degraded; advisory intent capture',
   'core/ProjectDriftChecker.ts': 'returns empty drift — advisory project-drift signal, no gated action',
-  'core/CompletionEvaluator.ts': 'fail-open returns met:false ("keep working") / stopAllowed:true — conservative; gates autonomous completion in the benign direction',
+  // core/CompletionEvaluator.ts REMOVED from REVIEWED_ADVISORY (llm-decision-quality-meter
+  // P7 correlation-persistence wiring): it now carries a @silent-fallback-ok marker
+  // (the persistCorrelation sink-write catch — a sink failure degrades later outcome
+  // annotation to age-out-unknown, honest; the verdict path is untouched). The
+  // "no stale entries" check below enforces this removal (it now hasMarker).
   'core/ContextualEvaluator.ts': 'routes failure through handleEvaluationError — advisory contextual evaluation',
   // core/CoherenceReviewer.ts REMOVED from REVIEWED_ADVISORY (reviewer-fail-closed-on-abstain,
   // CMT-1794): it no longer silently degrades — it now carries gating:true (the router
@@ -77,7 +80,6 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'monitoring/PromptGate.ts': 'returns/skips on malformed output — advisory prompt observation, no gated action',
   'monitoring/InputClassifier.ts': 'conservative default is "relay" (route to human) with a deterministic destructive-op floor BEFORE the LLM — never auto-approves on failure',
   'monitoring/PresenceProxy.ts': 'returns early on cancelled/started — advisory presence heartbeat',
-  'messaging/slack/SlackAdapter.ts': 'fail-open returns true/[] on advisory Slack paths — no gated action',
 };
 
 function walk(dir: string): string[] {

@@ -122,6 +122,12 @@ export class WorkingSetPullCoordinator {
 
   /** The reflex (§3.3): POST /coherence/fetch-working-set — same pipeline, on demand. */
   async fetchWorkingSet(topic: number): Promise<FetchOutcome> {
+    // A transfer-target kick can arrive before the target's ownership replica.
+    // Do not consume the reflex window for that expected not-owner race; the
+    // trigger below still rechecks ownership at the actual authority boundary.
+    if (this.d.ownerOf(topic).owner !== this.d.ownMachineId) {
+      return { topic, scheduled: false, skipReason: 'not-owner' };
+    }
     const nowMs = (this.d.now?.() ?? new Date()).getTime();
     const last = this.lastReflexAt.get(topic) ?? 0;
     const inflight = this.inFlight.get(topic);

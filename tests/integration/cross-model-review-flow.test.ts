@@ -59,6 +59,9 @@ We need an external reviewer.
 
 ## Proposed design
 Route it through codex.
+
+## Decision points touched
+*(none)*
 `;
 
 const ELI16 = 'overview '.repeat(120); // > 800 chars

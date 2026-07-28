@@ -67,12 +67,12 @@ const bearer = (r: request.Test) => r.set('Authorization', `Bearer ${AUTH}`);
 /**
  * fix instar#1069: the read routes now serve the per-host SNAPSHOT (written by the
  * sweep), never a lazy scaffold. This helper scaffolds the index AND writes the
- * snapshot the same way the engine's persistSnapshot does (synchronous detect), so
+ * snapshot the same way the engine's persistSnapshot does (in-process detect), so
  * the route tests exercise the real snapshot-backed contract.
  */
-function scaffoldAndSnapshot(t: CartographerTree): void {
+async function scaffoldAndSnapshot(t: CartographerTree): Promise<void> {
   t.scaffold();
-  const r = runDetect({
+  const r = await runDetect({
     indexPath: t.indexFilePath(), projectDir: repo, maxIndexBytes: 256 * 1024 * 1024,
     maxCandidates: 100, maxNodesPerPass: 25, maxDeferredPasses: 5, revalidateSamplePerPass: 0,
     graceMs: 0, gitMaxBuffer: 64 * 1024 * 1024, snapshotSampleMax: 500, nowMs: Date.now(),
@@ -108,7 +108,7 @@ describe('GET /cartographer/* (Tier 2 integration)', () => {
   });
 
   it('health (snapshot present) → 200, nodeCount ≥ 1, snapshot:present, freshness block', async () => {
-    const t = tree(); scaffoldAndSnapshot(t);
+    const t = tree(); await scaffoldAndSnapshot(t);
     const res = await bearer(request(appWith(t)).get('/cartographer/health'));
     expect(res.status).toBe(200);
     expect(res.body.snapshot).toBe('present');
@@ -119,7 +119,7 @@ describe('GET /cartographer/* (Tier 2 integration)', () => {
   });
 
   it('stale (snapshot present) → 200 with bounded sample + total + truncated', async () => {
-    const t = tree(); scaffoldAndSnapshot(t);
+    const t = tree(); await scaffoldAndSnapshot(t);
     const res = await bearer(request(appWith(t)).get('/cartographer/stale'));
     expect(res.status).toBe(200);
     expect(res.body.snapshot).toBe('present');
@@ -137,7 +137,7 @@ describe('GET /cartographer/* (Tier 2 integration)', () => {
   });
 
   it('tree?format=compact (snapshot present) → 200 with a nodeCount, no node map', async () => {
-    const t = tree(); scaffoldAndSnapshot(t);
+    const t = tree(); await scaffoldAndSnapshot(t);
     const res = await bearer(request(appWith(t)).get('/cartographer/tree?format=compact'));
     expect(res.status).toBe(200);
     expect(res.body.nodeCount).toBeGreaterThanOrEqual(1);

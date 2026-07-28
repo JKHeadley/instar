@@ -71,6 +71,13 @@ describe('WS1.1 — server wiring seams (at-rest)', () => {
     expect(serverSrc).toMatch(/seamlessnessFlags: \{[^}]*ws11DeliverReceive: !!_inboundQueue/);
   });
 
+  it('refreshes the self heartbeat immediately after the late-bound inbound queue becomes live', () => {
+    const queueBoot = serverSrc.match(
+      /_inboundQueue = new qdlMod\.QueueDrainLoop\([\s\S]{0,7000}?\[inbound-queue\] engine live[\s\S]{0,900}?_refreshPoolHeartbeat\(\);/,
+    );
+    expect(queueBoot).not.toBeNull();
+  });
+
   it('the drain spawn boundary re-checks ownership and bounces non-owner spawns to un-routable', () => {
     const seam = serverSrc.match(/_ownershipReadForDrain && _meshSelfId[\s\S]{0,400}/);
     expect(seam, 'drain spawn-boundary re-check missing').toBeTruthy();

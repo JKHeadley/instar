@@ -339,238 +339,145 @@ describe('lint-dev-agent-dark-gate', () => {
     // attributor against the MERGED ConfigDefaults (25 entries, each a real
     // `enabled: false,` line).
     const EXPECTED: Record<string, string> = {
-      // autonomous-progress-heartbeat (AutonomousProgressHeartbeat): a new
-      // monitoring.autonomousProgressHeartbeat ConfigDefaults block (+13 lines)
-      // was inserted near the top of SHARED_DEFAULTS (after line 57). It OMITS the
-      // `enabled:` literal (dev-gated — resolveDevAgentGate decides), so it adds NO
-      // new attributed path; it only shifts EVERY `enabled:` line below it DOWN by
-      // +13. Each key below RE-VERIFIED by hand via the attributor on the edited
-      // ConfigDefaults (each maps to a real `enabled:` line).
-      // autonomous-liveness-reconciler (2026-06-17): a NEW
-      // monitoring.autonomousLivenessReconciler ConfigDefaults block (+22 lines)
-      // was inserted near the top of SHARED_DEFAULTS (above autonomousHeartbeat). It
-      // OMITS the `enabled:` literal (dev-gated — resolveDevAgentGate decides), so it
-      // adds NO new attributed path; it only shifts EVERY `enabled:` line below it
-      // DOWN by +22. Each key below RE-VERIFIED via the attributor on the merged
-      // ConfigDefaults (still 19 entries, same paths — confirming the dev-gate convention).
-      // forkbomb-prevention-simple (2026-06-22): an `intelligence: { spawnCap: {...} }`
-      // safety-floor block (14 lines, NO `enabled:` literal — the cap is ON by
-      // default, not dev-gated) was inserted near the TOP of SHARED_DEFAULTS (after
-      // `models:`, before `monitoring:`). It adds no attributed path but shifts EVERY
-      // key below it DOWN by +14. RE-VERIFIED by hand via the attributor on the edited
-      // ConfigDefaults (each key maps to a real `enabled: false,` line). Flag SET
-      // unchanged (still 22).
-      '236': 'monitoring.sessionReaper.enabled',
-      '294': 'monitoring.agentWorktreeReaper.enabled',
-      // REBASE onto current main (incl. operator-auth-request #1138 authorizationRequests +
-      // credential-repointing Increment B): main shifted mcpProcessReaper-onward; WS2.6 inserts
-      // two new `enabled: false` stateSync blocks (userRegistry+topicOperator) after evolutionActions,
-      // pushing cartographer to 1066/1111/1136. credentialRepointing + authorizationRequests OMIT
-      // enabled (dev-gated). Every line RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
-      // reaper-initial-pass (2026-07-02, this PR): ONE line —
-      // monitoring.agentWorktreeReaper.initialPassDelayMs (a tunable, NOT an
-      // `enabled:` literal, so it adds NO new attributed path) — was inserted inside
-      // the agentWorktreeReaper block (after line 294), shifting EVERY `enabled:`
-      // line from mcpProcessReaper down by +1. sessionReaper (236) and
-      // agentWorktreeReaper.enabled (294) sit ABOVE the insertion and are unchanged.
-      // Each key below RE-VERIFIED by hand via the attributor on the edited
-      // ConfigDefaults (CI expected-vs-received diff matched 1:1 on all 22 shifts).
-      '357': 'monitoring.mcpProcessReaper.enabled',
-      '371': 'monitoring.agentSleep.enabled',
-      // self-unblock-before-escalating (CMT-1519): the blockerLedger ConfigDefaults block
-      // gained two nested OMITTED-`enabled` dev-gate sub-blocks (selfUnblockChecklist +
-      // durableVaultSession) + a 6-line explanatory comment. Neither sub-block carries an
-      // `enabled:` literal (they OMIT it so the dev-gate resolves them), so the attributor
-      // does NOT track them — but the +10 lines they add shift every `enabled: false` default
-      // BELOW blockerLedger (correctionLearning-onward) DOWN by +10. The four reapers/sleep
-      // ABOVE the block (sessionReaper/agentWorktreeReaper/mcpProcessReaper/agentSleep) are
-      // unchanged. Every line below RE-VERIFIED by hand via the attributor on the edited
-      // ConfigDefaults (each maps to a real `enabled: false,` line).
-      // self-unblock-producer-wiring (PRODUCER increment): the
-      // monitoring.blockerLedger.selfUnblockChecklist block gained an OMITTED-enabled
-      // `credentialScopeTags: {}` fail-closed default plus a 5-line explanatory
-      // comment (NOT an `enabled:` path, so the attributor ignores it) ABOVE every
-      // block below — shifting each subsequent `enabled: false` line DOWN by +5.
-      // RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
-      '442': 'monitoring.correctionLearning.enabled',
-      '545': 'monitoring.apprenticeshipCycleSla.enabled',
-      '553': 'monitoring.geminiCapacityEscalation.enabled',
-      '577': 'monitoring.greenPrAutoMerge.enabled',
-      '627': 'threadline.a2aCheckIn.enabled',
-      // secure-a2a-verified-pairing §3.10 (Increment 6): the new
-      // threadline.verifiedPairing block (~21 lines, NO `enabled:` literal — see the
-      // note below the sessionPool keys) was inserted inside the `threadline` block
-      // ABOVE mentor, shifting every subsequent `enabled: false` line DOWN by +19.
-      // RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
-      '738': 'mentor.enabled',
-      '749': 'mentor.autonomousFix.enabled',
-      '764': 'mentee.enabled',
-      // multi-machine-lease-self-heal: a NEW multiMachine.leaseSelfHeal block was
-      // inserted at the TOP of the `multiMachine` block (ABOVE accountFollowMe). It
-      // adds TWO `enabled: false` literals — F2 staleHolderTakeover + F3
-      // silentStandbyRelinquish (both classified action-bearing in DARK_GATE_EXCLUSIONS;
-      // F1 tickWatchdog is `enabled: true` and F4 preferredAwakeMachineId is null, so
-      // neither is attributed). The block (~30 lines incl. its comment) shifts every
-      // subsequent `enabled: false` line DOWN by +28. RE-VERIFIED by hand via the
-      // attributor on the edited ConfigDefaults (each maps to a real `enabled: false,` line).
-      // standby-write-reconciliation §7 (2026-07-02): a NEW
-      // multiMachine.writeAdmission block (11 lines: an 8-line OMITTED-`enabled`
-      // dev-gate comment + `dryRun: true` + `refusalAggregateThreshold: 5`) was
-      // inserted at the TOP of the `multiMachine` block (ABOVE leaseSelfHeal). It
-      // deliberately adds NO `enabled:` literal (the flag rides the developmentAgent
-      // gate — registered in DEV_GATED_FEATURES; a literal `false` would force-dark
-      // dev agents, the PR #1001 anti-pattern), so it introduces NO new attributed
-      // path — it ONLY shifts every multiMachine-onward `enabled: false` line DOWN
-      // by +11 relative to the rebased main line-map (867→878, 871→882, 878→889,
-      // 888→899, 1125→1136, 1151→1162, 1161→1172, 1190→1201, 1378→1389,
-      // 1519→1530, 1564→1575, 1589→1600).
-      // RE-VERIFIED by hand via the attributor on the rebase-merged ConfigDefaults
-      // (each still maps to a real `enabled: false,` line inside its named block).
-      // Class-Closure Gate keystone (PR #1347): a new prGate.classClosure block
-      // (9 lines, dark + report-only) was inserted at ConfigDefaults.ts:824, adding this
-      // new dark-gate literal AND shifting every key below it DOWN by +9 (hand-verified via
-      // the attributor: no path changed, only the one intended new gate).
-      '824': 'prGate.classClosure.enabled',
-      '887': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '891': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      // multi-transport-mesh-comms (2026-06-20): soloCaptainHold.enabled:false (Layer 3,
-      // action-bearing) added to the leaseSelfHeal block + a ~15-line meshTransport FLAT
-      // block (enabled: TRUE, NOT an `enabled: false` path so the attributor ignores it)
-      // inserted ABOVE sessionPool — together shifting every sessionPool-onward
-      // `enabled: false` line by +24 (956→980, 981→1005). RE-VERIFIED via the attributor.
-      '898': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      // U4.4 lease hand-back (docs/specs/u4-4-lease-handback.md §5, R-r2-4): a NEW
-      // multiMachine.leaseSelfHeal.preferredCaptainHandback block with an EXPLICIT
-      // `enabled: false` (+ dryRun:true + 5 tunables, ~16 lines incl. comment) was
-      // inserted right after soloCaptainHold. UNLIKE the dev-gated features it ships
-      // HARD-DARK (action-bearing lease authority — DARK_GATE_EXCLUSIONS, matching its
-      // F2/F3/L3 siblings), so its `enabled: false` literal IS attributed here (873)
-      // and every key below the leaseSelfHeal block shifts DOWN by +16. U4.2
-      // staleOwnerRelease (same PR) appends a sessionPool block that OMITS `enabled`
-      // (dev-gated — DEV_GATED_FEATURES) so it adds NO attributed path, only a +19
-      // shift below the sessionPool block. RE-VERIFIED via the attributor on the
-      // edited ConfigDefaults (each maps to a real `enabled: false,` line).
-      '908': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      // WS4.1-durable-ack (CMT-1416) inserts a plain `ws41DurableAck: false`
-      // seamlessness boolean (NOT `enabled:`, so the attributor ignores it) above
-      // sessionPool. WS4.3-role-guard (CMT-1416) inserts another plain
-      // `ws43RoleGuard: false` seamlessness boolean (also NOT `enabled:`, ignored
-      // by the attributor) above sessionPool. WS4.4(f) pool-cache unification
-      // (CMT-1416) inserts a 17-line seamlessness block (the OMITTED `ws44PoolCache`
-      // dev-gate comment + the plain `ws44PoolCacheTtlMs: 3000` tunable — neither is
-      // an `enabled:` path, so the attributor ignores both) above sessionPool,
-      // shifting every sessionPool-onward `enabled: false` line. WS4.3 journal-
-      // lease cutover inserts another 18-line plain-boolean seamlessness block
-      // (ws43JournalLease + ws43JournalLeaseDryRun, NOT `enabled:` paths) above
-      // sessionPool, a further +18 shift. RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
-      // mm-pool-seamlessness-devgate (operator directive 2026-06-13, topic 13481):
-      // the 5 multiMachine.seamlessness coherence flags (ws3OneVoice, ws13Reconcile,
-      // ws41DurableAck, ws43RoleGuard, ws43JournalLease) had their hardcoded `false`
-      // literals REMOVED (now OMITTED so the dev-gate resolves them live-on-dev / dark-
-      // fleet). They were never `enabled:` paths so the attributor never tracked them, but
-      // removing the literals + their comment reflow shifted the sessionPool block DOWN by
-      // +23 (786→809) and cartographer DOWN by +23 (1100→1123). The 3 sessionPool flags
-      // stay HARDCODED false (held — they share the StageAdvancer `stage !== 'dark'` gate,
-      // not cleanly dev-gatable), so they remain attributed here. RE-VERIFIED by hand via
-      // the attributor on the edited ConfigDefaults (each maps to a real `enabled: false,` line).
-      // (+19 shift from the Increment-6 verifiedPairing block — see the mentor note above.)
-      // ws52-account-follow-me PR1 (2026-06-17): a NEW multiMachine.accountFollowMe block
-      // (~16 lines: an OMITTED-`enabled` dev-gate comment + credentialTransport:{} +
-      // maxFollowMachines:5) was inserted into the `multiMachine` block ABOVE sessionPool. It
-      // adds NO `enabled:` literal (the flag rides the developmentAgent gate; registered in
-      // DEV_GATED_FEATURES) so it introduces no new attributed path. After merging JKHeadley/main
-      // (which added its own config above), the sessionPool keys resolve to 872/897/926.
-      // RE-VERIFIED by hand via the attributor on the MERGED ConfigDefaults.
-      // R6b added `remoteScrapeTimeoutMs` (+7) and R7a added the `spendSlice` block ABOVE
-      // these keys; merged with main's revocation-wiring (#1215) config additions → the
-      // sessionPool keys resolve as below. RE-VERIFIED via the attributor on the MERGED ConfigDefaults.
-      // multimachine-lease-poll-robustness (2026-06-20, topic 13481): the leaseSelfHeal +
-      // multiMachine blocks gained the dev-gated `resilientRenew`/`skewImmuneLiveness`/
-      // `churnDetector`/`pollFollowsLease` config (all OMIT `enabled` / dryRun-only → NO new
-      // attributed `enabled: false` path), inserting +17 lines ABOVE the sessionPool keys.
-      // Every key below the insertion shifts DOWN by +17; the flag SET is unchanged (still 22).
-      // RE-VERIFIED via the attributor on the edited ConfigDefaults (each maps to a real
-      // `enabled: false,` line).
-      // mesh-self-heal G2 enforce (2026-06-28): a NEW multiMachine.nobodyPollingRecovery
-      // block (`{ dryRun: true }` + a 6-line comment, ~7 lines) was inserted into the
-      // `multiMachine` block right after pollFollowsLease (ABOVE sessionPool). It OMITS
-      // the `enabled:` literal (dev-gated via resolveDevAgentGate — registered in
-      // DEV_GATED_FEATURES), so it adds NO new attributed path; it only shifts every
-      // sessionPool-onward `enabled: false` line DOWN by +7. RE-VERIFIED via the
-      // attributor on the edited ConfigDefaults (path set unchanged, uniform +7).
-      // mesh-self-heal G1 zombieRelinquish (2026-06-28): a NEW
-      // multiMachine.zombieRelinquish block (`{ dryRun: true }` + ~7-line comment)
-      // was inserted right after nobodyPollingRecovery (ABOVE sessionPool). It OMITS
-      // `enabled` (dev-gated via resolveDevAgentGate), so NO new attributed path; it
-      // only shifts every sessionPool-onward `enabled: false` line DOWN by +7.
-      // RE-VERIFIED via the attributor on the edited ConfigDefaults (uniform +7).
-      '1145': 'multiMachine.sessionPool.enabled',
-      '1171': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1181': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1210': 'multiMachine.sessionPool.holdForStability.enabled',
-      // mm-stores-devgate (operator directive 2026-06-13, topic 13481): the 7
-      // multiMachine.stateSync.* memory stores MOVED from DARK_GATE_EXCLUSIONS to
-      // DEV_GATED_FEATURES and their `enabled: false` literals were REMOVED from
-      // ConfigDefaults (the stores now OMIT `enabled` so the dev-gate resolves them
-      // live on a dev agent, dark on the fleet) — so they have NO attributed path
-      // here anymore (exactly like credentialRepointing/authorizationRequests). Their
-      // removal shrank the stateSync block, shifting cartographer up: 1125→1100,
-      // 1170→1145, 1195→1170. RE-VERIFIED by hand via the attributor on the edited
-      // ConfigDefaults (each maps to a real `enabled: false,` line).
-      // agent-owned-followthrough merge of JKHeadley/main (2026-06-15): main's WS2
-      // send-side stateSync replication + topicOperator work inserted config between
-      // the sessionPool block (824/849/878, unchanged) and cartographer, shifting all
-      // three cartographer keys DOWN by +14 (1138→1152, 1183→1197, 1208→1222).
-      // RE-VERIFIED by hand via the attributor on the merged ConfigDefaults.
-      // secure-a2a-verified-pairing §3.8 (Increment 5): a NEW
-      // multiMachine.stateSync.threadlinePairing block with an EXPLICIT `enabled: false`
-      // (+ dryRun:true) was appended to the stateSync map (after topicOperator). UNLIKE
-      // the 7 WS2 stores it is NOT dev-gated — it ships hard-dark (a credential-gating
-      // surface) and is classified in DARK_GATE_EXCLUSIONS (action-bearing). The new
-      // `enabled: false` literal IS attributed here (line 1047), and the ~17 lines it
-      // adds shift the three cartographer keys DOWN by +17 (1152→1169, 1197→1214,
-      // 1222→1239). RE-VERIFIED by hand via the attributor on the edited ConfigDefaults.
-      // secure-a2a-verified-pairing §3.10 (Increment 6): a NEW
-      // threadline.verifiedPairing block (~21 lines: an OMITTED-`enabled` dev-gate
-      // comment + `dryRun:true` + `credentialShareEnforced:false`) was inserted into the
-      // `threadline` block ABOVE the stateSync map. It deliberately adds NO `enabled:`
-      // literal (the flag rides the developmentAgent gate — a literal `false` would
-      // force-dark dev agents, the PR #1001 anti-pattern), so it introduces no new
-      // attributed path; it only shifts the threadlinePairing + cartographer keys DOWN
-      // by +19 (1047→1066, 1169→1188, 1214→1233, 1239→1258). RE-VERIFIED by hand via the
-      // attributor on the edited ConfigDefaults.
-      // After merging JKHeadley/main + my accountFollowMe block, these resolve as below.
-      // RE-VERIFIED by hand via the attributor on the MERGED ConfigDefaults.
-      // (+7 from the nobodyPollingRecovery block above — see the sessionPool note.)
-      // (+7 from the zombieRelinquish block above — see the sessionPool note.)
-      // BIAS-TO-ACTION-SPEC D8: a NEW monitoring.biasToAction ConfigDefaults block
-      // (~9 lines: observeOnly + lookback) was inserted after correctionLearning. It
-      // deliberately adds NO `enabled:` literal (the flag rides the developmentAgent
-      // gate; a literal `false` would force-dark dev agents — the PR #1001 anti-pattern),
-      // so it introduces NO new attributed path — it ONLY shifts every `enabled: false`
-      // key below it DOWN by +9. RE-VERIFIED by hand via the attributor on the edited
-      // ConfigDefaults (each still maps to a real `enabled: false,` line).
-      // REBASE onto JKHeadley/main after #1324 (scope-accretion): main's
-      // completionDiscipline.scopeAccretion block (+19, `enabled: true` — not an
-      // attributed dark-gate literal) sits between stateSync and cartographer;
-      // this branch's U4.2/U4.4 blocks shift stateSync/cartographer further.
-      // Every key RE-VERIFIED via the attributor on the rebase-MERGED
-      // ConfigDefaults (each maps to a real `enabled: false,` line).
-      '1398': 'multiMachine.stateSync.threadlinePairing.enabled',
-      // autonomous-scope-accretion-completion §4: a NEW
-      // autonomousSessions.completionDiscipline.scopeAccretion block (`enabled: true`
-      // + breakerK — default ON, the documented maturation-path exception) plus the
-      // maxDurationMs ceiling comment (~19 lines total) was inserted after realCheck —
-      // BELOW the multiMachine block (threadlinePairing unshifted) and ABOVE the
-      // cartographer block. `enabled: true` is not an attributed dark-gate literal,
-      // so it introduces NO new attributed path — it ONLY shifts the three
-      // cartographer keys below it DOWN by +19 relative to the post-#1323 main
-      // line-map (1464→1483, 1509→1528, 1534→1553). RE-VERIFIED via the attributor
-      // on the rebase-MERGED ConfigDefaults (each still maps to a real
-      // `enabled: false,` line).
-      '1539': 'cartographer.freshnessSweep.enabled',
-      '1584': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '1609': 'cartographer.subtreeNav.llmRerank.enabled',
+      // Line->attributed-path map for every `enabled: false` literal in
+      // ConfigDefaults.ts. REGENERATED via attributeEnabledFalsePaths on the
+      // MERGED ConfigDefaults after rebasing echo/hubcommands-llm onto upstream/main
+      // (which now carries #1367's move-intent conversion). Two dev-gated blocks that
+      // OMIT `enabled` (so add NO attributed path, only shift the lines below them):
+      //   (a) threadline.hubIntent (Conversion #3, docs/specs/keyword-intent-conversions-1-and-3.md,
+      //       +20 lines) inserted after threadline.verifiedPairing — shifts everything
+      //       from mentor.enabled onward DOWN;
+      //   (b) multiMachine.sessionPool.moveIntent (#1367,
+      //       docs/specs/nickname-move-intent-llm-rebuild.md, +18 lines) inserted under
+      //       sessionPool — shifts the sessionPool sub-entries + everything after DOWN.
+      // Still 25 attributed paths (none added or removed); every entry maps to a real
+      // `enabled: false,` line in its named block.
+      // doorway-model-registry inc3 (2026-07-04, PR #1377): the config-knob migration
+      // seeds a `maintenance.doorwayScan` defaults block (~22 lines) near the TOP of
+      // SHARED_DEFAULTS (above monitoring.sessionReaper). Per spec D6 (deny-wins) it
+      // OMITS the `enabled` literal, so it adds NO attributed path — it only shifts
+      // EVERY `enabled: false` line below it DOWN by +22. Path SET unchanged (still 25
+      // entries, same dotted paths); RE-VERIFIED via attributeEnabledFalsePaths on the
+      // edited ConfigDefaults (uniform +22 shift, no new/removed entries).
+      // external-hog-zombie-autokill-sentinel (2026-07-04, PR #1370): the
+      // `monitoring.externalHogSentinel` defaults block (28 lines, at line 359 between
+      // agentWorktreeReaper and mcpProcessReaper) OMITS the `enabled` literal (it rides
+      // resolveDevAgentGate — a hardcoded `false` would dark dev agents, the #1001
+      // anti-pattern; the KILL side is separately gated by the PIN arm marker, never
+      // config). It adds NO attributed path — it only shifts every `enabled: false`
+      // line below it DOWN by +28. Path SET unchanged (still 25 entries, same dotted
+      // paths); RE-VERIFIED by hand against the edited ConfigDefaults (each shifted
+      // line remains a real `enabled: false,` in its named block; uniform +28 shift,
+      // no new/removed entries).
+      // dashboard-live-insights (2026-07-09, this PR): the `dashboard.liveInsights`
+      // default sub-block (17 lines: 9 comment + `dashboard:{ liveInsights:{ dryRun,
+      // ttlSeconds, maxLines, llmTimeoutMs } }`) was inserted at the TOP of
+      // SHARED_DEFAULTS (right after `maintenance`), ABOVE every attributed row. It
+      // OMITS `enabled` (it rides resolveDevAgentGate — a hardcoded `false` would
+      // dark dev agents, the #1001 anti-pattern), so it adds NO attributed path — it
+      // only shifts every `enabled: false` line below it DOWN by +17. Path SET
+      // unchanged (still 25 entries, same dotted paths); RE-VERIFIED via
+      // attributeRealConfigDefaults on the edited ConfigDefaults (uniform +17 shift,
+      // no new/removed entries).
+      //
+      // non-gating-swap-timeout (2026-07-10): a 6-line numeric timeout default
+      // (`intelligence.nonGatingSwapTimeoutMs`, no `enabled` literal) was inserted
+      // above monitoring. It adds NO attributed dark-gate path and shifts every
+      // existing `enabled: false` row below it DOWN by +6.
+      // autonomous-throughput-floor adds a 5-line fleet-dark default block above
+      // the existing monitoring gates. Its `enabled` value is true only inside the
+      // development-agent override and adds no attributed `enabled: false` row.
+      // SingleMachineFailoverGapDetector wiring (increment 2) inserts a ~10-line
+      // `monitoring.singleMachineFailoverGap: { dryRun: true }` default block above
+      // the monitoring gates — `enabled` OMITTED (rides resolveDevAgentGate), so it
+      // adds NO attributed row and shifts EVERY row below it DOWN by +10.
+      // MissingLoginSessionDetector wiring (increment 2, #1561) inserts a ~10-line
+      // `monitoring.missingLoginSession: { dryRun: true }` default block above the
+      // monitoring gates — `enabled` OMITTED (rides resolveDevAgentGate), so it adds
+      // NO attributed row and shifts EVERY row below it DOWN by +10.
+      // SessionPoolFailoverRunner wiring (drive10, this PR) inserts a 15-line
+      // `multiMachine.sessionPool.failoverRunner: { dryRun, tickIntervalMs,
+      // checkTimeoutMs }` default block INSIDE the sessionPool block (below the
+      // holdForStability row) — `enabled` OMITTED (rides resolveDevAgentGate), so it
+      // adds NO attributed row and shifts ONLY the 4 rows BELOW that insertion
+      // (threadlinePairing + the three cartographer rows) DOWN by +15. So the rows
+      // above sessionPool carry only the +10 (missingLogin) shift; the 4 trailing
+      // rows carry BOTH (+10 and +15). RE-VERIFIED via attributeRealConfigDefaults on
+      // the rebased ConfigDefaults (25 entries, none added/removed).
+      // goalRealignment adds a 12-line, dev-gated, dry-run-only monitoring
+      // default block above the existing dark rows. It rides the parent dev
+      // gate and adds no `enabled: false` literal, so all audited rows shift +12.
+      '336': 'monitoring.sessionReaper.enabled',
+      '394': 'monitoring.agentWorktreeReaper.enabled',
+      '513': 'monitoring.mcpProcessReaper.enabled',
+      '527': 'monitoring.agentSleep.enabled',
+      '598': 'monitoring.correctionLearning.enabled',
+      // Claim Verification v1 adds a six-line completion-claim provider-policy
+      // default above these rows. It introduces no new `enabled: false` literal,
+      // so the hand-audited path set is unchanged and later rows shift by +6.
+      '722': 'monitoring.apprenticeshipCycleSla.enabled',
+      '730': 'monitoring.geminiCapacityEscalation.enabled',
+      '754': 'monitoring.greenPrAutoMerge.enabled',
+      // red-pr-watchdog (2026-07-09): a 4-line `redPrWatchdog` default sub-block
+      // (3 comment lines + `redPrWatchdog: { enabled: true, ... }`) was inserted
+      // INSIDE the greenPrAutoMerge block, BELOW its `enabled: false` (668). It
+      // OMITS an `enabled: false` literal (its `enabled: true` is not a dark-gate
+      // row), so it adds NO attributed path — it only shifts every `enabled: false`
+      // line below it DOWN by +4. Path SET unchanged (still 25 entries, same dotted
+      // paths); RE-VERIFIED via attributeEnabledFalsePaths on the edited
+      // ConfigDefaults (uniform +4 shift, no new/removed entries).
+      '808': 'threadline.a2aCheckIn.enabled',
+      '939': 'mentor.enabled',
+      // mentor.visibleEcho is a fleet-on child setting under the existing dark
+      // mentor gate. It adds no `enabled: false` row and shifts every later
+      // attribution down by one; the hand-audited dotted-path set is unchanged.
+      '951': 'mentor.autonomousFix.enabled',
+      '966': 'mentee.enabled',
+      // evolutionActions.autoExpiry adds a 10-line fleet-on/dry-run-first block;
+      // no dark row is added, and every later attribution shifts by +10.
+      '1036': 'prGate.classClosure.enabled',
+      // +21 lines below: spec #3's multiMachine.seamlessOrchestrator dev-gated
+      // sub-block (docs/specs/llm-seamlessness-orchestrator.md) was inserted at the
+      // TOP of the multiMachine block; it OMITS `enabled` (rides resolveDevAgentGate),
+      // adds no map row, and shifts every subsequent `enabled:` line by +21.
+      // Mutual SSH adds a 12-line dev-gated, dry-run-first block at the top of
+      // multiMachine. It has no `enabled: false` literal and therefore shifts
+      // every subsequent attribution without changing the audited path set.
+      // ACT-897 peerExecution adds an 8-line dev-gated dry-run block.
+      '1140': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '1144': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '1151': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '1161': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1398': 'multiMachine.sessionPool.enabled',
+      // #1367's moveIntent dev-gated sub-block was inserted under sessionPool
+      // (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS `enabled` (rides
+      // resolveDevAgentGate), adds no map row, and shifts the subsequent lines.
+      '1449': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1459': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1488': 'multiMachine.sessionPool.holdForStability.enabled',
+      // replicated-journal-compaction adds a 5-line compaction default block
+      // above stateSync. It uses `run:false` (not an `enabled` gate), so the
+      // attributed path set is unchanged and the four rows below shift by +5.
+      // ownership-gated-spawn (2026-07-11): four dev-gated sub-blocks
+      // (ownershipGatedSpawn / duplicateReconciler / judgmentArbiters /
+      // commitmentCustodyTransfer) inserted under sessionPool — each OMITS
+      // `enabled` (rides resolveDevAgentGate), adds NO map row, and shifts
+      // stateSync.threadlinePairing by +37. Tier 1.4 adds the four-line
+      // enforceLiveOwner default/comment without adding an `enabled:` row.
+      // The three top-level blocks (ownerDarkLadder / provenance / standards,
+      // +32 lines, no `enabled:` literals) shift the cartographer rows below.
+      // +15 below the #1561 baseline: this row is BELOW the failoverRunner insert,
+      // so it carries both the +10 (missingLogin) and +15 (failoverRunner) shifts.
+      '1749': 'multiMachine.stateSync.threadlinePairing.enabled',
+      // commitment-auto-expiry (2026-07-10): a 6-line `commitments.autoExpiry`
+      // default sub-block was inserted above `promiseBeacon`/`cartographer`.
+      // Its `enabled: true` literal is an explicit fleet-on default, not a dark
+      // default, so it adds NO attributed dark-gate row; it shifts the cartographer
+      // `enabled: false` rows below it DOWN by +6.
+      // Below the failoverRunner insert → both +10 (missingLogin) and +15 shifts.
+      '1928': 'cartographer.freshnessSweep.enabled',
+      '1973': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '1998': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-20T03:13:17.484Z",
+  "slug": "NEXT",
+  "suggestedTier": 1,
+  "declaredTier": 3,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 14,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

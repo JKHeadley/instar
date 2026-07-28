@@ -4,6 +4,12 @@
 # Usage:
 #   ./telegram-reply.sh TOPIC_ID "message text"
 #   ./telegram-reply.sh --format markdown TOPIC_ID "**bold**"
+#
+#   EVERY FLAG GOES BEFORE THE TOPIC ID. Flag parsing stops at the topic id, so
+#   anything after it is message text. A flag in the wrong position used to be
+#   sent to the user as literal text with its effect silently dropped; it is now
+#   refused. Correct:
+#     ./telegram-reply.sh --tone-ack B2_FILE_PATH --tone-reason "why" TOPIC_ID "msg"
 #   echo "message text" | ./telegram-reply.sh TOPIC_ID
 #   cat <<'EOF' | ./telegram-reply.sh TOPIC_ID
 #   Multi-line message here
@@ -24,6 +30,24 @@
 #                     deliberately no env form (a standing env export would be
 #                     a blanket pre-ack that silently disables the inform
 #                     layer; spec outbound-jargon-filepath-gap §2.4(4)).
+#
+#   Tone-gate advisory reactions (answering a 422 `tone-gate-advisory`). BOTH
+#   forms are recorded as evidence that tunes the gate; neither is optional
+#   once you have been handed a decisionRef.
+#   --tone-complied <RULE>     You agreed with the nudge and revised the text.
+#                              Grades the check `right`.
+#   --tone-ack <RULE>          You disagree and are sending unchanged. Grades
+#                              the check `wrong`. REQUIRES --tone-reason: a
+#                              reasonless ack is refused and nothing sends,
+#                              because that reason IS the tuning evidence.
+#   --tone-reason "<why>"      Why the nudge is wrong in this case.
+#   --tone-decision-ref <REF>  The decisionRef from the 422, so the reaction
+#                              joins the verdict it answers.
+#
+#   Example (note the ordering — flags first, topic id last):
+#     ./telegram-reply.sh --tone-ack B2_FILE_PATH \
+#       --tone-reason "the operator asked for the path explicitly" \
+#       --tone-decision-ref DQ-1234 29723 "the message"
 #
 # Outbound advisory preflight (inform-only — spec outbound-jargon-filepath-gap §2.4):
 #   When this send comes from an automated LLM job session (the scheduler
@@ -66,6 +90,10 @@
 FORMAT=""
 STDIN_BASE64=0
 ACK_ADVISORY=0
+TONE_ACK=""
+TONE_ACK_REASON=""
+TONE_COMPLIED=""
+TONE_DECISION_REF=""
 
 # Parse leading flags before positional args.
 while [ $# -gt 0 ]; do
@@ -85,6 +113,27 @@ while [ $# -gt 0 ]; do
     --ack-advisory)
       ACK_ADVISORY=1
       shift
+      ;;
+    # ── Tone-gate advisory migration (2026-07-19) ────────────────────────────
+    # DISTINCT from --ack-advisory above, which acknowledges the deterministic
+    # PREFLIGHT. These four answer the SERVER-SIDE tone gate's 422 nudge. The
+    # names are deliberately un-abbreviated so the two ack families can never be
+    # confused at a callsite.
+    --tone-ack)
+      TONE_ACK="$2"
+      shift 2
+      ;;
+    --tone-reason)
+      TONE_ACK_REASON="$2"
+      shift 2
+      ;;
+    --tone-complied)
+      TONE_COMPLIED="$2"
+      shift 2
+      ;;
+    --tone-decision-ref)
+      TONE_DECISION_REF="$2"
+      shift 2
       ;;
     --)
       shift
@@ -107,6 +156,43 @@ if [ -z "$TOPIC_ID" ]; then
   echo "Usage: telegram-reply.sh [--format MODE] TOPIC_ID [message]" >&2
   exit 1
 fi
+
+# A flag placed AFTER the topic id was silently swallowed into the message.
+#
+# The parse loop above stops at the first non-flag argument (the topic id), so
+# everything from there on becomes message text via `MSG="$*"` below. A
+# misplaced `--tone-ack` was therefore SENT TO THE USER as visible message body
+# while the override it was meant to carry never reached the server — and,
+# because the flags never applied, the tone gate re-reviewed the send and its
+# verdict was then misread as absurd. That is how a CORRECT check came to be
+# graded `wrong` in the decision-quality data on 2026-07-26. The record is
+# durable; the cause was two characters of argument order.
+#
+# The asymmetry is the defect: a flag-shaped token BEFORE the topic id is fatal
+# ("Unknown flag", above), but after it the script was maximally permissive.
+# Refuse flag-shaped tokens in both positions. This also catches a TYPO'd flag
+# (`--tone-akc`), which is the realistic case and was equally silent.
+#
+# Deliberately strict: any `--*` argument. A message that genuinely needs such a
+# token as literal text goes through stdin, which is the documented primary path
+# and is unaffected by this check ($# is 0 there).
+for _arg in "$@"; do
+  case "$_arg" in
+    --*)
+      echo "Refused: '$_arg' appears AFTER the topic id." >&2
+      echo "" >&2
+      echo "Flags are only parsed BEFORE the topic id. Placed here it would have been" >&2
+      echo "sent to the user as literal message text, and its effect silently dropped." >&2
+      echo "" >&2
+      echo "  Correct:  telegram-reply.sh --tone-ack RULE --tone-reason \"why\" $TOPIC_ID \"message\"" >&2
+      echo "  You ran:  telegram-reply.sh $TOPIC_ID ... $_arg ..." >&2
+      echo "" >&2
+      echo "If '$_arg' is genuinely part of the message text, pipe the message on stdin:" >&2
+      echo "  cat <<'EOF' | telegram-reply.sh $TOPIC_ID" >&2
+      exit 1
+      ;;
+  esac
+done
 
 # Read message from args or stdin
 if [ $# -gt 0 ]; then
@@ -133,7 +219,21 @@ sys.stdout.write(base64.b64decode(raw, validate=True).decode("utf-8"))
   MSG="$DECODED_MSG"
 fi
 
-# Resolve config-derived values from .instar/config.json (single python3
+# Resolve the owning agent home before reading config or recovery state.
+# Explicit launcher context wins. Otherwise, ONLY the structural .worktrees
+# marker may move us upward; a general config search could cross tenant roots
+# on a multi-agent host. The ordinary agent-home cwd remains unchanged.
+if [ -n "${INSTAR_AGENT_HOME:-}" ]; then
+  AGENT_HOME="$INSTAR_AGENT_HOME"
+else
+  case "$PWD" in
+    */.worktrees/*) AGENT_HOME="${PWD%%/.worktrees/*}" ;;
+    *) AGENT_HOME="$PWD" ;;
+  esac
+fi
+CONFIG_PATH="$AGENT_HOME/.instar/config.json"
+
+# Resolve config-derived values from the owning agent's config (single python3
 # invocation). Env > config > 4040-warn for port. Auth: INSTAR_AUTH_TOKEN env
 # first (SessionManager injects it per spawned session; survives the
 # secret-externalization refactor that moved authToken out of config.json into
@@ -143,11 +243,11 @@ fi
 AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
 AGENT_ID=""
 CONFIG_PORT=""
-if [ -f ".instar/config.json" ]; then
+if [ -f "$CONFIG_PATH" ]; then
   CONFIG_VALUES=$(python3 -c "
 import json, sys
 try:
-    c = json.load(open('.instar/config.json'))
+    c = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(0)
 v = c.get('authToken', '')
@@ -156,7 +256,7 @@ print(c.get('projectName', ''))
 print(c.get('port', ''))
 t = (((c.get('messaging') or {}).get('outboundAdvisory') or {}).get('timeoutMs', ''))
 print(t if isinstance(t, (int, float)) else '')
-" 2>/dev/null)
+" "$CONFIG_PATH" 2>/dev/null)
   CONFIG_AUTH=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '1p')
   [ -z "$AUTH_TOKEN" ] && AUTH_TOKEN="$CONFIG_AUTH"
   AGENT_ID=$(printf '%s\n' "$CONFIG_VALUES" | sed -n '2p')
@@ -170,7 +270,7 @@ elif [ -n "$CONFIG_PORT" ]; then
   PORT="$CONFIG_PORT"
 else
   PORT=4040
-  echo "WARN: telegram-reply.sh — no INSTAR_PORT env and no port in .instar/config.json; falling back to 4040" >&2
+  echo "WARN: telegram-reply.sh — no INSTAR_PORT env and no port in $CONFIG_PATH; falling back to 4040" >&2
 fi
 
 # ── Outbound advisory preflight (inform-only; spec outbound-jargon-filepath-gap §2.4) ──
@@ -285,7 +385,9 @@ fi
 # component is enum-validated or charset-clamped above, so this fragment is
 # safe to interpolate into JSON and (parameterized) SQL contexts.
 METADATA_JSON=""
-if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] || { [ "$ACK_ADVISORY" = "1" ] && [ "$SENDER_CLASS" != "script" ]; }; then
+if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] \
+  || [ -n "$TONE_ACK" ] || [ -n "$TONE_COMPLIED" ] \
+  || { [ "$ACK_ADVISORY" = "1" ] && [ "$SENDER_CLASS" != "script" ]; }; then
   META_PARTS=""
   [ -n "$MESSAGE_KIND" ] && META_PARTS="\"messageKind\":\"${MESSAGE_KIND}\""
   if [ -n "$SENDER_CLASS" ]; then
@@ -308,6 +410,31 @@ if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] || { [
     [ -z "$ACK_CODES_JSON" ] && ACK_CODES_JSON="[]"
     [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
     META_PARTS="${META_PARTS}\"advisoryAck\":true,\"advisoryCodes\":${ACK_CODES_JSON}"
+  fi
+  # ── Tone-gate reaction metadata ─────────────────────────────────────────
+  # Without these four the migration is inert through the only sanctioned send
+  # path: the agent would be told by the 422 to override and have no way to do
+  # it. Values are charset-clamped — a rule id and a correlation id have narrow
+  # alphabets, and the reason is JSON-escaped via python3 (the only field that
+  # can contain arbitrary prose).
+  if [ -n "$TONE_ACK" ]; then
+    TONE_ACK_CLEAN=$(printf '%s' "$TONE_ACK" | tr -cd 'A-Z0-9_' | cut -c1-64)
+    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
+    META_PARTS="${META_PARTS}\"toneAdvisoryAck\":\"${TONE_ACK_CLEAN}\""
+    if [ -n "$TONE_ACK_REASON" ]; then
+      TONE_REASON_JSON=$(printf '%s' "$TONE_ACK_REASON" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()[:500]))' 2>/dev/null || printf '""')
+      META_PARTS="${META_PARTS},\"toneAdvisoryAckReason\":${TONE_REASON_JSON}"
+    fi
+  fi
+  if [ -n "$TONE_COMPLIED" ]; then
+    TONE_COMPLIED_CLEAN=$(printf '%s' "$TONE_COMPLIED" | tr -cd 'A-Z0-9_' | cut -c1-64)
+    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
+    META_PARTS="${META_PARTS}\"toneAdvisoryComplied\":\"${TONE_COMPLIED_CLEAN}\""
+  fi
+  if [ -n "$TONE_DECISION_REF" ]; then
+    TONE_REF_CLEAN=$(printf '%s' "$TONE_DECISION_REF" | tr -cd 'a-zA-Z0-9-' | cut -c1-128)
+    [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
+    META_PARTS="${META_PARTS}\"toneAdvisoryDecisionRef\":\"${TONE_REF_CLEAN}\""
   fi
   METADATA_JSON="{${META_PARTS}}"
 fi
@@ -341,10 +468,26 @@ if [ -z "$JSON_BODY" ]; then
   JSON_BODY="{\"text\":\"${ESCAPED}\"${META_FIELD}}"
 fi
 
+# ── delivery-id minted BEFORE the first POST (spec slack-outbound-robustness
+# §2.6, round-3 C1) ──
+# The id is sent as X-Instar-DeliveryId on the INITIAL send so the server
+# records THIS id the moment the send lands. Every later redrive of a
+# recoverable failure then reuses this exact id and is answered
+# `idempotent:true` — closing the latent double-post window that minting at
+# ENQUEUE time left open (the first send was permanently outside the id-ledger
+# guarantee, so a redrive past the content-dedup window re-posted the message
+# under an id the server had never seen). The enqueue below reuses this same
+# DELIVERY_ID and ATTEMPTED_AT. A mint failure (python3 gone) degrades to
+# today's headerless send — fail toward delivery, never a refused send.
+DELIVERY_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
+ATTEMPTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+
 # Assemble curl args. Always include X-Instar-AgentId when we can resolve it
 # from config — the server uses it to reject wrong-port requests before
 # evaluating the token.
 CURL_ARGS=(-s -w "\n%{http_code}" -X POST "http://localhost:${PORT}/telegram/reply/${TOPIC_ID}"
+  --connect-timeout 3
+  --max-time 125
   -H 'Content-Type: application/json'
   -d "$JSON_BODY")
 if [ -n "$AUTH_TOKEN" ]; then
@@ -353,8 +496,24 @@ fi
 if [ -n "$AGENT_ID" ]; then
   CURL_ARGS+=(-H "X-Instar-AgentId: ${AGENT_ID}")
 fi
+if [ -n "$DELIVERY_ID" ]; then
+  CURL_ARGS+=(-H "X-Instar-DeliveryId: ${DELIVERY_ID}")
+fi
 
 RESPONSE=$(curl "${CURL_ARGS[@]}")
+CURL_STATUS=$?
+
+# A transport failure after request start is inherently ambiguous: the server
+# may still finish its tone review or Telegram send after our bounded client
+# window closes. Always render a terminal outcome so a yielded/reattached tool
+# call cannot complete silently, and never auto-enqueue/retry an unknown send.
+if [ "$CURL_STATUS" -ne 0 ]; then
+  echo "AMBIGUOUS: Telegram relay transport ended without an HTTP outcome (curl ${CURL_STATUS})." >&2
+  echo "  The message MAY still be delivered. Do NOT retry blindly; verify the conversation first." >&2
+  [ -n "$DELIVERY_ID" ] && echo "  Delivery id: ${DELIVERY_ID}" >&2
+  echo "AMBIGUOUS: no HTTP outcome — verify delivery before retrying"
+  exit 0
+fi
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
@@ -374,9 +533,48 @@ elif [ "$HTTP_CODE" = "408" ]; then
   echo "AMBIGUOUS (HTTP 408): outcome unknown — verify in conversation before retrying"
   exit 0
 elif [ "$HTTP_CODE" = "422" ]; then
-  # Tone gate blocked the message — surface the issue + suggestion to the agent
+  # The 422 class is no longer one thing. Branch on `error` so a NUDGE reads as
+  # a nudge and the unoverridable wall reads as a wall — before the advisory
+  # migration this branch printed "BLOCKED" for every 422, which would have made
+  # the migration invisible through the only sanctioned send path.
+  # `blockedBy` is the machine code for the deterministic guards (whose `error`
+  # field carries the human sentence); the tone-gate classes put their code in
+  # `error`. Prefer `blockedBy` so both shapes classify correctly.
+  ERR_KIND=$(echo "$BODY" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("blockedBy") or d.get("error",""))' 2>/dev/null || echo "")
   ISSUE=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("issue","unknown"))' 2>/dev/null || echo "unknown")
   SUGGESTION=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("suggestion",""))' 2>/dev/null || echo "")
+  TONE_RULE=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("rule",""))' 2>/dev/null || echo "")
+  TONE_REF=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("decisionRef",""))' 2>/dev/null || echo "")
+  HOW_TO=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("howToProceed",""))' 2>/dev/null || echo "")
+
+  if [ "$ERR_KIND" = "credential-exposure-guard" ]; then
+    # The one outbound check with NO override. Print the server's own message —
+    # it names the credential CLASS and the remedy, and never the value.
+    GUARD_MSG=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("error",""))' 2>/dev/null || echo "")
+    echo "BLOCKED — live credential exposure. This one cannot be overridden." >&2
+    [ -n "$GUARD_MSG" ] && echo "  $GUARD_MSG" >&2
+    echo "  Remove the value, refer to the secret by NAME, and use Secret Drop if the recipient needs it." >&2
+    exit 1
+  elif [ "$ERR_KIND" = "tone-gate-advisory" ]; then
+    echo "ADVISORY — not sent yet, and the decision is YOURS (this is a nudge, not a wall)." >&2
+    echo "  Rule: ${TONE_RULE:-unknown}" >&2
+    echo "  Issue: $ISSUE" >&2
+    [ -n "$SUGGESTION" ] && echo "  Suggestion: $SUGGESTION" >&2
+    [ -n "$TONE_REF" ] && echo "  decisionRef: $TONE_REF" >&2
+    echo "  AGREE  → revise, then re-run with: --tone-complied ${TONE_RULE:-RULE}${TONE_REF:+ --tone-decision-ref $TONE_REF}" >&2
+    echo "  DISAGREE → re-run unchanged with: --tone-ack ${TONE_RULE:-RULE} --tone-reason \"why the nudge is wrong here\"${TONE_REF:+ --tone-decision-ref $TONE_REF}" >&2
+    [ -n "$HOW_TO" ] && echo "  $HOW_TO" >&2
+    # exit 1 (not 0): the message genuinely did NOT send, and a caller that
+    # treats 0 as delivered would drop it silently. The wording above is what
+    # tells the agent this is its call — not the exit code.
+    exit 1
+  elif [ "$ERR_KIND" = "tone-gate-advisory-reason-required" ]; then
+    echo "NOT SENT — an override needs a reason (it is the evidence that grades this check)." >&2
+    echo "  Re-run with: --tone-ack ${TONE_RULE:-RULE} --tone-reason \"why the nudge is wrong here\"" >&2
+    [ -n "$HOW_TO" ] && echo "  $HOW_TO" >&2
+    exit 1
+  fi
+
   echo "BLOCKED by tone gate — message not sent to user." >&2
   echo "  Issue: $ISSUE" >&2
   if [ -n "$SUGGESTION" ]; then
@@ -398,13 +596,33 @@ else
   #   - 5xx, conn-refused (HTTP_CODE=000), DNS failure (also 000)
   #   - 403 with structured `agent_id_mismatch`
   #   - 403 with structured `rate_limited` (sentinel honors Retry-After)
+  #   - 409 with structured `delivery-in-flight` (R8-M1 Arm C — the reservation
+  #     race; NON-LOSING, redriven under the same pre-minted id)
   # NOT recoverable here (already handled above or terminal):
   #   - 200 (success), 408 (ambiguous), 422 (tone gate)
-  #   - 400, 403/revoked, 403 unstructured
+  #   - 400, 403/revoked, 403 unstructured, 409 unstructured
   RECOVERABLE=0
   if [ "$HTTP_CODE" = "000" ] || \
      ( [ "$HTTP_CODE" -ge 500 ] 2>/dev/null && [ "$HTTP_CODE" -le 599 ] 2>/dev/null ); then
     RECOVERABLE=1
+  elif [ "$HTTP_CODE" = "409" ]; then
+    # 409 delivery-in-flight (spec R8-M1 Arm C): the server's §2.4 single-flight
+    # reservation saw a concurrent POST for THIS delivery-id still in flight.
+    # This is NON-LOSING, never terminal — enqueue under the SAME pre-minted id
+    # so the sentinel redrives; by then the first call has resolved (recorded →
+    # idempotent, or failed → retryable). recovery-policy classifies structured
+    # 409 delivery-in-flight as retry (Arm A). An UNSTRUCTURED 409 is terminal
+    # (default-deny) exactly like an unstructured 4xx.
+    IN_FLIGHT_CODE=$(echo "$BODY" | python3 -c 'import sys,json
+try:
+  print(json.load(sys.stdin).get("error",""))
+except Exception:
+  print("")' 2>/dev/null)
+    if [ "$IN_FLIGHT_CODE" = "delivery-in-flight" ]; then
+      RECOVERABLE=1
+    else
+      RECOVERABLE=0
+    fi
   elif [ "$HTTP_CODE" = "403" ]; then
     # Inspect the structured error code in the body. Unstructured 403 is
     # default-deny per spec § 2b.
@@ -427,17 +645,27 @@ except Exception:
     # Enqueue (spec § Layer 2b). Path: <stateDir>/state/pending-relay.<agentId>.sqlite
     # Mode 0600 enforced by the Node-side store; the CLI inherits umask, so
     # we explicitly chmod after first create as well.
-    QUEUE_DIR=".instar/state"
-    mkdir -p "$QUEUE_DIR" 2>/dev/null
     # Sanitize agent-id for filename (mirrors src/messaging/pending-relay-store.ts).
     SAFE_AGENT_ID=$(printf '%s' "${AGENT_ID:-unknown}" | tr -c 'A-Za-z0-9._-' '_')
+    if [ "$SAFE_AGENT_ID" = "unknown" ]; then
+      echo "Failed (HTTP $HTTP_CODE): $BODY" >&2
+      echo "  (also: agent id is unknown; refusing to create an undrainable pending-relay.unknown.sqlite store)" >&2
+      exit 1
+    fi
+    QUEUE_DIR="$AGENT_HOME/.instar/state"
+    mkdir -p "$QUEUE_DIR" 2>/dev/null
     QUEUE_DB="${QUEUE_DIR}/pending-relay.${SAFE_AGENT_ID}.sqlite"
 
-    # delivery_id — UUIDv4 via python3 (already a hard dep above).
-    DELIVERY_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
+    # delivery_id — the id was minted BEFORE the initial POST and sent on it
+    # (spec §2.6 round-3 C1); the enqueue reuses that exact id so a redrive of
+    # THIS row is answered idempotent:true by the server that already recorded
+    # it. If the pre-POST mint failed (python3 unavailable), the initial send
+    # went out headerless — the server never recorded an id, so there is
+    # nothing to make the redrive idempotent; skip the enqueue with the loud
+    # note (fail toward loudness, exactly today's degraded behavior).
     if [ -z "$DELIVERY_ID" ]; then
       echo "Failed (HTTP $HTTP_CODE): $BODY" >&2
-      echo "  (also: failed to generate delivery_id; queue write skipped)" >&2
+      echo "  (also: no delivery_id was minted pre-POST; queue write skipped)" >&2
       exit 1
     fi
 
@@ -457,7 +685,10 @@ except Exception:
       TRUNCATED=1
     fi
 
-    ATTEMPTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+    # ATTEMPTED_AT was stamped at the PRE-POST mint (spec §2.6 round-5 m3): the
+    # 25h-ledger > 24h-row-TTL margin holds only if both clocks anchor at the
+    # send, so the enqueue reuses the mint-time stamp rather than re-stamping
+    # `now` (which a wedged/slept script would push arbitrarily late).
     NOW_EPOCH=$(date -u +%s)
 
     # Run the queue write through python3's stdlib sqlite3 module — it
@@ -634,6 +865,31 @@ INSERT OR IGNORE INTO entries (
 SQL
       rm -f "${QUEUE_DB}.tmp.text" "${QUEUE_DB}.tmp.meta" 2>/dev/null
       chmod 600 "$QUEUE_DB" 2>/dev/null
+    fi
+
+    # A zero exit from a writer is not durable evidence. Re-open the canonical
+    # DB and prove this exact pre-minted delivery_id exists before claiming the
+    # message is queued. This closes the historical false-success path where a
+    # failed/partial writer left a zero-byte file and the script still printed
+    # "Queued for recovery".
+    QUEUE_PERSISTED=$(Q_DB_PATH="$QUEUE_DB" Q_DELIVERY_ID="$DELIVERY_ID" \
+      Q_TOPIC_ID="$TOPIC_ID" Q_TEXT_HASH="$TEXT_HASH" python3 -c '
+import os, sqlite3
+try:
+    conn = sqlite3.connect("file:" + os.environ["Q_DB_PATH"] + "?mode=ro", uri=True, timeout=2.0)
+    row = conn.execute(
+        "SELECT 1 FROM entries WHERE delivery_id=? AND topic_id=? AND text_hash=? AND state=? LIMIT 1",
+        (os.environ["Q_DELIVERY_ID"], int(os.environ["Q_TOPIC_ID"]), os.environ["Q_TEXT_HASH"], "queued"),
+    ).fetchone()
+    conn.close()
+    print("1" if row else "0")
+except Exception:
+    print("0")
+' 2>/dev/null)
+    if [ "$QUEUE_PERSISTED" != "1" ]; then
+      echo "Failed (HTTP $HTTP_CODE): $BODY" >&2
+      echo "  (also: recovery queue persistence could not be verified; message was NOT reported as queued)" >&2
+      exit 1
     fi
 
     # Best-effort POST /events/delivery-failed to the SAME port the

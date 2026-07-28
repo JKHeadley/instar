@@ -25,6 +25,34 @@ deliberately enabled.
   schedule that calls the process trigger and validates the pass against the post-pass stats.
   It ships `enabled: false` (fleet-dark) and is installed for every agent on update.
 
+## Operating drain and readiness API
+
+The operated drain extends processing into durable development work. These authenticated
+routes expose the bounded operator and agent surfaces:
+
+- **`GET /feedback-inbox/status`** — reports whether intake is available and making progress.
+- **`GET /feedback-factory/drain/status`** — returns drain posture, backlog stages, progress
+  ages, owner state, and consumer mode without exposing raw report bodies.
+- **`POST /feedback-factory/drain/tick`** — asks the canonical owner to run one bounded drain
+  tick; non-owners use the authenticated, replay-protected owner proxy.
+- **`POST /feedback-factory/drain/runs/:runId/cancel`** — records a fenced cancellation that
+  takes effect at the next safe stage boundary.
+- **`GET /feedback-factory/backlog/analysis`** — returns metadata-only age and stage analysis.
+- **`POST /feedback-factory/drain/failover/finalize`** — completes an operator-authorized,
+  checksum-bound restore only after quiescence or explicit split-brain recovery evidence.
+- **`POST /feedback-factory/readiness-authorities`** — creates or changes the bounded registry
+  of agents allowed to make readiness decisions; this is an operator-rooted action.
+- **`POST /feedback-factory/readiness/hold`** and **`POST /feedback-factory/readiness/release`** —
+  apply or clear integrity holds under their deterministic and operator authority rules.
+- **`POST /feedback-factory/consumer/promote`** and **`POST /feedback-factory/consumer/revoke`** —
+  switch a proposal-set-bound consumer batch between simulation and live handoff.
+
+Development agents construct the drain by default while fleet agents remain dark. Work
+creation starts in simulation. Readiness decisions come from a registered frontier-model
+Instar agent under deterministic safety floors; human approval is reserved for escalation
+and break-glass cases. Every accepted work item has a stable key, so retries, crashes, and
+concurrent ticks converge on one Initiative link.
+
 ## How it is gated
 
 Resolution goes through the standard development-agent gate

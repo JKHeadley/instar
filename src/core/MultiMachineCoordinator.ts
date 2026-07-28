@@ -15,6 +15,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { classifyCadenceLiveness } from './cadenceLiveness.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MachineIdentityManager } from './MachineIdentity.js';
@@ -44,10 +45,20 @@ export interface MultiMachineSyncStatus {
   leaseHolder: string | null;
   leaseEpoch: number;
   holdsLease: boolean;
-  /** 'clear' | 'contested' (more than one awake machine in the registry) | 'self-suspended'. */
+  /** 'clear' | 'contested' (more than one live-awake machine, or a latched pull-contest) | 'self-suspended'. */
   splitBrainState: 'clear' | 'contested' | 'self-suspended';
   protocolVersion: number;
-  awakeMachineCount: number;
+  /**
+   * machine-coherence-guard §5b — the number of machines currently awake. DERIVED
+   * FROM LIVE STATE, not last-written registry symbols: on a lease+pull mesh it is
+   * the lease-live count (self holds + distinct fresh/live/self-claiming peers);
+   * on a git-only mesh it degrades to the registry-role count; on a read failure
+   * it is `null` (honest, never a silent 0). `awakeMachineCountSource` names which
+   * basis spoke — always read the two together.
+   */
+  awakeMachineCount: number | null;
+  /** Which basis produced `awakeMachineCount` (machine-coherence-guard §5b, D5). */
+  awakeMachineCountSource: 'lease-live' | 'registry-roles' | 'unavailable';
   /**
    * multi-machine-lease-self-heal observability (Agent Awareness). F1 tick-watchdog
    * health — answers "did the watchdog fire?" / "is it disarmed?". `lastTickAgeMs`
@@ -230,6 +241,10 @@ export class MultiMachineCoordinator extends EventEmitter {
    * `watchdogReArmTimes` is a rolling window of re-arm timestamps for self-disarm.
    */
   private tickWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /** Positive evidence that the main monitor interval was installed. Before
+   * its first callback this is the cadence baseline; a missing first tick can
+   * therefore become provably stale without treating bare zero as failure. */
+  private heartbeatMonitorArmedMonoMs: number = 0;
   private lastTickRunMonoMs: number = 0;
   private leaseTickStartMonoMs: number = 0;
   private leasePullStartMonoMs: number = 0;
@@ -958,25 +973,70 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
+   * machine-coherence-guard §5b — the freshness bound for a peer lease observation
+   * to count toward `awakeMachineCount`: 3× the lease-pull interval, floored at
+   * 30s. A pull happens every `leasePullIntervalMs`, so 3 missed pulls (or a peer
+   * that has gone genuinely quiet) ages its last observation out of the count —
+   * the post-failover stale-claim overcount cannot linger past this window.
+   */
+  private leaseObservationStaleMs(): number {
+    const pull = this.config.multiMachine?.leasePullIntervalMs ?? DEFAULT_LEASE_PULL_INTERVAL_MS;
+    return Math.max(30_000, 3 * pull);
+  }
+
+  /**
    * Observability snapshot for /health.multiMachine.syncStatus (spec §11).
-   * Always returns valid fields (never null/throws) — this is the Phase-1
-   * "feature is alive" surface. On a single-machine install it reports the
-   * trivially-held lease.
+   * NEVER throws. Most fields are always valid; `awakeMachineCount` is `number |
+   * null` (source-tagged via `awakeMachineCountSource`) per machine-coherence-guard
+   * §5b — a read failure yields `null`+`'unavailable'`, never a silent 0. On a
+   * single-machine install it reports the trivially-held lease.
    */
   getSyncStatus(): MultiMachineSyncStatus {
-    let awakeMachineCount = 0;
-    try {
-      const reg = this.identityManager.loadRegistry();
-      for (const e of Object.values(reg.machines ?? {})) {
-        if (e.role === 'awake') awakeMachineCount++;
+    // machine-coherence-guard §5b — awakeMachineCount derives from LIVE state.
+    // Preferred basis (lease-live): the fenced lease is the authority for "awake",
+    // so when the lease+pull mesh is active we count self's hold + each distinct
+    // peer whose most-recent lease observation is fresh, live, and a self-claim.
+    // This is the fix for "awakeMachineCount:0 while the Mini holds the lease and
+    // both machines are reachable over Tailscale/LAN" — the old registry-role
+    // count depended on a laggy git-synced symbol that a dead Cloudflare rope or a
+    // slow registry push could leave stale, so it read 0 even though the lease
+    // (leaseHolder) correctly named the holder. The count now tracks the same
+    // authoritative signal leaseHolder does. Legacy git-only mesh (no lease
+    // coordinator, or no pull capability) degrades to the registry-role count,
+    // now HONESTLY tagged rather than silently conflated.
+    let awakeMachineCount: number | null;
+    let awakeMachineCountSource: MultiMachineSyncStatus['awakeMachineCountSource'];
+    if (this.leaseCoordinator && this.leaseCoordinator.canPullPeers()) {
+      try {
+        awakeMachineCount = this.leaseCoordinator.deriveLiveAwakeCount(this.leaseObservationStaleMs());
+        awakeMachineCountSource = 'lease-live';
+      } catch {
+        // @silent-fallback-ok — a read-only /health field: an unreadable lease
+        // view yields null+unavailable (honest), never a fabricated count.
+        awakeMachineCount = null;
+        awakeMachineCountSource = 'unavailable';
       }
-    } catch { /* @silent-fallback-ok — registry unreadable → count 0 */ }
+    } else {
+      try {
+        let n = 0;
+        const reg = this.identityManager.loadRegistry();
+        for (const e of Object.values(reg.machines ?? {})) {
+          if (e.role === 'awake') n++;
+        }
+        awakeMachineCount = n;
+        awakeMachineCountSource = 'registry-roles';
+      } catch {
+        // @silent-fallback-ok — registry unreadable → honest null, never a silent 0.
+        awakeMachineCount = null;
+        awakeMachineCountSource = 'unavailable';
+      }
+    }
 
     const holds = this.holdsLease();
     const selfSuspended = this.leaseCoordinator?.isSuspended ?? false;
     const splitBrainState: MultiMachineSyncStatus['splitBrainState'] = selfSuspended
       ? 'self-suspended'
-      : (awakeMachineCount > 1 || this.leasePullContested)
+      : ((awakeMachineCount != null && awakeMachineCount > 1) || this.leasePullContested)
         ? 'contested'
         : 'clear';
 
@@ -989,6 +1049,7 @@ export class MultiMachineCoordinator extends EventEmitter {
       splitBrainState,
       protocolVersion: SEAMLESSNESS_PROTOCOL_VERSION,
       awakeMachineCount,
+      awakeMachineCountSource,
       leaseTickWatchdog: this.leaseCoordinator
         ? {
             lastTickAgeMs: this.lastTickRunMonoMs > 0 ? this.monoNowMs() - this.lastTickRunMonoMs : -1,
@@ -1263,9 +1324,13 @@ export class MultiMachineCoordinator extends EventEmitter {
   /**
    * One pull tick: fan-out pull every peer, fold the freshest lease into our
    * view, reconcile role (a pulled HIGHER-epoch peer fences us → auto-demote),
-   * then surface a SAME-epoch contested split-brain Near-Silently. Pull is for
-   * LEARNING (anti-blinding); the heartbeat tickLease remains the only path that
-   * ACTS (acquire/renew). Re-arms via `arm` even on failure.
+   * then surface a SAME-epoch contested split-brain Near-Silently. A successful
+   * peer observation also nudges the normal fenced lease tick: this closes the
+   * phase gap where stale-holder eligibility becomes true just after the slow
+   * 2-minute heartbeat tick and takeover otherwise waits almost another full
+   * heartbeat period. The nudge does not add authority — tickLease still owns
+   * every acquire/renew decision and all its observe-only/preferred/fencing
+   * gates. Re-arms via `arm` even on failure.
    */
   private async tickLeasePull(arm: () => void): Promise<void> {
     if (this.leasePulling) { arm(); return; }
@@ -1307,6 +1372,18 @@ export class MultiMachineCoordinator extends EventEmitter {
         // §Problem A — ACT on a same-epoch contested tie (not just surface it):
         // deterministic tie-break → loser relinquishes / winner advances once.
         await this.resolveContestedSplitBrain();
+        // CMT-984/CMT-992 — automatic serving takeover must follow the existing
+        // 5s anti-blinding pull cadence, not the unrelated 2-minute heartbeat
+        // phase. Once F2's monotonic non-renewal window opens (or the observed
+        // lease expires), immediately re-run the ONE authoritative lease actor.
+        // tickLease's reentrancy guard makes this safe against a concurrent
+        // heartbeat tick; observe-only machines still refuse to acquire.
+        if (
+          !this.leaseCoordinator!.holdsLease() &&
+          this.leaseCoordinator!.peerTakeoverEligible()
+        ) {
+          await this.tickLease();
+        }
       }
     } catch {
       // @silent-fallback-ok — a pull failure (incl. a bounded-await timeout) is retried next tick
@@ -1570,9 +1647,15 @@ export class MultiMachineCoordinator extends EventEmitter {
       // No lease coordinator (solo / non-git mesh) ⇒ nothing to self-heal.
       if (!this.leaseCoordinator) return;
       const now = this.monoNowMs();
-      // lastTickRunMonoMs is stamped at the TOP of checkHeartbeatAndAct; if it
-      // has not advanced within the stale window, the main loop is stalled.
-      if (this.lastTickRunMonoMs > 0 && now - this.lastTickRunMonoMs <= cfg.staleMs) return;
+      // Absence of a first tick sample is UNKNOWN by itself (P20), but the
+      // successful timer-arm event is positive evidence and starts a bounded
+      // first-fire deadline. This catches a main interval lost before callback
+      // #1 without calling ordinary startup a recovered stall.
+      const cadenceBaseline = this.lastTickRunMonoMs > 0
+        ? this.lastTickRunMonoMs
+        : this.heartbeatMonitorArmedMonoMs;
+      const liveness = classifyCadenceLiveness(cadenceBaseline, now, cfg.staleMs);
+      if (liveness.state !== 'stale') return;
 
       // Ceiling-gated guard reset: only clear a guard whose in-flight tick is
       // ALSO older than the ceiling (a stuck guard, not a slow-but-live tick).
@@ -1640,6 +1723,10 @@ export class MultiMachineCoordinator extends EventEmitter {
     this.heartbeatCheckTimer = setInterval(() => {
       this.checkHeartbeatAndAct();
     }, HEARTBEAT_CHECK_INTERVAL_MS);
+    // `0` is the explicit uninitialized sentinel for cadence watermarks. A
+    // freshly-booted monotonic clock (and fake-timer E2E) may legitimately read
+    // zero, so preserve the successful arm as a positive value.
+    this.heartbeatMonitorArmedMonoMs = Math.max(1, this.monoNowMs());
 
     if (this.heartbeatCheckTimer.unref) {
       this.heartbeatCheckTimer.unref();

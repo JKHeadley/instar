@@ -63,6 +63,9 @@ describe('/subscription-pool — E2E feature-alive', () => {
       config: { authToken: 'test', stateDir: dir, port: 0 },
       startTime: new Date(),
       subscriptionPool: pool,
+      subscriptionIdentityOracle: {
+        resolveSlotTenant: async () => ({ email: 'primary@example.test' }),
+      },
     });
 
     // FEATURE IS ALIVE: GET returns 200 (not 404/503) with the live pool.
@@ -77,6 +80,7 @@ describe('/subscription-pool — E2E feature-alive', () => {
       body: JSON.stringify({
         id: 'claude-primary',
         nickname: 'primary',
+        email: 'primary@example.test',
         provider: 'anthropic',
         framework: 'claude-code',
         configHome: path.join(dir, '.claude-primary'),

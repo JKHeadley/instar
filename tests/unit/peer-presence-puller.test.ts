@@ -33,7 +33,7 @@ function makePuller(opts: {
   fetchImpl: (machineId: string, url: string) => Promise<PeerCapacity | null>;
   now?: () => Date;
 }) {
-  const recorded: Array<{ machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: QuotaState; seamlessnessFlags?: SeamlessFlags }> = [];
+  const recorded: Array<{ machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: QuotaState; seamlessnessFlags?: SeamlessFlags; coherenceAdvert?: MachineCapacity['coherenceAdvert']; coherenceAdvertRejected?: { atMs: number; reason: string } }> = [];
   const puller = new PeerPresencePuller({
     selfMachineId: opts.self,
     listPeers: () => opts.peers,
@@ -219,6 +219,48 @@ describe('PeerPresencePuller.pullOnce', () => {
     });
   });
 
+  // machine-coherence-guard §3.2 R2-N1: the ratchet covers only the NARROWING;
+  // the field must ALSO survive pullOnce's hand-maintained recordHeartbeat
+  // spread to reach registry storage — forgetting it there passes the ratchet
+  // and silently drops the field (the #930 class, potential 5th instance).
+  it('propagates a peer coherenceAdvert through the recordHeartbeat spread (R2-N1)', async () => {
+    const advert = {
+      instarVersion: '1.3.729',
+      protocolVersion: 1,
+      manifestHash: 'b'.repeat(64),
+      guard: 'live' as const,
+      beatSeq: 9,
+      flags: { developmentAgent: 'true' },
+    };
+    const { puller, recorded } = makePuller({
+      self: 'm_self',
+      peers: [{ machineId: 'm_mini', url: 'https://mini.example.dev' }],
+      fetchImpl: async () => ({ selfReportedLastSeen: '2026-07-03T10:00:00.000Z', coherenceAdvert: advert }),
+    });
+
+    await puller.pullOnce();
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].coherenceAdvert).toEqual(advert);
+  });
+
+  it('propagates a coherenceAdvertRejected marker through the recordHeartbeat spread (M4 — rejected ≠ absent)', async () => {
+    const { puller, recorded } = makePuller({
+      self: 'm_self',
+      peers: [{ machineId: 'm_bad', url: 'https://bad.example.dev' }],
+      fetchImpl: async () => ({
+        selfReportedLastSeen: '2026-07-03T10:00:00.000Z',
+        coherenceAdvertRejected: { atMs: 1751500000000, reason: 'manifest-hash-format' },
+      }),
+    });
+
+    await puller.pullOnce();
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].coherenceAdvertRejected).toEqual({ atMs: 1751500000000, reason: 'manifest-hash-format' });
+    expect('coherenceAdvert' in recorded[0]).toBe(false);
+  });
+
   it('omits seamlessnessFlags when the peer does not advertise one (old peer = non-participant)', async () => {
     const { puller, recorded } = makePuller({
       self: 'm_self',
@@ -250,6 +292,18 @@ describe('narrowSessionStatusToPeerCapacity — the shared receive-mapping (wiri
     guardPosture: { generatedAt: '2026-06-14T10:00:00.000Z', on: 2, off: 1, total: 3 } as unknown,
     seamlessnessFlags: { ws11DeliverReceive: true, stateSyncReceive: { learnings: true } },
     servesChannels: { slack: { workspaceIds: ['T-LIVE'] }, telegram: { chatIds: ['-100'] } },
+    // Machine-coherence advert (machine-coherence-guard §3.2) — a CLEAN,
+    // clamp-passing advert (the narrowing applies the M4 receive clamp, so a
+    // malformed fixture here would land in coherenceAdvertRejected instead and
+    // the ratchet loop would rightly go red).
+    coherenceAdvert: {
+      instarVersion: '1.3.729',
+      protocolVersion: 1,
+      manifestHash: 'a'.repeat(64),
+      guard: 'dark',
+      beatSeq: 4,
+      flags: { developmentAgent: 'false', 'sessionPool.stage': 'dark' },
+    },
   };
   const UNWRAPPED_JOURNAL = { 'learning-record': { incarnation: 'inc-j', lastSeq: 12 } };
 
@@ -268,6 +322,26 @@ describe('narrowSessionStatusToPeerCapacity — the shared receive-mapping (wiri
     expect(out!.preferencesAdvert).toEqual({ incarnation: 'inc-p', replicationSeq: 3 });
     expect(out!.quotaState).toEqual({ blocked: false });
     expect(out!.seamlessnessFlags).toEqual({ ws11DeliverReceive: true, stateSyncReceive: { learnings: true } });
+  });
+
+  // machine-coherence-guard §3.2 M4: the narrowing step IS the receive clamp.
+  it('passes a clean coherenceAdvert through byte-identical (M4)', () => {
+    const out = narrowSessionStatusToPeerCapacity(FULL_RAW, undefined);
+    expect(out).not.toBeNull();
+    expect(out!.coherenceAdvert).toEqual(FULL_RAW.coherenceAdvert);
+    expect('coherenceAdvertRejected' in out!).toBe(false);
+  });
+
+  it('clamps a malformed coherenceAdvert into a rejection marker — never a pass-through, never silence (M4)', () => {
+    const out = narrowSessionStatusToPeerCapacity(
+      { coherenceAdvert: { instarVersion: 'v<script>', protocolVersion: 1, manifestHash: 'nope', guard: 'live', beatSeq: 0, flags: {} } },
+      undefined,
+    );
+    expect(out).not.toBeNull();
+    expect('coherenceAdvert' in out!).toBe(false);
+    expect(out!.coherenceAdvertRejected).toBeDefined();
+    expect(out!.coherenceAdvertRejected!.reason).toBe('instar-version-format');
+    expect(typeof out!.coherenceAdvertRejected!.atMs).toBe('number');
   });
 
   it('uses presence (!== undefined), not truthiness — an all-disabled seamlessnessFlags object survives', () => {

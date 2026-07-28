@@ -32,6 +32,8 @@ import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { RestartCascadeDampener, formatLocalTimeHHMM } from './RestartCascadeDampener.js';
 import type { UpdateRestartHandshake } from './UpdateRestartHandshake.js';
 
+const DEFAULT_RESTART_RETRY_MS = 5 * 60_000;
+
 export interface AutoUpdaterConfig {
   /** How often to check for updates, in minutes. Default: 30 */
   checkIntervalMinutes?: number;
@@ -148,6 +150,8 @@ export class AutoUpdater {
   private sessionManager: SessionManagerLike | null = null;
   private sessionMonitor: SessionMonitorLike | null = null;
   private deferralTimer: ReturnType<typeof setTimeout> | null = null;
+  private deferralRetryInFlight = false;
+  private deferralLifecycleGeneration = 0;
   private restartDeferral: RestartDeferralState | null = null;
 
   // Loop prevention — track version mismatch notifications to avoid spam
@@ -234,6 +238,12 @@ export class AutoUpdater {
     // Run first check after a short delay (don't block startup)
     setTimeout(() => this.tick(), 10_000);
 
+    // Restart deferrals are durable, but timers are not. A server/subsystem
+    // restart, or any path that clears an in-memory timer, must not strand an
+    // already-installed update forever. Re-arm from the persisted deadline;
+    // an overdue retry runs immediately.
+    this.ensureDeferredRestartRetry();
+
     // Then run periodically
     this.interval = setInterval(() => this.tick(), intervalMs);
     this.interval.unref(); // Don't prevent process exit
@@ -256,6 +266,7 @@ export class AutoUpdater {
       clearTimeout(this.deferralTimer);
       this.deferralTimer = null;
     }
+    this.deferralLifecycleGeneration++;
     this.gate.reset();
   }
 
@@ -404,6 +415,11 @@ export class AutoUpdater {
             `(POST /updates/apply, or reinstall the shadow).`
           );
         } else if (deferral) {
+          // The loop-breaker intentionally skips re-applying an installed
+          // version. It must still self-heal a missing deferral timer, otherwise
+          // a single lost callback leaves the update installed-but-inactive
+          // indefinitely.
+          this.ensureDeferredRestartRetry();
           console.log(
             `[AutoUpdater] Skipping — v${info.latestVersion} is installed in the shadow install ` +
             `(at ${this.lastApply}) but the running process is still v${info.currentVersion}. ` +
@@ -700,13 +716,7 @@ export class AutoUpdater {
         });
 
         // Schedule a retry at the window start
-        if (this.deferralTimer) clearTimeout(this.deferralTimer);
-        this.deferralTimer = setTimeout(() => {
-          this.deferralTimer = null;
-          console.log(`[AutoUpdater] Restart window reached — attempting restart for v${newVersion}`);
-          this.gatedRestart(newVersion, false);
-        }, waitMs);
-        this.deferralTimer.unref();
+        this.scheduleDeferredRestartRetry(newVersion, waitMs, 'restart window reached');
         return;
       }
       // Idle (no active sessions) — the window has nothing to protect; fall
@@ -854,15 +864,86 @@ export class AutoUpdater {
       );
     }
 
-    // Schedule retry
-    if (this.deferralTimer) {
-      clearTimeout(this.deferralTimer);
-    }
-    this.deferralTimer = setTimeout(async () => {
+    this.scheduleDeferredRestartRetry(
+      newVersion,
+      result.retryInMs ?? DEFAULT_RESTART_RETRY_MS,
+      'session deferral elapsed',
+    );
+  }
+
+  /**
+   * Re-create an in-memory retry from durable deferral state.
+   *
+   * This is called both at startup and from the installed-version loop breaker,
+   * making the periodic update tick a watchdog for a missing timer.
+   */
+  private ensureDeferredRestartRetry(): void {
+    const deferral = this.restartDeferral;
+    if (!deferral?.active || this.deferralTimer || this.deferralRetryInFlight) return;
+
+    const retryAt = deferral.nextRetryAt ? Date.parse(deferral.nextRetryAt) : Number.NaN;
+    const delayMs = Number.isFinite(retryAt)
+      ? Math.max(0, retryAt - Date.now())
+      : DEFAULT_RESTART_RETRY_MS;
+    this.scheduleDeferredRestartRetry(deferral.targetVersion, delayMs, 'durable deferral resumed');
+  }
+
+  private scheduleDeferredRestartRetry(
+    targetVersion: string,
+    delayMs: number,
+    reason: string,
+  ): void {
+    if (this.deferralTimer) clearTimeout(this.deferralTimer);
+    const boundedDelayMs = Math.max(0, delayMs);
+    const generation = this.deferralLifecycleGeneration;
+    this.deferralTimer = setTimeout(() => {
       this.deferralTimer = null;
-      await this.gatedRestart(newVersion);
-    }, result.retryInMs ?? 300_000);
+      if (this.deferralRetryInFlight || generation !== this.deferralLifecycleGeneration) return;
+      this.deferralRetryInFlight = true;
+      console.log(`[AutoUpdater] ${reason} — attempting restart for v${targetVersion}`);
+      void this.retryDeferredRestart(targetVersion, generation).finally(() => {
+        this.deferralRetryInFlight = false;
+        // gatedRestart normally either clears the durable deferral or installs
+        // its next timer. If it did neither, repair the loop only while this
+        // lifecycle generation is still current; stop() invalidates callbacks
+        // scheduled before it, including manually driven updater cycles.
+        if (
+          generation === this.deferralLifecycleGeneration &&
+          !this.deferralTimer
+        ) {
+          this.ensureDeferredRestartRetry();
+        }
+      });
+    }, boundedDelayMs);
     this.deferralTimer.unref();
+  }
+
+  /**
+   * A rejected retry must not terminate the loop. Preserve the durable
+   * deferral and schedule another bounded attempt; successful/blocked attempts
+   * manage their own state and timer through gatedRestart().
+   */
+  private async retryDeferredRestart(targetVersion: string, generation: number): Promise<void> {
+    try {
+      await this.gatedRestart(targetVersion);
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err);
+      console.error(`[AutoUpdater] Deferred restart retry failed: ${this.lastError}`);
+      const deferral = this.getActiveRestartDeferral(targetVersion);
+      if (!deferral || generation !== this.deferralLifecycleGeneration) return;
+      const nextRetryAt = new Date(Date.now() + DEFAULT_RESTART_RETRY_MS).toISOString();
+      this.recordRestartDeferral({
+        targetVersion,
+        reason: deferral.reason,
+        currentBlockers: deferral.currentBlockers,
+        nextRetryAt,
+      });
+      this.scheduleDeferredRestartRetry(
+        targetVersion,
+        DEFAULT_RESTART_RETRY_MS,
+        'retry after deferred restart error',
+      );
+    }
   }
 
   /**

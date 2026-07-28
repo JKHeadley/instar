@@ -56,6 +56,18 @@ export interface CapabilityEntry {
 // ── Top-level capability entries ─────────────────────────────────────────
 
 export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
+  {
+    key: 'channelRegistry',
+    prefixes: ['/channels'],
+    description: 'Which peer-to-peer channels exist and which are usable right now, with the evidence for each verdict.',
+    build: () => ({ configured: true, endpoints: ['GET /channels'] }),
+  },
+  {
+    key: 'capabilityRegistry',
+    prefixes: ['/capability-registry'],
+    description: 'Local capability registry read surface; dark until explicitly enabled.',
+    build: ({ ctx }) => ({ configured: resolveDevAgentGate((ctx.config as any).capabilityRegistry?.enabled, ctx.config), endpoints: ['GET /capability-registry', 'GET /capability-registry/health'] }),
+  },
   // E2E-PAIRING: EXEMPT — capability classification metadata only (no new endpoint
   // behavior); the subscription-pool routes already have integration + e2e tests
   // (P1.1–P2.1), and the capabilities-discoverability unit lint is the coverage for
@@ -86,6 +98,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /subscription-pool/proactive-swap/check',
         'POST /subscription-pool/enroll',
         'GET /subscription-pool/pending-logins',
+        'POST /subscription-pool/enroll/:id/cancel',
         'POST /subscription-pool/enroll/:id/complete',
         'POST /subscription-pool/enroll/reissue-expired',
       ],
@@ -119,6 +132,43 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'judgmentProvenance',
+    prefixes: ['/judgment-provenance'],
+    description: 'Judgment-call decision provenance (ownership-gated-spawn-and-judgment-within-floors §3.5 + llm-decision-quality-meter §5.2 — the Decision Provenance & Outcome Review standard). Every judgment call the ownership layer makes (SpawnAdmission verdicts, duplicate-reconciler intended-owner determinations) AND every ENROLLED LLM decision the router-settlement seam records (correlation-id-keyed, content-class-enveloped, volume-class-valved) is durably logged — machine-local under .instar/state/judgment-provenance/ (0700/0600, gitignored, backup-excluded, 14-day retention, NEVER HTTP-served raw: a hardcoded NEVER_SERVED_PREFIXES deny in the file routes covers read/download/edit/link incl. symlink evasion). GET /judgment-provenance serves REDACTED rows only (write-time credential-shape scrub + omission of the machine-local full context); ?limit / ?sinceHours filter; ?scope=pool merges peers\' redacted rows as clamped untrusted data. The log is constructed UNCONDITIONALLY at boot on every agent, single-machine included (FD9) — a 503 here means construction FAILED (see server log), never "single-machine so not built". When asked "why did the system decide machine X owns this conversation?" / "what did the duplicate healer see?" / "what context did that gate judge?" → read this, never guess.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.judgmentProvenance,
+      endpoints: ['GET /judgment-provenance', 'GET /pool/duplicate-reconciler', 'GET /pool/ownership-view'],
+    }),
+  },
+  {
+    key: 'decisionQuality',
+    // P10: the /decision-quality routes are now registered in routes.ts
+    // (GET /decision-quality + POST /decision-quality/grade-pass), so the
+    // discoverability lint's "every declared prefix exists as a route" invariant
+    // holds with this prefix present (structure, not memory, closed the gap).
+    prefixes: ['/decision-quality'],
+    description: 'LLM-Decision Quality Meter (llm-decision-quality-meter §5.5 — ACT-1193/ACT-1194): the QUALITY meter beside the cost meter — per LLM decision-point over a window: decisions made, outcomes known, grade distribution (right/wrong/unknown/expired), grade-by-rule/rung/evidence-strength breakdowns (proof-like vs heuristic never conflated; insufficient-evidence marker below the minimum sample), attribution columns (model/framework/prompt_id), census debt (wired/pending/exempt + pending-ref-dead + wired-but-silent + exempt-but-active + wired-but-no-grader flags), and the honest counters (orphanOutcomes/joinMiss/droppedByBudget + the four annotation-rejection classes). GET /decision-quality is the read surface (Bearer; pure indexed SQLite; ?sinceHours; ?scope=pool merges MACHINE-TAGGED rows — per-machine framework routing makes per-machine quality genuinely distinct data); POST /decision-quality/grade-pass runs ONE bounded deterministic grading pass (cursor keyset, idempotent, zero LLM spend — the hourly llm-decision-grading job template drives it, ships enabled:true). Both routes 503 when the seam is DARK on this agent (provenance.uniformSeam resolves off — dev-gated: LIVE on a development agent, DARK on the fleet; dryRun defaults TRUE even on dev) — say so honestly rather than guessing. When the operator asks "is this gate performing / does it need a bigger model or a prompt change?" → read the meter, never guess.',
+    build: ({ ctx }) => ({
+      configured: resolveDevAgentGate(ctx.config.provenance?.uniformSeam?.enabled, ctx.config),
+      dryRun: ctx.config.provenance?.uniformSeam?.dryRun !== false,
+      endpoints: ['GET /decision-quality', 'POST /decision-quality/grade-pass'],
+    }),
+  },
+  {
+    key: 'benchmarkDivergence',
+    prefixes: ['/benchmark-divergence'],
+    description: 'Benchmark-Divergence Detector (benchmark-divergence-detector — Increment A of the benchmark-feedback loop; parent standard Decision Provenance & Outcome Review): the observe-only detector comparing each enrolled decision point\'s REAL per-model grade-rate (quality-meter settled grades over a rolling matured-day window, pool-collected across every machine on the serving-lease holder) against the benchmark\'s PREDICTED pass-rate from the git-tracked mirror — CI-aware on BOTH sides (Wilson half-widths, so a 10-case battery cannot manufacture divergence), precondition-FIRST (a stale/missing mirror or a drifted/unverifiable prompt template suppresses divergent AND aligned — a stale benchmark never blames or credits a model), direction-split (divergent-better leads with "is the grade-rate inflated?", never "promote this model"). Every finding is advisory:true (Signal vs. Authority) and content-free (correlation-id POINTERS into the meter, never raw decision context). GET /benchmark-divergence is the read surface (Bearer; ?scope=pool merges peers\' clamped findings, questions regenerated locally); POST /benchmark-divergence/analyze triggers one lease-gated, rate-limited, idempotent pass (the daily benchmark-divergence-analysis job template drives it, ships enabled:false); GET /benchmark-divergence/rollup-aggregates is the peer collection route (serving peer clamps the range). All three 503 when the detector is DARK on this agent (benchmarkDivergence resolves off — dev-gated: LIVE-in-dryRun on a development agent, DARK on the fleet) — say so honestly rather than guessing. When the operator asks "is the benchmark still right about model X?" / "why does this gate underperform its bench score?" → read the findings, never guess.',
+    build: ({ ctx }) => ({
+      configured: resolveDevAgentGate(ctx.config.benchmarkDivergence?.enabled, ctx.config),
+      dryRun: ctx.config.benchmarkDivergence?.dryRun !== false,
+      endpoints: [
+        'GET /benchmark-divergence',
+        'POST /benchmark-divergence/analyze',
+        'GET /benchmark-divergence/rollup-aggregates',
+      ],
+    }),
+  },
+  {
     key: 'conversationIdentity',
     prefixes: ['/conversations'],
     description: 'Durable Conversation Identity (durable-conversation-identity §8) — the read-only registry surface behind channel-agnostic conversation ids. Every conversation has ONE durable numeric identity: a Telegram topic IS its positive id (pass-through, never registered); a non-Telegram conversation (Slack channel/thread) is minted a stable NEGATIVE id at first inbound, so durable state (commitments, memory, notices) can attach to it and survive restarts. A negative topicId anywhere in state is a minted conversation id, not an error. GET /conversations lists entries + the alias table; GET /conversations/:id resolves one id (unknown negative → honest 404 "never minted on this machine"); GET /conversations/resolve?key=…|?sessionKey=… is the forward lookup that mints NOTHING; GET /conversations/health carries entry counts, origins, quarantine + snapshot-suspension state, and the growth tripwire. Recording is always-on foundation (kill-switch: conversationIdentity.recording.enabled=false degrades to legacy in-memory hashing); DELIVERY to minted ids is dev-gated (conversationIdentity.followThrough, dryRun-first). When asked "what is this negative topic id?" / "which Slack conversation is -N?" → read /conversations/:id, never guess.',
@@ -133,6 +183,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'doorwayRegistry',
+    prefixes: ['/doorways'],
+    description: 'Doorway/Model Knowledge Registry (DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC §D5) — the read-only merged map from each doorway (Claude Code, Codex, Gemini, a paid API key, …) to the top models it can currently reach: canonical topModels (git-tracked, with pricing — authoritative for routing) overlaid with this machine\'s read-validated live reachability. D5 two-state contract: 200 with scanState:"never-run" (registry present, no scan yet — live fields reachable:null/probeStatus:"never-scanned") then 200 merged once a scan runs; 503 code:"registry-unavailable-no-instar-source" (a non-instar-source install carries no manifest) or code:"registry-corrupt" (present but unparseable) — never a fabricated empty map. The recurring doorway-scan job that keeps it current ships OFF by default (job manifest enabled:false; maintenance.doorwayScan tunes it). When asked "what models can I reach?" / "is my model map current?" / "which doorways are live?" → read GET /doorways, don\'t guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /doorways'],
+    }),
+  },
+  {
     key: 'spawnLimiter',
     prefixes: ['/spawn-limiter'],
     description: 'Fork-bomb prevention — host-wide concurrent-LLM-subprocess cap (the SIMPLE design, docs/specs/forkbomb-prevention-simple.md). A SAFETY FLOOR that ships ON for every agent (never dark): a host-local counting semaphore bounds how many `claude -p`/`codex exec` subprocesses run AT ONCE across every compliant Instar process on the host (default 8), the chokepoint for the 2026-06-20 OOM fork-bomb. GET /spawn-limiter reports the live holder count, the cap, available slots, saturation, the live concurrent-poller count (P3 bounded ingress), and the acquire budget. Tune via intelligence.spawnCap.* or env (INSTAR_HOST_SPAWN_MAX / INSTAR_SPAWN_ACQUIRE_MS / INSTAR_SPAWN_WAITERS_MAX). When asked "are we capped against a fork-bomb?" / "how many LLM spawns are running right now?" → read this.',
@@ -142,12 +201,60 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'selfActionGovernor',
+    prefixes: ['/self-action-governor'],
+    description: 'Unified self-action backpressure — the SelfActionGovernor (docs/specs/unified-self-action-backpressure.md, Increment B). ONE in-process admission chokepoint every registered self-triggered action (reaper age-kill, external-hog kill, proactive account-swap, beacon notify/liveness) rides via admit(), keyed on a controller id: per-target + census-scaled total count ceilings, rate buckets, P19 brakes, a bounded coalescing queue, durable admission state that survives restarts (a crash/bounce never refills a runaway loop\'s count budget), and an ALWAYS-ALLOW audited principal lane (a human action always wins). Ships OBSERVE-ONLY on every class (records would-deny verdicts, blocks nothing); the per-class enforce flip is the operator\'s later FD8 action. GET /self-action-governor is a lock-free scrubbed read of per-class mode/counters/deciding-sub-mechanism aggregates (`?scope=pool` merges pool-shared class counters across machines). Kill switch: intelligence.selfActionGovernor.emergencyDisable (read live; the flip itself is audited + surfaced). When asked "why did my respawn get held / my swap get queued / my notify get folded?" → read this route\'s per-class reasons.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.selfActionGovernor,
+      endpoints: ['GET /self-action-governor'],
+    }),
+  },
+  {
+    key: 'testRunnerLimiter',
+    prefixes: ['/test-runner-limiter'],
+    description: 'Test-Runner Concurrency Bound — the spawn cap\'s sibling for vitest roots (docs/specs/test-runner-concurrency-bound.md). A per-machine ticket counter bounds how many test SUITES run at once across every actor on the host (full suites one-at-a-time by default; small targeted runs get a roomier ≤6-slot lane, each clamped to ≤4 workers) — the structural answer to the 2026-07-02 test-storm load-stall kill cascade. Ships WATCH-ONLY (dry-run posture, 14-day soak): it logs would-blocks but admits every run until the enforce flip. GET /test-runner-limiter reports cap/targetedCap/posture/ttlSignalArmed, live holders per lane, per-lane saturation, admitted-open (lock-wedge) runs, the recent event tail, and a skip-reason histogram — cap + posture resolve through the SAME resolvers the chokepoint uses (env → host tuning file → code default), never from config (no-lie constraint). POST /test-runner-limiter/prune is the recovery lever: forces a full reclaim pass (dead/reused-pid + TTL-expired holders) instead of hand-editing the holders JSON. When asked "why is my test run waiting?" / "did the limiter block something?" / a git push rejected that might be CONTENTION not red tests → read the GET route first. Kill switch: env INSTAR_HOST_TEST_SEMAPHORE=off (config intelligence.testRunnerCap is NOT the chokepoint lever).',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /test-runner-limiter', 'POST /test-runner-limiter/prune'],
+    }),
+  },
+  {
     key: 'multiMachinePool',
-    prefixes: ['/pool'],
+    prefixes: ['/pool', '/machines'],
     description: 'Multi-Machine Session Pool status — which machine holds the router + every machine\'s nickname, hardware, online status, load, and clock-skew. Backs the Machines dashboard tab and "where is this running?" / "move this to <nickname>". Single-machine until >1 paired.',
     build: ({ ctx }) => ({
       configured: !!ctx.machinePoolRegistry,
-      endpoints: ['GET /pool', 'PATCH /pool/machines/:id'],
+      endpoints: ['GET /pool', 'PATCH /pool/machines/:id', 'GET /machines/ssh-health'],
+    }),
+  },
+  {
+    key: 'singleMachineFailoverGap',
+    // The route lives under the already-claimed '/pool' top-level prefix (owned
+    // by the multiMachinePool entry), so this dedicated awareness entry claims
+    // NO new top-level prefix — it surfaces GET /pool/failover-gap via endpoints
+    // instead (mirrors the other /pool/* sub-feature entries + the empty-prefix
+    // precedent). Claiming '/pool/failover-gap' trips capabilities-discoverability:
+    // that test extracts TOP-LEVEL prefixes, so 'pool/failover-gap' is a dead entry.
+    prefixes: [],
+    description: 'Single-machine failover-gap detector — status snapshot for the "no failover target for active autonomous work" guard (single-machine WHILE active autonomous runs → ONE deduped HIGH attention item). Dev-gated dark on the fleet (503 when off); signal-only.',
+    build: ({ ctx }) => ({
+      configured: !!(ctx.getSingleMachineFailoverGap?.() ?? null),
+      endpoints: ['GET /pool/failover-gap'],
+    }),
+  },
+  {
+    key: 'missingLoginSession',
+    // The route lives under the already-claimed '/pool' top-level prefix (owned
+    // by the multiMachinePool entry), so this dedicated awareness entry claims
+    // NO new top-level prefix — it surfaces GET /pool/missing-login via endpoints
+    // instead (mirrors the other /pool/* sub-feature entries + the empty-prefix
+    // precedent). Claiming '/pool/missing-login' trips capabilities-discoverability:
+    // that test extracts TOP-LEVEL prefixes, so 'pool/missing-login' is a dead entry.
+    prefixes: [],
+    description: 'Missing-login-session detector — status snapshot for the "a live session is running on an account whose local login has gone missing" guard (drift under a live session → ONE deduped HIGH attention item). Dev-gated dark on the fleet (503 when off); signal-only.',
+    build: ({ ctx }) => ({
+      configured: !!(ctx.getMissingLoginSession?.() ?? null),
+      endpoints: ['GET /pool/missing-login'],
     }),
   },
   {
@@ -190,12 +297,27 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'workQueue',
+    prefixes: ['/work-queue'],
+    description: 'Unified work-intake registry — deterministic ranked read of active work; dev-agent gated while fleet rollout is dark.',
+    build: ({ ctx }) => ({ configured: !!ctx.workQueue, endpoints: ['GET /work-queue', 'POST /work-queue/rescore'] }),
+  },
+  {
     key: 'autonomousHeartbeat',
     prefixes: ['/autonomous-heartbeat'],
     description: 'AutonomousProgressHeartbeat — a hedged, change-gated, sparse liveness BACKSTOP that posts ONE purely-observational line when an autonomous run has gone silent on the user for a long stretch while its terminal output is STILL changing. NOT the suppressed PromiseBeacon "still on it" filler that HONEST-PROGRESS-MESSAGING removed — it fires only on a long user-silence gate (≥25m) AND a corroborated recent output change (read from ActiveWorkSilenceSentinel\'s already-computed snapshot — a liveness signal, NOT a progress claim), with a per-topic cooldown, a widening per-run backoff + hard cap, and the shared one-voice lease. Signal-only; never gates. Dev-gated dark + dryRun-first → 503 on the fleet.',
     build: ({ ctx }) => ({
       enabled: resolveDevAgentGate(ctx.config.monitoring?.autonomousHeartbeat?.enabled, ctx.config),
       endpoints: ['GET /autonomous-heartbeat'],
+    }),
+  },
+  {
+    key: 'goalRealignment',
+    prefixes: ['/goal-realignment'],
+    description: 'Periodic Goal Re-Alignment Phase 1 ("see it") — sender-verified operator messages flow through a deterministic candidate inbox and checkpointed extraction outbox into an append-only durable priority ledger. A cadence-shaped, content-addressed reflector compares active-run focus with the durable digest and logs evidence-linked aligned/drifting/diverged/indeterminate verdicts. Dry-run only: no injection, attention, blocking, planner write, or state-file mutation. GET /goal-realignment exposes the ledger, aging candidates, counters, and last verdict; dev-gated dark on the fleet.',
+    build: ({ ctx }) => ({
+      enabled: resolveDevAgentGate(ctx.config.monitoring?.goalRealignment?.enabled, ctx.config),
+      endpoints: ['GET /goal-realignment'],
     }),
   },
   {
@@ -248,7 +370,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'apprenticeshipProgram',
     prefixes: ['/apprenticeship'],
-    description: 'Apprenticeship Program — instance registry + lifecycle gates for onboarding agent frameworks. Each onboarding is a tracked instance (overseer / mentor / mentee). The retro-gate refuses starting an instance without a valid prior retro-harvest; the doc-as-required-artifact gate refuses completing one without its lessons captured. Gates are structural preconditions on objective artifacts; verdicts audited to logs/apprenticeship-decisions.jsonl.',
+    description: 'Apprenticeship Program — instance registry, evidence-backed independence ladder, and lifecycle gates for onboarding agent frameworks. Each onboarding is a tracked instance (overseer / mentor / mentee). Ladder transitions are adjacent, require evidence, and retain append-only history. Gate and ladder verdicts are audited to logs/apprenticeship-decisions.jsonl.',
     build: ({ ctx }) => ({
       configured: !!ctx.apprenticeshipProgram || !!ctx.apprenticeshipCycleStore,
       endpoints: [
@@ -257,11 +379,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'GET /apprenticeship/instances/:id/role-coverage',
         'GET /apprenticeship/cycles',
         'GET /apprenticeship/cycles/overdue',
+        'GET /apprenticeship/cycles/integrity',
         'GET /apprenticeship/cycles/:id',
         'POST /apprenticeship/instances',
         'POST /apprenticeship/instances/:id/transition',
+        'POST /apprenticeship/instances/:id/rung-transition',
         'POST /apprenticeship/instances/:id/can-start',
         'POST /apprenticeship/instances/:id/can-complete',
+        'POST /apprenticeship/instances/:id/matrix-acceptance/enumerate',
+        'POST /apprenticeship/instances/:id/matrix-acceptance',
         'POST /apprenticeship/cycles',
         'POST /apprenticeship/cycles/:id/close',
       ],
@@ -634,7 +760,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   },
   {
     key: 'commitments',
-    prefixes: ['/commitments'],
+    prefixes: ['/commitments', '/blocker-lifecycle'],
     description: 'CommitmentTracker — lifecycle for agent promises',
     build: () => ({
       enabled: true,
@@ -647,6 +773,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /commitments/:id/withdraw — withdraw the commitment',
         'POST /commitments/:id/resume — resume a paused commitment',
         'GET /commitments/active-context — assemble active-commitment context',
+        'GET /blocker-lifecycle/summary — raw per-origin blocker timing plus deliverable-completion count',
+        'GET /blocker-lifecycle/trend — raw per-origin blocker timing plus completion-count direction',
       ],
     }),
   },
@@ -697,6 +825,26 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'codexTaskContinuation',
+    prefixes: ['/continuation'],
+    description: 'Bounded ordinary-work continuation for Codex — explicit per-topic task ledgers keep a local Codex session moving only while unchecked tasks and both duration/count budgets remain. Operator stop, ownership mismatch, malformed state, lock contention, or audit failure all fail toward normal stop. Off by default.',
+    build: ({ ctx }) => ({
+      enabled: (ctx.liveConfig?.get(
+        'autonomousSessions.codexTaskContinuation',
+        ctx.config.autonomousSessions?.codexTaskContinuation,
+      ) ?? ctx.config.autonomousSessions?.codexTaskContinuation)?.enabled === true,
+      endpoints: [
+        'GET /continuation/:topic/status',
+        'POST /continuation/start',
+        'POST /continuation/:topic/renew',
+        'POST /continuation/:topic/complete',
+        'POST /continuation/:topic/stop',
+        'POST /continuation/stop-all',
+        'POST /continuation/decide',
+      ],
+    }),
+  },
+  {
     key: 'geminiCapacity',
     prefixes: ['/gemini'],
     description: 'Gemini capacity — live view of whether Gemini calls are currently deferred by the capacity policy (quota/rate-limit) and for how long. The escalation monitor (observe-only, ships OFF behind monitoring.geminiCapacityEscalation) raises one attention item per long block. Read-only.',
@@ -715,6 +863,18 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       enabled: true,
       endpoints: [
         'GET /metrics/features — per-feature rollup (calls, tokens incl. tokensCached, fired/no-op, fire-rate, p50/p95 latency, wait-stats) + feature×model breakdown (byModel, totals.byModel), per-framework usageCoverage, unlabeled token/call shares; ?sinceHours= / ?feature= filters',
+      ],
+    }),
+  },
+  {
+    key: 'routingSpend',
+    prefixes: ['/routing-spend'],
+    description: 'Routing Control Room spend VIEW (Increment A) — READ-ONLY reporting: the immutable token record priced ON READ against a reviewed price manifest, plus every metered paid-door key with its caps and honest not-live/$0 state. Gates nothing, books nothing (the money ledger + O(1) gate + PIN cap controls are Increment B). Dev-gated (live on a development agent, dark on the fleet).',
+    build: () => ({
+      enabled: true,
+      endpoints: [
+        'GET /routing-spend/summary — priced spend rollup per door/model + totals; ?grain=hour|day|month|total, ?sinceHours=; honest $0/not-live-yet + loud unpricedTokens',
+        'GET /routing-spend/caps — every metered key with its caps + committed ($0 in Increment A) + goLiveState (not-live)',
       ],
     }),
   },
@@ -874,6 +1034,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'dashboardLiveInsights',
+    prefixes: ['/insights'],
+    description: 'Dashboard Live-LLM-Insights — the per-page Insight Strip: a plain-English headline + supporting lines over a dashboard page\'s own data, an LLM insight routed through the shared nature-router (FAST lane), cached + awareness-only (never gates, never mutates)',
+    build: ({ ctx }) => ({
+      // DEV-GATED: resolve through the funnel so the capability report matches the
+      // construction gate — LIVE on a dev agent, DARK on the fleet.
+      enabled: resolveDevAgentGate(ctx.config.dashboard?.liveInsights?.enabled, ctx.config),
+      endpoints: [
+        'GET /insights — every registered page\'s Insight Strip (the cross-page digest surface)',
+        'GET /insights/:page — one page\'s Insight Strip',
+        'GET /insights/status — content-free posture (enabled/dryRun/ttl/pageCount)',
+      ],
+      hint: 'Dev-gated dark (dashboard.liveInsights.enabled); routes 503 when dark. dryRun:true (dev default) serves the deterministic floor; a deliberate dryRun:false activates the LLM insight. Point the user at the dashboard Insights tab, not curl.',
+    }),
+  },
+  {
     key: 'failureLearning',
     prefixes: ['/failures'],
     description: 'Failure-Learning Loop — instar dev-process failure forensics (which spec/tool produced a failure; what process gaps recur)',
@@ -905,6 +1081,21 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /corrections/analyze — 3-pronged recurrence gate + closed-loop tick (driven by the off-by-default correction-analyzer job); response includes routed.overflow + routed.rateLimited',
       ],
       hint: 'Ships OFF; when disabled these routes 503. The session-start hook fetches /preferences/session-context on every boot and injects the <auto-learned-preference> block. The /corrections API never serves raw learning text. The Preferences dashboard tab is the human read surface (plain-language preferences + scrubbed corrections).',
+    }),
+  },
+  {
+    key: 'correctionClassReview',
+    prefixes: ['/class-reviews'],
+    description: 'Correction Class Review — durable record-time standards/process review and outcome tracking for every captured correction, independent of recurrence scoring.',
+    build: ({ ctx }) => ({
+      enabled: resolveDevAgentGate(ctx.config.monitoring?.correctionClassReview?.enabled, ctx.config),
+      endpoints: [
+        'GET /class-reviews — scrubbed review lifecycle and backlog health',
+        'GET /class-reviews/:dedupeKey — exact correction-correspondent review artifact',
+        'POST /class-reviews/backfill — bounded recovery sweep (requires X-Instar-Request)',
+        'PATCH /class-reviews/:dedupeKey/outcome — operator-PIN disposition of one standards/process arm',
+      ],
+      hint: 'Development-gated, dry-run first, and fleet-dark. The intelligence pass may propose but cannot ratify standards. Correction recurrence remains an independent consumer.',
     }),
   },
   {
@@ -1218,6 +1409,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'usher', reason: 'operator-only observability — the mid-task re-surface signal pull surface + its precision metrics; signal-only, the agent-facing payoff is the future gated injection (rung 5), not a discoverable endpoint' },
   { prefix: 'rate-limit', reason: 'operator-only rate-limit-sentinel observability — agent-facing surface is the sentinel’s own notices' },
   { prefix: 'action-claim', reason: 'internal Stop-hook ingest for the action-claim follow-through sentinel (dark by default, messaging.actionClaim.enabled) — the hook posts here; the agent-facing payoff is the silent follow-through commitment, not a discoverable endpoint' },
+  { prefix: 'completion-claim', reason: 'internal dark Claim Verification Stop-hook ingest and privacy-thresholded observational audit; it has no outbound authority' },
   { prefix: 'slack', reason: 'surfaced via messaging adapters' },
   { prefix: 'whatsapp', reason: 'surfaced via messaging adapters' },
   { prefix: 'flows', reason: 'surfaced inside `evolution` subsystems' },
@@ -1235,6 +1427,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'worktrees', reason: 'AgentWorktreeReaper read-only report (reclaimable stale worktrees) — operational observability the agent READS, like /sessions/reap-log; not a user-invokable capability' },
   { prefix: 'processes', reason: 'McpProcessReaper read-only report (reclaimable leaked MCP-server procs + per-proc keep/reap verdict) — operational observability the agent READS, like /worktrees/agent-reaper; not a user-invokable capability' },
   { prefix: 'orphaned-work', reason: 'OrphanedWorkSentinel read-only snapshot (agent worktrees with uncommitted work whose owning session died — the silent-uncommitted-death backstop) — operational observability the agent READS, like /worktrees/agent-reaper; dev-gated dark, 503 on the fleet; not a user-invokable capability' },
+  { prefix: 'external-hog', reason: 'ExternalHogSentinel status (GET) + the PIN-gated arm / Bearer disarm (POST) for the external-hog zombie auto-kill sentinel — operational observability the agent READS + an operator PIN action, like /green-pr-automerge; dev-gated dark, 503 on the fleet; surfaced via the CLAUDE.md agent-awareness section, not a user-invokable capability' },
   { prefix: 'playwright-profiles', reason: 'dev-gated Playwright profile↔accounts registry; surfaced to agents via the CLAUDE.md template + the session-start boot block (503 on the fleet), not /capabilities — same class as intelligence/topic-profile' },
   { prefix: 'pr-leases', reason: 'dev-gated parallel-hand PR-push lease (stops two of my own sessions racing one branch); a PreToolUse git-push guard consults it and the CLAUDE.md template documents it — internal coordination machinery, 503 on the fleet, not a user-invokable capability' },
   { prefix: 'sleep', reason: 'SleepController read-only verdict (agent hard-sleep decision + which guard holds it awake) — operational observability the agent READS; not a user-invokable capability' },
@@ -1246,7 +1439,7 @@ export const INTERNAL_PREFIXES: ReadonlyArray<{ prefix: string; reason: string }
   { prefix: 'threadline', reason: 'surfaced via discovery (threadline-relay feature)' },
   { prefix: 'mesh', reason: 'machine-to-machine MeshRpc transport (§L0 Session Pool) — Ed25519-signed, recipient-bound peer commands; never an agent/user capability. (GET /mesh/rope-health — U4.5 rope-health read surface — shares this prefix; it is agent-surfaced via the CLAUDE.md template proactive trigger + the rope-health-digest job rather than discovery.)' },
   { prefix: 'mesh-selfheal', reason: 'G3 lease-gated-spawn promotion-evidence surface (MESH-SELF-HEAL-SPEC §3.3) — read-only soak ledger (would-have-prevented-duplicate / would-have-cleared-stale-binding + promotion recommendation) the agent READS for the dark-feature graduation loop; operational observability like /worktrees/agent-reaper, not a user-invokable capability' },
-  { prefix: 'session-pool', reason: 'session-pool rollout-gate E2E results (§Rollout) — operator observability for a dark feature, not a conversational capability' },
+  { prefix: 'session-pool', reason: 'session-pool rollout control/observability (§Rollout) — the signed E2E results (GET /session-pool/e2e-results), failover-runner status, and evidence-gated one-step promotion lever (POST /session-pool/promote); promotion remains explicitly off by default and ceiling-bounded' },
   { prefix: 'write-admission', reason: 'standby-write reconciliation status surface (docs/specs/standby-write-reconciliation.md P2-6/F9) — read-only per-domain admission counters + recent typed refusals + the event-loop-lag gauge the agent READS to answer "are writes hanging or being refused?"; dev-gated dark (503 on the fleet, dry-run first) and agent-surfaced via the CLAUDE.md "Write Admission" awareness section rather than discovery — operational observability like /mesh-selfheal and /worktrees/agent-reaper, not a user-invokable capability' },
 ];
 

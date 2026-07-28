@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-26T19:41:29.895Z",
+  "slug": "ssh2-cjs-named-imports",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 27,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

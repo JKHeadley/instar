@@ -49,6 +49,8 @@ import type { IntelligenceProvider } from '../core/types.js';
 
 /** The gate's decision for a single undirected message. */
 export interface AmbientDecision {
+  /** The one canonical action selected for this message. */
+  action: AmbientAction;
   /** True ONLY when every fail-to-silence condition holds. Default false. */
   speak: boolean;
   /** Machine-readable reason for the decision (for logging / FP measurement). */
@@ -56,6 +58,8 @@ export interface AmbientDecision {
   /** Optional human-readable detail (e.g. the LLM's named contribution). */
   detail?: string;
 }
+
+export type AmbientAction = 'speak' | 'react' | 'silent';
 
 /**
  * Observability — a bounded, in-memory record of a SINGLE silence the gate is
@@ -90,7 +94,7 @@ export interface AmbientSilenceSample {
  */
 export interface AmbientChannelStats {
   channelId: string;
-  /** Every shouldSpeak() call for this channel (spoke + silent). */
+  /** Every decideAction() call for this channel (spoke + non-speak). */
   evaluated: number;
   /** Decisions that returned speak=true. */
   spoke: number;
@@ -127,6 +131,7 @@ export type AmbientDecisionReason =
   | 'llm-unparseable' // (c) failed — LLM verdict could not be read → silent
   | 'llm-declined' // (c) failed — LLM said don't speak → silent
   | 'low-confidence' // (c) failed — below the conservative confidence bar → silent
+  | 'react' // ALL held — acknowledge with the fixed eyes reaction
   | 'speak'; // ALL held — a concrete, meaningful, in-budget contribution
 
 /** Per-channel ambient configuration. Default: ambient OFF. */
@@ -197,7 +202,7 @@ const DEFAULT_NEAR_MISS_DELTA = 0.1;
 const DEFAULT_NEAR_MISS_RING_CAPACITY = 50;
 
 interface RawAmbientVerdict {
-  speak?: unknown;
+  action?: unknown;
   confidence?: unknown;
   contribution?: unknown;
 }
@@ -229,13 +234,9 @@ export class AmbientContributionGate {
 
   /**
    * Rate-limit state lives HERE — a per-channel in-memory ring of the timestamps at
-   * which the gate last returned speak=true. It is recorded by recordSpoke() (called
-   * by _handleMessage only AFTER the gate cleared and the message is actually being
-   * processed), so a speak=true that the caller decides not to act on does not
-   * consume budget. In-memory is acceptable: a restart resetting the window can only
-   * make the agent quieter for a moment (it never over-speaks), which is on the safe
-   * side of the invariant. A future durable counter could replace this without
-   * changing the contract.
+   * which the gate's accepted speak/react action consumed budget. It is recorded by
+   * recordAction() immediately before the caller executes that action. In-memory is
+   * the existing legacy posture; this change adds no persistence or second limiter.
    */
   private readonly proactiveTimestamps: Map<string, number[]> = new Map();
 
@@ -265,23 +266,23 @@ export class AmbientContributionGate {
   }
 
   /**
-   * Decide whether to speak on an UNDIRECTED message in an ambient channel.
-   * FAIL-TO-SILENCE: returns { speak: false } on every degraded/uncertain path.
+   * Select one action for an UNDIRECTED message in an ambient channel.
+   * FAIL-TO-SILENCE: every degraded/uncertain path returns action: silent.
    */
-  async shouldSpeak(input: AmbientGateInput): Promise<AmbientDecision> {
+  async decideAction(input: AmbientGateInput): Promise<AmbientDecision> {
     // (a) Channel opt-in. Default OFF — an un-opted channel never speaks.
     if (!this.enabledChannels.has(input.channelId)) {
-      return this.decide(input.channelId, { speak: false, reason: 'channel-not-opted-in' });
+      return this.decide(input.channelId, { action: 'silent', speak: false, reason: 'channel-not-opted-in' });
     }
 
     // (b) Hard rate-limit. Budget exhausted in the rolling window → silent.
     if (this.isRateLimited(input.channelId)) {
-      return this.decide(input.channelId, { speak: false, reason: 'rate-limited' });
+      return this.decide(input.channelId, { action: 'silent', speak: false, reason: 'rate-limited' });
     }
 
     // (c) LLM judgment. No provider → silent (we never speak on a heuristic guess).
     if (!this.intelligence) {
-      return this.decide(input.channelId, { speak: false, reason: 'no-intelligence' });
+      return this.decide(input.channelId, { action: 'silent', speak: false, reason: 'no-intelligence' });
     }
 
     let raw: string;
@@ -303,44 +304,45 @@ export class AmbientContributionGate {
       });
     } catch {
       // network/timeout/provider failure / circuit open → SILENCE (never escalate).
-      return this.decide(input.channelId, { speak: false, reason: 'llm-error' });
+      return this.decide(input.channelId, { action: 'silent', speak: false, reason: 'llm-error' });
     }
 
     const parsed = parseAmbientVerdict(raw);
     if (!parsed) {
       // Unparseable LLM output is a judgment FAILURE → silence.
-      return this.decide(input.channelId, { speak: false, reason: 'llm-unparseable' });
+      return this.decide(input.channelId, { action: 'silent', speak: false, reason: 'llm-unparseable' });
     }
 
-    // The LLM must explicitly say speak.
-    if (!parsed.speak) {
-      return this.decide(input.channelId, { speak: false, reason: 'llm-declined' });
+    if (parsed.action === 'silent') {
+      return this.decide(input.channelId, { action: 'silent', speak: false, reason: 'llm-declined' });
     }
 
     // Conservative confidence bar. Below it (or no named contribution) → silence.
-    if (parsed.confidence < this.minConfidence || !parsed.contribution) {
+    if (parsed.confidence < this.minConfidence) {
       return this.decide(
         input.channelId,
-        { speak: false, reason: 'low-confidence', detail: parsed.contribution },
+        { action: 'silent', speak: false, reason: 'low-confidence', detail: parsed.contribution },
         parsed.confidence,
       );
+    }
+
+    if (parsed.action === 'react') {
+      return this.decide(input.channelId, { action: 'react', speak: false, reason: 'react' }, parsed.confidence);
     }
 
     // ALL fail-to-silence conditions held → speak.
     return this.decide(
       input.channelId,
-      { speak: true, reason: 'speak', detail: parsed.contribution },
+      { action: 'speak', speak: true, reason: 'speak', detail: parsed.contribution },
       parsed.confidence,
     );
   }
 
   /**
-   * Record that the agent actually spoke proactively in a channel (call AFTER the
-   * gate cleared and _handleMessage commits to processing). Consumes one unit of the
-   * rolling window budget. Idempotency is not required — each proactive turn is one
-   * unit.
+   * Consume one unit of the shared proactive speak/react rolling-window budget.
+   * Call immediately before executing the accepted action.
    */
-  recordSpoke(channelId: string): void {
+  recordAction(channelId: string): void {
     const arr = this.proactiveTimestamps.get(channelId) ?? [];
     arr.push(this.now());
     this.proactiveTimestamps.set(channelId, arr);
@@ -454,45 +456,35 @@ export class AmbientContributionGate {
 }
 
 /**
- * Validate + clamp the LLM's raw JSON into a safe verdict. Returns null when the
- * payload can't be read (→ caller fails to silence). A missing/false `speak` is a
- * VALID parse (it means don't speak), so this only returns null on structural junk.
+ * Strictly validate the LLM's raw JSON into one closed verdict. Any structural,
+ * type, range, or field-combination mismatch returns null and fails to silence.
  */
 function parseAmbientVerdict(
   raw: string,
-): { speak: boolean; confidence: number; contribution?: string } | null {
+): { action: AmbientAction; confidence: number; contribution?: string } | null {
   if (!raw || typeof raw !== 'string') return null;
-
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) return null;
 
   let obj: RawAmbientVerdict;
   try {
-    obj = JSON.parse(raw.slice(start, end + 1)) as RawAmbientVerdict;
+    obj = JSON.parse(raw.trim()) as RawAmbientVerdict;
   } catch {
     return null;
   }
 
-  // `speak` must be present and boolean-ish; anything else is unreadable → null,
-  // so the caller fails to silence rather than guessing an affirmative.
-  let speak: boolean;
-  if (typeof obj.speak === 'boolean') speak = obj.speak;
-  else if (obj.speak === 'true') speak = true;
-  else if (obj.speak === 'false') speak = false;
-  else return null;
-
-  // Missing/invalid confidence is treated as the floor (0) — never an optimistic 1.
-  let confidence = typeof obj.confidence === 'number' ? obj.confidence : Number(obj.confidence);
-  if (!Number.isFinite(confidence)) confidence = 0;
-  confidence = Math.max(0, Math.min(1, confidence));
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  const keys = Object.keys(obj);
+  if (keys.some(key => !['action', 'confidence', 'contribution'].includes(key))) return null;
+  if (obj.action !== 'speak' && obj.action !== 'react' && obj.action !== 'silent') return null;
+  if (typeof obj.confidence !== 'number' || !Number.isFinite(obj.confidence) || obj.confidence < 0 || obj.confidence > 1) return null;
 
   const contribution =
     typeof obj.contribution === 'string' && obj.contribution.trim()
-      ? obj.contribution.trim().slice(0, 500)
+      ? obj.contribution.trim()
       : undefined;
+  if (obj.action === 'speak' && (!contribution || contribution.length > 500)) return null;
+  if (obj.action !== 'speak' && Object.prototype.hasOwnProperty.call(obj, 'contribution')) return null;
 
-  return { speak, confidence, contribution };
+  return { action: obj.action, confidence: obj.confidence, contribution };
 }
 
 /**
@@ -508,12 +500,18 @@ function buildAmbientPrompt(input: AmbientGateInput): { systemPrompt: string; us
     'the failure mode is annoyance. Speak ONLY when you can name a concrete, specific,',
     'genuinely helpful contribution that the people in the channel would welcome —',
     'never to chime in, agree, restate, or interrupt a human-to-human exchange.',
-    'Return ONLY a compact JSON object, no prose, with exactly these keys:',
-    '  "speak":        boolean — true ONLY for a clearly worthwhile unprompted contribution.',
-    '  "confidence":   0.0-1.0 — your confidence that speaking adds clear value AND is welcome.',
+    'Return ONLY one compact JSON object, no prose. Choose exactly one action:',
+    '  "speak" — only for a clearly worthwhile unprompted contribution.',
+    '  "react" — a lightweight seen-and-considered acknowledgment is useful, but prose would intrude.',
+    '  "silent" — the strong default whenever neither action clearly helps.',
+    'Use exactly these fields:',
+    '  "action":       one of "speak", "react", or "silent".',
+    '  "confidence":   0.0-1.0 — your confidence that the chosen non-silent action adds clear value AND is welcome.',
     '                  Be honest; when unsure, return a LOW number. Uncertainty means stay silent.',
-    '  "contribution": one short sentence naming the concrete contribution (omit/empty if not speaking).',
-    'When in doubt, return {"speak": false, "confidence": 0.0}.',
+    '  "contribution": one short sentence naming the concrete contribution; include ONLY for "speak".',
+    'A "react" action always means the fixed eyes reaction: seen and considered, never ownership,',
+    'commitment, approval, or a promise of follow-up. You do not select the emoji.',
+    'When in doubt, return {"action":"silent","confidence":0.0}.',
     'Never output anything but the JSON object.',
   ].join('\n');
 

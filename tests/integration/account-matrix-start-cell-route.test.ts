@@ -54,7 +54,7 @@ const SELF_ID = 'this-machine';
 function buildCtx(dir: string, opts: { dev: boolean; pin: string; knowAccountEmail: boolean }) {
   const pool = new SubscriptionPool({ stateDir: dir });
   if (opts.knowAccountEmail) {
-    pool.add({ id: 'a1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/x/a1', email: 'approved@x.com' });
+    pool.addFixture({ id: 'a1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/x/a1', email: 'approved@x.com' });
   }
   const store = new PendingLoginStore({ stateDir: dir });
   const enrollmentWizard = new EnrollmentWizard({
@@ -131,6 +131,11 @@ describe('/subscription-pool/matrix/start-cell (integration)', () => {
     expect(r.body.verificationUrl).toBe('https://claude.com/oauth');
     expect(r.body.loginId).toBe('a1');
     expect(r.body.machineId).toBe(SELF_ID);
+    // Flow-detail passthrough (topic 29836 D2/D3): the matrix CELL renders the complete
+    // flow from this response — expected account, TTL, and flow kind ride along.
+    expect(r.body.expectedEmail).toBe('approved@x.com');
+    expect(typeof r.body.ttlExpiresAt).toBe('string');
+    expect(r.body.kind).toBe('url-code-paste');
     const wizard = (ctx as unknown as { enrollmentWizard: EnrollmentWizard }).enrollmentWizard;
     const pending = wizard.pending();
     expect(pending).toHaveLength(1);
@@ -138,16 +143,20 @@ describe('/subscription-pool/matrix/start-cell (integration)', () => {
     expect(pending[0].configHome).toContain('.claude-followme-a1');
   });
 
-  it('(d) valid PIN but email unresolvable → 409 cannot resolve approved account email', async () => {
+  it('(d) valid PIN but email unresolvable → actionable 409', async () => {
     const ctx = await bootstrap({ dev: true, pin: '123456', knowAccountEmail: false });
     const r = await post('/subscription-pool/matrix/start-cell', { accountId: 'a1', machineId: SELF_ID, pin: '123456' });
-    expect(r.status).toBe(409);
-    expect(r.body.error).toBe('cannot resolve approved account email');
+    expect(r.status).toBe(404);
+    expect(r.body).toMatchObject({
+      code: 'subscription-account-not-found',
+      error: 'This subscription account is no longer registered.',
+      accountId: 'a1',
+    });
     const wizard = (ctx as unknown as { enrollmentWizard: EnrollmentWizard }).enrollmentWizard;
     expect(wizard.pending()).toHaveLength(0);
   });
 
-  it('(e) idempotent re-call reuses the pending login (no duplicate, no stacked mandate)', async () => {
+  it('(e) idempotent re-call reuses the pending login (no duplicate, no stacked mandate) + the reuse carries the flow details', async () => {
     const ctx = await bootstrap({ dev: true, pin: '123456', knowAccountEmail: true });
     const first = await post('/subscription-pool/matrix/start-cell', { accountId: 'a1', machineId: SELF_ID, pin: '123456' });
     expect(first.status).toBe(201);
@@ -155,10 +164,30 @@ describe('/subscription-pool/matrix/start-cell (integration)', () => {
     expect(second.status).toBe(201);
     expect(second.body.reused).toBe(true);
     expect(second.body.loginId).toBe('a1');
+    // D5 URL coherence: the re-tap hands back THE SAME live attempt's URL + details —
+    // never a parallel attempt whose code could cross with the first.
+    expect(second.body.verificationUrl).toBe(first.body.verificationUrl);
+    expect(second.body.expectedEmail).toBe('approved@x.com');
+    expect(typeof second.body.ttlExpiresAt).toBe('string');
     const wizard = (ctx as unknown as { enrollmentWizard: EnrollmentWizard }).enrollmentWizard;
     expect(wizard.pending()).toHaveLength(1); // not duplicated
     const mandateStore = (ctx as unknown as { coordination: { store: FakeMandateStore } }).coordination.store;
     expect(mandateStore.list()).toHaveLength(1); // re-tap minted no second mandate
+  });
+
+  it('(g) D5 — an existing attempt whose sign-in PANE IS DEAD is NOT reused: it is superseded by a fresh attempt (record + pane replaced together)', async () => {
+    const ctx = await bootstrap({ dev: true, pin: '123456', knowAccountEmail: true });
+    // captureOutput → null = the pane is GONE (the 2026-07-10 zombie: record pending, no tmux session).
+    (ctx as unknown as { sessionManager: unknown }).sessionManager = { captureOutput: () => null };
+    const first = await post('/subscription-pool/matrix/start-cell', { accountId: 'a1', machineId: SELF_ID, pin: '123456' });
+    expect(first.status).toBe(201);
+    const second = await post('/subscription-pool/matrix/start-cell', { accountId: 'a1', machineId: SELF_ID, pin: '123456' });
+    expect(second.status).toBe(201);
+    expect(second.body.reused).toBeUndefined(); // NOT a reuse — the zombie was superseded
+    const wizard = (ctx as unknown as { enrollmentWizard: EnrollmentWizard }).enrollmentWizard;
+    // Exactly ONE live attempt remains (single-attempt discipline — codes can never cross).
+    expect(wizard.pending()).toHaveLength(1);
+    expect(wizard.getById('a1')?.status).toBe('pending');
   });
 
   it('(f) missing accountId/machineId → 400', async () => {

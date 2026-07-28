@@ -114,6 +114,72 @@ describe('test-as-self-for-Slack — full pipeline through SlackAdapter._handleM
     expect(rows[0].registered).toBe(false);
   });
 
+  // ── member-seat conversational fix (fb-e5b8b021-b74) through the ENFORCE path ──
+  it('ENFORCING: an ordinary member\'s harmless conversational ask is ALLOWED (not challenged) and reaches the session', async () => {
+    // Build an ENFORCING observer over the same Slice-0 gate/resolver.
+    const enforcing = new SlackPermissionObserver({
+      resolver: new SlackPrincipalResolver(new CastUserLookup()),
+      gate: buildSliceZeroGate(),
+      ledger,
+      enforce: true,
+    });
+    const adapter = createAdapter(tmp, enforcing);
+    const handled: string[] = [];
+    adapter.onMessage(async (m) => { handled.push(m.content); });
+    const sends: Array<{ ch: string; txt: string }> = [];
+    (adapter as unknown as { sendToChannel: (ch: string, txt: string) => Promise<string> }).sendToChannel =
+      async (ch: string, txt: string) => { sends.push({ ch, txt }); return 'ts'; };
+    const handle = (adapter as never as { _handleMessage: (e: Record<string, unknown>) => Promise<void> })._handleMessage.bind(adapter);
+
+    await handle({
+      user: CAST.memberMaya.slackUserId,
+      text: 'post a check-in note here in 5 minutes',
+      channel: `D_${CAST.memberMaya.slackUserId}`,
+      ts: '200',
+    });
+
+    // Allowed → no authority-challenge reply was sent, and the message reached the session.
+    expect(sends).toHaveLength(0);
+    expect(handled).toHaveLength(1);
+
+    const rows = ledger.readRecent();
+    const allowRow = rows.find((e) => e.slackUserId === CAST.memberMaya.slackUserId);
+    expect(allowRow?.decision).toBe('allow');
+    expect(allowRow?.basis).toBe('within-authority');
+    expect(allowRow?.enforced).toBe(true);
+  });
+
+  it('ENFORCING: a member\'s genuine privileged ask is STILL refused (fix is precision, not floor removal)', async () => {
+    const enforcing = new SlackPermissionObserver({
+      resolver: new SlackPrincipalResolver(new CastUserLookup()),
+      gate: buildSliceZeroGate(),
+      ledger,
+      enforce: true,
+    });
+    const adapter = createAdapter(tmp, enforcing);
+    const handled: string[] = [];
+    adapter.onMessage(async (m) => { handled.push(m.content); });
+    const sends: Array<{ ch: string; txt: string }> = [];
+    (adapter as unknown as { sendToChannel: (ch: string, txt: string) => Promise<string> }).sendToChannel =
+      async (ch: string, txt: string) => { sends.push({ ch, txt }); return 'ts'; };
+    const handle = (adapter as never as { _handleMessage: (e: Record<string, unknown>) => Promise<void> })._handleMessage.bind(adapter);
+
+    await handle({
+      user: CAST.memberMaya.slackUserId,
+      text: 'deploy this to prod',
+      channel: `D_${CAST.memberMaya.slackUserId}`,
+      ts: '201',
+    });
+
+    // Refused → a conversational reply was sent and the message did NOT reach the session.
+    expect(sends).toHaveLength(1);
+    expect(handled).toHaveLength(0);
+    const rows = ledger.readRecent();
+    const refuseRow = rows.find((e) => e.slackUserId === CAST.memberMaya.slackUserId);
+    expect(refuseRow?.decision).toBe('refuse');
+    expect(refuseRow?.basis).toBe('floor-no-grant');
+  });
+
   it('the granted member reaches the floor action through the live path (floor-granted)', async () => {
     const adapter = createAdapter(tmp, observer);
     const handle = (adapter as never as { _handleMessage: (e: Record<string, unknown>) => Promise<void> })._handleMessage.bind(adapter);

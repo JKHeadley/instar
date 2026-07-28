@@ -27,7 +27,7 @@ async function listen(app: express.Express): Promise<TestServer> {
 
 function buildCtx(dir: string, opts: { dev: boolean; createAttentionItem: ReturnType<typeof vi.fn> }) {
   const pool = new SubscriptionPool({ stateDir: dir });
-  pool.add({ id: 'a1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/x/a1', email: 'j@x.com' });
+  pool.addFixture({ id: 'a1', nickname: 'main', provider: 'anthropic', framework: 'claude-code', configHome: '/x/a1', email: 'j@x.com' });
   return {
     config: {
       authToken: 'test', stateDir: dir, port: 0, projectName: 'echo',

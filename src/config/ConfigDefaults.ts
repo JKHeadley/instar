@@ -29,6 +29,45 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   models: {
     tierEscalation: DEFAULT_TIER_ESCALATION_CONFIG,
   },
+  // Doorway/Model Knowledge Registry — the recurring doorway-scan job's config knob
+  // (docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §D6). Fail-closed defaults:
+  // free-probes (zero metered spend), weekly cadence, no digest topic, and a $0 money
+  // cap so no metered probe can EVER run until an operator sets a positive cap AND opts
+  // into a metered scope by hand. applyDefaults is add-missing-only (seeds `0`/`null`
+  // correctly and never clobbers an operator override), and it runs on BOTH init and
+  // migration — so existing agents get this on update (Migration Parity).
+  //
+  // `enabled` is DELIBERATELY OMITTED. Whether the scan RUNS is governed by the
+  // job-manifest `enabled` flag (seeded false); `maintenance.doorwayScan.enabled` is a
+  // master kill-switch with DENY-WINS semantics (`config.enabled !== false`). A seeded
+  // `false` would make `false !== false` false and PERMANENTLY block the scan even after
+  // the operator enables the job manifest — the round-2/round-5 bug. So seed every field
+  // EXCEPT `enabled` (which stays absent unless the operator sets it).
+  maintenance: {
+    doorwayScan: {
+      scope: 'free-probes',
+      cadence: '0 4 * * 1',
+      digestTopicId: null,
+      budgetCapUsd: 0,
+    },
+  },
+  // Dashboard Live-LLM-Insights (docs/specs/dashboard-live-insights.md) — the
+  // per-page Insight Strip. `enabled` is DELIBERATELY OMITTED so
+  // resolveDevAgentGate resolves it (LIVE on a development agent, DARK on the
+  // fleet; /insights routes 503 when dark) — the standard maturation ladder, not
+  // a flat default-false (a seeded `enabled:false` is the #1001 mechanism that
+  // would force-dark even a dev agent). `dryRun:true` is the SPEND canary: the
+  // LLM layer is inert (deterministic floor served, "would generate" logged)
+  // until a deliberate `dryRun:false`. applyDefaults is add-missing-only, so an
+  // operator's existing overrides are never clobbered (Migration Parity).
+  dashboard: {
+    liveInsights: {
+      dryRun: true,
+      ttlSeconds: 300,
+      maxLines: 3,
+      llmTimeoutMs: 12000,
+    },
+  },
   // Fork-bomb prevention — host-wide concurrent-LLM-subprocess cap (the SIMPLE
   // design, docs/specs/forkbomb-prevention-simple.md §D-CAP). A SAFETY FLOOR:
   // ON by default fleet-wide — a safety floor that ships dark is no floor. The
@@ -48,6 +87,25 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         rb: 2,
       },
     },
+    // Test-Runner Concurrency Bound — the spawn cap's sibling for vitest roots
+    // (docs/specs/test-runner-concurrency-bound.md §2.9). These values mirror
+    // the CODE defaults and tune the route report + server-launched tooling
+    // ONLY — NOT the chokepoint (its kill switch is env
+    // INSTAR_HOST_TEST_SEMAPHORE=off; its host-uniform authority is the
+    // ~/.instar/host-test-runner-tuning.json tuning file). Seeded here purely
+    // to materialize the operator-visible knobs (add-missing-only, matching
+    // the spawnCap treatment — a hand-tuned value is never overwritten).
+    testRunnerCap: {
+      enabled: true,
+      maxConcurrent: 1,
+      acquireWaitMs: 120000,
+    },
+    // Non-gating provider failure-swap timeout. This is deliberately longer than the
+    // safety-gating swap cap (`intelligence.swapAttemptTimeoutMs`, default 5s inline)
+    // because advisory/background calls can wait through a cold-start provider without
+    // slowing fail-closed gates. applyDefaults seeds missing config only; operator
+    // overrides are preserved on migration.
+    nonGatingSwapTimeoutMs: 15000,
   },
   monitoring: {
     memoryMonitoring: true,
@@ -58,6 +116,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // so resolveDevAgentGate decides — LIVE on a developmentAgent, DARK on the
     // fleet. NEVER hardcode `enabled: false` here (it would dark dev agents too).
     bootHealthBeacon: {},
+    // Raw, floor-independent blocker lifecycle timing. DEV-GATED: enabled is
+    // deliberately omitted (live on developmentAgent, dark on fleet).
+    blockerLifecycleLedger: {
+      dryRun: true,
+    },
     // Default-on so SessionWatchdog runs everywhere — required for the
     // compaction-idle polling fallback to actually fire.
     watchdog: {
@@ -128,6 +191,26 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       allowFreshFallback: false,
       notifyUser: true,
     },
+    // SingleMachineFailoverGapDetector (increment 2) — pure SIGNAL-only guard that
+    // surfaces the "no failover target for active autonomous work" gap. DEV-GATED:
+    // `enabled` is deliberately OMITTED so resolveDevAgentGate decides — LIVE on a
+    // developmentAgent, DARK on the fleet. NEVER hardcode `enabled: false` here (it
+    // would dark dev agents too — the #1001 mechanism). Ships dryRun-FIRST even on
+    // dev (computes + counts would-raise, raises NOTHING until a deliberate
+    // dryRun:false flip). docs — GET /pool/failover-gap.
+    singleMachineFailoverGap: {
+      dryRun: true,
+    },
+    // MissingLoginSessionDetector (increment 2) — pure SIGNAL-only guard that
+    // surfaces the "a live session is running on a missing-login account" gap.
+    // DEV-GATED: `enabled` is deliberately OMITTED so resolveDevAgentGate decides —
+    // LIVE on a developmentAgent, DARK on the fleet. NEVER hardcode `enabled: false`
+    // here (it would dark dev agents too — the #1001 mechanism). Ships dryRun-FIRST
+    // even on dev (computes + counts would-raise, raises NOTHING until a deliberate
+    // dryRun:false flip). docs — GET /pool/missing-login.
+    missingLoginSession: {
+      dryRun: true,
+    },
     // AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop
     // for an autonomous run gone silent-to-user while its output is still moving.
     // DEV-GATED: `enabled` is OMITTED so resolveDevAgentGate decides — LIVE on a
@@ -140,6 +223,23 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // docs/specs/autonomous-progress-heartbeat.md.
     autonomousHeartbeat: {
       dryRun: true,
+    },
+    // Periodic Goal Re-Alignment Phase 1 ("see it"). DEV-GATED: enabled is
+    // deliberately omitted so it runs on the development agent and stays dark
+    // on the fleet. Phase 1 is structurally dry-run: it computes + logs verdicts
+    // and exposes GET /goal-realignment, with no injection dependency at all.
+    // The 7-day window discovers NEW priorities only; durable ledger rows remain
+    // active until explicit supersession or confirmed-addressed evidence.
+    goalRealignment: {
+      dryRun: true,
+      cadenceMinutes: 60,
+      recencyDays: 7,
+      maxPriorities: 40,
+    },
+    // Autonomous Throughput Floor (ACT-847): bounded PULL/AUDIT-only reads.
+    throughputFloor: {
+      flatlineMs: 75 * 60_000,
+      tickMs: 15 * 60_000,
     },
     // U4.5 — Rope-Health Alerts (docs/specs/u4-5-rope-health-alerts.md §5).
     // DEV-GATED: `enabled` is DELIBERATELY OMITTED (not hardcoded false) so
@@ -312,6 +412,62 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       preserveWork: false,
       maxFlagsPerPass: 10,
     },
+    // ExternalHogSentinel (CMT-1901, docs/specs/external-hog-zombie-autokill-sentinel.md):
+    // surfaces any sustained external CPU hog and AUTO-KILLS one narrow class (orphaned
+    // Electron editor extension-host wrappers). Intelligence decides kill/leave/alert
+    // WITHIN a mechanical veto-only floor; kill iff floor_pass && classifier==='kill'.
+    // `enabled` is OMITTED so the runtime resolves it through the developmentAgent
+    // dark-feature gate (resolveDevAgentGate): LIVE on a dev agent, DARK on the fleet.
+    // `dryRun: true` is the canary — live-on-dev scans/classifies/LOGS would-kills but
+    // kills NOTHING until a deliberate PIN-gated arm. The numeric kill-gate knobs are
+    // read-time clamped to code-defined minimums. Registered in DEV_GATED_FEATURES.
+    externalHogSentinel: {
+      dryRun: true,
+      scanIntervalMs: 60_000,
+      cpuCoreThreshold: 1.5,
+      sustainedSampleCount: 3,
+      sampleWindowMs: 30_000,
+      singleFlightBudgetMs: 20_000,
+      killTimeCpuRecheckWindowMs: 2_500,
+      sigtermGraceMs: 12_000,
+      inFlightKillTtlMs: 36_000,
+      maxKillDeferrals: 3,
+      killLedgerMaxPerSignaturePerHour: 3,
+      maxClassificationsPerScan: 4,
+      classifierCacheTtlMs: 300_000,
+      classifierCacheMaxEntries: 256,
+      inFlightKillSetMax: 64,
+      noticeBudgetPerWindow: 4,
+      noticeWindowMs: 600_000,
+    },
+    // Turn-End Self-Deferral Guard (Phase A / shadow; docs/specs/turn-end-self-
+    // deferral-guard.md): the UnjustifiedStopGate authority OFFERS an allow-class
+    // U_SELF_DEFERRAL classification on every turn-end and RECORDS it as shadow
+    // telemetry (widened StopGateDb columns). Phase A blocks NOTHING. `enabled`
+    // is OMITTED so the runtime resolves it through the developmentAgent dark-
+    // feature gate (resolveDevAgentGate): LIVE on a dev agent, DARK on the fleet.
+    // OFF-state = the base stop-gate runs unchanged, no U_SELF_DEFERRAL rule in
+    // the prompt, no self-deferral columns recorded. Registered in
+    // DEV_GATED_FEATURES. Empty block = the gate decides at runtime.
+    selfDeferralGuard: {},
+    // Durable-Output Hygiene Standard §2 (Layer B — "What Persists Must Be
+    // Clean", docs/specs/durable-output-hygiene-standard.md): the config-gated
+    // DurableOutputScrubber redacts credential SPANS from LLM output at durable-
+    // output persistence chokepoints BEFORE the write. `enabled` is OMITTED so the
+    // runtime resolves it through the developmentAgent dark-feature gate
+    // (resolveDevAgentGate): LIVE on a dev agent, DARK on the fleet. `dryRun: true`
+    // is the canary — live-on-dev COMPUTES + records would-redact metrics but
+    // stores the ORIGINAL text (no durable mutation) until a deliberate
+    // dryRun:false flip, which is the OPERATOR'S endpoint decision (a false-positive
+    // redaction destroys data — Frontloaded Decision #4; the dev agent self-flips
+    // only on the §Frontloaded-Decision-#4 soak criterion). DO NOT hardcode
+    // `enabled` here — a baked-in false would dark dev agents too (the #1001 shape
+    // the dark-gate lint forbids for a dev-gated block). perStore is the per-store
+    // opt-out map (the bypass-carries-its-own-cap per-store control).
+    durableOutputScrub: {
+      dryRun: true,
+      perStore: {},
+    },
     // StrandedTopicSentinel (stranded-inbound-self-heal): a PURE-SIGNAL detector
     // that surfaces a topic whose owner machine is online-by-heartbeat but unable
     // to serve (quota-walled or adapter-disconnected) while a healthy machine
@@ -474,6 +630,27 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       captureBacklogDrainPerTick: 5,
       captureBacklogMaxRetries: 3,
     },
+    // Both omit `enabled`: resolveDevAgentGate makes them live on development
+    // agents and dark on the fleet. v1 remains observe-only via dryRun:true.
+    correctionClassReview: {
+      dryRun: true,
+      maxReviewsPerTick: 5,
+      maxAttempts: 3,
+      maxOpenArtifacts: 50,
+      agingDays: 7,
+    },
+    completionClaimVerification: {
+      dryRun: true,
+      generalObservation: true,
+      maxAuditBytes: 50 * 1024 * 1024,
+      maxCorpusBytes: 500 * 1024 * 1024,
+      maxQueued: 128,
+      maxQueuedPerTopic: 8,
+      maxConcurrent: 4,
+      maxConcurrentPerTopic: 1,
+      queueTtlMs: 120_000,
+      redactIdentifiers: false,
+    },
     // Bias-to-Action standing-authorization signal (BIAS-TO-ACTION-SPEC, D8).
     // Dev-gated DARK: `enabled` is intentionally OMITTED so the development-agent
     // gate resolves it (live-on-dev / dark-on-fleet, the standard pattern). The
@@ -592,6 +769,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       floorDriftCheckTicks: 6,
       floorDriftLookbackPrs: 10,
       floorDriftLookbackCommits: 30,
+      // red-pr-watchdog: signal-only backstop, default on. Raises ONE deduped,
+      // age-escalating attention line when a self-authored open PR is stuck RED
+      // past redThresholdMs (2h). Only runs while the parent watcher is enabled.
+      redPrWatchdog: { enabled: true, redThresholdMs: 7_200_000 },
     },
     // Master gate for Telegram delivery of silently-stopped-sentinel
     // escalations. Default false → sentinel notices are housekeeping and stay
@@ -708,6 +889,26 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       dryRun: true,
       credentialShareEnforced: false,
     },
+    // Hub-intent recognizer (Conversion #3, docs/specs/keyword-intent-conversions-1-and-3.md).
+    // The "open this"/"tie this to <topic>" hub-bind DECISION is inferred by an LLM
+    // over the message + recent conversation (HubIntentClassifier), NOT the anchored
+    // regexes it replaced — which SWALLOWED the message before the agent saw it, so a
+    // misread silently EATS a real message (the highest-care conversion). `enabled` is
+    // DELIBERATELY OMITTED (not hardcoded false) so resolveDevAgentGate decides — DARK
+    // on the fleet, LIVE on a development agent (registered in DEV_GATED_FEATURES,
+    // configPath threadline.hubIntent.enabled). Ships dry-run FIRST: on a dev agent the
+    // classifier RUNS and LOGS would-swallow vs would-pass to logs/hub-intent.jsonl, but
+    // the message ALWAYS passes through (never swallowed) until a deliberate dryRun:false
+    // — proving the false-positive rate collapsed before it can eat a message. Fail-OPEN
+    // on any uncertainty. applyDefaults deep-merges this under `threadline` on update
+    // (Migration Parity), so existing agents backfill it without an explicit patch.
+    hubIntent: {
+      dryRun: true,
+      minConfidence: 0.85,
+      timeoutMs: 4000,
+      contextWindowTurns: 6,
+      modelTier: 'fast',
+    },
   },
   // Topic-intent auto-capture loop (rung 0 of continuous-working-awareness).
   // ON by default (ratified): every substantive conversation turn gets a cheap
@@ -741,6 +942,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     minIntervalMs: 600000, // 10-min floor between ticks (anti-forced-cadence)
     maxRoundsPerDay: 24,
     dailySpendCapUsd: 0.5,
+    visibleEcho: true,
     // The "just be Echo" autonomous-fix loop (MENTOR-AUTONOMOUS-FIX-LOOP-SPEC):
     // when enabled, the heartbeat keeps ONE full-tool Opus loop session alive on
     // the manual dogfooding loop (assign → observe → FIX as a fleet PR → report)
@@ -767,6 +969,16 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     replyChatId: '',
     replyTopicId: 0,
     sessionTimeoutMs: 300000, // 5 min bounded-wait per session
+  },
+  // Evolution action-queue stale cleanup. Live in dry-run first: only ordinary
+  // pending actions are candidates; critical/pinned/future-deadline work is kept.
+  evolutionActions: {
+    autoExpiry: {
+      enabled: true,
+      maxAgeDays: 21,
+      sweepIntervalMs: 21600000,
+      dryRun: true,
+    },
   },
   // Spec-review standards-conformance gate (rung-3 normative slice). Default-on:
   // the gate reads docs/STANDARDS-REGISTRY.md and signals possible standard
@@ -854,6 +1066,47 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // Mutual SSH-subsystem bootstrap + continuous directional proof.
+    // `enabled` is deliberately OMITTED: DEV_GATED_FEATURES makes this live on
+    // the development agent and dark on fleet. dryRun FIRST creates keys and
+    // computes admissions/probes but does not accept peer sessions.
+    mutualSsh: {
+      dryRun: true,
+      requiredForEmployeeRole: false,
+      freshnessMs: 300_000,
+      cadenceMs: 60_000,
+      probeDeadlineMs: 8_000,
+      concurrency: 4,
+    },
+    // Reliable peer-machine execution. `enabled` is deliberately OMITTED so
+    // resolveDevAgentGate keeps fleet dark; dry-run records the intended
+    // account-home authorized_keys change without granting SSH access.
+    peerExecution: {
+      dryRun: true,
+      requiredForReadiness: true,
+      port: 22,
+    },
+    // Seamless LLM Orchestrator (docs/specs/llm-seamlessness-orchestrator.md).
+    // A lease-gated tier-1 LLM loop for ANTICIPATORY working-set preload — PROPOSE-
+    // ONLY / SIGNAL-ONLY (it never moves a conversation; placement stays with the
+    // deterministic RebalancePlanner/PlacementExecutor). `enabled` is deliberately
+    // OMITTED — the dev-agent dark-feature gate (resolveDevAgentGate) resolves it:
+    // LIVE on a development agent, DARK on the fleet. `dryRun` ships TRUE (FD-7
+    // telemetry pattern): the loop logs would-actuate + audits, and actuates
+    // NOTHING, until a deliberate operator flip to dryRun:false. applyDefaults()
+    // deep-merges this under an existing multiMachine block WITHOUT clobbering an
+    // operator-set value (Migration Parity). Numeric knobs are range-validated at
+    // startup.
+    seamlessOrchestrator: {
+      dryRun: true,
+      cadenceMs: 900000,        // 15 min full cadence
+      idleCadenceMs: 1800000,   // 30 min while idle (no proposals)
+      maxProposalsPerTick: 3,   // F6 proposal cap
+      llmLiftThreshold: 0.15,   // F4 deterministic-first: skip the LLM on a clear winner
+      perTopicCooldownMs: 1800000, // 30 min per-topic cooldown between actuations
+      maxDailyCents: 100,       // F7 LLM daily spend cap (background lane)
+      prefetchWindowByteBudget: 33554432, // 32MB per-window auto-prefetch disk budget
+    },
     // Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §7).
     // `enabled` is deliberately OMITTED — the dev-agent dark-feature gate
     // (resolveDevAgentGate) resolves it: LIVE on a development agent, DARK on
@@ -1145,6 +1398,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       enabled: false,
       stage: 'dark',
       dryRun: true,
+      // Promotion activation is independently reversible from the already-live
+      // demotion reconciler. `off` means no driver construction, no timer, and
+      // POST /session-pool/promote returns 503. The ceiling is a second,
+      // fail-closed authority bound: selecting a model alone cannot promote.
+      promotionModel: 'off',
+      promotionCeiling: 'dark',
+      promotionTickMs: 60000,
       clockSkewToleranceMs: 300000,
       maxExpectedNtpDriftMs: 250,
       machineRecordEvictionMs: 86400000,
@@ -1160,6 +1420,24 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       transferOutputCutoffMs: 1000,
       placementCooldownMs: 300000,
       topicPlacementUpdateMinIntervalMs: 10000,
+      // §L4 move-intent recognizer (docs/specs/nickname-move-intent-llm-rebuild.md).
+      // The "move/run/pin this on <nickname>" decision is inferred by an LLM over
+      // the message + recent conversation (MoveIntentClassifier), NOT a keyword
+      // verb list (the 2026-07-03 hijack). `enabled` is DELIBERATELY OMITTED (not
+      // hardcoded false) so resolveDevAgentGate decides — DARK on the fleet, LIVE
+      // on a development agent (registered in DEV_GATED_FEATURES, configPath
+      // multiMachine.sessionPool.moveIntent.enabled). Ships dry-run FIRST: on a
+      // dev agent the classifier RUNS and LOGS would-hijack vs would-pass to
+      // logs/move-intent.jsonl, but the message ALWAYS passes through (never
+      // hijacked) until a deliberate dryRun:false — proving the false-positive
+      // rate collapsed before it can eat a message. Fail-OPEN on any uncertainty.
+      moveIntent: {
+        dryRun: true,
+        minConfidence: 0.85,
+        timeoutMs: 4000,
+        contextWindowTurns: 6,
+        modelTier: 'fast',
+      },
       // G3 — lease-gated spawn (MESH-SELF-HEAL-SPEC §3.3, FD6). "Spawn iff I hold
       // the fenced awake-lease, else forward to the holder" — stops the
       // duplicate-session harm (the 2026-06-27 incident). Ships DARK (enabled:
@@ -1231,6 +1509,62 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         bootstrapNonObservationMultiple: 3,
         selfFenceTtlMs: 60000,
       },
+      // Ownership-gated spawn seam (ownership-gated-spawn-and-judgment-within-
+      // floors spec §3.1/§4 — Layer A). `enabled` DELIBERATELY OMITTED
+      // (resolveDevAgentGate — dev-live-in-dryRun, dark fleet; DEV_GATED_FEATURES).
+      // dryRun:true is the Increment-1 canary: the seam runs + journals
+      // would-block verdicts, never refuses a spawn. Structural invariant
+      // (§3.1 item 6): even dryRun:false cannot enforce until the durable
+      // inbound queue is live on this machine (durable custody).
+      ownershipGatedSpawn: {
+        dryRun: true,
+        // Tier 1.4: bind only the verified live-other-owner row when durable
+        // custody is live. Owner-dark/error rows remain dry-run until their
+        // separate hold + stale-release prerequisites graduate.
+        enforceLiveOwner: true,
+      },
+      // Duplicate-session reconciler (same spec §3.2 — Layer B). `enabled`
+      // OMITTED (dev gate; DEV_GATED_FEATURES). dryRun:true logs intended
+      // convergence writes without landing any CAS. Refuses to arm on an
+      // in-memory ownership store (substrate-not-ready — §3.2.0).
+      duplicateReconciler: {
+        dryRun: true,
+        reconcilerTickMs: 60000,
+        maxReconcilesPerTick: 3,
+        maxConvergenceWritesPerTick: 5,
+        echoConfirmTicks: 4,
+        breakerThreshold: 3,
+        breakerWindowMs: 86400000,
+      },
+      // J1/J2 LLM arbiters (same spec §3.4 — Increment 3+). `enabled` OMITTED
+      // (dev gate; DEV_GATED_FEATURES). shadowMode:true = decide-and-log, never
+      // act (the Increment-3 posture; acting is Increment 4's evidence-gated flip).
+      judgmentArbiters: {
+        dryRun: true,
+        shadowMode: true,
+      },
+      // Commitment custody transfer on reconciled/moved closeout (same spec
+      // §3.2.4a — Increment 2b, independently reversible). `enabled` OMITTED
+      // (dev gate; DEV_GATED_FEATURES). While unavailable, an open-commitment
+      // duplicate ESCALATES rather than auto-closes (the safe degradation).
+      commitmentCustodyTransfer: {
+        dryRun: true,
+      },
+      // SessionPoolFailoverRunner boot-wiring (§Rollout, Track H — the in-agent
+      // PRODUCER of a real failover-E2E green). `enabled` DELIBERATELY OMITTED
+      // (never hardcoded false) so resolveDevAgentGate decides — dev-live,
+      // DARK on the fleet; registered in DEV_GATED_FEATURES. dryRun:true is the
+      // canary: the runner runs the real two-node failover E2E subprocess and
+      // records its verdict, but a recorded green PROMOTES the stage (real
+      // authority), so while dryRun holds the verdict lands in a SIDE store the
+      // promotion path never reads — nothing promotes until a deliberate
+      // dryRun:false. tickIntervalMs paces the slow cadence (the E2E is a heavy
+      // two-server subprocess — floored at 60000 so it can never hot-loop).
+      failoverRunner: {
+        dryRun: true,
+        tickIntervalMs: 3600000,
+        checkTimeoutMs: 180000,
+      },
     },
     // Coherence Journal (COHERENCE-JOURNAL-SPEC §3.7). DARK-SHIP: `enabled` is
     // deliberately OMITTED — the runtime resolves `enabled ?? !!developmentAgent`
@@ -1242,7 +1576,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     coherenceJournal: {
       flushIntervalMs: 250,
       scannerIntervalMs: 60000,
-      replication: { maxBatchBytes: 262144 },
+      replication: {
+        maxBatchBytes: 262144,
+        // One-shot replicated-record journal compaction. Explicit opt-in only;
+        // first activation reports N -> M without touching disk.
+        compaction: { run: false, dryRun: true },
+      },
       // Working-Set Handoff (WORKING-SET-HANDOFF-SPEC §3.7). NO enable flag
       // here — the feature activates IFF replication.enabled === true (the
       // pull is meaningless without replication's mesh path and must never
@@ -1260,6 +1599,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
         serveConcurrency: 2,
         rearmConcurrency: 1,
         busyRetryCap: 10,
+        // intelligent-working-set-lazy-sync (F3/F8). recordInteractive is the
+        // recorder kill-switch READ BY THE PostToolUse hook (a standalone JS file
+        // that can't dev-gate) — DARK by default (false ⇒ the hook early-exits, no
+        // interactive artifact is recorded). recordTtlDays is the record-GC horizon
+        // (distinct from the 7d pending-pull TTL above); rows older are purged at boot.
+        recordInteractive: false,
+        recordTtlDays: 30,
       },
       // Commitments Coherence (COMMITMENTS-COHERENCE-SPEC §3.6). No enable
       // flag — rides replication.enabled === true like the working set.
@@ -1381,6 +1727,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       topicOperator: {
         dryRun: false,
       },
+      // Correction class-review lifecycle records are coherence-critical but
+      // ship dry-run first. `enabled` is intentionally omitted for the dev gate.
+      classReview: {
+        dryRun: true,
+      },
       // Secure A2A Verified Pairing §3.8 (FD11) — `threadline-pairing-record`, the EIGHTH
       // replicated-store consumer. Replicates ONLY the verified-IDENTITY RESULT of a pairing
       // { peerFp, peerIdentityPub, state:'mutual-verified', verifiedAt, verifiedOnMachine } —
@@ -1407,6 +1758,38 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // gate (`enabled ?? !!config.developmentAgent`) — live on the dev agent,
   // dark on the fleet; the live-fleet flip (registering `enabled: true` here)
   // is the tracked follow-up per the spec's rollout Resolution rule.
+  // Owner-dark ladder (ownership-gated-spawn-and-judgment-within-floors spec
+  // §3.3/§4). USER-facing bounds, not flags: the ladder itself activates with
+  // the ownershipGatedSpawn seam. maxUserSilenceMs is the silence CEILING
+  // (measured from an episode's first held/refused message to a real answer or
+  // the rung-3 notice; J1 may shorten but never extend past it).
+  ownerDarkLadder: {
+    maxUserSilenceMs: 600000,
+    maxConcurrentHolds: 20,
+    noticeCooldownMs: 1800000,
+  },
+  // Judgment-call decision provenance (same spec §3.5). Retention + sampling
+  // are the ONLY config here — the redaction contract is an INVARIANT in code.
+  // deterministicSampling 1.0 during the Increment-1 soak; the Increment-2
+  // entry gate steps the default down to 0.1. Arbiter rows are always written.
+  provenance: {
+    retentionDays: 14,
+    deterministicSampling: 1.0,
+  },
+  // Constitutional ceilings carried by ratified standards (three-standards-
+  // enforcement spec, converged 2026-07-03: Self-Heal Before Notify's
+  // recoverable-latency ceiling — a recoverable watcher must surface its
+  // low-noise observability line within this bound even while self-heal is
+  // still running; a watcher needing longer escalates instead of extending).
+  // Landed here at that spec's CONVERGED value per the §3.8 authority clause
+  // of ownership-gated-spawn-and-judgment-within-floors.
+  standards: {
+    selfHealBeforeNotify: {
+      // Numeric SECONDS (the converged proposed value "300s" = 5 min). A
+      // missing/non-numeric value fails CLOSED (escalate-sooner) per that spec.
+      recoverableLatencyCeiling: 300,
+    },
+  },
   // NOTE: `InstarConfig.selfKnowledge` is DISTINCT from the SelfKnowledgeTree
   // metadata field on AgentContextSnapshot — different type, different system.
   // applyDefaults add-missing semantics → migrateConfig backfills on update
@@ -1517,6 +1900,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // dev-gate lesson). These are the operator's tuning/opt-out dials; dryRun
   // defaults true so the dark→live promotion is the operator's deliberate flip.
   commitments: {
+    autoExpiry: {
+      enabled: true,
+      maxAgeDays: 21,
+      sweepIntervalMs: 21_600_000,
+      dryRun: true,
+    },
     agentOwnedFollowthrough: {
       dryRun: true,
       // externalBlockWindowMs / externalBlockCeilingMs / externalBlockSweepMs:
@@ -1564,7 +1953,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       detectWorkerHeapMb: 1536,       // worker V8 heap cap, co-sized with maxIndexBytes (≈6× parse expansion + headroom)
       maxIndexBytes: 209715200,       // 200MB pre-parse byte guard (200×6 ≈ 1200MB < heap; refuse above this)
       snapshotSampleMax: 500,         // cap on the /stale snapshot sample
-      gitMaxBuffer: 67108864,         // 64MB explicit git ls-tree buffer (never the 10MB default that throws)
+      gitMaxBuffer: 67108864,         // deprecated compatibility knob; streaming ls-tree ignores it
       detectCandidateHeadroom: 4,     // maxCandidates = maxNodesPerPass × this
       maxRequestNodes: 50000,         // /cartographer/tree (full) ceiling → too-large-for-request above
       scaffoldChunkNodes: 500,        // boot-path chunked scaffold: node-ops per macrotask before yielding
@@ -1635,6 +2024,26 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     spawnFailureBreakerThreshold: 3,      // §10.4 N (attributable failures)
     switchNowConfirmTtlMs: 300000,        // §8 'switch now' validity window
     defaults: {},                         // per-topic config-default profiles (§5.2)
+    // Offender #1 conversion (docs/specs/keyword-intent-conversions-1-and-3.md).
+    // The "change this topic's framework/model/thinking" decision is inferred by an
+    // LLM over the message + recent conversation (ProfileIntentClassifier), NOT the
+    // keyword regexes that used to live in parseProfileTrigger (the 2026-07-03
+    // keyword-intent audit's offender #1). `enabled` is DELIBERATELY OMITTED (not
+    // hardcoded false) so resolveDevAgentGate decides — DARK on the fleet, LIVE on a
+    // development agent (registered in DEV_GATED_FEATURES, configPath
+    // topicProfiles.intentClassifier.enabled). Ships dry-run FIRST: on a dev agent
+    // the classifier RUNS and LOGS would-actuate vs would-pass to
+    // logs/profile-intent.jsonl, but the message ALWAYS passes through (never
+    // actuated) until a deliberate dryRun:false — proving the false-positive rate
+    // collapsed before it can wrongly respawn a session. Fail-OPEN on any
+    // uncertainty. Enforces "Intelligence Infers, Keywords Only Guard".
+    intentClassifier: {
+      dryRun: true,
+      minConfidence: 0.85,
+      timeoutMs: 4000,
+      contextWindowTurns: 6,
+      modelTier: 'fast',
+    },
   },
   // Live credential re-pointing (spec: live-credential-repointing-rebalancer.md).
   // developmentAgent dark-feature gate (operator directive 2026-06-13): `enabled` is
@@ -1647,6 +2056,14 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // (a baked-in false would dark dev agents too — the #1001 shape the dark-gate lint
   // forbids for a dev-gated block).
   subscriptionPool: {
+    proactiveSwap: {
+      // Login-loss swap trigger — DEV-GATED: enabled deliberately omitted.
+      // A dev agent evaluates the exact intent but performs no session kill
+      // until a deliberate dryRun:false promotion. Fleet remains dark.
+      loginLoss: {
+        dryRun: true,
+      },
+    },
     credentialRepointing: {
       dryRun: true,
       manualLeversEnabled: true,
@@ -1705,6 +2122,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // dark-gate lint forbids for a dev-gated block).
   feedbackFactory: {
     processing: {},
+    drain: {
+      maxReadyScansPerTick: 250,
+      maxClaimsPerTick: 10,
+      maxWallClockMs: 90000,
+    },
+    consumer: {
+      dryRun: true,
+      maxClaimsPerTick: 10,
+    },
   },
 };
 

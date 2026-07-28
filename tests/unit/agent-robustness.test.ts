@@ -81,6 +81,14 @@ describe('Agent Robustness', () => {
       const target = fs.readlinkSync(symlinkPath);
       expect(fs.existsSync(target)).toBe(true);
     });
+
+    it('never selects the managed node symlink as its own target', async () => {
+      const { excludeManagedNodeSymlink } = await import('../../src/commands/setup.js');
+      const managed = path.join(tmpHome, 'agent', '.instar', 'bin', 'node');
+      const realNode = path.join(tmpHome, '.nvm', 'versions', 'node', 'v24', 'bin', 'node');
+
+      expect(excludeManagedNodeSymlink([managed, realNode], managed)).toEqual([realNode]);
+    });
   });
 
   describe('withLockSync force recovery', () => {

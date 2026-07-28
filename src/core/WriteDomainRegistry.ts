@@ -236,7 +236,6 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'machine id embedded in the kv key — single writer per file; peers’ copies ride git-sync inertly',
     },
   });
-
   // ── Route seam, wave 1: the P2-6 family (§3.5) ─────────────────────────
   // Both families are machine-local ⇒ admit everywhere — the user-visible
   // P2-6 fix. Stories per §3.1 + frontloaded decision §9.3.
@@ -256,6 +255,188 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
+  const classReviewStory: ConvergenceStory = {
+    logical: 'ws2x-replicated',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'class-review rows live in a machine-local SQLite/WAL store under the .instar sync exclusion; own-origin shells/outcomes converge through the class-review-record replicated store and remote terminal state remains advisory',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
+  reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/completion-claim/observe',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'completion evidence belongs to the executing machine/session; the route writes bounded audit/counter state under the .instar sync exclusion and pool reads proxy scrubbed observations without merging write authority',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/internal/stop-gate/reset-breaker',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the breaker describes this host physical provider route and lives in the machine-local StopGateDb under the git-sync-excluded .instar state jail',
+    },
+  });
+  // Promotion writes the coherence-critical, git-synced session-pool stage.
+  // Keep it behind the cluster lease holder; a standby must never create a
+  // competing rollout history even when its local signed evidence is green.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/session-pool/promote',
+    domain: 'cluster-shared',
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/slack/session-reply',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the route accepts only a ConversationRegistry row whose origin is this machine, then emits through this machine\'s physical Slack adapter credentials; replicated or foreign-origin rows are refused and no git-synced store is mutated',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/continuation/',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'continuation ledgers bind to one local Codex session and Stop hook under the project stateDir; .instar/continuation is explicitly excluded from git sync so another machine never adopts or actuates them',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/playwright-profiles/seat/acquire',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the lease protects browser cookies/user-data physically resident on this host; ~/.instar/state is outside every agent project and git sync',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/playwright-profiles/seat/release',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'ownership-checked release mutates the same host-wide browser-seat lease outside project git sync',
+    },
+  });
+
+  // Apprenticeship instance transitions mutate durable program state. Keep
+  // those writes on the cluster-shared/single-writer side so two machines can
+  // never fork rung or lifecycle history. Read-only POST previews currently
+  // share this path family; admission remains dry-run until the wave-2 latch.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/apprenticeship/instances/',
+    domain: 'cluster-shared',
+  });
+
+  // Pending enrollment records + raw login panes belong to the machine driving
+  // the login. Pool-scope pending-logins merges the logical view across peers;
+  // the backing stateDir file remains inside the git-sync-excluded .instar jail.
+  const enrollmentStory: ConvergenceStory = {
+    logical: 'pool-scope-read-merge',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'GET /subscription-pool/pending-logins?scope=pool merges owning-machine records; pending-logins.json and its raw tmux pane remain target-local under the .instar git-sync exclusion',
+  };
+  reg.add({
+    kind: 'route', method: 'POST', pathPrefix: '/subscription-pool/enroll/',
+    domain: 'machine-local', story: enrollmentStory,
+  });
+  reg.add({
+    kind: 'route', method: 'POST', pathPrefix: '/subscription-pool/:id/repair-email',
+    domain: 'machine-local', story: enrollmentStory,
+  });
+
+  // Credential identity repair executes staged swaps only among login homes on
+  // this machine. Claude credentials cannot be relocated across machines; the
+  // ledger/audit state is likewise agent-home-local and outside git sync.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/credentials/repair-plan/execute',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: false,
+      note: 'executes identity-verified staged swaps between this machine’s credential homes; credential files and the location ledger/audit live under agent-home-local state and never converge across machines',
+    },
+  });
+
+  // ── Routing Control Room MONEY surfaces (Increment B, §Surface 2) ────────
+  // Single-writer BY DESIGN (FD-20): the whole cap lives on ONE PIN-designated
+  // metered-lease machine until Increment D — the caps store + booking ledger are
+  // that machine's local state files (git-sync-excluded under .instar/state/), and
+  // every OTHER machine's gate fails closed by construction (`no-cap-slice` /
+  // `lease-liveness-unconfirmed`), so machine-local admission IS the convergence
+  // story: there is nothing to converge, one machine may ever write.
+  const moneyStory: ConvergenceStory = {
+    logical: 'git-sync-excluded',
+    onSharedGitSyncedPath: false,
+    note: 'FD-20: Increment B money is single-writer (one PIN-designated metered-lease machine); state/routing-spend-caps.json + the booking ledger are its local files; every other machine’s gate fails closed by construction. Increment D replicates cap SLICES, never these files.',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/plan', domain: 'machine-local', story: moneyStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/caps/adjust', domain: 'machine-local', story: moneyStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/go-live', domain: 'machine-local', story: moneyStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/unfreeze', domain: 'machine-local', story: moneyStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/freeze', domain: 'machine-local', story: moneyStory });
+
+  // ── Interactive working-set artifact recorder (intelligent-working-set-lazy-sync §F8) ──
+  // Machine-local: POST /coherence/working-set/record writes THIS machine's OWN-ORIGIN interactive
+  // artifact rows to .instar/working-set/artifacts.json. Logical state converges via the WS2
+  // 'working-set-artifact' replicated store (dark by default: stateSync.workingSetArtifact omitted
+  // ⇒ no emit); the backing file sits under the git-sync-excluded .instar/ jail.
+  const workingSetArtifactStory: ConvergenceStory = {
+    logical: 'ws2x-replicated',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'WS2 working-set-artifact replication covers .instar/working-set/artifacts.json (own-origin per-topic rows) and is dark on the fleet (stateSync.workingSetArtifact omitted ⇒ no emit); file-level arm via the .instar/ git-sync exclusion',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/coherence/working-set/record', domain: 'machine-local', story: workingSetArtifactStory });
+
+  // ── Seamless orchestrator manual soak tick (llm-seamlessness-orchestrator.md §Component3) ──
+  // Machine-local by construction: POST /intelligence/seamless-orchestrator/tick drives THIS
+  // machine's lease-gated orchestrator pass once. In dryRun (the shipped default) it actuates
+  // NOTHING; its only durable writes are the append-only audit trail (logs/orchestrator-actions.jsonl)
+  // + placement-signal log — per-machine soak EVIDENCE, never converged across machines, fully
+  // rebuildable (the next tick regenerates them). The in-process oscillation-blacklist is machine-
+  // local memory; its WS2 cross-machine replication is a tracked P4-live follow-up. The audit logs
+  // live under the agent-home `logs/` dir (a sibling of .instar/), outside any git repo — never a
+  // git-synced/shared mesh path.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/intelligence/seamless-orchestrator/tick',
+    domain: 'machine-local',
+    story: {
+      logical: 'ephemeral-rebuildable',
+      onSharedGitSyncedPath: false,
+      note: 'the orchestrator audit + placement-signal logs are per-machine soak evidence under agent-home logs/ (outside git); the oscillation-blacklist is in-process memory (WS2 replication is a tracked P4-live follow-up); dryRun actuates nothing',
+    },
+  });
 
   // ── Review canary battery trigger (context-aware-outbound-review §D9.4b) ──
   // Machine-local by construction: the Bearer-gated soak trigger runs THIS
@@ -276,6 +457,115 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       onSharedGitSyncedPath: true,
       fileLevel: 'git-sync-excluded',
       note: 'canary fixtures are finally-cleaned rows in the per-machine topic-memory SQLite (reserved negative topic ids); the D8 decision log is per-machine soak evidence; file-level arm shipped in FileClassifier sync exclusions (.instar/topic-memory.db + logs/response-review-decisions.jsonl)',
+    },
+  });
+
+  // ── Test-runner concurrency-bound recovery lever (test-runner-concurrency-bound §2.6/§2.7) ──
+  // Machine-local by construction: the semaphore bounds THIS machine's CPU
+  // cores, so its holders file is an OS-level rendezvous at ~/.instar/
+  // host-test-runner-holders.json — outside any git repo (a lock-file peer),
+  // never git-synced. POST /prune only removes dead/TTL-expired holder rows to
+  // restore capacity — fully ephemeral and rebuildable (a re-run regenerates
+  // everything it touches). Machine-locality is doubly enforced in the design:
+  // df-local determination gates all reclaim, and a foreign-hostname holder on a
+  // (mis)synced ~/.instar is DROPPED, so the count never converges across
+  // machines even if the path is userspace-synced (Dropbox/iCloud). The GET
+  // status route is a pure read (non-mutating) and needs no classification.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/test-runner-limiter/prune',
+    domain: 'machine-local',
+    story: {
+      logical: 'ephemeral-rebuildable',
+      onSharedGitSyncedPath: false,
+      note: 'holders file is a machine-local OS rendezvous at ~/.instar/host-test-runner-holders.json (outside any git tree); prune reclaims only dead/expired rows (capacity bookkeeping, fully rebuildable); df-local gate + foreign-hostname-holder drop prevent cross-machine convergence even on a userspace-synced home',
+    },
+  });
+
+  // ── External-hog arm/disarm (external-hog-sentinel spec, arm gate) ──
+  // Machine-local BY SAFETY DESIGN, not convenience: the PIN-gated arm marker
+  // (state/external-hog-arm.json) is this machine's operator consent to LIVE
+  // kills of THIS machine's processes. It must NEVER converge across machines —
+  // a synced marker would silently arm a peer's sentinel the operator never
+  // consented to (the exact silent-re-arm class the armEpoch/disarmEpoch design
+  // exists to prevent). So the logical story IS the file-level story: the
+  // marker is git-sync-excluded and each machine's arm state stands alone.
+  const externalHogArmStory: ConvergenceStory = {
+    logical: 'git-sync-excluded',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'arm marker is per-machine PIN consent — cross-machine convergence would BE the vulnerability (silent remote arm); file-level arm shipped in FileClassifier sync exclusions (.instar/state/external-hog-arm.json)',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/external-hog/arm', domain: 'machine-local', story: externalHogArmStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/external-hog/disarm', domain: 'machine-local', story: externalHogArmStory });
+
+  // Feedback Factory operating drain: all mutations target the canonical
+  // holder's durable queue/authority/promotion state. Non-holders must proxy
+  // or be refused by write admission; they never run a competing local drain.
+  // ACT-724 check-in reminder pass: mutates the COMMITMENT store (the
+  // delivery stamp + attempt counter), which is shared agent state, and the
+  // spec requires the pass to run on the serving-lease holder ONLY — the same
+  // single-writer shape as the feedback-factory entries below. Belt-and-braces
+  // even if that rule were violated: the CAS stamp makes a second writer a
+  // no-op, so a duplicate reminder is impossible, only duplicated work.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/check-in-reminder/pass', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/process', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/tick', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/runs/', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/failover/finalize', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/readiness-authorities', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/readiness/hold', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/readiness/release', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/consumer/promote', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/consumer/revoke', domain: 'cluster-shared' });
+
+  // ── Decision-Quality deterministic grading pass (llm-decision-quality-meter §5.5, §Multi-machine) ──
+  // Machine-local by construction: POST /decision-quality/grade-pass upserts grade
+  // rows for THIS machine's decision points into the per-machine feature-metrics
+  // SQLite (state/server-data/feature-metrics.db — decision_quality/decision_outcomes/
+  // rollup/cursor tables). It inherits the RATIFIED machine-local feature_metrics
+  // posture (spec §Multi-machine: "machine-local SQLite observability; per-machine
+  // spend/activity is the semantic unit"); the grading job runs per machine over its
+  // OWN local rows. Logical convergence is proxied-on-read — GET /decision-quality?scope=pool
+  // merges MACHINE-TAGGED rows across peers, summed nowhere silently. The backing store
+  // is a binary SQLite .db under the generated .instar/ server-data dir — git-sync-excluded
+  // on both counts (FileClassifier BINARY_EXTENSIONS + the .instar/server-data generated
+  // pattern), mirroring the topic-memory.db precedent above.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/decision-quality/grade-pass',
+    domain: 'machine-local',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'grades upsert into the per-machine feature-metrics SQLite (decision_quality/decision_outcomes tables); GET /decision-quality?scope=pool merges machine-tagged rows across peers (summed nowhere silently); the .db is git-sync-excluded via FileClassifier BINARY_EXTENSIONS + the .instar/server-data generated pattern',
+    },
+  });
+
+  // ── Benchmark-Divergence analyze pass (benchmark-divergence-detector §FD8, §Multi-machine) ──
+  // Machine-local by construction, inheriting the SAME ratified feature_metrics posture as
+  // the decision-quality grade-pass above: POST /benchmark-divergence/analyze runs on the
+  // SERVING-LEASE HOLDER only and upserts finding + watermark rows into the per-machine
+  // feature-metrics SQLite (state/server-data/feature-metrics.db — benchmark_analysis_finding
+  // /_watermark/_history + decision_quality_rollup_by_model). Findings are holder-local durable
+  // state (never replicated) that idempotently rebuild from raw on the next pass; logical
+  // convergence is proxied-on-read — GET /benchmark-divergence?scope=pool merges machine-tagged
+  // findings across peers through the FD9 clamps (free-text never crosses), summed nowhere
+  // silently. The .db is git-sync-excluded on both counts (FileClassifier BINARY_EXTENSIONS +
+  // the .instar/server-data generated pattern), exactly like the grade-pass precedent.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/benchmark-divergence/analyze',
+    domain: 'machine-local',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'lease-holder-only analyze pass upserts holder-local findings/watermark/by_model-rollup rows into the per-machine feature-metrics SQLite; GET /benchmark-divergence?scope=pool merges machine-tagged findings across peers through the FD9 clamps (free-text never crosses); the .db is git-sync-excluded via FileClassifier BINARY_EXTENSIONS + the .instar/server-data generated pattern',
     },
   });
 

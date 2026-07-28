@@ -12,7 +12,13 @@
  *
  * Ships dormant: `mentor.enabled=false` / `mentor.mode='off'` by default (§16).
  */
-import { runMentorTick, type MentorTickResult, type MentorMode, type MentorCycleCapture } from './MentorOnboardingTick.js';
+import {
+  runMentorTick,
+  type MentorTickResult,
+  type MentorMode,
+  type MentorCycleCapture,
+  type MentorDeliveryOutcome,
+} from './MentorOnboardingTick.js';
 import { llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
 import {
   runAutonomousGuardian,
@@ -70,6 +76,9 @@ export interface MentorConfig {
    *  name=instar-codey) — that mismatch silently broke same-machine a2a routing
    *  + reply-allowlisting until this field existed. */
   menteeAgentName?: string;
+  /** Machine that currently hosts the mentee agent. Required only when the
+   * mentor and mentee are on different machines; delivery uses signed MeshRpc. */
+  menteeMachineId?: string;
   minIntervalMs: number;
   maxRoundsPerDay: number;
   /** @deprecated dead config — we run on a Claude subscription; replacement is the
@@ -98,6 +107,8 @@ export interface MentorConfig {
    *  deliverA2aMessage, used both in the /a2a/inbox body and the Telegram
    *  fallback), so routing it here moves the entire exchange off the human topic. */
   mentorTopicId?: number;
+  /** Best-effort visible mirror of successful local-inbox mentor delivery. Default on. */
+  visibleEcho?: boolean;
   /**
    * Ordered onboarding backlog the mentor walks the mentee through (capability
    * checks, starter dev tasks). When set, an idle mentee gets the next concrete
@@ -136,6 +147,7 @@ export const DEFAULT_MENTOR_CONFIG: MentorConfig = {
   minIntervalMs: 600_000, // 10 min floor
   maxRoundsPerDay: 24,
   dailySpendCapUsd: 0.5,
+  visibleEcho: true,
   // botToken / menteeBotId / menteeTopicId default undefined → mentor wiring stays
   // dark until they are explicitly configured (per /mentor/bot-setup, future PR).
 };
@@ -159,7 +171,14 @@ export interface MentorRunnerServices {
   /** Build the conversation surface (Stage A's only input). */
   getSurface: (framework: string) => ConversationSurface;
   /** Persist-only delivery to the mentee (live mode only; never spawns). */
-  deliverToMentee?: (framework: string, message: string) => void;
+  deliverToMentee?: (
+    framework: string,
+    message: string,
+  ) =>
+    | void
+    | boolean
+    | MentorDeliveryOutcome
+    | Promise<void | boolean | MentorDeliveryOutcome>;
   /** Called once when a tick actually RAN (ran=true) — lets the host advance the
    *  min-interval clock and the per-day run counter. */
   onTickRan?: () => void;

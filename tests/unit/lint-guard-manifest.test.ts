@@ -226,4 +226,37 @@ describe('lint-guard-manifest', () => {
       expect(code).toBe(0);
     });
   });
+
+  // ── Machine-Coherence Guard manifest entry (machine-coherence-guard §6, C₁b-i) ──
+  describe('MachineCoherenceSentinel manifest entry (machine-coherence-guard C₁b-i wiring)', () => {
+    it('appears in GUARD_MANIFEST exactly ONCE and NOT in NOT_A_GUARD (no dual classification)', () => {
+      const manifestMatches = GUARD_MANIFEST.filter(e => e.component === 'MachineCoherenceSentinel');
+      expect(manifestMatches.length, 'GUARD_MANIFEST MachineCoherenceSentinel count').toBe(1);
+      expect(notAGuardComponents().has('MachineCoherenceSentinel'), 'must not be in NOT_A_GUARD').toBe(false);
+    });
+
+    it('is keyed on monitoring.machineCoherence.enabled with expectRuntime:true (C₁b-i registers the guardRegistry getter at boot) + fleet defaultEnabled:false + a 30s cadence', () => {
+      const entry = GUARD_MANIFEST.find(e => e.component === 'MachineCoherenceSentinel')!;
+      expect(entry).toBeDefined();
+      expect(entry.key).toBe('monitoring.machineCoherence.enabled');
+      expect(entry.configPath).toBe('monitoring.machineCoherence.enabled');
+      expect(entry.kind).toBe('config');
+      expect(entry.process).toBe('server');
+      // expectRuntime:true REQUIRES the server-boot guardRegistry.register callsite
+      // (C₁b-i, on the peerPresenceTick path) — flipped from the C₁a false.
+      expect(entry.expectRuntime).toBe(true);
+      // Fleet default is dark; the dev-gate resolves the live value.
+      expect(entry.defaultEnabled).toBe(false);
+      // Rides the 30s peerPresenceTick.
+      expect(entry.expectedTickMs).toBe(30_000);
+      // NOT loadBearing (D6): signal-only, no critical path consumes it yet.
+      expect((entry as { loadBearing?: boolean }).loadBearing ?? false).toBe(false);
+    });
+
+    it('the real lint stays clean with the MachineCoherenceSentinel entry present', () => {
+      const { code, out } = runLint([]);
+      expect(out).toContain('clean');
+      expect(code).toBe(0);
+    });
+  });
 });

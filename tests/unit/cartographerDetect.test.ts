@@ -73,26 +73,26 @@ function input(over: Partial<DetectInput> = {}): DetectInput {
 }
 
 describe('cartographerDetect.runDetect — bounded + ordered', () => {
-  it('returns at most maxCandidates and never materializes/sorts the full set (peak heap ≤ cap)', () => {
+  it('returns at most maxCandidates and never materializes/sorts the full set (peak heap ≤ cap)', async () => {
     const nodes: Record<string, { kind: 'file' }> = {};
     for (let i = 0; i < 1000; i++) nodes[`src/d${i % 10}/f${i}.ts`] = { kind: 'file' };
     writeIndex(nodes);
     const instr: DetectInstrumentation = { candidateHeapPeak: 0, starvedHeapPeak: 0, nodeFileReads: -1 };
-    const r = runDetect(input({ maxCandidates: 30 }), instr);
+    const r = await runDetect(input({ maxCandidates: 30 }), instr);
     expect(r.refused).toBe(false);
     expect(r.candidates.length).toBeLessThanOrEqual(30);
     expect(instr.candidateHeapPeak).toBeLessThanOrEqual(30);
     expect(r.staleTotal).toBe(1000); // counts the FULL candidate set, even though only 30 returned
   });
 
-  it('detect reads ZERO node files (the invariant the freeze fix depends on)', () => {
+  it('detect reads ZERO node files (the invariant the freeze fix depends on)', async () => {
     writeIndex({ 'a.ts': { kind: 'file' }, 'b.ts': { kind: 'file' } });
     const instr: DetectInstrumentation = { candidateHeapPeak: 0, starvedHeapPeak: 0, nodeFileReads: -1 };
-    runDetect(input(), instr);
+    await runDetect(input(), instr);
     expect(instr.nodeFileReads).toBe(0);
   });
 
-  it('GOLDEN deepest-first ordering (children before parents; path tiebreak)', () => {
+  it('GOLDEN deepest-first ordering (children before parents; path tiebreak)', async () => {
     // A fixed fixture → a frozen expected order. A future ordering change fails here.
     writeIndex({
       '': { kind: 'dir', hasChildren: true },
@@ -101,38 +101,38 @@ describe('cartographerDetect.runDetect — bounded + ordered', () => {
       'src/a/deep.ts': { kind: 'file' },
       'src/b.ts': { kind: 'file' },
     });
-    const r = runDetect(input({ maxCandidates: 100 }));
+    const r = await runDetect(input({ maxCandidates: 100 }));
     expect(r.candidates).toEqual(['src/a/deep.ts', 'src/a', 'src/b.ts', 'src', '']);
   });
 });
 
 describe('cartographerDetect.runDetect — refusal taxonomy (each feeds the breaker)', () => {
-  it('index missing → NOT a refusal, indexMissing:true (boot scaffold builds it)', () => {
+  it('index missing → NOT a refusal, indexMissing:true (boot scaffold builds it)', async () => {
     fs.rmSync(indexPath, { force: true });
-    const r = runDetect(input());
+    const r = await runDetect(input());
     expect(r.refused).toBe(false);
     expect(r.indexMissing).toBe(true);
   });
 
-  it('over-size index → refused detect-index-too-large (BEFORE the parse)', () => {
+  it('over-size index → refused detect-index-too-large (BEFORE the parse)', async () => {
     writeIndex({ 'a.ts': { kind: 'file' } });
-    const r = runDetect(input({ maxIndexBytes: 10 }));
+    const r = await runDetect(input({ maxIndexBytes: 10 }));
     expect(r.refused).toBe(true);
     expect(r.refusalReason).toBe('detect-index-too-large');
   });
 
-  it('corrupt index → refused detect-index-unreadable', () => {
+  it('corrupt index → refused detect-index-unreadable', async () => {
     fs.writeFileSync(indexPath, '{ this is not json');
-    const r = runDetect(input());
+    const r = await runDetect(input());
     expect(r.refused).toBe(true);
     expect(r.refusalReason).toBe('detect-index-unreadable');
   });
 
-  it('git failure → refused detect-git-error (NEVER "every node path-gone")', () => {
+  it('git failure → refused detect-git-error (NEVER "every node path-gone")', async () => {
     writeIndex({ 'a.ts': { kind: 'file' } });
     const nonGit = fs.mkdtempSync(path.join(os.tmpdir(), 'carto-nogit-'));
     try {
-      const r = runDetect(input({ projectDir: nonGit }));
+      const r = await runDetect(input({ projectDir: nonGit }));
       expect(r.refused).toBe(true);
       expect(r.refusalReason).toBe('detect-git-error');
     } finally {
@@ -142,11 +142,11 @@ describe('cartographerDetect.runDetect — refusal taxonomy (each feeds the brea
 });
 
 describe('cartographerDetect.runDetect — snapshot sample + freshness', () => {
-  it('stale sample is bounded by snapshotSampleMax and excludes secret-bearing paths', () => {
+  it('stale sample is bounded by snapshotSampleMax and excludes secret-bearing paths', async () => {
     const nodes: Record<string, { kind: 'file' }> = { 'src/.env': { kind: 'file' }, 'src/secrets.ts': { kind: 'file' } };
     for (let i = 0; i < 20; i++) nodes[`src/f${i}.ts`] = { kind: 'file' };
     writeIndex(nodes);
-    const r = runDetect(input({ snapshotSampleMax: 5 }));
+    const r = await runDetect(input({ snapshotSampleMax: 5 }));
     expect(r.staleSample.length).toBe(5);
     expect(r.staleTotal).toBe(22); // total counts everything, including secret-bearing
     const sampled = r.staleSample.map((e) => e.path);
@@ -154,13 +154,13 @@ describe('cartographerDetect.runDetect — snapshot sample + freshness', () => {
     expect(sampled).not.toContain('src/secrets.ts');
   });
 
-  it('freshness aggregate uses index-entry firstSeenAt/authorFailed (zero node files)', () => {
+  it('freshness aggregate uses index-entry firstSeenAt/authorFailed (zero node files)', async () => {
     writeIndex({
       'old.ts': { kind: 'file', codeHash: null, firstSeenAt: '2020-01-01T00:00:00.000Z' }, // past grace
       'new.ts': { kind: 'file', codeHash: null, firstSeenAt: '2026-01-02T00:00:00.000Z' }, // within grace
       'q.ts': { kind: 'file', codeHash: null, authorFailed: true },
     });
-    const r = runDetect(input({ graceMs: 1000 }));
+    const r = await runDetect(input({ graceMs: 1000 }));
     expect(r.freshness.neverAuthoredPastGrace).toBeGreaterThanOrEqual(1);
     expect(r.freshness.neverAuthoredWithinGrace).toBeGreaterThanOrEqual(1);
     expect(r.freshness.authorFailedCount).toBe(1);
@@ -168,14 +168,14 @@ describe('cartographerDetect.runDetect — snapshot sample + freshness', () => {
 });
 
 describe('cartographerDetect.runDetect — anti-starvation defer (index-sourced)', () => {
-  it('a dir candidate evicted by the bound, with a candidate child, gets staleSincePass bumped + persisted', () => {
+  it('a dir candidate evicted by the bound, with a candidate child, gets staleSincePass bumped + persisted', async () => {
     // maxCandidates=1 → only the deepest child is selected; the parent dir is evicted
     // but still has a candidate child → its staleSincePass increments in the index.
     writeIndex({
       'src': { kind: 'dir', hasChildren: true, staleSincePass: 2 },
       'src/deep.ts': { kind: 'file' },
     });
-    const r = runDetect(input({ maxCandidates: 1, maxNodesPerPass: 1 }));
+    const r = await runDetect(input({ maxCandidates: 1, maxNodesPerPass: 1 }));
     expect(r.deferredApplied).toBeGreaterThanOrEqual(1);
     const reread = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as CartographerIndex;
     expect(reread.nodes['src'].staleSincePass).toBe(3); // 2 → 3, persisted by the detect-phase write

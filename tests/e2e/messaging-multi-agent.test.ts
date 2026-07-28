@@ -42,6 +42,8 @@ import type { InstarConfig } from '../../src/core/types.js';
 import type { MessageEnvelope } from '../../src/messaging/types.js';
 import { registerAgent, unregisterAgent } from '../../src/core/AgentRegistry.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { assertPlainEnglish, assertHonestFailure, assertNoZombie, assertTimely } from '../../src/messaging/detectors/assertUserVisible.js';
+import { TestClock } from '../../src/messaging/detectors/clock.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -247,6 +249,14 @@ describe('E2E: Multi-Agent Messaging (same machine)', () => {
       expect(stored).not.toBeNull();
       expect(stored!.message.body).toBe('Cross-agent relay test');
       expect(stored!.delivery.phase).toBe('received');
+      assertPlainEnglish(stored!.message.body);
+      assertNoZombie([]);
+      assertHonestFailure({ message: 'Try sending again in a moment.', actionable: true, ok: false });
+      const clock = new TestClock(0);
+      clock.advance(250);
+      assertTimely([{ startedAt: 0, at: clock.now() }], 500, clock);
+      clock.advance(501);
+      expect(() => assertTimely([{ startedAt: 0, at: clock.now() }], 500, clock)).toThrow('exceeded its time bound');
     });
 
     it('Agent B sends → HTTP relay → Agent A receives (bidirectional)', async () => {

@@ -84,6 +84,18 @@ export const INSTAR_BASH_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry
     blocking: true,
     timeout: 6000,
   },
+  {
+    // Doorway-scan command-allowlist guard (spec DOORWAY-MODEL-KNOWLEDGE-REGISTRY §2.7):
+    // a strict command-shape allowlist that fires only inside the doorway-scan job
+    // session (env-first, INSTAR_JOB_SLUG=doorway-scan). Scope resolution fails OPEN
+    // (a guard bug never blocks an unrelated instar-dev/interactive session); command
+    // matching fails CLOSED (a non-sanctioned command in the doorway-scan session is
+    // refused). Strict no-op everywhere else.
+    type: 'command',
+    command: `node ${PD}/.instar/hooks/instar/doorway-scan-guard.js`,
+    blocking: true,
+    timeout: 5000,
+  },
 ];
 
 /**

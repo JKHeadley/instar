@@ -33,7 +33,7 @@ async function listen(app: express.Express): Promise<TestServer> {
 async function boot(enabled: boolean): Promise<{ server: TestServer; dir: string; pool: SubscriptionPool }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cred-census-int-'));
   const pool = new SubscriptionPool({ stateDir: dir });
-  pool.add({ id: 'claude-1', nickname: 'primary', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-1' });
+  pool.addFixture({ id: 'claude-1', nickname: 'primary', email: 'primary@example.test', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-1' });
   const app = express();
   app.use(express.json());
   const ctx: any = {

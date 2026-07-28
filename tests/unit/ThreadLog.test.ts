@@ -163,7 +163,7 @@ describe('ThreadLog — id allowlist + path confinement', () => {
     expect(THREAD_ID_RE.test('thread-840d5c1d')).toBe(true);
     expect(THREAD_ID_RE.test('../etc/passwd')).toBe(false);
     expect(THREAD_ID_RE.test('thread-../x')).toBe(false);
-    expect(THREAD_ID_RE.test('msg-1 ')).toBe(false);
+    expect(THREAD_ID_RE.test('msg-1\u0000')).toBe(false);
     expect(THREAD_ID_RE.test('thread-840d5c1d/../../x')).toBe(false);
   });
 

@@ -54,8 +54,26 @@ import {
   REGISTRY_REL_PATH,
 } from './lib/defect-class-registry.mjs';
 import { evaluateGuardClosure } from './lib/class-closure-grader.mjs';
+import { isSelfActionControllerFile } from './lib/self-action-detect.mjs';
 
 const DEFAULT_CONFIG = { enabled: false, dryRun: true, escalatorDrafting: false };
+
+// The self-action class id + the convergence-argument regex (Part E2). A
+// `defectClass: unbounded-self-action` + `closure: guard` declaration's
+// guardEvidence.howCaught must ADDRESS the convergence argument (control-loop
+// edge + steady-state bound + settling brake) — a per-tick-cap-only
+// justification does NOT address it.
+const SELF_ACTION_CLASS_ID = 'unbounded-self-action';
+const CONVERGENCE_ADDRESSED = /converge|steady[- ]?state|bound|dwell|hysteresis|all[- ]?hot|projected.*load|breaker/i;
+
+/** Read a repo file, or null (a deleted/binary path in a diff). */
+function readFileMaybe(repoRoot, rel) {
+  try {
+    return fs.readFileSync(path.join(repoRoot, rel), 'utf-8');
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The agent-authored-artifact predicate — a fix touching one of these is
@@ -92,7 +110,14 @@ export function isGateSourceFile(file) {
     f === 'docs/defect-classes.json' ||
     f === '.github/workflows/class-closure-gate.yml' ||
     f === 'docs/specs/class-closure-gate.md' ||
-    /^tests\/(unit|integration)\/class-closure-/.test(f)
+    /^tests\/(unit|integration)\/class-closure-/.test(f) ||
+    // The self-action gate's own source (docs/specs/self-action-convergence.md
+    // → Part E5): a broken self-action gate can never block its own repair.
+    f === 'scripts/lint-no-unregistered-self-action.js' ||
+    f === 'scripts/lib/self-action-detect.mjs' ||
+    f === 'src/testing/selfActionRegistry.ts' ||
+    f === 'docs/specs/self-action-convergence.md' ||
+    /^tests\/(unit|integration)\/self-action-/.test(f)
   );
 }
 
@@ -167,6 +192,17 @@ function validateDeclaration(repoRoot, decl, knownClassIds) {
         findings.push(`${where}: DOWNGRADE guard→gap — ${verdict.downgradeReason}`);
       } else {
         findings.push(`${where}: guard citation resolves (${verdict.gradedKind}) — closure:'guard' upheld`);
+      }
+    }
+    // Class-specific arm (Part E2): for the unbounded-self-action class, the
+    // convergence ARGUMENT must be addressed in howCaught — a per-tick-cap-only
+    // justification bounds one pass, never the loop. A hard violation when
+    // enforcing (returned to the caller so it can gate).
+    if (decl.defectClass === SELF_ACTION_CLASS_ID) {
+      const howCaught = decl.guardEvidence && decl.guardEvidence.howCaught;
+      if (typeof howCaught !== 'string' || !CONVERGENCE_ADDRESSED.test(howCaught)) {
+        findings.push(`${where}: unbounded-self-action closure:'guard' howCaught does NOT address convergence (steady-state bound / settling brake / dwell / all-hot / breaker) — a per-tick-cap-only justification is insufficient`);
+        hardViolations.push(`${where}: unbounded-self-action guard howCaught fails the convergence-addressed check (E2)`);
       }
     }
   } else if (decl.closure === 'gap') {
@@ -247,12 +283,19 @@ export function runClassClosureLint(input) {
     findings.push('mirror-consistency: counted the decision-audit host only (side-effects mirror is display-only) — trivially satisfied');
   }
 
-  // Diff-scope: does this PR touch an agent-authored artifact needing a declaration?
+  // Diff-scope: does this PR touch an agent-authored artifact OR a self-action
+  // controller (Part E2 — the concrete realization of #1347 Frontloaded
+  // Decision 1) needing a declaration?
   let inScope = false;
   let exempt;
   if (changedFiles && changedFiles.length > 0) {
     const agentFiles = changedFiles.filter(isAgentAuthoredArtifact);
-    inScope = agentFiles.length > 0;
+    // A diff touching a self-action controller file (name-shape or marker) is
+    // in scope for the unbounded-self-action declaration.
+    const selfActionFiles = changedFiles.filter((f) =>
+      isSelfActionControllerFile(f, readFileMaybe(repoRoot, f)),
+    );
+    inScope = agentFiles.length > 0 || selfActionFiles.length > 0;
     if (inScope) {
       // Gate-source-ONLY self-wedge exemption: applies ONLY when the diff
       // touches EXCLUSIVELY the gate's own source (a mixed PR cannot ride it).
@@ -260,8 +303,21 @@ export function runClassClosureLint(input) {
       if (allGateSource) {
         exempt = 'gate-source-only';
         findings.push('exempt: diff touches EXCLUSIVELY the gate\'s own source (gate-source-only self-wedge exemption, logged)');
-      } else if (declarations.length === 0) {
-        findings.push('missing class declaration (report-only) — this PR touches agent-authored artifacts but carries no classClosure declaration');
+      } else {
+        if (declarations.length === 0) {
+          findings.push('missing class declaration (report-only) — this PR touches agent-authored artifacts or self-action controllers but carries no classClosure declaration');
+        }
+        // Enforcement condition (i) (Part E2): an in-scope SELF-ACTION diff with
+        // no unbounded-self-action declaration is a hard violation when
+        // enforcing (report-only until prGate.classClosure.dryRun:false).
+        if (selfActionFiles.length > 0) {
+          const hasSelfActionDecl = declarations.some((d) => d.defectClass === SELF_ACTION_CLASS_ID);
+          if (!hasSelfActionDecl) {
+            const msg = `self-action controller(s) touched (${selfActionFiles.join(', ')}) but no unbounded-self-action classClosure declaration is present`;
+            findings.push(`missing unbounded-self-action declaration — ${msg}`);
+            hardViolations.push(msg);
+          }
+        }
       }
     }
   }

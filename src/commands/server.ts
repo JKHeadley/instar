@@ -20,20 +20,47 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // (A.5) wake-handler amplifier guard — the post-wake tmux re-validation is bounded
 // async (9s + SIGKILL) instead of a sync execFileSync that can wedge the event loop.
 const execFileAsync = promisify(execFile);
+
+function packagedSlackReplyRelay(): string | null {
+  for (const candidate of [
+    path.resolve(__dirname, '..', 'templates', 'scripts', 'slack-reply.sh'),
+    path.resolve(__dirname, '..', '..', 'src', 'templates', 'scripts', 'slack-reply.sh'),
+  ]) {
+    try { return fs.readFileSync(candidate, 'utf8'); } catch { /* try packaged/dev alternative */ }
+  }
+  return null;
+}
+
+function localSlackRelayReadiness(stateDir: string): { ready: true } | { ready: false; reason: string } {
+  const template = packagedSlackReplyRelay();
+  if (!template) return { ready: false, reason: 'packaged Slack reply relay template is unavailable' };
+  return slackReplyRelayReadiness(stateDir, template);
+}
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
 import { planInboundLossNotices } from '../core/inboundLossRouting.js';
+import { heartbeatFreshEnoughToRerecord } from '../core/MachineHeartbeat.js';
+import { slackRespawnBootstrapIds } from '../core/slackRefreshBinding.js';
 import { configureHostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
 import { SpawningTopicsRegistry } from '../core/SpawningTopicsRegistry.js';
+import { planCredentialIdentityRepair } from '../core/CredentialIdentityRepairPlan.js';
 import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifier.js';
+import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { resolveAntiThrashKnobs, readingValidity } from '../core/SwapAntiThrash.js';
 import { shouldReleaseOnComplete, planClaimOnSpawn, ownershipNonce } from '../core/ownershipFollowsLiveWork.js';
 import { PrHandLease } from '../core/PrHandLease.js';
 import { ConversationRegistry } from '../core/ConversationRegistry.js';
+import { slackReplyRelayReadiness } from '../core/SlackReplyRelayInstaller.js';
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
+import {
+  classifyProfileIntent,
+  toProfilePatch,
+  type ProfileIntentResult,
+  type ConversationTurn as ProfileIntentTurn,
+} from '../core/ProfileIntentClassifier.js';
 import { slugifyChannelName } from '../messaging/slack/sanitize.js';
 import {
   TopicProfileOrchestrator,
@@ -45,7 +72,7 @@ import {
 import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
 import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
 import { escalatedModelIds, normalizeTierEscalationConfig, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
-import { activeAutonomousJobs, autonomousRunRemainingForTopic, listAutonomousJobs, stopAutonomousTopic } from '../core/AutonomousSessions.js';
+import { activeAutonomousJobs, autonomousRunRemainingForTopic, listAutonomousJobs, readAutonomousRunMarkers, stopAutonomousTopic } from '../core/AutonomousSessions.js';
 import { AGE_LIMIT_ACTIVE_RUN_REASON, COMMITMENT_ACTIVE_RUN_REASON } from '../core/WorkEvidence.js';
 import { gapBEligibleForTopic, recentUserMessageFromHistory, recentUserMessageAtFromHistory, resolveGapBInjectionGate, decideGapBInjection } from '../core/gapBCommitmentEvidence.js';
 import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
@@ -68,6 +95,7 @@ import { BootHealthBeacon } from '../server/BootHealthBeacon.js';
 import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { buildColdStartFallbackReply } from '../messaging/ColdStartFallbackReply.js';
+import { sendRespawnCollisionNotice } from '../messaging/ColdStartFallbackReply.js';
 import { RelationshipManager } from '../core/RelationshipManager.js';
 import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker, getFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
@@ -115,12 +143,13 @@ import { SessionRecovery } from '../monitoring/SessionRecovery.js';
 import { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { isRemotelyHandled } from '../core/SessionRouter.js';
+import { confirmLocalPlacementAfterDelivery } from '../core/SessionPoolLocalClaim.js';
 import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } from '../core/leaseGatedSpawn.js';
 import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
-import { relayOutbound } from '../core/TelegramRelay.js';
+import { RelayRefusedError, isRelayRefusal, relayOutbound } from '../core/TelegramRelay.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
 import { wireRegistrySync } from '../core/wireRegistrySync.js';
@@ -153,7 +182,7 @@ import { SenderRejectionNoticer, SENDER_DEAUTHORIZED_CAUSE } from '../core/sende
 import { appendMeshRejection } from '../core/meshRejectionLog.js';
 import { ReplyMarkerTransport } from '../core/ReplyMarkerTransport.js';
 import { decryptFromSync, encryptForSync } from '../core/SecretStore.js';
-import { createPrivateKey, createPublicKey, createHash } from 'node:crypto';
+import { createPrivateKey, createPublicKey, createHash, randomBytes, randomInt } from 'node:crypto';
 import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CartographerTree } from '../core/CartographerTree.js';
@@ -179,6 +208,7 @@ import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
 import { LiveConfig } from '../config/LiveConfig.js';
 import { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
+import { buildCoherenceAdvert } from '../core/machineCoherenceAdvert.js';
 import { StaleProcessGuard } from '../core/StaleProcessGuard.js';
 import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
@@ -354,10 +384,8 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
       await send('Your API already has an authentication token configured. No changes needed.');
       return true;
     }
-    // Generate a random token
-    const token = Array.from({ length: 32 }, () =>
-      'abcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 36))
-    ).join('');
+    // Generate a cryptographically secure random token
+    const token = randomBytes(16).toString('hex');
     deps.liveConfig.set('authToken', token);
     await send(`Done! Generated and saved a new API authentication token. Your API is now protected.\n\nToken: ${token.slice(0, 8)}... (stored in config)`);
     return true;
@@ -369,7 +397,7 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
       await send(`Your dashboard already has a PIN: ${existing}`);
       return true;
     }
-    const pin = String(Math.floor(100000 + Math.random() * 900000));
+    const pin = String(randomInt(100000, 1000000));
     deps.liveConfig.set('dashboardPin', pin);
     await send(`Done! Generated dashboard PIN: ${pin}`);
     return true;
@@ -524,6 +552,10 @@ let _spawningTopicsRegistryRef: SpawningTopicsRegistry | null = null;
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
 let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null = null;
+// Context-wall recovery latch. These late-bound seams let every Telegram/Slack
+// spawn chokepoint fail fresh while SessionRecovery owns a durable latch.
+let _contextExhaustionFreshRequired: ((topicId: number) => boolean) | null = null;
+let _clearContextExhaustionFreshRequired: ((topicId: number) => void) | null = null;
 
 // ── Multi-Machine Session Pool (§L4) activation refs ──────────────────────
 // The SessionRouter is constructed in startServer()'s mesh block, but the inbound
@@ -534,10 +566,40 @@ let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null =
 // is byte-identical to today's always-local dispatch. Set once in startServer().
 let _sessionRouter: import('../core/SessionRouter.js').SessionRouter | null = null;
 let _sessionPoolStage: () => string = () => 'dark';
+// Self-placement deliberately falls through from SessionRouter into this file's
+// established local inject/spawn tail. Confirming inside SessionRouter would be
+// premature because handleLocally is only that fall-through marker. This callback
+// advances placing → active only after the local tail has actually succeeded.
+let _confirmLocalSessionPoolClaim: ((sessionKey: string) => boolean) | null = null;
 // ── Durable Inbound Message Queue (docs/specs/durable-inbound-message-queue.md) ──
 // The custody engine (null = feature dark / gate failed / invariants violated —
 // every consumer treats null as "refused → today's fall-through").
 let _inboundQueue: import('../core/QueueDrainLoop.js').QueueDrainLoop | null = null;
+// Late-bound self-capacity refresh. The heartbeat writer is constructed before
+// the durable inbound queue, whose live handle is one of the advertised fields.
+let _refreshPoolHeartbeat: () => void = () => {};
+// Module-level handle for the machine-coherence guard (machine-coherence-guard
+// §6) so `GET /pool/machine-coherence` can read the sentinel constructed deep in
+// the mesh peer-presence wiring. Null when the guard is dark (route 503s).
+let _machineCoherenceSentinel: import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null = null;
+// Module-level handle for the single-machine failover-gap detector (increment 2)
+// so `GET /pool/failover-gap` can read the detector constructed deep in the mesh
+// peer-presence wiring. Null when the guard is dark (route 503s).
+let _singleMachineFailoverGap: import('../monitoring/SingleMachineFailoverGapDetector.js').SingleMachineFailoverGapDetector | null = null;
+// Module-level handle for the missing-login-session detector (increment 2) so
+// `GET /pool/missing-login` can read the detector constructed deep in the mesh
+// peer-presence wiring. Null when the guard is dark (route 503s).
+let _missingLoginSession: import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionDetector | null = null;
+// Module-level handle for the SessionPoolFailoverRunner driver (§Rollout, Track H)
+// so `GET /session-pool/failover-runner` can read its status(). Null when the
+// runner is dark (dev-gated) — the route 503s. Constructed inside the rollout-gate
+// boot block next to the E2E result store + StageAdvancer.
+let _sessionPoolFailoverRunnerDriver:
+  import('../core/sessionPoolFailoverRunnerConfig.js').SessionPoolFailoverRunnerDriver | null = null;
+// Promotion activation is separate from the always-live demotion reconciler.
+// Null while promotionModel is off; backs the manual route and auto-climb tick.
+let _sessionPoolPromotionActivation:
+  import('../core/sessionPoolPromotionActivation.js').SessionPoolPromotionActivation | null = null;
 // The store the unconditional boot sweep opened when the queue will run this
 // boot — adopted by the engine construction (one open handle, single-writer).
 let _sweptInboundStore: import('../core/PendingInboundStore.js').PendingInboundStore | null = null;
@@ -614,7 +676,7 @@ let _resolvePeerUrls: (() => Array<{ machineId: string; url: string }>) | null =
  *  pool dark / no client — the transfer route degrades to today's pin path. */
 let _sendDrain:
   | ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<
-      { ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }
+      { ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean; claimLanded?: boolean }
     >)
   | null = null;
 let _listPoolMachines: (() => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>) | null = null;
@@ -776,6 +838,20 @@ function appendTopicProfileAudit(stateDir: string, event: Record<string, unknown
 
 let _projectDir: string = process.cwd();
 let _sharedIntelligence: import('../core/types.js').IntelligenceProvider | null = null;
+// Offender #1 conversion (docs/specs/keyword-intent-conversions-1-and-3.md): the
+// framework/model/thinking WRITE decision is inferred by the ProfileIntentClassifier
+// (LLM + recent conversation), replacing the removed keyword regexes in
+// parseProfileTrigger. Dev-gated dark (resolveDevAgentGate) + dry-run FIRST: while
+// dark or dry-run the message ALWAYS passes through (never actuated); the classifier
+// still runs on a dev agent and LOGS would-actuate vs would-pass to
+// logs/profile-intent.jsonl for the soak. Resolved once in startServer.
+let _profileIntentEnabled = false;
+let _profileIntentDryRun = true;
+let _profileIntentMinConfidence = 0.85;
+let _profileIntentTimeoutMs = 4000;
+let _profileIntentContextTurns = 6;
+let _profileIntentModelTier: 'fast' | 'balanced' | 'capable' = 'fast';
+let _profileIntentStateDir = '';
 let _selfKnowledgeTree: SelfKnowledgeTree | null = null;
 let _slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
 // WS1.1 dispatch-to-owner (Slack arm): the owner-side bridge reconstructs a Slack
@@ -798,6 +874,40 @@ let _ownershipReconciler: import('../core/OwnershipReconciler.js').OwnershipReco
 // GET /pool/stale-owner-release route + the reconciler dep can reach it. Null
 // until the pool block constructs it (single-machine / dark → the route 503s).
 let _staleOwnerEngine: import('../core/StaleOwnerReleaseEngine.js').StaleOwnerReleaseEngine | null = null;
+// Ownership-gated spawn seam (ownership-gated-spawn-and-judgment-within-floors
+// §3.1 Layer A) + its owner-dark ladder + the judgment-provenance log — hoisted
+// so the inbound handlers (registered earlier in this function) and the status
+// routes can reach them. Null until the mesh block constructs them
+// (single-machine / pool-dark → the seam's own null-guard/short-circuit keeps
+// dispatch byte-identical; the provenance route 503s).
+let _spawnAdmission: import('../core/SpawnAdmission.js').SpawnAdmission | null = null;
+let _ownerDarkLadder: import('../core/OwnerDarkLadder.js').OwnerDarkLadder | null = null;
+let _judgmentProvenance: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog | null = null;
+let _duplicateReconciler: import('../monitoring/DuplicateSessionReconciler.js').DuplicateSessionReconciler | null = null;
+/**
+ * Increment-1 dry-run soak (ownership-gated-spawn §3.3): when the seam
+ * OBSERVES a would-refuse on a DARK owner (the spawn still proceeds —
+ * observe mode changes nothing), the ladder journals the would-notice.
+ * That journal is the soak evidence the eventual enforce flip requires;
+ * without this consult the ladder would sit dark through the whole
+ * observe stage and the flip would arrive with zero ladder data.
+ * mode 'dry-run' NEVER sends — it only journals + opens the episode.
+ */
+function _ladderDryRunConsult(
+  d: import('../core/SpawnAdmission.js').AdmissionDecision,
+  sessionKey: string,
+  topicId: number | null,
+): void {
+  if (!_ownerDarkLadder || !d.allow || !d.wouldBlock) return;
+  if (d.ownership?.kind !== 'other-dark') return;
+  void _ownerDarkLadder.handleOwnerDark({
+    sessionKey,
+    topicId,
+    ownerMachineId: d.ownership?.owner ?? 'unknown',
+    mode: 'dry-run',
+    custodyLive: false,
+  }).catch(() => { /* @silent-fallback-ok: the ladder journals its own failures to logs/owner-dark-ladder.jsonl — a notice/journal miss must never break message dispatch. */ });
+}
 // U4.4 lease hand-back — the F4 reconciler, hoisted so the lease pull tick hook
 // (constructed early) and the /pool surfaces (constructed late) can reach it.
 let _leaseHandbackReconciler: import('../core/LeaseHandbackReconciler.js').LeaseHandbackReconciler | null = null;
@@ -840,6 +950,9 @@ let _handbackCanary: ((oldHolder: string) => Promise<boolean>) | null = null;
 let _handbackSendOffer:
   | ((target: string, offer: { proposedEpoch: number; consentToken: import('../core/FencedLease.js').HandbackConsentToken; expiresAt: string }) => Promise<import('../core/LeaseHandbackReconciler.js').HandbackOfferResponse>)
   | null = null;
+let _deliverA2aToMachine:
+  | ((input: { machineId: string; targetAgent: string; text: string; topicId: number; senderAgent: string; senderBotId: string }) => Promise<{ ok: boolean; agentMessage?: boolean; reason?: string }>)
+  | null = null;
 // Subscription & Auth Standard P1.3 — quota-aware account-swap scheduler. Null
 // until wired (requires SessionRefresh + the subscription pool).
 let _quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null = null;
@@ -869,9 +982,10 @@ async function spawnSessionForTopic(
   /** Reap-notify spec R2.8 / L13 — explicit per-spawn working directory (the
    *  resume-queue drainer passes a queue entry's recorded cwd so interrupted
    *  worktree work resumes in ITS tree). Omitted = module project dir. */
-  spawnOpts?: { cwd?: string },
+  spawnOpts?: { cwd?: string; awaitInitialInjection?: boolean },
 ): Promise<string> {
-  const msg = latestMessage || 'Session started — send a message to continue.';
+  const hasLatestMessage = typeof latestMessage === 'string' && latestMessage.length > 0;
+  const msg = hasLatestMessage ? latestMessage : 'Session started — send a message to continue.';
 
   // If memory is elevated/critical and we have the reaper, try to free memory
   // by cleaning orphans before spawning. Interactive sessions are NEVER blocked
@@ -1024,14 +1138,19 @@ async function spawnSessionForTopic(
       parts.push(``);
     }
 
-    parts.push(
-      inlineContext,
-      ``,
-      `IMPORTANT: Your response MUST acknowledge and continue the conversation above. Do NOT introduce yourself or ask "how can I help" — the user has been talking to you. Pick up where the conversation left off.`,
-      ``,
-      `The user's latest message:`,
-      `[telegram:${topicId}] ${msg}`,
-    );
+    parts.push(inlineContext, ``);
+    if (hasLatestMessage) {
+      parts.push(
+        `IMPORTANT: Your response MUST acknowledge and continue the conversation above. Do NOT introduce yourself or ask "how can I help" — the user has been talking to you. Pick up where the conversation left off.`,
+        ``,
+        `The user's latest message:`,
+        `[telegram:${topicId}] ${msg}`,
+      );
+    } else {
+      parts.push(
+        `HANDOFF ONLY: No new user message accompanies this framework switch. Load the context above, do not narrate or re-scope it, and wait silently for the next user message.`,
+      );
+    }
 
     bootstrapMessage = parts.join('\n');
   } else {
@@ -1104,6 +1223,14 @@ async function spawnSessionForTopic(
   // TopicResumeMap is authoritative — it saved the UUID for this specific topic at kill time
   // or via the refresh heartbeat. Skip LLM validation (which was failing due to JSONL sampling
   // issues and is redundant for an authoritative source).
+  const contextWallForcesFresh =
+    _contextExhaustionFreshRequired?.(topicId) === true;
+  if (contextWallForcesFresh) {
+    _topicResumeMap?.remove(topicId);
+    console.log(
+      `[spawnSessionForTopic] Context-exhaustion latch active for topic ${topicId} — forcing fresh spawn`,
+    );
+  }
   let resumeSessionId = _topicResumeMap?.get(topicId) ?? undefined;
   if (resumeSessionId) {
     console.log(`[spawnSessionForTopic] Found resume UUID for topic ${topicId}: ${resumeSessionId} (source: TopicResumeMap — trusted)`);
@@ -1170,6 +1297,7 @@ async function spawnSessionForTopic(
     ...(accountSwap?.accountId ? { subscriptionAccountId: accountSwap.accountId } : {}),
     // R2.8/L13: per-spawn cwd from the resume-queue entry. Unset = projectDir.
     ...(spawnOpts?.cwd ? { cwd: spawnOpts.cwd } : {}),
+    ...(spawnOpts?.awaitInitialInjection ? { awaitInitialInjection: true } : {}),
   });
 
   // Clear the resume entry after successful spawn to prevent stale reuse
@@ -1229,6 +1357,9 @@ async function spawnSessionForTopic(
     }, 8000);
   }
 
+  if (contextWallForcesFresh) {
+    _clearContextExhaustionFreshRequired?.(topicId);
+  }
   return newSessionName;
 }
 
@@ -1245,7 +1376,7 @@ async function respawnSessionForTopic(
   topicMemory?: TopicMemory,
   userProfile?: UserProfile,
   recoveryPrompt?: string,
-  options?: { silent?: boolean; configHome?: string; accountId?: string },
+  options?: { silent?: boolean; configHome?: string; accountId?: string; awaitInitialInjection?: boolean },
 ): Promise<void> {
   console.log(`[telegram→session] Session "${targetSession}" needs respawn for topic ${topicId}`);
 
@@ -1293,8 +1424,18 @@ async function respawnSessionForTopic(
     ? `${recoveryPrompt}\n\n${latestMessage || 'Session recovered — continue where you left off.'}`
     : latestMessage;
 
-  const newSessionName = await spawnSessionForTopic(sessionManager, telegram, topicName, topicId, effectiveMessage, topicMemory, userProfile, undefined,
-    (options?.configHome || options?.accountId) ? { configHome: options?.configHome, accountId: options?.accountId } : undefined);
+  const newSessionName = await spawnSessionForTopic(
+    sessionManager,
+    telegram,
+    topicName,
+    topicId,
+    effectiveMessage,
+    topicMemory,
+    userProfile,
+    undefined,
+    (options?.configHome || options?.accountId) ? { configHome: options?.configHome, accountId: options?.accountId } : undefined,
+    options?.awaitInitialInjection ? { awaitInitialInjection: true } : undefined,
+  );
 
   telegram.registerTopicSession(topicId, newSessionName, topicName);
   if (!options?.silent) {
@@ -1573,7 +1714,7 @@ function wireTelegramCallbacks(
     try {
       await respawnSessionForTopic(
         sessionManager, telegram, existingSession, topicId, undefined,
-        topicMemory, undefined, undefined, { silent: true },
+        topicMemory, undefined, undefined, { silent: true, awaitInitialInjection: true },
       );
       return { respawned: true };
     } catch (err) {
@@ -1838,6 +1979,45 @@ function messageToPipeline(msg: Message, topicName?: string): PipelineMessage {
  * a message carrying platform forward metadata falls through as normal
  * conversation regardless of sender.
  */
+/**
+ * Offender #1 conversion soak log: one JSONL line per LLM-engaged
+ * ProfileIntentClassifier decision (docs/specs/keyword-intent-conversions-1-and-3.md).
+ * A prefilter-skip is always a would-pass and the bulk of traffic — skipping it
+ * cuts volume AND the privacy surface to messages that named a profile signal and
+ * actually reached the classifier. Observability only — never gates the message.
+ */
+function logProfileIntent(
+  topicId: number,
+  text: string,
+  result: ProfileIntentResult,
+  acted: boolean,
+): void {
+  try {
+    if (result.source === 'prefilter-skip') return;
+    if (!_profileIntentStateDir) return;
+    const logDir = path.join(_profileIntentStateDir, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const decision = result.isChange ? (acted ? 'actuate' : 'would-actuate') : 'pass';
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      topicId,
+      decision,
+      dryRun: _profileIntentDryRun,
+      source: result.source,
+      intent: result.intent,
+      value: result.value,
+      confidence: result.confidence,
+      reason: result.reason,
+      // NO raw message content: the enum-bounded fields above are what the FP-rate
+      // soak needs, and the resolved `value` is already a closed-enum member. We
+      // record only the message LENGTH (non-content) — mirroring the codebase's
+      // dev-soak convention of never persisting a raw operator quote.
+      textLen: typeof text === 'string' ? text.length : 0,
+    });
+    fs.appendFileSync(path.join(logDir, 'profile-intent.jsonl'), line + '\n');
+  } catch { /* @silent-fallback-ok: the soak audit is observability-only — a log write fault must never gate or throw out of the message path (the classifier decision already stands) */ }
+}
+
 async function handleTopicProfileIngress(
   telegram: TelegramAdapter,
   topicId: number,
@@ -1854,9 +2034,57 @@ async function handleTopicProfileIngress(
   try { authorized = telegram.isAuthorizedSender(telegramUserId); } catch { /* @silent-fallback-ok: a trust-floor read fault fails toward NOT-a-trigger (deny-by-default) — the conversational profile parse never runs for an unauthorized turn (TOPIC-PROFILE-SPEC §10.1) */ }
   if (!authorized) return false;
 
-  const trigger = parseProfileTrigger(text);
-  if (!trigger) return false;
   const forwarded = (msg.metadata?.forwarded as boolean | undefined) === true;
+  const trigger = parseProfileTrigger(text);
+  if (!trigger) {
+    // Offender #1 conversion (docs/specs/keyword-intent-conversions-1-and-3.md):
+    // the framework/model/thinking WRITE decision moved OUT of parseProfileTrigger
+    // (keyword regexes) into the ProfileIntentClassifier — an LLM reasoning over
+    // the message + recent conversation with structured-enum output, per the
+    // constitutional standard "Intelligence Infers, Keywords Only Guard".
+    // Dev-gated dark + dry-run FIRST; fail-OPEN on every uncertainty.
+    if (forwarded) return false;             // forwarded content is never a command
+    if (!_profileIntentEnabled) return false; // fleet-dark → pass to the agent
+    let conversationContext: ProfileIntentTurn[] = [];
+    try {
+      // Fetch one extra turn, then drop a trailing turn equal to THIS message —
+      // getTopicHistory (oldest→newest) usually already contains the just-logged
+      // inbound row, so without this the model would see the message twice (once
+      // as MESSAGE, once as the newest CONTEXT turn).
+      const hist = telegram.getTopicHistory?.(topicId, _profileIntentContextTurns + 1) ?? [];
+      conversationContext = hist.map((h) => ({ fromUser: !!h.fromUser, text: String(h.text ?? '') }));
+      const trimmed = text.trim();
+      while (conversationContext.length > 0
+        && conversationContext[conversationContext.length - 1].fromUser
+        && conversationContext[conversationContext.length - 1].text.trim() === trimmed) {
+        conversationContext.pop();
+      }
+      conversationContext = conversationContext.slice(-_profileIntentContextTurns);
+    } catch { /* @silent-fallback-ok — context is best-effort; classify on the message alone */ }
+    const result = await classifyProfileIntent({
+      text,
+      conversationContext,
+      intelligence: _sharedIntelligence,
+      minConfidence: _profileIntentMinConfidence,
+      timeoutMs: _profileIntentTimeoutMs,
+      maxContextTurns: _profileIntentContextTurns,
+      modelTier: _profileIntentModelTier,
+    });
+    const willAct = result.isChange && !_profileIntentDryRun;
+    logProfileIntent(topicId, text, result, willAct);
+    // Dry-run (the soak) / fail-open / pass-through: log would-actuate vs
+    // would-pass, but pass the message through untouched. Real actuation needs a
+    // deliberate dryRun:false, AND fail-open means uncertainty never actuates.
+    if (!willAct) return false;
+    const patch = toProfilePatch(result);
+    if (!patch) return false;
+    const applyPrincipal = { kind: 'operator' as const, platform: 'telegram', uid: String(telegramUserId) };
+    const applyResult = await surface.applyWrite({
+      topicKey: String(topicId), patch, principal: applyPrincipal, origin: 'conversational', discloseInReply: true,
+    });
+    try { await telegram.sendToTopic(topicId, applyResult.reply); } catch { /* @silent-fallback-ok: best-effort disclosure send (TOPIC-PROFILE-SPEC §10.1) */ }
+    return true;
+  }
   if (forwarded) return false;
 
   const topicKey = String(topicId);
@@ -2000,6 +2228,50 @@ async function handleProfileConfirm(
   return true;
 }
 
+/**
+ * Resolve the hub-intent classifier deps (Conversion #3,
+ * docs/specs/keyword-intent-conversions-1-and-3.md) from live config + the shared
+ * IntelligenceProvider. `enabled` is DEV-GATED (resolveDevAgentGate): DARK on the
+ * fleet, LIVE on a development agent. `dryRun` defaults true (the soak) so a
+ * dev-agent classifier RUNS but the message ALWAYS passes through until a
+ * deliberate `dryRun:false`. Passed as a late-bound getter so it re-reads config
+ * at message time.
+ */
+export function resolveHubClassifierDeps(
+  config: InstarConfig,
+  intelligence: IntelligenceProvider | null,
+): {
+  intelligence: IntelligenceProvider | null;
+  enabled: boolean;
+  dryRun: boolean;
+  minConfidence: number;
+  timeoutMs: number;
+  contextTurns: number;
+  modelTier: 'fast' | 'balanced' | 'capable';
+  stateDir: string;
+} {
+  const cfg = (config.threadline as {
+    hubIntent?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+      minConfidence?: number;
+      timeoutMs?: number;
+      contextWindowTurns?: number;
+      modelTier?: 'fast' | 'balanced' | 'capable';
+    };
+  } | undefined)?.hubIntent;
+  return {
+    intelligence,
+    enabled: resolveDevAgentGate(cfg?.enabled, config),
+    dryRun: cfg?.dryRun ?? true,
+    minConfidence: cfg?.minConfidence ?? 0.85,
+    timeoutMs: cfg?.timeoutMs ?? 4000,
+    contextTurns: cfg?.contextWindowTurns ?? 6,
+    modelTier: cfg?.modelTier ?? 'fast',
+    stateDir: config.stateDir,
+  };
+}
+
 export function wireTelegramRouting(
   telegram: TelegramAdapter,
   sessionManager: SessionManager,
@@ -2020,6 +2292,23 @@ export function wireTelegramRouting(
   // message starting with restart/fix/clean is normal conversation and must
   // route to the session instead of being swallowed.
   getAttentionTopicId?: () => number | null | undefined,
+  // Late-bound (same reason as getHubDeps): the hub-intent classifier deps —
+  // the config-resolved dev-gate/settings + the shared IntelligenceProvider.
+  // Conversion #3 (docs/specs/keyword-intent-conversions-1-and-3.md): the
+  // "open this"/"tie this to <topic>" DECISION is inferred by an LLM over the
+  // message + recent conversation (HubIntentClassifier), NOT a regex — the
+  // regex SWALLOWED the message before the agent saw it, so a misread ATE it.
+  // Resolved at the callsite where config + sharedIntelligence are in scope.
+  getHubClassifierDeps?: () => {
+    intelligence: import('../core/types.js').IntelligenceProvider | null;
+    enabled: boolean;
+    dryRun: boolean;
+    minConfidence: number;
+    timeoutMs: number;
+    contextTurns: number;
+    modelTier: 'fast' | 'balanced' | 'capable';
+    stateDir: string;
+  } | null,
 ): void {
   // Guard: tracks which topic IDs have a spawn in progress.
   // Prevents duplicate concurrent spawns for the same topic when messages
@@ -2120,10 +2409,19 @@ export function wireTelegramRouting(
     }
 
     // ── Threadline hub commands: "open this" / "tie this to <topic>" (CMT-529) ──
-    // When a message in the Threadline HUB topic is a deterministic hub command,
-    // bind the conversation to a topic STRUCTURALLY — before any agent interprets
-    // it. This onTopicMessage seam is the convergence both inbound paths reach
+    // When a message in the Threadline HUB topic is a bind command, bind the
+    // conversation to a topic STRUCTURALLY — before any agent interprets it. This
+    // onTopicMessage seam is the convergence both inbound paths reach
     // (lifeline-forward AND server-polling), so one intercept covers both modes.
+    //
+    // Conversion #3 (docs/specs/keyword-intent-conversions-1-and-3.md): the
+    // "is this a bind command?" DECISION is inferred by an LLM over the message +
+    // recent conversation (HubIntentClassifier), NOT a regex. The old regex
+    // SWALLOWED the message before the agent saw it, so a misread silently ATE a
+    // real message. Dev-gated dark (resolveDevAgentGate at the callsite) +
+    // dry-run FIRST: while dark or dry-run the message ALWAYS passes through
+    // (never swallowed); the classifier still runs on a dev agent and LOGS
+    // would-swallow vs would-pass for the soak. Fail-OPEN on any uncertainty.
     // FAIL-OPEN: any error falls through to normal routing.
     const hubDeps = getHubDeps?.() ?? null;
     if (hubDeps) {
@@ -2131,17 +2429,75 @@ export function wireTelegramRouting(
         let hubTopicId: number | undefined;
         try { hubTopicId = hubDeps.collaborationSurfacer.getHubTopicId(); } catch { hubTopicId = undefined; }
         if (hubTopicId !== undefined && Number(topicId) === Number(hubTopicId)) {
-          const { parseHubCommand, bindHubConversation } = await import('../threadline/hubCommands.js');
-          const cmd = parseHubCommand(text);
-          if (cmd) {
-            const result = await bindHubConversation(hubDeps, { ...cmd, autoPick: true }); // human "open this" → auto-pick most-recent, never 409
-            if (!result.ok) {
-              await telegram.sendToTopic(topicId, result.status === 404
-                ? 'Nothing waiting in the hub to open right now.'
-                : `Couldn't open that — ${result.error}`).catch(() => { });
+          const clsDeps = getHubClassifierDeps?.() ?? null;
+          // Dark gate: when the classifier isn't enabled (fleet default), never
+          // swallow — pass the message through to the agent (no regex fallback).
+          if (clsDeps?.enabled) {
+            const { bindHubConversation } = await import('../threadline/hubCommands.js');
+            const { classifyHubIntent, toHubCommand } = await import('../threadline/HubIntentClassifier.js');
+            // The enum of bindable topics (real existing topics) — the model can
+            // only tie to one of these (structured-output guardrail).
+            let bindableTopics: import('../threadline/HubIntentClassifier.js').HubTopicCandidate[] = [];
+            try {
+              bindableTopics = telegram.getAllTopicMappings()
+                .map((m) => ({ topicId: m.topicId, topicName: m.topicName ?? `topic ${m.topicId}` }));
+            } catch { /* best-effort — an empty enum simply means only "open" is possible */ }
+            // Bounded window of recent turns so context-dependent commands ("yes,
+            // tie it to that one") can resolve their target. Best-effort.
+            let conversationContext: import('../threadline/HubIntentClassifier.js').ConversationTurn[] = [];
+            try {
+              const hist = telegram.getTopicHistory(topicId, clsDeps.contextTurns) ?? [];
+              conversationContext = hist.map((h) => ({ fromUser: !!h.fromUser, text: String(h.text ?? '') }));
+            } catch { /* context is best-effort; classify on the message alone */ }
+            const result = await classifyHubIntent({
+              text,
+              bindableTopics,
+              conversationContext,
+              intelligence: clsDeps.intelligence,
+              minConfidence: clsDeps.minConfidence,
+              timeoutMs: clsDeps.timeoutMs,
+              maxContextTurns: clsDeps.contextTurns,
+              modelTier: clsDeps.modelTier,
+            });
+            const willAct = result.isCommand && !clsDeps.dryRun;
+            // Audit the soak: log LLM-engaged decisions (a prefilter-skip is the
+            // bulk of traffic and always a would-pass — skipping it cuts volume
+            // AND the message-preview privacy surface). Never gates the message.
+            if (result.source !== 'prefilter-skip') {
+              try {
+                const logDir = path.join(clsDeps.stateDir, 'logs');
+                fs.mkdirSync(logDir, { recursive: true });
+                const decision = result.isCommand ? (willAct ? 'swallow' : 'would-swallow') : 'pass';
+                fs.appendFileSync(path.join(logDir, 'hub-intent.jsonl'), JSON.stringify({
+                  ts: new Date().toISOString(),
+                  topicId,
+                  decision,
+                  dryRun: clsDeps.dryRun,
+                  source: result.source,
+                  intent: result.intent,
+                  targetTopicId: result.targetTopicId,
+                  confidence: result.confidence,
+                  reason: result.reason,
+                  textPreview: String(text).replace(/\s+/g, ' ').trim().slice(0, 80),
+                }) + '\n');
+              } catch { /* audit is observability — never gates the message path */ }
             }
-            // On success bindHubConversation already posted the hub confirmation.
-            return; // structural: never inject the command into a session
+            // Dry-run (the soak) OR not-a-command OR fail-open → pass the message
+            // through untouched. Real swallowing needs a deliberate dryRun:false,
+            // AND fail-open means uncertainty never swallows.
+            if (willAct) {
+              const cmd = toHubCommand(result);
+              if (cmd) {
+                const bindResult = await bindHubConversation(hubDeps, { ...cmd, autoPick: true }); // human "open this" → auto-pick most-recent, never 409
+                if (!bindResult.ok) {
+                  await telegram.sendToTopic(topicId, bindResult.status === 404
+                    ? 'Nothing waiting in the hub to open right now.'
+                    : `Couldn't open that — ${bindResult.error}`).catch(() => { });
+                }
+                // On success bindHubConversation already posted the hub confirmation.
+                return; // structural: never inject the command into a session
+              }
+            }
           }
         }
       } catch (err) {
@@ -2216,6 +2572,11 @@ export function wireTelegramRouting(
         console.warn(`[session-pool] nickname relocation error for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    // SpawnAdmission TOCTOU guard (ownership-gated-spawn §3.1 item 2): stash the
+    // router's verdict for THIS message so the seam at the spawn callsites below
+    // CONSUMES it instead of re-resolving — the admission decision and the
+    // routing decision cannot disagree mid-dispatch.
+    let _admissionVerdict: { messageId: string; action: string; acked: boolean } | undefined;
     if (_sessionRouter && _sessionPoolStage() !== 'dark') {
       // Ordering gate (Durable Inbound Message Queue §2.3): a live message for
       // a session with queued custody enqueues BEHIND the existing entries —
@@ -2252,6 +2613,7 @@ export function wireTelegramRouting(
         // box (the recognizer logs its pin, but route()'s actual placement/forward
         // decision was invisible; that hid the bug below from the first live test).
         console.log(`[session-pool] route topic ${topicId} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'} acked=${outcome.acked}`);
+        _admissionVerdict = { messageId: String(msg.id), action: outcome.action, acked: outcome.acked };
         // silent-loss-refusal-conservation §2.A/§2.C — a first-class terminal
         // `rejected` (the owner re-validated the sender and refused) is NOT a
         // successful forward: TELL the user via the ORIGINATING adapter and
@@ -2315,16 +2677,94 @@ export function wireTelegramRouting(
       }
     }
 
+    // Safe after any successful local delivery. The registry-side callback is
+    // idempotent and confirms only a placing row already owned by this machine,
+    // so ordinary active-session traffic is a strict no-op.
+    const confirmLocalSessionPoolClaim = (): void => {
+      try {
+        _confirmLocalSessionPoolClaim?.(String(topicId));
+      } catch (err) {
+        // Delivery has already succeeded. A registry read/CAS/emit error must
+        // avoid reclassifying delivery as a spawn failure (or throwing out of
+        // the live-injection handler). The row is re-read by normal routing.
+        console.warn(`[session-pool] local claim confirmation errored for topic ${topicId}; ownership outcome will be re-read: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+
+    // ── SpawnAdmission — the binding-verdict seam (ownership-gated-spawn §3.1,
+    // Layer A / the Ownership-Gated Side Effects standard). Consulted before
+    // EVERY local session-creating action below. Increment-1 posture: dryRun
+    // (observe-only — allow is always true; would-block verdicts are journaled).
+    // Enforce mode (dryRun:false + durable custody live, §3.1 item 6) refuses a
+    // non-owner spawn: durable-queue custody where available, the rung-3 honest
+    // notice for a dark owner, and a loud fail-open for the residual edge —
+    // never a bootleg local copy, never silence.
+    const admitLocalSpawn = (
+      callsite: 'telegram-cold-spawn' | 'telegram-respawn-context-exhausted' | 'telegram-respawn-dead',
+    ): boolean => {
+      if (!_spawnAdmission) return true;
+      try {
+        const d = _spawnAdmission.admit({
+          sessionKey: String(topicId),
+          callsite,
+          routerVerdict: _admissionVerdict,
+        });
+        if (d.allow) {
+          _ladderDryRunConsult(d, String(topicId), topicId);
+          return true;
+        }
+        console.log(`[spawn-admission] topic ${topicId} ${callsite} REFUSED (row=${d.row}) — ${d.reason}`);
+        // Custody first: the durable queue is the forward-compatible floor
+        // (enforce mode structurally implies the queue is live, §3.1 item 6).
+        let custody = _admissionVerdict?.acked === true;
+        if (!custody && _inboundQueue) {
+          try {
+            const q = _inboundQueue.enqueueLive({
+              sessionKey: String(topicId),
+              messageId: String(msg.id),
+              payload: text,
+              senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName },
+              topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)),
+            }, 'spawn-admission-refusal');
+            custody = q.result === 'queued' || q.result === 'already-queued';
+          } catch { /* @silent-fallback-ok: custody is best-effort — the ladder notice below states custody honestly either way (queue-live vs resend wording). */ }
+        }
+        if (d.refusalAction === 'forward' && !custody) {
+          // Owner ALIVE but the router fell through AND custody refused —
+          // refusing here would be silent loss. Reachability wins (the §0
+          // argued-exemption direction): allow the spawn, loudly.
+          console.warn(`[spawn-admission] topic ${topicId} owner-alive refusal without custody — failing OPEN to local spawn (reachability wins)`);
+          return true;
+        }
+        if ((d.refusalAction === 'owner-dark-ladder' || d.refusalAction === 'rung3-notice') && _ownerDarkLadder) {
+          void _ownerDarkLadder.handleOwnerDark({
+            sessionKey: String(topicId),
+            topicId,
+            ownerMachineId: d.ownership?.owner ?? 'unknown',
+            mode: 'enforce',
+            custodyLive: custody,
+          }).catch(() => { /* @silent-fallback-ok: the ladder journals its own failures to logs/owner-dark-ladder.jsonl — a notice/journal miss must never break message dispatch. */ });
+        }
+        return false;
+      } catch (err) {
+        // The seam must never break dispatch — an admission ERROR fails open
+        // to today's behavior (the row-e direction, §3.1).
+        console.warn(`[spawn-admission] admit error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
+        return true;
+      }
+    };
+
     if (targetSession) {
       // Session is mapped — check if it's alive, inject or respawn
       if (sessionManager.isSessionAlive(targetSession)) {
         // Use toInjection() — types guarantee sender identity is included in the tag
         const injection = toInjection(pipeline, targetSession);
         console.log(`[telegram→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
-        sessionManager.injectTelegramMessage(
+        const injected = sessionManager.injectTelegramMessage(
           targetSession, topicId, text, pipeline.topicName, pipeline.sender.firstName, pipeline.sender.telegramUserId,
           parseInt(pipeline.id.replace('tg-', ''), 10) || undefined,
         );
+        if (injected) confirmLocalSessionPoolClaim();
         // Delivery confirmation — only when WE own polling. When lifeline owns
         // polling (--no-telegram / standby), it already sends its own confirmation.
         if (telegram.isPolling) {
@@ -2360,8 +2800,12 @@ export function wireTelegramRouting(
           // Context exhaustion: respawn FRESH (no --resume) — the old conversation
           // is too large to continue. The respawn path will load telegram thread
           // history as context, giving the new session continuity.
+          if (!admitLocalSpawn('telegram-respawn-context-exhausted')) return;
           if (spawningTopics.has(topicId)) {
             console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate respawn`);
+            void sendRespawnCollisionNotice(telegram.sendToTopic.bind(telegram), topicId).catch((err) => {
+              console.error(`[telegram→session] Failed to send respawn-collision loss notice for topic ${topicId}:`, err);
+            });
             return;
           }
           const _spawnTokA = spawningTopics.add(topicId);
@@ -2370,6 +2814,7 @@ export function wireTelegramRouting(
             _topicResumeMap.remove(topicId);
           }
           respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
+            .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Context exhaustion respawn failed:`, err);
               telegram.sendToTopic(topicId, `❌ Fresh session restart failed. Try sending your message again.`).catch(() => {});
@@ -2378,16 +2823,21 @@ export function wireTelegramRouting(
               spawningTopics.clear(topicId, _spawnTokA);
             });
         } else if (!isQuotaDeath) {
+          if (!admitLocalSpawn('telegram-respawn-dead')) return;
           // Guard: skip respawn if one is already in progress for this topic.
           // Prevents the infinite respawn loop: dead session + rapid messages → each
           // message triggers a new respawn → multiple concurrent spawns → chaos.
           if (spawningTopics.has(topicId)) {
             console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate respawn`);
+            void sendRespawnCollisionNotice(telegram.sendToTopic.bind(telegram), topicId).catch((err) => {
+              console.error(`[telegram→session] Failed to send respawn-collision loss notice for topic ${topicId}:`, err);
+            });
             return;
           }
           const _spawnTokB = spawningTopics.add(topicId);
           telegram.sendToTopic(topicId, `🔄 Session restarting — message queued.`).catch(() => {});
           respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
+            .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
               console.error(`[telegram→session] Respawn failed:`, err);
               // G1 "Agent Is Always Reachable" corollary (2): no silent resource
@@ -2436,6 +2886,11 @@ export function wireTelegramRouting(
         return;
       }
 
+      // The binding-verdict seam (ownership-gated-spawn §3.1) — the cold-spawn
+      // callsite is THE incident's fall-through (2026-07-10: verdict computed,
+      // then discarded 6ms later by this path's legacy reflex).
+      if (!admitLocalSpawn('telegram-cold-spawn')) return;
+
       const _spawnTokC = spawningTopics.add(topicId);
 
       // Resolve topic name — try in-memory, then active probe, then fallback
@@ -2449,6 +2904,7 @@ export function wireTelegramRouting(
       // Use the shared spawn helper that includes topic history + user context
       spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text, topicMemory, resolvedUser ?? undefined).then((newSessionName) => {
         telegram.registerTopicSession(topicId, newSessionName, spawnName);
+        confirmLocalSessionPoolClaim();
         telegram.sendToTopic(topicId, `Session starting up — reading your message now. One moment.`).catch(() => {});
         console.log(`[telegram→session] Auto-spawned "${newSessionName}" for topic ${topicId}`);
       }).catch((err) => {
@@ -2836,15 +3292,20 @@ async function ensureAgentAttentionTopic(
   }
 
   try {
-    const topic = await telegram.createForumTopic(
+    // find-or-create: on a fresh install an attention item raised BEFORE this
+    // boot path completes may have self-healed the hub already (single-topic
+    // routing) — reuse it by name instead of minting a duplicate.
+    const topic = await telegram.findOrCreateForumTopic(
       `${TOPIC_STYLE.ALERT.emoji} Attention`,
       TOPIC_STYLE.ALERT.color, // Yellow — needs user action
-      { origin: 'system' }, // bounded create-once boot topic
+      { origin: 'system', bounded: true, label: 'boot-attention' }, // bounded create-once boot topic
     );
     state.set('agent-attention-topic', topic.topicId);
-    await telegram.sendToTopic(topic.topicId,
-      `This is your agent's direct line to you — for things that genuinely need your attention.\n\nBlocked tasks, critical errors, memory pressure, quota alerts, and anything where your agent can't proceed without you.`
-    );
+    if (!topic.reused) {
+      await telegram.sendToTopic(topic.topicId,
+        `This is your agent's direct line to you — for things that genuinely need your attention.\n\nBlocked tasks, critical errors, memory pressure, quota alerts, and anything where your agent can't proceed without you.`
+      );
+    }
     console.log(pc.green(`  Created Agent Attention topic: ${topic.topicId}`));
   } catch (err) {
     console.error(`  Failed to create Agent Attention topic: ${err}`);
@@ -2919,7 +3380,7 @@ async function ensureAgentUpdatesTopic(
     const topic = await telegram.createForumTopic(
       `${TOPIC_STYLE.INFO.emoji} Updates`,
       TOPIC_STYLE.INFO.color, // Blue — informational
-      { origin: 'system' }, // bounded create-once boot topic
+      { origin: 'system', bounded: true, label: 'boot-updates' }, // bounded create-once boot topic
     );
     state.set('agent-updates-topic', topic.topicId);
     await telegram.sendToTopic(topic.topicId,
@@ -3378,7 +3839,15 @@ export async function startServer(options: StartOptions): Promise<void> {
     // handler frees the lock within a bounded grace); only a genuine duplicate
     // is refused. A standby on a DIFFERENT host with its own state dir boots
     // freely. Override with INSTAR_ALLOW_SECOND_INSTANCE=1.
-    const singleInstanceLock = new SingleInstanceLock({ stateDir: config.stateDir });
+    const silCfg = config.monitoring?.singleInstanceLock;
+    const singleInstanceLock = new SingleInstanceLock({
+      stateDir: config.stateDir,
+      // Hostname-flap auto-heal (2026-07-08 wedge). Operator override wins; else
+      // the dev-agent gate flips it LIVE on a development agent, DARK on the fleet
+      // (mirrors resumeQueue.autoHealStaleHostLock). Fail-closed inside acquire().
+      autoHealStaleHostRename: silCfg?.autoHealStaleHostRename ?? resolveDevAgentGate(undefined, config),
+      staleHostRenameMs: silCfg?.staleHostRenameMs,
+    });
     const lockResult = await singleInstanceLock.acquire();
     if (!lockResult.acquired) {
       console.error(
@@ -3793,6 +4262,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     // the mesh client) can reference it lazily; constructed in the mesh-wiring
     // block ONLY under the same explicit replication gate.
     let workingSetPullCoordinator: import('../core/WorkingSetPullCoordinator.js').WorkingSetPullCoordinator | undefined;
+    // Source-3 interactive-artifact manager (intelligent-working-set-lazy-sync). File-backed
+    // (.instar/working-set/artifacts.json), hoisted so ONE instance is shared by the read-side
+    // (WorkingSetPullServer), the replication emit-side (setReplicationEmitter), AND the recorder
+    // route (POST /coherence/working-set/record). Sharing matters: the emit seam attaches to this
+    // instance, so an artifact recorded via the route replicates when the flag is enabled.
+    // Assigned lazily (??=) at whichever of those sites runs first; undefined ⇒ the routes 503.
+    let workingSetArtifactManager: import('../core/WorkingSetArtifactManager.js').WorkingSetArtifactManager | undefined;
     // Commitments-coherence receive side (COMMITMENTS-COHERENCE-SPEC §3.2) —
     // same explicit replication gate; undefined = dark (verb answers
     // 'disabled', merge layer returns own rows only).
@@ -3875,9 +4351,22 @@ export async function startServer(options: StartOptions): Promise<void> {
               const wsReaderMod = await import('../core/CoherenceJournalReader.js');
               const wsReader = new wsReaderMod.CoherenceJournalReader({ stateDir: config.stateDir });
               const ws = cjCfg?.workingSet;
+              // Source 3 (intelligent-working-set-lazy-sync): the interactive-artifact manager.
+              // File-backed, so this read-side instance sees the same artifacts.json the
+              // replication-side instance (constructed later for the emit seam) writes. Only
+              // READY rows nominate; each relPath is re-jailed by the canonical validator here
+              // AND re-jailed + scanned inside computeWorkingSet (defense in depth).
+              const wsArtStoreMod = await import('../core/WorkingSetArtifactReplicatedStore.js');
+              const wsArtMgrMod = await import('../core/WorkingSetArtifactManager.js');
+              const wsArtifactMgrServe = (workingSetArtifactManager ??= new wsArtMgrMod.WorkingSetArtifactManager(config.stateDir));
               workingSetPullServer = new wsMod.WorkingSetPullServer({
                 stateDir: config.stateDir,
                 readRuns: (topic) => wsReader.readOwnAutonomousRuns(topic, cjMachineId),
+                readInteractiveArtifacts: (topic) =>
+                  wsArtifactMgrServe
+                    .getReadyRows(topic)
+                    .map((r) => r.relPath)
+                    .filter((rel) => wsArtStoreMod.jailValidateRelPath(rel) !== null),
                 caps: {
                   ...(ws?.maxFileBytes != null ? { maxFileBytes: ws.maxFileBytes } : {}),
                   ...(ws?.headlineFileBytes != null ? { headlineFileBytes: ws.headlineFileBytes } : {}),
@@ -4023,6 +4512,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // `multiMachine.stateSync.preferences.enabled` (default false ⇒ strict no-op).
     const { PREF_KIND_REGISTRATION } = await import('../core/PreferencesReplicatedStore.js');
     replicatedKindRegistry.register(PREF_KIND_REGISTRATION);
+    const { CLASS_REVIEW_KIND_REGISTRATION } = await import('../core/ClassReviewReplicatedStore.js');
+    replicatedKindRegistry.register(CLASS_REVIEW_KIND_REGISTRATION);
 
     // WS2.3 (ws23-relationships-userregistry-security) — register the SECOND concrete
     // replicated kind, `relationship-record`, onto the registry: the FIRST PII kind.
@@ -4059,6 +4550,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     // the file body), keyed on a content fingerprint (KnowledgeReplicatedStore.deriveKnowledgeRecordKey).
     const { KNOWLEDGE_KIND_REGISTRATION } = await import('../core/KnowledgeReplicatedStore.js');
     replicatedKindRegistry.register(KNOWLEDGE_KIND_REGISTRATION);
+
+    // intelligent-working-set-lazy-sync — register the `working-set-artifact` replicated
+    // kind (a per-topic index of files the agent wrote INTERACTIVELY under the .instar/
+    // jail, so an interactive artifact follows a conversation across machines — the case
+    // the computed WorkingSetManifest engine misses). Dual-registry's dynamic half (the
+    // static half is CoherenceJournal.JOURNAL_KINDS, which now lists 'working-set-artifact').
+    // Registration is INERT — emission/serve/pull stay gated behind
+    // `multiMachine.stateSync.workingSetArtifact.enabled` (default false ⇒ strict no-op).
+    // Only the row METADATA crosses (relPath/contentHash/state), keyed on a NON-path-shaped
+    // sha256(jailedRelPath)+':'+producer surface; the file BODY is fetched by the existing
+    // working-set engine, never replicated here.
+    const { WORKING_SET_ARTIFACT_KIND_REGISTRATION } = await import('../core/WorkingSetArtifactReplicatedStore.js');
+    replicatedKindRegistry.register(WORKING_SET_ARTIFACT_KIND_REGISTRATION);
 
     // WS2.5 (multi-machine-replicated-store-foundation) — register the FIFTH concrete
     // replicated kind, `evolution-action-record`, onto the registry: the FOURTH memory-family
@@ -4170,6 +4674,27 @@ export async function startServer(options: StartOptions): Promise<void> {
           stateDir: config.stateDir,
           registry: replicatedKindRegistry,
           selfMachineId: cjOwnMachineId,
+          logger: (m) => console.log(pc.dim(`  [ws2-witness-index] ${m}`)),
+        });
+        const compactionConfig = config.multiMachine?.coherenceJournal?.replication?.compaction;
+        if (compactionConfig?.run === true) {
+          const { ReplicatedJournalCompactor } = await import('../core/ReplicatedJournalCompactor.js');
+          new ReplicatedJournalCompactor({
+            stateDir: config.stateDir,
+            registry: replicatedKindRegistry,
+            enabled: true,
+            dryRun: compactionConfig.dryRun ?? true,
+            logger: (m) => console.log(pc.dim(`  ${m}`)),
+          }).run();
+          // A real run replaced streams atomically; rebuild from the committed files.
+        }
+        coherenceJournal.setReplicatedRecordCommitObserver((kind, entries) => {
+          replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
+          if (kind === 'ssh-direction-proof') for (const entry of entries) mutualSshRuntime?.handleJournalProof(entry.data, entry.machine);
+        });
+        journalSyncApplier?.setReplicatedRecordCommitObserver((senderMachineId, kind, entries) => {
+          replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
+          if (kind === 'ssh-direction-proof') for (const entry of entries) mutualSshRuntime?.handleJournalProof(entry.data, senderMachineId);
         });
 
         // Author-side HLC clock — persisted under the journal dir (atomic temp+rename)
@@ -4498,6 +5023,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // construction (far below) can wire the /api/lease[/pull] receivers to real registry fns.
     let peerEndpointRecorder: PeerEndpointRecorder | undefined;
     let getSelfMeshEndpoints: (() => import('../core/types.js').MeshEndpoint[] | undefined) | undefined;
+    let meshResolver!: PeerEndpointResolver;
     // mesh-coherence-live-state-honesty (Fix (b) / Decision #5): the resolved server bind host,
     // a BOOT CONSTANT. Declared `let` at OUTER scope (the same scope as getSelfMeshEndpoints)
     // and assigned inside the mesh-init block so the peerPresenceTimer closure (far below) can
@@ -4668,7 +5194,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // single-`url` legacy path (byte-for-byte today).
         const meshCfg = config.multiMachine?.meshTransport;
         const meshEnabled = () => meshCfg?.enabled !== false; // default ON
-        const meshResolver = new PeerEndpointResolver({
+        meshResolver = new PeerEndpointResolver({
           config: {
             enabled: meshCfg?.enabled !== false,
             hedgeDelayMs: meshCfg?.hedgeDelayMs ?? 1500,
@@ -4907,8 +5433,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           const { LeaseHandbackReconciler, DEFAULT_LEASE_HANDBACK_CONFIG, HANDBACK_CONSENT_TTL_MS } = await import('../core/LeaseHandbackReconciler.js');
           void HANDBACK_CONSENT_TTL_MS;
           const { readHandbackLatchUntilMs } = await import('../core/handbackLatch.js');
-          const { ropeReachableOnAnyRope } = await import('../core/ropeHealth.js');
+          const { ropeHealthProviderFromSnapshot } = await import('../core/ropeHealth.js');
           const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+          // Scoped to THIS server/reconciler lifecycle — never the module-global
+          // synthetic-test seam. A success must be newer than the latest failure
+          // and fresher than one lease TTL, so repeated reads cannot turn old
+          // traffic into a continuous-health window.
+          const handbackRopeHealth = ropeHealthProviderFromSnapshot(
+            () => meshResolver.snapshot(),
+            { maxAgeMs: seamlessness.leaseTtlMs },
+          );
           const hbCfgRead = () => {
             const c = config.multiMachine?.leaseSelfHeal?.preferredCaptainHandback ?? {};
             return {
@@ -4937,7 +5471,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 heartbeatFresh: cap?.online === true,
                 // U4.3 rope-health snapshot seam (R-r2-7): absent record/provider
                 // reads NOT-healthy → defer. U4.3 registers the real provider.
-                ropeReachable: ropeReachableOnAnyRope(machineId),
+                ropeReachable: handbackRopeHealth.reachableOnAnyRope(machineId),
                 leaseEligible: !!cap,
                 quotaOk: cap?.quotaState?.blocked !== true,
               };
@@ -5024,6 +5558,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (probeEnabled && meshEnabled()) {
             const { RopeRecoveryProber } = await import('../core/RopeRecoveryProber.js');
             const { buildRopeProbeCommand, parseProbeResponse } = await import('../core/ropeProbeContract.js');
+            const ropeSinkMod = await import('../monitoring/ropeSinkRouter.js');
             const probeClientMod = await import('../core/MeshRpcClient.js');
             const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
             let probeNonce = 0;
@@ -5036,6 +5571,17 @@ export async function startServer(options: StartOptions): Promise<void> {
             const ropeProber = new RopeRecoveryProber(
               {
                 resolver: meshResolver,
+                // Escalation bodies name machines by NICKNAME (rope-health alert
+                // contract), never by raw machine id — resolved from the same
+                // registry the targets come from.
+                nicknameOf: (machineId: string) => {
+                  try {
+                    return idMgr.loadRegistry().machines?.[machineId]?.nickname ?? null;
+                  } catch {
+                    // @silent-fallback-ok — naming is cosmetic; prober falls back to the id.
+                    return null;
+                  }
+                },
                 // The same validated registry view the transport dials: resolve()
                 // validates URL shape per kind + the LAN-subnet gate, so the probe
                 // can never dial a forbidden host.
@@ -5087,16 +5633,34 @@ export async function startServer(options: StartOptions): Promise<void> {
                     };
                   }
                 },
-                raiseAttention: (item) =>
-                  telegram?.createAttentionItem({
-                    id: item.id,
-                    title: item.title,
-                    summary: item.body.slice(0, 160),
-                    description: item.body,
-                    category: 'rope-recovery-probe',
-                    priority: 'NORMAL',
-                    sourceContext: 'rope-recovery-probe',
-                  }),
+                // calm-alerting M-P3: the typed-class sink router (extracted,
+                // unit-tested module — src/monitoring/ropeSinkRouter.ts). Routes
+                // on the SOURCE-DECLARED class; demotes informational content
+                // only under the LIVE delivery-true conjunction; both-class
+                // (peer,kind) 24 h dedupe with visible count appends.
+                raiseAttention: ropeSinkMod.makeRopeSinkRouter({
+                  telegram: () => telegram ?? null,
+                  digestConfigured: () => {
+                    const rhCfg = config.monitoring?.ropeHealth as { enabled?: boolean; digestTopicId?: number } | undefined;
+                    return rhCfg?.enabled !== false && typeof rhCfg?.digestTopicId === 'number';
+                  },
+                  digestRunnableHere: () => {
+                    // A live JobScheduler handle in THIS process with the digest
+                    // job loaded + enabled — the lease read is NOT the conjunct
+                    // (a promoted standby holds the lease with no scheduler).
+                    try { return !!scheduler && scheduler.getJobs().some((j) => j.slug === 'rope-health-digest' && j.enabled !== false); } catch { return false; }
+                  },
+                  selfNickname: () => {
+                    try { return machinePoolRegistry?.getCapacities().find((c) => c.machineId === selfMachineId)?.nickname ?? 'this machine'; } catch { return 'this machine'; }
+                  },
+                  audit: (row) => {
+                    try {
+                      const p = path.join(config.stateDir, '..', 'logs', 'sentinel-events.jsonl');
+                      fs.mkdirSync(path.dirname(p), { recursive: true });
+                      fs.appendFileSync(p, JSON.stringify(row) + '\n');
+                    } catch { /* @silent-fallback-ok: audit is observability, never authority */ }
+                  },
+                }),
                 recordMetric: (event) => {
                   try {
                     getFeatureMetricsRecorder()?.record({
@@ -5341,6 +5905,23 @@ export async function startServer(options: StartOptions): Promise<void> {
       // idle-monitor's rateLimitedAtIdle hand-off. `enabled` OMITTED from defaults ⇒
       // dev-agent live / dark-fleet.
       idleThrottleSettleGate: resolveDevAgentGate(config.monitoring?.idleThrottleSettleGate?.enabled, config),
+      // Idle-zombie veto-backoff (session-respawn-thrash Fix A). `enabled` OMITTED
+      // from ConfigDefaults ⇒ dev-agent live / dark-fleet (mirrors idleThrottleSettleGate).
+      // cooldownMs default 30m; escalateAfterEpisodes default 6. `cooldownMs: 0` is
+      // enabled-but-no-cooldown (R4-5), never a disable — only enabled:false darks it.
+      idleKillVetoBackoff: (() => {
+        const cfg = config.monitoring?.idleKillVetoBackoff;
+        const enabled = resolveDevAgentGate(cfg?.enabled, config);
+        const rawCooldown = cfg?.cooldownMs;
+        const cooldownMs = typeof rawCooldown === 'number' && Number.isFinite(rawCooldown) && rawCooldown >= 0
+          ? Math.floor(rawCooldown)
+          : 1_800_000;
+        const rawEsc = cfg?.escalateAfterEpisodes;
+        const escalateAfterEpisodes = typeof rawEsc === 'number' && Number.isFinite(rawEsc) && rawEsc > 0
+          ? Math.floor(rawEsc)
+          : 6;
+        return { enabled, cooldownMs, escalateAfterEpisodes };
+      })(),
       // Standby-write reconciliation §3.3 (round-2 L3): per-machine
       // SessionBuildContextStore re-key. The id comes from the coordinator/
       // mesh identity via this LATE-RESOLVING getter (the mesh id is assigned
@@ -5533,8 +6114,32 @@ export async function startServer(options: StartOptions): Promise<void> {
             dryRun?: boolean;
             switchNowConfirmTtlMs?: number;
             defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
+            intentClassifier?: {
+              enabled?: boolean;
+              dryRun?: boolean;
+              minConfidence?: number;
+              timeoutMs?: number;
+              contextWindowTurns?: number;
+              modelTier?: 'fast' | 'balanced' | 'capable';
+            };
           };
         }).topicProfiles;
+        // Offender #1 conversion: resolve the ProfileIntentClassifier settings ONCE
+        // (the module-level ingress handler has no config in scope). `enabled` rides
+        // resolveDevAgentGate (dark on the fleet, live on a dev agent — registered in
+        // DEV_GATED_FEATURES, configPath topicProfiles.intentClassifier.enabled);
+        // dryRun ships true (the dry-run canary — actuates only on a deliberate flip).
+        const _intentCfg = topicProfilesCfg?.intentClassifier;
+        _profileIntentEnabled = resolveDevAgentGate(
+          _intentCfg?.enabled,
+          config as { developmentAgent?: boolean },
+        );
+        _profileIntentDryRun = _intentCfg?.dryRun ?? true;
+        _profileIntentMinConfidence = _intentCfg?.minConfidence ?? 0.85;
+        _profileIntentTimeoutMs = _intentCfg?.timeoutMs ?? 4000;
+        _profileIntentContextTurns = _intentCfg?.contextWindowTurns ?? 6;
+        _profileIntentModelTier = _intentCfg?.modelTier ?? 'fast';
+        _profileIntentStateDir = config.stateDir;
         _topicProfileStore = new TopicProfileStore({
           stateFilePath: path.join(config.stateDir, 'state', 'topic-profiles.json'),
           legacyFrameworksPath: path.join(config.stateDir, 'state', 'topic-frameworks.json'),
@@ -5829,6 +6434,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // §4.5: per-attempt swap timeout, inline-defaulted to 5s (no ConfigDefaults
           // entry — codexExecJson precedent; absent ⇒ 5s, present ⇒ operator's value).
           swapAttemptTimeoutMs: config.intelligence?.swapAttemptTimeoutMs ?? 5000,
+          // Non-gating failure-swap uses its own longer cap so cold-start providers can
+          // serve advisory/background calls without slowing safety-gating fail-closed paths.
+          nonGatingSwapTimeoutMs: config.intelligence?.nonGatingSwapTimeoutMs ?? 15000,
           // Per-target swap caps + clamp + total budget (docs/specs/
           // per-target-swap-timeout-spec.md): all three thread through UNSET by
           // default — dark ship, byte-identical routing behavior until the operator
@@ -5837,6 +6445,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           swapAttemptTimeoutMsByFramework: config.intelligence?.swapAttemptTimeoutMsByFramework,
           swapAttemptTimeoutMsMax: config.intelligence?.swapAttemptTimeoutMsMax,
           swapTotalBudgetMs: config.intelligence?.swapTotalBudgetMs,
+          // NON-GATING failure-swap (docs/specs/nongating-failure-swap.md): extend the
+          // bounded swap tail to non-gating internal calls (TopicIntentExtractor's 28% codex
+          // invocation-error class). INLINE-DEFAULTED enabled:true (codexExecJson precedent —
+          // no ConfigDefaults/migrateConfig entry; absence ⇒ the default). A strict, bounded
+          // error reduction: at most maxAttempts (default 1) steps, never onto the Claude tail.
+          // `{ enabled: false }` restores today's behavior (hard-error to the heuristic).
+          nonGatingFailureSwap: {
+            enabled: config.intelligence?.nonGatingFailureSwap?.enabled ?? true,
+            maxAttempts: config.intelligence?.nonGatingFailureSwap?.maxAttempts,
+          },
           // The dedicated queue for the DEFERRABLE queue rung (§3b.3); undefined when the rung is
           // dark ⇒ the rung is a no-op (a deferrable call falls straight to its heuristic, as before).
           llmQueue: degradationLadderQueue,
@@ -5872,6 +6490,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                 impact: `LLM calls for '${info.component}' run on ${info.to} instead of the configured ${info.from} until that framework is available.`,
               });
             } catch { /* never break the LLM path on a degradation report */ }
+            // Increment C fallback counting (spec "Fallback used"): every served
+            // fallback (a swap-tail/degrade position answering instead of the
+            // primary) increments the Near-Silent hourly counter; a Telegram digest
+            // line fires ONLY on the rate-spike ceiling. Observer-isolated.
+            try {
+              _agentServerRef?.getSpendAlertEmitters?.()?.onNatureRoutePlan({ dryRun: false, servedFallback: true });
+            } catch { /* @silent-fallback-ok: observer isolation (I-9) — the fallback counter is a notifier, never the LLM path */ }
           },
           // Never-silent tracking (Resilient Degradation Ladder §4): a non-gating call that
           // exhausts the ladder (→ caller heuristic) opens a tracked degradation; a successful
@@ -5883,6 +6508,60 @@ export async function startServer(options: StartOptions): Promise<void> {
           onResolved: (component, framework) => {
             try { DegradationReporter.getInstance().resolveDegradation(component, framework); }
             catch { /* @silent-fallback-ok: a never-silent tracking hook must NEVER throw into the LLM call path; a failed resolve just leaves the open degradation for the next success/sweep. */ }
+          },
+          // S4 A2 — Nature-Axis Routing (docs/specs/nature-axis-routing.md). Read LIVE per call
+          // so the kill switch is hot: `enabled` is DEV-GATED (resolveDevAgentGate — `enabled`
+          // OMITTED in shipped config ⇒ live-in-dryRun on a dev agent, dark on the fleet). When
+          // disabled this returns undefined ⇒ the router's nature block is skipped ⇒ routing is
+          // BYTE-IDENTICAL to today. dryRun defaults true (observe-only). A2.1 ships the dark/
+          // dryRun OBSERVATION mechanism; enforcing selection + the durable audit surface are
+          // tracked A2.2 remainders.
+          resolveNatureRouting: () => {
+            const nrCfg = config.sessions?.natureRouting;
+            if (!resolveDevAgentGate(nrCfg?.enabled, config)) return undefined;
+            return {
+              enabled: true,
+              dryRun: nrCfg?.dryRun !== false, // default true on first enable
+              chains: nrCfg?.chains,
+            };
+          },
+          onNatureRoutePlan: (plan) => {
+            // I-9 (Increment C): onNatureRoutePlan is a SINGLE optional callback —
+            // fan out to each subscriber with observer ISOLATION (throw-swallow per
+            // subscriber; one throwing never breaks the LLM path or double-fires
+            // the others). Subscribers: (1) the A2.1 env-gated console breadcrumb;
+            // (2) the spend-alert emitters (door-dark / fallback-spike), resolved
+            // LATE via the AgentServer accessor so construction order never races.
+            try {
+              if (process.env.INSTAR_NATURE_ROUTING_LOG === '1') {
+                const r = plan.resolution;
+                const detail =
+                  r && r.outcome === 'route'
+                    ? `chain=${r.resolvedChain} primary=${r.primary.door}/${r.primary.modelId}` +
+                      `${r.primary.clamped ? ' (clamped)' : ''} tail=${r.swapTail.length}`
+                    : plan.failClosed
+                      ? 'FAIL-CLOSED (critical gate, no door)'
+                      : `outcome=${r?.outcome ?? 'n/a'}`;
+                console.log(
+                  `[nature-routing] ${plan.component ?? '(none)'} (${plan.category}) ${detail} ` +
+                    `dryRun=${plan.dryRun}`,
+                );
+              }
+            } catch { /* @silent-fallback-ok: the env-gated console breadcrumb is observability — never break the LLM path on an observation */ }
+            try {
+              const emitters = _agentServerRef?.getSpendAlertEmitters?.();
+              emitters?.onNatureRoutePlan({
+                component: plan.component,
+                dryRun: plan.dryRun,
+                failClosed: plan.failClosed,
+                resolution: plan.resolution as never,
+                // A served fallback = a swap/degrade position answering instead of
+                // the primary. That signal rides the router's onDegrade callback
+                // (wired below in this file) — at RESOLUTION time only fail-closed
+                // (door-dark) is derivable here.
+                servedFallback: false,
+              });
+            } catch { /* @silent-fallback-ok: observer isolation (I-9) — a notifier failure never breaks the LLM path */ }
           },
         });
       } catch (err) {
@@ -6023,6 +6702,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       quotaTracker = new QuotaTracker({
         quotaFile,
         thresholds: config.scheduler?.quotaThresholds ?? { normal: 50, elevated: 60, critical: 80, shutdown: 95 },
+        framework: resolvedFramework,
       });
       console.log(pc.green(`  Quota tracking enabled (${quotaFile})`));
     }
@@ -6204,6 +6884,35 @@ export async function startServer(options: StartOptions): Promise<void> {
     // against the declared manifest (missing = a state, never an omission).
     const guardRegistry = new GuardRegistry();
 
+    // ── Test-Runner Concurrency Bound guard row (test-runner-concurrency-bound §2.9) ──
+    // The chokepoint lives in vitest globalSetup (out-of-process); this getter
+    // serves the SERVER-PROCESS view of the resolved posture so /guards can
+    // grade the limiter (off / dry-run / enforcing). The GuardRegistry contract
+    // forbids file I/O inside getters and the posture authority is the host
+    // tuning file, so a snapshot is refreshed on an unref'd interval OUTSIDE
+    // the getter — the getter itself is a pure in-memory read. A refresh
+    // failure keeps the last snapshot (the guards row must never throw); a
+    // dead refresher surfaces honestly as on-stale via lastTickAt.
+    {
+      try {
+        const { getHostTestRunnerSemaphore } = await import('../core/hostTestRunnerSemaphore.js');
+        let testRunnerGuardSnapshot = { enabled: true, dryRun: true, lastTickAt: Date.now() };
+        const refreshTestRunnerGuard = (): void => {
+          try {
+            const posture = getHostTestRunnerSemaphore().resolveContext().posture.posture;
+            testRunnerGuardSnapshot = {
+              enabled: posture !== 'off',
+              dryRun: posture !== 'enforcing',
+              lastTickAt: Date.now(),
+            };
+          } catch { /* keep the last snapshot — the guards row must never throw */ }
+        };
+        refreshTestRunnerGuard();
+        setInterval(refreshTestRunnerGuard, 60_000).unref();
+        guardRegistry.register('intelligence.testRunnerCap', () => testRunnerGuardSnapshot);
+      } catch { /* guard registration is observability — never gates boot */ }
+    }
+
     // ── Permission-Prompt Auto-Resolver (always-on safety floor) ──────────────
     // Auto-answers a framework approval prompt Instar cannot otherwise clear (the
     // Claude Code 2.1.176-177 cd-redirection wedge). UNCONDITIONAL — there is NO
@@ -6366,6 +7075,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (resolvedFramework === 'claude-code') {
           const provider = createDefaultProvider();
           collector = new QuotaCollector(provider, quotaTracker);
+        } else if (resolvedFramework === 'codex-cli') {
+          collector = new QuotaCollector(null, quotaTracker, { framework: 'codex-cli' });
         } else {
           console.log(pc.yellow(`  QuotaCollector skipped for ${resolvedFramework} (no framework usage meter)`));
         }
@@ -6458,6 +7169,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               .telegramFormatMode,
           getLintStrict: () =>
             (config as unknown as { telegramLintStrict?: boolean }).telegramLintStrict,
+          // Single-alerts-topic routing: resolve the boot-created Attention hub
+          // live from state so attention items land there (never per-item topics).
+          getAttentionHubTopicId: () => state.get<number>('agent-attention-topic') ?? null,
         },
         config.stateDir,
       );
@@ -6533,7 +7247,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
-        () => state.get<number>('agent-attention-topic'));
+        () => state.get<number>('agent-attention-topic'),
+        () => resolveHubClassifierDeps(config, _sharedIntelligence));
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, undefined, config.sessions.claudePath, topicMemory);
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
@@ -6549,6 +7264,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               .telegramFormatMode,
           getLintStrict: () =>
             (config as unknown as { telegramLintStrict?: boolean }).telegramLintStrict,
+          // Single-alerts-topic routing: resolve the boot-created Attention hub
+          // live from state so attention items land there (never per-item topics).
+          getAttentionHubTopicId: () => state.get<number>('agent-attention-topic') ?? null,
         },
         config.stateDir,
       );
@@ -6680,7 +7398,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         (topicId, text) => handleFixCommand(topicId, text, _fixDeps!),
         () => (collaborationSurfacer && conversationStore && telegram) ? { collaborationSurfacer, conversationStore, commitmentTracker, telegram, brief: briefDeps } : null,
         () => _agentServerRef?.getTopicOperatorStore() ?? null,
-        () => state.get<number>('agent-attention-topic'));
+        () => state.get<number>('agent-attention-topic'),
+        () => resolveHubClassifierDeps(config, _sharedIntelligence));
       wireTelegramCallbacks(telegram, sessionManager, state, quotaTracker, accountSwitcher, config.sessions.claudePath, topicMemory);
 
       // Wire up unknown-user handling (Multi-User Setup Wizard Phase 4.5)
@@ -6985,6 +7704,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               senderName: entry.senderName,
               senderUsername: entry.senderUsername,
               telegramUserId: entry.telegramUserId,
+              forwarded: entry.forwarded,
             });
           }
         };
@@ -7514,9 +8234,14 @@ export async function startServer(options: StartOptions): Promise<void> {
         // mesh bridge replays when a Slack message was forwarded to this machine
         // because it owns the conversation. Sharing one function is "Structure >
         // Willpower": the forwarded path and the live path can never drift.
-        const slackInboundDispatch = async (message: Message): Promise<void> => {
+        const slackInboundDispatch = async (
+          message: Message,
+          // SpawnAdmission TOCTOU guard (ownership-gated-spawn §3.1 item 2): the
+          // pool checkpoint below passes its router verdict through so the seam
+          // CONSUMES it rather than re-resolving.
+          admissionVerdict?: { messageId: string; action: string; acked: boolean },
+        ): Promise<void> => {
           const channelId = message.channel.identifier;
-          const isDM = message.metadata?.isDM as boolean;
           const senderName = message.metadata?.senderName as string || 'User';
 
           // ── Thread → session routing (§5.3) ──────────────────────────────────
@@ -7597,15 +8322,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           contextLines.push('CRITICAL: You MUST relay your response back to Slack after responding.');
           contextLines.push('Use the relay script (write ONLY your reply text — do NOT pipe or cat this file into the script):');
           contextLines.push('');
-          // Thread session: pass the thread_ts as the 2nd arg so the reply lands IN
-          // the thread (not the channel root). Channel session: channelId only.
-          const replyTarget = replyThreadTs ? `${channelId} ${replyThreadTs}` : `${channelId}`;
-          contextLines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${replyTarget}`);
+          // The bind-token-scoped conversation id is the destination authority;
+          // never interpolate a caller-chosen channel/thread into the command.
+          contextLines.push("cat <<'EOF' | .instar/scripts/slack-reply.sh");
           contextLines.push('Your response text here');
           contextLines.push('EOF');
           if (replyThreadTs) {
             contextLines.push('');
-            contextLines.push('(This is a THREAD conversation — keep your reply in this thread by passing the thread id shown above as the 2nd argument.)');
+            contextLines.push('(This is a THREAD conversation — the session binding keeps the reply in this exact thread.)');
           }
           contextLines.push('');
           contextLines.push('Strip the [slack:] prefix before interpreting the message.');
@@ -7669,9 +8393,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (alive) {
               console.log(`[slack→session] Injecting into ${existingSession}: "${message.content.slice(0, 80)}"`);
               // Wait for Claude to be ready (handles race with recently spawned sessions)
-              const ready = await sessionManager.waitForClaudeReady(existingSession, 15000);
+              let ready = await sessionManager.waitForClaudeReady(existingSession, 15000);
+              // A pane sitting on a selection menu is NOT stuck — something is waiting
+              // on an answer, and the always-on auto-resolver clears those within
+              // seconds. Two things must not happen here: killing a live conversation
+              // for being polite, and injecting INTO the menu (Enter would select an
+              // option — the message would answer the question). So give the resolver
+              // a bounded window, then re-evaluate; a menu that never clears falls
+              // through to the pre-existing stuck path rather than losing the message.
+              if (!ready && sessionManager.classifyPaneState(existingSession) === 'menu') {
+                console.warn(`[slack→session] Session ${existingSession} is on a selection menu — waiting for it to clear, not killing`);
+                ready = await sessionManager.waitForClaudeReady(existingSession, 15000);
+              }
               if (!ready) {
-                // Session is stuck (permissions prompt, tool hang, etc.)
+                // Session is stuck (tool hang, wedged TUI, etc.)
                 // Kill it and fall through to spawn a fresh session — never silently lose messages
                 console.warn(`[slack→session] Session ${existingSession} not ready after 15s — killing and respawning`);
                 try {
@@ -7699,16 +8434,87 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           // Check resume map for session continuity (keyed on routing key, so a
           // thread resumes its OWN session and not the channel-root one).
-          const resumeInfo = slackAdapter!.getChannelResume(routingKey);
+          const contextWallForcesFresh =
+            conversationId !== null
+            && _contextExhaustionFreshRequired?.(conversationId) === true;
+          if (contextWallForcesFresh) {
+            slackAdapter!.removeChannelResume(routingKey);
+            console.log(
+              `[slack→session] Context-exhaustion latch active for conversation ${conversationId} — forcing fresh spawn`,
+            );
+          }
+          const resumeInfo = contextWallForcesFresh
+            ? null
+            : slackAdapter!.getChannelResume(routingKey);
           const resumeSessionId = resumeInfo?.uuid ?? undefined;
           if (resumeInfo) {
             slackAdapter!.removeChannelResume(routingKey);
           }
 
-          // Route: DMs go to lifeline session, channels/threads spawn new sessions.
-          // A thread session NEVER folds into the DM lifeline — it is its own
-          // isolated work session (DMs don't carry thread_ts anyway).
-          const targetSession = (isDM && !isThreadSession) ? 'lifeline' : undefined;
+          // Readiness gates actual spawn only. Existing live sessions keep
+          // receiving inbound work even if a later filesystem drift is found;
+          // their next reply reports the helper failure rather than dropping
+          // the user's message before injection.
+          const relayReadiness = localSlackRelayReadiness(config.stateDir);
+          if (conversationId === null || !relayReadiness.ready) {
+            const reason = conversationId === null
+              ? 'conversation identity unavailable'
+              : (!relayReadiness.ready ? relayReadiness.reason : 'unknown readiness failure');
+            console.error(`[slack→session] spawn refused: slack-relay-not-ready (${reason})`);
+            return;
+          }
+
+          // Slack DMs are isolated 1:1 bound sessions too. A shared lifeline
+          // intentionally has no single INSTAR_CONVERSATION_ID, so routing DMs
+          // there would make a destination-free reply impossible to authorize.
+          const targetSession = undefined;
+          // ── SpawnAdmission (ownership-gated-spawn §3.1) — the Slack inbound
+          // spawn callsite. Refusal floor: durable-queue custody where live;
+          // Slack has no telegram-topic notice surface, so the ladder records
+          // the episode journal-only (topicId null); no custody + owner-alive
+          // residual fails OPEN (reachability wins, loudly).
+          if (_spawnAdmission) {
+            try {
+              const d = _spawnAdmission.admit({
+                sessionKey: routingKey,
+                callsite: 'slack-inbound-spawn',
+                routerVerdict: admissionVerdict,
+              });
+              _ladderDryRunConsult(d, routingKey, null);
+              if (!d.allow) {
+                console.log(`[spawn-admission] slack key ${routingKey} spawn REFUSED (row=${d.row}) — ${d.reason}`);
+                let custody = admissionVerdict?.acked === true;
+                if (!custody && _inboundQueue) {
+                  try {
+                    const q = _inboundQueue.enqueueLive({
+                      sessionKey: routingKey,
+                      messageId: String(message.id),
+                      payload: message.content,
+                      senderEnvelope: null,
+                      topicMetadata: undefined,
+                    }, 'spawn-admission-refusal');
+                    custody = q.result === 'queued' || q.result === 'already-queued';
+                  } catch { /* @silent-fallback-ok: custody is best-effort — the Slack refusal path stays honest about custody in its journal row. */ }
+                }
+                if (!custody && d.refusalAction === 'forward') {
+                  console.warn(`[spawn-admission] slack key ${routingKey} owner-alive refusal without custody — failing OPEN to local spawn (reachability wins)`);
+                } else {
+                  if (_ownerDarkLadder && (d.refusalAction === 'owner-dark-ladder' || d.refusalAction === 'rung3-notice')) {
+                    void _ownerDarkLadder.handleOwnerDark({
+                      sessionKey: routingKey,
+                      topicId: null,
+                      ownerMachineId: d.ownership?.owner ?? 'unknown',
+                      mode: 'enforce',
+                      custodyLive: custody,
+                    }).catch(() => {});
+                  }
+                  return;
+                }
+              }
+            } catch (err) {
+              console.warn(`[spawn-admission] slack admit error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
           try {
             const newSessionName = await sessionManager.spawnInteractiveSession(
               bootstrapMessage,
@@ -7733,6 +8539,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               );
               slackAdapter!.trackMessageInjection(channelId, newSessionName, message.content);
               console.log(`[slack→session] ${resumeSessionId ? 'Resumed' : 'Spawned'} "${newSessionName}" for ${isThreadSession ? `thread ${routingKey}` : `channel ${channelId}`}`);
+              if (contextWallForcesFresh && conversationId !== null) {
+                _clearContextExhaustionFreshRequired?.(conversationId);
+              }
             }
           } catch (err) {
             console.error(`[slack] Session spawn failed: ${err instanceof Error ? err.message : err}`);
@@ -7812,6 +8621,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // where a Slack channel pinned/transferred to a peer machine still injected
           // the next message into the already-running LOCAL session (Telegram's
           // inbound path already followed the transfer; Slack's never did).
+          // SpawnAdmission TOCTOU guard (ownership-gated-spawn §3.1 item 2):
+          // stash the router verdict so the dispatch's seam consumes it.
+          let _slackAdmissionVerdict: { messageId: string; action: string; acked: boolean } | undefined;
           if (_sessionRouter && _sessionPoolStage() !== 'dark') {
             try {
               const outcome = await _sessionRouter.route({
@@ -7829,6 +8641,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 channel: { platform: 'slack', workspaceId: _slackAdapter?.getWorkspaceId(), channelId },
               });
               console.log(`[session-pool] slack route key=${routingKey} → action=${outcome.action} owner=${outcome.owner ?? '?'} self=${_meshSelfId ?? '?'} acked=${outcome.acked}`);
+              _slackAdmissionVerdict = { messageId: String(message.id), action: outcome.action, acked: outcome.acked };
               // silent-loss-refusal-conservation §2.A/§2.C — a first-class terminal
               // `rejected` is NOT a successful forward: reply in-thread on the
               // originating Slack channel and terminal-return WITHOUT local dispatch,
@@ -7873,7 +8686,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           }
 
-          await slackInboundDispatch(message);
+          await slackInboundDispatch(message, _slackAdmissionVerdict);
         });
 
         await slackAdapter.start();
@@ -7894,12 +8707,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (slackAttentionChannel) {
             slackAdapter!.sendToChannel(slackAttentionChannel,
               `⚠️ Stall detected in session "${sessionName}" (channel ${channelId}). Message may not have been answered: "${messageText.slice(0, 100)}"`
-            ).catch(() => {});
+            ).catch(err => {
+              // @silent-fallback-ok best-effort advisory; failure is surfaced in server logs
+              console.warn(`[slack] Failed to send stall notice to attention channel: ${err instanceof Error ? err.message : String(err)}`);
+            });
           }
           // Also notify in the originating channel
           slackAdapter!.sendToChannel(channelId,
             `⚠️ The session appears to have stalled. Use \`!restart\` to restart or \`!interrupt\` to nudge it.`
-          ).catch(() => {});
+          ).catch(err => {
+            // @silent-fallback-ok best-effort advisory; failure is surfaced in server logs
+            console.warn(`[slack] Failed to send stall notice to originating channel: ${err instanceof Error ? err.message : String(err)}`);
+          });
         };
 
         // Wire voice transcription (reuses Telegram's provider resolution: Groq → OpenAI)
@@ -8308,9 +9127,25 @@ export async function startServer(options: StartOptions): Promise<void> {
     const rqCfg = config.monitoring?.resumeQueue ?? {};
     let resumeQueue: import('../monitoring/ResumeQueue.js').ResumeQueue | null = null;
     let resumeDrainer: import('../monitoring/ResumeQueueDrainer.js').ResumeQueueDrainer | null = null;
+    // Constructed later in boot than the resume queue. These late-bound refs let
+    // the queue's callbacks recover an unbound warm Threadline worker without
+    // weakening boot ordering or inventing a second recovery loop.
+    let threadlineRouterForResume: ThreadlineRouter | null = null;
+    let listenerManagerForResume: ListenerSessionManager | null = null;
+    let threadLogForResume: ThreadLog | null = null;
+    let messageStoreForResume: MessageStore | null = null;
+    const { createThreadlineReapRecovery } = await import('../threadline/ThreadlineReapRecovery.js');
+    const threadlineReapRecovery = createThreadlineReapRecovery({
+      localAgent: config.projectName,
+      manager: () => listenerManagerForResume,
+      threadLog: () => threadLogForResume,
+      messageStore: () => messageStoreForResume,
+      router: () => threadlineRouterForResume,
+    });
     let autonomousLivenessReconciler:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null = null;
+    let autonomousThroughputFloor: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null = null;
     let enforcedTerminationWatchdog:
       | import('../monitoring/EnforcedTerminationWatchdog.js').EnforcedTerminationWatchdog
       | null = null;
@@ -8600,6 +9435,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 { cwd: entry.worktreePath ?? entry.cwd },
               );
             },
+            threadlineMessagePending: threadlineReapRecovery.pending,
+            respawnThread: threadlineReapRecovery.respawn,
             triggerJob: async (slug) => {
               if (!scheduler) return 'skipped';
               return await scheduler.triggerJob(slug, 'resume-queue');
@@ -9252,6 +10089,21 @@ export async function startServer(options: StartOptions): Promise<void> {
           // a throw fails toward NO injection (status-quo no-revive), never a spawn.
           let candidateReason = e.reason;
           let candidateWorkEvidence = e.workEvidence ?? [];
+          const threadMatch = threadResumeMap.getBySessionName(e.session.tmuxSession)[0];
+          const threadInbound = threadMatch && listenerManagerForResume
+            ? listenerManagerForResume.readLatestCanonicalInboxForThread(threadMatch.threadId)
+            : null;
+          const unsettledThreadInbound = threadInbound && listenerManagerForResume
+            && !listenerManagerForResume.hasCanonicalReplyFor(threadInbound.threadId, threadInbound.id)
+            ? threadInbound
+            : null;
+          if (unsettledThreadInbound) {
+            // The durable canonical inbound plus absence of a later outbound is
+            // direct evidence that an injected turn still needs completion.
+            // Reuse the existing strong `pending-injection` vocabulary so an
+            // unbound A2A worker is eligible without relaxing weak-evidence rules.
+            candidateWorkEvidence = [...candidateWorkEvidence, 'pending-injection'];
+          }
           if (
             e.reason === 'age-limit' &&
             topicId != null &&
@@ -9276,6 +10128,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             sessionName: e.session.name,
             tmuxSession: e.session.tmuxSession,
             topicId,
+            threadId: unsettledThreadInbound?.threadId,
+            threadlineMessageId: unsettledThreadInbound?.id,
             jobSlug: e.session.jobSlug,
             jobResumeOptIn: jobDef?.resumeOnReap === true,
             resumeUuid: topicId != null ? (_topicResumeMap?.get(topicId) ?? null) : null,
@@ -9607,6 +10461,29 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
       });
     }
+
+    // Idle-zombie veto P19 breaker (session-respawn-thrash Fix A′). Inject the
+    // best-effort "one per incident" dedupe seam (in-process coalescing + TTL) and
+    // route the breaker's ONE attention item through the existing attention queue
+    // (flood-guarded — never a spawned topic). Signal-only: an idle-zombie kill that
+    // stays permanently vetoed for `escalateAfterEpisodes` cooldowns surfaces once.
+    {
+      const { InProcessIncidentDedupe } = await import('../monitoring/IncidentDedupe.js');
+      sessionManager.setIncidentDedupe(new InProcessIncidentDedupe());
+    }
+    sessionManager.on('idleZombieVetoEscalation', (e: { session: import('../core/types.js').Session; topicId: number | null; reasonKey: string; message: string }) => {
+      if (!telegram) return;
+      void telegram.createAttentionItem({
+        id: `idle-zombie-veto-${e.topicId ?? 'none'}-${e.reasonKey}`,
+        title: 'Session permanently vetoed from idle-zombie cleanup',
+        summary: e.message,
+        category: 'session-lifecycle',
+        priority: 'HIGH',
+        sourceContext: `idle-zombie-veto:${e.topicId ?? 'none'}:${e.reasonKey}`,
+      }).catch((err: Error) => {
+        console.error('[idleZombieVetoEscalation] attention-item failed:', err.message);
+      });
+    });
 
     // G3.4 — Single-writer binding lifecycle: clear a killed session's stale
     // topic→session binding so a dead session can't silently resurrect (the
@@ -10084,6 +10961,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           // P1/P2 cross-check dep — see SessionRecovery.killForRecovery().
           hasActiveProcesses: (name) => sessionManager.hasActiveProcesses(name),
+          probeTranscript: (name) => {
+            const session = sessionManager.listRunningSessions()
+              .find((candidate) => candidate.tmuxSession === name);
+            if (!session?.claudeSessionId) {
+              return { resolved: false, path: '', size: 0, mtime: 0 };
+            }
+            return probeTranscript({
+              framework: session.framework ?? 'claude-code',
+              sessionId: session.claudeSessionId,
+              projectDir: session.cwd ?? config.sessions.projectDir,
+            });
+          },
           respawnSession: async (topicId, _sessionName, recoveryPrompt) => {
             // Check Slack first (synthetic IDs are negative)
             const slackChId = slackProxyChannelMap.get(topicId);
@@ -10158,6 +11047,12 @@ export async function startServer(options: StartOptions): Promise<void> {
               const slackApiChannel = parsedTarget.channelId;
               const slackReplyThread = parsedTarget.threadTs;
 
+              const relayReadiness = localSlackRelayReadiness(config.stateDir);
+              if (!relayReadiness.ready) {
+                console.error(`[slack→recovery] spawn refused: slack-relay-not-ready (${relayReadiness.reason})`);
+                return;
+              }
+
               // Kill existing session (already flagged in contextExhaustionKills via event listener)
               const session = sessionManager.listRunningSessions().find(s => s.tmuxSession === _sessionName);
               if (session) sessionManager.killSession(session.id);
@@ -10194,9 +11089,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               lines.push('');
               lines.push('CRITICAL: You MUST relay your response back to Slack.');
-              // Thread session: include the thread_ts so the recovered reply threads.
-              const recoveryReplyTarget = slackReplyThread ? `${slackApiChannel} ${slackReplyThread}` : `${slackApiChannel}`;
-              lines.push(`cat <<'EOF' | .claude/scripts/slack-reply.sh ${recoveryReplyTarget}`);
+              // The recovered session receives a freshly minted bind token;
+              // destination selection stays server-side and thread-exact.
+              lines.push("cat <<'EOF' | .instar/scripts/slack-reply.sh");
               lines.push('Your response text here');
               lines.push('EOF');
 
@@ -10208,6 +11103,22 @@ export async function startServer(options: StartOptions): Promise<void> {
 
               const bootstrapMessage = `[slack:${slackApiChannel}] ${contextData}`;
 
+              // SpawnAdmission (ownership-gated-spawn §3.1) — the Slack recovery
+              // spawn callsite (fresh ownership resolution; no router verdict on
+              // this path). Enforce-mode refusal: the conversation belongs to
+              // another machine — recovery there is that machine's job; skip.
+              if (_spawnAdmission) {
+                try {
+                  const d = _spawnAdmission.admit({ sessionKey: slackChId, callsite: 'slack-recovery-spawn' });
+                  _ladderDryRunConsult(d, slackChId, null);
+                  if (!d.allow) {
+                    console.log(`[spawn-admission] slack recovery spawn for ${slackChId} REFUSED (row=${d.row}) — ${d.reason}`);
+                    return;
+                  }
+                } catch (err) {
+                  console.warn(`[spawn-admission] slack recovery admit error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
+                }
+              }
               try {
                 // Spawn with the RAW channel (+ thread_ts) but register on the routing key.
                 const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, undefined, { slackChannelId: slackApiChannel, slackThreadTs: slackReplyThread });
@@ -10325,6 +11236,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Clean up after 60 seconds — by then the kill and respawn are done
         setTimeout(() => contextExhaustionKills.delete(sessionName), 60_000);
       });
+      _contextExhaustionFreshRequired = (topicId) =>
+        sessionRecovery?.hasContextWedgedSeen(topicId) === true;
+      _clearContextExhaustionFreshRequired = (topicId) => {
+        sessionRecovery?.clearContextWedgedSeen(topicId);
+      };
       console.log(pc.green('  Session Recovery enabled (mechanical fast-path)'));
     }
 
@@ -10649,8 +11565,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // view URL and the dashboard session — the documented UX cost of
       // having briefly routed private traffic through a third-party relay.
       tunnel.setCredentialRotator(async () => {
-        const { randomUUID } = await import('node:crypto');
-        const newPin = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit, matches startup gen
+        const { randomUUID, randomInt } = await import('node:crypto');
+        const newPin = String(randomInt(100000, 1000000)); // 6-digit, matches startup gen
         const newToken = randomUUID();
         // Persist to config.json (survives restart; boot reads the new token)…
         liveConfig.set('authToken', newToken);
@@ -10678,6 +11594,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const evolution = new EvolutionManager({
       stateDir: config.stateDir,
       ...(config.evolution || {}),
+      autoExpiry: config.evolutionActions?.autoExpiry,
     });
     console.log(pc.green('  Evolution system enabled'));
 
@@ -10852,6 +11769,82 @@ export async function startServer(options: StartOptions): Promise<void> {
             KNOWLEDGE_STORE_KEY,
             deriveKnowledgeRecordKey(title, url, type),
             (hlc, origin, observed) => buildKnowledgeTombstoneData({ title, url, type, hlc, origin, deletedAt, observed }),
+          ),
+      });
+    }
+
+    // intelligent-working-set-lazy-sync — the union reader for the `workingSetArtifact`
+    // store. loadOriginRecords materializes the OWN interactive-artifact rows (via
+    // workingSetArtifactToOriginRecord, keyed on the NON-path-shaped
+    // sha256(jailedRelPath)+':'+producer surface); peer replicas land via the journal-apply
+    // path (a later rollout stage). With only the own origin the union is a strict no-op.
+    // tierOf HIGH (append-both-and-flag; the READ layer is advisory). The emit seam is
+    // attached ONLY when stateSync.workingSetArtifact.enabled is true (default false ⇒ NOT
+    // injected ⇒ strict no-op). The manager is ALSO the recorder route's write target.
+    const {
+      workingSetArtifactTierOf,
+      workingSetArtifactToOriginRecord,
+      deriveWorkingSetArtifactRecordKey,
+      buildWorkingSetArtifactData,
+      buildWorkingSetArtifactTombstoneData,
+      WORKING_SET_ARTIFACT_STORE_KEY,
+    } = await import('../core/WorkingSetArtifactReplicatedStore.js');
+    const { WorkingSetArtifactManager } = await import('../core/WorkingSetArtifactManager.js');
+    // Consolidate onto the hoisted instance (shared with the read-side + the recorder route).
+    // The local alias carries the definite type for use inside the reader/emit closures.
+    const wsArtMgr = (workingSetArtifactManager ??= new WorkingSetArtifactManager(config.stateDir));
+    // Boot-time record GC (intelligent-working-set-lazy-sync F3): purge interactive-artifact
+    // rows older than the record TTL so the metadata catalog stays bounded across restarts
+    // (a LOCAL cleanup, not a tombstone — a peer's copy ages out under its own TTL). Distinct
+    // from the engine's 7d pending-pull TTL.
+    try {
+      const wsTtlDays = (config as unknown as { coherenceJournal?: { workingSet?: { recordTtlDays?: number } } }).coherenceJournal?.workingSet?.recordTtlDays;
+      const wsTtlMs = (typeof wsTtlDays === 'number' && wsTtlDays > 0 ? wsTtlDays : 30) * 24 * 60 * 60 * 1000;
+      const wsPurged = wsArtMgr.gc(wsTtlMs);
+      if (wsPurged > 0) console.log(pc.dim(`  [ws-artifact] GC purged ${wsPurged} record(s) older than ${Math.round(wsTtlMs / 86400000)}d`));
+    } catch { /* @silent-fallback-ok: record GC is best-effort housekeeping, never fails boot */ }
+    const workingSetArtifactUnionReader = new ReplicatedStoreReader({
+      registry: replicatedKindRegistry,
+      stores: _stateSyncStoresResolved,
+      tierOf: workingSetArtifactTierOf,
+      loadOriginRecords: (store, recordKey) => {
+        if (store !== WORKING_SET_ARTIFACT_STORE_KEY || _meshSelfId === null) return [];
+        for (const r of wsArtMgr.getAllRows()) {
+          if (deriveWorkingSetArtifactRecordKey(r.relPath, _meshSelfId) === recordKey) {
+            const o = workingSetArtifactToOriginRecord({ ...r, producerMachineId: _meshSelfId }, _meshSelfId);
+            return o ? [o] : [];
+          }
+        }
+        return [];
+      },
+      listRecordKeys: (store) => {
+        if (store !== WORKING_SET_ARTIFACT_STORE_KEY || _meshSelfId === null) return [];
+        const keys: string[] = [];
+        for (const r of wsArtMgr.getAllRows()) {
+          const k = deriveWorkingSetArtifactRecordKey(r.relPath, _meshSelfId);
+          if (k !== null) keys.push(k);
+        }
+        return keys;
+      },
+      droppedOrigins: droppedOriginRegistry,
+      conflictStore,
+    });
+    void workingSetArtifactUnionReader;
+    if (replicatedRecordEmitter && _meshSelfId !== null) {
+      const emitter = replicatedRecordEmitter;
+      const selfId = _meshSelfId;
+      wsArtMgr.setReplicationEmitter({
+        emitPut: (row) =>
+          emitter.emit(
+            WORKING_SET_ARTIFACT_STORE_KEY,
+            deriveWorkingSetArtifactRecordKey(row.relPath, selfId),
+            (hlc, origin, observed) => buildWorkingSetArtifactData({ row, hlc, origin, observed }),
+          ),
+        emitDelete: (d) =>
+          emitter.emit(
+            WORKING_SET_ARTIFACT_STORE_KEY,
+            deriveWorkingSetArtifactRecordKey(d.relPath, d.producerMachineId),
+            (hlc, origin, observed) => buildWorkingSetArtifactTombstoneData({ relPath: d.relPath, producerMachineId: d.producerMachineId, hlc, origin, deletedAt: d.deletedAt, observed }),
           ),
       });
     }
@@ -11416,6 +12409,73 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
     console.log(pc.green('  CompactionSentinel enabled (verified recovery lifecycle)'));
 
+    // ── Proactive autonomous compaction ───────────────────────────────
+    // Explicit opt-in, dry-run first. Claude already exposes a grounded
+    // percentage in its live pane ("Context left until auto-compact: N%").
+    // At >=85% used, ask for /compact only when the canonical async work-state
+    // probe says IDLE. Working and indeterminate sessions are never touched.
+    const proactiveCompactionCfg = config.monitoring?.proactiveAutonomousCompaction;
+    if (proactiveCompactionCfg?.enabled === true) {
+      const { ProactiveCompactionSentinel } = await import(
+        '../monitoring/ProactiveCompactionSentinel.js'
+      );
+      const parseContextRemaining = (pane: string | null): number | null => {
+        const match = pane?.match(/Context left until auto-compact:\s*([0-9]+)%/i);
+        if (!match) return null;
+        const value = Number(match[1]);
+        return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : null;
+      };
+      const proactiveCompaction = new ProactiveCompactionSentinel(
+        {
+          listCandidates: async () => Promise.all(sessionManager.listRunningSessions().map(async (session) => {
+            const topic = telegram?.getTopicForSession(session.tmuxSession);
+            let autonomous = false;
+            if (topic != null) {
+              try {
+                autonomous = fs.existsSync(
+                  path.join(config.stateDir, 'autonomous', `${topic}.local.md`),
+                );
+              } catch {
+                // Fail closed: an unreadable registration never grants actuation.
+                autonomous = false;
+              }
+            }
+            return {
+              sessionName: session.tmuxSession,
+              autonomous,
+              framework: session.framework,
+              contextRemainingPercent: parseContextRemaining(
+                sessionManager.captureOutput(session.tmuxSession, 30),
+              ),
+              workState: await sessionManager.checkSessionWorkState(session.tmuxSession),
+            };
+          })),
+          triggerCompact: (sessionName) =>
+            sessionManager.injectInternalMessage(
+              sessionName,
+              '/compact',
+              'proactive-autonomous-compaction',
+            ),
+          audit: (event) => {
+            console.log(
+              `[ProactiveCompaction] ${event.kind} "${event.sessionName}" ` +
+              `at ${event.usedPercent}% used (threshold ${event.thresholdUsedPercent}%)`,
+            );
+          },
+        },
+        proactiveCompactionCfg,
+      );
+      const proactiveCompactionTimer = setInterval(
+        () => { void proactiveCompaction.tick(); },
+        Math.max(10_000, proactiveCompactionCfg.tickIntervalMs ?? 60_000),
+      );
+      proactiveCompactionTimer.unref?.();
+      void proactiveCompaction.tick();
+      console.log(pc.green(
+        `  Proactive autonomous compaction enabled (${proactiveCompactionCfg.dryRun === false ? 'live' : 'dry-run'})`,
+      ));
+    }
+
     // ── Silently-stopped trio: SocketDisconnectSentinel + ActiveWorkSilenceSentinel ──
     // Wire-up post-2026-05-22 incident. Every transition (detect/nudge/recover)
     // lands in the audit log (server logs + JSONL) — the user never sees it.
@@ -11873,6 +12933,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     const commitmentTracker = new CommitmentTracker({
       stateDir: config.stateDir,
       liveConfig,
+      blockerLifecycleEnabled: resolveDevAgentGate(
+        (config.monitoring as { blockerLifecycleLedger?: { enabled?: boolean } } | undefined)?.blockerLifecycleLedger?.enabled,
+        config,
+      ),
+      autoExpiry: config.commitments?.autoExpiry,
       // P1.5 §3.1: the creator stamp — (originMachineId, id) is the
       // cross-machine identity (ids are per-machine sequential counters).
       ...(cjOwnMachineId ? { originMachineId: cjOwnMachineId } : {}),
@@ -11902,7 +12967,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Subscription & Auth Standard). Always instantiated; ships DARK because an
     // empty pool is a pure no-op (no background loop, no cost) until an operator
     // enrolls an account. Stores each account's login LOCATION, never tokens.
-    const { SubscriptionPool } = await import('../core/SubscriptionPool.js');
+    const { SubscriptionPool, requiresOwnerRelogin } = await import('../core/SubscriptionPool.js');
     const subscriptionPool = new SubscriptionPool({ stateDir: config.stateDir });
     if (subscriptionPool.size() > 0) {
       console.log(pc.green(`  Subscription pool: ${subscriptionPool.size()} account(s) registered`));
@@ -11953,7 +13018,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       // MOST-HEADROOM account (not the use-it-or-lose-it drain-first winner) — so
       // non-critical work runs whenever ANY account has room, while placement still
       // drains the soonest-to-reset account. Clamps + degraded signal are built in.
-      quotaTracker.setPoolQuotaProvider(() => poolHeadroom(subscriptionPool.list(), { nowMs: Date.now() }));
+      quotaTracker.setPoolQuotaProvider(() => poolHeadroom(subscriptionPool.list(), {
+        nowMs: Date.now(),
+        framework: config.sessions.framework ?? 'claude-code',
+      }));
       console.log(pc.green('  Pool-aware quota throttle: wired (placement-shared eligibility, most-headroom gating)'));
     }
 
@@ -11967,6 +13035,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // compat); only UNKNOWN mode (corrupt on-disk) raises a HIGH attention item, never throws.
     const { CredentialLocationLedger, shouldBootSeedCredentialLedger, shouldRunIdentityAudit } = await import('../core/CredentialLocationLedger.js');
     const { CredentialIdentityOracle } = await import('../core/CredentialIdentityOracle.js');
+    const credentialIdentityOracle = new CredentialIdentityOracle();
     const { CredentialLocationGate } = await import('../core/CredentialLocationGate.js');
     const credentialGateEmitAttention = telegram
       ? (item: import('../core/CredentialLocationGate.js').CredentialGateAttentionInput) =>
@@ -11983,9 +13052,37 @@ export async function startServer(options: StartOptions): Promise<void> {
     const credentialLocationLedger = new CredentialLocationLedger({
       stateDir: config.stateDir,
       pool: subscriptionPool,
-      oracle: new CredentialIdentityOracle(),
+      oracle: credentialIdentityOracle,
       emitAttention: credentialGateEmitAttention,
     });
+    // One-shot legacy identity reconciliation. It reads only each record's own
+    // credential slot through the real provider oracle; unresolved gaps remain
+    // quarantined and visible instead of being guessed from metadata.
+    const { repairMissingSubscriptionEmails } = await import('../core/SubscriptionAccountEmailRepair.js');
+    const {
+      SubscriptionAccountEmailRegistrar,
+      SubscriptionEmailReconciliationBarrier,
+    } = await import('../core/SubscriptionPool.js');
+    const subscriptionEmailBarrier = new SubscriptionEmailReconciliationBarrier();
+    const subscriptionEmailRegistrar = new SubscriptionAccountEmailRegistrar(
+      subscriptionPool,
+      credentialIdentityOracle,
+      credentialLocationLedger,
+    );
+    const runSubscriptionEmailRepair = async (): Promise<void> => {
+      const emailRepair = await repairMissingSubscriptionEmails(
+        subscriptionPool,
+        credentialIdentityOracle,
+        credentialLocationLedger,
+      );
+      subscriptionEmailBarrier.finish(emailRepair.unresolved);
+      if (emailRepair.repaired.length > 0 || emailRepair.unresolved.length > 0) {
+        console.log(pc.yellow(
+          `  Subscription email reconciliation: ${emailRepair.repaired.length} repaired, ` +
+          `${emailRepair.unresolved.length} unresolved`,
+        ));
+      }
+    };
     // The §2.10 env-token gate (Step 8): the §0.b applicability precondition, enforced. Evaluates
     // BOTH `config.anthropicApiKey` (read LIVE per call — restartless) AND the live running fleet's
     // durable per-session `credentialSource` flag, so a mid-run flip to an env token cannot silently
@@ -12062,6 +13159,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (matches.length !== 1) return { unavailable: true, reason: `ambiguous/unknown email (${matches.length} pool matches)` };
       return { accountId: matches[0].id };
     };
+    let quotaPollerRef: import('../core/QuotaPoller.js').QuotaPoller | null = null;
     const credentialSwapExecutor = new CredentialSwapExecutor({
       funnel: credentialWriteFunnel,
       ledger: credentialLocationLedger,
@@ -12073,7 +13171,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       },
       emitAudit: (rec) => credentialAuditEmit.audit({ event: 'swap-step', ...rec }),
       emitAttention: (item) => void credentialAuditEmit.attention(item),
-      onSlotsChanged: (slots) => { try { inUseAccountResolver.bustCache?.(); } catch { /* @silent-fallback-ok: cache-bust is an observability nicety (a stale badge self-corrects at TTL); a throwing consumer must never break the committed swap */ } void slots; },
+      onSlotsChanged: (slots) => { try { inUseAccountResolver.bustCache?.(); } catch { /* @silent-fallback-ok: cache-bust is an observability nicety (a stale badge self-corrects at TTL); a throwing consumer must never break the committed swap */ } quotaPollerRef?.invalidateIdentityCache(slots); },
     });
     const credentialManualLevers = new CredentialManualLevers({
       maxForcedPerWindow: config.subscriptionPool?.credentialRepointing?.maxForcedManualSwapsPerWindow,
@@ -12133,6 +13231,55 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
       },
     });
+    const buildCredentialRepairPlan = async () => {
+      const accounts = subscriptionPool.list().filter((a) => a.framework === 'claude-code');
+      const slots = [...new Set(accounts.map((a) => a.configHome))];
+      const observations = await Promise.all(slots.map(async (slot) => {
+        const identity = await credResolveIdentity(slot);
+        return { slot, accountId: 'unavailable' in identity ? null : identity.accountId };
+      }));
+      return planCredentialIdentityRepair(accounts, observations);
+    };
+    const executeCredentialRepairPlan = async () => {
+      const plan = await buildCredentialRepairPlan();
+      const results: Array<{ move: (typeof plan.moves)[number]; outcome: string; reason: string }> = [];
+      const vacateResults: Array<{ impostorSlot: string; retainedSlot: string; accountId: string; outcome: string; reason: string }> = [];
+      for (const vacate of plan.vacates) {
+        const result = await credentialSwapExecutor.vacateDuplicate(vacate.impostorSlot, vacate.retainedSlot, vacate.accountId);
+        vacateResults.push({ ...vacate, outcome: result.outcome, reason: result.reason });
+        if (result.outcome !== 'swapped' && result.outcome !== 'dry-run') break;
+      }
+      for (const move of plan.moves) {
+        const [liveA, liveB] = await Promise.all([credResolveIdentity(move.slotA), credResolveIdentity(move.slotB)]);
+        if ('unavailable' in liveA || 'unavailable' in liveB) {
+          results.push({ move, outcome: 'precondition-failed', reason: 'repair census became unavailable — move refused' });
+          break;
+        }
+        credentialLocationLedger.recordAssignment(move.slotA, liveA.accountId, { verifiedAt: new Date().toISOString(), op: 'reconcile', source: 'identity-repair-preflight' });
+        credentialLocationLedger.recordAssignment(move.slotB, liveB.accountId, { verifiedAt: new Date().toISOString(), op: 'reconcile', source: 'identity-repair-preflight' });
+        const result = await credentialSwapExecutor.swap(move.slotA, move.slotB);
+        results.push({ move, outcome: result.outcome, reason: result.reason });
+        if (result.outcome !== 'swapped' && result.outcome !== 'dry-run') break;
+      }
+      for (const accountId of plan.ownerReloginAccountIds) {
+        const externalKey = `credential-identity-relogin:${accountId}`;
+        try {
+          if (!commitmentTracker.getActive().some((c) => c.externalKey === externalKey)) {
+            commitmentTracker.record({
+              type: 'one-time-action', source: 'agent', beaconEnabled: true, externalKey,
+              userRequest: `Restore the missing local login for subscription account ${accountId}.`,
+              agentResponse: `Owner re-login is required on this machine. Use the dashboard Subscriptions grid or POST /subscription-pool/follow-me/enroll/start for account ${accountId}; the login is minted locally and never copied across machines.`,
+            });
+          }
+          subscriptionPool.update(accountId, { identityDrifted: true, identityDrift: {
+            expectedAccountId: accountId, actualAccountId: 'missing-local-login',
+            slot: subscriptionPool.get(accountId)?.configHome ?? 'unknown', detectedAt: new Date().toISOString(),
+            lastConfirmedAt: new Date().toISOString(), repairState: 'owner-relogin-required',
+          } });
+        } catch { /* @silent-fallback-ok: next audit retries the durable residual; no credential mutation depends on it */ }
+      }
+      return { plan, results, vacateResults };
+    };
     const credentialRepointing = {
       ledger: credentialLocationLedger,
       swapExecutor: credentialSwapExecutor,
@@ -12141,6 +13288,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       levers: credentialManualLevers,
       envTokenGate: credentialEnvTokenGate,
       rebalancer: credentialRebalancer,
+      repairPlan: buildCredentialRepairPlan,
+      executeRepairPlan: executeCredentialRepairPlan,
       readBlob: async (slot: string) => {
         const raw = await defaultKeychainExec.readService(credSwapService(slot));
         if (!raw) return null;
@@ -12171,14 +13320,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     // their respective awaits. isSeeded() does NOT protect this (seedFromOracle bumps version at
     // 'begin', so isSeeded() flips true mid-seed), so the audit gate also checks this flag.
     let credSeedInFlight = false;
-    if (
-      shouldBootSeedCredentialLedger(
-        resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config),
-        credentialLocationLedger.isSeeded(),
-      )
-    ) {
+    const shouldSeedCredentialLedger = shouldBootSeedCredentialLedger(
+      resolveDevAgentGate(config.subscriptionPool?.credentialRepointing?.enabled, config),
+      credentialLocationLedger.isSeeded(),
+    );
+    const seedCredentialLedger = (): Promise<unknown> => {
       credSeedInFlight = true;
-      void credentialLocationLedger
+      return credentialLocationLedger
         .seedFromOracle()
         .then((outcomes) => {
           const assigned = outcomes.filter((o) => o.result === 'assigned').length;
@@ -12186,7 +13334,22 @@ export async function startServer(options: StartOptions): Promise<void> {
         })
         .catch((e) => console.warn(`[CredentialLedger] boot seed failed: ${e instanceof Error ? e.message : String(e)}`))
         .finally(() => { credSeedInFlight = false; });
-    }
+    };
+    // A legacy email gap must be repaired against an already-existing,
+    // independent slot→tenant binding. seedFromOracle derives its candidates
+    // from complete pool rows and clears assignments first, so running it before
+    // repair could erase the only proof for an email-less row. Preserve that
+    // evidence: seed only when there are no quarantined gaps.
+    let credentialSeedReady: Promise<unknown> =
+      shouldSeedCredentialLedger && subscriptionPool.listEmailGaps().length === 0
+        ? seedCredentialLedger()
+        : Promise.resolve();
+    void credentialSeedReady
+      .then(() => runSubscriptionEmailRepair())
+      .catch((error) => {
+        subscriptionEmailBarrier.finish(subscriptionPool.listEmailGaps().length);
+        console.warn(`[subscription-email] reconciliation degraded: ${error instanceof Error ? error.message : String(error)}`);
+      });
 
     // B3b — the periodic balancer pass. tick() is a strict no-op while the feature resolves dark
     // (so the timer can always run; the gate lives INSIDE tick()), and on a dev agent it runs the
@@ -12247,6 +13410,20 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (r.refreshed || r.recovered || r.quarantined) {
           console.log(pc.dim(`  Credential identity audit (${trigger}): ${r.refreshed} refreshed, ${r.recovered} recovered, ${r.quarantined} quarantined, ${r.unresolved} unresolved`));
         }
+        // A confirmed divergence is not flag-and-forget. Immediately run the
+        // audited repair arm: dry-run while the feature is in dry-run, real
+        // staged moves only when the existing destructive gate is live.
+        if (r.quarantined > 0) {
+          const repair = await executeCredentialRepairPlan();
+          credentialAuditEmit.audit({
+            event: 'identity-repair-auto-pass', trigger,
+            moves: repair.results.length,
+            outcomes: repair.results.map((x) => x.outcome),
+            duplicateVacates: repair.vacateResults.length,
+            vacateOutcomes: repair.vacateResults.map((x) => x.outcome),
+            ownerReloginResiduals: repair.plan.ownerReloginAccountIds.length,
+          });
+        }
       } catch (e) {
         console.warn(`[CredentialIdentityAudit] ${trigger} error: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
@@ -12274,7 +13451,36 @@ export async function startServer(options: StartOptions): Promise<void> {
       logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
       // Census #1–#4: resolve each account's LIVE slot through the ledger (no-op while dark).
       locationGate: credentialLocationGate,
+      // Tier-0 attribution hardening: reuse the SAME profile-backed identity oracle as
+      // credential swaps. QuotaPoller caches this read for ~6h; the swap executor's
+      // mandatory pre-flight remains live/uncached.
+      resolveSlotIdentity: async (slot) => {
+        const r = await credResolveIdentity(slot);
+        if ('unavailable' in r) return r;
+        const account = subscriptionPool.get(r.accountId);
+        return { accountId: r.accountId, ...(account?.email ? { email: account.email } : {}) };
+      },
+      identityCacheTtlMs: 6 * 60 * 60_000,
+      locationLedger: credentialLocationLedger,
+      emitIdentityDriftAttention: telegram
+        ? (item) => void telegram!.createAttentionItem({
+            id: item.id,
+            title: item.title,
+            summary: item.summary,
+            description: item.summary,
+            category: 'credential-identity-drift',
+            priority: 'HIGH',
+            sourceContext: 'quota-poll-identity-oracle',
+          })
+        : undefined,
+      onIdentityRestored: (accountId, attentionId) => {
+        const externalKey = `credential-identity-relogin:${accountId}`;
+        const active = commitmentTracker.getActive().find((c) => c.externalKey === externalKey);
+        if (active) commitmentTracker.deliver(active.id);
+        void telegram?.updateAttentionStatus(attentionId, 'DONE', { silent: true }).catch(() => { /* @silent-fallback-ok: durable drift state is already closed; attention cleanup is best-effort */ });
+      },
     });
+    quotaPollerRef = quotaPoller;
     if (subscriptionPool.size() > 0) {
       quotaPoller.start();
       console.log(pc.green('  Subscription quota poller started'));
@@ -12287,6 +13493,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Census #8 (the E4a liar): when re-pointing is enabled and the ledger knows the `~/.claude`
     // tenant, the badge resolves from the ledger — NOT a stale `claude auth status` re-probe.
     const inUseAccountResolver = new InUseAccountResolver({ locationGate: credentialLocationGate });
+    // Late-bound across messaging-capture setup and the post-evolution
+    // class-review outcome wiring below.
+    let recordCorrectionClassReview:
+      | ((record: import('../monitoring/CorrectionLedger.js').CorrectionRecord) => void)
+      | undefined;
+    let correctionLedgerForClassReview: import('../monitoring/CorrectionLedger.js').CorrectionLedger | undefined;
 
     // EnrollmentWizard — mobile-first new-account login (P2.1 of the Subscription
     // & Auth Standard). Dark with the pool: the /subscription-pool/enroll routes
@@ -12297,7 +13509,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // a 2nd account never clobbers the 1st.
     const { PendingLoginStore } = await import('../core/PendingLoginStore.js');
     const { EnrollmentWizard } = await import('../core/EnrollmentWizard.js');
-    const { FrameworkLoginDriver, enrollPaneSessionName } = await import('../core/FrameworkLoginDriver.js');
+    const { FrameworkLoginDriver, enrollPaneSessionName, enrollmentBrowserEnv } = await import('../core/FrameworkLoginDriver.js');
     const DEFAULT_ENROLL_LOGIN_COMMANDS: Record<string, string> = {
       'claude-code': 'claude auth login',
       'codex-cli': 'codex login',
@@ -12315,8 +13527,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // WS5.2 §5.3/S7 — the follow-me completion gate reads the minted login's account email
       // from its config-home slot (the Anthropic OAuth profile endpoint) and validates it against
       // operator expectation before the account is selectable. Same oracle the credential-location
-      // ledger uses; constructed fresh here (the ledger's instance is not in scope at this point).
-      oracle: new CredentialIdentityOracle(),
+      // ledger uses; one process-wide oracle keeps identity evidence coherent.
+      oracle: credentialIdentityOracle,
       // A HELD follow-me completion (surprise/mismatched/unverifiable email) raises a HIGH
       // attention item for the operator. Map the email-gate's {id,title,body,priority,source}
       // shape onto the telegram attention-queue createAttentionItem shape.
@@ -12346,15 +13558,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
           return sessionManager.captureOutput(session, 120) || '';
         },
-        spawn: async ({ framework, configHome }) => {
+        spawn: async ({ framework, configHome, openBrowser }) => {
           const tmuxPath = detectTmuxPath();
           if (!tmuxPath) throw new Error('tmux not available for enrollment login');
           const baseCmd = enrollLoginCommands[framework] ?? `${framework} login`;
           // env-prefix sets the per-account config home for the login process so
           // the credential lands in its own slot (CLAUDE_CONFIG_DIR isolation).
-          const cmd = configHome
-            ? `env CLAUDE_CONFIG_DIR=${JSON.stringify(configHome)} ${baseCmd}`
-            : baseCmd;
+          const env = { ...(configHome ? { CLAUDE_CONFIG_DIR: configHome } : {}), ...enrollmentBrowserEnv(openBrowser) };
+          const prefix = Object.entries(env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
+          const cmd = prefix ? `env ${prefix} ${baseCmd}` : baseCmd;
           const session = enrollPaneSessionName(framework, configHome);
           try {
             execFileSync(tmuxPath, ['kill-session', '-t', `=${session}`], { stdio: 'ignore' });
@@ -12365,12 +13577,55 @@ export async function startServer(options: StartOptions): Promise<void> {
         logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
       }).asLoginDriver(),
     });
+    // Pending-login metadata is durable, but its framework pane is a process and
+    // therefore never survives this server's restart. Restore every incomplete
+    // flow before serving dashboard traffic so a persisted code is never backed
+    // by a dead pane. Renewal suppresses browser launch and stores only the fresh
+    // public URL/code, preserving the existing credential boundary.
+    const recoveredLogins = await enrollmentWizard.recoverAfterRestart();
+    if (recoveredLogins.length > 0) {
+      console.log(pc.green(`  Restored ${recoveredLogins.length} pending login flow(s) after restart`));
+    }
     // Background auto-reissue sweep — refreshes an expired login code without the
     // operator asking (the pi-live-test gap). Inert with no pending logins; the
     // timer is unref'd so it never holds the process open.
+    // The SAME tick also runs the follow-me COMPLETION sweep (D5, topic 29836): a
+    // sign-in that completed WITHOUT a paste-back code (the provider's already-
+    // authorized short-circuit — "You're all set up… close this window") lands its
+    // credential in the slot with nothing calling submit-code; the sweep detects the
+    // landed credential and drives the identity-verified completion (S7 email gate —
+    // a mismatch is HELD, never auto-enrolled) instead of waiting forever at a code
+    // prompt. This makes the submit-code route's "the reissue/complete sweep finishes
+    // it" contract true.
     const enrollReissueTimer = setInterval(() => {
       enrollmentWizard
         .reissueExpired()
+        .catch(() => { /* @silent-fallback-ok — one bad sweep is retried next tick */ });
+      enrollmentWizard
+        .sweepFollowMeCompletions({
+          credentialReady: (l) => !!l.configHome && fs.existsSync(path.join(l.configHome, '.claude.json')),
+          onValidated: (login, email) => {
+            // Upsert (D5): a re-auth of an EXISTING pool account updates it back to
+            // active; only a genuinely-new account is added (add() refuses dup ids).
+            if (subscriptionPool.get(login.id)) {
+              subscriptionEmailRegistrar.completeValidated(login.id, email, {
+                nickname: login.label, status: 'active',
+                ...(login.configHome ? { configHome: login.configHome } : {}),
+              });
+            } else {
+              subscriptionEmailRegistrar.completeNewValidated({
+                id: login.id, nickname: login.label, provider: login.provider,
+                framework: login.framework, configHome: login.configHome ?? '', status: 'active', email,
+              });
+            }
+            console.log(`[follow-me] completion-sweep outcome=validated id=${login.id}`);
+          },
+        })
+        .then((results) => {
+          for (const r of results) {
+            if (r.outcome === 'held') console.warn(`[follow-me] completion-sweep outcome=held id=${r.id}`);
+          }
+        })
         .catch(() => { /* @silent-fallback-ok — one bad sweep is retried next tick */ });
     }, config.subscriptionPool?.enrollment?.reissueSweepMs ?? 5 * 60_000);
     if (enrollReissueTimer.unref) enrollReissueTimer.unref();
@@ -12582,7 +13837,124 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.log(`[SpeakerElection] topic ${topicId}: speak=${v.speak} (${v.reason})`);
         }
       },
+      // Owner-liveness (speaker-election-owner-liveness Layer 1). ENFORCE only when
+      // EXPLICITLY enabled AND not dryRun — default (no config) is observe-only, so
+      // the verdict is UNCHANGED at ship. The live enforce-flip is deferred (ACT-1196).
+      ownerLivenessEnforce: () => {
+        const c = (config as Record<string, any>).monitoring?.speakerElection?.ownerLiveness;
+        return c?.enabled === true && c?.dryRun === false;
+      },
+      // Bounded observe surface (captured in the size-rotated server log): measures
+      // how often a placement/stamp owner LOOKED dark (and, downstream, how often it
+      // was a FALSE dark) so the enforce-flip decision has real soak data.
+      onOwnerLivenessObservation: (o) => {
+        console.log(`[SpeakerElection.ownerLiveness] would-fall-through topic=${o.topicId} owner=${o.owner} self=${o.self} rule=${o.rule} online=${o.onlinePool.length}`);
+      },
     });
+
+    // ── Periodic Goal Re-Alignment Phase 1 ("see it") ───────────────
+    // This boot path is intentionally independent of PresenceProxy and of LLM
+    // availability. Intake evidence still enters the durable candidate inbox
+    // when the provider is unavailable; failures stay pull-visible.
+    const goalRealignmentCfg = config.monitoring?.goalRealignment;
+    if (telegram && resolveDevAgentGate(goalRealignmentCfg?.enabled, config)) {
+      try {
+        const {
+          AlignmentReviewer,
+          GoalRealignmentCoordinator,
+          GoalRealignmentIntake,
+          PriorityLedger,
+          ALIGNMENT_REVIEW_PROMPT_ID,
+          GOAL_PRIORITY_PROMPT_ID,
+          createAlignmentReviewFn,
+          createPriorityExtractionFn,
+        } = await import('../monitoring/GoalRealignment.js');
+        const { AutonomousRunStore } = await import('../core/AutonomousRunStore.js');
+        const { TopicOperatorStore } = await import('../users/TopicOperatorStore.js');
+        const ledger = new PriorityLedger({ stateDir: config.stateDir });
+        const unavailable = {
+          evaluate: async () => { throw new Error('goal-realignment-intelligence-unavailable'); },
+        };
+        const queued = sharedIntelligence
+          ? {
+              evaluate: (
+                prompt: string,
+                options: {
+                  model: 'fast';
+                  temperature: number;
+                  maxTokens: number;
+                  attribution: { component: string };
+                  provenance?: import('../core/decisionQualityTypes.js').DecisionProvenanceBlock;
+                },
+              ) => sharedLlmQueue.enqueue(
+                'background',
+                () => sharedIntelligence.evaluate(prompt, {
+                  ...options,
+                  // The two registered callers always supply their own exact
+                  // component. This literal fallback also keeps the shared
+                  // queue boundary legible to the static attribution ratchet.
+                  attribution: options.attribution ?? { component: 'GoalPriorityExtractor' },
+                }),
+                0.25,
+              ),
+            }
+          : unavailable;
+        const intake = new GoalRealignmentIntake({
+          ledger,
+          extract: createPriorityExtractionFn(queued),
+          promptId: GOAL_PRIORITY_PROMPT_ID,
+          model: 'fast',
+        });
+        const reviewer = new AlignmentReviewer({
+          stateDir: config.stateDir,
+          ledger,
+          // Phase 1 is structurally dry-run. An accidental config false
+          // cannot create injection because no such dependency exists.
+          dryRun: true,
+          review: createAlignmentReviewFn(queued),
+          promptId: ALIGNMENT_REVIEW_PROMPT_ID,
+          model: 'fast',
+          maxPriorities: goalRealignmentCfg?.maxPriorities ?? 40,
+        });
+        const runStore = new AutonomousRunStore(config.stateDir);
+        const coordinator = new GoalRealignmentCoordinator({
+          stateDir: config.stateDir,
+          intake,
+          reviewer,
+          listActiveRuns: () => runStore.listActive().map((run) => ({
+            topicId: run.topicId,
+            runId: run.runId,
+            condition: run.condition,
+          })),
+          // Fresh instance per read avoids a stale cache beside AgentServer's
+          // single authoritative writer instance.
+          getOperatorUid: (topicId) =>
+            new TopicOperatorStore(path.join(config.stateDir, 'state'))
+              .getOperator(topicId)?.uid ?? null,
+          getRecentVerifiedRows: topicMemory
+            ? (topicId, sinceIso, limit) => topicMemory.getMessagesSince(topicId, sinceIso, limit)
+            : undefined,
+          cadenceMinutes: goalRealignmentCfg?.cadenceMinutes ?? 60,
+          recencyDays: goalRealignmentCfg?.recencyDays ?? 7,
+          onError: (stage, error, topicId) => {
+            console.warn(
+              `[GoalRealignment] ${stage} failed${topicId == null ? '' : ` for topic ${topicId}`}: `
+              + `${error instanceof Error ? error.message : String(error)}`,
+            );
+          },
+        });
+        const beforeGoalRealignmentCb = telegram.onMessageLogged;
+        telegram.onMessageLogged = (entry) => {
+          if (beforeGoalRealignmentCb) beforeGoalRealignmentCb(entry);
+          coordinator.ingestLogged(entry);
+        };
+        coordinator.start();
+        (globalThis as Record<string, unknown>).__instarGoalRealignmentWired = true;
+        console.log(pc.green('  Goal realignment Phase 1 wired (durable ledger + dry-run reviewer)'));
+      } catch (error) {
+        console.warn('[GoalRealignment] init failed:', error instanceof Error ? error.message : String(error));
+      }
+    }
 
     let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;
     if (sharedIntelligence && telegram) {
@@ -12747,6 +14119,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const result = await sessionRecovery!.checkAndRecover(topicId, sessionName);
                 return { recovered: result.recovered };
               }
+            : undefined,
+          hasContextExhaustionLatch: sessionRecovery
+            ? (topicId) => sessionRecovery!.hasContextWedgedSeen(topicId)
             : undefined,
           // Shared per-topic mutex — coordinates with PromiseBeacon.
           acquireProxyMutex: (topicId, holder) => proxyCoordinator.tryAcquire(topicId, holder),
@@ -12974,6 +14349,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const correctionLedger = new CorrectionLedger({
               dbPath: path.join(config.stateDir, 'correction-ledger.db'),
             });
+            correctionLedgerForClassReview = correctionLedger;
             // Per-sentinel LlmQueue — object opts (do NOT pass a bare number; that
             // is the latent PresenceProxy bug §2). Dedicated daily cap.
             const correctionLlmQueue = new LlmQueue({
@@ -13060,6 +14436,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                       llmAvailable: () => llmCircuitAvailable(),
                       ttlMs: backlogTtlMs,
                       audit: (e) => correctionAudit({ decision: e.decision, topicId: e.topicId, detail: e.detail }),
+                      onRecorded: (record) => recordCorrectionClassReview?.(record),
                     },
                     backlogDrainPerTick,
                   );
@@ -13091,6 +14468,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   rateCeiling: { maxPerWindow: cl.distillPerTopicRatePerMinute ?? 8, windowMs: 60_000 },
                   backlog: captureBacklog,
                   audit: correctionAudit,
+                  onRecorded: (record) => recordCorrectionClassReview?.(record),
                 },
                 {
                   topicId: entry.topicId ?? null,
@@ -13976,6 +15354,121 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
     void cartographerSweepPoller;
 
+    // ── Seamless LLM orchestrator (llm-seamlessness-orchestrator.md §Component3) ──
+    // A lease-gated tier-1 LLM loop for ANTICIPATORY working-set preload — PROPOSE-ONLY /
+    // SIGNAL-ONLY (it never moves a conversation; placement stays with the deterministic
+    // RebalancePlanner/PlacementExecutor). Modeled on the Cartographer sweep wiring above.
+    // Dev-gated DARK (resolveDevAgentGate) + dryRun-FIRST: on the fleet it is never
+    // constructed; on a dev agent it runs but actuates NOTHING (logs would-actuate + audits)
+    // until an operator flips seamlessOrchestrator.dryRun:false. Readers/deps are tick-time
+    // closures over the function-scoped lets (the first tick is cadenceMs out — long after
+    // boot assigns leaseCoordinatorRef / workingSet* — so the closures are safe).
+    let orchestratorPoller: import('../monitoring/OrchestratorPoller.js').OrchestratorPoller | null = null;
+    {
+      const soCfg = ((config.multiMachine as { seamlessOrchestrator?: Record<string, unknown> } | undefined)?.seamlessOrchestrator) ?? {};
+      const soEnabled = resolveDevAgentGate(soCfg.enabled as boolean | undefined, config);
+      if (soEnabled) {
+        try {
+          const soNum = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+          const { SeamlessOrchestratorEngine } = await import('../core/SeamlessOrchestratorEngine.js');
+          const { OrchestratorActuator } = await import('../core/OrchestratorActuator.js');
+          const { OrchestratorPoller } = await import('../monitoring/OrchestratorPoller.js');
+          const { OscillationBreaker } = await import('../core/OscillationBreaker.js');
+          const { ParallelActivityIndex: SOActivityIndex } = await import('../core/ParallelActivityIndex.js');
+          const soActivityIndex = new SOActivityIndex({ stateDir: config.stateDir });
+          const soBreaker = new OscillationBreaker({
+            oscillationWindowMs: soNum(soCfg.oscillationWindowMs, 3_600_000),
+            blacklistTtlMs: soNum(soCfg.blacklistTtlMs, 86_400_000),
+          });
+          const soDryRun = soCfg.dryRun !== false; // default true (dryRun-first)
+          const soAuditPath = path.join(config.stateDir, '..', 'logs', 'orchestrator-actions.jsonl');
+          const soSignalsPath = path.join(config.stateDir, '..', 'logs', 'orchestrator-placement-signals.jsonl');
+          const soWindowMs = soNum(soCfg.prefetchWindowMs, 3_600_000);
+          const soWindowBudget = soNum(soCfg.prefetchWindowByteBudget, 33_554_432);
+          let soWindowStart = Date.now();
+          const soWindowSpent = 0;
+          const soCooldowns = new Map<number, number>();
+          const engine = new SeamlessOrchestratorEngine({
+            reads: {
+              activeTopicsOnThisMachine: () => soActivityIndex.activities(Date.now()).map((a) => ({
+                topic: a.topicId, focus: a.focus ?? '', lastActivityMs: a.updatedAt ?? 0, running: a.running,
+              })),
+              workingSetRecords: (topic) => (workingSetArtifactManager?.getReadyRows(topic) ?? []).map((r) => ({
+                relPath: r.relPath, producerMachineId: r.producerMachineId, state: r.state,
+              })),
+            },
+            llmQueue: sharedLlmQueue,
+            holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
+            pressure: () => ({ tier: sharedPressureTier() }),
+            lastActuatedAt: (topic) => soCooldowns.get(topic) ?? null,
+            isBlacklisted: (topic) => soBreaker.isBlacklisted(topic), // F6 oscillation breaker
+
+            config: {
+              maxProposalsPerTick: soNum(soCfg.maxProposalsPerTick, 3),
+              llmLiftThreshold: typeof soCfg.llmLiftThreshold === 'number' ? soCfg.llmLiftThreshold : 0.15,
+              perTopicCooldownMs: soNum(soCfg.perTopicCooldownMs, 1_800_000),
+              suspendPressureTiers: ['moderate', 'critical'],
+              dryRun: soDryRun,
+            },
+            log: (m) => console.log(pc.gray(m)),
+          });
+          const actuator = new OrchestratorActuator({
+            // Dark-first conservative placement reader: exercised ONLY for dryRun AUDIT rows
+            // (actuate() never fetches/moves while dryRun). Precise pin/provenance/episode
+            // sourcing (pool placement + stale-owner/lease-handback episode state) is the
+            // TRACKED prerequisite before any operator flip to dryRun:false (spec P4). [C3d gap]
+            revalidate: () => ({ pinned: false, recentlyUserMoved: false, inFailureEpisode: false }),
+            budgetRemainingBytes: () => {
+              const nowT = Date.now();
+              if (nowT - soWindowStart >= soWindowMs) { soWindowStart = nowT; }
+              return Math.max(0, soWindowBudget - soWindowSpent);
+            },
+            estimatedBytes: (p) => {
+              try { return fs.statSync(path.join(config.stateDir, p.detail)).size; }
+              catch { return 65_536; /* @silent-fallback-ok: an un-stat-able candidate uses a nominal estimate; the budget check is soak-only under dryRun. */ }
+            },
+            fetchWorkingSet: async (topic) => {
+              if (!workingSetPullCoordinator) return { ok: false, skipReason: 'coordinator-unwired' };
+              const o = await workingSetPullCoordinator.fetchWorkingSet(topic);
+              return { ok: o.scheduled === true, skipReason: o.skipReason };
+            },
+            recordPlacementSignal: (p) => {
+              try { fs.mkdirSync(path.dirname(soSignalsPath), { recursive: true }); fs.appendFileSync(soSignalsPath, JSON.stringify({ ts: new Date().toISOString(), topic: p.targetTopic, detail: p.detail }) + '\n'); }
+              catch { /* @silent-fallback-ok: best-effort placement-signal record; a write failure never blocks the loop (the planner re-reads on its own cadence). */ }
+            },
+            audit: (e) => {
+              try { fs.mkdirSync(path.dirname(soAuditPath), { recursive: true }); fs.appendFileSync(soAuditPath, JSON.stringify(e) + '\n'); }
+              catch { /* @silent-fallback-ok: best-effort audit append (read-only observability); a write failure never blocks actuation. */ }
+            },
+            now: () => new Date().toISOString(),
+            log: (m) => console.log(pc.gray(m)),
+            config: { dryRun: soDryRun },
+          });
+          orchestratorPoller = new OrchestratorPoller({
+            engine,
+            actuator,
+            cadenceMs: soNum(soCfg.cadenceMs, 900_000),
+            idleCadenceMs: soNum(soCfg.idleCadenceMs, 1_800_000),
+            recordActuated: (topic, nowT) => {
+              soCooldowns.set(topic, nowT);
+              // F6 oscillation breaker: record the actuation; a one-shot `true` = the topic just
+              // tripped the blacklist. In dryRun nothing actuates so this is inert; the deduped
+              // attention-item raise + WS2 blacklist replication ride the same P4-live prerequisite
+              // bundle as the revalidate-precision sourcing. [C4 tracked gap]
+              if (soBreaker.recordActuation(topic, nowT)) {
+                console.warn(`  Seamless orchestrator: topic ${topic} tripped the oscillation blacklist (suppressed).`);
+              }
+            },
+            log: (m) => console.log(pc.gray(m)),
+          });
+          orchestratorPoller.start();
+          console.log(pc.green(`  Seamless LLM orchestrator enabled (lease-gated, ${soDryRun ? 'dry-run' : 'LIVE'})`));
+        } catch (err) {
+          console.warn('  Seamless LLM orchestrator: construction failed —', err instanceof Error ? err.message : err);
+        }
+      }
+    }
+
     // Self-Knowledge Tree — tree-based agent self-knowledge with LLM triage
     let selfKnowledgeTree: SelfKnowledgeTree | undefined;
     let coverageAuditor: CoverageAuditor | undefined;
@@ -14187,6 +15680,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Inter-Agent Messaging — structured communication between sessions
     const messageStore = new MessageStore(path.join(config.stateDir, 'messages'));
+    messageStoreForResume = messageStore;
     await messageStore.initialize();
     const threadResumeMap = new ThreadResumeMap(config.stateDir, config.stateDir);
     // Threadline Phase 1 keystone: the Conversation single-source-of-truth +
@@ -14213,6 +15707,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       seenSetMaxPerThread: _canonHist.seenSetMaxPerThread,
       seenSetMaxThreads: _canonHist.seenSetMaxThreads,
     });
+    threadLogForResume = threadLog;
     const threadMessageRecorder = new ThreadMessageRecorder({
       threadLog,
       conversationStore,
@@ -14332,10 +15827,49 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     retryManager.start();
 
+    // Durable-Output Hygiene Standard §2 (Layer B) — the config-gated scrubber
+    // that redacts credential SPANS from LLM-derived summary fields BEFORE they
+    // persist. Dark-first: `enabled` resolves via the developmentAgent gate (LIVE
+    // on a dev agent, DARK on the fleet) and `dryRun` defaults true (the canary —
+    // computes + records would-redact metrics but stores the ORIGINAL text). A
+    // real redaction flip (dryRun:false) is the operator's endpoint decision.
+    const { DurableOutputScrubber } = await import('../monitoring/DurableOutputScrubber.js');
+    const durableScrubCfg = config.monitoring?.durableOutputScrub;
+    const durableOutputScrubber = new DurableOutputScrubber({
+      enabled: resolveDevAgentGate(durableScrubCfg?.enabled, config),
+      dryRun: durableScrubCfg?.dryRun, // undefined → fail-safe default true inside the scrubber
+      metrics: {
+        // Feature key `durable-output-scrub` — COUNTS/kind only (the ledger row
+        // never carries the matched bytes; the floor's metadata is offset/kind).
+        recordEvent: (feature, outcome) => {
+          try { getFeatureMetricsRecorder()?.record({ feature, kind: 'event', outcome }); } catch { /* @silent-fallback-ok — observability must never throw into the persist path; the store write still completes */ }
+        },
+      },
+      onPoisoningSuspected: (signal) => {
+        // One deduped attention item per store (spec §2 poisoning visibility);
+        // the AttentionTopicGuard flood ceiling backstops further.
+        try {
+          void telegram?.createAttentionItem({
+            id: `durable-output-poisoning:${signal.store}`,
+            title: 'Possible durable-memory poisoning (credential-shaped plant burst)',
+            summary: `${signal.count} credential-shaped redactions on "${signal.store}" within ${Math.round(signal.windowMs / 60_000)} min`,
+            description:
+              `The durable-output scrub redacted ${signal.count} credential-shaped spans (kinds: ${signal.kinds.join(', ')}) ` +
+              `on the "${signal.store}" store in a short window — a possible deliberate memory-degradation attempt. ` +
+              `No records were dropped; each altered entry carries its provenance marker.`,
+            category: 'security',
+            priority: 'NORMAL',
+            sourceContext: 'durable-output-scrub-poisoning',
+          });
+        } catch { /* @silent-fallback-ok — escalation is best-effort signal-only; a throw here must never break the persist path */ }
+      },
+    });
+
     // Session summary sentinel for intelligent routing (Phase 2)
     const { SessionSummarySentinel } = await import('../messaging/SessionSummarySentinel.js');
     const summarySentinel = new SessionSummarySentinel({
       stateDir: config.stateDir,
+      scrubber: durableOutputScrubber,
       getActiveSessions: () => sessionManager.listRunningSessions(),
       captureOutput: (tmuxSession: string) => {
         // RULE 3: EXEMPT — this is raw byte capture (the whole pane), not state parsing.
@@ -14576,6 +16110,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       warmTrustFloor,
       warmEnabled ? killWarmSessionByName : null,
     );
+    threadlineRouterForResume = threadlineRouter;
 
     // Warm-Session A2A reap tick — kill warm sessions idle past their TTL so a
     // flood can't pin processes. Gated on warmEnabled; .unref() so it never holds
@@ -14708,6 +16243,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const listenerManager = config.threadline?.relayEnabled
       ? new ListenerSessionManager(config.stateDir, config.authToken ?? '', config.threadline as Partial<import('../threadline/ListenerSessionManager.js').ListenerConfig>)
       : null;
+    listenerManagerForResume = listenerManager;
 
     // A2A Delivery Tracker — durable per-peer delivery lifecycle + peer-health
     // ("communications never just die out", A2A-DURABLE-DELIVERY-SPEC.md / #939).
@@ -15370,18 +16906,23 @@ export async function startServer(options: StartOptions): Promise<void> {
     // config syntax, and other technical leakage in agent-to-user messages.
     let messagingToneGate: import('../core/MessagingToneGate.js').MessagingToneGate | undefined;
     if (sharedIntelligence) {
-      const { MessagingToneGate } = await import('../core/MessagingToneGate.js');
-      // Pass a live config getter so the failClosedOnExhaustion kill-switch
-      // (spec §Design 6) is honored without a restart.
+      const { MessagingToneGate, resolveToneGateOperatorConfig } = await import('../core/MessagingToneGate.js');
+      // Pass a live config getter so the operator knobs (kill-switch, fail-mode,
+      // candidate-body capture — spec §Design 6) are honored without a restart.
+      // Single wiring point: resolveToneGateOperatorConfig reads the TOP-LEVEL
+      // toneGate block (messaging is an array — a messaging.toneGate read is
+      // structurally dead, the cause of the 2026-07-24 capture wiring gap).
+      // The getter re-runs on EVERY review, but `config` is the boot-time
+      // snapshot — nothing re-reads the file into it, so a knob resolved only
+      // from `config` is restart-required no matter how often the getter fires.
+      // Layering the LIVE block on top is what makes the documented rollback
+      // ("set advisoryMigration:false, no restart") actually true; without it
+      // the spec would promise a lever that does not move until a bounce.
       messagingToneGate = new MessagingToneGate(sharedIntelligence, () => {
-        const tg = (config as { messaging?: { toneGate?: { failClosedOnExhaustion?: boolean; failClosedMode?: 'always' | 'tiered' | 'never'; toneTierDryRun?: boolean } } }).messaging?.toneGate;
-        return {
-          failClosedOnExhaustion: tg?.failClosedOnExhaustion,
-          // operator-channel-sacred (outbound): default 'always' (today's behavior).
-          // 'tiered' is an explicit opt-in; ship it with toneTierDryRun:true first to soak.
-          failClosedMode: tg?.failClosedMode,
-          toneTierDryRun: tg?.toneTierDryRun,
-        };
+        const live = liveConfig.get<Record<string, unknown>>('toneGate', undefined as never);
+        return resolveToneGateOperatorConfig(
+          live && typeof live === 'object' ? { ...config, toneGate: live } : config,
+        );
       });
       console.log(pc.green('  Messaging tone gate: active (Haiku via shared IntelligenceProvider)'));
     } else {
@@ -15419,7 +16960,36 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (sharedIntelligence && stopGateDb) {
         try {
           const { UnjustifiedStopGate } = await import('../core/UnjustifiedStopGate.js');
-          unjustifiedStopGate = new UnjustifiedStopGate({ intelligence: sharedIntelligence });
+          const { stopGateBreakerKey } = await import('../core/StopGateBreakerState.js');
+          const { resolveDevAgentGate } = await import('../core/devAgentGate.js');
+          // Turn-End Self-Deferral Guard (Phase A / shadow) — dev-gated dark:
+          // `monitoring.selfDeferralGuard` OMITS `enabled` so resolveDevAgentGate
+          // decides (LIVE on a dev agent, DARK on the fleet). When on, the
+          // authority OFFERS the U_SELF_DEFERRAL rule + its four shadow fields.
+          const selfDeferralGuardEnabled = resolveDevAgentGate(
+            (config.monitoring?.selfDeferralGuard as { enabled?: boolean } | undefined)?.enabled,
+            config,
+          );
+          unjustifiedStopGate = new UnjustifiedStopGate({
+            intelligence: sharedIntelligence,
+            selfDeferralGuardEnabled,
+            breakerStateStore: stopGateDb,
+            breakerKey: stopGateBreakerKey({
+              defaultFramework: config.sessions?.framework,
+              gateCategoryFramework: config.sessions?.componentFrameworks?.categories?.gate,
+              stopGateOverride: config.sessions?.componentFrameworks?.overrides?.UnjustifiedStopGate,
+              failureSwap: config.sessions?.componentFrameworks?.failureSwap,
+            }),
+            onBreakerPersistenceError: (err) => {
+              DegradationReporter.getInstance().report({
+                feature: 'unjustifiedStopGate.breakerPersistence',
+                primary: 'Durable Stop-gate authority breaker state',
+                fallback: 'memory-only breaker + fail-open allow',
+                reason: err instanceof Error ? err.message : String(err),
+                impact: 'Restart-survival may be temporarily unavailable; Stop events remain fail-open.',
+              });
+            },
+          });
         } catch (err) {
           DegradationReporter.getInstance().report({
             feature: 'unjustifiedStopGate.authority',
@@ -15657,8 +17227,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     let completionEvaluator: import('../core/CompletionEvaluator.js').CompletionEvaluator | undefined;
     if (sharedIntelligence) {
       const { CompletionEvaluator } = await import('../core/CompletionEvaluator.js');
-      completionEvaluator = new CompletionEvaluator({ intelligence: sharedIntelligence });
-      console.log(pc.green('  Completion evaluator: active (independent /goal-style judge)'));
+      // LLM-Decision Quality Meter §5.3 (P8 integration): the router-minted
+      // completion/P13 correlation ids are persisted into the durable autonomous
+      // run-state record so the realcheck path can annotate the decision later.
+      // The sink is a file-backed AutonomousRunStore keyed on the same stateDir
+      // the routes' instance uses (the store is stateless file IO — the
+      // throwaway-instance pattern at AutonomousRunStore.ts, so both instances
+      // read/write the same state/autonomous-server/*.json records coherently).
+      const { AutonomousRunStore } = await import('../core/AutonomousRunStore.js');
+      completionEvaluator = new CompletionEvaluator({
+        intelligence: sharedIntelligence,
+        runCorrelationSink: new AutonomousRunStore(config.stateDir),
+      });
+      console.log(pc.green('  Completion evaluator: active (independent /goal-style judge; §5.3 correlation sink wired)'));
     }
 
     // ── LiveTestGate (live-user-channel-proof spec §4) ──────────────────────
@@ -16000,6 +17581,100 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     const { InitiativeTracker } = await import('../core/InitiativeTracker.js');
     const initiativeTracker = new InitiativeTracker(config.stateDir);
+
+    // Drive 7 WS1 — bind the automated operator-attributed capture path to the
+    // same record-time class-review store used by the HTTP surface. This seam is
+    // independent of recurrence: every successful durable CorrectionLedger
+    // write invokes it, including backlog-drain writes.
+    if (sharedIntelligence && resolveDevAgentGate(config.monitoring?.correctionClassReview?.enabled, config)) {
+      try {
+        const [{ ClassReviewStore }, { CorrectionClassReview }] = await Promise.all([
+          import('../monitoring/ClassReviewStore.js'),
+          import('../monitoring/CorrectionClassReview.js'),
+        ]);
+        const { evaluateCorrectionInstanceFix } = await import('../monitoring/CorrectionInstanceFixGate.js');
+        const classReviewCfg = config.monitoring?.correctionClassReview ?? {};
+        const classReviewStore = new ClassReviewStore({
+          dbPath: path.join(config.stateDir, 'class-reviews.db'),
+          machineId: coordinator.identity?.machineId ?? os.hostname(),
+        });
+        if (replicatedRecordEmitter) {
+          const { CLASS_REVIEW_STORE_KEY, buildClassReviewRecordData } = await import('../core/ClassReviewReplicatedStore.js');
+          classReviewStore.setReplicationEmitter({
+            emitPut: (record) => replicatedRecordEmitter.emit(
+              CLASS_REVIEW_STORE_KEY,
+              record.dedupeKey,
+              (hlc, origin, observed) => buildClassReviewRecordData({ record, hlc, op: 'put', origin, observed }),
+            ),
+          });
+        }
+        if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
+          const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
+          classReviewStore.setRemoteReader({
+            get: (dedupeKey) => replicatedPeerStreamReader.loadOriginRecords(CLASS_REVIEW_STORE_KEY, dedupeKey)
+              .flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; }),
+            keys: () => replicatedPeerStreamReader.listRecordKeys(CLASS_REVIEW_STORE_KEY),
+          });
+        }
+        const classReviewAuditPath = path.join(config.stateDir, 'logs', 'correction-class-review.jsonl');
+        const classReview = new CorrectionClassReview({
+          store: classReviewStore,
+          intelligence: sharedIntelligence,
+          dryRun: classReviewCfg.dryRun !== false,
+          maxAttempts: classReviewCfg.maxAttempts,
+          maxReviewsPerTick: classReviewCfg.maxReviewsPerTick,
+          maxOpenArtifacts: classReviewCfg.maxOpenArtifacts,
+          admitCorrectionAction: ({ correctionId, classReviewRef }) => evaluateCorrectionInstanceFix({
+            originCorrection: true, correctionId, claimedClassReviewRef: classReviewRef,
+            dryRun: classReviewCfg.dryRun !== false,
+            correctionLedger: correctionLedgerForClassReview ?? null,
+            classReviewStore,
+          }),
+          standardTitles: () => {
+            try {
+              const registry = fs.readFileSync(path.join(config.projectDir, 'docs', 'STANDARDS-REGISTRY.md'), 'utf8');
+              return [...registry.matchAll(/^###\s+(.+)$/gm)].map((match) => match[1].trim()).slice(0, 100);
+            } catch { return []; }
+          },
+          createInitiative: async (input) => {
+            const created = await initiativeTracker.create({
+              id: String(input.id), title: String(input.title), description: String(input.description),
+              phases: [{ id: 'operator-ratification', name: 'Operator ratification' }],
+              needsUser: true,
+              needsUserReason: 'Standards amendments require explicit operator ratification.',
+            });
+            return { id: created.id };
+          },
+          addAction: (input) => {
+            const recovery = input.origin === 'correction-class-review-recovery';
+            const action = evolution.addAction({
+              title: String(input.title),
+              description: `Correction-derived process improvement. classReviewRef=${String(input.classReviewRef)}; autonomous execution is forbidden.`,
+              priority: 'medium',
+              source: { platform: 'correction-class-review', context: 'process-gap' },
+              tags: [recovery ? 'origin:class-review-recovery' : 'origin:correction', `class-review:${String(input.classReviewRef)}`],
+            });
+            return { id: action.id };
+          },
+          attentionRoute: async (input) => {
+            await telegram?.createAttentionItem({
+              id: `correction-class-review:${input.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 48)}`,
+              title: input.title, summary: input.body, priority: input.priority === 'high' ? 'HIGH' : 'NORMAL',
+              category: 'general', sourceContext: 'correction-class-review',
+            });
+          },
+          audit: (event) => {
+            try {
+              fs.mkdirSync(path.dirname(classReviewAuditPath), { recursive: true });
+              fs.appendFileSync(classReviewAuditPath, `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`, { mode: 0o600 });
+            } catch { /* @silent-fallback-ok — audit is best-effort */ }
+          },
+        });
+        recordCorrectionClassReview = (record) => { classReview.record(record, 'operator-attributed'); };
+      } catch (error) {
+        console.warn('[CorrectionClassReview] automated capture wiring unavailable:', (error as Error).message);
+      }
+    }
 
     // Project-scope Phase 1.9 — wire the digest cache writer so every
     // project mutation re-renders `.instar/projects-digest.cache`. The
@@ -16392,6 +18067,24 @@ export async function startServer(options: StartOptions): Promise<void> {
               const sep = routingKey.indexOf(':');
               const slackChannelId = sep === -1 ? routingKey : routingKey.slice(0, sep);
               const slackThreadTs = sep === -1 ? undefined : routingKey.slice(sep + 1);
+              // durable-conversation-identity §7 (slack-respawn-bind-token fix): a
+              // FRESH Slack spawn passes `bootstrapConversationIds: [conversationId]`
+              // (server.ts fresh-dispatch path) so the session mints INSTAR_BIND_TOKEN
+              // + INSTAR_CONVERSATION_ID and can open durable state (a commitment)
+              // bound to the minted id. This RESPAWN path (used by /sessions/refresh,
+              // quota-swap, restart, restart-all — all funnel through SessionRefresh →
+              // slackRespawner) previously OMITTED it, so a refreshed/quota-swapped
+              // Slack session came up token-less and its durable binds were refused
+              // (fail-closed) → the follow-through fell back to a fragile session-local
+              // timer that dies on the next restart (the live-proven S7 gap). Telegram's
+              // respawn is unaffected because it passes telegramTopicId, which
+              // bindTokenEnvFlags uses as a fallback; Slack has no such fallback.
+              // mintForInbound is an idempotent get-or-create → the SAME minted id the
+              // fresh dispatch resolved for this routingKey. (Helper is unit-tested in
+              // slackRefreshBinding.ts.)
+              const bootstrapIds = slackRespawnBootstrapIds(routingKey, (k) =>
+                conversationRegistry.mintForInbound(k),
+              );
               const newSessionName = await sessionManager.spawnInteractiveSession(
                 followUpPrompt ?? 'Session refreshed — continue where you left off.',
                 undefined,
@@ -16399,6 +18092,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   resumeSessionId,
                   slackChannelId,
                   slackThreadTs,
+                  ...(bootstrapIds ? { bootstrapConversationIds: bootstrapIds } : {}),
                   ...(accountSwap?.configHome ? { configHome: accountSwap.configHome } : {}),
                   ...(accountSwap?.accountId ? { subscriptionAccountId: accountSwap.accountId } : {}),
                 },
@@ -16436,8 +18130,8 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // ── QuotaAwareScheduler (Subscription & Auth Standard P1.3) ──
     // Telegram-specific (createAttentionItem + subscription-pool wiring).
-    if (telegram) {
-      const telegramRef = telegram; // narrow for closure
+    if (telegram || _slackAdapter) {
+      const telegramRef = telegram; // optional notification surface only
       // Selects the optimal account + enforces the continuity guarantee: on
       // quota pressure it resumes the session under another account (via the
       // SessionRefresh account-swap path), never letting it die. Auto-trigger
@@ -16458,8 +18152,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const k = antiThrashKnobsGetter();
                 return { thresholdPct: k.thresholdPct, targetHeadroomPct: k.targetHeadroomPct, minImprovementPct: k.minImprovementPct };
               },
-              resolveCurrentAccountId: (sessionName) =>
-                state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === sessionName)?.subscriptionAccountId ?? null,
+              resolveEffectiveAccountId: async (sessionName, sourceWasUntagged, sourceTrigger) => {
+                const tagged = state.listSessions({ status: 'running' })
+                  .find((s) => s.tmuxSession === sessionName)?.subscriptionAccountId ?? null;
+                if (!sourceWasUntagged || tagged) return tagged;
+                if (sourceTrigger === 'login-loss') {
+                  const realHome = sessionManager.configHomeForSession(sessionName);
+                  if (!realHome) return null;
+                  return subscriptionPool.list().find((a) => a.configHome === realHome)?.id ?? null;
+                }
+                return (await inUseAccountResolver.resolve(subscriptionPool.list())).activeAccountId;
+              },
               onReactiveExecuted: (a) => _swapAntiThrashEngine?.recordReactiveExecuted(a),
               onReactiveFailed: (a) =>
                 _swapAntiThrashEngine?.recordExecFailure({
@@ -16488,7 +18191,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // anti-thrash observation layer can classify failures (§3.1/§3.6).
           return r.ok ? { ok: true } : { ok: false, code: r.code };
         },
-        onNoAlternate: (sessionName, exhaustedAccountId) => {
+        onNoAlternate: telegramRef ? (sessionName, exhaustedAccountId) => {
           void telegramRef.createAttentionItem({
             id: `subpool-no-alternate-${exhaustedAccountId}`,
             title: 'Subscription pool — no alternate account to swap to',
@@ -16497,7 +18200,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             priority: 'HIGH',
             sourceContext: 'subscription-pool:no-alternate',
           }).catch(() => { /* @silent-fallback-ok: attention is best-effort */ });
-        },
+        } : undefined,
         logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
       });
 
@@ -16510,13 +18213,15 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (!sessionName) return;
           // Resolve which account this session is running under; only pool-managed
           // sessions are swap-eligible (others fall back to the existing back-off).
-          const accountId = state.listSessions({ status: 'running' })
-            .find(s => s.tmuxSession === sessionName)?.subscriptionAccountId;
+          const session = state.listSessions({ status: 'running' })
+            .find(s => s.tmuxSession === sessionName);
+          const accountId = session?.subscriptionAccountId;
           if (!accountId) return;
           void _quotaAwareScheduler?.onQuotaPressure({
             sessionName,
             exhaustedAccountId: accountId,
             nowMs: Date.now(),
+            framework: session?.framework ?? 'claude-code',
           });
         });
       }
@@ -16530,7 +18235,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (config.subscriptionPool?.pinSessionsToPool) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
         sessionManager.setSpawnAccountResolver(() => {
-          const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now() });
+          const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
         });
         console.log(pc.green('  Subscription-pool session pinning enabled'));
@@ -16555,11 +18260,19 @@ export async function startServer(options: StartOptions): Promise<void> {
               // Only claude-code sessions ride the claude-account pool (legacy
               // records with no framework default to claude-code).
               .filter((s) => s.framework === undefined || s.framework === 'claude-code')
-              .map((s) => ({
-                sessionName: s.tmuxSession,
-                accountId: s.subscriptionAccountId ?? null,
-                startedAt: s.startedAt,
-              })),
+              .map((s) => {
+                const realHome = sessionManager.configHomeForSession(s.tmuxSession);
+                const loginLossAccountId = realHome
+                  ? subscriptionPool.list().find((a) => a.configHome === realHome && requiresOwnerRelogin(a))?.id ?? null
+                  : null;
+                return {
+                  sessionName: s.tmuxSession,
+                  accountId: s.subscriptionAccountId ?? null,
+                  loginLossAccountId,
+                  startedAt: s.startedAt,
+                  refreshable: _sessionRefresh?.canRefreshSession(s.tmuxSession) ?? false,
+                };
+              }),
           resolveDefaultAccountId: async () =>
             (await inUseAccountResolver.resolve(subscriptionPool.list())).activeAccountId,
           swap: (a) =>
@@ -16579,6 +18292,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           antiThrash: _swapAntiThrashEngine
             ? { engine: _swapAntiThrashEngine, getKnobs: antiThrashKnobsGetter }
             : undefined,
+          loginLoss: {
+            enabled: resolveDevAgentGate(proactiveCfg.loginLoss?.enabled, config),
+            dryRun: proactiveCfg.loginLoss?.dryRun !== false,
+          },
           // §4 — the in-flight work gate (proactive arm: defer, ceiling-drop).
           // The monitor owns the deferral lifecycle; the gate is stateless.
           workGate: _swapWorkGate
@@ -16948,7 +18665,196 @@ export async function startServer(options: StartOptions): Promise<void> {
       ));
     }
 
+    // ── ExternalHogSentinel (external-hog zombie auto-kill sentinel, CMT-1901) ──
+    // Surfaces sustained EXTERNAL CPU hogs (broad observability) and auto-kills exactly
+    // one narrow class — orphaned Electron editor extension-host wrappers — WITHIN a
+    // mechanical veto-only floor + an intelligence kill/leave/alert verdict (a kill fires
+    // iff floor_pass && classifier==='kill'). developmentAgent dark-feature gate: LIVE
+    // (watch-only dryRun) on a dev agent, DARK on the fleet. A REAL kill needs a deliberate
+    // PIN-gated arm (POST /external-hog/arm). GET /external-hog. Construction is guarded so a
+    // failure disables the feature this boot rather than crashing the server.
+    const _externalHogEnabled = resolveDevAgentGate(config.monitoring?.externalHogSentinel?.enabled, config);
+    let externalHogSentinel: import('../monitoring/ExternalHogSentinel.js').ExternalHogSentinel | undefined;
+    try {
+      const ehCfg = config.monitoring?.externalHogSentinel ?? {};
+      const ehNum = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+      const { createExternalHogServerPrimitives } = await import('../monitoring/ExternalHogServerPrimitives.js');
+      const { createExternalHogAdapters } = await import('../monitoring/ExternalHogRealAdapters.js');
+      const { ExternalHogSentinel } = await import('../monitoring/ExternalHogSentinel.js');
+      const { ExternalHogDecisionStore } = await import('../monitoring/ExternalHogDecisionStore.js');
+      const { annotateDecisionOutcome } = await import('../core/DecisionQualityRecorderImpl.js');
+      // Positive-clamp the interval-critical knobs so a garbage config (0/negative/huge-but-finite,
+      // which ehNum passes through) can never hot-loop the tick or widen candidacy to everything
+      // (Phase-5 reviewer nit D — dev-only robustness; the kill gate is unaffected either way).
+      const ehScanIntervalMs = Math.max(1_000, ehNum(ehCfg.scanIntervalMs, 60_000));
+      const ehSampleWindowMs = Math.max(1_000, ehNum(ehCfg.sampleWindowMs, 30_000));
+      const ehCpuCoreThreshold = Math.max(0.1, ehNum(ehCfg.cpuCoreThreshold, 1.5));
+      const ehSustainedSampleCount = Math.max(1, ehNum(ehCfg.sustainedSampleCount, 3));
+      const ehEuid = process.geteuid?.() ?? -1;
+      const ehPrims = createExternalHogServerPrimitives({
+        exec: async (cmd, args) => (await execFileAsync(cmd, [...args], { timeout: 15_000, maxBuffer: 8 * 1024 * 1024 })).stdout,
+        signal: (pid, sig) => { try { process.kill(pid, sig === 0 ? 0 : sig); return true; } catch { return false; } }, // @silent-fallback-ok: `false` IS the signal primitive's contract (pid gone / EPERM → delivery failed); the kill funnel consumes the boolean and surfaces every outcome
+        // llm-decision-quality-meter §5.3: forward the router-enrollment provenance
+        // block (from ExternalHogScanTick) into the intelligence options so the
+        // router mints + settles a decision_quality row for the classifier call.
+        // Minting is always-on; the decision_quality WRITE is gated inside the
+        // recorder (dev-gate + dryRun), so this forward is unconditional.
+        evaluate: (prompt, provenance) => (sharedIntelligence
+          ? sharedIntelligence.evaluate(prompt, { model: 'fast', attribution: { component: 'ExternalHogClassifier' }, ...(provenance ? { provenance } : {}) })
+          : Promise.reject(new Error('no intelligence provider'))),
+        raiseAttention: (item) => telegram?.createAttentionItem({
+          id: 'agent:external-hog',
+          title: item.title,
+          summary: item.body.slice(0, 160),
+          description: item.body,
+          category: 'external-hog-sentinel',
+          priority: item.priority === 'high' ? 'HIGH' : item.priority === 'low' ? 'LOW' : 'NORMAL',
+          sourceContext: 'external-hog-sentinel',
+        }),
+        config: () => ({ enabled: _externalHogEnabled, dryRun: ehCfg.dryRun !== false }),
+        stateDir: config.stateDir,
+        ownEuid: ehEuid,
+        serverPid: process.pid,
+        sleep: (ms) => new Promise((res) => setTimeout(res, Math.max(0, ms))),
+      });
+      const ehAdapters = createExternalHogAdapters(ehPrims, {
+        cpuCoreThreshold: ehCpuCoreThreshold,
+        maxAncestorHops: 30,
+        killTimeCpuRecheckWindowMs: ehNum(ehCfg.killTimeCpuRecheckWindowMs, 2_500),
+        killTimeCpuCoreThreshold: 0.5,
+        homeDir: os.homedir(),
+      });
+      // ── llm-decision-quality-meter §5.3 wiring: the durable decision store +
+      //    the §5.4 annotate chokepoint. The SEAM gate is independent of the hog
+      //    gate — resolve it the SAME way the recorder does (resolveDevAgentGate
+      //    on provenance.uniformSeam.enabled + dryRun defaults TRUE). The store is
+      //    constructed ONLY when the seam resolves live; dryRun is threaded in so
+      //    the store suppresses its durable persist while still running
+      //    grade-on-supersede in-memory (§5.2: "dry-run suppresses all durable
+      //    writes"). `annotate` is always passed — the recorder gates it
+      //    internally, and a disabled seam leaves `decisionStore` undefined so
+      //    recordDecisions() no-ops before reaching it.
+      const _dqSeamEnabled = resolveDevAgentGate(config.provenance?.uniformSeam?.enabled, config);
+      const _dqSeamDryRun = config.provenance?.uniformSeam?.dryRun !== false;
+      const ehDecisionStore = _dqSeamEnabled
+        ? new ExternalHogDecisionStore({
+            stateDir: config.stateDir,
+            config, // reads provenance.quality.{evidenceWindowHours,gradingSlackHours}
+            killLedgerBreakerWindowMs: 3_600_000, // MUST equal breaker.windowMs below (§5.3 retention derivation)
+            dryRun: _dqSeamDryRun,
+            log: (m) => console.log(m),
+          })
+        : undefined;
+      externalHogSentinel = new ExternalHogSentinel(ehAdapters, {
+        sampler: { ownEuid: ehEuid, cpuCoreThreshold: ehCpuCoreThreshold, sampleWindowMs: ehSampleWindowMs, maxAncestorHops: 30 },
+        sustainedSampleCount: ehSustainedSampleCount,
+        maxClassificationsPerScan: ehNum(ehCfg.maxClassificationsPerScan, 4),
+        breaker: { windowMs: 3_600_000, maxPerWindow: ehNum(ehCfg.killLedgerMaxPerSignaturePerHour, 3), keyIsVolatile: false },
+        killFunnel: { sigtermGraceMs: ehNum(ehCfg.sigtermGraceMs, 12_000), maxKillDeferrals: ehNum(ehCfg.maxKillDeferrals, 3) },
+        noticeBudgetPerWindow: ehNum(ehCfg.noticeBudgetPerWindow, 4),
+        killLedgerRetentionMs: 3_600_000,
+        samplerDeadThresholdMs: Math.max(2 * ehScanIntervalMs, ehSustainedSampleCount * ehSampleWindowMs),
+      }, {
+        decisionStore: ehDecisionStore,
+        annotate: (a) => {
+          // Map the sentinel's HogOutcomeAnnotation → the recorder's
+          // DecisionOutcomeAnnotationInput (ruleId is top-level on the input but
+          // nested in gradedBy on the hog annotation). The result is discarded —
+          // `annotate` is void; the recorder gates enabled+dryRun internally.
+          annotateDecisionOutcome({
+            correlationId: a.correlationId,
+            ruleId: a.gradedBy.ruleId,
+            gradedBy: { component: a.gradedBy.component },
+            grade: a.grade,
+            evidence: a.evidence,
+          });
+        },
+      });
+      // Register the /guards runtime getter regardless of enabled (so posture reports honestly).
+      guardRegistry.register('monitoring.externalHogSentinel.enabled', () => externalHogSentinel!.guardRuntimeStatus());
+      if (_externalHogEnabled) {
+        const ehRef = externalHogSentinel;
+        const ehTimer = setInterval(() => {
+          void ehRef.tick().catch((e) => console.error('[external-hog] tick error:', e instanceof Error ? e.message : String(e))); // @silent-fallback-ok: NOT silent — every tick error is logged; an interval callback must never throw (it would crash the server for a scan hiccup)
+        }, ehScanIntervalMs);
+        if (typeof ehTimer.unref === 'function') ehTimer.unref();
+        console.log(pc.green(`  ExternalHogSentinel enabled (external-hog zombie auto-kill — ${ehCfg.dryRun === false ? 'config live; needs PIN arm to kill' : 'watch-only dryRun'})`));
+      }
+    } catch (err) {
+      console.error('[external-hog] construction failed (feature disabled this boot):', err instanceof Error ? err.message : String(err));
+      externalHogSentinel = undefined;
+      DegradationReporter.getInstance().report({
+        feature: 'ExternalHogSentinel',
+        primary: 'external-hog zombie sentinel scanning on a schedule',
+        fallback: 'sentinel disabled for this boot (no scanning, no alerts, no kills)',
+        reason: `construction failed: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'Outside-process CPU hogs go unnoticed until the next successful boot — the exact blindness the sentinel exists to close.',
+      });
+    }
+
     // ── OrphanedWorkSentinel (the silent-uncommitted-death backstop) ──────────
+    // ── SelfActionGovernor (unified-self-action-backpressure Increment B) ──
+    // ONE in-process admission chokepoint every registered self-triggered
+    // action rides (age-kill, external-hog kill, proactive swap, beacon
+    // notify/liveness). Ships OBSERVE-ONLY on every class, fleet-wide (FD1):
+    // admit() records would-deny verdicts and always allows; the per-class
+    // enforce flip is the operator's later action. INIT-ONCE process-global
+    // anchor; emergencyDisable is read LIVE (PATCH /config applies with no
+    // restart). Construction is guarded — a failure leaves the module-level
+    // governor uninitialized (disabled-passthrough admits), never a dead boot.
+    let _selfActionGovernor: import('../monitoring/selfaction/governor.js').SelfActionGovernorCore | undefined;
+    try {
+      const { initSelfActionGovernor } = await import('../monitoring/selfaction/governor.js');
+      _selfActionGovernor = initSelfActionGovernor({
+        stateDir: config.stateDir,
+        readEmergencyDisable: () =>
+          liveConfig.get(
+            'intelligence.selfActionGovernor.emergencyDisable',
+            config.intelligence?.selfActionGovernor?.emergencyDisable ?? false,
+          ) === true,
+        readClassesConfig: () =>
+          liveConfig.get(
+            'intelligence.selfActionGovernor.classes',
+            (config.intelligence?.selfActionGovernor?.classes ?? undefined) as Record<string, unknown> | undefined,
+          ),
+        // Census discipline (spec SC6-1): governor-owned, sampled OFF the hot
+        // path (the governor's own slow tick), INDEPENDENT of any governed
+        // controller's candidate enumeration — the STATE-store read, never the
+        // reaper's own listRunningSessions.
+        readCensus: () => ({
+          value: state.listSessions({ status: 'running' }).length,
+          asOf: Date.now(),
+          confidence: 'high' as const,
+        }),
+        configuredSessionCap: () => (config as { sessions?: { maxSessions?: number } }).sessions?.maxSessions,
+        // FD9 level gate input: the REGISTERED machine count (not online peers).
+        registeredMachineCount: () => Math.max(1, machinePoolRegistry?.getCapacities().length ?? 1),
+        emitAttention: (item) => {
+          void telegram?.createAttentionItem({
+            id: item.id,
+            title: item.title,
+            summary: item.body.slice(0, 160),
+            description: item.body,
+            category: 'self-action-governor',
+            priority: item.priority,
+            sourceContext: item.sourceContext,
+          });
+        },
+      });
+      guardRegistry.register('intelligence.selfActionGovernor.enabled', () => _selfActionGovernor!.guardRuntimeStatus());
+      console.log(pc.dim('  SelfActionGovernor initialized (observe-only — unified self-action backpressure)'));
+    } catch (err) {
+      console.error('[self-action-governor] init failed (admits pass through this boot):', err instanceof Error ? err.message : String(err));
+      _selfActionGovernor = undefined;
+      DegradationReporter.getInstance().report({
+        feature: 'SelfActionGovernor',
+        primary: 'self-action admission chokepoint (observe-only would-deny measurement)',
+        fallback: 'governor uninitialized for this boot — every admit resolves disabled-passthrough (allow)',
+        reason: `init failed: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'Self-action would-deny telemetry is not collected this boot; the retrofitted emit paths behave exactly as before (observe mode never blocks anyway).',
+      });
+    }
+
     // Detects agent worktrees with uncommitted work whose owning session is dead
     // + settled, records them durably, and raises ONE deduped agent-health notice
     // — the case the PromiseBeacon escalation ladder can't see (nothing registered
@@ -17462,6 +19368,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             ...(gpCfg as object),
             agentNamespace,
             repo: 'JKHeadley/instar',
+            // red-pr-watchdog: thread the (optional) config block through explicitly
+            // (the class deep-merges its defaults — enabled:true, redThresholdMs:2h).
+            redPrWatchdog: (gpCfg as { redPrWatchdog?: { enabled?: boolean; redThresholdMs?: number } }).redPrWatchdog,
           } as never);
           if (greenPrAutoMerger.invariantOk) {
             guardLatchStore.markPoolArmed(); // R7: this pool is deliberately armed
@@ -17577,7 +19486,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
         if (poolSelfId) {
           try {
-            poolIdMgr.recordSelfHardware(poolSelfId, poolMod.captureHardware());
+            // §5a (machine-coherence-guard): stamp the RUNNING version into
+            // hardware self-attest so peers can see it (activates the already-
+            // written consumer at routes.ts:6645/6671). When ProcessIntegrity is
+            // unavailable the argument is OMITTED so the field stays honestly
+            // absent (L1) — never a possibly-stale config.version.
+            poolIdMgr.recordSelfHardware(
+              poolSelfId,
+              poolMod.captureHardware(ProcessIntegrity.getInstance()?.runningVersion),
+            );
           } catch { /* best-effort hardware self-attest */ }
           // Quota-aware placement (2026-06-05): self-report whether a NEW
           // session on THIS machine could work right now. Blocked = a provider
@@ -17663,6 +19580,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               return undefined;
             }
           };
+          // Machine-coherence advert beat counter (machine-coherence-guard §3.2
+          // M5): sender-side monotonic advert generation. FORENSIC-ONLY —
+          // resets on restart; receivers NEVER use it as a freshness check
+          // (freshness is the receiver-stamped advert receipt time; R2-L1).
+          let _coherenceBeatSeq = 0;
           const refreshPool = (): void => {
             try {
               machinePoolRegistry!.recordHeartbeat({
@@ -17687,6 +19609,35 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
                 seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive() },
+                // Machine-coherence advert (machine-coherence-guard §3.2).
+                // Emission is UNCONDITIONAL (M3, normative): it ships live with
+                // the code, regardless of the sentinel's dev-gate/enabled/dryRun
+                // — only the evaluator + alarm are dev-gated (§7). A gated
+                // advert would make the guard misdiagnose the exact F4 topology
+                // (dark side advert-less → false "peer predates the guard").
+                // Recomputed each beat: boot-read entries re-advertise within
+                // one beat of a restart; live-read entries (readSource:'live',
+                // M8) within one beat of the PATCH /config. Alarm marker is the
+                // episode machinery's to attach (increment C) — absent until an
+                // open, successfully-raised local item exists.
+                ...(() => {
+                  try {
+                    return {
+                      coherenceAdvert: buildCoherenceAdvert(
+                        {
+                          boot: config as unknown as Record<string, unknown>,
+                          liveGet: (path, fallback) => liveConfig.get(path, fallback),
+                          // unified-self-action-backpressure INT7-1: the mode
+                          // rows read `demoted` from governor RUNTIME state —
+                          // a config-only read would advertise `enforce` on a
+                          // runtime-demoted machine and defeat the skew alarm.
+                          governorClassMode: (controllerId) => _selfActionGovernor?.getClassMode(controllerId) ?? 'observe',
+                        },
+                        { instarVersion: ProcessIntegrity.getInstance()?.runningVersion ?? 'unknown', beatSeq: _coherenceBeatSeq++ },
+                      ),
+                    };
+                  } catch { return {}; } // @silent-fallback-ok: a builder fault must never kill the liveness beat; self degrades to advert-less (loud via version-class after grace), never a dead heartbeat
+                })(),
                 // Durable Inbound Message Queue §5.1: depth + oldest + tenure +
                 // bounded top-K — the survivor's loss-SUSPECTED item, capped
                 // re-placement arm, and supersede-dedupe key all read these.
@@ -17708,8 +19659,18 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
               const hbApi = machineHeartbeat?.api;
               if (hbApi) {
+                // Layer 0 (speaker-election-owner-liveness): a DEAD peer's git-synced
+                // heartbeat file lingers, and re-recording it every ~30s stamps a fresh
+                // LOCAL receipt (routerReceivedAtMs) → the peer stays online:true FOREVER
+                // locally, so any owner/holder-liveness read silently no-ops. Gate the
+                // re-record on the record's SELF-REPORTED freshness: skip when
+                // lastHeartbeatAt is older than >=2x the ~30min write cadence (~60min), or
+                // unparseable (fail toward not-refreshing). A live git-syncing peer
+                // (mid-interval) is always within the window → never flapped dark; only a
+                // peer silent for >2 cadences (genuinely dead) ages out of `online`.
                 for (const r of hbApi.listAll()) {
                   if (r.machineId !== poolSelfId) {
+                    if (!heartbeatFreshEnoughToRerecord(r.lastHeartbeatAt, Date.now())) continue;
                     // COARSE: the file-based MachineHeartbeat is git-synced + written every
                     // ~30min, so its lastHeartbeatAt is NOT a live clock reading. Mark it coarse
                     // so it refreshes liveness but never drives the 5-min clock-skew quarantine
@@ -17733,6 +19694,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               )
               .catch(() => { /* @silent-fallback-ok — G2 eval is best-effort signal */ });
           };
+          _refreshPoolHeartbeat = refreshPool;
           refreshPool();
           const poolTimer = setInterval(refreshPool, 30_000);
           if (typeof poolTimer.unref === 'function') poolTimer.unref();
@@ -17786,6 +19748,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // are live too. Single-machine uses the in-memory store; the cross-machine
     // git-backed store swaps in for the Track-H proof (the registry is store-agnostic).
     let meshRpcDispatcher: import('../core/MeshRpc.js').MeshRpcDispatcher | undefined;
+    let mutualSshRuntime: import('../core/MutualSshRuntime.js').MutualSshRuntime | null = null;
     let sessionOwnershipRegistry: import('../core/SessionOwnershipRegistry.js').SessionOwnershipRegistry | undefined;
     /**
      * Ownership Follows Live Work — Part B (claim-on-spawn). Assigned inside the
@@ -17805,6 +19768,31 @@ export async function startServer(options: StartOptions): Promise<void> {
     // onCommit hook. Stays null on pool-dark installs (the index warms empty;
     // scoped domains collapse to the legacy lease boolean anyway).
     let _writeAdmissionOwnershipStore: import('../core/SessionOwnershipRegistry.js').SessionOwnershipStore | null = null;
+
+    // ── Judgment-provenance log (llm-decision-quality-meter §5.7/FD9) ──
+    // Constructed UNCONDITIONALLY — the decision-quality settlement seam needs
+    // a substrate on every agent, single-machine included (construction uses
+    // only stateDir/config/logger, zero mesh inputs). Previously this lived
+    // inside the mesh block below, so a single-machine agent had nothing to
+    // write to and /judgment-provenance 503'd through the whole dev soak.
+    // Only the assignment moved; the hoisted `_judgmentProvenance` is passed
+    // to AgentServer unchanged, and the two mesh-block callsites keep their
+    // optional-chaining writes.
+    try {
+      const jplMod = await import('../core/JudgmentProvenanceLog.js');
+      const provCfg = config.provenance ?? {};
+      _judgmentProvenance = new jplMod.JudgmentProvenanceLog({
+        dir: path.join(config.stateDir, 'state', 'judgment-provenance'),
+        retentionDays: provCfg.retentionDays,
+        sampling: provCfg.deterministicSampling,
+        log: (m) => console.log(pc.dim(`  ${m}`)),
+      });
+    } catch (err) {
+      console.error(
+        `[judgment-provenance] construction failed (provenance rows will not be recorded; /judgment-provenance will 503): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     try {
       const meshMod = await import('../core/MeshRpc.js');
       const idMod = await import('../core/MachineIdentity.js');
@@ -18736,9 +20724,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Durable Inbound Message Queue §3.4 remote path: the queue store's
             // remote receipt (canonical-id keyed, carries the `injected` marker
             // that makes peer-crash-between-receipt-and-inject boot-detectable —
-            // loss window 6). Recorded ALONGSIDE the existing ledger receipt;
-            // engine dark → the prior posture, named in the spec's skew note.
-            try { _inboundQueue?.recordRemoteReceipt(session, messageId); } catch { /* receipt best-effort; ledger is authoritative for dedupe */ }
+            // loss window 6). Its INSERT OR IGNORE result is authoritative when
+            // the queue is live; discarding it reopened duplicates after every
+            // owner restart whenever the optional exactly-once ledger was dark.
+            try {
+              if (_inboundQueue) return _inboundQueue.recordRemoteReceipt(session, messageId);
+            } catch { /* receipt unavailable — fall through to the next durable tier */ }
             if (messageLedger) return messageLedger.record(messageId, { platform: 'mesh', topic: session }).firstSeen;
             if (deliverSeenFallback.has(messageId)) return false;
             deliverSeenFallback.add(messageId);
@@ -18983,7 +20974,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             const secretSyncMod = await import('../core/SecretSync.js');
             const secretStoreMod = await import('../core/SecretStore.js');
             const cryptoMod = await import('node:crypto');
-            const secretStore = new secretStoreMod.SecretStore({ stateDir: config.stateDir });
+            // Honor the configured at-rest key policy, as every other SecretStore writer does.
+            // This is load-bearing for headless joined homes: their OS-keychain
+            // context may differ across SSH/bootstrap and daemon restart, while
+            // `secrets.forceFileKey` deliberately selects the durable file key.
+            const secretStore = new secretStoreMod.SecretStore({
+              stateDir: config.stateDir,
+              forceFileKey: config.secrets?.forceFileKey,
+            });
             _secretShareHandler = new secretSyncMod.SecretShareHandler({
               ownEncryptionPrivateKey: () => cryptoMod.createPrivateKey(meshIdMgr.loadEncryptionKey()),
               store: { set: (k, v) => secretStore.set(k, v) },
@@ -19032,6 +21030,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           },
           handlers: {
+            'ssh-bootstrap-advert': (cmd, sender) => {
+              if (!mutualSshRuntime) return { ok: false, reason: 'mutual-ssh-disabled' };
+              const c = cmd as Extract<import('../core/MeshRpc.js').MeshCommand, { type: 'ssh-bootstrap-advert' }>;
+              return mutualSshRuntime.handleAdvert(c.advert, sender);
+            },
+            'ssh-proof-publish': (cmd, sender) => {
+              if (!mutualSshRuntime) return { ok: false, reason: 'mutual-ssh-disabled' };
+              const c = cmd as Extract<import('../core/MeshRpc.js').MeshCommand, { type: 'ssh-proof-publish' }>;
+              return mutualSshRuntime.handleProof(c.proof, sender);
+            },
             'capacity-report': () => machinePoolRegistry?.getCapacities() ?? [],
             'session-status': () => {
               const base = machinePoolRegistry?.getCapacity(meshSelfId) ?? { machineId: meshSelfId };
@@ -19055,6 +21063,21 @@ export async function startServer(options: StartOptions): Promise<void> {
                 ? _preferencesManagerForSync.getReplicationAdvert()
                 : undefined;
               return { ...base, journalAdvert, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
+            },
+            'a2a-inbox-deliver': async (cmd, sender) => {
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'a2a-inbox-deliver' };
+              const { handleA2aMeshInbox } = await import('../core/A2aMeshInbox.js');
+              return handleA2aMeshInbox(c, {
+                localAgent: config.projectName,
+                authenticatedSenderMachine: sender,
+                authorizedMentorMachine: (agent) => {
+                  const known = (config as unknown as { mentee?: { knownMentors?: Record<string, { machineId?: string }> } }).mentee?.knownMentors;
+                  return known?.[agent]?.machineId;
+                },
+                dispatch: telegram
+                  ? (message) => telegram.dispatchAgentMessageHook(message)
+                  : undefined,
+              });
             },
             // Pool Dashboard Streaming (§2.3): mint a single-use bearer ticket
             // for the authenticated peer so it may open a /pool-stream WS to
@@ -19406,8 +21429,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             nonce: () => `${meshSelfId}:r:${Date.now()}:${++routerNonce}`,
             now: () => Date.now(),
           });
-          const peerUrl = (machineId: string): string | null =>
-            meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry.lastKnownUrl ?? null;
+          const peerUrl = (machineId: string): string | null => {
+            const entry = meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry;
+            if (!entry) return null;
+            return meshResolver.resolve(machineId, entry.endpoints, entry.lastKnownUrl)[0]?.url ?? null;
+          };
           _meshSelfId = meshSelfId;
           // U4.4 — the offer transport (HOLDER side) + the post-hand-back delivery
           // canary (PREFERRED side), both over the signed mesh RPC.
@@ -19435,6 +21461,19 @@ export async function startServer(options: StartOptions): Promise<void> {
             } catch {
               return 'timeout'; /* @silent-fallback-ok — a transport fault reads as timeout: the holder KEEPS HOLDING (claim-before-release, the safe direction) */
             }
+          };
+          _deliverA2aToMachine = async (input) => {
+            const url = peerUrl(input.machineId);
+            if (!url) return { ok: false, reason: 'no-peer-url' };
+            const res = await meshClient.send(
+              { machineId: input.machineId, url },
+              { type: 'a2a-inbox-deliver', targetAgent: input.targetAgent, text: input.text, topicId: input.topicId, senderAgent: input.senderAgent, senderBotId: input.senderBotId },
+              0,
+              { timeoutMs: 10_000 },
+            );
+            if (!res.ok) return { ok: false, reason: res.reason ?? `http-${res.status}` };
+            const body = (res.result ?? {}) as { ok?: boolean; agentMessage?: boolean; reason?: string };
+            return { ok: body.ok === true, agentMessage: body.agentMessage === true, reason: body.reason };
           };
           _handbackCanary = async (oldHolder) => {
             // One identity-authenticated round-trip through the REAL mesh RPC to
@@ -19490,6 +21529,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 status: o.status,
                 reason: o.detail,
                 runSuspended: o.autonomousRunSuspended,
+                claimLanded: (o.status === 'drained' || o.status === 'drained-interrupted') && o.claimLanded === true,
               };
             }
             const url = peerUrl(ownerMachineId);
@@ -19502,8 +21542,16 @@ export async function startServer(options: StartOptions): Promise<void> {
                 { timeoutMs: 50_000 },
               );
               if (res.ok) {
-                const r = (res.result ?? {}) as { ok?: boolean; status?: string; reason?: string };
-                return { ok: r.ok === true, status: typeof r.status === 'string' ? r.status : undefined, reason: typeof r.reason === 'string' ? r.reason : undefined };
+                const r = (res.result ?? {}) as { ok?: boolean; status?: string; reason?: string; autonomousRunSuspended?: boolean; claimLanded?: boolean };
+                const status = typeof r.status === 'string' ? r.status : undefined;
+                const completed = r.ok === true && (status === 'drained' || status === 'drained-interrupted');
+                return {
+                  ok: r.ok === true,
+                  status,
+                  reason: typeof r.reason === 'string' ? r.reason : undefined,
+                  runSuspended: r.autonomousRunSuspended === true,
+                  claimLanded: completed && r.claimLanded === true,
+                };
               }
               return { ok: false, reason: res.reason ?? `status-${res.status}`, noHandler: res.status === 501 };
             } catch (err) {
@@ -19515,11 +21563,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             const h = coordinator.getSyncStatus().leaseHolder;
             return h && h !== meshSelfId ? peerUrl(h) : null;
           };
+          // Pool-scope readers must use the same validated multi-rope resolver as
+          // routing and lease traffic. A freshly enrolled peer can have live
+          // LAN/Tailscale endpoints without the legacy lastKnownUrl field; the
+          // old filter silently omitted that online machine from every pool view.
           _resolvePeerUrls = () =>
             meshIdMgr
               .getActiveMachines()
-              .filter((m) => m.machineId !== meshSelfId && !!m.entry.lastKnownUrl)
-              .map((m) => ({ machineId: m.machineId, url: m.entry.lastKnownUrl as string }));
+              .filter((m) => m.machineId !== meshSelfId)
+              .map((m) => ({ machineId: m.machineId, url: peerUrl(m.machineId) }))
+              .filter((m): m is { machineId: string; url: string } => m.url != null);
           // EVERY registered non-revoked machine — URL or not — so the /guards
           // pool view can account for each by name (no-known-url is a NAMED row,
           // never a silent omission — GUARD-POSTURE-ENDPOINT-SPEC §2.3).
@@ -19529,6 +21582,125 @@ export async function startServer(options: StartOptions): Promise<void> {
               nickname: m.entry.nickname,
               lastKnownUrl: m.entry.lastKnownUrl ?? null,
             }));
+          // Mutual SSH phase 1: the signed HTTP mesh is the bootstrap carrier;
+          // the resulting proof itself traverses the restricted SSH subsystem.
+          // Hard-dark on fleet, dry-run first on the development agent.
+          const peerExecutionEnabled = resolveDevAgentGate(config.multiMachine?.peerExecution?.enabled, config);
+          if (!peerExecutionEnabled) {
+            try {
+              const { PeerAuthorizedKeys } = await import('../core/PeerAuthorizedKeys.js');
+              new PeerAuthorizedKeys(os.homedir(), false).revokeUnknown(config.projectName, new Set());
+            } catch (error) {
+              // @silent-fallback-ok — disabled-feature cleanup failure is loud;
+              // no runtime starts and no readiness success can mask stale access.
+              console.warn(`[peer-execution] disabled-grant cleanup blocked: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          if (resolveDevAgentGate(config.multiMachine?.mutualSsh?.enabled, config)) {
+            try {
+              const sshMod = await import('../core/MutualSshRuntime.js');
+              const portMod = await import('../core/PortRegistry.js');
+              const cryptoMod = await import('node:crypto');
+              const selfPem = meshIdMgr.getSigningPublicKeyPem(meshSelfId) ?? '';
+              const machineFingerprint = (pem: string) => cryptoMod.createHash('sha256').update(pem).digest('hex');
+              const privateHosts = (getSelfMeshEndpoints?.() ?? []).flatMap((endpoint) => {
+                try {
+                  const host = new URL(endpoint.url).hostname;
+                  return host ? [host] : [];
+                } catch {
+                  // @silent-fallback-ok — malformed advertised URLs are omitted;
+                  // readiness names the peer and reports the missing endpoint.
+                  return [];
+                }
+              });
+              const bindHost = privateHosts.find(host => host.startsWith('100.'))
+                ?? privateHosts.find(host => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host))
+                ?? '127.0.0.1';
+              const bindPort = portMod.allocatePort(`${config.projectName}-mutual-ssh`, 42000, 49000);
+              const standingHostKey = (() => {
+                if (!peerExecutionEnabled) return null;
+                try { return fs.readFileSync('/etc/ssh/ssh_host_ed25519_key.pub', 'utf8').trim(); }
+                catch {
+                  // @silent-fallback-ok — absence is a named standing endpoint
+                  // readiness blocker; never substitute an unpinned host key.
+                  return null;
+                }
+              })();
+              const peers = () => meshIdMgr.getActiveMachines()
+                .filter(row => row.machineId !== meshSelfId)
+                .map(row => ({
+                  machineId: row.machineId,
+                  // Millisecond precision is part of the revoke→re-pair replay fence;
+                  // second truncation could accidentally reuse an epoch during a fast re-pair.
+                  pairingEpoch: Math.max(1, Date.parse(row.entry.pairedAt)),
+                  machineFingerprint: machineFingerprint(meshIdMgr.getSigningPublicKeyPem(row.machineId) ?? ''),
+                  endpoints: (row.entry.endpoints ?? []).map(endpoint => endpoint.url),
+                }));
+              mutualSshRuntime = new sshMod.MutualSshRuntime({
+                stateDir: config.stateDir, agentId: config.projectName, selfMachineId: meshSelfId,
+                selfMachineFingerprint: machineFingerprint(selfPem),
+                observerBootId: `${meshSelfId}:${process.pid}:${Date.now()}`,
+                bindHost, bindPort, dryRun: config.multiMachine?.mutualSsh?.dryRun !== false,
+                peerExecution: peerExecutionEnabled ? {
+                  // The SSH daemon resolves AuthorizedKeysFile beneath the
+                  // account home; never write a system/global sshd path.
+                  agentHome: os.homedir(),
+                  dryRun: config.multiMachine?.peerExecution?.dryRun !== false,
+                  requiredForReadiness: config.multiMachine?.peerExecution?.requiredForReadiness !== false,
+                } : undefined,
+                localStandingSsh: peerExecutionEnabled && standingHostKey && bindHost !== '127.0.0.1' ? {
+                  host: bindHost,
+                  port: config.multiMachine?.peerExecution?.port ?? 22,
+                  username: os.userInfo().username,
+                  hostPublicKey: standingHostKey,
+                } : undefined,
+                requiredForReadiness: config.multiMachine?.mutualSsh?.requiredForEmployeeRole === true,
+                freshnessMs: config.multiMachine?.mutualSsh?.freshnessMs,
+                cadenceMs: config.multiMachine?.mutualSsh?.cadenceMs,
+                concurrency: config.multiMachine?.mutualSsh?.concurrency,
+                listPeers: peers,
+                send: async (machineId, command) => {
+                  const url = peerUrl(machineId);
+                  if (!url) throw new Error('mutual-ssh-control-plane-unavailable');
+                  const result = await meshClient.send({ machineId, url }, command as import('../core/MeshRpc.js').MeshCommand, 0, { timeoutMs: 15_000 });
+                  if (!result.ok) throw new Error(result.reason ?? `mutual-ssh-mesh-${result.status}`);
+                  return result.result;
+                },
+                sign: payload => idMod.sign(payload, localSigningKeyPem),
+                verify: (machineId, payload, signature) => {
+                  const pem = meshIdMgr.getSigningPublicKeyPem(machineId);
+                  return pem ? idMod.verify(payload, signature, pem) : false;
+                },
+                emitJournalProof: proof => {
+                  if (!proof.machineSignature) return;
+                  const { monotonicDeadlineMs: _, ...durable } = proof;
+                  coherenceJournal?.emitSshDirectionProof(durable as import('../core/CoherenceJournal.js').SshDirectionProofData);
+                },
+                audit: event => {
+                  const file = path.join(config.stateDir, 'logs', 'mutual-ssh.jsonl');
+                  fs.mkdirSync(path.dirname(file), { recursive: true });
+                  /* state-registry: audit-mutual-ssh */ fs.appendFileSync(file, `${JSON.stringify(event)}\n`);
+                },
+                notifySecurity: event => notify('IMMEDIATE', 'mutual-ssh-host-key-change', JSON.stringify(event)),
+              });
+              await mutualSshRuntime.start();
+              (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime = mutualSshRuntime;
+              guardRegistry.register('multiMachine.mutualSsh.enabled', () => ({
+                enabled: true, dryRun: config.multiMachine?.mutualSsh?.dryRun !== false,
+                status: mutualSshRuntime?.status() ?? null,
+              }));
+              guardRegistry.register('multiMachine.peerExecution.enabled', () => ({
+                enabled: resolveDevAgentGate(config.multiMachine?.peerExecution?.enabled, config),
+                dryRun: config.multiMachine?.peerExecution?.dryRun !== false,
+                status: mutualSshRuntime?.status() ?? null,
+              }));
+            } catch (err) {
+              // @silent-fallback-ok — the feature fails closed and surfaces its
+              // stable bootstrap reason while the rest of the server remains live.
+              mutualSshRuntime = null;
+              console.warn(`[mutual-ssh] initialization blocked: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
           // Pool Dashboard Streaming requesting side (§2.2): build the connector
           // the WebSocketManager uses to open an upstream /pool-stream to a peer.
           // connect() is synchronous (PeerStreamProxy contract) but the mint +
@@ -20017,7 +22189,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               const secretSyncMod = await import('../core/SecretSync.js');
               const secretStoreMod = await import('../core/SecretStore.js');
               const cryptoModOut = await import('node:crypto');
-              const provStore = new secretStoreMod.SecretStore({ stateDir: config.stateDir });
+              const provStore = new secretStoreMod.SecretStore({
+                stateDir: config.stateDir,
+                forceFileKey: config.secrets?.forceFileKey,
+              });
               const readSecrets = (): import('../core/SecretStore.js').Secrets => {
                 // @silent-fallback-ok — no vault on disk (or unreadable) ⇒ nothing to sync; an
                 // empty set makes provisionAll a clean no-op rather than crashing the boot path.
@@ -20117,6 +22292,23 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
             },
           });
+          _confirmLocalSessionPoolClaim = (sk: string): boolean => {
+            return confirmLocalPlacementAfterDelivery({
+              selfMachineId: meshSelfId,
+              readOwnership: (sessionKey) => ownReg.read(sessionKey),
+              claimOwnership: (sessionKey, machineId) => {
+                const prevOwner = ownReg.read(sessionKey)?.ownerMachineId;
+                const r = ownReg.cas({ type: 'claim', machineId }, { sessionKey, sender: meshSelfId, nonce: `${meshSelfId}:lcl:${++routerNonce}` });
+                return {
+                  confirmed: r.ok,
+                  afterConfirm: () => emitPlacement(sessionKey, r, 'placed', prevOwner),
+                };
+              },
+              onError: (err) => {
+                console.warn(`[session-pool] local ownership confirmation observer failed for ${sk}; authoritative state will be re-read: ${err instanceof Error ? err.message : String(err)}`);
+              },
+            }, sk);
+          };
           _sessionRouter = new routerMod.SessionRouter({
             selfMachineId: meshSelfId,
             placement: new placeMod.PlacementExecutor(undefined, {
@@ -20181,6 +22373,12 @@ export async function startServer(options: StartOptions): Promise<void> {
               const r = ownReg.cas({ type: 'claim', machineId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:cl:${++routerNonce}` });
               emitPlacement(sk, r, 'placed', prevOwner); // placing→active confirmation: a real epoch bump in the registry
             },
+            // The local delivery tail runs outside SessionRouter. Confirm its
+            // self-placement only after that tail reports a successful inject or
+            // spawn; a thrown/failed spawn therefore leaves the row in placing.
+            // Guarding the current row makes repeated live injections idempotent.
+            // The adjacent _confirmLocalSessionPoolClaim callback shares this
+            // authoritative registry and nonce stream for the local tail.
             deliverMessage: async (target, env) => {
               const url = peerUrl(target);
               if (!url) throw new Error(`no peer url for ${target}`);
@@ -20370,6 +22568,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const tickHandle = setInterval(() => { void _inboundQueue?.tick(); }, qcfg.drainTickMs);
                 tickHandle.unref?.();
                 console.log(pc.dim(`  [inbound-queue] engine live — tick every ${qcfg.drainTickMs}ms, tenure ${_inboundQueue.currentTenure()}`));
+                // WS1.1 capability truth is late-bound to `_inboundQueue`, but the
+                // first self heartbeat is emitted earlier in boot while that handle
+                // is still null. Refresh immediately now that durable receive is
+                // genuinely live; otherwise peers retain `ws11DeliverReceive:false`
+                // until a later beat and queue/fall through instead of forwarding
+                // during the boot window (live CROSS-MACHINE finding, 2026-07-17).
+                _refreshPoolHeartbeat();
 
                 // Survivor arm (spec §5.1, loss window 1): the machine that
                 // holds the routing role checks — once heartbeats have had a
@@ -20415,6 +22620,334 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           } catch (err) {
             console.error(`[inbound-queue] engine construction failed (queue stays OFF): ${err instanceof Error ? err.message : String(err)}`);
+          }
+
+          // ── Ownership-gated spawn seam (ownership-gated-spawn §3.1, Layer A) ──
+          // Constructed whenever the mesh block runs; the seam short-circuits
+          // itself on pool stage 'dark' / missing mesh identity (byte-identical
+          // dispatch, zero writes), so construction here is safe on every pool.
+          try {
+            const spawnAdmMod = await import('../core/SpawnAdmission.js');
+            const ladderMod = await import('../core/OwnerDarkLadder.js');
+            const audMod = await import('../core/BoundedJsonlAudit.js');
+            const ogsCfg = config.multiMachine?.sessionPool?.ownershipGatedSpawn ?? {};
+            // (The JudgmentProvenanceLog is constructed UNCONDITIONALLY before
+            // this mesh block — llm-decision-quality-meter FD9; the seam callsites
+            // here keep their optional-chaining writes.)
+            const ownerDarkAudit = new audMod.BoundedJsonlAudit({
+              file: path.join(config.stateDir, 'logs', 'owner-dark-ladder.jsonl'),
+              log: (m) => console.log(pc.dim(`  ${m}`)),
+            });
+            // Same liveness expression the router uses (§3.1: `other-dark`
+            // derives from the EXISTING isMachineAlive input — one authority).
+            const seamIsAlive = (m: string): boolean =>
+              m === meshSelfId ||
+              ((machinePoolRegistry?.getCapacity(m)?.online ?? false) && !ownerSuspectBreaker.isSuspect(m));
+            _ownerDarkLadder = new ladderMod.OwnerDarkLadder(config.ownerDarkLadder, {
+              isMachineAlive: seamIsAlive,
+              // The deterministic G1 path (telegram.sendToTopic — never the LLM
+              // tone gate), with the DECLARED owner-dark exception to speaker
+              // election (§3.3 rung 3; election rule 1 is owner-liveness-blind
+              // and would structurally silence the notice).
+              sendNotice: async (noticeTopicId, noticeText) => {
+                if (!telegram) return false;
+                try {
+                  await telegram.sendToTopic(noticeTopicId, noticeText);
+                  return true;
+                } catch {
+                  // @silent-fallback-ok: a failed send returns false — the ladder
+                  // records notice-send-failed in its journal (the loud path).
+                  return false;
+                }
+              },
+              // Topic-scoped suppression (split-brain guard): a recent
+              // owner-dark notice visible in the topic's send history — from
+              // ANY machine — suppresses a second voice.
+              topicHistoryHasRecentNotice: (noticeTopicId) => {
+                try {
+                  return (telegram?.getTopicHistory(noticeTopicId, 10) ?? [])
+                    .some((e) => !e.fromUser && typeof e.text === 'string' && e.text.includes('temporarily unreachable'));
+                } catch {
+                  // @silent-fallback-ok: history unreadable → no suppression signal;
+                  // the ladder's episode-dedupe + cooldown layers still bound the send.
+                  return false;
+                }
+              },
+              journal: ownerDarkAudit,
+              log: (m) => console.log(pc.dim(`  ${m}`)),
+            });
+            _spawnAdmission = new spawnAdmMod.SpawnAdmission(
+              {
+                enabled: resolveDevAgentGate(ogsCfg.enabled, config),
+                dryRun: ogsCfg.dryRun !== false,
+                enforceLiveOwner: ogsCfg.enforceLiveOwner === true,
+              },
+              {
+                selfMachineId: () => _meshSelfId,
+                poolStage: () => _sessionPoolStage(),
+                readOwnership: (sk) => {
+                  const r = ownReg.read(sk);
+                  if (!r) return null;
+                  return { owner: ownReg.ownerOf(sk), epoch: r.ownershipEpoch, status: r.status ?? null };
+                },
+                isMachineAlive: seamIsAlive,
+                readHardPinOwner: (sk) => {
+                  const pin = _pinPlacementMetadata ? _pinPlacementMetadata(sk) : _topicPinStore?.asTopicMetadata(sk);
+                  return pin?.pinned === true && pin.preferredMachine ? pin.preferredMachine : null;
+                },
+                hasLiveSession: (sk) => {
+                  // Liveness keeps legitimate respawns admissible while live duplicates remain visible.
+                  const topicSessions = telegram?.getAllTopicSessions?.();
+                  const sessionName = topicSessions?.get(Number(sk));
+                  if (!sessionName) return false;
+                  return sessionManager.getCachedRunningSessions().sessions.some((session) =>
+                    session.tmuxSession === sessionName && (session.status === 'starting' || session.status === 'running'));
+                },
+                durableCustodyLive: () => !!_inboundQueue,
+                journal: (row) => ownerDarkAudit.append(row),
+                raiseAttention: (item) => {
+                  void telegram
+                    ?.createAttentionItem({
+                      id: item.id,
+                      title: item.title,
+                      summary: item.body,
+                      category: 'system',
+                      priority: item.priority === 'high' ? 'HIGH' : 'NORMAL',
+                      sourceContext: 'spawn-admission',
+                    })
+                    .catch(() => { /* attention raise is observability — never affects admission */ });
+                },
+                provenance: (row) => {
+                  _judgmentProvenance?.recordDecision(row);
+                },
+                log: (m) => console.log(pc.dim(`  [spawn-admission] ${m}`)),
+              },
+            );
+            console.log(pc.dim(`  [spawn-admission] seam constructed (mode: ${_spawnAdmission.effectiveMode()})`));
+          } catch (err) {
+            console.error(`[spawn-admission] construction failed (seam stays off — legacy spawn behavior): ${err instanceof Error ? err.message : String(err)}`);
+          }
+
+          // ── Duplicate-session reconciler (ownership-gated-spawn §3.2, Layer B) ──
+          // Detection + evidence ladder + would-converge journaling run on the
+          // serving-lease holder; the substrate gate (§3.2.0) refuses to arm on
+          // the fleet-default in-memory ownership store regardless of flags,
+          // and dryRun (the Increment-1 canary) lands no CAS.
+          try {
+            const durMod = await import('../monitoring/DuplicateSessionReconciler.js');
+            const audMod2 = await import('../core/BoundedJsonlAudit.js');
+            const dupCfgRaw = (config.multiMachine?.sessionPool?.duplicateReconciler ?? {}) as {
+              enabled?: boolean; dryRun?: boolean; reconcilerTickMs?: number; maxReconcilesPerTick?: number;
+              maxConvergenceWritesPerTick?: number; echoConfirmTicks?: number; breakerThreshold?: number; breakerWindowMs?: number;
+            };
+            const dupAudit = new audMod2.BoundedJsonlAudit({
+              file: path.join(config.stateDir, 'logs', 'duplicate-reconciler.jsonl'),
+              log: (m) => console.log(pc.dim(`  ${m}`)),
+            });
+            const selfBase = `http://127.0.0.1:${config.port}`;
+            const meshAuthHeaders = { Authorization: `Bearer ${config.authToken ?? ''}` };
+            const fetchJson = async (url: string, timeoutMs: number): Promise<unknown> => {
+              const r = await fetch(url, { headers: meshAuthHeaders, signal: AbortSignal.timeout(timeoutMs) });
+              if (!r.ok) throw new Error(`HTTP ${r.status}`);
+              return r.json();
+            };
+            const dupCfgResolved = {
+              enabled: resolveDevAgentGate(dupCfgRaw.enabled, config),
+              dryRun: dupCfgRaw.dryRun !== false,
+              reconcilerTickMs: Math.max(5_000, dupCfgRaw.reconcilerTickMs ?? 60_000),
+              maxReconcilesPerTick: dupCfgRaw.maxReconcilesPerTick ?? 3,
+              maxConvergenceWritesPerTick: dupCfgRaw.maxConvergenceWritesPerTick ?? 5,
+              echoConfirmTicks: dupCfgRaw.echoConfirmTicks ?? 4,
+              breakerThreshold: dupCfgRaw.breakerThreshold ?? 3,
+              breakerWindowMs: dupCfgRaw.breakerWindowMs ?? 86_400_000,
+            };
+            _duplicateReconciler = new durMod.DuplicateSessionReconciler(dupCfgResolved, {
+              selfMachineId: () => _meshSelfId,
+              holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
+              // §3.2.0: durable + replicated ownership substrate (the same two
+              // activation signals the store selection above resolved).
+              substrateReady: () =>
+                durableOwnershipOn && _replicationOn
+                  ? { ready: true }
+                  : {
+                      ready: false,
+                      reason: durableOwnershipOn
+                        ? 'placement replication not enabled (peer views unresolvable)'
+                        : 'in-memory ownership store (fleet default — records wiped on restart)',
+                    },
+              errorEpisodeOpen: () => _spawnAdmission?.isErrorEpisodeOpen() ?? false,
+              topicHasAuthorityInMotion: (sk) => {
+                try {
+                  const r = ownReg.read(sk);
+                  return r?.status === 'transferring' || r?.status === 'placing';
+                } catch {
+                  // @silent-fallback-ok: unreadable → treat as in-motion, the
+                  // reconciler DEFERS the topic entirely (the safe direction).
+                  return true;
+                }
+              },
+              // Lease-holder bounded fan-out at tick cadence (§3.2.1 — the
+              // declared fallback while the WS4.4(f) poll-cache is dev-gated):
+              // the pool sessions view already computes duplicateTopics from a
+              // bounded per-peer fetch; one detector, one implementation.
+              discoverCandidates: async () => {
+                const j = (await fetchJson(`${selfBase}/sessions?scope=pool`, 15_000)) as {
+                  pool?: { duplicateTopics?: Array<{ platform: string; platformId: string | number; machineIds: string[]; sessions: string[] }> };
+                };
+                const dups = j.pool?.duplicateTopics ?? [];
+                return {
+                  candidates: dups.map((d) => ({
+                    key: `${d.platform}:${String(d.platformId)}`,
+                    platform: d.platform,
+                    platformId: String(d.platformId),
+                    machines: d.machineIds.map((m) => ({ machineId: m, sessions: d.sessions })),
+                  })),
+                };
+              },
+              // Fresh direct probe (5s budget) — never acts on a cached row.
+              probeLiveCopy: async (machineId, key) => {
+                try {
+                  const sep = key.indexOf(':');
+                  const platform = key.slice(0, sep);
+                  const pid = key.slice(sep + 1);
+                  const base =
+                    machineId === _meshSelfId
+                      ? selfBase
+                      : (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId)?.url;
+                  if (!base) return { ok: false, live: false };
+                  const list = (await fetchJson(`${base}/sessions`, 5_000)) as Array<Record<string, unknown>>;
+                  const live = (Array.isArray(list) ? list : []).some(
+                    (s) => String(s.platform) === platform && String(s.platformId) === pid,
+                  );
+                  return { ok: true, live };
+                } catch {
+                  // @silent-fallback-ok: ok:false is the DEFERRAL signal — the
+                  // reconciler journals probe-failed-deferred and burns an
+                  // attempt; a failed probe is never acted on as evidence.
+                  return { ok: false, live: false };
+                }
+              },
+              readPin: (sk) => {
+                try {
+                  const tp = _pinPlacementMetadata ? _pinPlacementMetadata(sk) : _topicPinStore?.asTopicMetadata(sk);
+                  // Quarantined pins never surface through the fold reads (U4.1).
+                  return tp ? { pinned: !!tp.pinned, preferredMachine: tp.preferredMachine ?? null, quarantined: false } : null;
+                } catch {
+                  // @silent-fallback-ok: no pin evidence → the ladder falls to
+                  // rule 2/3 or ESCALATES — absence of evidence never converges.
+                  return null;
+                }
+              },
+              readOwnershipViews: (sk) => {
+                try {
+                  const r = ownReg.read(sk);
+                  if (!r) return [];
+                  // The local view is journal-materialized (OwnershipApplier) —
+                  // epoch fast-forward means it already carries the highest
+                  // epoch this machine has SEEN; peers' own views are consulted
+                  // at echo time via /pool/ownership-view.
+                  return [{ machineId: _meshSelfId ?? 'self', owner: ownReg.ownerOf(sk), epoch: r.ownershipEpoch, admissible: true }];
+                } catch {
+                  // @silent-fallback-ok: no admissible view → rule 2 yields no
+                  // winner and the verdict ESCALATES (no-admissible-evidence).
+                  return [];
+                }
+              },
+              // §3.2.2 rule 3: run registration read from each machine's own
+              // authenticated surface — the fetch succeeding IS the live probe.
+              liveRunHosts: async (sk) => {
+                const out: Array<{ machineId: string; registeredAt: number; confirmed: boolean }> = [];
+                const targets = [
+                  { machineId: _meshSelfId ?? 'self', url: selfBase },
+                  ...(_resolvePeerUrls?.() ?? []),
+                ];
+                for (const t of targets) {
+                  try {
+                    const j = (await fetchJson(`${t.url}/autonomous/sessions`, 5_000)) as {
+                      sessions?: Array<{ topic: string | null; active: boolean; startedAt: string | null }>;
+                    };
+                    const run = (j.sessions ?? []).find((s) => s.active && s.topic === sk);
+                    if (run) {
+                      out.push({
+                        machineId: t.machineId,
+                        registeredAt: run.startedAt ? Date.parse(run.startedAt) : Date.now(),
+                        confirmed: true,
+                      });
+                    }
+                  } catch {
+                    /* @silent-fallback-ok: a dark peer's run is UNCONFIRMED — it never corroborates (§3.2.2). */
+                  }
+                }
+                return out;
+              },
+              // The fenced convergence CAS (§3.2.3 item 1): `claim` by the
+              // intended owner — the FSM's fenced epoch increment + journal
+              // fast-forward carry the repair to every peer's view.
+              casConverge: (sk, owner) => {
+                try {
+                  const prevOwner = ownReg.read(sk)?.ownerMachineId;
+                  const r = ownReg.cas(
+                    { type: 'claim', machineId: owner },
+                    { sessionKey: sk, sender: _meshSelfId ?? 'dup-reconciler', nonce: `dup-reconcile:${sk}:${Date.now().toString(36)}` },
+                  );
+                  // COHERENCE-JOURNAL-SPEC §3.3 pairing: the journal emit IS the
+                  // replication path that carries the repair to every peer's
+                  // materialized view — without it the peer-echo verify (§3.2.3
+                  // item 2) could never observe the converged owner.
+                  emitPlacement(sk, r, 'reconcile', prevOwner);
+                  return r.ok ? { ok: true } : { ok: false, reason: String((r as { reason?: string }).reason ?? 'cas-refused') };
+                } catch (err) {
+                  // @silent-fallback-ok: ok:false carries the reason UP — the
+                  // reconciler ESCALATES a refused/errored CAS (never retries
+                  // blindly), so this is the loud path, not a swallow.
+                  return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+                }
+              },
+              // Peer-echo (§3.2.3 item 2): the peer's OWN registry view via the
+              // proxy-free /pool/ownership-view read.
+              peerEchoObserved: async (sk, owner, machineId) => {
+                const base = (_resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId)?.url;
+                if (!base) return false;
+                const j = (await fetchJson(`${base}/pool/ownership-view?key=${encodeURIComponent(sk)}`, 5_000)) as {
+                  owner?: string | null;
+                };
+                return j.owner === owner;
+              },
+              // §3.2.3 item 3: the converged RECORD is the arming mechanism —
+              // each non-owner machine's own closeout sweeper fires off its
+              // (journal-materialized) topicOwnerElsewhere read. Journal intent.
+              armCloseout: (sk, owner) => {
+                dupAudit.append({ ts: new Date().toISOString(), kind: 'closeout-armed-via-record', key: sk, owner });
+              },
+              raiseAttention: (item) => {
+                void telegram
+                  ?.createAttentionItem({
+                    id: item.id,
+                    title: item.title,
+                    summary: item.body,
+                    category: 'system',
+                    priority: item.priority === 'high' ? 'HIGH' : 'NORMAL',
+                    sourceContext: 'duplicate-reconciler',
+                  })
+                  .catch(() => { /* attention raise is observability */ });
+              },
+              journal: dupAudit,
+              provenance: (row) => {
+                _judgmentProvenance?.recordDecision(row);
+              },
+              log: (m) => console.log(pc.dim(`  [dup-reconciler] ${m}`)),
+            });
+            const dupTimer = setInterval(() => {
+              void _duplicateReconciler?.tick();
+            }, dupCfgResolved.reconcilerTickMs);
+            dupTimer.unref?.();
+            console.log(
+              pc.dim(
+                `  [dup-reconciler] constructed (enabled=${dupCfgResolved.enabled}, dryRun=${dupCfgResolved.dryRun}, tick=${dupCfgResolved.reconcilerTickMs}ms)`,
+              ),
+            );
+          } catch (err) {
+            console.error(`[dup-reconciler] construction failed (reconciler stays off): ${err instanceof Error ? err.message : String(err)}`);
           }
 
           // ── B (HTTP presence transport): pull each peer's self-capacity over
@@ -20603,6 +23136,208 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
           });
           void peerPresencePuller.pullOnce();
+
+          // ── Machine-Coherence Guard (machine-coherence-guard §3.3/§3.4/§6/§7,
+          // roadmap 4.1 F4/P0-1) — PURE SIGNAL, rides THIS 30s peerPresenceTick ──
+          // Compares version/resolved-flag/protocol/manifest across the agent's OWN
+          // ONLINE machines (the F4 skew class) and — Session B — will raise ONE
+          // episode-scoped attention item from exactly ONE elected machine. Dev-gate
+          // dark on the fleet (`enabled` OMITTED → resolveMachineCoherenceConfig), dry-
+          // run FIRST even on dev. Constructed ONLY when the gate resolves enabled — a
+          // dark guard is never constructed (route 503s, no tick); single-machine is a
+          // strict no-op inside tick(). MUTATES NOTHING. Own try/catch: a wiring
+          // failure is logged non-fatal and the server runs without the evaluator.
+          let machineCoherenceSentinel:
+            import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null = null;
+          let runMachineCoherenceEffects:
+            typeof import('../monitoring/machineCoherenceEffectsExecutor.js').executeMachineCoherenceEffects | null = null;
+          try {
+            const mcMod = await import('../monitoring/MachineCoherenceSentinel.js');
+            const effMod = await import('../monitoring/machineCoherenceEffectsExecutor.js');
+            runMachineCoherenceEffects = effMod.executeMachineCoherenceEffects;
+            const mcCfg = mcMod.resolveMachineCoherenceConfig(config as unknown as Record<string, unknown>);
+            // calm-alerting M-P1 config invariant (warn-only): the progress window
+            // must exceed the restart-cascade dampener window with margin.
+            const sanityMsg = mcMod.checkCalmAlertingConfigSanity(config as unknown as Record<string, unknown>, mcCfg);
+            if (sanityMsg) console.warn(pc.yellow(`  ⚠ ${sanityMsg}`));
+            if (mcCfg.enabled) {
+              machineCoherenceSentinel = new mcMod.MachineCoherenceSentinel(
+                {
+                  listCapacities: () => machinePoolRegistry?.getCapacities() ?? [],
+                  selfMachineId: () => meshSelfId ?? null,
+                  // Election lease view: the holder id when a lease coordinator is
+                  // attached; null otherwise (a git-only mesh has no live holder for
+                  // election — electRaiser then falls to the lowest machineId).
+                  leaseHolderMachineId: () => (leaseCoordinatorRef ? leaseCoordinatorRef.currentHolder() : null),
+                  now: () => Date.now(),
+                  // §4 episode machinery: the per-agent state root + the nickname
+                  // resolver (registry display label). With these the sentinel
+                  // owns a durable EpisodeManager and emits raise/append/resolve
+                  // effects the peerPresenceTick drains + executes below.
+                  stateDir: () => config.stateDir ?? null,
+                  nicknameOf: (m: string) =>
+                    machinePoolRegistry?.getCapacities().find((c) => c.machineId === m)?.nickname ?? m,
+                },
+                mcCfg,
+              );
+              // expectRuntime:true on the GUARD_MANIFEST entry — register the
+              // synchronous runtime getter so /guards grades the guard's posture.
+              guardRegistry.register('monitoring.machineCoherence.enabled', () => machineCoherenceSentinel!.guardStatus());
+              _machineCoherenceSentinel = machineCoherenceSentinel; // expose to GET /pool/machine-coherence
+              try {
+                const mfMod = await import('../core/machineCoherenceManifest.js');
+                console.log(pc.dim(
+                  `  MachineCoherenceGuard: enabled dryRun=${mcCfg.dryRun} ` +
+                  `manifestHash=${mfMod.selfManifestHash().slice(0, 12)} flags=${mfMod.COHERENCE_CRITICAL_FLAGS.length} ` +
+                  `(pool-skew evaluator — pure signal)`,
+                ));
+              } catch { /* boot log line only — never fatal */ }
+            }
+          } catch (e) {
+            // @silent-fallback-ok — optional dev-gated, pure-signal feature: a wiring
+            // failure is logged (console.error, NOT silent) and is non-fatal BY DESIGN
+            // — the monitoring sentinel must never crash server boot.
+            console.error('  MachineCoherenceGuard wiring failed (non-fatal):', e instanceof Error ? e.message : String(e));
+          }
+
+          // ── Single-Machine Failover-Gap Detector (increment 2 — pure SIGNAL) ──
+          // Surfaces the "no failover target for active autonomous work" gap BEFORE
+          // it bites (the 2026-07-22 Codey overnight loss): single-machine (no online
+          // mesh peer) WHILE active autonomous runs → ONE deduped HIGH attention item.
+          // Rides THIS 30s peerPresenceTick; SIGNAL-ONLY (never blocks/provisions/kills).
+          // Dev-gated dark on the fleet (`enabled` OMITTED → resolveDevAgentGate), dry-
+          // run FIRST even on dev (computes + counts would-raise, raises nothing).
+          // Constructed ONLY when the gate resolves enabled — a dark guard is never
+          // constructed (route 503s, no tick); single-machine-with-no-work is a strict
+          // no-op inside tick(). Own try/catch: a wiring failure is logged non-fatal.
+          try {
+            const smfgMod = await import('../monitoring/singleMachineFailoverGapWiring.js');
+            const smfgDetMod = await import('../monitoring/SingleMachineFailoverGapDetector.js');
+            const { getByPath: smfgGetByPath } = await import('../core/machineCoherenceManifest.js');
+            const { activeAutonomousJobs: smfgActiveJobs } = await import('../core/AutonomousSessions.js');
+            const smfgCfg = smfgDetMod.resolveSingleMachineFailoverGapConfig(
+              smfgGetByPath(config, 'monitoring.singleMachineFailoverGap') as
+                | import('../monitoring/SingleMachineFailoverGapDetector.js').SingleMachineFailoverGapConfigBlock
+                | undefined,
+              (explicit) => resolveDevAgentGate(explicit, config),
+            );
+            if (smfgCfg.enabled) {
+              const smfgDetector = smfgMod.makeSingleMachineFailoverGapDetector({
+                enabled: () => smfgCfg.enabled,
+                dryRun: () => smfgCfg.dryRun,
+                getCapacities: () => machinePoolRegistry?.getCapacities() ?? [],
+                selfMachineId: () => meshSelfId ?? null,
+                // "configured" = a multiMachine block exists at all (peer-offline vs
+                // not-configured only changes the message text, never the gap verdict).
+                multiMachineEnabled: () => !!config.multiMachine,
+                getActiveAutonomousRunCount: () =>
+                  config.stateDir ? smfgActiveJobs(config.stateDir).length : 0,
+                createAttentionItem: (item) => {
+                  // fire-and-forget into the real attention queue; a Telegram fault
+                  // must never crash the shared presence tick (fail toward silence).
+                  void telegram?.createAttentionItem(item)?.catch?.(() => {});
+                },
+              });
+              // expectRuntime:true on the GUARD_MANIFEST entry — register the
+              // synchronous runtime getter so /guards grades the guard's posture
+              // (enabled/dryRun + real lastTickAt liveness from status()).
+              guardRegistry.register('monitoring.singleMachineFailoverGap.enabled', () => {
+                const s = smfgDetector.status();
+                return { enabled: s.enabled, dryRun: s.dryRun, lastTickAt: s.lastTickAt ? Date.parse(s.lastTickAt) : 0 };
+              });
+              _singleMachineFailoverGap = smfgDetector; // expose to GET /pool/failover-gap
+              console.log(pc.dim(
+                `  SingleMachineFailoverGap: enabled dryRun=${smfgCfg.dryRun} (no-failover-target detector — pure signal)`,
+              ));
+            }
+          } catch (e) {
+            // @silent-fallback-ok — optional dev-gated, pure-signal feature: a wiring
+            // failure is logged (console.error, NOT silent) and is non-fatal BY DESIGN.
+            console.error('  SingleMachineFailoverGap wiring failed (non-fatal):', e instanceof Error ? e.message : String(e));
+          }
+
+          // ── Missing-Login-Session Detector (increment 2 — pure SIGNAL) ──
+          // Surfaces the "a live session is running on an account whose local login
+          // has gone missing" gap BEFORE the session walls silently (the 2026-07-22
+          // justin-gmail silent auth-death): a running session bound to an account
+          // whose subscription-pool identity drift is `owner-relogin-required` /
+          // `missing-local-login` → ONE deduped HIGH attention item naming the account.
+          // Rides THIS 30s peerPresenceTick; SIGNAL-ONLY (never swaps/relogins/kills).
+          // Dev-gated dark on the fleet (`enabled` OMITTED → resolveDevAgentGate), dry-
+          // run FIRST even on dev (computes + counts would-raise, raises nothing).
+          // Constructed ONLY when the gate resolves enabled — a dark guard is never
+          // constructed (route 503s, no tick); no-drift-under-a-session is a strict
+          // no-op inside tick(). Own try/catch: a wiring failure is logged non-fatal.
+          try {
+            const mlsMod = await import('../monitoring/missingLoginSessionWiring.js');
+            const mlsDetMod = await import('../monitoring/MissingLoginSessionDetector.js');
+            const { getByPath: mlsGetByPath } = await import('../core/machineCoherenceManifest.js');
+            const mlsCfg = mlsDetMod.resolveMissingLoginSessionConfig(
+              mlsGetByPath(config, 'monitoring.missingLoginSession') as
+                | import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionConfigBlock
+                | undefined,
+              (explicit) => resolveDevAgentGate(explicit, config),
+            );
+            if (mlsCfg.enabled) {
+              const mlsDetector = mlsMod.makeMissingLoginSessionDetector({
+                enabled: () => mlsCfg.enabled,
+                dryRun: () => mlsCfg.dryRun,
+                // Raw subscription-pool accounts (identity-drift flags → missing-login);
+                // a pool of zero accounts (single-account agent) is a strict no-op.
+                getPoolAccounts: () => subscriptionPool.list(),
+                // Running sessions + each one's REAL login slot (its live
+                // CLAUDE_CONFIG_DIR, resolved from tmux). This is the config home
+                // the session is ACTUALLY on — NOT its recorded subscriptionAccountId,
+                // which diverges from the real slot under identity drift (the gap this
+                // guard exists for). A session whose config home is unresolvable
+                // contributes configHome:undefined and is skipped by the factory (never
+                // a guessed slot). configHomeForSession fails toward silence internally.
+                getRunningSessions: () =>
+                  sessionManager.listRunningSessions().map((s) => ({
+                    sessionName: s.tmuxSession,
+                    configHome: sessionManager.configHomeForSession(s.tmuxSession),
+                  })),
+                createAttentionItem: (item) => {
+                  // fire-and-forget into the real attention queue; a Telegram fault
+                  // must never crash the shared presence tick (fail toward silence).
+                  void telegram?.createAttentionItem(item)?.catch?.(() => {});
+                },
+              });
+              // expectRuntime:true on the GUARD_MANIFEST entry — register the
+              // synchronous runtime getter so /guards grades the guard's posture
+              // (enabled/dryRun + real lastTickAt liveness from status()).
+              guardRegistry.register('monitoring.missingLoginSession.enabled', () => {
+                const s = mlsDetector.status();
+                return { enabled: s.enabled, dryRun: s.dryRun, lastTickAt: s.lastTickAt ? Date.parse(s.lastTickAt) : 0 };
+              });
+              _missingLoginSession = mlsDetector; // expose to GET /pool/missing-login
+              console.log(pc.dim(
+                `  MissingLoginSession: enabled dryRun=${mlsCfg.dryRun} (missing-login-under-a-session detector — pure signal)`,
+              ));
+            }
+          } catch (e) {
+            // @silent-fallback-ok — optional dev-gated, pure-signal feature: a wiring
+            // failure is logged (console.error, NOT silent) and is non-fatal BY DESIGN.
+            console.error('  MissingLoginSession wiring failed (non-fatal):', e instanceof Error ? e.message : String(e));
+          }
+
+          // Drain + execute the machine-coherence episode effects (§4) the last
+          // reconcile produced (raise/append/resolve). Async + best-effort — a
+          // Telegram fault never crashes the shared presence tick (fail toward
+          // silence). Defined OUTSIDE the tick body so the tick stays lean; the
+          // sentinel already gates effects to raiser && live posture.
+          // calm-alerting M-P2: extracted to the injectable, unit-tested
+          // machineCoherenceEffectsExecutor module (the pass-through fix for the
+          // original hardcoded-HIGH bug lives there); this thin shim only drains.
+          const executeMachineCoherenceEffects = (
+            sentinel: NonNullable<typeof machineCoherenceSentinel>,
+            tg: typeof telegram,
+          ): void => {
+            let effects: ReturnType<typeof sentinel.drainPendingEffects>;
+            try { effects = sentinel.drainPendingEffects(); } catch { return; }
+            runMachineCoherenceEffects?.(effects, { telegram: () => tg ?? null });
+          };
+
           const peerPresenceTick = (): void => {
             void peerPresencePuller.pullOnce();
             // mesh-coherence-live-state-honesty (Fix (b)): the periodic, signal-only live-vs-config
@@ -20661,6 +23396,22 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
               }
             }
+            // Machine-Coherence Guard rider (§3.3): evaluator tick + drain/execute
+            // §4 effects, both fail toward silence (helper defined above). Placed
+            // AFTER the mesh recheck so it never grows the mesh block's source-
+            // assertion window (mesh-coherence-wiring.test.ts slices a fixed span).
+            if (machineCoherenceSentinel) {
+              try { machineCoherenceSentinel.tick(); } catch { /* @silent-fallback-ok: §3.3 the evaluator tick fails toward silence by design — a sentinel fault must never crash the shared 30s presence tick; the next reconcile re-derives from durable episode state */ }
+              executeMachineCoherenceEffects(machineCoherenceSentinel, telegram);
+            }
+            // Single-machine failover-gap detector rider (increment 2): one pure-
+            // signal evaluation per tick. Fails toward silence — a detector fault
+            // must never crash the shared 30s presence tick.
+            try { _singleMachineFailoverGap?.tick(); } catch { /* @silent-fallback-ok: fails toward silence */ }
+            // Missing-login-session detector rider (increment 2): one pure-signal
+            // evaluation per tick. Fails toward silence — a detector fault must
+            // never crash the shared 30s presence tick.
+            try { _missingLoginSession?.tick(); } catch { /* @silent-fallback-ok: fails toward silence */ }
           };
           const peerPresenceTimer = setInterval(peerPresenceTick, 30_000);
           if (typeof peerPresenceTimer.unref === 'function') peerPresenceTimer.unref();
@@ -20691,8 +23442,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               const v = (config as { multiMachine?: { relayTimeoutMs?: number } }).multiMachine?.relayTimeoutMs;
               return typeof v === 'number' && v > 0 ? v : 15_000;
             })();
-            telegram.outboundRelay = (topicId, text, opts) =>
-              relayOutbound(topicId, text, opts, {
+            telegram.outboundRelay = async (topicId, text, opts) => {
+              const r = await relayOutbound(topicId, text, opts, {
                 leaseHolder: () => coordinator.getSyncStatus().leaseHolder,
                 selfMachineId: meshSelfId,
                 peerUrl,
@@ -20700,6 +23451,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                 timeoutMs: relayTimeoutMs,
                 log: (line) => console.warn(pc.yellow(`  ${line}`)),
               });
+              // A holder REFUSAL (422 — a tone-gate nudge, the credential wall)
+              // is not a transport failure and must not be reported as one. It
+              // is thrown as a typed error so the standby's route can re-emit
+              // the holder's own body verbatim; otherwise the agent sees
+              // "router unreachable" and can never answer the nudge that is
+              // actually waiting for it.
+              if (isRelayRefusal(r)) throw new RelayRefusedError(r);
+              return r;
+            };
           }
 
           // ── L4 transfer-by-nickname activation: the "move/run this on <nickname>"
@@ -20709,13 +23469,57 @@ export async function startServer(options: StartOptions): Promise<void> {
           // routed message re-places onto the pinned machine via the already-wired
           // placeAndClaim → spawnOnMachine → owner-side onAccepted resume path.
           // Inert unless the rollout stage is past 'dark' (gated at the call site).
-          const nickMod = await import('../core/NicknameCommand.js');
           const transferMod = await import('../core/TransferByNickname.js');
+          const moveIntentMod = await import('../core/MoveIntentClassifier.js');
           const autonomousSessionsModule = await import('../core/AutonomousSessions.js');
           const pinMod = await import('../core/TopicPlacementPinStore.js');
           const pinMutationMod = await import('../core/TopicPinMutation.js');
           const relocSetMod = await import('../core/RelocationNicknameSet.js');
           const nickAssignMod = await import('../core/NicknameAssigner.js');
+          // §L4 move-intent recognizer (docs/specs/nickname-move-intent-llm-rebuild.md):
+          // the "move/run/pin this on <nickname>" decision is inferred by an LLM
+          // over the message + recent conversation (MoveIntentClassifier), NOT a
+          // keyword verb list (the 2026-07-03 hijack of "keep the work on the
+          // laptop"). Dev-gated dark (resolveDevAgentGate) + dry-run FIRST: while
+          // dark or dry-run, the message ALWAYS passes through (never hijacked);
+          // the classifier still runs on a dev agent and LOGS would-hijack vs
+          // would-pass for the soak. Fail-OPEN on any uncertainty.
+          const _moveIntentCfg = (config.multiMachine?.sessionPool as
+            | { moveIntent?: { enabled?: boolean; dryRun?: boolean; minConfidence?: number; timeoutMs?: number; contextWindowTurns?: number; modelTier?: 'fast' | 'balanced' | 'capable' } }
+            | undefined)?.moveIntent;
+          const _moveIntentEnabled = resolveDevAgentGate(_moveIntentCfg?.enabled, config);
+          const _moveIntentDryRun = _moveIntentCfg?.dryRun ?? true;
+          const _moveIntentMinConfidence = _moveIntentCfg?.minConfidence ?? 0.85;
+          const _moveIntentTimeoutMs = _moveIntentCfg?.timeoutMs ?? 4000;
+          const _moveIntentContextTurns = _moveIntentCfg?.contextWindowTurns ?? 6;
+          const _moveIntentModelTier = _moveIntentCfg?.modelTier ?? 'fast';
+          const _logMoveIntent = (topicId: number, text: string, result: import('../core/MoveIntentClassifier.js').RelocationIntentResult, acted: boolean): void => {
+            try {
+              // Log ONLY LLM-engaged decisions (the soak signal). A prefilter-skip
+              // is always a would-pass and is the bulk of inbound traffic — logging
+              // it would over-collect a message preview for every message. Skipping
+              // it cuts volume AND the privacy surface to messages that named a
+              // machine and actually reached the classifier.
+              if (result.source === 'prefilter-skip') return;
+              const logDir = path.join(config.stateDir, 'logs');
+              fs.mkdirSync(logDir, { recursive: true });
+              const decision = result.isCommand ? (acted ? 'hijack' : 'would-hijack') : 'pass';
+              const line = JSON.stringify({
+                ts: new Date().toISOString(),
+                topicId,
+                decision,
+                dryRun: _moveIntentDryRun,
+                source: result.source,
+                intent: result.intent,
+                target: result.targetNickname,
+                confidence: result.confidence,
+                reason: result.reason,
+                // Truncated, whitespace-collapsed preview for soak inspection.
+                textPreview: String(text).replace(/\s+/g, ' ').trim().slice(0, 80),
+              });
+              fs.appendFileSync(path.join(logDir, 'move-intent.jsonl'), line + '\n');
+            } catch { /* audit is observability — never gates the message path */ }
+          };
           _topicPinStore = new pinMod.TopicPlacementPinStore({
             filePath: path.join(config.stateDir, 'session-pool', 'topic-pins.json'),
             // U4.1 §2C (fixes defect 3): a corrupt pin file quarantines ASIDE +
@@ -20772,7 +23576,34 @@ export async function startServer(options: StartOptions): Promise<void> {
               selfMachineId: meshSelfId,
               selfNickname: resolveSelfNickname(caps),
             });
-            const cmd = nickMod.recognizeNicknameCommand(text, knownNicknames);
+            // Dark gate: when the recognizer isn't enabled (fleet default), never
+            // hijack — pass the message through to the agent.
+            if (!_moveIntentEnabled) return { handled: false };
+            // Bounded window of recent turns so context-dependent commands ("yes,
+            // move it") can resolve their target. Best-effort — the classifier
+            // works on the message alone if history is unavailable.
+            let conversationContext: import('../core/MoveIntentClassifier.js').ConversationTurn[] = [];
+            try {
+              const hist = telegram?.getTopicHistory(topicId, _moveIntentContextTurns) ?? [];
+              conversationContext = hist.map((h) => ({ fromUser: !!h.fromUser, text: String(h.text ?? '') }));
+            } catch { /* @silent-fallback-ok — context is best-effort; classify on the message alone */ }
+            const moveResult = await moveIntentMod.classifyRelocationIntent({
+              text,
+              knownNicknames,
+              conversationContext,
+              intelligence: _sharedIntelligence,
+              minConfidence: _moveIntentMinConfidence,
+              timeoutMs: _moveIntentTimeoutMs,
+              maxContextTurns: _moveIntentContextTurns,
+              modelTier: _moveIntentModelTier,
+            });
+            const _willAct = moveResult.isCommand && !_moveIntentDryRun;
+            _logMoveIntent(topicId, text, moveResult, _willAct);
+            // Dry-run (the soak): log would-hijack vs would-pass, but pass the
+            // message through untouched. Real hijacking needs a deliberate
+            // dryRun:false, AND fail-open means uncertainty never hijacks.
+            if (!_willAct) return { handled: false };
+            const cmd = moveIntentMod.toNicknameCommand(moveResult);
             if (!cmd) return { handled: false };
             const plan = transferMod.planTransferByNickname(
               cmd,
@@ -20901,6 +23732,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const stageMod = await import('../core/StageAdvancer.js');
       const guardMod = await import('../config/stageWriteGuard.js');
       const crypto = await import('node:crypto');
+      const failoverCheckMod = await import('../core/sessionPoolFailoverCheck.js');
       // HMAC over the agent's authToken — tamper-evident without a separate keystore.
       const hmacKey = String(config.authToken ?? 'instar-session-pool-e2e');
       const hmac = (c: string) => crypto.createHmac('sha256', hmacKey).update(c).digest('hex');
@@ -20908,36 +23740,199 @@ export async function startServer(options: StartOptions): Promise<void> {
         filePath: path.join(config.stateDir, 'session-pool-e2e-results.json'),
         sign: hmac,
         verifySig: (c, s) => {
-          try { const exp = hmac(c); return s.length === exp.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(exp)); } catch { return false; }
+          try { const exp = hmac(c); return s.length === exp.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(exp)); } catch { return false; /* @silent-fallback-ok: HMAC verify fails closed — a malformed/short input is treated as an invalid signature, never accepted */ }
         },
       });
-      // Boot-cache the running commit SHA once (env first, else git HEAD, else
-      // 'unknown'). StageAdvancer scopes an E2E red/green to the CURRENT build via
-      // this, so a stale result from another commit can't trigger a revert/advance.
+      // Resolve the checkout the failover subprocess will actually exercise.
+      // Boot-pin it so the proof target and its build identity cannot drift
+      // independently during a run.
+      const failoverSourceCandidates = [
+        process.env.INSTAR_SOURCE_ROOT,
+        path.resolve(__dirname, '..', '..'),
+        process.cwd(),
+      ].filter((c): c is string => typeof c === 'string' && c.length > 0);
+      let sessionPoolFailoverSourceRoot: string | null = null;
+      for (const candidate of failoverSourceCandidates) {
+        try {
+          if (
+            fs.existsSync(path.join(candidate, 'node_modules', '.bin', 'vitest'))
+            && fs.existsSync(path.join(candidate, failoverCheckMod.DEFAULT_FAILOVER_E2E_PATH))
+          ) {
+            sessionPoolFailoverSourceRoot = candidate;
+            break;
+          }
+        } catch { /* @silent-fallback-ok — probe the next bounded candidate */ }
+      }
+      // Boot-cache one build identity (env SHA first, else the exact runner
+      // checkout's git HEAD, else cwd git HEAD, installed package version, then
+      // 'unknown'). Producer and StageAdvancer share this exact closure.
       const gitMod = await import('../core/SafeGitExecutor.js');
       let bootCommitSha = process.env.INSTAR_COMMIT_SHA ?? process.env.GITHUB_SHA ?? '';
-      if (!bootCommitSha) {
+      const gitIdentityCandidates = [
+        sessionPoolFailoverSourceRoot,
+        process.cwd(),
+      ].filter((c, index, all): c is string =>
+        typeof c === 'string' && c.length > 0 && all.indexOf(c) === index);
+      for (const candidate of gitIdentityCandidates) {
+        if (bootCommitSha) break;
         try {
           bootCommitSha = gitMod.SafeGitExecutor.readSync(['rev-parse', 'HEAD'], {
-            cwd: process.cwd(), encoding: 'utf-8', stdio: 'pipe', operation: 'server.ts:rollout-commit-sha',
+            cwd: candidate, encoding: 'utf-8', stdio: 'pipe', operation: 'server.ts:rollout-commit-sha',
           }).trim();
-        } catch { bootCommitSha = ''; /* @silent-fallback-ok — git unreadable → 'unknown' */ }
+        } catch { bootCommitSha = ''; /* @silent-fallback-ok — git unreadable → package identity below */ }
       }
+      if (!bootCommitSha && startupVersion && startupVersion !== '0.0.0') {
+        bootCommitSha = `package:${startupVersion}`;
+      }
+      const currentSessionPoolBuildIdentity = () => bootCommitSha || 'unknown';
+      // ONE authoritative stage read for the rollout gate and its proof producer.
+      // Splitting these previously let the runner stamp every green as stage 0
+      // while StageAdvancer was already waiting for a green at stage 2.
+      const readSessionPoolStage = () =>
+        liveConfig.get(
+          'multiMachine.sessionPool.stage',
+          'dark',
+        ) as import('../core/StageAdvancer.js').SessionPoolStage;
       // StageAdvancer: the sole stage writer. Held for the rollout job/route to drive;
       // constructed here so the write path (liveConfig + token) is wired in one place.
       const stageAdvancer = new stageMod.StageAdvancer({
         resultStore: sessionPoolE2EResultStore,
-        currentCommitSha: () => bootCommitSha || 'unknown',
-        readStage: () => (liveConfig.get('multiMachine.sessionPool.stage', 'dark') as import('../core/StageAdvancer.js').SessionPoolStage),
+        currentCommitSha: currentSessionPoolBuildIdentity,
+        readStage: readSessionPoolStage,
         writeStageConfig: (s) => liveConfig.set(guardMod.STAGE_CONFIG_PATH, s, { stageWriteToken: guardMod.STAGE_WRITE_TOKEN }),
         audit: (event, detail) => console.log(pc.dim(`  [stage-advancer] ${event} ${JSON.stringify(detail)}`)),
       });
+      // ── Promotion activation ────────────────────────────────────────────────
+      // Default `off` constructs nothing and schedules nothing. Both live models
+      // reuse the same driver + StageAdvancer gate. The manual route remains a
+      // one-step lever in both `operator` and `auto-climb`; only auto-climb gets
+      // a timer. The independent ceiling defaults to dark, so selecting a model
+      // alone grants no promotion authority.
+      const promotionMod = await import('../core/sessionPoolPromotionActivation.js');
+      const rolloutMod = await import('../core/SessionPoolRolloutDriver.js');
+      const promotionCfg = promotionMod.resolveSessionPoolPromotionConfig(
+        config.multiMachine?.sessionPool,
+      );
+      if (promotionCfg.model !== 'off') {
+        const rolloutDriver = new rolloutMod.SessionPoolRolloutDriver({
+          advancer: stageAdvancer,
+          enabled: () => true,
+          targetCeiling: () => promotionCfg.ceiling,
+          audit: (event, detail) => console.log(pc.dim(`  [session-pool-promotion] ${event} ${JSON.stringify(detail)}`)),
+        });
+        _sessionPoolPromotionActivation = new promotionMod.SessionPoolPromotionActivation(
+          promotionCfg,
+          rolloutDriver,
+        );
+        if (promotionCfg.model === 'auto-climb') {
+          const promotionTimer = setInterval(() => {
+            try {
+              _sessionPoolPromotionActivation?.autoTick();
+            } catch (err) {
+              console.warn(
+                '[session-pool-promotion] auto-climb tick failed; no stage was promoted:',
+                err instanceof Error ? err.message : String(err),
+              );
+            }
+          }, promotionCfg.tickMs);
+          if (promotionTimer.unref) promotionTimer.unref();
+        }
+        console.log(pc.green(`  SessionPool promotion activation: ${promotionCfg.model} (ceiling ${promotionCfg.ceiling}; cadence ${promotionCfg.tickMs}ms)`));
+      }
+      // ── SessionPoolFailoverRunner (§Rollout, Track H) — the in-agent PRODUCER of
+      // a real failover-E2E green so a DEPLOYED dev agent can promote its own
+      // sessionPool stage instead of sitting at 'shadow' forever. Dev-gated dark
+      // (enabled OMITTED → resolveDevAgentGate) + dryRun-first: while dryRun holds
+      // the recorded verdict lands in a SIDE store the StageAdvancer never reads,
+      // so nothing promotes until a deliberate dryRun:false. Constructed here so it
+      // shares the E2E result store + boot commit SHA + the slow reconcile tick.
+      const fromMod = await import('../core/sessionPoolFailoverRunnerConfig.js');
+      const failoverRunnerCfg = fromMod.resolveSessionPoolFailoverRunnerConfig(
+        config.multiMachine?.sessionPool?.failoverRunner,
+        (explicit) => resolveDevAgentGate(explicit, config),
+      );
+      if (failoverRunnerCfg.enabled) {
+        // The dry-run SIDE store: a separate signed file the promotion path
+        // (StageAdvancer/driver) NEVER reads, so a would-record green captured
+        // during the soak can never wrongly promote the stage.
+        const failoverDryRunStore = new e2eMod.SessionPoolE2EResultStore({
+          filePath: path.join(config.stateDir, 'session-pool-failover-runner-dryrun.json'),
+          sign: hmac,
+          verifySig: (c, s) => {
+            try { const exp = hmac(c); return s.length === exp.length && crypto.timingSafeEqual(Buffer.from(s), Buffer.from(exp)); } catch { return false; /* @silent-fallback-ok: HMAC verify fails closed — a malformed/short input is treated as an invalid signature, never accepted */ }
+          },
+        });
+        // The REAL bounded subprocess runner. Resolves the instar SOURCE root (the
+        // agent's own checkout) — a deployed agent with no source/vitest yields
+        // ranToCompletion:false → the check throws → the runner records NOTHING
+        // (honest degrade, never a fabricated verdict). The spawn is fully bounded
+        // (kill on timeout) and its output is streamed to a durable evidence log.
+        const cp = await import('node:child_process');
+        const failoverLogPath = path.join(config.stateDir, 'logs', 'session-pool-failover-runner.log');
+        const runProcess = (args: { testPath: string; timeoutMs: number }): Promise<import('../core/sessionPoolFailoverCheck.js').SubprocessRunResult> =>
+          new Promise((resolve) => {
+            const sourceRoot = sessionPoolFailoverSourceRoot;
+            if (!sourceRoot) {
+              // No source/vitest resolvable → NOT a failover verdict; the check
+              // contract makes this THROW so the runner records nothing.
+              resolve({ ranToCompletion: false, exitCode: null, evidenceRef: `no-source: vitest+${args.testPath} not resolvable (checkout absent)` });
+              return;
+            }
+            const vitestBin = path.join(sourceRoot, 'node_modules', '.bin', 'vitest');
+            let logFd: number | null = null;
+            try { fs.mkdirSync(path.dirname(failoverLogPath), { recursive: true }); logFd = fs.openSync(failoverLogPath, 'a'); } catch { logFd = null; /* @silent-fallback-ok — evidence log optional */ }
+            const evidenceRef = `${failoverLogPath}@${new Date().toISOString()}`;
+            let settled = false;
+            const done = (r: import('../core/sessionPoolFailoverCheck.js').SubprocessRunResult) => {
+              if (settled) return; settled = true;
+              if (logFd !== null) { try { fs.closeSync(logFd); } catch { /* @silent-fallback-ok */ } }
+              resolve(r);
+            };
+            try {
+              const child = cp.spawn(vitestBin, ['run', args.testPath, '--reporter=dot'], {
+                cwd: sourceRoot,
+                stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
+                env: { ...process.env },
+              });
+              const killTimer = setTimeout(() => {
+                try { child.kill('SIGKILL'); } catch { /* @silent-fallback-ok */ }
+                done({ ranToCompletion: false, exitCode: null, evidenceRef: `${evidenceRef} (timeout ${args.timeoutMs}ms)` });
+              }, args.timeoutMs);
+              if (killTimer.unref) killTimer.unref();
+              child.on('error', () => { clearTimeout(killTimer); done({ ranToCompletion: false, exitCode: null, evidenceRef: `${evidenceRef} (spawn-error)` }); });
+              child.on('close', (code) => { clearTimeout(killTimer); done({ ranToCompletion: true, exitCode: code, evidenceRef }); });
+            } catch {
+              // @silent-fallback-ok — a spawn throw is an infra failure, NOT a
+              // failover verdict; ranToCompletion:false → the check throws → nothing recorded.
+              done({ ranToCompletion: false, exitCode: null, evidenceRef: `${evidenceRef} (spawn-threw)` });
+            }
+          });
+        _sessionPoolFailoverRunnerDriver = fromMod.buildSessionPoolFailoverRunnerDriver({
+          config: failoverRunnerCfg,
+          resultStore: sessionPoolE2EResultStore,
+          dryRunResultStore: failoverDryRunStore,
+          runProcess,
+          currentCommitSha: currentSessionPoolBuildIdentity,
+          // Credit the proof to the stage that is actually running. The next
+          // promotion reads this same current-stage index as its prior-stage gate.
+          provenStage: () => stageMod.stageIndex(readSessionPoolStage()),
+          audit: (event, detail) => console.log(pc.dim(`  [failover-runner] ${event} ${JSON.stringify(detail)}`)),
+        });
+        if (_sessionPoolFailoverRunnerDriver) {
+          console.log(pc.green(`  SessionPoolFailoverRunner enabled (${failoverRunnerCfg.dryRun ? 'dry-run — records to SIDE store' : 'LIVE — records to promotion store'}; cadence ${failoverRunnerCfg.tickIntervalMs}ms)`));
+        }
+      }
       // Revert-ONLY reconcile tick (§Rollout): reconcile() can solely DEMOTE a live
       // stage when the CURRENT commit's Tier-3 E2E goes red — it never advances.
       // Promotion (advanceTo) stays operator-triggered via the rollout route/job.
-      // Cheap + inert while stage is 'dark' (reconcile() no-ops at the floor).
+      // Cheap + inert while stage is 'dark' (reconcile() no-ops at the floor). The
+      // failover runner's maybeTick() rides the SAME slow tick — it self-throttles
+      // to its own (far slower) tickIntervalMs, so it is NOT a hot loop here.
       const stageReconcileTimer = setInterval(() => {
         try { stageAdvancer.reconcile(); } catch { /* @silent-fallback-ok — retried next tick */ }
+        // Fire-and-forget: the driver owns the in-flight guard + cadence gate; a
+        // heavy E2E subprocess must never block the timer. Fail toward silence.
+        try { void _sessionPoolFailoverRunnerDriver?.maybeTick(); } catch { /* @silent-fallback-ok — retried next tick */ }
       }, 60_000);
       if (stageReconcileTimer.unref) stageReconcileTimer.unref();
     } catch (err) {
@@ -21211,7 +24206,121 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim('  Write-admission: dark (multiMachine.writeAdmission resolves off on this agent)'));
     }
 
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    // PULL/AUDIT-ONLY: deliberately no notification, governor, A2A, or remediation seam.
+    try {
+      const tfCfg = (config.monitoring as { throughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloorConfig } | undefined)?.throughputFloor ?? {};
+      if (resolveDevAgentGate(tfCfg.enabled, config)) {
+        const { AutonomousThroughputFloor, hasMeaningfulDeliverableDelta } = await import('../monitoring/AutonomousThroughputFloor.js');
+        type TfState = import('../monitoring/AutonomousThroughputFloor.js').ThroughputFloorRunState;
+        type TfSnapshot = import('../monitoring/AutonomousThroughputFloor.js').DeliverableSnapshot;
+        const statePath = (id: string) => path.join(config.stateDir, 'autonomous', `${createHash('sha256').update(id).digest('hex').slice(0, 20)}.throughput-floor.local.json`);
+        const loadTf = (id: string): TfState | { corrupt: true } | null => {
+          try {
+            const file = statePath(id);
+            const stat = fs.lstatSync(file);
+            if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 128 * 1024) return { corrupt: true };
+            const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as TfState;
+            return validTfState(parsed) ? parsed : { corrupt: true };
+          } catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : { corrupt: true }; }
+        };
+        const validTfState = (row: TfState): boolean => row?.version === 1 && typeof row.signalRunId === 'string' && row.signalRunId.length <= 512
+          && Number.isFinite(row.lastDeliverableDeltaAt) && Number.isFinite(row.lastManagerOutboundAt)
+          && Number.isSafeInteger(row.consecutiveSweepFailures) && row.consecutiveSweepFailures >= 0 && row.consecutiveSweepFailures <= 1_000
+          && Number.isFinite(row.nextSweepAt)
+          && (!row.lastSnapshot || (Array.isArray(row.lastSnapshot.merged) && row.lastSnapshot.merged.length <= 64 && Array.isArray(row.lastSnapshot.open) && row.lastSnapshot.open.length <= 64 && typeof row.lastSnapshot.digest === 'string' && row.lastSnapshot.digest.length <= 128));
+        const saveTf = (id: string, value: TfState) => { const file = statePath(id); fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) throw new Error('throughput-floor-state-symlink-refused'); const tmp = `${file}.${process.pid}.tmp`; fs.writeFileSync(tmp, `${JSON.stringify(value)}\n`, { mode: 0o600 }); const fd = fs.openSync(tmp, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } fs.renameSync(tmp, file); };
+        const snapshot = async (previous?: TfSnapshot): Promise<TfSnapshot> => {
+          const started = Date.now();
+          const run = async (file: string, args: string[]): Promise<string> => {
+            const remaining = 10_000 - (Date.now() - started);
+            if (remaining <= 0) throw new Error('throughput-sweep-timed-out');
+            const result = await execFileAsync(file, args, { encoding: 'utf8', timeout: remaining, maxBuffer: 512 * 1024 });
+            return String(result.stdout).trim();
+          };
+          const origin = await run('git', ['-C', config.projectDir, 'remote', 'get-url', 'origin']);
+          const match = origin.match(/github\.com[/:]([^/]+)\/([^/.]+)(?:\.git)?$/i);
+          if (!match) throw new Error('invalid-scope');
+          const repo = `${match[1]}/${match[2]}`;
+          const [openJson, mergedJson] = await Promise.all([
+            run('gh', ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '32', '--json', 'number,headRefOid']),
+            run('gh', ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '32', '--json', 'number,mergeCommit']),
+          ]);
+          const openRows = JSON.parse(openJson) as Array<{ number: number; headRefOid: string }>;
+          const mergedRows = JSON.parse(mergedJson) as Array<{ number: number; mergeCommit?: { oid?: string } | null }>;
+          const merged = mergedRows.filter(r => r.mergeCommit?.oid).map(r => ({ number: r.number, mergeCommitSha: r.mergeCommit!.oid! })).sort((a, b) => a.number - b.number);
+          const prior = new Map((previous?.open ?? []).map(row => [row.number, row]));
+          const open: TfSnapshot['open'] = [];
+          for (let offset = 0; offset < openRows.length; offset += 4) {
+            const batch = openRows.slice(offset, offset + 4);
+            open.push(...await Promise.all(batch.map(async r => {
+              const old = prior.get(r.number);
+              const requests: Array<Promise<string>> = [run('gh', ['api', `repos/${repo}/git/commits/${r.headRefOid}`, '--jq', '.tree.sha'])];
+              if (old && old.headSha !== r.headRefOid) requests.push(run('gh', ['api', `repos/${repo}/compare/${old.headSha}...${r.headRefOid}`, '--jq', '.status']));
+              const [treeSha, compare] = await Promise.all(requests);
+              return { number: r.number, headSha: r.headRefOid, treeSha, descendsPrevious: compare === 'ahead' || compare === 'identical' };
+            })));
+          }
+          open.sort((a, b) => a.number - b.number);
+          return { merged, open, digest: createHash('sha256').update(JSON.stringify({ merged, open })).digest('hex') };
+        };
+        autonomousThroughputFloor = new AutonomousThroughputFloor({
+          listRuns: () => activeAutonomousJobs(config.stateDir).flatMap(job => { const topicId = Number(job.topic); const startedAt = Date.parse(job.startedAt ?? ''); if (!Number.isSafeInteger(topicId) || topicId <= 0 || !Number.isFinite(startedAt)) return []; const markers = readAutonomousRunMarkers(config.stateDir, topicId); return [{ signalRunId: `topic:${topicId}:${job.startedAt}`, topicId, startedAt, telegramBacked: Boolean(telegram), registeredMachineCount: _listPoolMachines?.().length || 1, midMove: !markers || Boolean(markers.movedTo || markers.moveSuspended) }]; }),
+          sweep: async (_run, previous) => { try { const next = await snapshot(previous); return { status: 'ok' as const, snapshot: next, meaningfulDelta: previous ? hasMeaningfulDeliverableDelta(previous, next) : false }; } catch (error) { const msg = error instanceof Error ? error.message : ''; return { status: 'unknown' as const, failure: /invalid-scope/.test(msg) ? 'invalid-scope' as const : /timed out|ETIMEDOUT/.test(msg) ? 'timeout' as const : 'github-read' as const }; } },
+          observeOutbound: (run, cursor) => { const rows = telegram?.getTopicHistory(run.topicId, 100) ?? []; const newest = [...rows].reverse().find(row => !row.fromUser); const covered = rows.length < 100 || rows.some(row => Date.parse(row.timestamp) <= run.startedAt || row.timestamp === cursor); return { coverage: covered ? 'proven' as const : 'unknown' as const, newestOutboundAt: newest ? Date.parse(newest.timestamp) : undefined, cursor: rows.at(-1)?.timestamp }; },
+          loadState: loadTf,
+          saveState: saveTf,
+          audit: (row) => { try { const p = path.join(config.stateDir, 'logs', 'autonomous-throughput-floor.jsonl'); fs.mkdirSync(path.dirname(p), { recursive: true }); /* state-registry: audit-autonomous-throughput-floor */ fs.appendFileSync(p, `${JSON.stringify(row)}\n`); } catch { /* @silent-fallback-ok: in-memory ring remains */ } },
+        }, { ...tfCfg, enabled: true });
+        autonomousThroughputFloor.start();
+        (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor = autonomousThroughputFloor;
+        guardRegistry.register('monitoring.throughputFloor.enabled', () => autonomousThroughputFloor!.guardStatus());
+      }
+    } catch (err) { /* @silent-fallback-ok: fleet-dark optional observer; failure is logged and adds no authority */ console.warn('[AutonomousThroughputFloor] init failed:', (err as Error).message); }
+    const { WorkQueueRegistry } = await import('../core/WorkQueue.js');
+    const { FeedbackProcessingService, resolveCanonicalStoreDir } = await import('../feedback-factory/processing/FeedbackProcessingService.js');
+    const { ParallelActivityIndex } = await import('../core/ParallelActivityIndex.js');
+    const ageDays = (value: string | undefined): number => value ? Math.max(0, (Date.now() - Date.parse(value)) / 86_400_000) : 0;
+    const feedbackStoreDir = resolveCanonicalStoreDir(config);
+    const feedbackReader = feedbackStoreDir ? new FeedbackProcessingService({ dataDir: feedbackStoreDir }) : null;
+    const topicActivityIndex = new ParallelActivityIndex({ stateDir: config.stateDir });
+    const workQueue = new WorkQueueRegistry({
+      commitments: () => (commitmentTracker?.getActive() ?? []).map((c) => ({
+        id: c.id, source: 'commitment' as const, sourceRef: c.id, title: c.userRequest,
+        kind: c.type, goalAlignment: [], urgency: 60,
+        ageDays: ageDays(c.createdAt), userDirected: Boolean(c.boundBy), status: c.status as 'pending',
+        assignee: null, priority: 'medium' as const,
+      })),
+      evolutionActions: () => (evolution?.listActions() ?? []).map((a) => ({
+        id: a.id, source: 'evolution-action' as const, sourceRef: a.id, title: a.title,
+        kind: 'evolution-action', goalAlignment: a.tags ?? [], urgency: a.priority === 'critical' ? 90 : 50,
+        ageDays: ageDays(a.createdAt), userDirected: Boolean(a.source), status: a.status,
+        assignee: null, priority: a.priority as 'critical' | 'high' | 'medium' | 'low',
+      })),
+      feedback: () => (feedbackReader?.activeClusters() ?? []).map((c) => ({
+        id: c.clusterId, source: 'feedback' as const, sourceRef: c.clusterId, title: c.title,
+        kind: c.type ?? 'feedback', goalAlignment: [], urgency: 50,
+        ageDays: ageDays(c.createdAt), userDirected: false, status: 'open' as const,
+        assignee: null, priority: 'medium' as const,
+      })),
+      topics: () => topicActivityIndex.activities().filter((a) => a.focus).map((a) => ({
+        id: `topic-${a.topicId}`, source: 'topic' as const, sourceRef: String(a.topicId), title: a.focus!,
+        kind: 'topic-intent', goalAlignment: a.tags, urgency: a.running ? 70 : 40,
+        ageDays: a.updatedAt ? Math.max(0, (Date.now() - a.updatedAt) / 86_400_000) : 0,
+        userDirected: true, status: 'open' as const, assignee: null, priority: 'medium' as const,
+      })),
+    });
+
+    const server = new AgentServer({ config, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle: credentialIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    server.setWorkQueue(workQueue);
+    if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
+      const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
+      const reader = replicatedPeerStreamReader;
+      server.setClassReviewRemoteReader({
+        get: (dedupeKey) => reader.loadOriginRecords(CLASS_REVIEW_STORE_KEY, dedupeKey)
+          .flatMap((record) => { const parsed = classReviewFromOriginRecord(record); return parsed ? [parsed] : []; }),
+        keys: () => reader.listRecordKeys(CLASS_REVIEW_STORE_KEY),
+      });
+    }
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
@@ -21363,8 +24472,28 @@ export async function startServer(options: StartOptions): Promise<void> {
               const topicName = telegram.getTopicName(n) || `topic-${n}`;
               _orchestratorSpawnInFlight.add(topicKey);
               try {
-                await spawnSessionForTopic(sessionManager, telegram, topicName, n, undefined, topicMemory);
-                return { ok: true };
+                const spawnedName = await spawnSessionForTopic(
+                  sessionManager,
+                  telegram,
+                  topicName,
+                  n,
+                  undefined,
+                  topicMemory,
+                  undefined,
+                  undefined,
+                  undefined,
+                  { awaitInitialInjection: true },
+                );
+                const spawned = sessionManager.listRunningSessions()
+                  .find((session) => session.tmuxSession === spawnedName);
+                return {
+                  ok: true,
+                  applied: {
+                    ...resolvedToApplied(_resolved),
+                    framework: spawned?.framework ?? _resolved.framework,
+                    model: spawned?.model ?? _resolved.model ?? null,
+                  },
+                };
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
                 let cls: ProfileSpawnFailureClass = 'unknown';
@@ -21538,6 +24667,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.error('  Boot health beacon stop failed (continuing to bind real server):', err instanceof Error ? err.message : err);
     }
     await server.start();
+    // #1425 regression containment: only begin the cooperative witness-index +
+    // parity scans AFTER the HTTP server is listening. Until publication the
+    // reader serves the legacy witness path, never a partial candidate index.
+    void replicatedPeerStreamReader?.rebuildWitnessIndexAsync();
     void taskFlowSweeper; void taskFlowDueWaker; void divergenceChecker;
 
     // ── No-LOSS recovery: re-run inbound events stranded in 'processing' (spec §8 G3a) ──
@@ -21747,35 +24880,35 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Failure on initial start is non-fatal: the manager keeps trying
     // in the background, and the post-exhausted retry timer keeps the
     // agent recoverable without requiring a server restart.
+    let bootTunnelUrl: string | null = null;
     if (tunnel) {
       try {
-        const tunnelUrl = await tunnel.start();
-        console.log(pc.green(`  Tunnel active: ${pc.bold(tunnelUrl)}`));
-        // Mesh URL advertisement: record THIS machine's reachable URL into its
-        // registry entry so cross-machine routing (deliver/transfer/lease) can
-        // reach it. Without this, lastKnownUrl is null and every peer is filtered
-        // out (the session pool is inert across machines). The existing
-        // RegistrySyncDebouncer propagates the populated entry to peers.
-        if (coordinator.enabled && coordinator.identity) {
-          const cfUrl = resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl);
-          advertiseSelfMeshUrl(
-            coordinator.managers.identityManager,
-            coordinator.identity.machineId,
-            cfUrl,
-            (m) => console.log(pc.dim(m)),
-          );
-          // multi-transport-mesh-comms (Layer 0) — advertise the full endpoint set.
-          await advertiseSelfMeshEndpointsNow(
-            coordinator.managers.identityManager,
-            coordinator.identity.machineId,
-            config,
-            cfUrl,
-          );
-        }
+        bootTunnelUrl = await tunnel.start();
+        console.log(pc.green(`  Tunnel active: ${pc.bold(bootTunnelUrl)}`));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(pc.red(`  Tunnel start failed (manager will keep retrying in background): ${msg}`));
       }
+    }
+
+    // Mesh endpoint advertisement is independent of optional tunnel success.
+    // A rate-limited quick tunnel must not suppress healthy LAN/Tailscale ropes:
+    // doing so makes reachable peers appear offline and removes the HTTP lease
+    // medium. Cloudflare is simply omitted when it has no resolved URL.
+    if (coordinator.enabled && coordinator.identity) {
+      const cfUrl = resolveAdvertisedMeshUrl(config.tunnel, bootTunnelUrl);
+      advertiseSelfMeshUrl(
+        coordinator.managers.identityManager,
+        coordinator.identity.machineId,
+        cfUrl,
+        (m) => console.log(pc.dim(m)),
+      );
+      await advertiseSelfMeshEndpointsNow(
+        coordinator.managers.identityManager,
+        coordinator.identity.machineId,
+        config,
+        cfUrl,
+      );
     }
 
     // ── Dashboard Topic: always-available link ──────────────────────────
@@ -21790,7 +24923,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Auto-generate dashboardPin if missing — do this on every startup,
           // not just during upgrades. The PIN should always exist.
           if (!config.dashboardPin) {
-            const pin = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit
+            const { randomInt } = await import('node:crypto');
+            const pin = String(randomInt(100000, 1000000)); // 6-digit
             config.dashboardPin = pin;
             // Persist via LiveConfig so it survives restart
             liveConfig.set('dashboardPin', pin);
@@ -22020,6 +25154,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       wakeSocketServer?.stop();
       pipeSpawner?.killAll();
       try { stopHeartbeat?.(); } catch { /* non-critical during shutdown */ }
+      try { await (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime?.rollback(); } catch { /* @silent-fallback-ok: shutdown continues; endpoint sockets also die with the process */ }
+      delete (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime;
       // pid-guarded: only remove OUR OWN registration. An unguarded
       // unregister-by-path here deletes the successor generation's fresh
       // entry during back-to-back update restarts (registry lost-update

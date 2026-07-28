@@ -387,9 +387,40 @@ export class JobScheduler {
         const task = new Cron(job.schedule, async () => {
           // New cron window — reset retry state so we get fresh attempts
           this.clearRetryState(job.slug);
-          await this.triggerJob(job.slug, 'scheduled');
+          try {
+            await this.triggerJob(job.slug, 'scheduled');
+          } catch (err) {
+            // Cron callbacks are a process-lifetime boundary. A lease demotion
+            // can race the pre-trigger read-only check and make a later shared
+            // bookkeeping write throw; contain that refusal (and every other
+            // trigger failure) here rather than creating an unhandled rejection
+            // that terminates the server.
+            console.error(`[scheduler] Scheduled trigger failed for "${job.slug}": ${err}`);
+          }
         });
         this.cronTasks.set(job.slug, task);
+
+        // Stamp when this job STARTED EXISTING, once. The startup missed-job
+        // sweep needs it to tell "brand-new, its window simply hasn't come yet"
+        // apart from "has been sitting here unrun through window after window".
+        // Without it the sweep could only see "no lastRun" and fired both alike
+        // (ACT-724 defect (a)). Never overwritten, so the age is real.
+        const existing = this.state.getJobState(job.slug);
+        if (!existing?.firstSeenAt) {
+          try {
+            this.state.saveJobState({
+              slug: job.slug,
+              consecutiveFailures: 0,
+              ...(existing ?? {}),
+              firstSeenAt: new Date().toISOString(),
+            });
+          } catch (err) {
+            // A bookkeeping write must never stop the scheduler from starting.
+            // Missing firstSeenAt degrades SAFE: the sweep declines to treat the
+            // job as missed (see checkMissedJobs) rather than firing it blind.
+            console.error(`[scheduler] Could not stamp firstSeenAt for "${job.slug}": ${err}`);
+          }
+        }
       } catch (err) {
         console.error(`[scheduler] Invalid cron expression for job "${job.slug}": ${job.schedule} — ${err instanceof Error ? err.message : err}`);
       }
@@ -402,9 +433,15 @@ export class JobScheduler {
     const graceMs = this.config.startupGraceMs ?? 5000;
     if (graceMs > 0) {
       console.log(`[scheduler] Startup grace period: ${graceMs}ms before missed-job evaluation`);
-      setTimeout(() => this.checkMissedJobs(scopedJobs), graceMs);
+      setTimeout(() => {
+        this.checkMissedJobs(scopedJobs).catch((err) => {
+          console.error(`[scheduler] Missed-job startup evaluation failed: ${err}`);
+        });
+      }, graceMs);
     } else {
-      this.checkMissedJobs(scopedJobs);
+      this.checkMissedJobs(scopedJobs).catch((err) => {
+        console.error(`[scheduler] Missed-job startup evaluation failed: ${err}`);
+      });
     }
 
     // Ensure every job has a Telegram topic (job-topic coupling)
@@ -457,6 +494,23 @@ export class JobScheduler {
 
     if (this.paused) {
       this.skipLedger.recordSkip(slug, 'paused');
+      return 'skipped';
+    }
+
+    // In the legacy one-awake-machine posture the scheduler is constructed on
+    // the machine that is awake at boot, but it is not torn down if that machine
+    // subsequently loses the fenced lease.  Once StateManager has demoted this
+    // process to a read-only standby, every legacy job path eventually performs
+    // a shared-state write (run state, an event, or both).  Letting a missed-job
+    // pass reach those writes turns the expected refusal into an unhandled
+    // startup rejection and crash-loops the standby.
+    //
+    // Pool-owned sessions have a separate session-scoped write exception, but
+    // scheduler bookkeeping (job state + events) remains shared state.  The
+    // scheduler therefore stays fenced whenever the StateManager is read-only.
+    if (this.state.readOnly) {
+      this.skipLedger.recordSkip(slug, 'role-guard');
+      console.log(`[scheduler] Job "${slug}" skipped — this machine is a read-only standby.`);
       return 'skipped';
     }
 
@@ -520,10 +574,17 @@ export class JobScheduler {
     // two never run simultaneously for the same job set (the named migration
     // hazard). The decision is recomputed live at each seam; in the steady
     // coherent state it is stable across the same tick.
-    const claimPath = this.resolveClaimPath(slug);
-    const remoteHeld = claimPath?.path === 'journal'
-      ? this.leaseClaimStore!.hasRemoteClaim(slug)
-      : (this.claimManager?.hasRemoteClaim(slug) ?? false);
+    // DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC §2.8 / D11 — a `perMachineIndependent`
+    // job (like the doorway scan, whose result is a physical fact of THIS
+    // machine's own disk) skips the global jobSlug claim/lease entirely, the same
+    // way `script`-type jobs bypass quota gating. It NEVER consults the claim path
+    // and so never yields to a peer's claim — every machine runs its own scan.
+    const claimPath = job.perMachineIndependent ? null : this.resolveClaimPath(slug);
+    const remoteHeld = job.perMachineIndependent
+      ? false
+      : (claimPath?.path === 'journal'
+          ? this.leaseClaimStore!.hasRemoteClaim(slug)
+          : (this.claimManager?.hasRemoteClaim(slug) ?? false));
     if (remoteHeld) {
       const claimedBy = claimPath?.path === 'journal'
         ? this.leaseClaimStore!.getClaim(slug)?.machineId
@@ -613,7 +674,11 @@ export class JobScheduler {
     // is LOGGED (the WS-wide "log intended claims" posture) but the bus path
     // still runs — so a dry-run pool never half-migrates.
     const timeoutMs = (job.expectedDurationMinutes ?? 30) * 2 * 60_000;
-    if (claimPath?.path === 'journal') {
+    // Spec §2.8/D11 — a perMachineIndependent job takes NO claim (neither the
+    // journal lease nor the legacy bus broadcast); each machine runs it locally.
+    if (job.perMachineIndependent) {
+      // no-op: claim/lease deliberately skipped
+    } else if (claimPath?.path === 'journal') {
       // Synchronous, durable: the lease is persisted before the spawn, so a
       // crash between claim and spawn leaves the lease (fenced, expiring) rather
       // than a silent double-run window.
@@ -1863,23 +1928,38 @@ export class JobScheduler {
       const task = this.cronTasks.get(job.slug);
       if (!task) continue;
 
-      // Jobs that have never run: trigger on startup if their first expected
-      // run time has already passed (i.e., the job was added while the server
-      // was down and missed its first scheduled window).
-      if (!jobState?.lastRun) {
-        // Use a large overdueRatio so never-run jobs sort below truly-overdue jobs
-        missedJobs.push({ job, overdueRatio: 1.5 });
-        continue;
-      }
-
-      const lastRun = new Date(jobState.lastRun).getTime();
-
       // Get expected interval from next two runs
       const nextRun = task.nextRun();
       const nextNextRun = task.nextRuns(2)[1];
       if (!nextRun || !nextNextRun) continue;
 
       const intervalMs = nextNextRun.getTime() - nextRun.getTime();
+
+      // Jobs that have never run: trigger on startup ONLY if their first
+      // expected run time has already passed — i.e. the job has existed for
+      // longer than one full interval without ever running, so a window really
+      // did go by. That was always the intended rule (it is stated in the
+      // comment this replaces), but nothing recorded when a job started
+      // existing, so the branch could not check it and fired EVERY never-run
+      // job instead. A reminder scheduled for December discharged itself on the
+      // next boot (ACT-724 defect (a)).
+      //
+      // Fails SAFE in both unknown cases: a job with no firstSeenAt (legacy
+      // state written before this field existed) is treated as not-missed. The
+      // cost is one skipped catch-up; the cost of guessing the other way is a
+      // future-dated job firing early, which is indistinguishable from the
+      // reminder having been delivered.
+      if (!jobState?.lastRun) {
+        const firstSeen = jobState?.firstSeenAt ? new Date(jobState.firstSeenAt).getTime() : null;
+        if (firstSeen === null || Number.isNaN(firstSeen)) continue;
+        const ageMs = now - firstSeen;
+        if (ageMs <= intervalMs) continue; // its window genuinely hasn't come yet
+        // Use a large overdueRatio so never-run jobs sort below truly-overdue jobs
+        missedJobs.push({ job, overdueRatio: 1.5 });
+        continue;
+      }
+
+      const lastRun = new Date(jobState.lastRun).getTime();
       const timeSinceLastRun = now - lastRun;
 
       // If overdue by more than 1.5x the interval, mark as missed
@@ -1896,7 +1976,15 @@ export class JobScheduler {
     });
 
     for (const { job } of missedJobs) {
-      await this.triggerJob(job.slug, 'missed');
+      try {
+        await this.triggerJob(job.slug, 'missed');
+      } catch (err) {
+        // A demotion can occur after triggerJob's entry check but before a gate
+        // or spawn path records shared bookkeeping. The StateManager refusal is
+        // authoritative; contain it per job so one raced trigger cannot abort
+        // evaluation of the rest or escape the startup callback.
+        console.error(`[scheduler] Missed trigger failed for "${job.slug}": ${err}`);
+      }
     }
   }
 

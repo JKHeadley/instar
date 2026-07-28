@@ -110,9 +110,8 @@ describe('JsonlFeedbackStore — import-artifact adoption (the cutover seam)', (
   });
 });
 
-describe('JsonlFeedbackStore — compaction', () => {
-  it('compacts at load when most lines are superseded, preserving latest state', () => {
-    // 600 entities × 2 rows each = 1200 lines, 50%+ superseded → compaction fires.
+describe('JsonlFeedbackStore — active generation safety', () => {
+  it('never rewrites an active append-only generation while folding latest state', () => {
     const lines: string[] = [];
     for (let i = 0; i < 600; i++) {
       lines.push(JSON.stringify({ feedbackId: `fb-${i}`, title: 't', description: 'd', type: 'bug', status: 'unprocessed' }));
@@ -124,13 +123,12 @@ describe('JsonlFeedbackStore — compaction', () => {
     const store = new JsonlFeedbackStore(dir);
     expect(store.getUnprocessedFeedback()).toHaveLength(0); // latest rows won
     const after = fs.readFileSync(p, 'utf8').trim().split('\n');
-    expect(after).toHaveLength(600); // one row per entity post-compaction
-    // And the compacted file still loads identically.
+    expect(after).toHaveLength(1200); // durable tail offsets remain valid
     const reread = new JsonlFeedbackStore(dir);
     expect(reread.hasFeedback('fb-599')).toBe(true);
   });
 
-  it('does NOT compact a small file (below the line threshold)', () => {
+  it('leaves a small append-only file byte-stable too', () => {
     const p = path.join(dir, 'feedback.jsonl');
     fs.writeFileSync(p, [
       JSON.stringify(item('fb-1')),

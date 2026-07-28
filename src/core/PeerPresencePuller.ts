@@ -25,6 +25,8 @@
  * failover threshold.
  */
 
+import { clampCoherenceAdvert } from './machineCoherenceAdvert.js';
+
 /** A peer to consider polling: its machine id + resolved tunnel URL (null ⇒ unreachable). */
 export interface PeerPresenceMachine {
   machineId: string;
@@ -87,6 +89,23 @@ export interface PeerCapacity {
   seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags'];
   /** Platform/workspace reachability (placement-platform-workspace-aware) — replicated like the others. */
   servesChannels?: import('./types.js').MachineCapacity['servesChannels'];
+  /**
+   * Machine-coherence advert (machine-coherence-guard §3.2): the peer's running
+   * instar version, protocol version, manifest hash, guard posture, and
+   * manifest-resolved effective flag values. CLAMP-PASSED by the narrowing step
+   * (M4 — the narrowing applies `clampCoherenceAdvert`, so a value here is
+   * already format-validated; a rejected advert lands in
+   * `coherenceAdvertRejected` instead). Absent = pre-guard peer (`unknown` →
+   * version-class after grace). The #930/A2/WS2.1/seamlessnessFlags narrowing
+   * lesson applies a FIFTH time — this field is in SESSION_STATUS_ADVERT_FIELDS
+   * so the ratchet covers the narrowing, AND it must survive `pullOnce`'s
+   * hand-maintained recordHeartbeat spread (the R2-N1 second enumeration).
+   */
+  coherenceAdvert?: import('./machineCoherenceAdvert.js').CoherenceAdvert;
+  /** Clamp-rejection marker (M4): the peer SENT an advert but it failed the
+   *  receive clamp — recorded so the peer classifies `advert-rejected` (a loud
+   *  named condition), never silently treated as advert-less. */
+  coherenceAdvertRejected?: { atMs: number; reason: string };
 }
 
 /**
@@ -106,6 +125,7 @@ export const SESSION_STATUS_ADVERT_FIELDS = [
   'guardPosture',
   'seamlessnessFlags',
   'servesChannels',
+  'coherenceAdvert',
 ] as const;
 
 /**
@@ -133,6 +153,7 @@ export function narrowSessionStatusToPeerCapacity(
     guardPosture?: import('./types.js').GuardPostureSummary;
     seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags'];
     servesChannels?: import('./types.js').MachineCapacity['servesChannels'];
+    coherenceAdvert?: unknown;
   };
   return {
     selfReportedLastSeen: cap.selfReportedLastSeen,
@@ -146,6 +167,18 @@ export function narrowSessionStatusToPeerCapacity(
     // THE FIX (4th instance of the narrowing-return-forgets-a-field class): the
     // peer's receive advert must cross the wire or replication never starts.
     ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}),
+    // Machine-coherence advert (§3.2): CLAMPED on receive, right here in the
+    // narrowing step (M4 — the spec's designated clamp point). A clean advert
+    // passes rebuilt-byte-identical; a malformed one becomes a rejection marker
+    // (rejected ≠ absent — the peer classifies `advert-rejected`, loudly).
+    ...(cap.coherenceAdvert !== undefined
+      ? (() => {
+          const res = clampCoherenceAdvert(cap.coherenceAdvert);
+          return res.ok
+            ? { coherenceAdvert: res.advert }
+            : { coherenceAdvertRejected: { atMs: Date.now(), reason: res.reason } };
+        })()
+      : {}),
   };
 }
 
@@ -169,7 +202,7 @@ export interface PeerPresencePullerDeps {
    */
   fetchPeerCapacity: (machineId: string, url: string) => Promise<PeerCapacity | null>;
   /** Record an observed peer heartbeat into the pool registry (marks it online for the failover window). */
-  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string }; guardPosture?: import('./types.js').GuardPostureSummary; seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags']; servesChannels?: import('./types.js').MachineCapacity['servesChannels'] }) => void;
+  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string }; guardPosture?: import('./types.js').GuardPostureSummary; seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags']; servesChannels?: import('./types.js').MachineCapacity['servesChannels']; coherenceAdvert?: import('./machineCoherenceAdvert.js').CoherenceAdvert; coherenceAdvertRejected?: { atMs: number; reason: string } }) => void;
   /** Wall clock — injectable for tests. Defaults to `Date`. */
   now?: () => Date;
   /** Optional structured log line per pass (e.g. for the boot log). */
@@ -251,7 +284,7 @@ export class PeerPresencePuller {
         }
         if (!cap) return null;
         const seen = cap.selfReportedLastSeen ?? (this.d.now?.() ?? new Date()).toISOString();
-        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, ...(cap.quotaState !== undefined ? { quotaState: cap.quotaState } : {}), ...(cap.guardPosture !== undefined ? { guardPosture: cap.guardPosture } : {}), ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}), ...(cap.servesChannels !== undefined ? { servesChannels: cap.servesChannels } : {}) });
+        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, ...(cap.quotaState !== undefined ? { quotaState: cap.quotaState } : {}), ...(cap.guardPosture !== undefined ? { guardPosture: cap.guardPosture } : {}), ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}), ...(cap.servesChannels !== undefined ? { servesChannels: cap.servesChannels } : {}), ...(cap.coherenceAdvert !== undefined ? { coherenceAdvert: cap.coherenceAdvert } : {}), ...(cap.coherenceAdvertRejected !== undefined ? { coherenceAdvertRejected: cap.coherenceAdvertRejected } : {}) });
         // REPLICATION-GATED journal-delta drive — only when the server wired the
         // delta deps (i.e. replication.enabled === true). Otherwise a complete
         // no-op (engine/transport stay dark). Never throws into the puller.

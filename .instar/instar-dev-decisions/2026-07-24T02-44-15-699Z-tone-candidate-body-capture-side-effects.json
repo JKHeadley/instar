@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-24T02:44:15.699Z",
+  "slug": "tone-candidate-body-capture.side-effects",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 113,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Latent from the meter's original content-bearing discipline, which was deliberate and documented but self-defeating: the gate inspects outbound text for leaks, so declining to store that text protected the store at the cost of making retrospective correctness review impossible. Surfaced when the operator reframed the programme around record-now/judge-later-in-bulk and the missing input became the blocking gap. The operator settled the retention question directly on 2026-07-23 (topic 33368): the text is already in the session transcript, so a second copy in an operator-and-agent-only store crosses no new line."
+  },
+  "classClosure": null,
+  "verdict": "blocked"
+}

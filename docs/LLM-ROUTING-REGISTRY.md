@@ -2,6 +2,8 @@
 
 **Purpose.** Be *extremely intentional* about which provider + model every LLM task in Instar defaults to. Every codepath that hands a decision or generation to an LLM is enumerated here with its **task nature** and its **intended default**. If a callsite isn't here, it isn't governed — add it.
 
+**Freshness guard (2026-07-03):** the per-provider "capable/latest/frontier" model pins are now protected against silent rot by `scripts/lint-model-registry-freshness.mjs` + `scripts/model-registry-freshness.manifest.json` (the human-edit frontier allowlist + `lastReviewedAt`). Two teeth — a staleness window and a per-door allowlist-membership drift check. Ships in `enforcement: "strict"` (CI-GATING — exits 1 on any staleness/drift finding) as of PR #1378; it runs in the `npm run lint` chain, so a rotted pin fails CI. (Set `enforcement` back to `"report"` for a dark/reversible rollback.) When you swap a model id, update the manifest `topModels` frontier set + `lastReviewedAt` in the same change. As of 2026-07-03 the `flaggedStale` block is EMPTY — both prior pending pins are resolved: gemini `capable` swapped `gemini-2.5-pro` → `gemini-3.1-pro-preview`; codex `capable` stays `gpt-5.5` (GA flagship — `gpt-5.6-sol` is preview-only/gov-gated, NOT pinned).
+
 **Status:** v2, 2026-07-02 (Echo) — now maintained IN-REPO (first canonical shipment); benchmark-derived defaults below supersede the v1 taxonomy recommendations. **Runtime source of truth:** `GET /intelligence/routing` (registered components) + `.instar/config.json → sessions.componentFrameworks` / `frameworkDefaultModels` / `topicFrameworks` / `models.tierEscalation`. This doc is the *human-readable intentional-defaults layer*. Callsite inventory verified against `src/` (branch `echo/serve-main`) AND the deployed dist for the load-bearing claims. **Keep it current:** add a row when you add an LLM callsite; update the row + note why when you change a default.
 
 ---
@@ -11,7 +13,7 @@
 1. **[FIXED — PR #1319, merged 2026-07-02] Thirteen LLM components ran on Claude by default.** The Provider-Fallback Default Policy only moves components whose `attribution.component` name is in the `COMPONENT_CATEGORY` map (`src/core/componentCategories.ts`) as sentinel/gate/reflector, OR that pass an explicit `attribution.category`. Anything else resolves to `'other'` → **the agent default framework (Claude) at its tier.** On canonical the full set was 13 (this doc's original 9 plus `TelegramAdapter`, `Usher`, `TopicIntentExtractor`, `a2a-checkin`; `MentorStageBForensics` is `mentor-stage-b` at the callsite). Corrected framing: they were NOT silently unknown — they were the pinned `WIRING_EXCLUSIONS` backlog in `tests/unit/llm-attribution-ratchet.test.ts`, deliberately deferred pending a routing decision, and that ratchet already fails CI on any NEW unregistered callsite (the drift guard exists and is live). PR #1319 registered all 13 (`InputClassifier`/`SessionSummarySentinel`/`TelegramAdapter`→sentinel, `ResumeValidator`→gate, the other 9→reflector) and trimmed the exception list to the 5 explicit-category components. Per-row ⚠/❌ markers below predate the fix — read them as "fixed in #1319."
 2. **Bounded sentinels/gates route to gpt-5.5 (a large model) — overkill for nature-A tasks.** Echo routes sentinels/gates/reflectors → **pi-cli → `openai-codex/gpt-5.5`**. INSTAR-Bench shows a simple bounded verdict (classify a message, boolean gate) is equal-accuracy on a small fast model (GPT-5.4-mini / Gemini 3.1 Flash-Lite) — faster and cheaper. gpt-5.5-via-codex is also SLOW (~18.5s observed). **But keep the nature-B critical gates on a reasoning model** (see taxonomy).
 3. **Hardcoded-model / router-bypass callsites** exist (dispatch=haiku, mentor=opus, setup-wizard=gpt-5.3-codex/gemini-flash, credential-probe=haiku, crossModelReviewer=codex+gemini). These are NOT re-routable via config — listed in "Risk items."
-4. **Model-ID caveat:** `src/core/models.ts` on this branch shows `claude-opus-4-6 / sonnet-4-6 / haiku-4-5`, while `ModelTierEscalation` uses `claude-opus-4-8` + escalated `claude-fable-5`. Branch is ~127 commits behind canonical; treat concrete IDs as verify-against-deployed.
+4. **Model-ID caveat:** `src/core/models.ts` now shows `claude-opus-4-8 / sonnet-4-6 / haiku-4-5`, reconciled with `ModelTierEscalation` (`claude-opus-4-8` default + escalated `claude-fable-5`) — the prior `opus-4-6`↔`opus-4-8` drift is resolved. Treat concrete IDs as verify-against-deployed.
 
 ---
 
@@ -126,7 +128,7 @@ are INTERIM pending the vendor-balance remainder run.
 |---|---|---|---|---|
 | fast | claude-haiku-4-5 | gpt-5.4-mini | gemini-2.5-flash | configured `provider/id` |
 | balanced | claude-sonnet-4-6 | gpt-5.4-mini | gemini-2.5-flash | configured `provider/id` |
-| capable | claude-opus-4-6 | gpt-5.5 | gemini-2.5-pro | configured `provider/id` |
+| capable | claude-opus-4-8 | gpt-5.5 | gemini-3.1-pro-preview | configured `provider/id` |
 
 **Two overlays on the Claude path:** `AnthropicSubscriptionRouter` (SDK-credit `claude -p` vs subscription interactive-pool; `intelligence.subscriptionPath.mode`, currently `off`) sits inside the per-framework breaker; the account-global breaker + usage metering (`CircuitBreakingIntelligenceProvider`) wraps all. **Tier escalation** (`models.tierEscalation`) applies to spawned SESSIONS, not `.evaluate()` calls.
 
@@ -150,6 +152,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | ProjectDriftChecker | src/core/ProjectDriftChecker.ts:351 | project/topic drift | B | OC(balanced) | ✅ |
 | PresenceProxy | src/monitoring/PresenceProxy.ts:1809 | standby status / tier message | A | OC(fast/balanced) | ⚠ |
 | PromiseBeacon | (sentinel) | follow-through heartbeat wording | A | OC(fast) | ⚠ |
+| ExternalHogClassifier | src/commands/server.ts (via ExternalHogRealAdapters classify) | zombie kill/leave/alert (SUBTRACTIVE — the deterministic floor carries kill-safety; the model carries effectiveness) | A | OC(fast) | ✅ fast fits — bounded strict-JSON verdict; a wrong verdict can only false-spare, never widen a kill |
 | SessionActivitySentinel ×3 | src/monitoring/SessionActivitySentinel.ts:300/552/659 | session digest/synthesis | D | OC(fast) | ⚠ cheap fits |
 | SessionWatchdog | src/monitoring/SessionWatchdog.ts:718 | is a destructive Ctrl-C legit? | B | OC(default) | ✅ |
 | StallTriageNurse | src/monitoring/StallTriageNurse.ts:609 | diagnose stalled session | B | OC(balanced) | ✅ |
@@ -167,7 +170,11 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | ExternalOperationGate | src/core/ExternalOperationGate.ts:510 | external-op mutability class | **B** safety | OC(default)·gating | ✅ |
 | LLMSanitizer | src/security/LLMSanitizer.ts:110 | prompt-injection sanitize | **B** safety | OC(fast) | ✅ |
 | UnjustifiedStopGate | src/core/UnjustifiedStopGate.ts:416 | is a self-stop justified? | B | OC(fast) | ✅ |
+| FeedbackReadinessArbiter | src/feedback-factory/drain/FeedbackReadinessArbiter.ts | does bounded, coherent cluster evidence warrant one owned Initiative task? | B·gating | OC(capable) | ✅ registered frontier-model authority; adversarial input, provenance, prompt/schema/model canaries, and deterministic confidence/evidence floors |
 | WarrantsReplyGate | src/threadline/WarrantsReplyGate.ts:295 | does A2A msg need a reply? | A | OC(fast) | ⚠ small fits |
+| MoveIntentClassifier | src/core/MoveIntentClassifier.ts:303 | is inbound a "move/pin this on <nickname>" command vs discussion? | A·gating (fail-open) | OC(fast) | ✅ nature-A strict-JSON enum verdict; fail-open never hijacks, so a small fast model fits (replaces a keyword verb-list — the 2026-07-03 hijack) |
+| HubIntentClassifier | src/threadline/HubIntentClassifier.ts:classifyHubIntent | is a hub message an "open this"/"tie this to <topic>" bind command vs discussion? | A·gating (fail-open) | OC(fast) | ✅ nature-A strict-JSON enum verdict; fail-open never swallows, so a small fast model fits (replaces the anchored regexes that ate the message before the agent saw it) |
+| ProfileIntentClassifier | src/core/ProfileIntentClassifier.ts:301 | is inbound a "change this topic's framework/model/thinking" command vs discussion? | A·gating (fail-open) | OC(fast) | ✅ nature-A strict-JSON enum verdict; fail-open never actuates, so a small fast model fits (replaces a keyword regex set — the 2026-07-03 offender #1) |
 | TaskClassifier / OverrideDetector / AutoApprover / IntegrationGate / PromptGate | src/providers/uxConfirm/* | classification / approval verdicts | A | OC(fast) | ⚠ mostly nature A |
 | DiscoveryEvaluator | src/core/DiscoveryEvaluator.ts:467 | surface a feature discovery? | A | OC(fast) | ⚠ |
 | IntentLlmJudge / LlmIntentClassifier / AmbientContributionGate | src/core/IntentTestHarness.ts:246; src/permissions/* | intent-vs-org / permission intent / speak? | B·gating (explicit category) | OC(fast) | ✅ explicit-category, correct |
@@ -192,6 +199,12 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | **LLMConflictResolver** ⚠ | src/core/LLMConflictResolver.ts:204 | resolve divergent multi-machine state | B | **AD → Claude** | ❌ not in map |
 | **MentorStageBForensics** ⚠ | src/scheduler/MentorStageBForensics.ts:141 | classify mentor signals → findings | B | **AD(capable) → Claude** | ❌ not in map |
 | **server:correction-learning** ⚠ | src/commands/server.ts:11380 | distill corrections → preference | D | **AD(fast) → Claude** | ❌ strips to unmapped name |
+| correction-class-review | src/monitoring/CorrectionClassReview.ts | propose whether one correction exposes a standards/process class gap | B | OC(capable) | ✅ nuanced standards judgment; registered reflector, proposal-only and bounded-retry |
+| completion-claim-verify | src/monitoring/ClaimClauseArbiter.ts | classify future commitments vs completion assertions and assess structural evidence | B·gating | OC(capable) | ✅ false suppression could lose a commitment, so use capable reasoning; authority publishes only after downstream routing succeeds |
+| GoalPriorityExtractor | src/monitoring/GoalRealignment.ts | classify verified operator-authored messages into durable priority events | A | OC(fast) | ✅ bounded strict-JSON extraction; failures remain visible in the candidate inbox and never silently create authority |
+| AlignmentReviewer | src/monitoring/GoalRealignment.ts | compare the durable priority digest with current autonomous-run focus | B·dry-run | OC(fast) | ✅ Phase 1 signal-only; incomplete evidence deterministically yields indeterminate and no verdict can actuate |
+| **SelfKnowledgeTree** ⚠ | src/knowledge/SelfKnowledgeTree.ts | synthesize self-knowledge tree nodes | D | **AD → Claude** | ❌ not in map (bench pending wave-3) |
+| DashboardInsightEngine | src/monitoring/DashboardInsightEngine.ts:315 | summarize a dashboard page's data → Insight Strip | A (declared; FAST) | OC(fast) | ✅ intentional — awareness-only, non-gating; declares `nature:'A'` + `model:'fast'` so it rides the router's FAST tier (bench `{exempt}` — no `LLM_ROUTING_NATURE` row until an insight-summary bench task is authored, per cite-the-bench). Degrades to a deterministic floor. |
 
 ### Jobs (router-backed, cost-bearing)
 | Component | file:line | Decision | Route | Note |
@@ -216,7 +229,7 @@ Resolution order (verified): (1) `/local-model` binding (codex) → (2) topic-pr
 | 5 | setup-wizard codex-driver | src/commands/setup-wizard/codex-driver.ts:192 | **hardcoded gpt-5.3-codex** | wizard copy |
 | 6 | setup-wizard gemini-driver | src/commands/setup-wizard/gemini-driver.ts:194 | **hardcoded gemini-2.5-flash** | wizard copy |
 | 7 | anthropic-headless credential probe | src/providers/adapters/anthropic-headless/control/authCredentialInjection.ts:67 | **hardcoded claude-haiku-4-5** | direct api.anthropic.com validation ping |
-| 8 | Claude tier→id source of truth | src/core/models.ts | claude-opus-4-6/sonnet-4-6/haiku-4-5 | changing Claude models = edit this file, not config |
+| 8 | Claude tier→id source of truth | src/core/models.ts | claude-opus-4-8/sonnet-4-6/haiku-4-5 | changing Claude models = edit this file, not config |
 | 9 | metered-funnel | research/llm-pathway-bench/metered-funnel.mjs:181 | openrouter/openai/groq/deepinfra/anthropic | budget-gated; bench-only |
 | 10 | `instar reflect` / `instar route` CLIs | src/commands/reflect.ts:361; route.ts:80 | direct buildIntelligenceProvider | CLI, not server |
 

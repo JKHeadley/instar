@@ -57,8 +57,8 @@ describe('geminiCapacityPolicy', () => {
     expect(second.action).toBe('retry');
     expect(second.model).toBe('gemini-2.5-pro');
 
-    // pro ALSO exhausts → every known model is now in an exhaustion window →
-    // genuine account-wide block → defer (and only NOW would a stop-state write).
+    // pro exhausts too → the remaining known model (gemini-3.1-pro-preview) still
+    // has headroom, so switch to it rather than declaring a global block yet.
     const third = decideGeminiCapacityPolicy({
       errorMessage: 'exhausted your capacity on this model. quota will reset after 46m',
       attempt: 2,
@@ -66,7 +66,19 @@ describe('geminiCapacityPolicy', () => {
       config: { backoffMs: 1 },
       now: 1_000,
     });
-    expect(third.action).toBe('defer');
+    expect(third.action).toBe('retry');
+    expect(third.model).toBe('gemini-3.1-pro-preview');
+
+    // the last known model exhausts → every known model is now in an exhaustion
+    // window → genuine account-wide block → defer (only NOW a stop-state write).
+    const fourth = decideGeminiCapacityPolicy({
+      errorMessage: 'exhausted your capacity on this model. quota will reset after 46m',
+      attempt: 3,
+      model: 'gemini-3.1-pro-preview',
+      config: { backoffMs: 1 },
+      now: 1_000,
+    });
+    expect(fourth.action).toBe('defer');
   });
 
   it('a single-model exhaustion switches to the model with headroom (no global stop)', () => {
@@ -84,21 +96,24 @@ describe('geminiCapacityPolicy', () => {
     expect(d.model).toBe('gemini-2.5-pro');
   });
 
-  it('pickGeminiFallbackModel returns the other model, then undefined once both are exhausted', () => {
+  it('pickGeminiFallbackModel returns the next model with headroom, then undefined once ALL are exhausted', () => {
     expect(pickGeminiFallbackModel('gemini-2.5-flash', undefined, 0)).toBe('gemini-2.5-pro');
-    // record both models as exhausted via the decision path
+    // record every known model as exhausted via the decision path
     decideGeminiCapacityPolicy({ errorMessage: 'quota exhausted; reset after 46m', attempt: 9, model: 'gemini-2.5-flash', now: 0 });
     decideGeminiCapacityPolicy({ errorMessage: 'quota exhausted; reset after 46m', attempt: 9, model: 'gemini-2.5-pro', now: 0 });
+    decideGeminiCapacityPolicy({ errorMessage: 'quota exhausted; reset after 46m', attempt: 9, model: 'gemini-3.1-pro-preview', now: 0 });
     expect(pickGeminiFallbackModel('gemini-2.5-flash', undefined, 0)).toBeUndefined();
   });
 
   it('per-model exhaustion windows self-clear once the reset passes', () => {
     const t0 = 1_000;
-    // pro exhausts with a ~1m reset
+    // both heavy models (pro + the preview pro) exhaust with a ~1m reset → no
+    // non-flash model has headroom during the window.
     decideGeminiCapacityPolicy({ errorMessage: 'quota exhausted; reset after 1m', attempt: 9, model: 'gemini-2.5-pro', now: t0 });
-    // before the window passes, pro is not a usable fallback
+    decideGeminiCapacityPolicy({ errorMessage: 'quota exhausted; reset after 1m', attempt: 9, model: 'gemini-3.1-pro-preview', now: t0 });
+    // before the windows pass, no usable fallback remains
     expect(pickGeminiFallbackModel('gemini-2.5-flash', undefined, t0 + 1_000)).toBeUndefined();
-    // after the window, pro has headroom again
+    // after the windows, the heavy models have headroom again (pro is first in order)
     expect(pickGeminiFallbackModel('gemini-2.5-flash', undefined, t0 + 120_000)).toBe('gemini-2.5-pro');
   });
 
@@ -120,7 +135,7 @@ describe('Gemini known model resolution', () => {
     expect(isKnownGeminiModel('gemini-2.5-flash')).toBe(true);
     expect(isKnownGeminiModel('gemini-2.0-flash')).toBe(false);
     expect(resolveCliModelFlag('gemini-2.0-flash')).toBe('gemini-2.0-flash');
-    expect(resolveCliModelFlag('capable')).toBe('gemini-2.5-pro');
+    expect(resolveCliModelFlag('capable')).toBe('gemini-3.1-pro-preview');
     expect(resolveKnownGeminiFallback('gemini-2.0-flash', { fallbackModel: 'gemini-2.5-flash' })).toBe('gemini-2.5-flash');
     expect(resolveKnownGeminiFallback('gemini-2.0-flash', { fallbackModel: 'gemini-2.0-flash' })).toBe('gemini-2.0-flash');
   });
