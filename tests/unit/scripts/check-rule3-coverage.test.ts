@@ -30,9 +30,19 @@ delete childEnv.GIT_INDEX_FILE;
 delete childEnv.GIT_OBJECT_DIRECTORY;
 delete childEnv.GIT_COMMON_DIR;
 
+/**
+ * Run the COPY of the script inside the tmp repo, not the original.
+ *
+ * The script resolves the state-detector registry from `__dirname/../specs/`,
+ * so running the original made it read the real repo's registry while reading
+ * staged files from the tmp repo. `beforeEach` has always copied the script in
+ * — the copy was simply never executed, so every registry fixture was silently
+ * ignored and the "already in the registry" branch had no reachable coverage.
+ */
 function runCheck(cwd: string): { exitCode: number; stderr: string } {
+  const scriptInRepo = path.join(cwd, 'scripts', 'check-rule3-coverage.cjs');
   try {
-    execFileSync('node', [SCRIPT_PATH], { cwd, encoding: 'utf-8', stdio: 'pipe', env: childEnv });
+    execFileSync('node', [scriptInRepo], { cwd, encoding: 'utf-8', stdio: 'pipe', env: childEnv });
     return { exitCode: 0, stderr: '' };
   } catch (err) {
     const e = err as { status: number; stderr: Buffer | string };
@@ -45,6 +55,19 @@ function stage(cwd: string, filepath: string, content: string): void {
   fs.mkdirSync(path.dirname(full), { recursive: true });
   fs.writeFileSync(full, content, 'utf-8');
   execFileSync('git', ['add', filepath], { cwd, stdio: 'pipe', env: childEnv });
+}
+
+/**
+ * Overwrite the tmp repo's state-detector registry with the given table rows.
+ * The default fixture registry is empty, so the "already in the registry"
+ * branch of the gate was never exercised before these tests.
+ */
+function writeRegistry(cwd: string, ...rows: string[]): void {
+  fs.writeFileSync(
+    path.join(cwd, 'specs', 'provider-portability', '06-state-detector-registry.md'),
+    ['# Registry', '', '| Location | Status |', '|---|---|', ...rows, ''].join('\n'),
+    'utf-8',
+  );
 }
 
 describe('check-rule3-coverage.cjs', () => {
@@ -75,6 +98,39 @@ describe('check-rule3-coverage.cjs', () => {
     stage(repo, 'src/core/banal.ts', 'export const x = 1;');
     const result = runCheck(repo);
     expect(result.exitCode).toBe(0);
+  });
+
+  // A registry entry does NOT exempt on its own: the gate requires
+  // `inRegistry && (hasRationale || hasCanary)`. These two cases therefore
+  // stage a registered file that carries a rationale but no canary — the
+  // combination the registry branch exists to serve.
+  //
+  // The registry's Location column is section-relative. Most sections write
+  // paths relative to src/, but the provider-substrate section writes them
+  // relative to src/providers/ (21 of its 23 rows, measured on main).
+  const RATIONALE = '/** RULE 3.1 RATIONALE — advisory read; loud fallback. */';
+
+  it('accepts a registered file with a rationale when the registry path is relative to src/', () => {
+    writeRegistry(repo, '| `core/Widget.ts` — parses a subprocess result | 🔵 Exempt |');
+    stage(repo, 'src/core/Widget.ts', `${RATIONALE}\nexport const r = JSON.parse(stdout);`);
+    expect(runCheck(repo).exitCode).toBe(0);
+  });
+
+  it('accepts a registered provider file with a rationale when the registry path is relative to src/providers/', () => {
+    writeRegistry(
+      repo,
+      '| `adapters/openai-codex/observability/logTailer.ts` — parses a subprocess result | 🔵 Exempt |',
+    );
+    stage(
+      repo,
+      'src/providers/adapters/openai-codex/observability/logTailer.ts',
+      `${RATIONALE}\nexport const r = JSON.parse(stdout);`,
+    );
+    // Before the section-relative fix this failed: the gate stripped only
+    // `src/`, looked for `providers/adapters/...`, never matched the row that
+    // was right there, and refused the file for "registry entry or canary
+    // file" — telling the author to add a row that already existed.
+    expect(runCheck(repo).exitCode).toBe(0);
   });
 
   it('blocks when a staged source file fetches from Anthropic without canary or rationale', () => {
