@@ -36,7 +36,7 @@ Before using this skill, check if Instar is available:
    If the user agrees, run `npx instar` and follow the interactive setup.
    If they decline, acknowledge and suggest they visit https://instar.sh when ready.
 
-3. If Instar is installed, verify the server: `curl -sf http://localhost:4040/health`
+3. If Instar is installed, verify the server: `curl -sf http://localhost:${INSTAR_PORT:-4040}/health`
 4. If server is not running: "The Instar server needs to be running. Want me to start it? (`instar server start`)"
 5. Once running, proceed with the instructions below.
 
@@ -166,7 +166,7 @@ Fires at every session start (PostToolUse on the first tool call). Outputs a com
 Identity: .instar/AGENT.md
 Memory:   .instar/MEMORY.md
 User:     .instar/USER.md
-Server:   curl http://localhost:4040/health
+Server:   curl http://localhost:${INSTAR_PORT:-4040}/health
 ===========================
 ```
 
@@ -198,13 +198,13 @@ cat .instar/MEMORY.md
 
 ```bash
 # What's running
-curl http://localhost:4040/status
+curl http://localhost:${INSTAR_PORT:-4040}/status
 
 # What jobs exist
-curl http://localhost:4040/jobs
+curl http://localhost:${INSTAR_PORT:-4040}/jobs
 
 # What's happened recently
-curl "http://localhost:4040/events?since=4" | python3 -m json.tool
+curl "http://localhost:${INSTAR_PORT:-4040}/events?since=4" | python3 -m json.tool
 ```
 
 ### Step 3: Re-orient with compaction seed format

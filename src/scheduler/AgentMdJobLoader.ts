@@ -93,6 +93,8 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'topicId',
   'machines',
   'supervision',
+  'mcpAccess',
+  'perMachineIndependent',
 ]);
 
 // ── Zod preprocessors (spec §6) ────────────────────────────────────────────
@@ -141,6 +143,13 @@ export interface PerSlugManifest {
   gate?: string;
   unrestrictedTools?: boolean;
   manifestVersion?: number;
+  /** DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC §2.8 / D11 — run on every machine
+   *  independently (skip the global jobSlug claim/lease). See JobDefinition
+   *  for the misuse warning. Absent → false → today's claim/lease behavior. */
+  perMachineIndependent?: boolean;
+  /** MCP access for the spawned session — 'none' spawns with zero project MCP
+   *  servers (claude-code only). Absent → legacy full-project-MCP behavior. */
+  mcpAccess?: 'project' | 'none';
   /** SHA of the body at the time an operator disabled the default — preserved
    *  across regeneration so a re-enabled default re-syncs intentionally. */
   disabledAtBodyHash?: string;
@@ -297,6 +306,17 @@ export function loadAgentMdJobs(
   // Issues card.
   const jobs: JobDefinition[] = [];
   for (const { manifest } of survivors) {
+    // A disabled/retired per-slug manifest must load as a disabled JobDefinition
+    // WITHOUT requiring its markdown body — the body may have been deleted when
+    // the job was retired. Loading it disabled lets it still shadow a stale
+    // enabled entry in legacy jobs.json (the per-slug precedence rule), instead
+    // of being dropped for a missing body and letting the zombie legacy job run
+    // (Codey gap-run F009).
+    if (!manifest.enabled) {
+      jobs.push(manifestToJobDefinition(manifest));
+      continue;
+    }
+
     if (manifest.execute.type === 'agentmd') {
       const loaded = loadAgentMdBody(manifest, jobsRootDir);
       if (loaded.problem) {
@@ -560,6 +580,11 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   // Optional gate (shell command)
   if (j.gate !== undefined && typeof j.gate !== 'string') {
     throw new Error(`${prefix}: "gate" must be a string if provided`);
+  }
+
+  // Optional mcpAccess
+  if (j.mcpAccess !== undefined && j.mcpAccess !== 'project' && j.mcpAccess !== 'none') {
+    throw new Error(`${prefix}: "mcpAccess" must be "project" or "none" if provided, got "${j.mcpAccess}"`);
   }
 
   return j as unknown as PerSlugManifest;
@@ -1067,6 +1092,8 @@ function manifestToJobDefinition(
     gate: manifest.gate,
     unrestrictedTools: manifest.unrestrictedTools,
     manifestVersion: manifest.manifestVersion,
+    mcpAccess: manifest.mcpAccess,
+    perMachineIndependent: manifest.perMachineIndependent,
   };
 
   if (manifest.execute.type === 'agentmd') {

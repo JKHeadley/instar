@@ -1,0 +1,21 @@
+🎯 **Post-mortem arc COMPLETE.** Six PRs, all five named bug classes closed.
+
+```
+#542 silent-403 secret-externalization → class #4 (silent failure) — DEPLOYED
+#545 failure-learning A+C (wiring + migration parity) → classes #2 #3 — DEPLOYED
+#550 sourceTreeReadOk (the meta-issue) → class #1 partial — MERGED
+#551 gh-pr-merge gate (#539 watch-exit-merge close) → class #5 — MERGED
+#552 bare catch{} ban → class #4 source-level — MERGED
+#555 real-world-state fixture framework + 1st scenario → class #1 broader — MERGED (eb8c2ece)
+```
+
+**Where the picture stands now:**
+- Failure-Learning Loop on Echo is unstuck + capturing (sources.ci+revert=true, RevertDetector no longer SourceTreeGuard-blocked).
+- gh pr merge can no longer fire against a red PR — the gate caught a real mistake on #555 itself (the lint-fix-forward I just did was a 5-minute round trip instead of a 16-hour outage like the #539 class would have produced).
+- Bare catch{} blocks can't be reintroduced anywhere without `@silent-fallback-ok` + a rationale. PromptGate.ts has zero-tolerance — the $452 incident shape can't recur.
+- Migration-parity test catches any future fresh-init vs auto-update hook divergence.
+- The real-world-state framework is in place; future scenarios (multi-100MB DB, wrong-ABI binary, concurrency-at-scale) ship as small follow-ups each using `describeAtTier(...)`.
+
+Took ~9h calendar elapsed (lots of CI waits + your other PRs landing on main forcing rebases). Net agent work was ~4-5h. Each PR closes one class structurally so the 19% fix-rate over the last 14 days drops the next time someone tries to ship one of those patterns — not by remembering to be careful but because the test/lint/gate refuses.
+
+Memory updated; tasks closed. Standing by for whatever's next.

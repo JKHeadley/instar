@@ -293,4 +293,51 @@ describe('TelegramAdapter', () => {
 
     vi.unstubAllGlobals();
   });
+
+  describe('tokenless standby outbound relay (bug #7)', () => {
+    it('sendToTopic on a TOKENLESS adapter routes through outboundRelay (not the API)', async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-tg-relay-'));
+      const standby = new TelegramAdapter({ token: '', chatId: '-100123456', pollIntervalMs: 100 }, tmp);
+      const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) });
+      vi.stubGlobal('fetch', fetchSpy);
+      const relay = vi.fn(async (_topicId: number, _text: string) => ({ messageId: 999, topicId: _topicId }));
+      standby.outboundRelay = relay;
+      try {
+        const res = await standby.sendToTopic(42, 'reply from a moved session');
+        expect(relay).toHaveBeenCalledWith(42, 'reply from a moved session', { silent: undefined });
+        expect(res.messageId).toBe(999); // the relayed id, used for local bookkeeping
+        expect(fetchSpy).not.toHaveBeenCalled(); // never hits the Telegram API directly
+      } finally {
+        vi.unstubAllGlobals();
+        await standby.stop();
+        SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/TelegramAdapter.test.ts:relay1' });
+      }
+    });
+
+    it('a token-HOLDING adapter still uses the API directly (relay NOT consulted)', async () => {
+      const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, result: { message_id: 7 } }) });
+      vi.stubGlobal('fetch', fetchSpy);
+      const relay = vi.fn(async () => ({ messageId: 999, topicId: 42 }));
+      adapter.outboundRelay = relay; // adapter has token 'test-token-123'
+      try {
+        await adapter.sendToTopic(42, 'direct send');
+        expect(fetchSpy).toHaveBeenCalled();
+        expect(relay).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('a tokenless adapter whose relay returns null surfaces a failure (no silent drop)', async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-tg-relay2-'));
+      const standby = new TelegramAdapter({ token: '', chatId: '-100123456', pollIntervalMs: 100 }, tmp);
+      standby.outboundRelay = vi.fn(async () => null); // relay could not deliver
+      try {
+        await expect(standby.sendToTopic(42, 'mute?')).rejects.toThrow(/relay failed/i);
+      } finally {
+        await standby.stop();
+        SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/TelegramAdapter.test.ts:relay2' });
+      }
+    });
+  });
 });

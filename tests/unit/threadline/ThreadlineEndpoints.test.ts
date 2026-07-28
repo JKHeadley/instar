@@ -7,8 +7,25 @@ import express from 'express';
 import request from 'supertest';
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../../../src/threadline/ThreadlineEndpoints.js';
-import { sign } from '../../../src/threadline/ThreadlineCrypto.js';
+import { sign, generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
+import { computeFingerprint } from '../../../src/threadline/client/MessageEncryptor.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
+
+/** Write a canonical (unencrypted) identity.json into a state dir and return its expected fingerprint. */
+function writeCanonicalIdentity(stateDir: string): { fingerprint: string; publicKeyHex: string } {
+  fs.mkdirSync(stateDir, { recursive: true });
+  const kp = generateIdentityKeyPair();
+  fs.writeFileSync(
+    path.join(stateDir, 'identity.json'),
+    JSON.stringify({
+      publicKey: kp.publicKey.toString('base64'),
+      privateKey: kp.privateKey.toString('base64'),
+      privateKeyEncryption: 'none',
+      createdAt: new Date().toISOString(),
+    }, null, 2),
+  );
+  return { fingerprint: computeFingerprint(kp.publicKey), publicKeyHex: kp.publicKey.toString('hex') };
+}
 
 describe('ThreadlineEndpoints', () => {
   let tmpDir: string;
@@ -32,6 +49,7 @@ describe('ThreadlineEndpoints', () => {
     appA.use(createThreadlineRoutes(managerA, null, {
       localAgent: 'agent-a',
       version: '1.0',
+      stateDir: stateDirA,
     }));
 
     appB = express();
@@ -39,6 +57,7 @@ describe('ThreadlineEndpoints', () => {
     appB.use(createThreadlineRoutes(managerB, null, {
       localAgent: 'agent-b',
       version: '1.0',
+      stateDir: stateDirB,
     }));
   });
 
@@ -63,6 +82,41 @@ describe('ThreadlineEndpoints', () => {
     it('sets correct content type', async () => {
       const res = await request(appA).get('/threadline/health');
       expect(res.headers['content-type']).toContain('application/threadline+json');
+    });
+
+    // THREADLINE-IDENTITY-DISCOVERY-UNIFICATION: health must advertise the
+    // canonical routing identity (the address the relay answers to), with
+    // identityPub and fingerprint internally consistent.
+    it('reports the canonical routing fingerprint + consistent identityPub when an identity exists', async () => {
+      const stateDir = path.join(tmpDir, 'agent-canonical');
+      const expected = writeCanonicalIdentity(stateDir);
+
+      const app = express();
+      app.use(express.json());
+      app.use(createThreadlineRoutes(new HandshakeManager(stateDir, 'agent-canonical'), null, {
+        localAgent: 'agent-canonical',
+        version: '1.0',
+        stateDir,
+      }));
+
+      const res = await request(app).get('/threadline/health');
+      expect(res.status).toBe(200);
+      expect(res.body.fingerprint).toBe(expected.fingerprint);
+      expect(res.body.identityPub).toBe(expected.publicKeyHex);
+      // Internal consistency: fingerprint === computeFingerprint(identityPub)
+      expect(computeFingerprint(Buffer.from(res.body.identityPub, 'hex'))).toBe(res.body.fingerprint);
+    });
+
+    // No-fabrication boundary: no canonical identity → fall back to the
+    // handshake key and OMIT the fingerprint (never invent a dead address).
+    it('omits fingerprint and falls back to the handshake key when no routing identity exists', async () => {
+      // appA's stateDirA has no canonical identity.json (only the handshake manager key).
+      const res = await request(appA).get('/threadline/health');
+      expect(res.status).toBe(200);
+      expect(res.body.fingerprint).toBeUndefined();
+      // Falls back to the handshake-layer key so existing behavior is preserved.
+      expect(res.body.identityPub).toBeDefined();
+      expect(res.body.identityPub).toHaveLength(64);
     });
   });
 
@@ -259,9 +313,149 @@ describe('ThreadlineEndpoints', () => {
     });
   });
 
-  describe('GET /threadline/messages/thread/:id', () => {
+  // Accept-boundary (#3 / issue-580): the receive handler must respond the
+  // instant the message is accepted + authenticated and run the (slow) spawn in
+  // the background — NOT await it — so a sender on a ~10s timeout can't time out,
+  // treat delivery as failed, and retry with a fresh nonce → duplicate spawn.
+  describe('POST /threadline/messages/receive — accept-boundary', () => {
+    // Self-contained agents so we control agent-a's signing key directly: write a
+    // KNOWN hex identity for agent-a before constructing its manager, then sign
+    // with that exact private key (the outer managers persist their identity
+    // lazily/in-memory, which we can't read back).
+    let abA: HandshakeManager;
+    let abB: HandshakeManager;
+    let abDirB: string;
+    let aPriv: Buffer;
+
+    beforeEach(() => {
+      const dirA = path.join(tmpDir, 'ab-a');
+      abDirB = path.join(tmpDir, 'ab-b');
+      // HandshakeManager keeps identity under <stateDir>/threadline/identity.json.
+      fs.mkdirSync(path.join(dirA, 'threadline'), { recursive: true });
+      fs.mkdirSync(abDirB, { recursive: true });
+      const kp = generateIdentityKeyPair();
+      aPriv = kp.privateKey;
+      fs.writeFileSync(path.join(dirA, 'threadline', 'identity.json'), JSON.stringify({
+        publicKey: kp.publicKey.toString('hex'),
+        privateKey: kp.privateKey.toString('hex'),
+      }, null, 2));
+      abA = new HandshakeManager(dirA, 'agent-a');
+      abB = new HandshakeManager(abDirB, 'agent-b');
+      // Sanity: the manager loaded OUR known key (so our signature will verify).
+      expect(abA.getIdentityPublicKey()).toBe(kp.publicKey.toString('hex'));
+    }, 20000);
+
+    /** Complete the A→B handshake so agent-b trusts agent-a's identity. */
+    function completeHandshake() {
+      const init = abA.initiateHandshake('agent-b');
+      if (!('payload' in init)) throw new Error('unexpected');
+      const resp = abB.handleHello(init.payload);
+      if (!('payload' in resp)) throw new Error('unexpected');
+      const confirm = abA.handleHelloResponse(resp.payload);
+      if (!('confirmPayload' in confirm)) throw new Error('unexpected');
+      abB.handleConfirm(confirm.confirmPayload);
+    }
+
+    /** Build agent-b's app wired to a controllable mock router (not null). */
+    function appBWithRouter(router: unknown) {
+      const app = express();
+      app.use(express.json());
+      app.use(createThreadlineRoutes(abB, router as never, {
+        localAgent: 'agent-b',
+        version: '1.0',
+        stateDir: abDirB,
+      }));
+      return app;
+    }
+
+    /** Sign a receive request exactly as the threadlineAuth middleware verifies:
+     *  Ed25519 over (METHOD\nPATH\nNONCE\nTIMESTAMP\n + sha256(JSON.stringify(body))). */
+    function signedReceiveHeaders(body: unknown) {
+      const nonce = crypto.randomBytes(16).toString('hex');
+      const timestamp = new Date().toISOString();
+      const bodyHash = crypto.createHash('sha256').update(JSON.stringify(body)).digest();
+      const signedData = Buffer.concat([
+        Buffer.from(`POST\n/threadline/messages/receive\n${nonce}\n${timestamp}\n`, 'utf-8'),
+        bodyHash,
+      ]);
+      const signature = sign(aPriv, signedData).toString('hex');
+      return {
+        Authorization: `Threadline-Relay ${abA.getRelayToken('agent-b')!}`,
+        'X-Threadline-Agent': 'agent-a',
+        'X-Threadline-Nonce': nonce,
+        'X-Threadline-Timestamp': timestamp,
+        'X-Threadline-Signature': signature,
+      };
+    }
+
+    it('responds {accepted, async} BEFORE the slow spawn finishes, then runs it in the background', async () => {
+      completeHandshake();
+
+      // A handler we hold open: started=true on entry, finished=true only once
+      // we release it — so we can prove the response returned WITHOUT awaiting.
+      let started = false;
+      let finished = false;
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => { release = r; });
+      const router = {
+        handleInboundMessage: async () => {
+          started = true;
+          await held;
+          finished = true;
+          // Deliberately a DIFFERENT threadId than the body's, to prove the
+          // accept response sources threadId from the envelope (not the router
+          // result it no longer awaits).
+          return { handled: true, threadId: 'router-thread' };
+        },
+      };
+
+      const body = { message: { threadId: 't-1', from: { agent: 'agent-a' }, body: 'hi' } };
+      const res = await request(appBWithRouter(router))
+        .post('/threadline/messages/receive')
+        .set(signedReceiveHeaders(body))
+        .send(body);
+
+      // Accepted immediately, async flagged, no spawn-outcome fields.
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ accepted: true, async: true, threadId: 't-1' });
+      expect(res.body.spawned).toBeUndefined();
+      expect(res.body.resumed).toBeUndefined();
+      // The handler STARTED but the response did NOT await it (still pending).
+      expect(started).toBe(true);
+      expect(finished).toBe(false);
+
+      // Background work completes after we release it.
+      release();
+      await new Promise((r) => setImmediate(r));
+      expect(finished).toBe(true);
+    });
+
+    it('still returns 200 accepted even when the background spawn rejects', async () => {
+      await completeHandshake();
+      const router = {
+        handleInboundMessage: async () => { throw new Error('spawn boom'); },
+      };
+      const body = { message: { threadId: 't-2', from: { agent: 'agent-a' }, body: 'yo' } };
+      const res = await request(appBWithRouter(router))
+        .post('/threadline/messages/receive')
+        .set(signedReceiveHeaders(body))
+        .send(body);
+
+      // A background rejection can't break a response that already returned.
+      expect(res.status).toBe(200);
+      expect(res.body.accepted).toBe(true);
+      await new Promise((r) => setImmediate(r));
+    });
+  });
+
+  // Robustness Phase 2 (D-C): the placeholder GET /threadline/messages/thread/:id
+  // that unconditionally returned `{ messages: [], messageCount: 0 }` (a second F3
+  // hard-zero source) is DELETED. Canonical history is read via the bearer-gated
+  // GET /threadline/threads/:id on the agent server; the participant-authorized
+  // convergence backfill replaces this relay-auth surface.
+  describe('POST /threadline/threads/backfill (convergence backfill)', () => {
     it('requires authentication', async () => {
-      const res = await request(appA).get('/threadline/messages/thread/test-thread');
+      const res = await request(appA).post('/threadline/threads/backfill').send({ threadId: 'test-thread', missingDigests: [] });
 
       expect(res.status).toBe(401);
       expect(res.body.error.code).toBe('TL_AUTH_MISSING');

@@ -71,9 +71,17 @@ describe('Threadline keystone — wiring integrity (feature alive)', () => {
     // This was caught in test-as-self; the assertion guards against regression.
     const relayAgentIdx = routesSrc.indexOf("router.post('/messages/relay-agent'");
     expect(relayAgentIdx).toBeGreaterThan(0);
-    const route = routesSrc.slice(relayAgentIdx, relayAgentIdx + 8000);
+    // Window sized to span the route body up to the handleInboundMessage spawn.
+    // Widened from 12000 → 16000 after Robustness Phase 2 added the canonical-log
+    // append funnel + threadSync honoring to this inbound path (the spawn moved to
+    // ~13.2k); the gate-before-spawn ORDER this test guards is unchanged.
+    const route = routesSrc.slice(relayAgentIdx, relayAgentIdx + 16000);
     const gateIdx = route.indexOf('evaluateAndRecordInbound(ctx.warrantsReplyGate, ctx.conversationStore');
-    const routerIdx = route.indexOf('ctx.threadlineRouter.handleInboundMessage(envelope)');
+    // Match the call by method+first-arg so the assertion survives formatting of
+    // the `ctx.threadlineRouter` receiver AND extra args (the local-attribution fix
+    // passes `handleInboundMessage(envelope, undefined, { inboundSenderFingerprint })`).
+    // The gate still runs BEFORE this spawn call — which is what this guards.
+    const routerIdx = route.indexOf('handleInboundMessage(envelope');
     expect(gateIdx).toBeGreaterThan(0);
     expect(routerIdx).toBeGreaterThan(gateIdx); // gate runs BEFORE the spawn
     expect(route.slice(gateIdx, routerIdx)).toMatch(/if\s*\(\s*decision\.suppress\s*\)/);

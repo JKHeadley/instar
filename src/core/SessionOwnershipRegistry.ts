@@ -1,0 +1,231 @@
+/**
+ * SessionOwnershipRegistry — the distributed per-session ownership registry
+ * (Multi-Machine Session Pool §L3). Holds a SessionOwnershipRecord per session;
+ * answers "which machine holds session X"; and mutates ownership via a per-session
+ * CAS at `ownershipEpoch+1`, reusing the §L−1 single-ref fast-forward discipline
+ * (the same pattern as GitLeaseStore/LeaseCoordinator) but at per-session
+ * granularity — thousands of independent CAS points, one ref-file per session.
+ *
+ * The dangerous parts (CAS contention, per-session replay) are driven through
+ * injected seams so they are unit-testable with in-memory fakes:
+ *  - `store` — the durable CAS substrate (git single-ref fast-forward push per
+ *    session). `casWrite(candidate)` returns ok:true if the candidate landed
+ *    (fast-forwarded from the current epoch), or ok:false + the freshly-observed
+ *    record after a reject+reread (a peer won the race). MUST NOT force-push.
+ *  - `seenNonce`/`recordNonce` — the per-session-scoped replay guard
+ *    (keyed on {sessionKey, sender, epoch} — see SessionOwnership.ownershipNonceKey).
+ *
+ * The FSM (legal transitions, run-fence, output-exclusion) lives in
+ * SessionOwnership.ts; this module enforces the CAS + replay + retry-backoff +
+ * lifecycle around it.
+ */
+
+import {
+  applyOwnershipAction,
+  ownershipNonceKey,
+  type OwnershipAction,
+  type OwnershipReason,
+  type SessionOwnershipRecord,
+} from './SessionOwnership.js';
+
+/**
+ * In-memory per-session ownership store with fast-forward CAS — correct for a
+ * single machine (no cross-machine contention) and for the dark v0.1 state.
+ * The CROSS-MACHINE durable store (git single-ref-per-session push, mirroring
+ * GitLeaseStore) swaps in for the Track-H real-hardware proof; the registry/FSM/
+ * CAS logic above is store-agnostic. A candidate lands only if it fast-forwards
+ * from the current epoch (`candidate.ownershipEpoch === current.epoch + 1`).
+ */
+export class InMemorySessionOwnershipStore {
+  private recs = new Map<string, import('./SessionOwnership.js').SessionOwnershipRecord>();
+  /** Interface-level commit hook (standby-write-reconciliation §3.2, round-2
+   *  S4): fired at THIS substrate's own mutation point (`casWrite` — it has no
+   *  `persist()` funnel), so a WriteAdmission ownership index warmed against
+   *  this store is never warm-once-then-permanently-stale. */
+  onCommit?: (record: import('./SessionOwnership.js').SessionOwnershipRecord) => void;
+  read(sessionKey: string) {
+    return this.recs.get(sessionKey) ?? null;
+  }
+  casWrite(candidate: import('./SessionOwnership.js').SessionOwnershipRecord) {
+    const current = this.recs.get(candidate.sessionKey) ?? null;
+    const curEpoch = current?.ownershipEpoch ?? 0;
+    // Fast-forward = MONOTONIC advance (like a git fast-forward push, which may
+    // advance several commits) — not exactly +1. The epoch floor (finding #7)
+    // legitimately jumps a fresh post-restart record past journal-consumed
+    // epochs; cas() is synchronous, so within this in-process store a stale
+    // competing candidate still loses (it computed from the same `current`
+    // and proposes an epoch ≤ the landed one).
+    if (candidate.ownershipEpoch > curEpoch) {
+      this.recs.set(candidate.sessionKey, candidate);
+      try {
+        this.onCommit?.(candidate);
+      } catch {
+        /* @silent-fallback-ok — the commit hook is an observability consumer
+           (WriteAdmission ownership index); a listener throw must never fail the
+           ownership CAS itself. The index's own ingest never throws by design. */
+      }
+      return { ok: true, observed: candidate };
+    }
+    return { ok: false, observed: current };
+  }
+  all() {
+    return [...this.recs.values()];
+  }
+}
+
+/** Durable per-session CAS substrate (git single-ref fast-forward push). */
+export interface SessionOwnershipStore {
+  /** Read the current committed record for a session (null if none). */
+  read(sessionKey: string): SessionOwnershipRecord | null;
+  /**
+   * Attempt to land `candidate` as the new record via a fast-forward push from
+   * the current epoch. ok:true if it landed; ok:false + observed (the
+   * freshly-reread record) if a peer advanced first (non-fast-forward reject).
+   */
+  casWrite(candidate: SessionOwnershipRecord): { ok: boolean; observed: SessionOwnershipRecord | null };
+  /**
+   * Every known record from the store's in-memory cache (StrandedTopicSentinel
+   * scan). Optional: a store that can't enumerate cheaply omits it and the
+   * registry's `all()` reads empty. Both shipped stores (InMemory + Local)
+   * implement it.
+   */
+  all?(): SessionOwnershipRecord[];
+  /**
+   * Interface-level commit hook (standby-write-reconciliation §3.2, round-2
+   * S4): assignable listener each substrate fires at its OWN mutation point —
+   * `LocalSessionOwnershipStore` inside `persist()` (after `cache.set`),
+   * `InMemorySessionOwnershipStore` inside `casWrite()` at its `recs.set`.
+   * BOTH mutation paths (`registry.cas()` and `OwnershipApplier`) funnel
+   * through the store's commit point, so a consumer (the WriteAdmission
+   * ownership index) can never miss a transition the local store saw.
+   * A listener throw must never fail the CAS (substrates guard the call).
+   */
+  onCommit?: (record: SessionOwnershipRecord) => void;
+}
+
+export interface SessionOwnershipRegistryDeps {
+  store: SessionOwnershipStore;
+  /** Has this per-session nonce been seen (replay guard)? */
+  seenNonce: (key: string) => boolean;
+  /** Record a per-session nonce as seen (called only on a successful CAS). */
+  recordNonce: (key: string) => void;
+  now?: () => number;
+  /** Eviction age (ms) for `released` records. Default 86400000 (24h). */
+  releasedEvictionMs?: number;
+  /**
+   * Durable epoch floor for a session (live-matrix finding #7): the newest
+   * JOURNALED epoch, so a post-restart re-place on this in-memory store never
+   * reuses an epoch the coherence journal already consumed (its (topic, epoch)
+   * op-key would silently dedupe the new placement evidence away). Best-effort:
+   * a throw reads as 0 — the floor is monotonicity insurance, never a gate.
+   */
+  epochFloorOf?: (sessionKey: string) => number;
+  logger?: (msg: string) => void;
+}
+
+export type CasResult =
+  | { ok: true; record: SessionOwnershipRecord }
+  | { ok: false; reason: OwnershipReason | 'replayed-nonce' | 'cas-lost'; observed: SessionOwnershipRecord | null };
+
+export class SessionOwnershipRegistry {
+  private readonly d: SessionOwnershipRegistryDeps;
+  private casConflicts = 0;
+  private casRetryExhaustions = 0;
+
+  constructor(deps: SessionOwnershipRegistryDeps) {
+    this.d = deps;
+  }
+  private now(): number {
+    return (this.d.now ?? Date.now)();
+  }
+
+  read(sessionKey: string): SessionOwnershipRecord | null {
+    return this.d.store.read(sessionKey);
+  }
+
+  /**
+   * Every known ownership record from the underlying store's in-memory cache
+   * (StrandedTopicSentinel scan — stranded-inbound-self-heal). A store without an
+   * `all()` (none ship today) reads as empty: the sentinel then has nothing to
+   * scan (the safe direction — it can only raise an item it has evidence for).
+   */
+  all(): SessionOwnershipRecord[] {
+    return this.d.store.all?.() ?? [];
+  }
+
+  /** The current owner machine of a session (null if none / released). */
+  ownerOf(sessionKey: string): string | null {
+    const r = this.d.store.read(sessionKey);
+    if (!r || r.status === 'released') return null;
+    return r.ownerMachineId;
+  }
+
+  /**
+   * The machine the router last assigned for a session (§L4 RBAC `claim` check):
+   * the placed-owner while `placing`, or the transfer target while `transferring`.
+   */
+  placementTargetOf(sessionKey: string): string | null {
+    const r = this.d.store.read(sessionKey);
+    if (!r) return null;
+    if (r.status === 'placing') return r.ownerMachineId;
+    if (r.status === 'transferring') return r.transferTo ?? null;
+    return null;
+  }
+
+  /**
+   * Apply an ownership action via CAS (§L3). Runs the FSM transition, the
+   * per-session replay check, then the durable fast-forward CAS. On a lost CAS
+   * (a peer advanced the epoch first) returns `cas-lost` + the observed record —
+   * the caller backs off (ownershipCasRetryBackoffMs) or stands down. The nonce
+   * is recorded ONLY on a landed CAS (a rejected attempt never burns a nonce).
+   */
+  cas(action: OwnershipAction, ctx: { sessionKey: string; sender: string; nonce: string }): CasResult {
+    const current = this.d.store.read(ctx.sessionKey);
+    let epochFloor = 0;
+    try {
+      epochFloor = this.d.epochFloorOf?.(ctx.sessionKey) ?? 0;
+    } catch { /* @silent-fallback-ok: the journal-derived epoch floor is monotonicity insurance (finding #7) — a reader failure must never block an ownership CAS, it just risks the pre-fix dedupe behavior for this one call */
+    }
+    const t = applyOwnershipAction(current, action, { sessionKey: ctx.sessionKey, nonce: ctx.nonce, now: this.now(), epochFloor });
+    if (!t.ok) return { ok: false, reason: t.reason, observed: current };
+
+    const nkey = ownershipNonceKey(ctx.sessionKey, ctx.sender, t.next.ownershipEpoch, ctx.nonce);
+    if (this.d.seenNonce(nkey)) return { ok: false, reason: 'replayed-nonce', observed: current };
+
+    const res = this.d.store.casWrite(t.next);
+    if (!res.ok) {
+      this.casConflicts++;
+      this.d.logger?.(`[ownership] CAS lost for ${ctx.sessionKey} → observed epoch ${res.observed?.ownershipEpoch ?? 0}`);
+      return { ok: false, reason: 'cas-lost', observed: res.observed };
+    }
+    this.d.recordNonce(nkey);
+    return { ok: true, record: t.next };
+  }
+
+  /** Observability counters (spec §L3: /pool ownership.casConflicts/casRetryExhaustions). */
+  noteRetryExhaustion(): void {
+    this.casRetryExhaustions++;
+  }
+  metrics(): { casConflicts: number; casRetryExhaustions: number } {
+    return { casConflicts: this.casConflicts, casRetryExhaustions: this.casRetryExhaustions };
+  }
+}
+
+/**
+ * Exponential-jitter retry delay for a lost CAS (spec §L3): `ownershipCasRetryBackoffMs`
+ * 50→500ms, biased so the lowest-machineId contender retries first (a client-side
+ * ordering hint ONLY — never the CAS arbiter; the remote ref-update decides the winner).
+ */
+export function ownershipRetryDelayMs(
+  retryCount: number,
+  selfMachineId: string,
+  contenderMachineId: string,
+  opts: { baseMs?: number; maxMs?: number } = {},
+): number {
+  const base = opts.baseMs ?? 50;
+  const max = opts.maxMs ?? 500;
+  const backoff = Math.min(max, base * 2 ** Math.max(0, retryCount - 1));
+  // Lowest machineId retries first (shorter delay) — ordering hint, not arbitration.
+  const yieldBias = selfMachineId > contenderMachineId ? backoff : Math.floor(backoff / 2);
+  return Math.min(max, yieldBias);
+}

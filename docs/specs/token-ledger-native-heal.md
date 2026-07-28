@@ -69,3 +69,67 @@ Revert four files (`src/memory/NativeModuleHealer.ts`, `src/server/AgentServer.t
 ## Convergence Notes
 
 Single-iteration. Conversational alignment with Justin on Telegram topic 8615 (2026-05-15, immediately following the PromptGate token-burn fix) established the scope: "restore /tokens/* endpoints by adopting the existing healer." The PROP-399 design and W-1 extension already cover the cryptographic surface; this PR is a pure consumer-side addition.
+
+## Amendment (2026-05-29): shared prior-heal retry — finish AC#7
+
+**This amendment is in-scope for the original approval** (its sole purpose is to make AC#7 — "/tokens/summary returns live data after a Node upgrade" — actually hold). It was surfaced live while dogfooding the Codey agent (Telegram topic 13435): on a node-upgraded agent, `/memory/search` (SemanticMemory) returned 200 while `/tokens/summary` (TokenLedger) still returned `{"error":"token ledger unavailable"}` (503). The binding on disk was correct (ABI-127, loads under the running Node 22), the heal log was empty, yet TokenLedger stayed dark.
+
+### Residual defect
+
+The original fix routed TokenLedger through `openWithHealSync` (✓), but the **once-per-process heal guard** (`healAttempted`) — described at "Fix" point 2 above as a loop-safety feature — is too coarse. It conflates two distinct concerns:
+
+1. *"Don't run the ~30s `npm rebuild` again this process."* — correct; the rebuild is expensive.
+2. *"Don't even retry the open."* — wrong after a **successful** prior rebuild.
+
+Boot ordering makes this bite: the FIRST sqlite subsystem to construct (e.g. `SemanticMemory`) hits the ABI mismatch, heals successfully, rebuilds the binding on disk, and sets `healAttempted = true`. Any LATER subsystem (`TokenLedger`, `TopicMemory`, `MemoryIndex`) that then constructs and throws `NODE_MODULE_VERSION` hits `if (this.healAttempted) → throw "(heal previously attempted)"` and is permanently dark for the process — **even though the binding is already fixed and a cheap re-require would succeed.** Net: every sqlite subsystem opened after the first one to heal stays broken until the next restart.
+
+### Fix
+
+In both `openWithHeal` (async) and `openWithHealSync` (sync), when `healAttempted === true`, branch on the prior outcome (`this.lastResult.success`):
+
+- **Prior heal SUCCEEDED** → the on-disk binding is already correct. `clearBetterSqlite3Cache()` (drops the stale cached `.node` require entry) then retry `opener()` **once**. No second rebuild. The lazy `bindings()` require inside `new Database()` re-loads the now-correct binding. If the retry still throws, surface that error honestly.
+- **Prior heal FAILED** → a retry can't help; throw with the existing `(heal previously attempted and failed: …)` context (unchanged behavior).
+
+This preserves the once-per-process *rebuild* guard (the expensive step still runs at most once) while removing the spurious *open* lockout. Purely additive to the decision in the `healAttempted` block; the non-mismatch passthrough, first-heal, and prior-failure paths are unchanged.
+
+### Acceptance Criteria (amendment)
+
+A1. After SemanticMemory heals successfully, a subsequent `openWithHealSync('TokenLedger', …)` whose first open throws `NODE_MODULE_VERSION` clears the cache and retries, returning the opened handle — **without** a second `healBetterSqlite3Sync` call.
+A2. Same for the async `openWithHeal` surface.
+A3. When the prior heal FAILED, a later caller still throws `(heal previously attempted and failed: …)` and does NOT retry (regression guard — both sides of the boundary).
+A4. A persistent post-retry failure surfaces the original `NODE_MODULE_VERSION` error directly (no swallowing).
+A5. All pre-existing healer tests keep passing.
+
+### Rollback (amendment)
+
+Revert the two `if (this.healAttempted)` blocks in `src/memory/NativeModuleHealer.ts` to the unconditional-throw form. One file, one revert, no state/migration/contract change. The reverted-to state is the pre-amendment behavior (TokenLedger dark after another subsystem heals first) — strictly the bug we are fixing, never worse.
+
+## Amendment 2 (2026-05-29): schema-migration ordering — a SECOND cause of `/tokens/*` 503
+
+**Also in-scope for the original approval** (same goal: AC#7, "/tokens/* returns live data"). Surfaced while verifying the heal fix during the Codey dogfooding run: Echo's `/tokens/summary` returned 503 too, but for a DIFFERENT reason than the ABI lockout above — `SqliteError: no such column: attribution_key` at TokenLedger init. Echo's `token_events` table was created by an instar version that pre-dates the `attribution_key` column (verified on-disk).
+
+### Residual defect
+
+The `SCHEMA` DDL array in `src/monitoring/TokenLedger.ts` ran the `attribution_key`-dependent index **before** the migration that adds the column:
+
+1. `CREATE TABLE IF NOT EXISTS token_events (… attribution_key …)` — a no-op on a pre-attribution DB (table already exists *without* the column), so the column is NOT added here.
+2. `CREATE INDEX IF NOT EXISTS idx_token_events_key_ts ON token_events(attribution_key, ts)` — references `attribution_key`, which does not exist yet → throws `no such column: attribution_key`.
+3. The init loop's catch swallows **only** `/duplicate column name/i`, so this error is **rethrown** → TokenLedger init fails → `/tokens/*` 503.
+4. The `ALTER TABLE token_events ADD COLUMN attribution_key …` migration that would have fixed it sat *after* the failing index in the array, so it never ran.
+
+Fleet-wide: every agent whose `token_events` table predates `attribution_key` gets a permanent TokenLedger 503 (independent of, and unfixed by, Amendment 1's ABI heal).
+
+### Fix
+
+Reorder `SCHEMA` so the `ALTER TABLE token_events ADD COLUMN attribution_key` migration runs **immediately after** the `CREATE TABLE token_events` and **before** any index/query that references the column. On a fresh DB the column already exists → the ALTER throws `duplicate column name` → swallowed (existing behavior); on a pre-attribution DB the ALTER adds the column → the index and the `attribution_key`-referencing prepared statements then succeed. Establishes the invariant (in a code comment): **a column-adding migration MUST precede any index or query that references the new column.** Pure reorder of `SCHEMA` entries; no logic change.
+
+### Acceptance Criteria (amendment 2)
+
+B1. Constructing `TokenLedger` against a DB whose `token_events` predates `attribution_key` does NOT throw and migrates the column in (PRAGMA table_info shows it).
+B2. After migration, `summary()` and `byAttributionKey()` work and the pre-existing row is backfilled with the `'unknown::pre-attribution'` DEFAULT (not dropped).
+B3. Re-initialising an already-migrated DB is idempotent (the duplicate-column ALTER is swallowed).
+B4. Fresh-DB construction (the common case) is unchanged — all pre-existing TokenLedger tests keep passing.
+
+### Rollback (amendment 2)
+
+Revert the `SCHEMA` reorder in `src/monitoring/TokenLedger.ts`. One file, no state/migration/contract change. The reverted-to state is the pre-amendment behavior (pre-attribution DBs stay 503) — strictly the bug being fixed, never worse.

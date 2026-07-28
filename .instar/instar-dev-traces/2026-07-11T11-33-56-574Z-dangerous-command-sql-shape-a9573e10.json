@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "sessionId": "46e7cabc-4f2b-439e-a7a2-a88f6a73f395",
+  "timestamp": "2026-07-11T11:33:56.574Z",
+  "artifactPath": "upgrades/side-effects/dangerous-command-sql-shape.md",
+  "artifactSha256": "7e56b85af5a5adf9f17ce002a66088e23044bfb49e42a1e4ba2ad5cfa6bd96fd",
+  "specPath": "docs/specs/codex-enforcement-hook-layer.md",
+  "coveredFiles": [
+    ".instar/hooks/instar/dangerous-command-guard.sh",
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Safety-command classifier precision change; preserves fail-closed ambiguity and all non-SQL patterns",
+  "secondPass": "false",
+  "reviewerConcurred": false
+}

@@ -1,0 +1,24 @@
+{
+  "ts": "2026-07-12T09:20:34.017Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 1133,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "citation": "tests/unit/machine-coherence-anchors.test.ts",
+    "enforcement": "ratchet",
+    "howCaught": "Every self-triggered emission is structurally bounded: durable per-key 24h derived-raise latches (restart-proof), per-episode once-per-class records, resolve-note bounding (one per item per reopenWindowMs; latched-flapping to jsonl only), wave 24h dedupe, 64-event flap clamp, per-day cap + append budget retained, plus the fail-loud escalationRaiseFailed invariant. Convergence proven by the anchors/narration/rope-router unit suites (bounded steady state under sustained pressure)."
+  },
+  "verdict": "blocked"
+}

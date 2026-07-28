@@ -19,7 +19,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { ConversationStore, type Conversation } from './ConversationStore.js';
+import { findRolloutFileSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
+import { findGeminiSessionFileSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
+import { ConversationStore, type Conversation, type ConversationState } from './ConversationStore.js';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -44,6 +46,12 @@ export interface ThreadResumeEntry {
   spawnMode?: 'interactive' | 'pipe';
   originTopicId?: number;
   originSessionName?: string;
+}
+
+export interface ThreadResumeSessionMatch {
+  threadId: string;
+  entry: ThreadResumeEntry;
+  conversationState: ConversationState;
 }
 
 // ── Field bridge ────────────────────────────────────────────────
@@ -110,6 +118,7 @@ function applyEntryToConversation(entry: ThreadResumeEntry, draft: Conversation)
 
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const RESOLVED_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_INACTIVE_RETIRE_MS = 24 * 60 * 60 * 1000;
 
 // ── Implementation ──────────────────────────────────────────────
 
@@ -151,6 +160,20 @@ export class ThreadResumeMap {
     // topic-linkage entries still expire via ConversationStore's TTL, and the
     // topic's real liveness is re-checked at route time (TopicLinkageHandler.topicActive).
     if (!entry.pinned && entry.originTopicId === undefined && !this.jsonlExists(entry.uuid)) {
+      // The session JSONL doesn't exist — usually because the uuid is still the
+      // spawn-time placeholder that onSessionComplete / the resume heartbeat never
+      // upgraded to a real transcript id (the production A2A continuity break: every
+      // peer-to-peer follow-up cold-spawned a memoryless session). Normally
+      // unrecoverable → null → cold-spawn. BUT if the entry's tmux session is still
+      // ALIVE, the live-inject path (ThreadlineRouter.tryInjectIntoLiveSession →
+      // messageDelivery.deliverToSession) can deliver the follow-up straight into the
+      // running session — no transcript needed. Returning the entry here is what lets
+      // a rapid A2A follow-up inject into the session already handling the thread
+      // instead of cold-spawning a fresh one (spec Layer 2, warm-inject). If the
+      // session is gone too, it is genuinely unrecoverable → null.
+      if (entry.sessionName && this.sessionAlive(entry.sessionName)) {
+        return entry;
+      }
       return null;
     }
     return entry;
@@ -190,15 +213,44 @@ export class ThreadResumeMap {
 
   /** Find all (non-expired) threads with a specific remote agent. */
   getByRemoteAgent(agentName: string): Array<{ threadId: string; entry: ThreadResumeEntry }> {
+    this.retireInactive();
     return this.store.getByParticipant(agentName)
       .map(c => ({ threadId: c.threadId, entry: conversationToEntry(c) }));
   }
 
   /** List all active or idle threads. */
   listActive(): Array<{ threadId: string; entry: ThreadResumeEntry }> {
+    this.retireInactive();
     return this.store.listActive()
       .map(c => ({ threadId: c.threadId, entry: conversationToEntry(c) }))
       .filter(({ entry }) => entry.state === 'active' || entry.state === 'idle');
+  }
+
+  /** Reverse lookup live conversation entries by their bound tmux session name. */
+  getBySessionName(sessionName: string): ThreadResumeSessionMatch[] {
+    return this.store.listActive()
+      .filter(c => c.boundSessionName === sessionName)
+      .map(c => ({
+        threadId: c.threadId,
+        entry: conversationToEntry(c),
+        conversationState: c.state,
+      }));
+  }
+
+  /** Reverse lookup live conversation entries by their bound SessionManager UUID. */
+  getBySessionUuid(uuid: string): ThreadResumeSessionMatch[] {
+    return this.store.listActive()
+      .filter(c => c.sessionUuid === uuid)
+      .map(c => ({
+        threadId: c.threadId,
+        entry: conversationToEntry(c),
+        conversationState: c.state,
+      }));
+  }
+
+  /** Archive stale non-pinned active/idle/open conversations. */
+  retireInactive(maxInactiveMs: number = DEFAULT_INACTIVE_RETIRE_MS, now: Date = new Date()): number {
+    return this.store.retireInactive(maxInactiveMs, now);
   }
 
   /** Cross-machine failover: demote a source machine's active threads to idle. */
@@ -311,18 +363,55 @@ export class ThreadResumeMap {
     return now - new Date(ref).getTime() > MAX_AGE_MS;
   }
 
+  /**
+   * True if a tmux session by this EXACT name currently exists. Used by get() to
+   * keep a resume entry alive for the live-inject path even when its transcript
+   * JSONL doesn't exist yet (placeholder uuid). `=name` forces an exact tmux match
+   * (no prefix/fnmatch) — the same idiom as the resume heartbeat and cli.ts.
+   * Protected so unit tests can stub liveness deterministically via a subclass.
+   */
+  protected sessionAlive(sessionName: string): boolean {
+    if (!sessionName) return false;
+    try {
+      return spawnSync(this.tmuxPath, ['has-session', '-t', `=${sessionName}`], { stdio: 'ignore' }).status === 0;
+    } catch {
+      return false;
+    }
+  }
+
   /** Check if a JSONL file exists for the given session UUID. (protected so
    *  tests can bypass the filesystem check via a subclass.) */
   protected jsonlExists(uuid: string): boolean {
     if (!uuid) return false;
+    // Claude: flat ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl.
     const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
-    if (!fs.existsSync(claudeProjectsDir)) return false;
-    try {
-      for (const dir of fs.readdirSync(claudeProjectsDir)) {
-        if (fs.existsSync(path.join(claudeProjectsDir, dir, `${uuid}.jsonl`))) return true;
+    if (fs.existsSync(claudeProjectsDir)) {
+      try {
+        for (const dir of fs.readdirSync(claudeProjectsDir)) {
+          if (fs.existsSync(path.join(claudeProjectsDir, dir, `${uuid}.jsonl`))) return true;
+        }
+      } catch {
+        // Can't check the Claude layout — fall through to the codex layout.
       }
+    }
+    // Codex: date-partitioned $CODEX_HOME/sessions/.../rollout-<ts>-<uuid>.jsonl.
+    // A codex thread has no Claude jsonl, so without this every codex session
+    // looks expired/missing and resume breaks fleet-wide (codex-compat root).
+    try {
+      if (findRolloutFileSync(uuid) !== null) return true;
     } catch {
-      // Can't check — assume not found.
+      // Can't check the codex layout — treat as not found.
+    }
+    // Gemini: ~/.gemini/tmp/<projectHash>/chats/session-<ts>-<short8>.json[l].
+    // A gemini session has neither a Claude jsonl nor a codex rollout, so
+    // without this every gemini session looks expired/missing and resume
+    // breaks fleet-wide (the gemini analog of the codex-compat resume root —
+    // apprenticeship Step 2 §4.0.1). Routed through the gemini adapter's
+    // sessionPaths resolver, NOT a third hardcoded probe inline.
+    try {
+      if (findGeminiSessionFileSync(uuid) !== null) return true;
+    } catch {
+      // Can't check the gemini layout — treat as not found.
     }
     return false;
   }

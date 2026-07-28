@@ -104,7 +104,13 @@ export class LLMSanitizer {
         .replace('{CONTEXT}', context)
         .replace('{TEXT}', truncated);
 
-      const response = await this.provider.evaluate(prompt, this.defaultOptions);
+      // Attribution is inlined at the callsite (the lint's same-file-declaration
+      // rule does not cover constructor property assignments like
+      // this.defaultOptions — the sanctioned fix is the inline spread).
+      const response = await this.provider.evaluate(prompt, {
+        ...this.defaultOptions,
+        attribution: { component: 'LLMSanitizer' },
+      });
       return this.parseResponse(response, truncated, options);
     } catch (err) {
       // If LLM is unavailable, fail safe

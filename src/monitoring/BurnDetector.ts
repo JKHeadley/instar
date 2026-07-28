@@ -1,6 +1,7 @@
 /**
  * BurnDetector — emits a structured signal when a single attribution_key
- * crosses configured spend thresholds.
+ * crosses configured fresh-cost thresholds. Cache reads remain visible in the
+ * ledger's gross totals but never increase burn share or rate.
  *
  * Phase 3 of docs/specs/token-burn-detection-and-self-heal.md.
  *
@@ -27,11 +28,28 @@
 
 import type { TokenLedger, AttributionKeyRow } from './TokenLedger.js';
 import type { DegradationReporter } from './DegradationReporter.js';
+import { PRE_ATTRIBUTION_KEY } from './AttributionResolver.js';
+
+/** Backward-compatible for test doubles and older ledger adapters. */
+function burnTokens(row: AttributionKeyRow): number {
+  return row.freshTokens ?? row.totalTokens;
+}
 
 export interface BurnDetectionConfig {
   enabled: boolean;
   /** Default 0.25 (25%). */
   absoluteShareThreshold: number;
+  /**
+   * Minimum last-1h tokens for the ABSOLUTE-SHARE trigger to fire. A key whose
+   * trailing-24h share is high but whose CURRENT (last-1h) spend is at or below
+   * this floor is not actively burning — it is a finished burst still sitting
+   * inside the 24h window. Gating on it closes the "consumed 67% of 24h spend …
+   * Projected 0 tokens in next 24h" false alarm that otherwise re-fires every
+   * cooldown for a full day after one heavy session ends. Default 0 → require
+   * strictly positive recent activity. (The baseline-divergence trigger already
+   * has its own activity floor, `rollingBaselineFloor`.)
+   */
+  absoluteShareActivityFloorTokens: number;
   /** Default 2 (2x). */
   rollingBaselineMultiplier: number;
   /** Default 10_000_000 tokens/hour. */
@@ -47,6 +65,7 @@ export interface BurnDetectionConfig {
 export const DEFAULT_BURN_DETECTION_CONFIG: BurnDetectionConfig = {
   enabled: true,
   absoluteShareThreshold: 0.25,
+  absoluteShareActivityFloorTokens: 0,
   rollingBaselineMultiplier: 2,
   rollingBaselineFloor: 10_000_000,
   perKeyAlertCooldownMs: 3_600_000,
@@ -74,6 +93,13 @@ export interface BurnDetectorDeps {
   config?: Partial<BurnDetectionConfig>;
   /** Injectable clock for tests. Defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Model-tier escalation §8 mid-run cap monitor (UltraSessionCapMonitor).
+   * Rides THIS detector's tick cadence so no new poller exists
+   * (FABLE-MODEL-ESCALATION-SPEC round-3 Integration-NEW-2). Its tick()
+   * never throws. Optional — absent on agents without the feature wired.
+   */
+  ultraCapMonitor?: { tick(): void };
 }
 
 export class BurnDetector {
@@ -81,6 +107,7 @@ export class BurnDetector {
   private readonly reporter: BurnDetectorDeps['reporter'];
   private readonly config: BurnDetectionConfig;
   private readonly now: () => number;
+  private readonly ultraCapMonitor?: { tick(): void };
   /** First time a given attribution_key was seen. Used for cold-start cutoff. */
   private readonly firstSeen = new Map<string, number>();
   /** Last alert emit time per key — gates per-key alert cooldown. */
@@ -92,6 +119,7 @@ export class BurnDetector {
     this.reporter = deps.reporter;
     this.config = { ...DEFAULT_BURN_DETECTION_CONFIG, ...(deps.config ?? {}) };
     this.now = deps.now ?? (() => Date.now());
+    this.ultraCapMonitor = deps.ultraCapMonitor;
   }
 
   start(): void {
@@ -123,6 +151,10 @@ export class BurnDetector {
    */
   tick(): BurnSignal[] {
     if (!this.config.enabled) return [];
+    // §8 ultra-cap monitor rides this cadence — BEFORE the empty-ledger
+    // early-returns below, so a quiet attribution ledger can't starve the
+    // per-session cap check. Its tick() is self-guarding (never throws).
+    this.ultraCapMonitor?.tick();
     const now = this.now();
     const since24h = now - 24 * 60 * 60 * 1000;
     const since1h = now - 60 * 60 * 1000;
@@ -130,7 +162,7 @@ export class BurnDetector {
 
     const keys24h = this.ledger.byAttributionKey({ sinceMs: since24h });
     if (keys24h.length === 0) return [];
-    const total24h = keys24h.reduce((sum, k) => sum + k.totalTokens, 0);
+    const total24h = keys24h.reduce((sum, k) => sum + burnTokens(k), 0);
     if (total24h <= 0) return [];
 
     // Update first-seen map.
@@ -145,9 +177,10 @@ export class BurnDetector {
     const keys1hMap = new Map(keys1h.map((k) => [k.attributionKey, k]));
 
     for (const key24h of keys24h) {
-      const share = key24h.totalTokens / total24h;
+      const tokens24h = burnTokens(key24h);
+      const share = tokens24h / total24h;
       const key1h = keys1hMap.get(key24h.attributionKey);
-      const tokens1h = key1h ? key1h.totalTokens : 0;
+      const tokens1h = key1h ? burnTokens(key1h) : 0;
       const projectedDaily = tokens1h * 24;
 
       // Skip exempt runbook self-attribution prefix (defence in depth — Phase 4
@@ -162,7 +195,34 @@ export class BurnDetector {
       let baselineMedian7d: number | undefined;
 
       // Trigger 1 — absolute share.
-      if (share > this.config.absoluteShareThreshold) {
+      //
+      // The PRE_ATTRIBUTION_KEY sentinel ("resolver never ran") is EXEMPT from
+      // this trigger. A bucket at 100% share under the sentinel means "we
+      // don't attribute these events yet" — a coverage gap — not "one
+      // component is burning." Before attribution was wired, every event sat
+      // under this sentinel, so absolute-share fired forever (the false
+      // positive this change closes). Per the umbrella spec §"Threshold
+      // logic", the sentinel is a coverage signal, never an absolute-share
+      // burn trigger. The genuinely-residual `unknown::<sessionId>` key
+      // (resolver ran, found no match) is NOT exempt and still alerts —
+      // that's the spec's "alert on unattributable spend." Baseline-divergence
+      // (trigger 2) is intentionally still allowed on the sentinel: a sudden
+      // spike of NEW unattributed spend vs its own 7-day history is worth
+      // surfacing even though its absolute share is not.
+      //
+      // ACTIVITY GATE: absolute-share also requires the key to be actively
+      // spending right now (last-1h tokens above absoluteShareActivityFloorTokens).
+      // A burn alert means "something is spending heavily NOW" — a key whose
+      // 24h share is high but whose current rate is ~zero is a FINISHED burst
+      // still inside the trailing window, not a live burn. Without this gate one
+      // heavy session re-tripped the 25% alarm every cooldown for a full 24h
+      // with a self-contradictory "consumed 67% of 24h spend … Projected 0
+      // tokens" message (the 2026-06-03 noise incident). The baseline-divergence
+      // trigger already gates on rollingBaselineFloor; this brings the
+      // absolute-share trigger to parity.
+      const isPreAttributionSentinel = key24h.attributionKey === PRE_ATTRIBUTION_KEY;
+      const isActivelySpending = tokens1h > this.config.absoluteShareActivityFloorTokens;
+      if (!isPreAttributionSentinel && isActivelySpending && share > this.config.absoluteShareThreshold) {
         trigger = 'absolute-share';
       }
 
@@ -176,7 +236,7 @@ export class BurnDetector {
           const keys7d = this.ledger.byAttributionKey({ sinceMs: since7d });
           const key7d = keys7d.find((k) => k.attributionKey === key24h.attributionKey);
           if (key7d) {
-            baselineMedian7d = key7d.totalTokens / (7 * 24);
+            baselineMedian7d = burnTokens(key7d) / (7 * 24);
             if (tokens1h > this.config.rollingBaselineMultiplier * baselineMedian7d) {
               trigger = 'baseline-divergence';
             }
@@ -191,7 +251,7 @@ export class BurnDetector {
         trigger,
         emittedAt: new Date(now).toISOString(),
         observed: {
-          tokens24h: key24h.totalTokens,
+          tokens24h,
           share24h: share,
           tokensLast1h: tokens1h,
           projectedDaily,
@@ -212,8 +272,7 @@ export class BurnDetector {
             ? `${key24h.attributionKey} consumed ${(share * 100).toFixed(1)}% of 24h spend (threshold ${(this.config.absoluteShareThreshold * 100).toFixed(0)}%)`
             : `${key24h.attributionKey} last-1h rate ${tokens1h.toLocaleString()} tok/h, baseline ${baselineMedian7d?.toLocaleString() ?? '?'} tok/h (multiplier ${this.config.rollingBaselineMultiplier}x)`,
         impact:
-          `Projected ${projectedDaily.toLocaleString()} tokens in next 24h at current rate. ` +
-          `Phase 3 is observation-only; Phase 4 wires alerting and bounded auto-throttle.`,
+          `Projected ${projectedDaily.toLocaleString()} tokens in next 24h at the current rate.`,
       });
     }
 

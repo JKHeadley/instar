@@ -1,0 +1,18 @@
+{
+  "ts": "2026-06-24T11:44:38.365Z",
+  "slug": "ownership-follows-live-work",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 597,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "New capability per the converged spec docs/specs/ownership-follows-live-work.md (Parts A/B/D): ownership follows live work — release-on-complete, claim-on-spawn, and a double-dispatch recovery gate. Dark-flagged behind multiMachine.ownershipFollowsLiveWork. Not a regression fix; closes the mesh seam where a moved/completed topic could leave ownership stale or double-dispatch a recovery."
+  },
+  "verdict": "pass"
+}

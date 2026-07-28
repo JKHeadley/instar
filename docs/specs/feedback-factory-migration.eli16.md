@@ -35,7 +35,7 @@ We do it in careful phases, and only **one** of them is a one-way door:
 
 1. Stand up the new front door + guidance channel (no live traffic yet).
 2. Port the Python sorting brain into Instar's own language (TypeScript), with Dawn checking my port against her original line by line.
-3. Carry over the chef's notebook exactly (both the raw reports and the curated piles).
+3. Carry over the chef's notebook exactly (both the raw reports and the curated piles). Before we move the real notebook, we can run a full **dress rehearsal** any time: fetch the real data, copy it into a throwaway scratch pad exactly the way the real move would, and verify every page survived letter-for-letter — with nothing permanent written anywhere. A passing rehearsal proves the moving van works; it does NOT count as the real move (the readiness light stays off until the genuine carry-over runs and verifies).
 4. Have Dawn quietly send a *copy* of every incoming report to the new place too, run both brains side by side, and **prove they produce the identical sorting** before we trust it.
 5. Only then flip the switch so every agent points at the new place — and Dawn keeps her old door warm as a safety net for a while.
 6. After a quiet period with zero disagreement, retire the old one.

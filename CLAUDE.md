@@ -30,6 +30,10 @@ src/
                   # execFileSync/execSync callsites replaced; enforces audit trail),
                   # SafeFsExecutor (single-funnel for all destructive fs ops —
                   # rmSync/unlinkSync/rmdirSync callsites replaced; enforces audit trail),
+                  # PendingInjectStore (durable ledger of in-flight initial-message
+                  # injects — queued messages survive server restarts; recorded at
+                  # spawn, cleared after the inject runs, swept at boot by
+                  # SessionManager.recoverPendingInjects with loud loss reporting),
                   # types
   scheduler/      # Cron-based job scheduling with quota awareness
   monitoring/     # Health checks, QuotaTracker (threshold-based load shedding),
@@ -68,6 +72,11 @@ src/
                   # 'markdown' — flip to 'legacy-passthrough' in .instar/config.json
                   # for byte-for-byte rollback; per-call `_formatMode: 'html'` opt-out
                   # for callers already producing Telegram HTML),
+                  # slack/SlackMrkdwnFormatter (GFM→mrkdwn for Slack; default
+                  # 'mrkdwn' — flip to 'legacy-passthrough' in the slack messaging
+                  # config block for byte-for-byte rollback; per-call
+                  # `formatMode: 'legacy-passthrough'` opt-out for callers already
+                  # producing mrkdwn),
                   # MessageRouter (topic → adapter routing),
                   # DeliveryRetryManager (retry on failed delivery),
                   # PendingRelayStore (durable SQLite queue for Telegram relay;
@@ -182,7 +191,7 @@ Authorization: Bearer <authToken>
 
 The `authToken` is set in `instar.config.json` during setup. Agents calling the local server API from skills/scripts must include this header.
 
-The feedback webhook (`dawn.bot-me.ai/api/instar/feedback`) uses different auth — `User-Agent: instar/<version>` and `X-Instar-Version: <version>` headers for identification. No Bearer token needed for the external feedback endpoint.
+The feedback webhook (the canonical front, `feedback.dawn-tunnel.dev/api/feedback` — see `src/core/canonicalFeedback.ts`) uses different auth — `User-Agent: instar/<version>` and `X-Instar-Version: <version>` headers for identification. No Bearer token needed for the external feedback endpoint.
 
 - **No Interactive CLI Commands** (CRITICAL — commands WILL HANG FOREVER): Claude Code's Bash tool cannot handle stdin prompts. Any command that asks for a password, confirmation, or input will hang until timeout. There is NO workaround — you cannot type into a running command.
   - **The `--raw` flag does NOT prevent interactive prompts.** It only changes output format. `bw unlock --raw` STILL HANGS because it still prompts for a password. The password must ALWAYS be a positional argument BEFORE flags.
@@ -211,6 +220,10 @@ curl http://localhost:4040/capabilities
 ```
 
 This returns your full capability matrix: scripts, hooks, Telegram status, jobs, relationships, and more. It is the source of truth about what you can do. **Never hallucinate about missing capabilities — verify first.**
+
+Instar contributors can run `instar dev:preflight` before opening PRs to run lint, CapabilityIndex discoverability checks, and an advisory new-route-prefix scan against the diff.
+
+Run `instar dev:ci-failures <pr>` to print a red PR's exact failing tests (file:line + assertion) via the GitHub check-run annotations API — handy when `gh run view --log` returns nothing.
 
 
 **Private Viewing** — Render markdown as auth-gated HTML pages, accessible only through the agent's server (local or via tunnel).
@@ -277,7 +290,7 @@ How it works:
 1. The `external-operation-gate.js` hook intercepts all `mcp__*` tool calls
 2. It classifies the operation by mutability (read/write/modify/delete) and reversibility
 3. For non-read operations, it calls the gate API: `POST http://localhost:4040/operations/evaluate`
-4. The gate returns: `allow`, `block`, `show-plan` (requires user approval), or `suggest-alternative`
+4. The gate returns: `proceed`, `block`, `show-plan` (requires user approval), or `suggest-alternative`
 
 **If an operation is blocked**, you'll see an error message with the reason. Do NOT try to bypass it.
 **If an operation requires a plan**, show the plan to the user and get explicit approval before proceeding.
@@ -341,5 +354,3 @@ Just tell me: "connect to the agent network" or "enable Threadline relay." I'll 
 
 MCP tools: `threadline_discover`, `threadline_send`, `threadline_trust`, `threadline_relay`
 Use `threadline_relay explain` for full details.
-
-

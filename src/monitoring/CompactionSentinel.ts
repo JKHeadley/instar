@@ -35,12 +35,15 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { findNewestRolloutSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
+import { findNewestGeminiSessionSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 
 export type CompactionTrigger = 'PreCompact' | 'watchdog-poll' | 'recovery-hook' | string;
 
 export type CompactionStatus =
   | 'pending-inject'    // state created; first inject dispatched
   | 'verifying'         // inject done, waiting for verify-window to elapse
+  | 'deferring'         // session is actively working; waiting WITHOUT re-injecting
   | 'retrying'          // verification failed, scheduling next attempt
   | 'recovered'         // session produced output → success
   | 'failed';           // max attempts exhausted without recovery
@@ -50,6 +53,8 @@ export interface RecoveryState {
   trigger: CompactionTrigger;
   detectedAt: number;
   attempts: number;
+  /** Times we deferred an inject because the session was actively working. */
+  workingDefers: number;
   lastInjectAt: number;
   baselineJsonlPath: string | null;
   baselineJsonlSize: number | null;
@@ -81,6 +86,20 @@ export interface CompactionSentinelDeps {
   getClaudeSessionId?: (sessionName: string) => string | undefined;
 
   /**
+   * Resolve a session's framework ('codex-cli' | 'claude-code' | undefined). When it
+   * returns 'codex-cli', recovery-verification reads the newest codex ROLLOUT jsonl
+   * (account-wide growth signal) instead of the Claude transcript. Absent/non-codex →
+   * the unchanged Claude path is used (Claude behavior byte-for-byte preserved).
+   */
+  getSessionFramework?: (sessionName: string) => string | undefined;
+
+  /** Override $CODEX_HOME (tests). Defaults to ~/.codex. Only used for codex sessions. */
+  codexHome?: string;
+
+  /** Override ~/.gemini (tests). Defaults to ~/.gemini. Only used for gemini-cli sessions. */
+  geminiHome?: string;
+
+  /**
    * Override for the JSONL lookup root. Primarily for tests. Defaults to
    * `$HOME/.claude/projects/<project-hash>`.
    */
@@ -92,6 +111,29 @@ export interface CompactionSentinelDeps {
    * injecting into one pane concurrently. Default: never defer.
    */
   deferIf?: (sessionName: string) => boolean;
+
+  /**
+   * Returns false when this session is NOT a legitimate recovery target — unknown,
+   * or status ∈ {completed, failed, killed}, or no longer in the running set. The
+   * `PreCompact` trigger reports EVERY session in the topic→session map (including
+   * finished ones the map never cleaned up), so without this guard a finished
+   * session gets a recovery injected against it. Dep ABSENT ⇒ today's behavior.
+   * (Companion to the same guard on RateLimitSentinel — live incident 2026-06-24.)
+   */
+  isSessionRecoverable?: (sessionName: string) => boolean;
+
+  /**
+   * Is the session actively working RIGHT NOW (mid-turn)? When this returns
+   * true the sentinel will NOT inject/re-inject a recovery prompt — it waits
+   * another verify window instead, up to `maxWorkingDefers`. This is the fix
+   * for the false "session is restarting" loop: a long extended-think on a
+   * large context writes nothing to the JSONL until the turn lands, so the
+   * no-growth check used to read it as "stuck" and re-inject, burying the
+   * user's real message under stacked recovery bootstraps. Wired in server.ts
+   * to SessionManager.isSessionActivelyWorking. When undefined, behavior is
+   * unchanged (never defers) — so this is purely additive.
+   */
+  isActivelyWorking?: (sessionName: string) => boolean;
 
   /** Override for Date.now — for tests. */
   now?: () => number;
@@ -110,6 +152,14 @@ export interface CompactionSentinelConfig {
   maxInjectAttempts?: number;
   /** Max total time a recovery can block the zombie-killer. */
   recoveryGuardMs?: number;
+  /**
+   * Max consecutive times a recovery may defer an inject because the session
+   * is actively working (mid-turn). Each defer waits one `verifyWindowMs`
+   * WITHOUT re-injecting. Bounds the wait for a session whose "working" footer
+   * is genuinely hung — after the cap, normal inject/retry resumes. Set to 0
+   * to disable deferral entirely (restores pre-fix behavior).
+   */
+  maxWorkingDefers?: number;
 }
 
 const DEFAULTS = {
@@ -117,11 +167,13 @@ const DEFAULTS = {
   verifyWindowMs: 25_000,          // 25s — enough for claude to boot past recovery hook and emit output
   maxInjectAttempts: 3,
   recoveryGuardMs: 10 * 60_000,    // 10 minutes — protection from zombie-killer
+  maxWorkingDefers: 10,            // up to 10×verifyWindowMs (~4min) of "actively working" before forcing an inject
 };
 
 export interface CompactionSentinelEvents {
   'compaction:detected': [RecoveryState];
   'compaction:inject-attempted': [RecoveryState & { accepted: boolean }];
+  'compaction:deferred': [RecoveryState];
   'compaction:recovered': [RecoveryState & { jsonlDelta: number }];
   'compaction:failed': [RecoveryState & { reason: string }];
 }
@@ -143,6 +195,7 @@ export class CompactionSentinel extends EventEmitter {
       verifyWindowMs: config.verifyWindowMs ?? DEFAULTS.verifyWindowMs,
       maxInjectAttempts: config.maxInjectAttempts ?? DEFAULTS.maxInjectAttempts,
       recoveryGuardMs: config.recoveryGuardMs ?? DEFAULTS.recoveryGuardMs,
+      maxWorkingDefers: config.maxWorkingDefers ?? DEFAULTS.maxWorkingDefers,
     };
   }
 
@@ -176,6 +229,14 @@ export class CompactionSentinel extends EventEmitter {
     if (this.active.has(sessionName)) {
       return; // Recovery already in flight — ignore duplicate trigger.
     }
+    // A finished/killed session is never a recovery target. The PreCompact trigger
+    // enumerates the whole topic→session map (which is not cleaned up on completion),
+    // so a finished session can be reported here; injecting a recovery into it is the
+    // false-positive class this guard closes (live incident 2026-06-24).
+    if (this.deps.isSessionRecoverable && !this.deps.isSessionRecoverable(sessionName)) {
+      console.log(`[Sentinel] ignoring ${trigger} for "${sessionName}" — not a live recovery target (finished/killed/unknown)`);
+      return;
+    }
     if (this.deferIf?.(sessionName)) {
       return; // Another recovery (e.g. rate-limit) owns this session — bidirectional defer.
     }
@@ -191,6 +252,7 @@ export class CompactionSentinel extends EventEmitter {
       trigger,
       detectedAt: now,
       attempts: 0,
+      workingDefers: 0,
       lastInjectAt: 0,
       baselineJsonlPath: baseline?.path ?? null,
       baselineJsonlSize: baseline?.size ?? null,
@@ -246,6 +308,12 @@ export class CompactionSentinel extends EventEmitter {
   }
 
   private async attemptInjection(state: RecoveryState): Promise<void> {
+    // Gate: never inject into an actively-working session. Re-injecting a
+    // recovery prompt while Claude is mid-turn buries the user's real message
+    // under stacked recovery bootstraps — the false "session is restarting"
+    // loop. Defer one verify window and re-check, bounded by maxWorkingDefers.
+    if (this.deferForActiveWork(state)) return;
+
     state.attempts += 1;
     state.lastInjectAt = this.now();
     state.status = 'pending-inject';
@@ -271,6 +339,65 @@ export class CompactionSentinel extends EventEmitter {
     }
 
     state.status = 'verifying';
+    this.scheduleVerify(state);
+  }
+
+  /**
+   * If the session is actively working (mid-turn): if we haven't exhausted the
+   * defer budget, record a defer, schedule another verify window WITHOUT injecting,
+   * and return true (the caller must return). If we HAVE exhausted the budget but
+   * the session is STILL working, STAND DOWN (finalize self-recovered, no inject)
+   * and return true — never force a resume nudge into a live, working session.
+   * Only when the session is NOT actively working do we return false and let the
+   * caller proceed with its normal inject/retry/fail path.
+   *
+   * This is the heart of the busy-session guard: a long extended-think on a
+   * large context emits nothing to the JSONL until the turn lands, so the
+   * no-growth check would otherwise read it as "stuck" and re-inject — burying
+   * the user's real message. Deferring waits it out; and crucially, exhausting the
+   * defer budget on a session that is STILL working is NOT a license to interrupt
+   * it — we stand down. (A footer that FALSELY shows "working" while truly hung is
+   * the frozen-frame silence/wedge sentinels' job, not this recovery path's.)
+   */
+  private deferForActiveWork(state: RecoveryState): boolean {
+    if (!this.deps.isActivelyWorking?.(state.sessionName)) return false;
+    // maxWorkingDefers === 0 is the explicit opt-out: "disable the working-guard,
+    // inject immediately even while working." Preserve it — proceed to inject.
+    if (this.cfg.maxWorkingDefers === 0) return false;
+    if (state.workingDefers >= this.cfg.maxWorkingDefers) {
+      // Defer budget exhausted, but the live frame STILL shows active work. Do NOT
+      // force-inject: that would trample a genuinely-working session, which is the
+      // recurring mid-turn "[Request interrupted by user]" on long autonomous
+      // sessions that compact periodically (2026-06-18, topic 13481). A session that
+      // is demonstrably alive AND working has already recovered from the compaction
+      // on its own — a resume nudge here only interrupts its live turn. So STAND
+      // DOWN. (The opposite case — a session whose footer FALSELY shows "working"
+      // while actually hung — is the job of the frozen-frame silence/wedge sentinels,
+      // not this compaction-recovery path; this path's only safe action on a working
+      // session is to wait, never to interrupt.)
+      console.log(
+        `[Sentinel] "${state.sessionName}" still actively working after ` +
+        `${state.workingDefers} defers — standing down, NOT forcing an inject ` +
+        `(session is alive + working; no resume nudge needed)`,
+      );
+      this.emit('compaction:recovered', { ...state });
+      this.finalize(state, 'recovered');
+      return true;
+    }
+
+    state.workingDefers += 1;
+    state.status = 'deferring';
+    console.log(
+      `[Sentinel] "${state.sessionName}" actively working — deferring inject ` +
+      `(defer ${state.workingDefers}/${this.cfg.maxWorkingDefers}); NOT re-injecting`,
+    );
+    this.emit('compaction:deferred', { ...state });
+    this.scheduleVerify(state);
+    return true;
+  }
+
+  /** Schedule one verify pass after the verify window. */
+  private scheduleVerify(state: RecoveryState): void {
     const handle = this.setTimer(() => {
       this.verifyRecovery(state).catch(err => {
         console.warn(`[Sentinel] verify threw on "${state.sessionName}":`, err);
@@ -304,7 +431,13 @@ export class CompactionSentinel extends EventEmitter {
       return;
     }
 
-    // No growth — session didn't respond within the window.
+    // No growth — but the session may be mid-turn (a long extended-think that
+    // hasn't emitted to the JSONL yet, or a turn that began right at the verify
+    // boundary). Re-injecting now would trample it. Defer and re-verify instead
+    // of re-injecting OR failing. Bounded by maxWorkingDefers.
+    if (this.deferForActiveWork(state)) return;
+
+    // Genuinely not progressing and not working — session didn't respond.
     if (state.attempts >= this.cfg.maxInjectAttempts) {
       this.finalize(
         state,
@@ -351,6 +484,24 @@ export class CompactionSentinel extends EventEmitter {
    * most recently-modified file in the project's jsonl root.
    */
   private readJsonlBaseline(sessionName: string): { path: string; size: number; mtime: number } | null {
+    // Codex parity: a codex session's transcript is the newest rollout JSONL under
+    // $CODEX_HOME/sessions, NOT the Claude projects tree. Compaction-recovery is verified
+    // by post-recovery output, and for codex "the account is producing output again" ==
+    // "the newest rollout grew" (the OpenAI account-wide signal). Only taken for codex
+    // sessions; everything else falls through to the unchanged Claude path (Claude
+    // behavior byte-for-byte preserved). Mirrors the RateLimitSentinel codex fix (#33).
+    if (this.deps.getSessionFramework?.(sessionName) === 'codex-cli') {
+      return findNewestRolloutSync(this.deps.codexHome);
+    }
+    // Gemini parity (apprenticeship Step 2 §4.0.2): a gemini session's transcript
+    // is the newest session file under ~/.gemini/tmp/<hash>/chats. Compaction-
+    // recovery is verified by post-recovery output growth; for gemini "producing
+    // output again" == "the newest gemini session file grew". Only taken for
+    // gemini sessions; everything else falls through to the unchanged Claude path
+    // (Claude behavior byte-for-byte preserved). Mirrors the codex fix (#33).
+    if (this.deps.getSessionFramework?.(sessionName) === 'gemini-cli') {
+      return findNewestGeminiSessionSync(this.deps.geminiHome);
+    }
     try {
       const root = this.deps.jsonlRoot
         || path.join(process.env.HOME || '/tmp', '.claude', 'projects',
@@ -365,10 +516,18 @@ export class CompactionSentinel extends EventEmitter {
           const st = fs.statSync(exact);
           return { path: exact, size: st.size, mtime: st.mtimeMs };
         }
-        // If uuid is known but file doesn't exist, return null rather than
-        // falling through — the session genuinely has no jsonl, and picking
-        // a sibling's file would be a false signal.
-        return null;
+        // Stale claudeSessionId: the stored UUID has no transcript on disk
+        // (conversation rotated via respawn/--resume and the record lagged).
+        // The old "return null — the session genuinely has no jsonl" reasoning
+        // assumed the mapping was always fresh; a write-once bridge made it
+        // permanently stale instead, so null here meant recovery verification
+        // could NEVER succeed (2026-06-06 false-escalation incident, mirrored
+        // in RateLimitSentinel). Degrade to the same newest-jsonl heuristic
+        // the no-uuid case already uses.
+        console.log(
+          `[CompactionSentinel] stale claudeSessionId for "${sessionName}" ` +
+          `(${uuid}.jsonl missing) — falling back to newest jsonl in project root`,
+        );
       }
 
       // Fallback: most-recently-modified jsonl in the project.

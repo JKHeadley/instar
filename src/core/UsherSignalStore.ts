@@ -28,12 +28,25 @@ export interface UsherSignal {
   at: string;
   /** True once the re-surfaced context was actually used (precision numerator). */
   acted: boolean;
+  /**
+   * Which path confirmed the signal was useful (set when `acted` flips true):
+   *   'use'  — the agent's next reply actually used the re-surfaced context.
+   *   'miss' — the user later had to correct the agent on that same context, so
+   *            the nudge was a genuine catch the agent ignored.
+   * Optional for backward-compat with signals/callers that pre-date the split.
+   */
+  actedVia?: 'use' | 'miss';
+  /** ISO timestamp when the signal was marked acted. */
+  actedAt?: string;
 }
 
 export interface UsherMetrics {
   fired: number;
   acted: number;
   last_fired_at: string | null;
+  /** Precision numerator, split by which path confirmed usefulness (observability). */
+  acted_by_use?: number;
+  acted_by_miss?: number;
 }
 
 interface UsherTopicFile {
@@ -116,14 +129,26 @@ export class UsherSignalStore {
     }
   }
 
-  /** Mark a signal as acted-on (precision numerator). Best-effort. */
-  markActed(topicId: number, signalId: string): boolean {
+  /**
+   * Mark a signal as acted-on (precision numerator). Best-effort, idempotent
+   * (a second call on the same signal is a no-op returning false).
+   *
+   * `opts.via` records WHICH correlation path confirmed usefulness ('use' =
+   * the agent used it in a reply; 'miss' = the user had to correct on it) and
+   * is reflected in the split metrics. `opts.at` lets callers stamp a
+   * deterministic timestamp (tests); defaults to now.
+   */
+  markActed(topicId: number, signalId: string, opts?: { via?: 'use' | 'miss'; at?: string }): boolean {
     try {
       const file = this.load(topicId);
       const sig = file.signals.find(x => x.id === signalId);
       if (!sig || sig.acted) return false;
       sig.acted = true;
+      if (opts?.via) sig.actedVia = opts.via;
+      sig.actedAt = opts?.at ?? new Date().toISOString();
       file.metrics.acted += 1;
+      if (opts?.via === 'use') file.metrics.acted_by_use = (file.metrics.acted_by_use ?? 0) + 1;
+      else if (opts?.via === 'miss') file.metrics.acted_by_miss = (file.metrics.acted_by_miss ?? 0) + 1;
       this.save(file);
       return true;
     } catch {

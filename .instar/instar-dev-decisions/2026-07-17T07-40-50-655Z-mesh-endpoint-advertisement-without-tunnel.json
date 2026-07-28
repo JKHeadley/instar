@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-17T07:40:50.655Z",
+  "slug": "mesh-endpoint-advertisement-without-tunnel",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 10,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

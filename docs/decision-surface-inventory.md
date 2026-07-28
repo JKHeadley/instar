@@ -66,7 +66,7 @@
 | Location | Decides | Style | Classification |
 |---|---|---|---|
 | `core/ExternalOperationGate.ts` — `computeRiskLevel()` | Classify op as low/medium/high/critical | Deterministic matrix | **Signal — OK** (pure classifier feeding the decision below) |
-| `core/ExternalOperationGate.ts` — `evaluate()` | Allow / show-plan / suggest-alternative / block | Hybrid (matrix + config + LLM for medium+) | **Authority — OK** (correct hybrid pattern: constrained matrix for low-risk, LLM for judgment cases) |
+| `core/ExternalOperationGate.ts` — `evaluate()` | Proceed / show-plan / suggest-alternative / block | Hybrid (matrix + config + LLM for medium+) | **Authority — OK** (correct hybrid pattern: constrained matrix for low-risk, LLM for judgment cases) |
 | `core/ExternalOperationGate.ts` — `checkServicePermission()` | Service permission enforcement | Deterministic whitelist | **Authority — OK** (hard policy at trust boundary) |
 
 ## 7. Trust & access control

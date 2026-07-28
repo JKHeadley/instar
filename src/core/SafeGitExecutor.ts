@@ -40,6 +40,7 @@ import {
   type SpawnOptions,
 } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -106,6 +107,7 @@ export const READONLY_GIT_VERBS: ReadonlySet<string> = new Set([
   'name-rev',
   'blame',
   'cat-file',
+  'cherry', // read-only: lists +/- patch-equivalence vs an upstream; no mutation
   'grep',
   'shortlog',
   'count-objects',
@@ -118,6 +120,7 @@ export const READONLY_GIT_VERBS: ReadonlySet<string> = new Set([
   'interpret-trailers',
   'check-ref-format',
   'symbolic-ref',
+  'show-ref',
   'for-each-ref',
   'merge-base',
   'reflog', // read-only by default; reflog expire/delete is destructive (caller must use execSync)
@@ -151,9 +154,15 @@ export const SOURCE_TREE_READ_TIER_VERBS: ReadonlySet<string> = new Set([
   'ls-tree',
   'show',
   'log',
+  'diff',
   'cat-file',
   'merge-base',
   'remote', // shape-checked to list/get-url only; needed by resolveCanonicalRemote
+  // read-tier verbs the AgentWorktreeReaper needs against the source tree to
+  // decide whether a worktree is reclaimable. Both are pure reads (no mutation
+  // possible): `status --porcelain` for cleanliness, `cherry` for merged-detection.
+  'status',
+  'cherry',
 ]);
 
 // ── Env denylist ────────────────────────────────────────────────────
@@ -208,7 +217,109 @@ function getHostGitIdentity(): { name?: string; email?: string } {
   };
 }
 
-function sanitizeEnv(callerEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+// ── Per-agent identity isolation (Caroline-class gap 1, Phase-3 Inc-P3a) ──
+//
+// Git's native precedence puts GIT_AUTHOR_*/GIT_COMMITTER_* env vars ABOVE
+// repo-local config. On a shared machine that precedence is exactly the
+// credential/identity-bleed exposure: an agent spawned from a shell that
+// exports another person's GIT_AUTHOR_NAME silently commits as that person,
+// even though the agent's worktree has its own local user.name/user.email
+// (set by `instar worktree create` / init). The fix: when the target repo
+// HAS a local identity configured, the funnel strips inherited identity env
+// vars so the repo-local identity — the per-agent identity — always wins.
+// Repos WITHOUT a local identity keep the long-standing host-identity
+// behavior (injected only-if-empty) so non-agent installs don't break
+// with "Author identity unknown".
+const IDENTITY_ENV_VARS = [
+  'GIT_AUTHOR_NAME',
+  'GIT_AUTHOR_EMAIL',
+  'GIT_COMMITTER_NAME',
+  'GIT_COMMITTER_EMAIL',
+] as const;
+
+// Cache of "does this repo have a local user.name AND user.email" keyed on
+// the directory we run git in. Local config is stable for the life of a
+// process; tests reset via _resetLocalIdentityCacheForTest.
+//
+// IMPORTANT: this probe reads .git/config via fs, NOT via a git subprocess.
+// Spawning `git config --local` here would route through child_process — and
+// unit tests that mock node:child_process with scripted mockReturnValueOnce
+// sequences (e.g. GitSync.test.ts) would have those sequences consumed and
+// misaligned by the probe. The fs read is also faster and side-effect-free.
+const _localIdentityCache = new Map<string, boolean>();
+
+/** Candidate config files that hold "repo-local" identity for `dir`. */
+function localConfigCandidates(dir: string): string[] {
+  const dotGit = path.join(dir, '.git');
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(dotGit);
+  } catch {
+    return []; /* @silent-fallback-ok — not a git repo: legacy host-identity behavior applies */
+  }
+  if (st.isDirectory()) return [path.join(dotGit, 'config')];
+  // Linked worktree: .git is a file containing "gitdir: <path>". Its local
+  // config is the COMMON repo config (and config.worktree when the
+  // extensions.worktreeConfig overlay is enabled) — check both.
+  try {
+    const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
+    if (!m) return [];
+    const gitdir = path.resolve(dir, m[1]);
+    const candidates: string[] = [path.join(gitdir, 'config.worktree')];
+    const commondirFile = path.join(gitdir, 'commondir');
+    if (fs.existsSync(commondirFile)) {
+      const common = path.resolve(gitdir, fs.readFileSync(commondirFile, 'utf-8').trim());
+      candidates.push(path.join(common, 'config'));
+    } else {
+      candidates.push(path.join(gitdir, 'config'));
+    }
+    return candidates;
+  } catch {
+    return []; /* @silent-fallback-ok — unreadable worktree pointer: legacy host-identity behavior applies */
+  }
+}
+
+/** Minimal git-config parse: does the [user] section define `key`? */
+function configDefines(file: string, key: 'name' | 'email'): boolean {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, 'utf-8');
+  } catch {
+    return false; /* @silent-fallback-ok — absent candidate file is simply not a source */
+  }
+  let inUser = false;
+  for (const raw of content.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('[')) {
+      inUser = /^\[user\]/i.test(line);
+      continue;
+    }
+    if (inUser && new RegExp(`^${key}\\s*=\\s*\\S`).test(line)) return true;
+  }
+  return false;
+}
+
+function repoHasLocalIdentity(cwd: string): boolean {
+  let key: string;
+  try {
+    key = path.resolve(cwd);
+  } catch {
+    return false; /* @silent-fallback-ok — unresolvable cwd: legacy host-identity behavior applies */
+  }
+  const cached = _localIdentityCache.get(key);
+  if (cached !== undefined) return cached;
+  const candidates = localConfigCandidates(key);
+  const has =
+    candidates.some((f) => configDefines(f, 'name')) &&
+    candidates.some((f) => configDefines(f, 'email'));
+  _localIdentityCache.set(key, has);
+  return has;
+}
+function _resetLocalIdentityCacheForTest(): void {
+  _localIdentityCache.clear();
+}
+
+function sanitizeEnv(callerEnv?: NodeJS.ProcessEnv, cwd?: string): NodeJS.ProcessEnv {
   // Start from a copy of process.env, then strip the denylist, then strip
   // anything the caller supplied that's on the denylist or that matches
   // GIT_CONFIG_KEY_* / GIT_CONFIG_VALUE_*.
@@ -222,15 +333,57 @@ function sanitizeEnv(callerEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       delete merged[k];
     }
   }
-  // Preserve host git identity before we neutralize global config — without
-  // this, every commit through SafeGitExecutor would fail with "Author
-  // identity unknown" because the global config is at /dev/null. Identity is
-  // not an alias-attack vector; alias rebinding is.
-  const id = getHostGitIdentity();
-  if (id.name && !merged.GIT_AUTHOR_NAME) merged.GIT_AUTHOR_NAME = id.name;
-  if (id.email && !merged.GIT_AUTHOR_EMAIL) merged.GIT_AUTHOR_EMAIL = id.email;
-  if (id.name && !merged.GIT_COMMITTER_NAME) merged.GIT_COMMITTER_NAME = id.name;
-  if (id.email && !merged.GIT_COMMITTER_EMAIL) merged.GIT_COMMITTER_EMAIL = id.email;
+  // Per-agent identity isolation: a repo with its OWN local identity is
+  // authoritative — strip inherited identity env vars so git falls through
+  // to the repo-local config (the agent's identity), never a name that
+  // leaked in from the spawning shell or another principal on the machine.
+  if (repoHasLocalIdentity(cwd ?? process.cwd())) {
+    const stripped = IDENTITY_ENV_VARS.filter((k) => merged[k] !== undefined);
+    for (const k of IDENTITY_ENV_VARS) delete merged[k];
+    if (stripped.length > 0) {
+      // Inc-P3d observability: this is the Caroline-class moment — an inherited
+      // identity tried to ride into a repo that has its own. Record it.
+      appendCredentialResolutionEntry({
+        timestamp: new Date().toISOString(),
+        kind: 'resolution',
+        decision: 'repo-local-strip',
+        strippedKeys: stripped,
+        cwd: cwd ?? process.cwd(),
+      });
+    }
+  } else {
+    // Preserve host git identity before we neutralize global config — without
+    // this, every commit through SafeGitExecutor would fail with "Author
+    // identity unknown" because the global config is at /dev/null. Identity is
+    // not an alias-attack vector; alias rebinding is.
+    const id = getHostGitIdentity();
+    const injected: string[] = [];
+    if (id.name && !merged.GIT_AUTHOR_NAME) {
+      merged.GIT_AUTHOR_NAME = id.name;
+      injected.push('GIT_AUTHOR_NAME');
+    }
+    if (id.email && !merged.GIT_AUTHOR_EMAIL) {
+      merged.GIT_AUTHOR_EMAIL = id.email;
+      injected.push('GIT_AUTHOR_EMAIL');
+    }
+    if (id.name && !merged.GIT_COMMITTER_NAME) {
+      merged.GIT_COMMITTER_NAME = id.name;
+      injected.push('GIT_COMMITTER_NAME');
+    }
+    if (id.email && !merged.GIT_COMMITTER_EMAIL) {
+      merged.GIT_COMMITTER_EMAIL = id.email;
+      injected.push('GIT_COMMITTER_EMAIL');
+    }
+    if (injected.length > 0) {
+      appendCredentialResolutionEntry({
+        timestamp: new Date().toISOString(),
+        kind: 'resolution',
+        decision: 'host-identity-inject',
+        injectedKeys: injected,
+        cwd: cwd ?? process.cwd(),
+      });
+    }
+  }
   // Inject unconditional config disables.
   merged.GIT_CONFIG_GLOBAL = '/dev/null';
   merged.GIT_CONFIG_SYSTEM = '/dev/null';
@@ -564,12 +717,90 @@ function auditLogPath(): string | null {
   return path.join(process.cwd(), '.instar', 'audit', 'destructive-ops.jsonl');
 }
 
+/**
+ * Size cap at which destructive-ops.jsonl rotates (token-audit-completeness
+ * spec). Per-call SafeFs deletions (codex out-dirs) make this a hot-path log
+ * (~1,550 appends/day on a codex-routed agent); without rotation it grows
+ * without bound AND drowns the rare wipe-class entries the audit exists to
+ * surface. Rotation keeps ONE predecessor segment (`.1`).
+ */
+const AUDIT_LOG_ROTATE_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Rotate `file` → `file.1` when it has reached the size cap.
+ *
+ * Rename-based atomic rotation with a RE-STAT IMMEDIATELY BEFORE THE RENAME,
+ * skipping if below cap: two writer processes racing the threshold could
+ * otherwise double-rotate, and the second rename would clobber the FRESHEST
+ * just-rotated segment — the loss would land on the newest audit history,
+ * the worst direction for an audit log. The re-stat shrinks that window to
+ * effectively zero; the live log is never at risk either way.
+ *
+ * Returns the rotation-marker payload to write as the FIRST line of the fresh
+ * segment, or null when no rotation happened. Legitimate rotation must never
+ * be camouflage for audit-log loss (Observation Needs Structure): the marker
+ * records when the segment aged out, how many entries it held, and where the
+ * predecessor went, so "the audit log shrank" stays auditable.
+ */
+function maybeRotateAuditLog(
+  file: string,
+): { agedOutEntries: number; predecessor: string } | null {
+  let size: number;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    // @silent-fallback-ok: no file yet — nothing to rotate; the append below creates it
+    return null;
+  }
+  if (size < AUDIT_LOG_ROTATE_BYTES) return null;
+
+  // Count the entries about to age out (informational; rotation is rare so a
+  // one-time full read is acceptable). Counted BEFORE the re-stat+rename so
+  // the rename stays immediately adjacent to its stat.
+  let agedOutEntries = 0;
+  try {
+    const content = fs.readFileSync(file, 'utf-8');
+    for (let i = 0; i < content.length; i++) {
+      if (content.charCodeAt(i) === 10) agedOutEntries++;
+    }
+  } catch {
+    // ignore — count stays 0, rotation still proceeds
+  }
+
+  const predecessor = `${file}.1`;
+  try {
+    // Re-stat immediately before the rename; skip if another writer already
+    // rotated (the file is now the fresh, below-cap segment).
+    const reStat = fs.statSync(file);
+    if (reStat.size < AUDIT_LOG_ROTATE_BYTES) return null;
+    fs.renameSync(file, predecessor);
+  } catch {
+    // @silent-fallback-ok: racing writer won, or rename failed — the audit
+    // APPEND must never be blocked by rotation housekeeping; an unrotated
+    // log just rotates on the next append
+    return null;
+  }
+  return { agedOutEntries, predecessor: path.basename(predecessor) };
+}
+
 export function appendAuditEntry(entry: AuditEntry): void {
   const file = auditLogPath();
   if (!file) return;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+    const rotation = maybeRotateAuditLog(file);
+    let payload = JSON.stringify(entry) + '\n';
+    if (rotation) {
+      // First entry of each fresh segment is the rotation marker.
+      payload =
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          kind: 'rotation-marker',
+          agedOutEntries: rotation.agedOutEntries,
+          predecessor: rotation.predecessor,
+        }) + '\n' + payload;
+    }
+    fs.appendFileSync(file, payload);
   } catch (err) {
     // Fail-soft: writing audit must never block the operation.
     try {
@@ -588,6 +819,166 @@ function captureCallerFrame(): string {
   // Skip 0 (Error), 1 (this fn), 2 (caller in this file), pick 3.
   const frame = stack[3] || stack[2] || '';
   return frame.trim();
+}
+
+// ── Credential-resolution audit (Caroline-class observability, Inc-P3d) ──
+//
+// Observe-only record of the identity-resolution decisions the funnel makes
+// (which identity surface won and why), plus a boot-time coherence sample of
+// the machine's credential surfaces. Signal-only by construction: a write
+// problem never affects the git operation or server boot. Same dir + env
+// overrides as the destructive-ops audit (INSTAR_AUDIT_LOG_DIR /
+// INSTAR_AUDIT_LOG_DISABLED).
+
+export interface CredentialResolutionEntry {
+  timestamp: string;
+  kind: 'resolution' | 'boot-coherence';
+  /** For kind 'resolution': which way sanitizeEnv resolved identity. */
+  decision?: 'repo-local-strip' | 'host-identity-inject';
+  /** Identity env vars deleted because the repo-local identity is authoritative. */
+  strippedKeys?: string[];
+  /** Identity env vars injected from the host identity (repo had none). */
+  injectedKeys?: string[];
+  cwd?: string;
+  /** For kind 'boot-coherence': the agent's expected identity and its source. */
+  expected?: { name?: string; email?: string; source: string };
+  /** Surfaces whose identity disagrees with (or shadows) the expected one. */
+  divergences?: Array<{ surface: string; detail: string }>;
+  /** Whether a machine-global gh CLI auth state file exists (presence only). */
+  ghHostsPresent?: boolean;
+}
+
+function credentialAuditPath(): string | null {
+  if (process.env.INSTAR_AUDIT_LOG_DISABLED === '1') return null;
+  const overrideDir = process.env.INSTAR_AUDIT_LOG_DIR;
+  const dir = overrideDir ?? path.join(process.cwd(), '.instar', 'audit');
+  return path.join(dir, 'credential-resolution.jsonl');
+}
+
+// Per-process dedupe so a recurring resolution (e.g. a sync loop hitting the
+// same repo every few minutes) is recorded once, not flooded. Boot-coherence
+// entries are always written (one per boot by construction).
+const _credentialAuditSeen = new Set<string>();
+function _resetCredentialAuditDedupeForTest(): void {
+  _credentialAuditSeen.clear();
+}
+
+export function appendCredentialResolutionEntry(entry: CredentialResolutionEntry): void {
+  const file = credentialAuditPath();
+  if (!file) return;
+  if (entry.kind === 'resolution') {
+    const dedupeKey = `${entry.decision}|${entry.cwd}|${(entry.strippedKeys || entry.injectedKeys || []).join(',')}`;
+    if (_credentialAuditSeen.has(dedupeKey)) return;
+    _credentialAuditSeen.add(dedupeKey);
+  }
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+  } catch {
+    /* @silent-fallback-ok — observe-only record; a write problem must never affect the git operation */
+  }
+}
+
+/** Minimal git-config parse: the VALUE of `key` in the [user] section, if any. */
+function configGet(file: string, key: 'name' | 'email'): string | undefined {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, 'utf-8');
+  } catch {
+    return undefined; /* @silent-fallback-ok — absent candidate file is simply not a source */
+  }
+  let inUser = false;
+  for (const raw of content.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('[')) {
+      inUser = /^\[user\]/i.test(line);
+      continue;
+    }
+    if (!inUser) continue;
+    const m = new RegExp(`^${key}\\s*=\\s*(.+)$`).exec(line);
+    if (m) return m[1].trim();
+  }
+  return undefined;
+}
+
+export interface BootCredentialCoherenceReport {
+  expected: { name?: string; email?: string; source: string };
+  divergences: Array<{ surface: string; detail: string }>;
+  ghHostsPresent: boolean;
+  sampledAt: string;
+}
+
+/**
+ * Boot-time credential coherence sample (Inc-P3d). Reads the agent's
+ * EXPECTED identity from the repo-local git config of `agentDir`, compares
+ * the machine's other identity surfaces against it (inherited identity env
+ * vars, the machine-global ~/.gitconfig), and notes whether a machine-global
+ * gh CLI auth state exists. Pure fs reads — no subprocess (the P3a lesson:
+ * funnel-adjacent probes must not consume mocked child_process sequences).
+ * Records one 'boot-coherence' line in credential-resolution.jsonl and
+ * returns the report. Never throws; returns null if sampling itself broke.
+ */
+export function auditBootCredentialCoherence(
+  agentDir?: string,
+  homeDirOverride?: string,
+): BootCredentialCoherenceReport | null {
+  try {
+    const dir = path.resolve(agentDir ?? process.cwd());
+    const candidates = localConfigCandidates(dir);
+    const name = candidates.map((f) => configGet(f, 'name')).find((v) => v !== undefined);
+    const email = candidates.map((f) => configGet(f, 'email')).find((v) => v !== undefined);
+    const expected = { name, email, source: 'repo-local-config' };
+    const divergences: Array<{ surface: string; detail: string }> = [];
+    for (const k of IDENTITY_ENV_VARS) {
+      const v = process.env[k];
+      if (!v) continue;
+      const expectedVal = k.endsWith('EMAIL') ? email : name;
+      if (expectedVal === undefined) {
+        divergences.push({
+          surface: `env:${k}`,
+          detail: 'identity env var inherited but the agent dir has no repo-local identity to anchor against',
+        });
+      } else if (v !== expectedVal) {
+        divergences.push({
+          surface: `env:${k}`,
+          detail: 'inherited identity env var differs from the repo-local agent identity',
+        });
+      }
+    }
+    const home = homeDirOverride ?? os.homedir();
+    const gName = configGet(path.join(home, '.gitconfig'), 'name');
+    const gEmail = configGet(path.join(home, '.gitconfig'), 'email');
+    if (gName !== undefined && name !== undefined && gName !== name) {
+      divergences.push({
+        surface: 'global-gitconfig:user.name',
+        detail: 'machine-global git identity differs from the repo-local agent identity',
+      });
+    }
+    if (gEmail !== undefined && email !== undefined && gEmail !== email) {
+      divergences.push({
+        surface: 'global-gitconfig:user.email',
+        detail: 'machine-global git identity differs from the repo-local agent identity',
+      });
+    }
+    const ghHostsPresent = fs.existsSync(path.join(home, '.config', 'gh', 'hosts.yml'));
+    const report: BootCredentialCoherenceReport = {
+      expected,
+      divergences,
+      ghHostsPresent,
+      sampledAt: new Date().toISOString(),
+    };
+    appendCredentialResolutionEntry({
+      timestamp: report.sampledAt,
+      kind: 'boot-coherence',
+      cwd: dir,
+      expected,
+      divergences,
+      ghHostsPresent,
+    });
+    return report;
+  } catch {
+    return null; /* @silent-fallback-ok — a broken sample must never affect server boot */
+  }
 }
 
 // ── Public types ────────────────────────────────────────────────────
@@ -627,6 +1018,17 @@ export interface SafeGitOptions {
    * audited escape hatch the spec referenced.
    */
   sourceTreeReadOk?: boolean;
+  /**
+   * Opt-in: allow the InstarWorktreeManager's narrow source-tree operations.
+   *
+   * `instar worktree create` must run against a validated instar source
+   * checkout to create a sibling worktree. That requires a tiny set of git
+   * reads, `git worktree add/prune`, and per-worktree `user.name` /
+   * `user.email` config writes. This flag does not allow general source-tree
+   * mutation; every permitted shape is enumerated by
+   * `isSourceTreeWorktreeManagerInvocation`.
+   */
+  sourceTreeWorktreeManagerOk?: boolean;
 }
 
 // ── Errors ─────────────────────────────────────────────────────────
@@ -657,19 +1059,19 @@ export class SafeGitExecutor {
    */
   static execSync(args: readonly string[], opts: SafeGitOptions): string {
     const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
+    const verbArgs = sliceAfterVerb(args, verb);
 
     // Run source-tree assertion against every target — unless the caller
     // explicitly opted into the narrow data-pull allowlist (fetch / etc.)
     // for the documented LAYER B + LAYER C canonical-ref read path. See
     // SafeGitOptions.sourceTreeReadOk for the rationale.
-    if (!(opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb))) {
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
-      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTreeReadOk-bypass');
+      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
     }
 
     // Verb classification.
-    const verbArgs = sliceAfterVerb(args, verb);
     const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
     if (ambiguousReadOnly === true) {
       // The verb is ambiguous and the shape is read-only — caller used the
@@ -687,7 +1089,7 @@ export class SafeGitExecutor {
       );
     }
 
-    const env = sanitizeEnv(opts.env);
+    const env = sanitizeEnv(opts.env, opts.cwd);
 
     let stdout: string;
     try {
@@ -713,13 +1115,13 @@ export class SafeGitExecutor {
    */
   static spawn(args: readonly string[], opts: SafeGitOptions): ChildProcess {
     const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
-    if (!(opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb))) {
+    const verbArgs = sliceAfterVerb(args, verb);
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
-      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTreeReadOk-bypass');
+      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
     }
 
-    const verbArgs = sliceAfterVerb(args, verb);
     const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
     if (ambiguousReadOnly === true) {
       audit('git', opts.operation, verb, targets[0], 'denied', 'read-only-shape-via-spawn');
@@ -734,7 +1136,7 @@ export class SafeGitExecutor {
       );
     }
 
-    const env = sanitizeEnv(opts.env);
+    const env = sanitizeEnv(opts.env, opts.cwd);
     const spawnOpts: SpawnOptions = {
       cwd: opts.cwd,
       stdio: opts.stdio ?? 'pipe',
@@ -742,6 +1144,44 @@ export class SafeGitExecutor {
     };
     audit('git', opts.operation, verb, targets[0], 'allowed');
     return nodeSpawn('git', args as string[], spawnOpts);
+  }
+
+  /**
+   * Streaming read-only variant. It preserves the same classification, source-
+   * tree guard, environment scrubbing, and audit funnel as `readSync`, while
+   * leaving stdout consumption and process completion checks to the caller.
+   */
+  static readStream(args: readonly string[], opts: SafeGitOptions): ChildProcess {
+    const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
+    const verbArgs = sliceAfterVerb(args, verb);
+    const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
+    if (ambiguousReadOnly === false) {
+      audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-shape-via-readStream');
+      throw new SafeGitExecutorError(
+        `SafeGitExecutor.readStream called with destructive shape '${verb} ${verbArgs.join(' ')}' — use SafeGitExecutor.spawn instead.`,
+      );
+    }
+    if (ambiguousReadOnly === null && !READONLY_GIT_VERBS.has(verb)) {
+      audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-verb-via-readStream');
+      throw new SafeGitExecutorError(
+        `SafeGitExecutor.readStream called with destructive verb '${verb}' — use SafeGitExecutor.spawn instead.`,
+      );
+    }
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
+      runSourceTreeChecks(targets, opts.operation, 'git', verb);
+    } else {
+      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
+    }
+
+    const env = sanitizeEnv(opts.env, opts.cwd);
+    audit('git', opts.operation, verb, targets[0], 'allowed');
+    return nodeSpawn('git', args as string[], {
+      cwd: opts.cwd,
+      stdio: opts.stdio ?? 'pipe',
+      env,
+      timeout: opts.timeout ?? 30000,
+      killSignal: 'SIGKILL',
+    });
   }
 
   /**
@@ -775,13 +1215,13 @@ export class SafeGitExecutor {
     // caller opted into the narrow read-tier allowlist (the LAYER B/C
     // canonical-ref read path that legitimately operates against the agent's
     // own instar checkout). See SafeGitOptions.sourceTreeReadOk.
-    if (!(opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb))) {
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
-      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTreeReadOk-bypass');
+      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
     }
 
-    const env = sanitizeEnv(opts.env);
+    const env = sanitizeEnv(opts.env, opts.cwd);
     let stdout: string;
     try {
       stdout = execFileSync('git', args as string[], {
@@ -823,6 +1263,64 @@ export class SafeGitExecutor {
     }
     return SafeGitExecutor.execSync(args, opts);
   }
+}
+
+function isSourceTreeCheckBypassed(
+  verb: string,
+  verbArgs: readonly string[],
+  opts: SafeGitOptions,
+): boolean {
+  if (opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb)) return true;
+  if (opts.sourceTreeWorktreeManagerOk && isSourceTreeWorktreeManagerInvocation(verb, verbArgs)) {
+    return true;
+  }
+  return false;
+}
+
+function isSourceTreeWorktreeManagerInvocation(verb: string, verbArgs: readonly string[]): boolean {
+  switch (verb) {
+    case 'rev-parse':
+    case 'check-ref-format':
+    case 'symbolic-ref':
+    case 'show-ref':
+      return true;
+    case 'config':
+      return isReadOnlyConfigInvocation(verbArgs) || isWorktreeIdentityConfigWrite(verbArgs);
+    case 'worktree':
+      return isAllowedWorktreeManagerSubcommand(verbArgs);
+    default:
+      return false;
+  }
+}
+
+function isWorktreeIdentityConfigWrite(verbArgs: readonly string[]): boolean {
+  if (verbArgs.length !== 2) return false;
+  return verbArgs[0] === 'user.name' || verbArgs[0] === 'user.email';
+}
+
+/**
+ * Worktree subcommands the worktree-manager / AgentWorktreeReaper may run against
+ * the instar source tree:
+ *  - `add` / `prune` — the `instar worktree create` lifecycle (unchanged).
+ *  - `list`           — pure read; the reaper enumerates worktrees to evaluate.
+ *  - `remove`         — the reaper reclaims a merged+clean+idle worktree, but ONLY
+ *                       in its SAFE form. `git worktree remove` without `--force`
+ *                       refuses to delete a worktree with uncommitted changes or a
+ *                       lock, so it can never destroy in-flight work. `--force`/`-f`
+ *                       is explicitly denied here — that is the one form that could.
+ */
+function isAllowedWorktreeManagerSubcommand(verbArgs: readonly string[]): boolean {
+  const subcommand = verbArgs.find((arg) => !arg.startsWith('-'));
+  if (subcommand === 'add' || subcommand === 'prune' || subcommand === 'list') return true;
+  if (subcommand === 'remove') {
+    // Only the non-forced form. --force can delete a dirty worktree (data loss),
+    // so it must still trip the source-tree guard. Deny ANY force-ish token shape
+    // (`--force`, `--force=1`, `-f`, `-fxyz`) rather than relying on git's own
+    // parser to reject lookalikes — the guard stays self-sufficient even if git's
+    // argument parsing changes. `worktree remove` has no other `-f`-prefixed flag.
+    return !verbArgs.some((arg) => /^--force(=|$)/.test(arg) || /^-f/.test(arg));
+  }
+  return false;
 }
 
 function runSourceTreeChecks(
@@ -872,6 +1370,10 @@ export const _internal = {
   isReadOnlyShape,
   sanitizeEnv,
   GIT_ENV_DENYLIST,
+  repoHasLocalIdentity,
+  _resetLocalIdentityCacheForTest,
+  _resetCredentialAuditDedupeForTest,
+  configGet,
 };
 
 // Suppress unused-export warnings for the convenience re-exports. The

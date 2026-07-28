@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-11T03:19:19.358Z",
+  "slug": "codex-quota-load-shed-ci-fix",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "The compaction change added an intentional catch fallback without the repository-required inline classification, causing no-silent-fallbacks CI to reject it."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

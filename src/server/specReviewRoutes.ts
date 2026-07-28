@@ -17,6 +17,22 @@ import path from 'node:path';
 import type { IntelligenceProvider } from '../core/types.js';
 import { loadStandardsRegistry, parseStandardsRegistry, runRegistryCanary } from '../core/StandardsRegistryParser.js';
 import { StandardsConformanceReviewer } from '../core/reviewers/standards-conformance.js';
+import { recordConformanceInvocationAt } from '../core/AutonomousRunStore.js';
+
+/**
+ * Derive the spec SLUG a conformance-check invocation is recorded under
+ * (scope-accretion R32): frontmatter `slug:` when present, else the specPath
+ * basename minus `.md`. Empty when neither resolves (nothing recorded).
+ */
+export function conformanceSlugFor(markdown: string, specPath?: string): string {
+  const fm = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (fm) {
+    const m = fm[1].match(/^slug:\s*(.+)$/m);
+    if (m) return m[1].trim().replace(/^["']|["']$/g, '');
+  }
+  if (specPath) return path.basename(specPath).replace(/\.md$/, '');
+  return '';
+}
 
 // ── File-backed metrics (Observability: reloads on restart) ────────────────
 
@@ -50,6 +66,18 @@ function saveMetrics(file: string, m: ConformanceMetrics): void {
   } catch (err) {
     console.error(`[specReviewRoutes] metrics save failed: ${err}`);
   }
+}
+
+/**
+ * Extract the `parent-principle` value from a spec's YAML frontmatter
+ * (Constitutional Traceability). Returns '' when absent — the caller then knows
+ * the spec named no parent (a block-worthy condition: name a real parent).
+ */
+export function extractParentPrinciple(md: string): string {
+  const fm = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fm) return '';
+  const m = fm[1].match(/^parent-principle:\s*(.+)$/m);
+  return m ? m[1].trim().replace(/^["']|["']$/g, '') : '';
 }
 
 export function createSpecReviewRoutes(deps: {
@@ -110,6 +138,18 @@ export function createSpecReviewRoutes(deps: {
 
     const report = await reviewer.review(markdown, articles);
 
+    // Constitutional Traceability (Part C): attach the fit verdict for the spec's
+    // named parent constitutional standard. parentPrinciple comes from the request
+    // body or the spec's frontmatter; when present, judgeFit returns fit/weak/none
+    // (and fails open to 'fit' when the reviewer is degraded). Absent → no fit field
+    // (the caller — e.g. the pre-commit gate — treats a missing parent as block).
+    const parentPrinciple = (typeof req.body?.parentPrinciple === 'string' && req.body.parentPrinciple.trim())
+      ? req.body.parentPrinciple.trim()
+      : extractParentPrinciple(markdown);
+    if (parentPrinciple) {
+      report.fit = await reviewer.judgeFit(markdown, parentPrinciple, articles);
+    }
+
     // Record metrics (best-effort).
     try {
       const m = loadMetrics(metricsFile);
@@ -120,6 +160,17 @@ export function createSpecReviewRoutes(deps: {
       m.last_run_at = report.checkedAt;
       saveMetrics(metricsFile, m);
     } catch { /* metering best-effort */ }
+
+    // Scope-accretion ceremony evidence (R32): the spec-converge ceremony calls
+    // THIS route on every round, so the invocation is persisted server-side
+    // keyed by spec slug — a forged convergence report without a real ceremony
+    // run has no server record, and the report arm of corroboration can never
+    // clear on it. Best-effort: a miss only DELAYS clearing (keep-working).
+    try {
+      const slug = conformanceSlugFor(markdown, typeof req.body?.specPath === 'string' ? req.body.specPath : undefined);
+      if (slug) recordConformanceInvocationAt(deps.stateDir, slug);
+    } catch { /* @silent-fallback-ok — ceremony-record persistence is corroboration
+                 evidence only; a miss fails toward keep-working (R21/R22) */ }
 
     res.json({ report, registryCanary: canary });
   });
@@ -142,5 +193,9 @@ export async function runConformanceCheck(
   const canary = runRegistryCanary(articles);
   const reviewer = new StandardsConformanceReviewer(intelligence, { model });
   const report = await reviewer.review(markdown, articles);
+  const parentPrinciple = extractParentPrinciple(markdown);
+  if (parentPrinciple) {
+    report.fit = await reviewer.judgeFit(markdown, parentPrinciple, articles);
+  }
   return { report, registryCanary: canary };
 }

@@ -66,6 +66,7 @@ Two design choices carry the whole thing:
 
 - **Signal vs. authority.** The Librarian and Usher are cheap and fast, and they only emit *signals* — "this might matter," "this might be worth re-surfacing." A higher-context decision step decides whether to actually inject or stay silent.
 - **Near-silent by default.** A loop that chatters becomes the next thing dismissed 73 times. The Usher injects only when it would change the agent's next action. Everything else goes to a pull surface, never into the agent's face.
+- **The right to interrupt is earned, not assumed.** Before the Usher is ever allowed to inject mid-task, it has to prove its re-surface signals are useful. `UsherSignalStore` records every fired signal and its precision (`acted / fired`); `UsherActedCorrelator` credits a signal when the agent's next reply actually uses the re-surfaced context, or when the user later has to correct the agent on something a nudge already flagged. That measured precision is the hard precondition on the final rung — the loop must demonstrate accuracy before it gets to interrupt. See [Observability](/features/observability/) for the live metrics.
 
 ## Not starting from scratch
 

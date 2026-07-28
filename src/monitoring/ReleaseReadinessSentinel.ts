@@ -129,6 +129,15 @@ export interface ReleaseReadinessSentinelConfig {
   hysteresisHours?: number;
   staleEpisodeTtlDays?: number;
   /**
+   * Fast-trigger (RELEASE-FRAGMENT-GATE-SPEC Layer 2, D7): when the block is
+   * specifically a missing release-note fragment (guideBlocksPublish) WITH
+   * unreleased feature/fix work — the case where publish.yml would SILENTLY
+   * SKIP — surface at LOW IMMEDIATELY instead of waiting out the multi-day age
+   * floor. This closes the "fresh fragment-less merge sits silent for 2 days"
+   * gap that the 2026-06-27 incident exposed. Default on.
+   */
+  fastTriggerOnGuideBlock?: boolean;
+  /**
    * When true, evaluator-self-failures (fetch / analyzer / top-level tick stages)
    * post a low-priority Attention item in addition to the audit log. Default
    * false: housekeeping per the sentinel-trio standard — the audit log
@@ -149,6 +158,7 @@ const DEFAULTS: Required<ReleaseReadinessSentinelConfig> = {
   backlogAgeDaysHigh: 7,
   hysteresisHours: 12,
   staleEpisodeTtlDays: 30,
+  fastTriggerOnGuideBlock: true,
   escalateEvalFailures: false,
 };
 
@@ -269,7 +279,8 @@ export class ReleaseReadinessSentinel extends EventEmitter {
       return;
     }
 
-    const blocked = this.isBlocked(report, await this.deps.guideBlocksPublish());
+    const guideBlocks = await this.deps.guideBlocksPublish();
+    const blocked = this.isBlocked(report, guideBlocks);
     if (!blocked) {
       // Backlog clear — resolve any open episodes.
       await this.resolveAll(state, 'cleared');
@@ -288,7 +299,17 @@ export class ReleaseReadinessSentinel extends EventEmitter {
     }
 
     const ageDays = (this.deps.now() - oldest.dateMs) / DAY_MS;
-    const priority = this.priorityForAge(ageDays);
+    const ageBasedPriority = this.priorityForAge(ageDays);
+
+    // Fast-trigger (D7): a missing-fragment block with unreleased feature/fix
+    // work is the SILENT-SKIP case — surface at LOW immediately, bypassing the
+    // multi-day age floor, instead of letting a fresh fragment-less merge sit
+    // silent for days (the 2026-06-27 gap).
+    const featureOrFix =
+      report.analysis.commitClassification.features + report.analysis.commitClassification.fixes;
+    const fastTriggered =
+      this.cfg.fastTriggerOnGuideBlock && guideBlocks && featureOrFix > 0 && !ageBasedPriority;
+    const priority: ReadinessPriority | null = ageBasedPriority ?? (fastTriggered ? 'LOW' : null);
 
     let episode = state.episodes.find((e) => e.oldestSha === oldest.sha && !e.resolvedMs);
     if (!episode) {
@@ -297,7 +318,7 @@ export class ReleaseReadinessSentinel extends EventEmitter {
     }
 
     if (!priority) {
-      // Below the silent threshold — recorded, no message.
+      // Below the silent threshold AND not a fast-trigger case — recorded, no message.
       this.reap(state);
       return;
     }
@@ -326,8 +347,8 @@ export class ReleaseReadinessSentinel extends EventEmitter {
       episode.attentionId = id;
       episode.lastPriority = priority;
       state.lastSignalAt = this.deps.now();
-      this.deps.audit({ kind: 'release-readiness', event: 'signal', oldestSha: oldest.sha, priority, ageDays: days, delivered });
-      this.emit('signal', { oldestSha: oldest.sha, priority });
+      this.deps.audit({ kind: 'release-readiness', event: 'signal', oldestSha: oldest.sha, priority, ageDays: days, delivered, fastTriggered });
+      this.emit('signal', { oldestSha: oldest.sha, priority, fastTriggered });
     }
     this.reap(state);
   }

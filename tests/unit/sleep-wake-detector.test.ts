@@ -13,6 +13,9 @@ describe('SleepWakeDetector', () => {
     detector = new SleepWakeDetector({
       checkIntervalMs: 50,
       driftThresholdMs: 100,
+      // Pin idle load so the CPU-starvation guard doesn't (correctly) suppress
+      // this synthetic short-drift wake when the test host itself is busy.
+      loadAvgProvider: () => [0, 0, 0],
     });
 
     const wakePromise = new Promise<any>((resolve) => {

@@ -271,12 +271,26 @@ class NativeModuleHealerImpl {
     } catch (err) {
       if (!this.isNodeModuleVersionError(err)) throw err;
 
-      // Already tried this process — don't loop, surface the original error
+      // The expensive rebuild runs at most once per process. But "rebuild
+      // already ran" does NOT mean "this caller can't recover" — it depends on
+      // whether that rebuild SUCCEEDED.
       if (this.healAttempted) {
         const last = this.lastResult;
-        const hint = last && !last.success
-          ? ` (heal previously attempted and failed: ${last.errorTail ?? 'unknown'})`
-          : ' (heal previously attempted)';
+        // Multi-subsystem case: the FIRST sqlite subsystem to open (e.g.
+        // SemanticMemory) consumes the once-per-process rebuild. When that
+        // rebuild succeeded, the on-disk binding is already correct — a LATER
+        // subsystem (e.g. TokenLedger) that is still holding the stale cached
+        // binding just needs a fresh require. Clear the cache and retry the
+        // open once (cheap; no second rebuild). Without this, every sqlite
+        // subsystem opened after the first one stays broken on a node-upgraded
+        // agent — observed live as TokenLedger 503 while SemanticMemory 200.
+        if (last?.success) {
+          this.clearBetterSqlite3Cache();
+          return await opener();
+        }
+        // The prior rebuild FAILED — retrying the open won't help; surface the
+        // original error with heal context.
+        const hint = ` (heal previously attempted and failed: ${last?.errorTail ?? 'unknown'})`;
         const wrapped = err instanceof Error ? err : new Error(String(err));
         wrapped.message = `${wrapped.message}${hint}`;
         throw wrapped;
@@ -316,11 +330,19 @@ class NativeModuleHealerImpl {
     } catch (err) {
       if (!this.isNodeModuleVersionError(err)) throw err;
 
+      // The expensive rebuild runs at most once per process — but recovery for
+      // THIS caller depends on whether that rebuild succeeded (see openWithHeal).
       if (this.healAttempted) {
         const last = this.lastResult;
-        const hint = last && !last.success
-          ? ` (heal previously attempted and failed: ${last.errorTail ?? 'unknown'})`
-          : ' (heal previously attempted)';
+        // A prior rebuild succeeded → binding on disk is already correct. Clear
+        // this caller's stale cached binding and retry the open once. This is
+        // the path TokenLedger's sync constructor takes when SemanticMemory
+        // healed first.
+        if (last?.success) {
+          this.clearBetterSqlite3Cache();
+          return opener();
+        }
+        const hint = ` (heal previously attempted and failed: ${last?.errorTail ?? 'unknown'})`;
         const wrapped = err instanceof Error ? err : new Error(String(err));
         wrapped.message = `${wrapped.message}${hint}`;
         throw wrapped;
@@ -390,37 +412,59 @@ class NativeModuleHealerImpl {
       `[${component}] NativeModuleHealer: rebuilding better-sqlite3 for Node ${process.version} (prefix=${installPrefix}). This may take ~30s.`
     );
 
-    let result: SpawnSyncReturns<string>;
+    // FLEET FIX (wrong-ABI rebuild on a PATH-shadowed Node + compile-only heal,
+    // 2026-05-29 — mirrors the supervisor preflight; instar-codey sqlite offline
+    // 16h). Two changes:
+    //  (1) Pin the toolchain to THIS process's Node dir so node-gyp /
+    //      prebuild-install / any `#!/usr/bin/env node` shebang resolve the
+    //      correct ABI even when another Node (e.g. an asdf 22.x) is first on
+    //      PATH — otherwise the rebuild "succeeds" but targets the wrong ABI.
+    //  (2) Prefer the PREBUILT via `npm install` (runs better-sqlite3's install
+    //      script → prebuild-install → fetches the correct-ABI prebuilt, ~2s, NO
+    //      compiler) and only compile from source as a fallback. `npm rebuild`
+    //      ALWAYS node-gyp-compiles and never fetches a prebuilt, so it cannot
+    //      heal a box without a working C++ toolchain.
+    const nodeDir = path.dirname(process.execPath);
+    const rebuildEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      npm_config_node_gyp: undefined,
+      npm_node_execpath: process.execPath,
+      PATH: `${nodeDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    };
+    let pkgVersion = '';
     try {
-      // `--build-from-source` forces npm to compile against the current
-      // Node ABI instead of installing a cached prebuilt that may match
-      // the SAME wrong ABI the existing broken binary has. Without it,
-      // `npm rebuild` can exit 0 while leaving the failure mode intact —
-      // the "rebuild succeeded but module still fails to load" pattern.
-      // `--ignore-scripts` keeps the rebuild scoped to the named package
-      // and avoids running every dependency's postinstall hooks.
-      result = spawnSync(
-        process.execPath,
-        [npmPath, 'rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', installPrefix],
-        {
+      pkgVersion = (JSON.parse(
+        fs.readFileSync(path.join(installPrefix, 'node_modules', 'better-sqlite3', 'package.json'), 'utf-8')
+      ).version as string) || '';
+    } catch { /* version optional */ }
+    const installSpec = pkgVersion ? `better-sqlite3@${pkgVersion}` : 'better-sqlite3';
+    // `--ignore-scripts` on the from-source fallback keeps it scoped (no arbitrary
+    // postinstalls). The prebuilt attempt MUST run scripts (that is how
+    // prebuild-install fetches the binary), so it is a plain `npm install`.
+    const attempts: string[][] = [
+      [npmPath, 'install', installSpec, '--no-save', '--prefix', installPrefix],
+      [npmPath, 'rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', installPrefix],
+    ];
+    let result: SpawnSyncReturns<string> | null = null;
+    for (const args of attempts) {
+      try {
+        // Namespace access so tests can monkey-patch child_process.spawnSync.
+        result = child_process.spawnSync(process.execPath, args, {
           encoding: 'utf-8',
           timeout: 120_000,
           cwd: installPrefix,
-          env: { ...process.env, npm_config_node_gyp: undefined },
-        }
-      );
-    } catch (spawnErr) {
-      event.errorTail = `spawn failed: ${spawnErr instanceof Error ? spawnErr.message : String(spawnErr)}`;
-      event.durationMs = Date.now() - started;
-      console.error(`[${component}] NativeModuleHealer: ${event.errorTail}`);
-      this.logHealEvent(event);
-      this.lastResult = event;
-      return false;
+          env: rebuildEnv,
+        }) as SpawnSyncReturns<string>;
+      } catch (spawnErr) {
+        event.errorTail = `spawn failed: ${spawnErr instanceof Error ? spawnErr.message : String(spawnErr)}`;
+        continue;
+      }
+      if (result && result.status === 0) break;
     }
 
     event.durationMs = Date.now() - started;
 
-    if (result.status === 0) {
+    if (result && result.status === 0) {
       event.success = true;
       console.log(`[${component}] NativeModuleHealer: rebuild succeeded in ${event.durationMs}ms`);
       this.logHealEvent(event);
@@ -428,10 +472,10 @@ class NativeModuleHealerImpl {
       return true;
     }
 
-    const stderrTail = (result.stderr || result.stdout || '').slice(-300);
-    event.errorTail = stderrTail || `npm exited ${result.status}`;
+    const stderrTail = (result?.stderr || result?.stdout || '').slice(-300);
+    event.errorTail = stderrTail || event.errorTail || `npm exited ${result?.status ?? 'n/a'}`;
     console.error(
-      `[${component}] NativeModuleHealer: rebuild failed (status=${result.status}): ${event.errorTail}`
+      `[${component}] NativeModuleHealer: rebuild failed (status=${result?.status ?? 'n/a'}): ${event.errorTail}`
     );
     this.logHealEvent(event);
     this.lastResult = event;
@@ -527,9 +571,17 @@ class NativeModuleHealerImpl {
    *   - the rebuilt `.node` binary's sha256 is recorded in `lastResult` so
    *     the Remediator's audit-projection can detect cross-process binary
    *     divergence (A28),
-   *   - `--ignore-scripts --build-from-source` are passed so the rebuild
-   *     never re-runs every dep's install scripts and never picks up a
-   *     poisoned prebuild binary (A45).
+   *   - prebuilt-first heal (parity with the boot heal paths): attempt 1 is
+   *     `npm install better-sqlite3@<pinned> --no-save` so prebuild-install
+   *     fetches the correct-ABI prebuilt (no compiler needed — the only path
+   *     that heals a node-ABI bump on a box without a C++ toolchain); attempt 2
+   *     is the from-source `--ignore-scripts --build-from-source` fallback.
+   *     NOTE — this deliberately RELAXES the original §A45 from-source-only
+   *     stance: the scoped prebuilt fetch (single pinned package, official
+   *     better-sqlite3 release — the same source a normal `npm install` uses)
+   *     is accepted in exchange for healability, matching what the boot heal
+   *     paths already do fleet-wide. The from-source fallback retains
+   *     `--ignore-scripts` (no arbitrary postinstalls).
    *
    * Returns an `ExecutionResult`-shaped object compatible with F-8's
    * `ApprovedRunbook.surfaceCallable` contract. Errors are caught and
@@ -619,10 +671,12 @@ class NativeModuleHealerImpl {
   }
 
   /**
-   * Remediator-side rebuild path. Mirrors `healBetterSqlite3` but uses
-   * `--ignore-scripts --build-from-source <single-package>` (A28 + A45)
-   * and records the sha256 of the rebuilt `.node` binary in the heal log
-   * for cross-process binary-divergence detection (A28).
+   * Remediator-side rebuild path. Mirrors `healBetterSqlite3`: prebuilt-first
+   * (`npm install better-sqlite3@<pinned>` → prebuild-install fetches the
+   * correct-ABI prebuilt, no compiler) with a scoped `--ignore-scripts
+   * --build-from-source` fallback (A28 + A45), toolchain PATH-pinned to this
+   * process's Node, and records the sha256 of the rebuilt `.node` binary in the
+   * heal log for cross-process binary-divergence detection (A28).
    *
    * Returns `{outcome: 'success' | 'failure', details: {...}}` directly so
    * the caller (W-1 runbook surfaceCallable) doesn't need a second mapping
@@ -675,32 +729,63 @@ class NativeModuleHealerImpl {
     // sha256 lockfile from A55 lands in a follow-up PR).
     const integrity = this.readPackageLockIntegrity(installPrefix);
 
-    // A28 + A45: rebuild via `--ignore-scripts --build-from-source` with the
-    // single package name as the only positional argument.
-    let result: SpawnSyncReturns<string>;
+    // FLEET FIX (2026-05-31 — instar-codey node-25 ABI deadlock): prebuilt-first,
+    // mirroring `healBetterSqlite3` and the ServerSupervisor preflight (both made
+    // prebuilt-first by #539). The remediator path was the last rebuild surface
+    // still `npm rebuild --build-from-source`-ONLY, which ALWAYS node-gyp-compiles
+    // and can't heal a box without a working C++ toolchain — exactly where the
+    // node-25/ABI-141-vs-127 boxes got stuck.
+    //  (1) Pin the toolchain to THIS process's Node dir so node-gyp /
+    //      prebuild-install / any `#!/usr/bin/env node` shebang resolve the
+    //      correct ABI even when another Node (e.g. an asdf 22.x) is first on PATH.
+    //  (2) Try the PREBUILT first via `npm install better-sqlite3@<pinned>` (runs
+    //      the install script → prebuild-install fetches the correct-ABI prebuilt,
+    //      ~2s, NO compiler), then a from-source `--build-from-source` fallback.
+    // A45 supply-chain: the prebuilt attempt MUST run scripts (that is how
+    // prebuild-install fetches the binary) but is scoped to the single pinned
+    // package with `--no-save`; the from-source fallback keeps `--ignore-scripts`
+    // (no arbitrary postinstalls) — identical to the two sibling paths.
+    const nodeDir = path.dirname(process.execPath);
+    const rebuildEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      npm_config_node_gyp: undefined,
+      npm_node_execpath: process.execPath,
+      PATH: `${nodeDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    };
+    let pkgVersion = '';
     try {
-      // Use namespace access so tests can monkey-patch `child_process.spawnSync`.
-      result = child_process.spawnSync(
-        process.execPath,
-        [
-          npmPath,
-          'rebuild',
-          '--ignore-scripts',
-          '--build-from-source',
-          'better-sqlite3',
-          '--prefix',
-          installPrefix,
-        ],
-        {
+      pkgVersion = (JSON.parse(
+        fs.readFileSync(path.join(installPrefix, 'node_modules', 'better-sqlite3', 'package.json'), 'utf-8')
+      ).version as string) || '';
+    } catch { /* version optional */ }
+    const installSpec = pkgVersion ? `better-sqlite3@${pkgVersion}` : 'better-sqlite3';
+    const attempts: string[][] = [
+      [npmPath, 'install', installSpec, '--no-save', '--prefix', installPrefix],
+      [npmPath, 'rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', installPrefix],
+    ];
+    let result: SpawnSyncReturns<string> | null = null;
+    let lastSpawnErr = '';
+    for (const args of attempts) {
+      if (ctx.abortSignal.aborted) break;
+      try {
+        // Use namespace access so tests can monkey-patch `child_process.spawnSync`.
+        result = child_process.spawnSync(process.execPath, args, {
           encoding: 'utf-8',
           timeout: timeoutMs,
           cwd: installPrefix,
-          env: { ...process.env, npm_config_node_gyp: undefined },
+          env: rebuildEnv,
           signal: ctx.abortSignal,
-        }
-      );
-    } catch (spawnErr) {
-      event.errorTail = `spawn failed: ${spawnErr instanceof Error ? spawnErr.message : String(spawnErr)}`;
+        }) as SpawnSyncReturns<string>;
+      } catch (spawnErr) {
+        lastSpawnErr = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
+        continue;
+      }
+      // Stop at the first attempt that npm reports as successful; the
+      // post-rebuild load/sha256 checks below confirm it is actually loadable.
+      if (result && result.status === 0) break;
+    }
+    if (!result) {
+      event.errorTail = `spawn failed: ${lastSpawnErr || 'no rebuild attempt produced a result'}`;
       event.durationMs = Date.now() - started;
       this.logHealEvent(event);
       this.lastResult = event;

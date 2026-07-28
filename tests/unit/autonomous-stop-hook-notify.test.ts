@@ -67,12 +67,16 @@ describe('Layer A — notify_terminal_stop wiring in the bundled hook', () => {
     expect(block).toContain('|| true'); // never blocks the exit
   });
 
-  it('calls notify_terminal_stop at every terminal exit (duration/emergency/completion x2 + native x2)', () => {
+  it('calls notify_terminal_stop at every terminal exit (duration/emergency/completion + native + hard-blocker)', () => {
     const src = readHook();
     const calls = src.split('\n').filter((l) => /^\s*notify_terminal_stop "/.test(l));
     // 2 native-mode (emergency, duration) + 4 legacy (duration, emergency,
-    // completion-condition, completion-promise) = 6.
-    expect(calls.length).toBe(6);
+    // completion-condition, completion-promise) + 1 idle-backoff emergency
+    // re-check (the flag can arrive DURING the backoff sleep) = 7, PLUS the
+    // completion-discipline additions: +1 the CD_ENABLED met-condition exit
+    // (folded-judge path, distinct from the legacy P13 met-condition exit) and
+    // +1 the (a) hard-blocker exit (AUTONOMOUS-COMPLETION-DISCIPLINE.md §2b.3) = 9.
+    expect(calls.length).toBe(9);
     // Each terminal-exit message is plain-English and references the run.
     for (const c of calls) {
       expect(c).toMatch(/autonomous run/i);
@@ -81,10 +85,13 @@ describe('Layer A — notify_terminal_stop wiring in the bundled hook', () => {
 
   it('places a notify call before each terminal rm -f "$STATE_FILE"; exit pattern', () => {
     const src = readHook();
+    // The scope-accretion run_end_call (R40/R44 — every exit surface reports to
+    // the server) may sit between the notify and the state-file removal; the
+    // invariant under test is unchanged: notify PRECEDES the removal.
     // completion-promise block: notify precedes the state-file removal
-    expect(src).toMatch(/notify_terminal_stop "[^\n]*finished — all the work is done\.[^\n]*"\n\s*rm -f "\$STATE_FILE"/);
+    expect(src).toMatch(/notify_terminal_stop "[^\n]*finished — all the work is done\.[^\n]*"(\n\s*run_end_call "[^\n]*")?\n\s*rm -f "\$STATE_FILE"/);
     // duration block (legacy)
-    expect(src).toMatch(/notify_terminal_stop "[^\n]*hit its time limit[^\n]*"\n\s*rm -f "\$STATE_FILE"/);
+    expect(src).toMatch(/notify_terminal_stop "[^\n]*hit its time limit[^\n]*"(\n\s*run_end_call "[^\n]*")?\n\s*rm -f "\$STATE_FILE"/);
   });
 });
 
@@ -173,8 +180,40 @@ describe('Layer A — existing agents receive the notify-enabled hook (migration
     expect(result.errors).toEqual([]);
   });
 
-  it('uses notify_terminal_stop as the migration capability marker', () => {
+  it('uses the latest-capability marker for the autonomous-stop-hook migration', () => {
+    // The marker is bumped each time the bundled hook gains a feature, so prior installs
+    // re-deploy. It advanced `notify_terminal_stop` → `CODEX_LOOP_ENABLED` (#28 codex
+    // autonomous-loop driver) → `codex-stdout-json-safe` (codex Stop hook stdout JSON-only)
+    // → `p13_stop_allowed` (P13 stop-reason guard) → `CLOCK_SEG` (SESSION CLOCK injection)
+    // → `RESTART_NOTE_SILENT` (the restart-resume note is no longer delivered to the
+    // user's topic — self-lifecycle narration is housekeeping/default-silent; the
+    // recovery-audit JSONL remains the durable record) → `IDLE_BACKOFF` (consecutive
+    // quick stops pace frame re-injection — the 2026-06-06 rapid-idle-refire waste)
+    // → `COMPLETION_DISCIPLINE` (structural enforcement of "don't stop a pre-approved
+    // autonomous run early" — AUTONOMOUS-COMPLETION-DISCIPLINE.md)
+    // → `REALCHECK_VERIFY` (ACT-152: the hook now runs an opt-in verification_command on a
+    // met:true verdict and gates the exit on it — autonomous-completion-real-checks.md)
+    // → `SCOPE_ACCRETION` (autonomous-scope-accretion-completion.md: Layer B scan +
+    // topicId/runId echo + run_end_call on every exit surface).
+    // The bundled hook still contains
+    // notify_terminal_stop — asserted above — so that capability is not lost on upgrade.
     const src = fs.readFileSync(path.join(REPO_ROOT, 'src', 'core', 'PostUpdateMigrator.ts'), 'utf8');
-    expect(src).toMatch(/upgrade\(\s*'\.claude\/skills\/autonomous\/hooks\/autonomous-stop-hook\.sh',\s*'notify_terminal_stop'/);
+    expect(src).toMatch(/upgrade\(\s*'\.claude\/skills\/autonomous\/hooks\/autonomous-stop-hook\.sh',\s*'DECISION_QUALITY_REALCHECK'/);
+  });
+
+  it('restart-resume note is SILENT to the user — audit + stderr only (RESTART_NOTE_SILENT)', () => {
+    // Self-lifecycle narration is housekeeping (the note's own text says "No action
+    // needed") — under restart churn the per-iteration notes flooded user topics
+    // (2026-06-06). The block must keep the RECOVERY_AUDIT write but must NOT call
+    // deliver_recovery_note. notify_terminal_stop (run finished / time limit — a real
+    // lifecycle consequence the user should see) is unaffected.
+    const src = fs.readFileSync(HOOK_PATH, 'utf8');
+    expect(src).toContain('RESTART_NOTE_SILENT');
+    // the restart-resume block keeps its audit write…
+    expect(src).toMatch(/"event":"restart-resume"/);
+    // …but no longer composes/delivers the user-facing note
+    expect(src).not.toMatch(/Heads up — my session restarted mid-run/);
+    const restartBlock = src.split('RESTART_NOTE_SILENT')[1]?.split('# Reconcile recorded session_id')[0] ?? '';
+    expect(restartBlock).not.toContain('deliver_recovery_note ');
   });
 });

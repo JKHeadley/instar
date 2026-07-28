@@ -58,3 +58,16 @@ Revert `scripts/pre-push-gate.js` and the test additions, ship a patch release. 
 ## Convergence Notes
 
 Single-iteration. The motivating incident is documented in PR #228 (which manually unblocked the same publish failure today). Justin's authorization on Telegram topic 8615 explicitly covered "the publish pipe failing silently for two days is the deeper issue here. The cleanest fix would be to move the upgrade-guide validation INTO the pre-push gate." This PR implements that exact ask.
+
+## Addendum — fragment-aware validation (per-PR release-note fragments)
+
+Release notes are now authored as per-PR FRAGMENTS at `upgrades/next/<slug>.md` instead of a single shared `upgrades/NEXT.md`, so concurrent PRs never collide on the release notes (see `scripts/assemble-next-md.mjs` and the L10 lesson in `docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md`).
+
+The pre-push gate stays symmetric with publish by validating the ASSEMBLED result rather than NEXT.md alone:
+
+- It calls `gatherFragmentInputs` + `assembleNextMd` (the SAME assembler the publish workflow runs) to fold `upgrades/next/*.md` + any legacy `upgrades/NEXT.md` into an in-memory string, then runs `validateGuideContent` on that string. A PR that ships ONLY a fragment therefore passes the identical section/content checks.
+- It assembles in-memory ONLY — it never writes `upgrades/NEXT.md` to disk during pre-push, so the PR keeps its fragment, not a generated guide.
+- A malformed fragment (content but no parseable `## ` section) fails the push loudly, mirroring the loud failure the publish workflow would hit.
+- When no fragment and no legacy NEXT.md is staged, it falls back to validating the versioned `${version}.md` (post-release-cut state), preserving prior behavior.
+
+Authority is unchanged: `validateGuideContent` is still the single deterministic authority; the assembler is a transform that feeds it, not a new gate. `upgrades/NEXT.md` remains a fully supported legacy path.

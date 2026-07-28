@@ -1,0 +1,4 @@
+000.00.000.000  xxxxxxx-xxxxxxx-xxx  xxxxxx@  macOS  -                                                            
+000.00.000.00   xxxxxxxx-0           xxxxxx@  macOS  active; direct 000.000.00.00:53355, tx 295868 rx 278500      
+000.00.000.00   xxxxxx-00-xxx-xxx    xxxxxx@  iOS    -                                                            
+000.00.000.00   xxxxxxx-xxx-xxxx     xxxxxx@  macOS  active; direct 000.000.00.00:41641, tx 14986420 rx 15678588  

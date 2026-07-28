@@ -55,7 +55,15 @@ describe('installCodexHooks', () => {
       .flatMap((g: any) => g.hooks.map((h: any) => h.command));
     expect(allCommands.length).toBeGreaterThan(0);
     for (const cmd of allCommands) {
-      expect(cmd).toContain(path.join(projectDir, INSTAR_HOOK_PATH_MARKER));
+      // Every command is an absolute path under the agent home. The gate scripts live
+      // under .instar/hooks/instar/; the autonomous-loop driver (#28) is the one
+      // documented exception — it lives in the autonomous skill dir — but is still an
+      // absolute, cwd-independent path under projectDir.
+      if (cmd.includes('autonomous-stop-hook.sh')) {
+        expect(cmd).toContain(path.join(projectDir, '.claude/skills/autonomous/hooks/'));
+      } else {
+        expect(cmd).toContain(path.join(projectDir, INSTAR_HOOK_PATH_MARKER));
+      }
     }
     // The external-operation gate is wired into both PreToolUse and PermissionRequest.
     expect(cfg.hooks.PreToolUse[0].hooks.some((h: any) => h.command.includes('external-operation-gate.js'))).toBe(true);
@@ -150,5 +158,46 @@ describe('installCodexHooks', () => {
     const b = buildInstarCodexHookGroups('/tmp/agentB');
     expect(a.PreToolUse[0].hooks[0].command).toContain('/tmp/agentA/');
     expect(b.PreToolUse[0].hooks[0].command).toContain('/tmp/agentB/');
+  });
+
+  // ── #28: codex autonomous-loop driver ──────────────────────────────────
+  it('registers the autonomous-loop driver as the LAST hook in the SAME Stop group (slot stop:0:N, not a separate group)', () => {
+    installCodexHooks(projectDir);
+    const cfg = read();
+    // ONE instar Stop group — a separate group would emit stop:1:0, which codex may not
+    // trust (breaks armCodexHooks idempotency). The driver rides the trio's group.
+    expect(cfg.hooks.Stop).toHaveLength(1);
+    const hooks = cfg.hooks.Stop[0].hooks;
+    expect(hooks[0].command).toContain('stop-gate-router.js'); // router still first
+    const loopCmd = hooks[hooks.length - 1].command; // driver is LAST
+    expect(loopCmd).toContain('.claude/skills/autonomous/hooks/autonomous-stop-hook.sh');
+    expect(loopCmd).toContain(projectDir); // absolute, cwd-independent
+    expect(loopCmd.trim().endsWith('--codex')).toBe(true); // self-gate marker
+  });
+
+  it('is idempotent for the loop driver — re-run never duplicates it within the Stop group', () => {
+    installCodexHooks(projectDir);
+    installCodexHooks(projectDir);
+    const cfg = read();
+    expect(cfg.hooks.Stop).toHaveLength(1);
+    const loopHooks = cfg.hooks.Stop[0].hooks.filter((h: any) =>
+      h.command.includes('autonomous-stop-hook.sh'),
+    );
+    expect(loopHooks).toHaveLength(1);
+  });
+
+  it('preserves a user-added Stop group alongside the instar Stop group (which carries the loop driver)', () => {
+    const codexDir = path.join(projectDir, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(codexDir, 'hooks.json'),
+      JSON.stringify({ hooks: { Stop: [{ matcher: '^never$', hooks: [{ type: 'command', command: 'echo user-stop' }] }] } }),
+    );
+    installCodexHooks(projectDir);
+    const cfg = read();
+    const allStop = cfg.hooks.Stop.flatMap((g: any) => g.hooks.map((h: any) => h.command));
+    expect(allStop).toContain('echo user-stop'); // user group survives
+    expect(allStop.some((c: string) => c.includes('stop-gate-router.js'))).toBe(true);
+    expect(allStop.some((c: string) => c.includes('autonomous-stop-hook.sh'))).toBe(true);
   });
 });

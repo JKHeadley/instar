@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "sessionId": "cbdc2d51-a6de-446b-8215-773ec12f8e0b",
+  "timestamp": "2026-06-07T07:16:33.305Z",
+  "artifactPath": "upgrades/side-effects/dashboard-stream-phase2b-requesting.md",
+  "artifactSha256": "b1cba5f64e76dd33432713d6ae5cd3e9e32670cf69cb439abba4f849ddde4fe3",
+  "specPath": "docs/specs/POOL-DASHBOARD-STREAM-SPEC.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/server/AgentServer.ts",
+    "src/server/WebSocketManager.ts",
+    "tests/e2e/pool-stream-roundtrip-alive.test.ts",
+    "tests/unit/WebSocketManager.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Requesting side of the approved dashboard-streaming spec: WSManager routes a remote-machineId subscribe through a per-peer PeerStreamProxy (phase-1, reused) + a PoolStreamConnector that mints a ticket (phase-2a verb) and opens /pool-stream. Output fans back machine-tagged; input relayed; honest error frames; transfer-staleness guard. 7 new unit tests (fake connector) + a real two-WSManager round-trip e2e over real sockets.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

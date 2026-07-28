@@ -43,9 +43,39 @@ describe('runDryRunCompare', () => {
 
     expect(result.divergent).toBe(false);
     expect(result.clustersCompared).toBe(2);
+    expect(result.clustersWithFingerprint).toBe(2);
     const records = readJsonl(out);
     expect(records).toHaveLength(1); // just the summary
-    expect(records[0]).toMatchObject({ kind: 'summary', divergent: false, clustersCompared: 2, fingerprintDivergences: 0 });
+    expect(records[0]).toMatchObject({
+      kind: 'summary',
+      divergent: false,
+      clustersCompared: 2,
+      clustersWithFingerprint: 2,
+      fingerprintDivergences: 0,
+    });
+  });
+
+  it('emits a partial-coverage summary: empty-fingerprint clusters keep divergent=false but lower clustersWithFingerprint', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dryrun-'));
+    const out = join(dir, 'compare.jsonl');
+    const source = new InMemoryParitySource([
+      cluster('c1', 'bug', 'covered title'),
+      { clusterId: 'c2', type: 'bug', title: 'pre-backfill', fingerprint: '' },
+    ]);
+
+    const result = runDryRunCompare(source, { outPath: out, now: '2026-05-27T00:00:00Z' });
+
+    expect(result.divergent).toBe(false);
+    expect(result.clustersCompared).toBe(2);
+    expect(result.clustersWithFingerprint).toBe(1); // a green run that is NOT 100% coverage
+    const records = readJsonl(out);
+    expect(records).toHaveLength(1); // no divergences — just the summary
+    expect(records[0]).toMatchObject({
+      kind: 'summary',
+      divergent: false,
+      clustersCompared: 2,
+      clustersWithFingerprint: 1,
+    });
   });
 
   it('detects a fingerprint divergence, sets divergent=true, and logs the divergence + summary', () => {
@@ -99,6 +129,7 @@ describe('toRecords', () => {
     const records = toRecords(
       {
         clustersCompared: 1,
+        clustersWithFingerprint: 1,
         outcomesCompared: 0,
         fingerprintDivergences: [{ clusterId: 'c1', instar: 'a', portal: 'b' }],
         outcomeDivergences: [],
@@ -107,6 +138,11 @@ describe('toRecords', () => {
       '2026-05-27T12:00:00Z',
     );
     expect(records[0].kind).toBe('fingerprint-divergence');
-    expect(records[records.length - 1]).toMatchObject({ kind: 'summary', at: '2026-05-27T12:00:00Z', divergent: true });
+    expect(records[records.length - 1]).toMatchObject({
+      kind: 'summary',
+      at: '2026-05-27T12:00:00Z',
+      clustersWithFingerprint: 1,
+      divergent: true,
+    });
   });
 });

@@ -14,6 +14,11 @@
 # matched on "compaction".
 
 INSTAR_DIR="${CLAUDE_PROJECT_DIR:-.}/.instar"
+CONFIG_FILE="$INSTAR_DIR/config.json"
+AGENT_ID="${INSTAR_AGENT_ID:-}"
+if [ -z "$AGENT_ID" ] && [ -f "$CONFIG_FILE" ]; then
+  AGENT_ID=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('projectName',''))" 2>/dev/null)
+fi
 
 echo "=== COMPACTION RECOVERY — IDENTITY RESTORATION ==="
 echo ""
@@ -36,7 +41,7 @@ if [ -f "$INSTAR_DIR/soul.md" ]; then
     # Check integrity via server if available
     SOUL_INTEGRITY="valid"
     if [ -n "$PORT" ] && [ -n "$AUTH_TOKEN" ]; then
-      INTEGRITY_CHECK=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" \
+      INTEGRITY_CHECK=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
         "http://localhost:${PORT}/identity/soul/integrity" 2>/dev/null)
       SOUL_INTEGRITY=$(echo "$INTEGRITY_CHECK" | python3 -c "
 import sys, json
@@ -174,10 +179,13 @@ echo ""
 # Resolves Open Question #5 from the Consent & Discovery Framework spec:
 # lastSurfacedAt timestamps persist in SQLite regardless of context state.
 if [ -f "$CONFIG_FILE" ]; then
-  PORT=$(grep -o '"port":[0-9]*' "$CONFIG_FILE" | head -1 | cut -d':' -f2)
+  PORT=$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$CONFIG_FILE" | head -1 | grep -oE '[0-9]+' | head -1)
   if [ -n "$PORT" ]; then
-    AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
-    FEATURES_JSON=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+    if [ -z "$AUTH_TOKEN" ]; then
+      AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+    fi
+    FEATURES_JSON=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
       "http://localhost:${PORT}/features/summary" 2>/dev/null)
     if [ -n "$FEATURES_JSON" ]; then
       DISCOVERY_STATE=$(echo "$FEATURES_JSON" | python3 -c "
@@ -235,7 +243,7 @@ fi
 # Server health reminder + recent Telegram context
 CONFIG_FILE="$INSTAR_DIR/config.json"
 if [ -f "$CONFIG_FILE" ]; then
-  PORT=$(grep -o '"port":[0-9]*' "$CONFIG_FILE" | head -1 | cut -d':' -f2)
+  PORT=$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$CONFIG_FILE" | head -1 | grep -oE '[0-9]+' | head -1)
   if [ -n "$PORT" ]; then
     echo "Server: curl http://localhost:${PORT}/health | Capabilities: curl http://localhost:${PORT}/capabilities"
 
@@ -247,13 +255,22 @@ if [ -f "$CONFIG_FILE" ]; then
       # Slack channel context — if INSTAR_SLACK_CHANNEL is set, this is a Slack session
       SLACK_CHANNEL="${INSTAR_SLACK_CHANNEL:-}"
       if [ -n "$SLACK_CHANNEL" ]; then
-        AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
+        AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+    if [ -z "$AUTH_TOKEN" ]; then
+      AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+    fi
         SLACK_MSGS=$(curl -s \
-          -H "Authorization: Bearer ${AUTH_TOKEN}" \
+          -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
           "http://localhost:${PORT}/slack/channels/${SLACK_CHANNEL}/messages?limit=20" 2>/dev/null)
 
         echo "$SLACK_MSGS" | python3 -c "
 import sys, json
+def _localts(raw):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    except Exception:
+        return str(raw)[:16].replace('T', ' ')
 try:
     data = json.load(sys.stdin)
     msgs = data.get('messages', [])
@@ -270,7 +287,7 @@ try:
         try:
             from datetime import datetime
             dt = datetime.fromtimestamp(float(ts))
-            time_str = dt.strftime('%H:%M:%S')
+            time_str = dt.astimezone().strftime('%H:%M:%S %Z')
         except:
             time_str = ts[:8] if ts else '??:??:??'
         user = m.get('user', 'unknown')
@@ -306,11 +323,9 @@ try:
         print('!' * 60)
     print()
     print('--- END SLACK CONTEXT ---')
-    import os
-    ch = os.environ.get('INSTAR_SLACK_CHANNEL', '')
     print()
     print('CRITICAL: Relay your response back to Slack:')
-    print('cat <<\"SLACKEOF\" | .claude/scripts/slack-reply.sh ' + ch)
+    print('cat <<\"SLACKEOF\" | .instar/scripts/slack-reply.sh')
     print('Your response text here')
     print('SLACKEOF')
 except Exception:
@@ -346,10 +361,13 @@ except Exception:
       fi
 
       if [ -n "$TOPIC_FOR_CONTEXT" ]; then
-        AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
+        AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+    if [ -z "$AUTH_TOKEN" ]; then
+      AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+    fi
         if [ -n "$AUTH_TOKEN" ]; then
           RECENT_MSGS=$(curl -s \
-            -H "Authorization: Bearer ${AUTH_TOKEN}" \
+            -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
             "http://localhost:${PORT}/telegram/topics/${TOPIC_FOR_CONTEXT}/messages?limit=15" 2>/dev/null)
         else
           RECENT_MSGS=$(curl -s \
@@ -359,6 +377,12 @@ except Exception:
         # Format messages and detect unanswered user messages
         echo "$RECENT_MSGS" | python3 -c "
 import sys, json
+def _localts(raw):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    except Exception:
+        return str(raw)[:16].replace('T', ' ')
 try:
     data = json.load(sys.stdin)
     msgs = data.get('messages', [])
@@ -369,7 +393,7 @@ try:
     print('--- RECENT TELEGRAM CONTEXT (restoring after compaction, last %d messages) ---' % len(msgs))
 
     for m in msgs:
-        ts = m.get('timestamp', '')[:16].replace('T', ' ')
+        ts = _localts(m.get('timestamp', ''))
         from_user = m.get('fromUser', m.get('direction', 'in') == 'in')
         text = m.get('text', '').strip()
         sender = 'User' if from_user else 'Agent'
@@ -395,7 +419,7 @@ try:
         print('UNANSWERED MESSAGE(S) FROM USER:')
         for pm in pending_user:
             pm_text = pm.get('text', '')[:200]
-            pm_ts = pm.get('timestamp', '')[:16].replace('T', ' ')
+            pm_ts = _localts(pm.get('timestamp', ''))
             print(f'  [{pm_ts}] \"{pm_text}\"')
         print()
         print('You MUST address these messages substantively. Do NOT respond')
@@ -418,10 +442,13 @@ fi
 # This surfaces what you already know that's relevant to the current context,
 # preventing you from re-deriving knowledge you've already accumulated.
 if [ -f "$CONFIG_FILE" ]; then
-  PORT=$(grep -o '"port":[0-9]*' "$CONFIG_FILE" | head -1 | cut -d':' -f2)
+  PORT=$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$CONFIG_FILE" | head -1 | grep -oE '[0-9]+' | head -1)
   if [ -n "$PORT" ]; then
-    AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
-    WORKING_MEM=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+    if [ -z "$AUTH_TOKEN" ]; then
+      AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+    fi
+    WORKING_MEM=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
       "http://localhost:${PORT}/context/working-memory?prompt=compaction-recovery&limit=5" 2>/dev/null)
     if [ -n "$WORKING_MEM" ]; then
       CONTEXT=$(echo "$WORKING_MEM" | python3 -c "
@@ -452,12 +479,15 @@ fi
 # so it gives us a guaranteed signal. The server will check for unanswered user
 # messages and re-inject them shortly after this hook completes.
 if [ -f "$CONFIG_FILE" ] && command -v tmux >/dev/null 2>&1; then
-  PORT=$(grep -o '"port":[0-9]*' "$CONFIG_FILE" | head -1 | cut -d':' -f2)
+  PORT=$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$CONFIG_FILE" | head -1 | grep -oE '[0-9]+' | head -1)
   TMUX_SESSION=$(tmux display-message -p '#S' 2>/dev/null)
   if [ -n "$PORT" ] && [ -n "$TMUX_SESSION" ]; then
-    AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
+    AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+    if [ -z "$AUTH_TOKEN" ]; then
+      AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+    fi
     curl -s -m 2 -X POST \
-      -H "Authorization: Bearer ${AUTH_TOKEN}" \
+      -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
       -H "Content-Type: application/json" \
       -d "{\"sessionName\":\"${TMUX_SESSION}\"}" \
       "http://localhost:${PORT}/internal/compaction-resume" >/dev/null 2>&1 &

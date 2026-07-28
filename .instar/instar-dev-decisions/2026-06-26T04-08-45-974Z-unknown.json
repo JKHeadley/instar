@@ -1,0 +1,15 @@
+{
+  "ts": "2026-06-26T04:08:45.974Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/AgentWorktreeReaper.ts matches session reaper"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 76,
+  "causalAutopsy": null,
+  "verdict": "blocked"
+}

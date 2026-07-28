@@ -37,7 +37,7 @@ afterAll(() => {
   SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/scope-coherence-reentry.test.ts:afterAll' });
 });
 
-function run(payload: object): { exitCode: number; decision?: string } {
+function run(payload: object): { exitCode: number; stdout: string; decision?: string } {
   // Run from a clean cwd with no INSTAR_SESSION_ID so the headless short-circuit
   // doesn't mask the re-entry guard we're testing.
   const res = spawnSync('node', [hookPath], {
@@ -47,21 +47,34 @@ function run(payload: object): { exitCode: number; decision?: string } {
     cwd: tmpDir,
     env: { ...process.env, INSTAR_SESSION_ID: '', TERM_PROGRAM: 'iTerm.app' },
   });
+  const stdout = (res.stdout || '').trim();
   let decision: string | undefined;
-  try { decision = JSON.parse(res.stdout).decision; } catch { /* no json */ }
-  return { exitCode: res.status ?? -1, decision };
+  try { decision = JSON.parse(stdout).decision; } catch { /* no json */ }
+  return { exitCode: res.status ?? -1, stdout, decision };
 }
 
-describe('scope-coherence-checkpoint — re-entry guard (C3)', () => {
-  it('approves immediately on a correction continuation (stop_hook_active=true)', () => {
+describe('scope-coherence-checkpoint — re-entry guard (C3) + codex stdout-safety', () => {
+  it('allows immediately on a correction continuation (stop_hook_active=true) with EMPTY stdout', () => {
     const r = run({ hook_event_name: 'Stop', stop_hook_active: true });
     expect(r.exitCode).toBe(0);
-    expect(r.decision).toBe('approve');
+    // ALLOW is now signalled by empty stdout (codex-safe), NOT {decision:'approve'}.
+    expect(r.stdout).toBe('');
+    expect(r.decision).toBeUndefined();
   });
 
-  it('does not block a fresh Stop below the depth threshold (sanity — normal approve path)', () => {
+  it('allows a fresh Stop below the depth threshold with EMPTY stdout (codex-safe allow path)', () => {
     const r = run({ hook_event_name: 'Stop', stop_hook_active: false });
     expect(r.exitCode).toBe(0);
-    expect(r.decision).toBe('approve'); // no state file => depth 0 => approve
+    expect(r.stdout).toBe(''); // no state file => depth 0 => allow => empty
+    expect(r.decision).toBeUndefined();
+  });
+
+  it('the generated hook emits NO {decision:"approve"} on stdout but DOES keep the block path (codex Stop-hook contract: empty=allow, block-JSON=block)', () => {
+    const src = fs.readFileSync(hookPath, 'utf-8');
+    // No approve-JSON anywhere — codex rejects it as "invalid stop hook JSON output".
+    expect(src).not.toContain("decision: 'approve'");
+    expect(src).not.toContain('decision: "approve"');
+    // The scope-checkpoint BLOCK path is preserved (codex accepts block decisions).
+    expect(src).toContain("decision: 'block'");
   });
 });

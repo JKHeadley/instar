@@ -90,12 +90,64 @@ describe('Usher disabled', () => {
   });
 });
 
+describe('precision split (acted_by_use / acted_by_miss)', () => {
+  let project: TempProject;
+  let server: AgentServer;
+  let app: ReturnType<AgentServer['getApp']>;
+
+  beforeAll(() => {
+    project = createTempProject();
+    fs.writeFileSync(path.join(project.stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'usplit', agentName: 'USplit' }));
+    const store = new UsherSignalStore(project.stateDir);
+    const a = store.recordSignal(77, { contextRef: 'r1', contextText: 'unify the memory stores', reason: 'r', turn: 1 });
+    const b = store.recordSignal(77, { contextRef: 'r2', contextText: 'we are testing over telegram', reason: 'r', turn: 2 });
+    store.recordSignal(77, { contextRef: 'r3', contextText: 'unrelated', reason: 'r', turn: 3 }); // stays unacted
+    store.markActed(77, a!, { via: 'use' });
+    store.markActed(77, b!, { via: 'miss' });
+    server = new AgentServer({ config: buildConfig(project), sessionManager: createMockSessionManager() as any, state: project.state, usherSignalStore: store });
+    app = server.getApp();
+  });
+  afterAll(() => { project?.cleanup(); });
+
+  it('GET /usher/metrics splits the numerator by path and computes precision', async () => {
+    const res = await request(app).get('/usher/metrics').query({ topicId: 77 }).set({ Authorization: `Bearer ${AUTH}` });
+    expect(res.status).toBe(200);
+    expect(res.body.metrics.fired).toBe(3);
+    expect(res.body.metrics.acted).toBe(2);
+    expect(res.body.metrics.acted_by_use).toBe(1);
+    expect(res.body.metrics.acted_by_miss).toBe(1);
+    expect(res.body.metrics.precision).toBeCloseTo(2 / 3, 5);
+  });
+
+  it('a legacy topic (no acted) still reports the split fields as 0', async () => {
+    const res = await request(app).get('/usher/metrics').query({ topicId: 4242 }).set({ Authorization: `Bearer ${AUTH}` });
+    expect(res.status).toBe(200);
+    expect(res.body.metrics.acted_by_use).toBe(0);
+    expect(res.body.metrics.acted_by_miss).toBe(0);
+    expect(res.body.metrics.precision).toBeNull();
+  });
+});
+
 describe('wiring-integrity (anti-shipped-but-asleep)', () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
   it('server.ts attaches the Usher loop to the live message callback', () => {
-    const here = path.dirname(fileURLToPath(import.meta.url));
     const src = fs.readFileSync(path.join(here, '../../src/commands/server.ts'), 'utf-8');
     expect(src).toContain('createUsherLoop(');
     expect(src).toContain('__instarUsherWired');
     expect(src).toMatch(/telegram\.onMessageLogged\s*=\s*\(entry\)\s*=>\s*\{[\s\S]*usherLoop\(/);
+  });
+
+  it('routes.ts credits the Usher (path a) on the outbound reply path', () => {
+    const src = fs.readFileSync(path.join(here, '../../src/server/routes.ts'), 'utf-8');
+    expect(src).toContain('creditUsherOnOutbound');
+    expect(src).toMatch(/creditUsherOnOutbound\(ctx\.usherSignalStore,\s*topicId,\s*text\)/);
+  });
+
+  it('server.ts credits the Usher (path b) right after the human-as-detector observe', () => {
+    const src = fs.readFileSync(path.join(here, '../../src/commands/server.ts'), 'utf-8');
+    expect(src).toContain('creditUsherOnMiss');
+    // the miss signal returned by observeInboundMessage feeds the correlator
+    expect(src).toMatch(/const missSignal = observeInboundMessage\(humanAsDetectorLog,\s*entry\)/);
+    expect(src).toMatch(/creditUsherOnMiss\(usherSignalStore,\s*missSignal,\s*entry\)/);
   });
 });

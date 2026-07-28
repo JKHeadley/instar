@@ -20,7 +20,7 @@
  * self-suspend logic are unit-testable with in-memory fakes.
  */
 
-import { FencedLease } from './FencedLease.js';
+import { FencedLease, type StaleHolderTakeoverOpts, type HandbackConsentToken } from './FencedLease.js';
 import type { LeaseRecord } from './types.js';
 
 /** Durable (git-backed) view + CAS write of the lease. */
@@ -44,6 +44,14 @@ export interface LeaseStore {
    * confirms over the tunnel instead and may no-op this.
    */
   refresh(lease: LeaseRecord): boolean;
+  /**
+   * Force the local self-lease to read as expired (git-less relinquish, spec
+   * §Problem A). Used by LeaseCoordinator.relinquish() to break a same-epoch
+   * contested tie WITHOUT lowering the epoch floor. Optional: only the git-less
+   * LocalLeaseStore implements it; a git-substrate store resolves contention via
+   * CAS instead, so this is a no-op there.
+   */
+  forceLocalExpiry?(): void;
 }
 
 /** Optional low-latency tunnel transport for the lease. */
@@ -54,6 +62,21 @@ export interface LeaseTransport {
   observed(): { lease: LeaseRecord | null; lastNonceByHolder: Record<string, number> };
   /** Whether the tunnel medium is currently reachable. */
   isReachable(): boolean;
+  /**
+   * Cross-Machine Coherence — active PULL of a single peer's current lease over
+   * the authenticated channel, folding the result into observed() via the same
+   * receive path. Optional: a git-only mesh has no pull-capable transport.
+   */
+  pullPeer?(peer: { machineId: string; url: string }): Promise<LeaseRecord | null>;
+  /** Best-effort fan-out pull of every peer's lease. Optional (see pullPeer). */
+  pullAllPeers?(): Promise<void>;
+  /**
+   * Per-peer lease-observation view (machine-coherence-guard §5b): what each
+   * peer most recently disclosed as its lease view + when it was observed.
+   * Optional — a git-only mesh has no pull-capable transport. Advisory data
+   * (L4/SEC-4): feeds the awakeMachineCount counting rule, never demotion.
+   */
+  observedByPeer?(): Map<string, { lease: LeaseRecord | null; observedAtMs: number }>;
 }
 
 export interface LeaseCoordinatorDeps {
@@ -62,14 +85,63 @@ export interface LeaseCoordinatorDeps {
   tunnel?: LeaseTransport;
   /** Machines presumed dead (lastSeen older than failoverThresholdMs). */
   presumedDeadHolders: () => ReadonlySet<string>;
-  /** Wall clock (injectable for tests). */
+  /**
+   * Wall clock (injectable for tests). Used ONLY to stamp human-readable
+   * `acquiredAt`/`expiresAt` ISO fields on lease records (display + the
+   * liveness heuristic). It is NEVER the authority for whether THIS machine
+   * still holds the lease — see `monotonicNow` (spec §L−1: a holder's own
+   * expiry is judged on its monotonic-local clock, never wall-clock).
+   */
   now?: () => number;
+  /**
+   * Monotonic clock (injectable for tests) — the AUTHORITY for the holder's
+   * self-expiry / self-fence. Returns a strictly non-decreasing millisecond
+   * reading (default `performance.now()`) that an NTP step, a VM pause/resume,
+   * a sleep/wake, or a CPU-starvation clock jump CANNOT move backward. The
+   * router-lease self-fence (spec §L−1 "TTL self-fence" + §L1) measures
+   * "elapsed since my last confirmed renewal" on THIS clock, so a partitioned
+   * or clock-chaotic holder goes quiet on its own reading before the TTL
+   * elapses — independent of wall-clock. This is the LEASE-SUBSTRATE-ROBUSTNESS
+   * fold-in and directly answers the SleepWakeDetector CPU-starvation lesson.
+   */
+  monotonicNow?: () => number;
   /** Escalate an unresolvable split-brain (deduped per partitionEpisodeId by the caller's sink). */
   onEscalate?: (info: { partitionEpisodeId: string; holder: string; reason: string }) => void;
   /** Fired when the holder must self-suspend ingress (tunnel-renewal lapse). */
   onSelfSuspend?: (reason: string) => void;
   /** Fired whenever our effective epoch advances (drives leaseEpochChange → registry push). */
   onEpochAdvance?: (epoch: number) => void;
+  /**
+   * F2 (multi-machine-lease-self-heal staleHolderTakeover) — resolved live so a
+   * config flip needs no restart. null/disabled ⇒ canAcquire is byte-for-byte the
+   * legacy behavior. When enabled, a standby may take over a holder whose signed
+   * nonce watermark hasn't advanced for `ttlMs × nonRenewalMissedObservations` of
+   * the OBSERVER's own monotonic time (skew-immune; the takeover stays CAS-fenced).
+   */
+  staleHolderTakeover?: () => { enabled: boolean; nonRenewalMissedObservations: number } | null;
+  /**
+   * multi-transport-mesh-comms Layer 3 (soloCaptainHold) — resolved live; DARK by
+   * default (null/disabled ⇒ renew() is byte-for-byte today's self-fence). When
+   * enabled AND all three preconditions hold, a preferred stationary captain that
+   * cannot confirm its renewal over ANY rope HOLDS its lease (same epoch) instead
+   * of self-suspending. The preconditions are SIGNALS consumed here, never
+   * authority invented here:
+   *   - isPreferredAwakeAgreed(): this machine is the F4-agreed preferred-awake
+   *     machine (NOT a raw-config read — the agreement signal from the coordinator).
+   *   - allPeersPresumedGone(): every peer is presumed-gone by liveness-silence
+   *     (the EXISTING presumedDeadHolders timeout), i.e. positively aged-out, not
+   *     merely unreachable this tick.
+   *   - no higher epoch observed (checked inline against the effective view).
+   * The monotonic self-fence stays armed whenever allPeersPresumedGone() is false,
+   * so a merely-unreachable-but-recently-alive peer can NEVER keep the captain
+   * alive — only a liveness-aged-out one can. store.refresh is NOT used as
+   * evidence (a tautology on LocalLeaseStore). Spec: docs/specs/multi-transport-mesh-comms.md.
+   */
+  soloCaptainHold?: () => { enabled: boolean } | null;
+  /** F4-agreed preferred-awake signal (consumed by Layer 3 — never the raw config). */
+  isPreferredAwakeAgreed?: () => boolean;
+  /** True iff EVERY peer is presumed-gone by liveness-silence (Layer 3 gate). */
+  allPeersPresumedGone?: () => boolean;
   logger?: (msg: string) => void;
 }
 
@@ -77,9 +149,25 @@ export class LeaseCoordinator {
   private readonly d: LeaseCoordinatorDeps;
   private readonly fl: FencedLease;
   private nonceCounter = 0;
-  private lastRenewOkAt: number;
+  /**
+   * Monotonic-clock reading at the last CONFIRMED renewal/acquisition — the
+   * authority for the holder's self-fence (spec §L−1): an NTP step / VM pause /
+   * sleep / CPU-starvation jump cannot move it backward, so a partitioned or
+   * clock-chaotic holder still goes quiet on its own monotonic reading before
+   * the TTL elapses. (Wall-clock is used only for the display `expiresAt`.)
+   */
+  private lastRenewOkMonoMs = 0;
   private lastObservedEpoch = 0;
   private suspended = false;
+  /**
+   * Epoch acquired from a PEER through the normal fenced takeover authority.
+   * When this machine is the preferred captain, this is positive evidence that
+   * it may keep that exact epoch alive while the peer remains unreachable:
+   * acquisition already proved expired/dead/non-renewing and won the CAS.
+   * Process-local and epoch-bound by design; restart forgets it (fail-closed)
+   * and any higher observed epoch makes it inapplicable.
+   */
+  private peerTakeoverAuthorizedEpoch: number | null = null;
   /**
    * The freshest lease THIS machine has signed (acquisition or renewal). It is
    * the authoritative low-latency copy of our own holding — we broadcast it
@@ -88,15 +176,43 @@ export class LeaseCoordinator {
    * while it is not superseded by a higher epoch.
    */
   private selfIssued: LeaseRecord | null = null;
+  /**
+   * F2 (staleHolderTakeover) — per-holder freshness on the OBSERVER's own
+   * monotonic clock: the time we last saw that holder's signed nonce watermark
+   * ADVANCE (a renewing holder bumps its nonce each renew). Stamped only when a
+   * VERIFIED observed lease's nonce strictly exceeds the last we recorded for
+   * that holder. `lastObservedNonce` is the per-holder high-water nonce that
+   * gates the stamp. Single-clock ⇒ clock-skew immune; the holder cannot forge
+   * freshness (the nonce is inside its Ed25519 signature).
+   */
+  private freshObservedMonoMs = new Map<string, number>();
+  private lastObservedNonce = new Map<string, number>();
 
   constructor(deps: LeaseCoordinatorDeps) {
     this.d = deps;
     this.fl = deps.lease;
-    this.lastRenewOkAt = this.now();
+    this.markRenewOk();
   }
 
   private now(): number {
     return (this.d.now ?? Date.now)();
+  }
+  /**
+   * Monotonic clock — strictly non-decreasing, immune to wall-clock jumps (NTP
+   * step, VM pause/resume, sleep/wake, CPU-starvation timer slip). Default uses
+   * `process.hrtime`. The authority for the holder's self-expiry/self-fence
+   * (spec §L−1); injectable for tests.
+   */
+  private monotonicNow(): number {
+    if (this.d.monotonicNow) return this.d.monotonicNow();
+    return Number(process.hrtime.bigint() / 1_000_000n);
+  }
+  /**
+   * Record a CONFIRMED renewal/acquisition on the monotonic self-fence clock.
+   * Called wherever a renewal/acquisition/broadcast is confirmed over a medium.
+   */
+  private markRenewOk(): void {
+    this.lastRenewOkMonoMs = this.monotonicNow();
   }
   private log(m: string): void {
     this.d.logger?.(`[lease] ${m}`);
@@ -124,12 +240,42 @@ export class LeaseCoordinator {
     if (this.d.tunnel) {
       const obs = this.d.tunnel.observed();
       if (obs.lease) {
-        const decision = this.fl.acceptTunnelLease(obs.lease, git.epoch, obs.lastNonceByHolder);
-        if (decision.accept && obs.lease.epoch > epoch) {
-          bestLease = obs.lease;
-          epoch = obs.lease.epoch;
+        // acceptTunnelLease re-checks signature + git-floor + nonce-replay. The
+        // transport already replay-guarded obs.lease on RECEIVE (recordObserved),
+        // and by design its watermark for obs.lease's holder == obs.lease.nonce —
+        // so passing the raw watermark here would self-reject the very lease we're
+        // validating (nonce <= watermark). Exclude obs.lease's own holder from the
+        // nonce floor so a genuine standby broadcast is folded in; the transport
+        // remains the replay guard and the signature/git-floor checks still run.
+        // (2026-05-31: this self-rejection silently broke the git-less tunnel-
+        // observe path — a standby never learned the holder → MeshRpc not-router.)
+        const { [obs.lease.holder]: _self, ...nonceFloor } = obs.lastNonceByHolder;
+        void _self;
+        const decision = this.fl.acceptTunnelLease(obs.lease, git.epoch, nonceFloor);
+        if (decision.accept) {
+          // F2 freshness stamp (VERIFIED fold-in): a renewing holder bumps its
+          // signed nonce each renew (same OR higher epoch), so its watermark
+          // advances; a non-renewing holder's stops. Stamp the OBSERVER's own
+          // monotonic time when a peer holder's nonce watermark strictly advances.
+          const prevNonce = this.lastObservedNonce.get(obs.lease.holder) ?? -1;
+          if (obs.lease.holder !== this.selfMachineId && obs.lease.nonce > prevNonce) {
+            this.lastObservedNonce.set(obs.lease.holder, obs.lease.nonce);
+            this.freshObservedMonoMs.set(obs.lease.holder, this.monotonicNow());
+          }
+          if (obs.lease.epoch > epoch) {
+            bestLease = obs.lease;
+            epoch = obs.lease.epoch;
+          }
         }
       }
+    }
+    // A higher accepted epoch permanently consumes any process-local solo-hold
+    // authorization for our older takeover. Do this BEFORE selfIssued folding:
+    // if the transport later forgets/removes that peer observation, the old
+    // epoch must never resurrect authority merely because it becomes the max
+    // visible record again.
+    if (this.peerTakeoverAuthorizedEpoch !== null && epoch > this.peerTakeoverAuthorizedEpoch) {
+      this.peerTakeoverAuthorizedEpoch = null;
     }
     // Fold in our own freshest self-issued lease (a renewal's new expiry lives
     // here, not in coarse git). Only while not superseded by a higher epoch.
@@ -144,7 +290,16 @@ export class LeaseCoordinator {
   holdsLease(): boolean {
     if (this.suspended) return false;
     const view = this.effectiveView();
-    return this.fl.holdsValidLease(view.lease, view.epoch, this.now());
+    if (!this.fl.holdsValidLease(view.lease, view.epoch, this.now())) return false;
+    // Monotonic self-fence (spec §L−1): even if the wall-clock `expiresAt` has
+    // not passed, a holder that has not CONFIRMED a renewal within ttlMs on its
+    // MONOTONIC clock must NOT act — this is immune to NTP steps / VM-pause /
+    // sleep / CPU-starvation clock jumps that could otherwise fool the
+    // wall-clock check into believing a lapsed lease is still live. The
+    // wall-clock `isExpired` check above is retained as a conservative second
+    // gate (either gate may fence; both must pass to hold).
+    if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) return false;
+    return true;
   }
 
   /** The current effective epoch (for stamping writes/sends). */
@@ -152,8 +307,304 @@ export class LeaseCoordinator {
     return this.effectiveView().epoch;
   }
 
+  /**
+   * The lease TTL in ms (B3 — multimachine-lease-poll-robustness). Exposed so the
+   * coordinator can size a dedicated renew timer SHORTER than the TTL, keeping the
+   * lease fresh between renewals instead of letting it lapse every heartbeat tick
+   * (the epoch-climb root: TTL 60s < tick 120s → always re-acquire at epoch+1).
+   */
+  get ttlMs(): number {
+    return this.fl.ttlMs;
+  }
+
   currentHolder(): string | null {
-    return this.effectiveView().lease?.holder ?? null;
+    const lease = this.effectiveView().lease;
+    // F3 — a RELEASED tombstone declares "epoch N released, not held": it names
+    // no live holder, so peers stop deferring to a muted ex-holder's zombie. A
+    // higher-epoch normal acquisition still strictly dominates (epoch fold).
+    if (!lease || lease.released) return null;
+    return lease.holder;
+  }
+
+  /**
+   * F4 — is `machineId` the current holder of a LIVE (non-expired, non-released)
+   * lease we observe? The deferential-standby health gate: a non-preferred machine
+   * defers to its preferred peer ONLY while this is true, so a frozen/down/released
+   * preferred never strands coverage (the non-preferred then acquires normally).
+   */
+  isHolderHealthy(machineId: string): boolean {
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.released || view.lease.holder !== machineId) return false;
+    return !this.fl.isExpired(view.lease, this.now());
+  }
+
+  /**
+   * multi-transport-mesh-comms Layer 3 — may a preferred stationary captain HOLD
+   * its lease (same epoch) instead of self-suspending when no rope confirmed?
+   * ALL must hold (each is an EXISTING signal, never authority invented here):
+   *  (1) the feature is enabled (DARK by default);
+   *  (2) this machine is the F4-AGREED preferred-awake machine;
+   *  (3) EVERY peer is presumed-gone by liveness-silence, OR this exact epoch
+   *      was acquired from a peer through the fenced takeover authority;
+   *  (4) no higher epoch than ours is observed (a real takeover always wins).
+   * Fail-closed: a missing dep ⇒ not eligible (today's self-suspend).
+   */
+  private soloCaptainHoldEligible(ourEpoch: number): boolean {
+    const cfg = this.d.soloCaptainHold?.();
+    if (!cfg?.enabled) return false;
+    if (!this.d.isPreferredAwakeAgreed?.()) return false;
+    const authorizedByPeerTakeover = this.peerTakeoverAuthorizedEpoch === ourEpoch;
+    if (!authorizedByPeerTakeover && !this.d.allPeersPresumedGone?.()) return false;
+    // No higher epoch observed than the one we hold (a real takeover dominates).
+    const view = this.effectiveView();
+    if (view.epoch > ourEpoch) return false;
+    return true;
+  }
+
+  /**
+   * The current effective-view signed lease (max of tunnel-observed, git-committed,
+   * and this machine's self-issued renewal), or null. Used to SERVE an active PULL
+   * (POST /api/lease/pull, Cross-Machine Coherence): a peer asks for our lease and
+   * we return this. Includes the holder's self-issued lease (which the transport's
+   * observed() — receive-only — does not), so a holder serves its own current lease.
+   */
+  currentLease(): LeaseRecord | null {
+    return this.effectiveView().lease;
+  }
+
+  /**
+   * Relinquish this machine's claim to break a same-epoch contested tie (spec
+   * §Problem A — the deterministic loser, lower-`machineId` LOSES is FALSE: the
+   * lower machineId WINS, the higher relinquishes). Two effects, both required
+   * for convergence:
+   *  (a) clears `selfIssued` AND forces the local store's persisted self-lease to
+   *      read as expired — so we stop being a "live holder at epoch N": the
+   *      winner's `canAcquire()` no longer returns `held-by-live-peer` (it can
+   *      now advance to N+1) and our `holdsLease()` returns false (we reconcile
+   *      to standby);
+   *  (b) we then ADOPT the winner's N+1 lease via the strict-`>` tunnel fold in
+   *      effectiveView() (N+1 > N), so currentHolder() names the winner.
+   * Idempotent. The caller (MultiMachineCoordinator's contested branch) latches
+   * this ONE-SHOT per contested episode so we do not re-clear+re-acquire every
+   * tick (which would re-introduce the leapfrog). The epoch FLOOR is preserved
+   * (forceLocalExpiry keeps the committed epoch) so a replayed stale lease can't
+   * win after we relinquish.
+   */
+  relinquish(): void {
+    this.selfIssued = null;
+    this.d.store.forceLocalExpiry?.();
+    this.log('relinquished self-lease (contested tie-break loser) — winner may now advance to N+1');
+  }
+
+  /**
+   * F2 — build the StaleHolderTakeoverOpts for `canAcquire`, or `undefined` when
+   * the flag is off / the candidate is not a takeable peer (so canAcquire stays
+   * byte-for-byte the legacy behavior). Uses this holder's observed freshness on
+   * the OBSERVER's own monotonic clock.
+   */
+  private staleHolderOpts(currentLease: LeaseRecord | null | undefined): StaleHolderTakeoverOpts | undefined {
+    const cfg = this.d.staleHolderTakeover?.();
+    if (!cfg?.enabled) return undefined;
+    if (!currentLease || currentLease.holder === this.selfMachineId) return undefined;
+    return {
+      monotonicNowMs: this.monotonicNow(),
+      freshObservedMonoMs: this.freshObservedMonoMs.get(currentLease.holder),
+      nonRenewalThresholdMs: this.fl.ttlMs * Math.max(1, cfg.nonRenewalMissedObservations),
+    };
+  }
+
+  /**
+   * F3 — relinquish a lease THIS machine holds AND broadcast a SIGNED tombstone
+   * so peers stop deferring to a muted ex-holder's zombie. Called level-triggered
+   * by the coordinator when this machine is observe-only yet still the named
+   * holder (the 2026-06-19 silent-standby zombie). The tombstone is
+   * `released:true` at our epoch with a fresh nonce strictly greater than our last
+   * (so a concurrent in-flight renewal cannot out-nonce it) and a past expiry; a
+   * higher-epoch normal takeover always strictly dominates it. Idempotent: a no-op
+   * (just local relinquish) when we are not the named holder.
+   */
+  async relinquishAndBroadcast(): Promise<void> {
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder !== this.selfMachineId || view.lease.released) {
+      // Not the live holder (or already a tombstone) → just clear local state.
+      this.relinquish();
+      return;
+    }
+    const tombstone = this.fl.signLease(
+      view.lease.epoch,
+      view.lease.acquiredAt,
+      new Date(this.now()).toISOString(), // past/now expiry — released regardless
+      this.nextNonce(),                   // strictly > our last renewal nonce
+      true,                               // released
+    );
+    this.relinquish(); // clear our own self-hold first (forceLocalExpiry preserves the epoch floor)
+    await this.broadcast(tombstone);
+    this.log(`relinquished + broadcast tombstone for epoch ${view.lease.epoch} (silent-standby release)`);
+  }
+
+  /**
+   * Force a ONE-TIME epoch advance to resolve a same-epoch contested tie (spec
+   * §Problem A — the WINNER side, lower `machineId`). Unlike acquireIfEligible(),
+   * which RENEWS the same epoch when we already hold it, this builds the NEXT
+   * epoch (N+1) and CAS-writes it, establishing a strictly-higher signed lease
+   * that the contested peer (the loser, having relinquished) adopts via the
+   * strict-`>` tunnel fold. The caller latches this ONE-SHOT per contested
+   * episode (NOT per tick), so it is a tie-resolution, never a per-tick bump →
+   * no leapfrog. Routes through the SAME casWrite/broadcast/sign path as a normal
+   * acquisition. Returns true if the advance landed (or we already hold a
+   * strictly-higher epoch). Idempotent against a peer that advanced first.
+   */
+  async advanceEpochForContestedWin(): Promise<boolean> {
+    const view = this.effectiveView();
+    // buildAcquisition writes currentEpoch+1; currentEpoch is max(self@N, peer@N)=N.
+    const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
+    const res = this.d.store.casWrite(candidate);
+    if (res.ok) {
+      this.selfIssued = candidate;
+      await this.broadcast(candidate);
+      this.markRenewOk();
+      this.emitEpoch(candidate.epoch);
+      this.log(`advanced to epoch ${candidate.epoch} to resolve contested same-epoch tie (winner)`);
+      return true;
+    }
+    // CAS lost — a strictly-higher epoch already exists (a peer advanced first);
+    // adopt it. Either way the same-epoch tie is broken.
+    this.emitEpoch(res.observed.epoch);
+    this.log(`contested-win advance lost CAS to epoch ${res.observed.epoch} — adopting the higher lease`);
+    return res.observed.lease?.holder === this.selfMachineId;
+  }
+
+  /**
+   * Whether the attached transport can actively PULL peer leases (Cross-Machine
+   * Coherence). False on a git-only mesh — the standby pull loop is then a no-op.
+   */
+  canPullPeers(): boolean {
+    return typeof this.d.tunnel?.pullAllPeers === 'function';
+  }
+
+  /**
+   * Active-pull every peer's current lease over the tunnel and fold the freshest
+   * into our observed view (the transport's recordObserved path). Safe no-op when
+   * the transport has no pull capability. Awaiting this then reading holdsLease()/
+   * observedPeerLease() reflects whatever a peer just disclosed.
+   */
+  async pullFromPeers(): Promise<void> {
+    if (this.d.tunnel?.pullAllPeers) await this.d.tunnel.pullAllPeers();
+  }
+
+  /**
+   * The RAW lease most-recently observed from a peer (push or pull), independent
+   * of our own self-issued/git view. effectiveView()'s max() masks a *same-epoch*
+   * peer (our self-issued wins the tie), so the standby pull loop reads this to
+   * detect a same-epoch contested split-brain that currentHolder() would hide.
+   */
+  observedPeerLease(): LeaseRecord | null {
+    return this.d.tunnel?.observed().lease ?? null;
+  }
+
+  /**
+   * Per-peer lease observations (machine-coherence-guard §5b): the map behind
+   * the lease-live awakeMachineCount derivation — each online peer's most
+   * recently disclosed lease view with its observation time, keyed on the
+   * machine-auth-verified peer id. Empty map when the transport has no pull
+   * capability (a git-only mesh — the counting rule degrades to the legacy
+   * 'registry-roles' source there).
+   */
+  peerLeaseObservations(): Map<string, { lease: LeaseRecord | null; observedAtMs: number }> {
+    return this.d.tunnel?.observedByPeer?.() ?? new Map();
+  }
+
+  /**
+   * machine-coherence-guard §5b — the LEASE-LIVE `awakeMachineCount` derivation
+   * (the fix for "awakeMachineCount:0 while both machines are online and a peer
+   * holds the lease"). The count is derived from the AUTHORITATIVE lease signal,
+   * NOT the laggy git-synced registry role field:
+   *
+   *   awakeMachineCount = (self holdsLease() ? 1 : 0)
+   *                     + #{ distinct online peers P whose most-recent observation
+   *                         satisfies ALL of }:
+   *       (i)  FRESHNESS — observed within `staleMs` (a stale claim contributes
+   *            nothing; the post-failover stale-claim overcount dies here);
+   *       (ii) LIVENESS  — the observed lease is NOT expired on OUR clock (an
+   *            expired lease carries no authority — the same rule the supersede
+   *            gate enforces);
+   *       (iii) SELF-CLAIM — `lease.holder === P`. A pulled lease naming a THIRD
+   *            machine is that peer's HEARSAY about someone else and contributes
+   *            nothing (the third machine's own self-claim is counted when IT is
+   *            pulled).
+   *
+   * Duplicate ids are impossible (map keying); observations are keyed on the
+   * machine-auth-verified DIALED peer id (never a response-body holder claim) and
+   * never include self, so `holder === P ≠ self` means self can never be
+   * double-counted. ADVISORY only (L4/SEC-4) — this count NEVER drives an
+   * automatic demotion; it feeds observability + the human-decision flow.
+   *
+   * Clock assumption (R2-N5): lease liveness is judged on the OBSERVER's clock;
+   * the freshness bound caps how long any one misjudged observation can distort
+   * the count, and the pool registry's clock-skew gate is the mesh-wide backstop.
+   */
+  deriveLiveAwakeCount(staleMs: number): number {
+    let count = this.holdsLease() ? 1 : 0;
+    const now = this.now();
+    for (const [peerId, rec] of this.peerLeaseObservations()) {
+      if (!rec.lease) continue; // an honest "no lease" — the peer is not awake
+      if (now - rec.observedAtMs > staleMs) continue; // (i) freshness
+      if (this.fl.isExpired(rec.lease, now)) continue; // (ii) liveness
+      if (rec.lease.holder !== peerId) continue; // (iii) self-claim (no hearsay)
+      count++;
+    }
+    return count;
+  }
+
+  /**
+   * Whether the most-recently OBSERVED peer lease genuinely SUPERSEDES ours and
+   * may therefore drive a pull-loop demotion. True ONLY when that peer lease is
+   * LIVE (not expired) AND at a STRICTLY HIGHER epoch than our own self-issued
+   * lease.
+   *
+   * Why this stricter gate exists (live incident 2026-06-02, the real laptop+mini
+   * pair): the pull loop demoted on ANY non-null `observedPeerLease()`. A standby
+   * peer kept disclosing a 2-DAY-EXPIRED, epoch-150 lease (vs our live epoch-1400+),
+   * which satisfied that loose gate — so every time our own ~60s lease lapsed
+   * transiently between renewals, the legitimate holder flipped to read-only
+   * standby (~50% of the time), blocking real writes (#673 caught the crash but the
+   * writes still failed). A stale/expired or lower-or-equal-epoch peer carries no
+   * fencing authority and must NEVER demote a legitimate holder; that holder's
+   * transient self-lapse is re-acquired by `tickLease`. Same-epoch contention is a
+   * separate concern handled by the contested-split-brain resolver, not here.
+   *
+   * NOTE: compare against `selfIssued.epoch` (our OWN lease), NOT `currentEpoch()`
+   * — the latter is `effectiveView().epoch = max(self, observed-peer)`, so it would
+   * already fold the peer in and make `peer.epoch > currentEpoch()` impossible.
+   */
+  peerLeaseSupersedes(): boolean {
+    const peer = this.observedPeerLease();
+    if (!peer) return false;
+    // A stale/expired observed peer lease carries no fencing authority.
+    if (this.fl.isExpired(peer, this.now())) return false;
+    // Only a STRICTLY higher epoch out-fences our own self-issued lease. A peer at
+    // our epoch or below cannot demote us (same-epoch ties → contested resolver).
+    const ourEpoch = this.selfIssued?.epoch ?? -1;
+    return peer.epoch > ourEpoch;
+  }
+
+  /**
+   * Whether the current peer-held effective lease is takeable by the normal
+   * fenced acquisition rules right now. This is a scheduling hint only: callers
+   * still invoke acquireIfEligible(), which re-evaluates the same decision and
+   * owns the CAS. Exposing the hint lets the fast anti-blinding pull loop wake
+   * acquisition exactly when an expired/dead/non-renewing holder becomes
+   * eligible without turning every pull into a noisy acquisition attempt.
+   */
+  peerTakeoverEligible(): boolean {
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder === this.selfMachineId) return false;
+    return this.fl.canAcquire(
+      view.lease,
+      this.d.presumedDeadHolders(),
+      this.now(),
+      this.staleHolderOpts(view.lease),
+    ).can;
   }
 
   /**
@@ -175,7 +626,7 @@ export class LeaseCoordinator {
       if (view.lease && view.lease.holder === this.selfMachineId && !this.fl.isExpired(view.lease, this.now())) {
         return this.renew();
       }
-      const decision = this.fl.canAcquire(view.lease, dead, this.now());
+      const decision = this.fl.canAcquire(view.lease, dead, this.now(), this.staleHolderOpts(view.lease));
       if (!decision.can) {
         this.log(`acquire skipped: ${decision.reason}`);
         return false;
@@ -184,8 +635,19 @@ export class LeaseCoordinator {
       const res = this.d.store.casWrite(candidate);
       if (res.ok) {
         this.selfIssued = candidate;
+        if (
+          view.lease &&
+          view.lease.holder !== this.selfMachineId &&
+          (
+            decision.reason === 'current-lease-expired' ||
+            decision.reason.startsWith('holder-presumed-dead') ||
+            decision.reason.startsWith('holder-not-renewing')
+          )
+        ) {
+          this.peerTakeoverAuthorizedEpoch = candidate.epoch;
+        }
         await this.broadcast(candidate);
-        this.lastRenewOkAt = this.now();
+        this.markRenewOk();
         this.emitEpoch(candidate.epoch);
         this.log(`acquired lease at epoch ${candidate.epoch}`);
         return true;
@@ -195,8 +657,8 @@ export class LeaseCoordinator {
       if (observedEpoch >= candidate.epoch) {
         this.log(`CAS lost to epoch ${observedEpoch} (our candidate ${candidate.epoch}) — yielding`);
         this.emitEpoch(observedEpoch);
-        // If the winner is a presumed-dead/expired holder we'll retry; else stop.
-        if (!this.fl.canAcquire(res.observed.lease, dead, this.now()).can) return false;
+        // If the winner is a presumed-dead/expired/non-renewing holder we'll retry; else stop.
+        if (!this.fl.canAcquire(res.observed.lease, dead, this.now(), this.staleHolderOpts(res.observed.lease)).can) return false;
       }
       retries++;
       if (this.fl.shouldBackoffAfterContention(retries, res.observed.lease?.holder ?? '')) {
@@ -204,6 +666,113 @@ export class LeaseCoordinator {
         return false;
       }
     }
+  }
+
+  /**
+   * Consented planned-handoff acquisition (spec §8 G3e). The incoming machine
+   * takes the lease while the OUTGOING is still alive — which the liveness-gated
+   * acquireIfEligible() correctly refuses. This path is reachable ONLY from the
+   * onYield handler, which fires only on an authenticated POST /api/handoff/yield
+   * after the outgoing verified the ack + passed validation. The existing
+   * split-brain-critical canAcquire() gate is deliberately left UNTOUCHED — this
+   * is an additive consent path, not a weakening of the liveness rule.
+   *
+   * Security guard: the yielding machine MUST be the holder we currently observe.
+   * A yield from any non-holder is refused, so a forged/misdirected yield cannot
+   * trigger a takeover. On success: CAS to epoch+1, broadcast, emit the new epoch.
+   */
+  async acquireOnConsent(yieldFromMachineId: string): Promise<boolean> {
+    const view = this.effectiveView();
+    const holder = view.lease?.holder ?? null;
+    if (holder && holder === this.selfMachineId) {
+      return true; // already ours — nothing to do
+    }
+    if (holder && holder !== yieldFromMachineId) {
+      this.log(`consent acquire refused: yield from ${yieldFromMachineId} but current holder is ${holder}`);
+      return false;
+    }
+    const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
+    const res = this.d.store.casWrite(candidate);
+    if (res.ok) {
+      this.selfIssued = candidate;
+      await this.broadcast(candidate);
+      this.markRenewOk();
+      this.emitEpoch(candidate.epoch);
+      this.log(`acquired lease on consent at epoch ${candidate.epoch} (yield from ${yieldFromMachineId})`);
+      return true;
+    }
+    // CAS lost — someone already advanced; adopt the observed epoch and stand down.
+    this.emitEpoch(res.observed.epoch);
+    this.log(`consent acquire lost CAS to epoch ${res.observed.epoch}`);
+    return false;
+  }
+
+  // ── U4.4 lease hand-back (docs/specs/u4-4-lease-handback.md) ────────
+
+  /** Used consent-token nonces per holder (single-use enforcement on the
+   *  ACQUIRING side). In-memory: a restart forgets, but the token TTL is short
+   *  and the envelope nonce guard is durable — the safe direction. */
+  private usedHandbackNonces = new Map<string, Set<number>>();
+
+  /**
+   * HOLDER side — mint the SIGNED, epoch-bound, TTL-bounded, SINGLE-USE consent
+   * token a `handback-offer` carries (R-r2-1). Refuses (null) unless THIS
+   * machine currently holds a valid lease — a non-holder can never mint
+   * consent for a lease it does not hold.
+   */
+  mintHandbackConsent(target: string, ttlMs: number): HandbackConsentToken | null {
+    if (!this.holdsLease()) return null;
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder !== this.selfMachineId) return null;
+    const expiresAt = new Date(this.now() + Math.max(1_000, ttlMs)).toISOString();
+    return this.fl.signHandbackConsent(view.epoch, target, expiresAt, this.nextNonce());
+  }
+
+  /**
+   * PREFERRED-CAPTAIN side — claim the lease by presenting the holder's consent
+   * token through the `handbackOpts` branch of canAcquire (R-r2-1). Claim-
+   * before-release: on success the CAS advances the epoch and the old holder
+   * steps down by observing it (isStampCurrent fencing — no double-serve
+   * window); on ANY failure nothing changes and the holder keeps holding (a
+   * failed hand-back can never leave zero holders). Single-use: the token's
+   * (holder, nonce) is burned on FIRST presentation, success or not.
+   */
+  async acquireOnHandbackConsent(token: HandbackConsentToken): Promise<{ ok: boolean; reason: string }> {
+    const view = this.effectiveView();
+    const used = this.usedHandbackNonces.get(token?.holder ?? '') ?? new Set<number>();
+    const alreadyUsed = used.has(token?.nonce);
+    const decision = this.fl.canAcquire(view.lease, this.d.presumedDeadHolders(), this.now(), undefined, {
+      token,
+      alreadyUsed,
+    });
+    // Burn the nonce on first presentation (replay/reuse fail-closed after).
+    if (token && typeof token.nonce === 'number') {
+      used.add(token.nonce);
+      this.usedHandbackNonces.set(token.holder, used);
+      if (used.size > 256) {
+        // bounded memory: keep the newest nonces
+        const keep = [...used].sort((a, b) => b - a).slice(0, 128);
+        this.usedHandbackNonces.set(token.holder, new Set(keep));
+      }
+    }
+    if (!decision.can || !decision.reason.startsWith('handback-consent')) {
+      // FAIL-CLOSED: only the consent branch may authorize this path — a
+      // coincidentally-expired lease must not turn a bad token into a claim.
+      return { ok: false, reason: decision.can ? `non-consent-grant-refused (${decision.reason})` : decision.reason };
+    }
+    const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
+    const res = this.d.store.casWrite(candidate);
+    if (res.ok) {
+      this.selfIssued = candidate;
+      await this.broadcast(candidate);
+      this.markRenewOk();
+      this.emitEpoch(candidate.epoch);
+      this.log(`acquired lease on hand-back consent at epoch ${candidate.epoch} (from ${token.holder})`);
+      return { ok: true, reason: 'handback-claimed' };
+    }
+    this.emitEpoch(res.observed.epoch);
+    this.log(`hand-back consent acquire lost CAS to epoch ${res.observed.epoch} — holder keeps holding`);
+    return { ok: false, reason: 'cas-lost' };
   }
 
   /**
@@ -238,14 +807,30 @@ export class LeaseCoordinator {
 
     if (confirmed) {
       this.selfIssued = renewed;
-      this.lastRenewOkAt = this.now();
+      this.markRenewOk();
       return true;
     }
 
-    if (this.now() - this.lastRenewOkAt > this.fl.ttlMs) {
+    // ── multi-transport-mesh-comms Layer 3 — safe-by-construction solo-captain hold ──
+    // The renewal could not confirm over any rope. BEFORE self-suspending, check the
+    // partition floor: a PREFERRED stationary captain whose sole peer is PROVABLY
+    // GONE (presumed-gone by liveness-silence) holds its lease (same epoch) instead
+    // of thrashing. Gated on F4-agreed-preferred + every-peer-presumed-gone + no
+    // higher epoch observed. The hold NEVER advances the epoch or takes over a
+    // peer's lease, so even a wrongly-presumed-gone live peer cannot double-write
+    // (the intact epoch-CAS + signature fence remains the authority). The monotonic
+    // self-fence stays armed whenever the presumed-gone gate is NOT satisfied.
+    if (this.soloCaptainHoldEligible(view.epoch)) {
+      this.selfIssued = renewed;
+      this.markRenewOk(); // hold the SAME epoch — no re-acquire, no inflation
+      this.log('solo-captain hold: preferred + all peers presumed-gone + no higher epoch — held lease without medium confirm');
+      return true;
+    }
+
+    if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) {
       this.suspended = true;
       this.d.onSelfSuspend?.(
-        `could not confirm lease over ${this.d.tunnel ? 'tunnel' : 'git'} for > leaseTtlMs (${this.fl.ttlMs}ms) — lease lapsed`,
+        `could not confirm lease over ${this.d.tunnel ? 'tunnel' : 'git'} for > leaseTtlMs (${this.fl.ttlMs}ms, monotonic) — lease lapsed`,
       );
       this.log('self-suspended: renewal-confirmation lapse');
       return false;
@@ -259,7 +844,7 @@ export class LeaseCoordinator {
     if (!this.d.tunnel) return;
     try {
       const ok = await this.d.tunnel.broadcast(lease);
-      if (ok) this.lastRenewOkAt = this.now();
+      if (ok) this.markRenewOk();
     } catch (err) {
       this.log(`broadcast failed: ${err instanceof Error ? err.message : String(err)}`);
     }

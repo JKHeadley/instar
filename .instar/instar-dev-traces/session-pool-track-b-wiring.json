@@ -1,0 +1,14 @@
+{
+  "phase": "complete",
+  "slug": "session-pool-track-b-wiring",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "src/commands/server.ts",
+    "src/core/types.ts",
+    "src/config/ConfigDefaults.ts"
+  ],
+  "artifactPath": "upgrades/side-effects/session-pool-track-b-wiring.md",
+  "artifactSha256": "374d81f096703b648d25a66681f476dbbc28da3369bb49dfb52b317df5d9fc78",
+  "specPath": "docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md",
+  "createdAt": "2026-05-29T10:49:19Z"
+}

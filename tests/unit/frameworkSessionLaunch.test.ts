@@ -15,6 +15,7 @@ import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
   resolveInteractiveFramework,
+  resolveInteractiveLaunchModel,
   resolveModelForFramework,
 } from '../../src/core/frameworkSessionLaunch.js';
 import { __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
@@ -42,6 +43,28 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       expect(spec.argv).toEqual(['/usr/local/bin/claude', '--dangerously-skip-permissions']);
     });
 
+    it('injects CLAUDE_CONFIG_DIR when a configHome is set (P1.3 account swap)', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        configHome: '/Users/x/.claude-personal',
+      });
+      expect(spec.envOverrides.CLAUDE_CONFIG_DIR).toBe('/Users/x/.claude-personal');
+      // Conversation continuity is account-agnostic: --resume still applies.
+      const resumed = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        configHome: '/Users/x/.claude-work',
+        resumeSessionId: 'uuid-1',
+      });
+      expect(resumed.envOverrides.CLAUDE_CONFIG_DIR).toBe('/Users/x/.claude-work');
+      expect(resumed.argv).toContain('--resume');
+      expect(resumed.argv).toContain('uuid-1');
+    });
+
+    it('does NOT set CLAUDE_CONFIG_DIR when no configHome (inherits parent — unchanged default)', () => {
+      const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/usr/local/bin/claude' });
+      expect(spec.envOverrides.CLAUDE_CONFIG_DIR).toBeUndefined();
+    });
+
     it('appends --resume <id> when a resumeSessionId is provided', () => {
       const spec = buildInteractiveLaunch('claude-code', {
         binaryPath: '/usr/local/bin/claude',
@@ -55,13 +78,86 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       ]);
     });
 
+    it('appends --session-id <id> when sessionId is set (warm-session A2A)', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        sessionId: 'warm-uuid-1',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '--session-id',
+        'warm-uuid-1',
+      ]);
+    });
+
+    it('--resume wins over --session-id when both are set (mutually exclusive)', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        resumeSessionId: 'resume-uuid',
+        sessionId: 'warm-uuid-1',
+      });
+      // Reloading an existing transcript precludes setting a fresh id.
+      expect(spec.argv).toContain('--resume');
+      expect(spec.argv).not.toContain('--session-id');
+    });
+
     it('emits CLAUDECODE= override so nested Claude detection stays off', () => {
       const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/x/claude' });
       expect(spec.envOverrides).toEqual({ CLAUDECODE: '' });
     });
+
+    it('does NOT push --model when no defaultModel is set (account default preserved)', () => {
+      const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/x/claude' });
+      expect(spec.argv).not.toContain('--model');
+    });
+
+    it('pins --model from a generic tier (balanced → sonnet) when defaultModel is set', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        defaultModel: 'balanced',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '--model',
+        'sonnet',
+      ]);
+    });
+
+    it('passes a raw model id through verbatim to --model', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        defaultModel: 'claude-opus-4-8',
+      });
+      expect(spec.argv).toContain('--model');
+      expect(spec.argv[spec.argv.indexOf('--model') + 1]).toBe('claude-opus-4-8');
+    });
+
+    it('combines --resume and --model when both are provided', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        resumeSessionId: 'abc-123',
+        defaultModel: 'capable',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '--resume',
+        'abc-123',
+        '--model',
+        'opus',
+      ]);
+    });
   });
 
   describe('codex-cli', () => {
+    it('reports the same concrete default model the interactive builder launches', () => {
+      expect(resolveInteractiveLaunchModel('codex-cli', undefined)).toBe('gpt-5.5');
+      expect(resolveInteractiveLaunchModel('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
+      expect(resolveInteractiveLaunchModel('codex-cli', undefined, 'ollama')).toBe('llama3.2:latest');
+    });
+
     it('passes --model gpt-5.5 + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
       const spec = buildInteractiveLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',
@@ -361,20 +457,50 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
 
   describe('codex-cli', () => {
     it('maps generic tiers to subscription-safe Codex model ids', () => {
-      // Confirmed light/medium/heavy mapping (Justin, 2026-05-23):
-      // light=gpt-5.2 (non-reasoning), medium=gpt-5.4-mini (cheapest reasoning),
-      // heavy=gpt-5.5 (frontier). See models.ts for the subscription rationale.
-      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.2');
+      // light/medium/heavy mapping. NOTE: gpt-5.2 was retired from ChatGPT-account
+      // Codex on 2026-06-03 (now 400s), so `fast`/`haiku` moved to gpt-5.4-mini —
+      // the cheapest still-accepted model (== balanced). See models.ts.
+      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.4-mini');
       expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
       expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-5.5');
     });
     it('maps legacy Claude tier names to Codex equivalents (cross-port back-compat)', () => {
-      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.2');
+      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.4-mini');
       expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-5.4-mini');
       expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-5.5');
     });
     it('passes raw Codex model ids through verbatim', () => {
       expect(resolveModelForFramework('codex-cli', 'gpt-5.4-codex')).toBe('gpt-5.4-codex');
+    });
+  });
+
+  describe('gemini-cli', () => {
+    it('keeps raw Gemini model ids inside the verified known-model set', () => {
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.5-flash')).toBe('gemini-2.5-flash');
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.5-pro')).toBe('gemini-2.5-pro');
+    });
+    it('passes explicit raw Gemini model ids through so bad overrides fail loudly upstream', () => {
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.0-flash')).toBe('gemini-2.0-flash');
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.5-pro-exp')).toBe('gemini-2.5-pro-exp');
+    });
+    it('uses the raw Gemini model id in interactive and headless launch argv', () => {
+      const interactive = buildInteractiveLaunch('gemini-cli', {
+        binaryPath: '/x/gemini',
+        defaultModel: 'gemini-2.5-pro-exp',
+      });
+      expect(interactive.argv).toEqual(['/x/gemini', '-m', 'gemini-2.5-pro-exp', '--yolo']);
+
+      const headless = buildHeadlessLaunch('gemini-cli', {
+        binaryPath: '/x/gemini',
+        prompt: 'p',
+        model: 'gemini-2.5-pro-exp',
+      });
+      expect(headless.argv).toEqual([
+        '/x/gemini',
+        '-m', 'gemini-2.5-pro-exp',
+        '--approval-mode', 'default',
+        '-p', 'p',
+      ]);
     });
   });
 

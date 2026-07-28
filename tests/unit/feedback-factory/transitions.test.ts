@@ -7,7 +7,16 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { canTransition, detectCycling, V2_STATES, V2_TRANSITIONS } from '../../../src/feedback-factory/processor/transitions.js';
+import {
+  canTransition,
+  detectCycling,
+  V2_STATES,
+  V2_TRANSITIONS,
+  V1_TO_V2_STATUS,
+  TERMINAL_STATUSES,
+  normalizeStatus,
+  isTerminalStatus,
+} from '../../../src/feedback-factory/processor/transitions.js';
 
 describe('canTransition — state legality', () => {
   it('allows a legal transition', () => {
@@ -85,5 +94,79 @@ describe('constants sanity', () => {
       expect(V2_STATES.has(from)).toBe(true);
       for (const t of targets) expect(V2_STATES.has(t)).toBe(true);
     }
+  });
+});
+
+describe('normalizeStatus — legacy(v1)→canonical(v2) projection', () => {
+  it('projects the three statuses that actually change', () => {
+    expect(normalizeStatus('open')).toBe('new'); // birth-default literal → new
+    expect(normalizeStatus('fixed')).toBe('fix_applied');
+    expect(normalizeStatus('resolved')).toBe('closed');
+  });
+
+  it('leaves identity-mapped v1 literals unchanged', () => {
+    expect(normalizeStatus('investigating')).toBe('investigating');
+    expect(normalizeStatus('wontfix')).toBe('wontfix');
+    expect(normalizeStatus('duplicate')).toBe('duplicate');
+  });
+
+  it('passes an already-v2 status through unchanged (idempotent — safe to double-apply)', () => {
+    for (const s of ['new', 'fix_applied', 'closed', 'verified', 'dispatched', 'research_complete']) {
+      expect(normalizeStatus(s)).toBe(s);
+      expect(normalizeStatus(normalizeStatus(s))).toBe(s); // idempotence
+    }
+  });
+
+  it('passes an unrecognised status through unchanged (no silent drop)', () => {
+    expect(normalizeStatus('totally_bogus')).toBe('totally_bogus');
+    expect(normalizeStatus('')).toBe('');
+  });
+
+  it('exposes the exact pinned v1→v2 map (no drift)', () => {
+    expect(V1_TO_V2_STATUS).toEqual({
+      open: 'new',
+      investigating: 'investigating',
+      fixed: 'fix_applied',
+      resolved: 'closed',
+      wontfix: 'wontfix',
+      duplicate: 'duplicate',
+    });
+  });
+});
+
+describe('isTerminalStatus — terminal check on NORMALIZED status (both sides of the boundary)', () => {
+  it('is true for every canonical terminal state', () => {
+    for (const s of ['closed', 'verified', 'wontfix', 'duplicate', 'chronic_escalated', 'legacy_closed']) {
+      expect(isTerminalStatus(s)).toBe(true);
+    }
+  });
+
+  it('normalizes BEFORE checking — a raw v1 `resolved` reads terminal (the load-bearing case)', () => {
+    expect(isTerminalStatus('resolved')).toBe(true); // → closed → terminal
+  });
+
+  it('is false for non-terminal statuses, including v1 literals that project to non-terminal', () => {
+    expect(isTerminalStatus('open')).toBe(false); // → new
+    expect(isTerminalStatus('new')).toBe(false);
+    expect(isTerminalStatus('investigating')).toBe(false);
+    expect(isTerminalStatus('fixed')).toBe(false); // → fix_applied (NOT terminal)
+    expect(isTerminalStatus('fix_applied')).toBe(false);
+    expect(isTerminalStatus('research_complete')).toBe(false);
+    expect(isTerminalStatus('dispatched')).toBe(false);
+    expect(isTerminalStatus('verified_tentative')).toBe(false);
+    expect(isTerminalStatus('chronic')).toBe(false);
+    expect(isTerminalStatus('deferred')).toBe(false);
+  });
+
+  it('exposes the exact pinned terminal set (no drift)', () => {
+    expect([...TERMINAL_STATUSES].sort()).toEqual(
+      ['chronic_escalated', 'closed', 'duplicate', 'legacy_closed', 'verified', 'wontfix'],
+    );
+  });
+
+  it('legacy_closed is terminal but is NOT a v2 lifecycle state (terminal-only literal)', () => {
+    expect(isTerminalStatus('legacy_closed')).toBe(true);
+    expect(V2_STATES.has('legacy_closed')).toBe(false);
+    expect(normalizeStatus('legacy_closed')).toBe('legacy_closed'); // passes through unchanged
   });
 });

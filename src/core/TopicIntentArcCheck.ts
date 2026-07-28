@@ -25,6 +25,7 @@
  * Instar's LlmQueue + IntelligenceProvider; tests stub it.
  */
 
+import type { IntelligenceProvider } from './types.js';
 import {
   TopicIntentStore,
   isTaskContextKind,
@@ -230,4 +231,44 @@ export function parseArcCheckResponse(raw: string): ArcCheckClassification {
   } catch {
     return { actsOn: [], contradicts: [] };
   }
+}
+
+export type ArcCheckDegradeReason = 'no-intelligence' | 'error';
+
+/**
+ * Production classifier built atop an injected IntelligenceProvider. Mirrors
+ * createLlmExtractFn from TopicIntentExtractor: degrade-safe, subscription
+ * transport (the provider must be the subscription/REPL-pool path — see
+ * feedback_anthropic_path_constraints), structured response parsing.
+ *
+ * `onDegrade` is an optional observability hook that fires on each degrade
+ * path WITHOUT weakening degrade-safety — the function still returns
+ * `{actsOn:[], contradicts:[]}` regardless. The `ArcCheck` class turns an
+ * empty classification into `{fire:false}`, so a degraded call cannot fire
+ * a false signal into the outbound gate.
+ */
+export function createArcCheckClassifyFn(
+  intelligence?: IntelligenceProvider,
+  onDegrade?: (reason: ArcCheckDegradeReason) => void,
+): ArcCheckClassifyFn {
+  return async (draftText, refs): Promise<ArcCheckClassification> => {
+    if (!intelligence) {
+      try { onDegrade?.('no-intelligence'); } catch { /* metering best-effort */ }
+      return { actsOn: [], contradicts: [] };
+    }
+    const { systemPrompt, userPrompt } = buildArcCheckPrompt(draftText, refs);
+    let raw: string;
+    try {
+      raw = await intelligence.evaluate(`${systemPrompt}\n\n${userPrompt}`, {
+        model: 'fast',
+        temperature: 0,
+        maxTokens: 400,
+        attribution: { component: 'TopicIntentArcCheck' },
+      });
+    } catch {
+      try { onDegrade?.('error'); } catch { /* metering best-effort */ }
+      return { actsOn: [], contradicts: [] };
+    }
+    return parseArcCheckResponse(raw);
+  };
 }

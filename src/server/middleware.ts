@@ -5,6 +5,49 @@
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
+const guardedResponses = new WeakSet<Response>();
+const GUARDED_RESPONSE_METHODS = ['json', 'send', 'sendStatus', 'redirect', 'download', 'sendFile'] as const;
+
+function responseAlreadyCommitted(res: Response): boolean {
+  return res.headersSent || res.writableEnded;
+}
+
+function logDuplicateResponse(req: Request, method: string): void {
+  const stack = new Error().stack?.split('\n').slice(2).join('\n');
+  console.warn(
+    `[server] Suppressed duplicate response send: ${req.method} ${req.originalUrl || req.url} via res.${method}()`
+    + (stack ? `\n${stack}` : ''),
+  );
+}
+
+/**
+ * Prevent a late duplicate Express response from throwing
+ * ERR_HTTP_HEADERS_SENT after a handler has already committed a response.
+ *
+ * This is a last-resort process guard; route handlers should still return
+ * immediately after early response branches.
+ */
+export function duplicateResponseGuard(req: Request, res: Response, next: NextFunction): void {
+  if (guardedResponses.has(res)) {
+    next();
+    return;
+  }
+  guardedResponses.add(res);
+
+  for (const method of GUARDED_RESPONSE_METHODS) {
+    const original = res[method].bind(res) as (...args: unknown[]) => Response;
+    (res[method] as unknown as (...args: unknown[]) => Response) = (...args: unknown[]) => {
+      if (responseAlreadyCommitted(res)) {
+        logDuplicateResponse(req, method);
+        return res;
+      }
+      return original(...args);
+    };
+  }
+
+  next();
+}
+
 export function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
   // Restrict CORS to localhost origins only — this is a local management API
   const origin = req.headers.origin;
@@ -112,7 +155,29 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
 
     // Message relay endpoints use their own auth (agent tokens / machine-HMAC),
     // not the general API bearer token. Auth is enforced in the route handlers.
-    if (req.path === '/messages/relay-agent' || req.path === '/messages/relay-machine') {
+    // /a2a/inbox is the same-machine a2a transport — callers hold the TARGET
+    // agent's per-agent token (from AgentRegistry), not the API bearer token,
+    // so the inbox route enforces `verifyAgentToken` in its handler.
+    if (
+      req.path === '/messages/relay-agent'
+      || req.path === '/messages/relay-machine'
+      || req.path === '/a2a/inbox'
+      || req.path === '/a2a/apprenticeship/cycles'
+    ) {
+      next();
+      return;
+    }
+
+    // /mesh/rpc is the §L0 Multi-Machine Session Pool machine-to-machine command
+    // transport. It is authed by the signed, recipient-bound MeshEnvelope (Ed25519
+    // verify → RBAC → nonce-burn in the dispatcher), NOT the API bearer token — a
+    // shared bearer token cannot work cross-machine, since each install holds its
+    // own authToken. So it is exempt from the bearer gate here; the dispatcher in
+    // the route handler rejects any envelope that fails verification. WITHOUT this
+    // exemption every cross-machine MeshRpc call (capacity/session-status,
+    // deliverMessage, place/claim/transfer) 401s before the envelope is ever
+    // checked — i.e. the entire pool is non-functional over the wire.
+    if (req.path === '/mesh/rpc') {
       next();
       return;
     }
@@ -156,6 +221,19 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
     // Secret drop routes — the token in the URL IS the auth.
     // GET serves the form, POST receives the submission. Both are user-facing.
     if (req.path.startsWith('/secrets/drop/')) {
+      next();
+      return;
+    }
+
+    // Dynamic-MCP operator-approval TAP pages — opened by the operator's BROWSER,
+    // which carries no Bearer token (the operator has the dashboard PIN, not the
+    // agent token). Same posture as Secret Drop: the opaque single-use requestId in
+    // the URL gates the GET page (renders the change, never the nonce), and the POST
+    // submit is PIN-gated by checkMandatePin inside the handler. The Bearer middleware
+    // would otherwise 401 the page before it ever renders. Scoped to `/mcp/approve/<id>`
+    // (trailing slash) so the agent-only `/mcp/approve` (exact) + `/mcp/approval-link`
+    // + `/mcp/load|offload|session` stay Bearer-gated.
+    if (req.path.startsWith('/mcp/approve/')) {
       next();
       return;
     }
@@ -297,6 +375,27 @@ export function rateLimiter(windowMs: number = 60_000, maxRequests: number = 10)
 export const OUTBOUND_MESSAGING_TIMEOUT_MS = 120_000;
 
 /**
+ * Hard budget (ms) the outbound tone/relevance gate is allowed to spend BEFORE
+ * the route fails it open and delivers the message un-reviewed.
+ *
+ * This MUST stay comfortably below OUTBOUND_MESSAGING_TIMEOUT_MS. The reason is
+ * a real production failure (2026-06-08): the tone gate is FAIL-OPEN by design,
+ * but `MessagingToneGate.review` will wait up to RATE_LIMIT_WAIT_MS (120s) for a
+ * rate-limit window PLUS the call itself — and that whole wait sat inside an
+ * un-raced `await` in `checkOutboundMessage`. Under rate-limit pressure the gate
+ * routinely finished at 121s–185s (observed in the tone-gate decision log, all
+ * failedOpen), blowing past the 120s route budget. The route then 408s, which is
+ * the WORST outcome: the message both bypasses the gate AND, because the send
+ * "failed", the calling session dumps the note into whatever topic it is active
+ * in (the "patch notes landing in the Invoices topic" bug). Capping the gate at
+ * this budget — and failing OPEN past it (same contract as the ArcCheck 200ms
+ * race) — guarantees the route always returns a verdict in budget. The invariant
+ * `OUTBOUND_GATE_REVIEW_BUDGET_MS < OUTBOUND_MESSAGING_TIMEOUT_MS` is asserted in
+ * the wiring test so the two budgets can never drift into conflict again.
+ */
+export const OUTBOUND_GATE_REVIEW_BUDGET_MS = 20_000;
+
+/**
  * Extended budget for the standards-conformance gate route (`/spec/conformance-check`).
  * It makes a single heavy top-tier review call over a full spec; the 30s default
  * 408s on any real spec. Set ABOVE the reviewer's inner CONFORMANCE_REVIEW_TIMEOUT_MS
@@ -306,12 +405,56 @@ export const OUTBOUND_MESSAGING_TIMEOUT_MS = 120_000;
 export const SPEC_REVIEW_TIMEOUT_MS = 180_000;
 
 /**
+ * Extended budget for the cutover-readiness parity-pass trigger
+ * (`/cutover-readiness/parity-pass`). One pass fetches the FULL live Portal
+ * cluster set (paginated) and compares server-side — measured at ~3.5 minutes
+ * against the real endpoint under load (2026-06-05). Under the 30s default the
+ * client always got a 408 while the handler kept running, and a late failure's
+ * 409 then crashed into ERR_HTTP_HEADERS_SENT with no trace of the outcome.
+ */
+export const PARITY_PASS_TIMEOUT_MS = 360_000;
+
+/**
+ * Extended budget for the deterministic topic transfer (`/pool/transfer`,
+ * WS1.2). When the topic's current owner can drain, the handler awaits the
+ * owner-side SessionDrainRunner SYNCHRONOUSLY: it waits up to `drainBoundMs`
+ * (30s default) for the in-flight turn to reach a boundary, then closes the
+ * session and lands the claim — so a CLEAN drain routinely lands at or past
+ * 30s, and the remote `_sendDrain` mesh call is itself capped at 50s. Under
+ * the 30s default the client would get a 408 mid-drain while the handler kept
+ * running to completion (landing the claim + setting the pin) — the exact
+ * "408 while the handler keeps running" failure class the outbound-messaging
+ * and parity-pass overrides already exist to prevent (2026-06-12 second-pass
+ * review concern #1). 75s clears the 50s remote cap + slack with margin.
+ */
+export const POOL_TRANSFER_TIMEOUT_MS = 75_000;
+
+/**
+ * Slack added on top of a configured parity-source TOTAL fetch budget when
+ * deriving the parity-pass/import-dryrun route budgets: the route does the full
+ * live fetch PLUS server-side compare/import work after it.
+ */
+export const PARITY_ROUTE_SLACK_MS = 60_000;
+
+/**
  * The production per-path request-timeout overrides. Exported as the single
  * source of truth so wiring-integrity tests assert against the SAME map the
  * server actually wires — never a hand-rolled copy that could pass while the
  * server is misconfigured (the PR-#334 dead-code lesson).
+ *
+ * `paritySourceTotalTimeoutMs` (config `feedbackMigration.paritySource.totalTimeoutMs`):
+ * when an operator widens the live-source fetch budget for a degraded source, the
+ * parity-pass/import-dryrun ROUTE budgets must widen with it — otherwise every
+ * trigger 408s at the constant while the handler keeps running, and a caller that
+ * retries on the 408 piles a concurrent fetch onto the degraded source (observed
+ * live 2026-06-05: 600s/page configured, 360s route → four concurrent passes).
+ * The constant stays the floor; the derived budget never shrinks below it.
  */
-export function buildRequestTimeoutOverrides(): Record<string, number> {
+export function buildRequestTimeoutOverrides(opts?: { paritySourceTotalTimeoutMs?: number }): Record<string, number> {
+  const configuredTotal = opts?.paritySourceTotalTimeoutMs;
+  const parityBudgetMs = typeof configuredTotal === 'number' && Number.isFinite(configuredTotal) && configuredTotal > 0
+    ? Math.max(PARITY_PASS_TIMEOUT_MS, configuredTotal + PARITY_ROUTE_SLACK_MS)
+    : PARITY_PASS_TIMEOUT_MS;
   return {
     '/telegram/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/telegram/post-update': OUTBOUND_MESSAGING_TIMEOUT_MS,
@@ -320,6 +463,16 @@ export function buildRequestTimeoutOverrides(): Record<string, number> {
     '/imessage/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
+    '/cutover-readiness/parity-pass': parityBudgetMs,
+    // The import dry-run does the same full live source fetch as a parity pass
+    // (plus an in-memory import + gate, which is fast) — same budget.
+    '/cutover-readiness/import-dryrun': parityBudgetMs,
+    // The REAL integrity pass spawns a child that does the same full-corpus fetch +
+    // a persisted import + gate; the route awaits the child — same extended budget.
+    '/cutover-readiness/integrity-pass': parityBudgetMs,
+    // WS1.2: the deterministic transfer awaits the owner-side drain (≤ drain
+    // bound + the 50s remote-call cap) synchronously — see POOL_TRANSFER_TIMEOUT_MS.
+    '/pool/transfer': POOL_TRANSFER_TIMEOUT_MS,
   };
 }
 
@@ -403,9 +556,53 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
   next();
 }
 
-export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction): void {
+/**
+ * #1441 — dashboard static assets must never outlive a deploy. Stamp a
+ * revalidate-always `Cache-Control: no-cache` on every dashboard response.
+ *
+ * Before this, express.static served `Cache-Control: public, max-age=0`, which
+ * Cloudflare's edge silently overrode with its default multi-hour TTL for
+ * .js/.css. A warm-cache browser then paired a FRESH index.html (sent each load)
+ * with a STALE glance.js and threw `glance.blockersGlanceSpec is not a function`,
+ * blanking a whole tab for up to 4h after every phase deploy. `no-cache` (not
+ * `no-store`) keeps the ETag/Last-Modified revalidation express already generates,
+ * so every asset — index.html AND its transitively-imported ES modules
+ * (glance.js → subscriptions.js) — 304-revalidates on each load; a deploy can never
+ * leave a skewed pair. `no-cache` is also a directive Cloudflare honors by NOT
+ * edge-caching, so it kills the stale-edge-copy half of the skew too.
+ *
+ * This runs via `express.static({ setHeaders })` (below) so it wins over
+ * serve-static's own default Cache-Control, and is called directly for the
+ * index.html `res.sendFile` route.
+ */
+export function dashboardCacheControl(res: Response): void {
+  res.setHeader('Cache-Control', 'no-cache');
+}
+
+/**
+ * The `express.static` options for the dashboard directory — exported so the
+ * AgentServer wiring and its integration test exercise the SAME object (no drift).
+ * `setHeaders` applies {@link dashboardCacheControl} after serve-static would set
+ * its own header, so `no-cache` is the final Cache-Control; etag/lastModified stay
+ * on for cheap 304 revalidation.
+ */
+export const DASHBOARD_STATIC_OPTIONS = {
+  etag: true,
+  lastModified: true,
+  setHeaders: dashboardCacheControl,
+} as const;
+
+export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
   const message = err instanceof Error ? err.message : String(err);
-  console.error(`[server] Error: ${message}`);
+  const stack = err instanceof Error ? err.stack : undefined;
+  if (responseAlreadyCommitted(res)) {
+    console.warn(
+      `[server] Error after response was already sent for ${req.method} ${req.originalUrl || req.url}: ${message}`
+      + (stack ? `\n${stack}` : ''),
+    );
+    return;
+  }
+  console.error(`[server] Error: ${message}` + (stack ? `\n${stack}` : ''));
   // Never leak internal error details to clients
   res.status(500).json({
     error: 'Internal server error',

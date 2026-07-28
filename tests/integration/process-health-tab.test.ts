@@ -91,12 +91,15 @@ describe('Process Health controller (§4.3 — happy path + rendering)', () => {
     c.start();
     await flush();
 
-    expect(els.headline.textContent).toContain('Watching — 1 issue recorded');
+    expect(els.headline.textContent).toContain('Keeping an eye out — 1 thing noticed');
     expect(els.patterns.textContent).toContain('repeated races');
-    expect(els.patterns.textContent).toContain('verify before acting');
-    expect(els.captured.textContent).toContain('A concurrency issue');
-    expect(els.maturation.querySelector('.ph-stage-here')?.textContent).toContain('Capture-only');
-    expect(els.detail.textContent).toContain('Total recorded: 2');
+    // v7: per-card framing line dropped (was the third echo of the section title +
+    // subtitle saying the same thing). The pattern card now shows just its own
+    // headline + the labeled rows in the expanded body.
+    expect(els.patterns.textContent).not.toContain('Same kind of problem has come up more than once');
+    expect(els.captured.textContent).toContain('A timing problem');
+    expect(els.maturation.querySelector('.ph-stage-here')?.textContent).toContain('Quietly watching');
+    expect(els.detail.textContent).toContain('Total noticed: 2');
     c.stop();
   });
 
@@ -221,11 +224,11 @@ describe('Process Health controller (§4.3 — race / visibility / staleness / b
     const c = createController({ doc, els, fetchImpl, now: () => 1000, schedule: t.schedule, cancel: t.cancel });
     c.start();
     await flush();
-    expect(els.headline.textContent).toContain('Watching');
+    expect(els.headline.textContent).toContain('Keeping an eye out');
     script.analysis.status = 500; script.insights.status = 500; script.failures.status = 500;
     for (let i = 0; i < 3; i++) { await c.tick(); }
-    expect(els.headline.textContent).toContain('Connection paused');
-    expect(els.headline.textContent).not.toContain('Watching — 1 issue');
+    expect(els.headline.textContent).toContain("Can't refresh right now");
+    expect(els.headline.textContent).not.toContain('Keeping an eye out — 1 thing');
     c.stop();
   });
 
@@ -238,13 +241,13 @@ describe('Process Health controller (§4.3 — race / visibility / staleness / b
     const c = createController({ doc, els, fetchImpl, now: () => clock, cadenceMs: 60_000, staleMs: 180_000, schedule: t.schedule, cancel: t.cancel });
     c.start();
     await flush();
-    expect(els.headline.textContent).toContain('Watching');
+    expect(els.headline.textContent).toContain('Keeping an eye out');
     // /failures now pins to 304 forever; siblings keep returning fresh 200s.
     script.failures.status = 304;
     script.analysis.body = { total: 1, rollout: { stage: 'capture-only' } };
     clock = 1_200_000; // +200s elapsed, past the 180s (3× cadence) staleness ceiling
     await c.tick();
-    expect(els.headline.textContent).toContain('Connection paused');
+    expect(els.headline.textContent).toContain("Can't refresh right now");
     // The corner stamp reflects /failures' own last-200 age, not the freshest sibling.
     expect(els.stamp.textContent).toMatch(/updated \d+m ago/);
     c.stop();
@@ -287,9 +290,9 @@ describe('Process Health controller (§4.3 — race / visibility / staleness / b
           s.insights.body = { insights: [{ summary: 'repeated races', recommendation: 'add a lock', distinctSessions: 4 }] };
           s.failures.body = { failures: [{ category: 'concurrency', summary: 'a data race', initiativeId: 'failure-learning-loop', detectedAt: new Date().toISOString(), status: 'open' }] };
         },
-        expectState: /watching/i,
+        expectState: /keeping an eye out/i,
       },
-      { name: 'empty', setup: () => {}, expectState: /nothing recorded yet/i },
+      { name: 'empty', setup: () => {}, expectState: /nothing has come up yet/i },
       { name: 'disabled', setup: (s) => { s.analysis.status = 503; s.insights.status = 503; s.failures.status = 503; }, expectState: /isn’t turned on/i },
     ];
     for (const fx of fixtures) {

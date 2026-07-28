@@ -292,7 +292,11 @@ export class WarrantsReplyGate {
 ${text.slice(0, 2000)}
 </classify-input>`;
     try {
-      const raw = await this.intelligence!.evaluate(prompt, { model: 'fast', maxTokens: 8 });
+      const raw = await this.intelligence!.evaluate(prompt, {
+        model: 'fast',
+        maxTokens: 8,
+        attribution: { component: 'WarrantsReplyGate' },
+      });
       return raw.trim().toUpperCase().includes('NO_REPLY') ? 'NO_REPLY' : 'REPLY';
     } catch {
       // Authority failure → fail toward responsive.

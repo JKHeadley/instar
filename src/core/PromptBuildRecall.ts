@@ -26,7 +26,7 @@
  */
 
 import crypto from 'node:crypto';
-import type { SemanticMemory } from '../memory/SemanticMemory.js';
+import type { SemanticMemory, SearchStrategy } from '../memory/SemanticMemory.js';
 
 export interface PromptBuildRecallConfig {
   enabled: boolean;
@@ -78,6 +78,12 @@ export interface PromptBuildRecallResult {
   elapsedMs: number;
   resultsCount: number;
   cacheKey: string;
+  /**
+   * Which retrieval strategy actually served this recall. Absent on the paths
+   * that never reached a search (disabled, cached, circuit-open, no-memory,
+   * error, timeout) — a strategy is only claimed when one genuinely ran.
+   */
+  strategy?: SearchStrategy;
 }
 
 interface CacheEntry {
@@ -105,12 +111,21 @@ export class PromptBuildRecall {
    * Run a recall pass for a user message. Returns the context-text to inject
    * into the system prompt (or empty string if nothing useful surfaces).
    *
-   * Synchronous because the caller (UserPromptSubmit hook) blocks on the
-   * response. The recall path itself uses sqlite-backed SemanticMemory which
-   * is fast and synchronous; the only "async" guard is the timeout, which is
-   * enforced by checking elapsed time after the search.
+   * ASYNC because recall now prefers `searchHybrid()` — the semantic path over
+   * the embedding index — rather than the keyword-only `search()`.
+   *
+   * It was synchronous, and that single choice decided the retrieval strategy for
+   * the whole system: `search()` is sync, `searchHybrid()` is not, so the sync one
+   * was called and the fully-populated vector index went unused. Nothing reported
+   * it, because a keyword answer and a semantic answer are the same shape.
+   *
+   * Executing server-side (the hook POSTs to `/internal/prompt-recall`) means the
+   * embedding model stays warm in a long-lived process, so the async cost is a
+   * cold-start on the first call after boot, not a per-call penalty. The timeout
+   * is now a real race rather than an after-the-fact elapsed check, so that
+   * cold start cannot exceed the budget the hook is entitled to.
    */
-  recall(opts: { userMessage: string; sessionId?: string }): PromptBuildRecallResult {
+  async recall(opts: { userMessage: string; sessionId?: string }): Promise<PromptBuildRecallResult> {
     const start = this.now();
     const cacheKey = this.makeCacheKey(opts);
 
@@ -133,12 +148,29 @@ export class PromptBuildRecall {
       return { contextText: '', source: 'no-memory', elapsedMs: 0, resultsCount: 0, cacheKey };
     }
 
+    const memory = this.deps.semanticMemory;
     let entries: Array<{ name: string; description?: string; confidence?: number }> = [];
+    let timedOut = false;
     try {
-      const raw = this.deps.semanticMemory.search(opts.userMessage, {
-        limit: this.config.maxRecallResults,
-        minConfidence: this.config.minConfidence,
-      });
+      // Semantic first, keyword as its fallback — searchHybrid degrades to
+      // search() internally when vectors are unavailable, and records which one
+      // actually served. The budget is enforced as a race: an embedding cold
+      // start must not hold the prompt path past recallTimeoutMs.
+      const raw = await Promise.race([
+        memory.searchHybrid(opts.userMessage, {
+          limit: this.config.maxRecallResults,
+          minConfidence: this.config.minConfidence,
+        }),
+        new Promise<null>((resolve) =>
+          setTimeout(() => { timedOut = true; resolve(null); }, this.config.recallTimeoutMs),
+        ),
+      ]);
+      if (timedOut || raw === null) {
+        // A timeout is not a circuit failure: the search may still be warming the
+        // model and succeeding. Counting it toward the breaker would open the
+        // circuit on a healthy-but-cold path and keep recall dark for the cooldown.
+        return { contextText: '', source: 'timeout', elapsedMs: this.now() - start, resultsCount: 0, cacheKey };
+      }
       entries = raw as typeof entries;
       this.circuit.consecutiveFailures = 0;
     } catch {
@@ -150,12 +182,19 @@ export class PromptBuildRecall {
     }
 
     const elapsed = this.now() - start;
+    // The race above already bounded the wait; this remains as a belt-and-braces
+    // check for a clock that jumped or a synchronous path that outran the timer.
     if (elapsed > this.config.recallTimeoutMs) {
       return { contextText: '', source: 'timeout', elapsedMs: elapsed, resultsCount: 0, cacheKey };
     }
 
+    // Which strategy served this recall — 'vector-hybrid' when embeddings ranked
+    // it, an 'fts-*' value when it fell back to lexical. Reported so a caller can
+    // tell a semantic answer from a keyword one.
+    const strategy = memory.lastSearchStrategy;
+
     if (entries.length === 0) {
-      const result: PromptBuildRecallResult = { contextText: '', source: 'empty', elapsedMs: elapsed, resultsCount: 0, cacheKey };
+      const result: PromptBuildRecallResult = { contextText: '', source: 'empty', elapsedMs: elapsed, resultsCount: 0, cacheKey, strategy };
       this.cache.set(cacheKey, { value: result, expiresAt: start + this.config.cacheTtlMs });
       return result;
     }
@@ -167,6 +206,7 @@ export class PromptBuildRecall {
       elapsedMs: elapsed,
       resultsCount: entries.length,
       cacheKey,
+      strategy,
     };
     this.cache.set(cacheKey, { value: result, expiresAt: start + this.config.cacheTtlMs });
     return result;

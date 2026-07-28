@@ -41,7 +41,6 @@ function harness(opts: { topic: number | null; lifeline: number | null }) {
 
   const deps = buildRateLimitRecoveryDeps({
     isSessionAlive: () => true,
-    injectTopicNudge: () => true,
     injectInternalNudge: (_n, text) => { internalNudges.push(text); return true; },
     getTopicForSession: () => opts.topic,
     getLifelineTopicId: () => opts.lifeline,

@@ -1,0 +1,1 @@
+{ "phase": "complete", "slug": "session-pool-track-c-dispatcher", "coveredFiles": ["src/core/MeshRpc.ts"], "artifactPath": "upgrades/side-effects/session-pool-track-c-dispatcher.md", "artifactSha256": "4ae4a2437693299c5918c5943b28bd70e11e46bf303247be9ad6e24c3eafdef6", "specPath": "docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md", "createdAt": "2026-05-29T11:09:39Z" }

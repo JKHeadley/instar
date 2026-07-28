@@ -43,8 +43,24 @@ const RECOMMENDATION_BY_CATEGORY: Record<FailureCategory, string> = {
   logic: 'Recurring logic failures — strengthen the both-sides-of-the-boundary test requirement in the spec review.',
   migration: 'Recurring migration failures — add a migration-parity check (existing-agent path) to the review checklist.',
   'test-gap': 'Recurring test-gap failures — require the 3-tier test set (incl. the production storage path) before merge.',
+  // Ingestion-sources spec §7: required because this is a total Record<FailureCategory,…>
+  // — widening the enum without these entries fails tsc. (A totality test locks this.)
+  'build-failure': 'Recurring build failures — check the build config / dependency or lint rule that keeps breaking, and add a pre-merge build gate for it.',
+  'test-failure': 'Recurring test failures — require the 3-tier test set before merge and stabilize the flaky path before it lands.',
+  regression: 'Recurring regressions — a shipped feature keeps breaking; add a regression guard (a test pinning the behavior) for this path.',
   unknown: 'Recurring uncategorized failures — improve the failure-categorization step so these become actionable.',
 };
+
+/**
+ * Judgment Within Floors (ownership-gated-spawn spec §3.6): the paired
+ * recommendation for the filer-flagged `judgmentCandidate` cluster. Template
+ * text, never free LLM prose — same contract as RECOMMENDATION_BY_CATEGORY.
+ */
+const JUDGMENT_CANDIDATE_RECOMMENDATION =
+  'Recurring failures trace to static heuristics at competing-signals decision points — ' +
+  'evaluate each as a judgment point within a deterministic floor (bounded action space, ' +
+  'conservative default, bench-laddered arbiter) per the Judgment Within Floors standard ' +
+  'in docs/STANDARDS-REGISTRY.md.';
 
 export interface AnalyzeResult {
   insightsDiscovered: InsightRecord[];
@@ -66,9 +82,13 @@ export class FailureAnalyzer {
       : undefined;
     // Only attributed records feed a process-change recommendation (§4.3): a
     // guess (`inferred`) is excluded until confirmed.
+    // Ingestion-sources spec §6.1 (implements parent §4.4 M6, specified-but-unbuilt):
+    // `resolved` records (incl. those a revert closes) are excluded from active-rate
+    // clustering — a fixed/reverted failure must not keep driving a recommendation.
+    // `reopened` stays IN (it is active again); only `resolved` is excluded.
     const records = this.ledger
       .list({ sinceMs, limit: 1000 })
-      .filter((r) => r.attribution === 'automatic' || r.attribution === 'one-tap');
+      .filter((r) => (r.attribution === 'automatic' || r.attribution === 'one-tap') && r.status !== 'resolved');
 
     const byCategory = new Map<FailureCategory, FailureRecord[]>();
     for (const r of records) {
@@ -102,9 +122,39 @@ export class FailureAnalyzer {
       if (insight) discovered.push(insight);
     }
 
+    // Judgment-candidate cluster (§3.6): filer-flagged records cluster ACROSS
+    // categories — the shared trait is "a static heuristic at a competing-signals
+    // decision point failed", not the failure category. Same diversity gates.
+    const jcCluster = records.filter((r) => r.judgmentCandidate === true);
+    let jcConsidered = 0;
+    if (jcCluster.length > 0) {
+      jcConsidered = 1;
+      const distinctSessions = new Set(jcCluster.map((r) => r.filedBy)).size;
+      const distinctCauseCommits = new Set(jcCluster.map((r) => r.causeCommitOid ?? r.id)).size;
+      const crosses =
+        jcCluster.length >= this.gates.minSupport &&
+        distinctSessions >= this.gates.minDistinctSessions &&
+        distinctCauseCommits >= this.gates.minDistinctCauseCommits;
+      if (crosses) {
+        const insight = this.ledger.upsertInsight({
+          identityKey: 'judgment-candidate',
+          summary: `${jcCluster.length} attributed judgment-candidate failures (static heuristics at competing-signals decision points) across ${distinctSessions} sessions / ${distinctCauseCommits} cause-commits`,
+          recommendation: JUDGMENT_CANDIDATE_RECOMMENDATION,
+          supportingFailureIds: jcCluster.map((r) => r.id),
+          distinctSessions,
+          distinctCauseCommits,
+          targetCategory: 'judgment-candidate',
+          baselineRate: jcCluster.length,
+        });
+        if (insight) discovered.push(insight);
+      } else {
+        belowThreshold++;
+      }
+    }
+
     return {
       insightsDiscovered: discovered,
-      clustersConsidered: byCategory.size,
+      clustersConsidered: byCategory.size + jcConsidered,
       clustersBelowThreshold: belowThreshold,
     };
   }

@@ -21,16 +21,28 @@ if [ ! -f "$CONFIG_FILE" ]; then
   exit 0
 fi
 
-PORT=$(grep -o '"port":[0-9]*' "$CONFIG_FILE" | head -1 | cut -d':' -f2)
+PORT=$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$CONFIG_FILE" | head -1 | grep -oE '[0-9]+' | head -1)
 if [ -z "$PORT" ]; then
   exit 0
 fi
 
-AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
+# Resolve auth token: INSTAR_AUTH_TOKEN env first (SessionManager injects it per
+# spawned session — survives secret-externalization), legacy plaintext-config
+# fallback with string-type guard so the { "secret": true } placeholder produced
+# by SecretMigrator cannot leak through as a bogus Bearer.
+AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+if [ -z "$AUTH_TOKEN" ]; then
+  AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+fi
+AGENT_ID="${INSTAR_AGENT_ID:-}"
+if [ -z "$AGENT_ID" ]; then
+  AGENT_ID=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('projectName',''))" 2>/dev/null)
+fi
 
 # Check if server is alive
 HEALTH=$(curl -s -o /dev/null -w "%{http_code}" \
   -H "Authorization: Bearer ${AUTH_TOKEN}" \
+  -H "X-Instar-AgentId: ${AGENT_ID}" \
   "http://localhost:${PORT}/health" 2>/dev/null)
 if [ "$HEALTH" != "200" ]; then
   exit 0
@@ -43,15 +55,17 @@ curl -s -X POST "http://localhost:${PORT}/scope-coherence/reset" -o /dev/null 2>
 # Record session start for reflection metrics (usage-based reflection trigger)
 curl -s -X POST "http://localhost:${PORT}/reflection/session-start" \
   -H "Authorization: Bearer ${AUTH_TOKEN}" \
+  -H "X-Instar-AgentId: ${AGENT_ID}" \
   -H "Content-Type: application/json" -o /dev/null 2>/dev/null || true
 
 # Reset homeostasis state for new session (work-velocity awareness)
 curl -s -X POST "http://localhost:${PORT}/homeostasis/reset" \
   -H "Authorization: Bearer ${AUTH_TOKEN}" \
+  -H "X-Instar-AgentId: ${AGENT_ID}" \
   -H "Content-Type: application/json" -o /dev/null 2>/dev/null || true
 
 # Check reflection metrics — usage-based reflection suggestion
-REFLECTION_CHECK=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" \
+REFLECTION_CHECK=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
   "http://localhost:${PORT}/reflection/metrics" 2>/dev/null)
 if [ -n "$REFLECTION_CHECK" ]; then
   SUGGESTED=$(echo "$REFLECTION_CHECK" | python3 -c "import sys,json; print(json.load(sys.stdin).get('suggested',False))" 2>/dev/null)
@@ -159,7 +173,7 @@ if [ -n "$JOB_SLUG" ]; then
   QUERY_URL="${QUERY_URL}&jobSlug=${JOB_SLUG_ENCODED}"
 fi
 
-WORKING_MEM=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" "$QUERY_URL" 2>/dev/null)
+WORKING_MEM=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" "$QUERY_URL" 2>/dev/null)
 
 if [ -z "$WORKING_MEM" ]; then
   exit 0
@@ -192,7 +206,7 @@ except Exception:
 # Active commitments injection (PROMISE-BEACON-SPEC Round 3 #7).
 # Surfaces beacon-watched pending commitments so the agent can self-regulate
 # pacing across compaction. Capped server-side at 20 entries.
-ACTIVE_COMMITMENTS=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" \
+ACTIVE_COMMITMENTS=$(curl -s -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
   "http://localhost:${PORT}/commitments/active-context" 2>/dev/null)
 if [ -n "$ACTIVE_COMMITMENTS" ]; then
   python3 -c "
@@ -319,6 +333,7 @@ if [ -n "$PORT" ] && [ -n "$AUTH_TOKEN" ]; then
 
   EVAL_RESULT=$(curl -s --max-time 6 -X POST \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -H "X-Instar-AgentId: ${AGENT_ID}" \
     -H "Content-Type: application/json" \
     "http://localhost:${PORT}/features/evaluate-context" \
     -d "{\"topicCategory\":\"${TOPIC_LABEL}\",\"conversationIntent\":\"${INTENT}\",\"problemCategories\":[],\"autonomyProfile\":\"collaborative\",\"enabledFeatures\":[]}" \

@@ -25,6 +25,8 @@ import type { AutonomyGate } from './AutonomyGate.js';
 import type { AgentTrustLevel } from './AgentTrustManager.js';
 import { buildRelayGroundingPreamble, tagExternalMessage, RELAY_HISTORY_LIMITS } from './RelayGroundingPreamble.js';
 import type { RelayGroundingContext } from './RelayGroundingPreamble.js';
+import { WarmSessionPeerConflictError } from './WarmSessionPool.js';
+import type { WarmSessionPool } from './WarmSessionPool.js';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -90,6 +92,14 @@ export interface RelayMessageContext {
   originFingerprint?: string;
   /** Original source name */
   originName?: string;
+  /**
+   * Warm-session A2A (dark-ship): when true, the relay decided this inbound is
+   * eligible for a keep-alive interactive worker (non-topic-bound, trust ≥ floor,
+   * feature enabled). The router requests an interactive (persistent) spawn and
+   * admits it to the WarmSessionPool instead of the headless `-p` cold-spawn.
+   * Absent/false → existing cold-spawn behavior, byte-for-byte.
+   */
+  preferWarmSession?: boolean;
 }
 
 /** Result of handling an inbound threaded message */
@@ -154,12 +164,128 @@ Messages in thread: {message_count}
 {history_section}
 
 The latest message from {remote_agent}:
+Message ID: {latest_message_id}
 Subject: {latest_subject}
 ---
 {latest_body}
 ---
 
-Respond to this message. Use the threadline_send MCP tool with the agentId set to "{remote_agent}" and include the threadId "{thread_id}" to send your reply.`;
+Respond to this message. Use the threadline_send MCP tool with the agentId set to "{remote_agent}", threadId "{thread_id}", and inReplyTo "{latest_message_id}" to send your reply.`;
+
+/**
+ * Warm-session keep-alive variant of THREAD_SPAWN_PROMPT_TEMPLATE (spec §3.5).
+ *
+ * Used ONLY for interactive (persistent REPL) keep-alive spawns. The difference
+ * from the cold one is the closing instruction: a `claude -p` worker processes
+ * one message and exits, but a warm worker must reply, then STAY in the
+ * conversation and wait — the next message on this thread is injected directly
+ * into this same live session. This mirrors how Telegram-bound interactive
+ * sessions already persist and accept injected follow-up turns.
+ */
+const THREAD_WARM_SPAWN_PROMPT_TEMPLATE = `You are continuing a threaded conversation with {remote_agent}.
+
+Thread: {thread_id}
+Subject: {subject}
+Messages in thread: {message_count}
+
+{history_section}
+
+The latest message from {remote_agent}:
+Message ID: {latest_message_id}
+Subject: {latest_subject}
+---
+{latest_body}
+---
+
+Respond to this message. Use the threadline_send MCP tool with the agentId set to "{remote_agent}", threadId "{thread_id}", and inReplyTo "{latest_message_id}" to send your reply.
+
+After sending your reply with threadline_send, remain in this conversation and wait. When another message from {remote_agent} arrives, respond to it the same way. Do not exit or ask what to do next.`;
+
+/**
+ * Byte budget for the thread-history block injected into a spawn prompt.
+ *
+ * The spawn prompt is passed as a `tmux new-session ... <command>` ARGUMENT
+ * (SessionManager.spawnSession → execFileSync). tmux's command-line limit is
+ * ~16 KB (empirically: a 15 KB arg succeeds, 16 KB fails with the literal
+ * "command too long"). An UNBOUNDED, ever-growing thread history made the spawn
+ * command exceed that ceiling, so multi-agent reply-spawns failed OUTRIGHT once
+ * a thread accumulated enough messages — silently breaking agent-to-agent
+ * communication on exactly the long-running threads that need it most.
+ *
+ * Same failure class + fix as Mentor Stage-A (see MentorStageA.ts, which caps
+ * its own growing compose context). We bound the history (newest-first) plus the
+ * latest body so the whole assembled command stays comfortably under the cliff
+ * (worst case ≈ 6 KB history + 3.5 KB latest + ~2.5 KB env/flags/grounding ≈
+ * 12 KB, a ~4 KB margin). The existing message-COUNT cap (maxHistoryMessages)
+ * is kept; this byte cap is the belt-and-suspenders that actually bounds size.
+ */
+const MAX_HISTORY_BYTES = 6000;
+/** Per-message cap inside the history block, so one huge message can't dominate the budget. */
+const MAX_HISTORY_MESSAGE_BYTES = 1500;
+/** Cap on the latest (triggering) message body embedded in the spawn prompt. */
+const MAX_LATEST_BODY_BYTES = 3500;
+
+/**
+ * Truncate a message body to a byte budget with an explicit marker. Pure +
+ * exported for unit testing. No-op when already under budget.
+ */
+export function capMessageBody(body: string, maxBytes: number): string {
+  if (body.length <= maxBytes) return body;
+  return `${body.slice(0, maxBytes)}\n…[truncated ${body.length - maxBytes} chars]`;
+}
+
+/**
+ * Build the bounded "Recent thread history" block. Walks newest→oldest so the
+ * most recent context always survives, truncates any single oversized message,
+ * and stops adding older messages once the byte budget is hit (always keeping at
+ * least the newest one). Pure + exported for unit testing.
+ */
+export function buildBoundedHistorySection(
+  messages: Array<{ agent: string; createdAt: string; body: string }>,
+  totalCount: number,
+  opts: { maxBytes: number; perMessageBytes: number },
+): string {
+  if (messages.length === 0) return '';
+  const entries: string[] = [];
+  let usedBytes = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const body = capMessageBody(m.body, opts.perMessageBytes);
+    const entry = `${m.agent} (${m.createdAt}):\n${body}`;
+    // Always include at least the newest message; stop adding older ones once
+    // the budget would be exceeded.
+    if (entries.length > 0 && usedBytes + entry.length > opts.maxBytes) break;
+    entries.unshift(entry);
+    usedBytes += entry.length;
+  }
+  const numbered = entries.map((e, i) => `[${i + 1}] ${e}`).join('\n\n');
+  const omitted = totalCount - entries.length;
+  const header = omitted > 0
+    ? `Recent thread history (${entries.length} of ${totalCount} messages, older omitted to fit):`
+    : `Recent thread history (${entries.length} of ${totalCount} messages):`;
+  return `${header}\n${numbered}`;
+}
+
+/**
+ * Trust-level ordering for the warm-session floor check (spec §3.5).
+ *
+ * Explicit ordering array — NEVER string `>=` (the latent `shouldUseListener`
+ * `'verified' >= 'trusted'` alphabetical bug). A trust level meets a floor when
+ * its index is >= the floor's index. Unknown levels resolve to index -1 (below
+ * everything), so a malformed value can never satisfy a floor.
+ */
+const TRUST_ORDER: ReadonlyArray<AgentTrustLevel> = ['untrusted', 'verified', 'trusted', 'autonomous'];
+
+/**
+ * True when `level` meets or exceeds `floor` per the explicit TRUST_ORDER.
+ * Pure + exported for unit testing both sides of the boundary.
+ */
+export function trustMeetsFloor(level: string, floor: string): boolean {
+  const levelIdx = TRUST_ORDER.indexOf(level as AgentTrustLevel);
+  const floorIdx = TRUST_ORDER.indexOf(floor as AgentTrustLevel);
+  if (levelIdx < 0 || floorIdx < 0) return false;
+  return levelIdx >= floorIdx;
+}
 
 // ── Implementation ──────────────────────────────────────────────
 
@@ -177,6 +303,23 @@ export class ThreadlineRouter {
 
   /** Optional ledger-event sink (Integrated-Being v1). Signal-only. */
   private readonly onLedgerEvent: ((evt: ThreadlineLedgerEvent) => void) | null;
+
+  /**
+   * Warm-session A2A (dark-ship). When non-null AND warmEnabled, a relay inbound
+   * flagged `preferWarmSession` spawns an interactive keep-alive worker and admits
+   * it here, so follow-ups inject into the live session. Null when the feature is
+   * disabled (the dark-ship invariant — behavior is byte-for-byte unchanged).
+   */
+  private readonly warmSessionPool: WarmSessionPool | null;
+  private readonly warmEnabled: boolean;
+  /** Trust floor (abuse/resource control) a peer must meet to pin a warm session. */
+  private readonly warmTrustFloor: string;
+  /**
+   * Server-owned primitive to kill a warm session by its tmux name (cap eviction
+   * on admit). Null when the feature is disabled. The server resolves the tmux
+   * name → instar session id → killSession; the router never touches tmux itself.
+   */
+  private readonly killWarmSession: ((sessionName: string) => void) | null;
 
   /**
    * Optional topic-linkage handler (THREAD-TOPIC-LINKAGE-SPEC.md). When set,
@@ -215,6 +358,10 @@ export class ThreadlineRouter {
     messageDelivery?: IMessageDelivery | null,
     onLedgerEvent?: (evt: ThreadlineLedgerEvent) => void,
     nowFn?: () => number,
+    warmSessionPool?: WarmSessionPool | null,
+    warmEnabled?: boolean,
+    trustFloor?: string,
+    killWarmSession?: ((sessionName: string) => void) | null,
   ) {
     this.messageRouter = messageRouter;
     this.spawnManager = spawnManager;
@@ -228,6 +375,12 @@ export class ThreadlineRouter {
     this.messageDelivery = messageDelivery ?? null;
     this.onLedgerEvent = onLedgerEvent ?? null;
     this.nowFn = nowFn ?? (() => Date.now());
+    // Warm-session A2A: only active when BOTH the pool exists AND the flag is on.
+    // Either being absent keeps the dark-ship invariant (cold-spawn only).
+    this.warmSessionPool = warmSessionPool ?? null;
+    this.warmEnabled = warmEnabled ?? false;
+    this.warmTrustFloor = trustFloor ?? 'verified';
+    this.killWarmSession = killWarmSession ?? null;
   }
 
   /**
@@ -350,7 +503,23 @@ export class ThreadlineRouter {
    * - Has threadId + existing resume entry → resume session
    * - Has threadId + no resume entry → spawn new session
    */
-  async handleInboundMessage(envelope: MessageEnvelope, relayContext?: RelayMessageContext): Promise<ThreadlineHandleResult> {
+  async handleInboundMessage(
+    envelope: MessageEnvelope,
+    relayContext?: RelayMessageContext,
+    opts?: {
+      /**
+       * Resolved canonical fingerprint for the inbound sender, supplied by a
+       * LOCAL-delivery ingress where `message.from.agent` is a NAME (the relay
+       * path carries the fingerprint via relayContext). Consumed ONLY by the
+       * anti-hijack identity comparison below — a narrow hint, NOT a full
+       * relayContext, so it has zero effect on grounding, history depth,
+       * affinity, or persisted records. Null/absent → name-based fallback
+       * (fail-safe isolation). Spec:
+       * docs/specs/threadline-local-delivery-fingerprint-attribution.md
+       */
+      inboundSenderFingerprint?: string;
+    },
+  ): Promise<ThreadlineHandleResult> {
     const { message } = envelope;
 
     // Only handle messages from other agents (not self-delivery)
@@ -386,7 +555,11 @@ export class ThreadlineRouter {
       const presented = this.threadResumeMap.get(message.threadId);
       if (presented) {
         const cryptoVerified = relayContext?.trust.kind === 'verified';
-        const inboundFp = relayContext?.senderFingerprint || message.from.agent || '';
+        // Local-delivery ingress resolves the sender's NAME → canonical fingerprint
+        // and supplies it as `opts.inboundSenderFingerprint`, so the guard compares
+        // fingerprint-to-fingerprint against the (fingerprint-derived) owner instead
+        // of mismatching name-vs-fingerprint. Relay path (relayContext) still wins.
+        const inboundFp = relayContext?.senderFingerprint || opts?.inboundSenderFingerprint || message.from.agent || '';
         const inboundName = relayContext?.senderName || '';
         const peer = presented.remoteAgent || '';
         const identityMatches = !!peer && (peer === inboundFp || peer === inboundName);
@@ -487,13 +660,22 @@ export class ThreadlineRouter {
       // spawning a fresh Claude process. Fall through to resume/spawn on
       // failure.
       if (existingEntry && this.messageDelivery) {
-        const injected = await this.tryInjectIntoLiveSession(threadId, existingEntry, envelope);
+        const injected = await this.tryInjectIntoLiveSession(threadId, existingEntry, envelope, relayContext);
         if (injected) return injected;
       }
 
       if (existingEntry) {
         return await this.resumeThread(threadId, existingEntry, envelope, relayContext);
       } else {
+        // Warm-session A2A (dark-ship): when the relay decided this inbound is
+        // warm-eligible AND the feature is wired, spawn an interactive keep-alive
+        // worker and admit it to the pool so follow-ups inject into the same live
+        // session. Falls back to the normal cold-spawn on conflict/error or when
+        // the feature is off (the dark-ship invariant).
+        if (relayContext?.preferWarmSession && this.warmEnabled && this.warmSessionPool) {
+          const warm = await this.spawnWarmThread(threadId, envelope, relayContext);
+          if (warm) return warm;
+        }
         return await this.spawnNewThread(threadId, envelope, relayContext);
       }
     } catch (err) {
@@ -524,6 +706,42 @@ export class ThreadlineRouter {
       state: 'idle',
       lastAccessedAt: new Date().toISOString(),
     });
+  }
+
+  /**
+   * Notify the router that a bound worker session has completed.
+   * Reverse-maps the tmux session to all active thread entries and demotes only
+   * threads that are no longer legitimately waiting on the remote peer.
+   */
+  onSessionComplete(sessionName: string, uuid?: string): { demoted: number; skippedAwaitingReply: number } {
+    const matchesByThreadId = new Map(
+      this.threadResumeMap.getBySessionName(sessionName)
+        .map(match => [match.threadId, match]),
+    );
+    if (uuid) {
+      for (const match of this.threadResumeMap.getBySessionUuid(uuid)) {
+        matchesByThreadId.set(match.threadId, match);
+      }
+    }
+    let demoted = 0;
+    let skippedAwaitingReply = 0;
+
+    for (const match of matchesByThreadId.values()) {
+      if (match.conversationState === 'awaiting-reply') {
+        skippedAwaitingReply += 1;
+        continue;
+      }
+      this.threadResumeMap.save(match.threadId, {
+        ...match.entry,
+        uuid: uuid || match.entry.uuid,
+        sessionName,
+        state: 'idle',
+        lastAccessedAt: new Date().toISOString(),
+      });
+      demoted += 1;
+    }
+
+    return { demoted, skippedAwaitingReply };
   }
 
   /**
@@ -571,24 +789,25 @@ export class ThreadlineRouter {
   ): Promise<ThreadlineHandleResult> {
     const { message } = envelope;
 
-    // Build history context (trust-level-aware depth for relay)
-    const maxHistory = relayContext
-      ? RELAY_HISTORY_LIMITS[relayContext.trustLevel]
-      : this.config.maxHistoryMessages;
-    const historyContext = await this.buildHistoryContext(threadId, maxHistory);
-
-    // Build the resume prompt (with grounding preamble if relay)
+    // Threadline A2A continuity: this thread already has a claude-code
+    // transcript (created with `--session-id entry.uuid` by spawnNewThread).
+    // We resume it via `--resume entry.uuid`, which reloads the FULL prior
+    // conversation from disk. So the prompt must carry ONLY the new message +
+    // the relay grounding preamble — NOT buildHistoryContext, which would
+    // double the history (it's already in the resumed transcript). Pass an
+    // empty history so buildPrompt renders "No previous history available."
+    // and the spawn argument stays small.
     const prompt = this.buildPrompt(
       message,
       threadId,
       entry.subject,
       entry.messageCount,
       entry.remoteAgent,
-      historyContext,
+      '',
       relayContext,
     );
 
-    // Spawn with resume UUID
+    // Spawn with resume UUID — `--resume entry.uuid` reloads the transcript.
     const spawnResult = await this.spawnManager.evaluate({
       requester: message.from,
       target: { agent: this.config.localAgent, machine: this.config.localMachine },
@@ -596,6 +815,7 @@ export class ThreadlineRouter {
       context: prompt,
       priority: message.priority === 'critical' ? 'critical' : 'medium',
       pendingMessages: [message.id],
+      resumeSessionId: entry.uuid,
     });
 
     if (!spawnResult.approved) {
@@ -659,6 +879,17 @@ export class ThreadlineRouter {
       relayContext,
     );
 
+    // Threadline A2A continuity: mint the conversation id up front and launch
+    // the headless claude-code spawn with `--session-id <claudeUuid>` so its
+    // transcript is created at THIS exact id. We then persist claudeUuid as the
+    // thread's resume-map entry, so the next inbound message on this thread can
+    // `--resume` the precise conversation (resumeThread). Previously the entry
+    // uuid was a placeholder (the bare instar session id or a throwaway random
+    // uuid), which never matched any real transcript → every follow-up
+    // cold-spawned memoryless. (No effect for codex spawns — sessionId is
+    // claude-only in SessionManager.)
+    const claudeUuid = crypto.randomUUID();
+
     // Request spawn
     const spawnResult = await this.spawnManager.evaluate({
       requester: message.from,
@@ -667,6 +898,7 @@ export class ThreadlineRouter {
       context: prompt,
       priority: message.priority === 'critical' ? 'critical' : 'medium',
       pendingMessages: [message.id],
+      sessionId: claudeUuid,
     });
 
     if (!spawnResult.approved) {
@@ -687,10 +919,12 @@ export class ThreadlineRouter {
       };
     }
 
-    // Create the thread resume entry
+    // Create the thread resume entry. The uuid is the claudeUuid we passed as
+    // `--session-id`, NOT spawnResult.sessionId (the instar session id) — only
+    // claudeUuid matches the real claude-code transcript that `--resume` reloads.
     const now = new Date().toISOString();
     const newEntry: ThreadResumeEntry = {
-      uuid: spawnResult.sessionId || crypto.randomUUID(),
+      uuid: claudeUuid,
       sessionName: spawnResult.tmuxSession || `thread-${threadId.slice(0, 8)}`,
       createdAt: now,
       savedAt: now,
@@ -721,6 +955,148 @@ export class ThreadlineRouter {
     };
   }
 
+  // ── Private: Spawn a keep-alive (warm) thread session ───────
+
+  /**
+   * Warm-session A2A keep-alive spawn (spec §3.5). Like spawnNewThread but:
+   *  - requests an INTERACTIVE persistent worker (`interactive: true`) so it
+   *    stays alive between messages and accepts injected follow-ups;
+   *  - uses the dedicated stay-alive prompt (THREAD_WARM_SPAWN_PROMPT_TEMPLATE);
+   *  - admits the session to the WarmSessionPool, killing any cap-evicted
+   *    sessions and falling back to cold-spawn on a peer-conflict.
+   *
+   * Returns a ThreadlineHandleResult on a successful warm spawn+admit, or null
+   * to signal the caller should fall back to the normal cold-spawn (peer
+   * conflict, spawn denied, or admit failure). NEVER throws to the caller —
+   * the warm path is best-effort over the proven cold-spawn.
+   */
+  private async spawnWarmThread(
+    threadId: string,
+    envelope: MessageEnvelope,
+    relayContext: RelayMessageContext,
+  ): Promise<ThreadlineHandleResult | null> {
+    if (!this.warmSessionPool) return null;
+    const { message } = envelope;
+
+    // peerId = the stable sender identity the relay decision used for the
+    // trust/ownership checks (the crypto fingerprint), NOT the display name.
+    const peerId = relayContext.senderFingerprint;
+
+    // Pre-spawn peer-conflict check (defense-in-depth): if the threadId is
+    // already owned by a DIFFERENT peer, refuse the warm path BEFORE spending an
+    // interactive spawn (otherwise admit would throw only after the worker is
+    // launched, double-spawning). The upstream anti-hijack guard makes this rare
+    // for verified peers, but the pool must never cross-bind. → cold-spawn.
+    const existingRecord = this.warmSessionPool.peek(threadId);
+    if (existingRecord && existingRecord.peerId !== peerId) {
+      console.warn(`[ThreadlineRouter] Warm pre-spawn peer-conflict for thread ${threadId}: owned by ${existingRecord.peerId.slice(0, 16)}, sender ${peerId.slice(0, 16)}. Falling back to cold-spawn.`);
+      return null;
+    }
+
+    const maxHistory = RELAY_HISTORY_LIMITS[relayContext.trustLevel];
+    const historyContext = await this.buildHistoryContext(threadId, maxHistory);
+
+    // Warm worker: stay-alive prompt + grounding (relayContext is always present
+    // on this path, so buildPrompt wraps it). This is the worker's FIRST turn.
+    const prompt = this.buildPrompt(
+      message,
+      threadId,
+      message.subject,
+      1,
+      message.from.agent,
+      historyContext,
+      relayContext,
+      THREAD_WARM_SPAWN_PROMPT_TEMPLATE,
+    );
+
+    const claudeUuid = crypto.randomUUID();
+
+    let spawnResult: SpawnResult;
+    try {
+      spawnResult = await this.spawnManager.evaluate({
+        requester: message.from,
+        target: { agent: this.config.localAgent, machine: this.config.localMachine },
+        reason: `Warm thread from ${message.from.agent}: ${message.subject}`,
+        context: prompt,
+        priority: message.priority === 'critical' ? 'critical' : 'medium',
+        pendingMessages: [message.id],
+        sessionId: claudeUuid,
+        // Route the spawn callback to the INTERACTIVE persistent path.
+        interactive: true,
+      });
+    } catch (err) {
+      // @silent-fallback-ok — intentional + observable: the warm keep-alive path
+      // is best-effort over the PROVEN cold-spawn. A spawn-eval error degrades to
+      // cold-spawn (logged here, and the cold path has its own denial handling).
+      console.warn(`[ThreadlineRouter] Warm spawn evaluate threw for thread ${threadId}: ${err instanceof Error ? err.message : String(err)} — falling back to cold-spawn`);
+      return null;
+    }
+
+    if (!spawnResult.approved) {
+      // Don't escalate here; just fall back to the cold-spawn path which has its
+      // own denial handling. (Avoids double-counting denials.)
+      console.log(`[ThreadlineRouter] Warm spawn not approved for thread ${threadId}: ${spawnResult.reason}. Falling back to cold-spawn.`);
+      return null;
+    }
+
+    const sessionName = spawnResult.tmuxSession || `thread-${threadId.slice(0, 8)}`;
+
+    // Admit to the pool, killing cap-evicted sessions. A peer-conflict means the
+    // thread is owned by a different peer — fall back to cold-spawn (no warm).
+    try {
+      const evicted = this.warmSessionPool.admit({ threadId, peerId, sessionName });
+      for (const victim of evicted) {
+        try {
+          this.killWarmSession?.(victim.sessionName);
+        } catch (killErr) {
+          console.warn(`[ThreadlineRouter] Failed to kill cap-evicted warm session ${victim.sessionName}: ${killErr instanceof Error ? killErr.message : String(killErr)}`);
+        }
+      }
+    } catch (err) {
+      // @silent-fallback-ok — a peer-conflict (defense-in-depth) degrades to the
+      // PROVEN cold-spawn (logged); it must NEVER overwrite the owner's warm
+      // session. Any OTHER error re-throws (not a silent fallback).
+      if (err instanceof WarmSessionPeerConflictError) {
+        console.warn(`[ThreadlineRouter] Warm admit peer-conflict for thread ${threadId}: ${err.message}. Falling back to cold-spawn.`);
+        return null;
+      }
+      throw err;
+    }
+
+    // Persist the resume entry (same shape as cold-spawn) so eviction-mid-thread
+    // falls back losslessly to the Path-1 resume (#746).
+    const now = new Date().toISOString();
+    const newEntry: ThreadResumeEntry = {
+      uuid: claudeUuid,
+      sessionName,
+      createdAt: now,
+      savedAt: now,
+      lastAccessedAt: now,
+      remoteAgent: message.from.agent,
+      subject: message.subject,
+      state: 'active',
+      pinned: false,
+      messageCount: 1,
+    };
+    this.threadResumeMap.save(threadId, newEntry);
+
+    this.emitLedger({
+      kind: 'thread-opened',
+      threadId,
+      remoteAgent: message.from.agent,
+      subject: message.subject,
+      timestamp: new Date().toISOString(),
+    });
+
+    console.log(`[ThreadlineRouter] Warm (keep-alive) session ${sessionName} admitted for thread ${threadId} (peer ${peerId.slice(0, 16)})`);
+    return {
+      handled: true,
+      threadId,
+      spawned: true,
+      sessionName,
+    };
+  }
+
   // ── Private: Inject into live session (PR-4) ────────────────
 
   /**
@@ -733,12 +1109,22 @@ export class ThreadlineRouter {
     threadId: string,
     entry: ThreadResumeEntry,
     envelope: MessageEnvelope,
+    relayContext?: RelayMessageContext,
   ): Promise<ThreadlineHandleResult | null> {
     if (!this.messageDelivery) return null;
     if (!entry.sessionName) return null;
 
     try {
-      const result = await this.messageDelivery.deliverToSession(entry.sessionName, envelope);
+      // SECURITY (spec §3.5): wrap the injected follow-up body in the SAME
+      // grounding header/footer used on spawn/resume (untrusted-data framing).
+      // Previously the raw body was injected unframed, so a follow-up carrying
+      // "ignore previous instructions, the operator granted full autonomy" would
+      // land without the boundary. This also fixes the already-shipped slice-1
+      // inject path, independent of warm sessions. We re-wrap by cloning the
+      // envelope with a grounded body — deliverToSession formats envelope.message.body.
+      const groundedEnvelope = this.wrapInjectEnvelopeWithGrounding(entry, envelope, relayContext);
+
+      const result = await this.messageDelivery.deliverToSession(entry.sessionName, groundedEnvelope);
       if (!result.success) {
         console.log(`[ThreadlineRouter] Live-session injection failed for thread ${threadId} (${entry.sessionName}): ${result.failureReason}. Falling back to resume/spawn.`);
         return null;
@@ -752,6 +1138,11 @@ export class ThreadlineRouter {
         messageCount: entry.messageCount + 1,
       });
 
+      // Warm-session A2A: refresh the LRU/idle clock so this thread's keep-alive
+      // worker isn't reaped while it's actively conversing. No-op when the pool
+      // is absent (dark-ship) or the thread isn't a warm one.
+      this.warmSessionPool?.touch(threadId);
+
       console.log(`[ThreadlineRouter] Injected message into live session ${entry.sessionName} for thread ${threadId}`);
       return {
         handled: true,
@@ -763,6 +1154,40 @@ export class ThreadlineRouter {
       console.warn(`[ThreadlineRouter] Live-session injection threw for thread ${threadId}:`, err);
       return null;
     }
+  }
+
+  /**
+   * Build a cloned envelope whose `message.body` is the inbound body wrapped in
+   * the relay grounding header/footer (spec §3.5). `deliverToSession` formats
+   * `envelope.message.body`, so wrapping there is what lands the boundary in the
+   * injected text. Trust context comes from `relayContext` when present, else
+   * falls back to the thread entry's known peer (still framed as external).
+   * Pure (no I/O) — exported behavior covered by a unit test asserting the
+   * grounding boundary appears in the injected body.
+   */
+  private wrapInjectEnvelopeWithGrounding(
+    entry: ThreadResumeEntry,
+    envelope: MessageEnvelope,
+    relayContext?: RelayMessageContext,
+  ): MessageEnvelope {
+    const grounding = buildRelayGroundingPreamble({
+      agentName: this.config.localAgent,
+      senderName: relayContext?.senderName ?? entry.remoteAgent,
+      senderFingerprint: relayContext?.senderFingerprint ?? entry.remoteAgent,
+      trustLevel: relayContext?.trustLevel ?? 'verified',
+      trustSource: relayContext?.trustSource,
+      trustDate: relayContext?.trustDate,
+      originFingerprint: relayContext?.originFingerprint,
+      originName: relayContext?.originName,
+    });
+    const groundedBody = `${grounding.header}\n\n${envelope.message.body}\n\n${grounding.footer}`;
+    return {
+      ...envelope,
+      message: {
+        ...envelope.message,
+        body: groundedBody,
+      },
+    };
   }
 
   // ── Private: Build thread history context ───────────────────
@@ -778,16 +1203,22 @@ export class ThreadlineRouter {
         return '';
       }
 
-      // Take the last N messages for context
-      const recentMessages = threadData.messages
-        .slice(-limit)
-        .map((env, i) => {
-          const msg = env.message;
-          return `[${i + 1}] ${msg.from.agent} (${msg.createdAt}):\n${msg.body}`;
-        })
-        .join('\n\n');
+      // Take the last N messages, then enforce a total BYTE budget. The block
+      // this produces is embedded in a spawn prompt passed as a `tmux
+      // new-session` command argument (~16 KB ceiling), so an unbounded history
+      // would fail the spawn outright on long threads ("command too long").
+      // buildBoundedHistorySection walks newest-first and drops/truncates older
+      // content to fit — see MAX_HISTORY_BYTES.
+      const recent = threadData.messages.slice(-limit).map((env) => ({
+        agent: env.message.from.agent,
+        createdAt: env.message.createdAt,
+        body: env.message.body,
+      }));
 
-      return `Recent thread history (${Math.min(threadData.messages.length, limit)} of ${threadData.messages.length} messages):\n${recentMessages}`;
+      return buildBoundedHistorySection(recent, threadData.messages.length, {
+        maxBytes: MAX_HISTORY_BYTES,
+        perMessageBytes: MAX_HISTORY_MESSAGE_BYTES,
+      });
     } catch {
       // @silent-fallback-ok — thread history is supplementary context; missing it degrades but doesn't break
       return '';
@@ -804,19 +1235,27 @@ export class ThreadlineRouter {
     remoteAgent: string,
     historyContext: string,
     relayContext?: RelayMessageContext,
+    template: string = THREAD_SPAWN_PROMPT_TEMPLATE,
   ): string {
     const historySection = historyContext
       ? `${historyContext}\n`
       : 'No previous history available.\n';
 
-    const basePrompt = THREAD_SPAWN_PROMPT_TEMPLATE
+    // Cap the latest body too: it's the other unbounded input to the spawn
+    // command argument (a peer can send an arbitrarily large message). Together
+    // with the bounded history this keeps the whole `tmux new-session` command
+    // under tmux's ~16 KB "command too long" ceiling.
+    const latestBody = capMessageBody(latestMessage.body, MAX_LATEST_BODY_BYTES);
+
+    const basePrompt = template
       .replaceAll('{remote_agent}', remoteAgent)
       .replaceAll('{thread_id}', threadId)
       .replaceAll('{subject}', subject)
       .replaceAll('{message_count}', String(messageCount))
       .replaceAll('{history_section}', historySection)
+      .replaceAll('{latest_message_id}', latestMessage.id)
       .replaceAll('{latest_subject}', latestMessage.subject)
-      .replaceAll('{latest_body}', latestMessage.body);
+      .replaceAll('{latest_body}', latestBody);
 
     // If relay context is present, wrap with grounding preamble
     if (relayContext) {

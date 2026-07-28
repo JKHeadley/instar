@@ -1,34 +1,30 @@
 /**
- * Unit tests for the deterministic Threadline hub commands (CMT-529):
- * parseHubCommand + bindHubConversation + the legacy-ordering fix.
+ * Unit tests for the Threadline hub binder (CMT-529): bindHubConversation + the
+ * legacy-ordering fix. The keyword/regex DECISION (`parseHubCommand`) is GONE —
+ * it moved to the LLM-with-context HubIntentClassifier (Conversion #3,
+ * docs/specs/keyword-intent-conversions-1-and-3.md); see
+ * HubIntentClassifier.test.ts + hub-intent-discrimination.test.ts for the
+ * recognizer. This file covers only the binder, whose behavior is unchanged.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseHubCommand, bindHubConversation, type HubBindDeps } from '../../src/threadline/hubCommands.js';
+import { bindHubConversation, type HubBindDeps } from '../../src/threadline/hubCommands.js';
 import { CollaborationSurfacer, type SurfacerTelegram } from '../../src/threadline/CollaborationSurfacer.js';
 import { ConversationStore } from '../../src/threadline/ConversationStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-describe('parseHubCommand', () => {
-  it('matches "open this" / "open" / "Open This." → open', () => {
-    expect(parseHubCommand('open this')).toEqual({ action: 'open' });
-    expect(parseHubCommand('open')).toEqual({ action: 'open' });
-    expect(parseHubCommand('  Open This. ')).toEqual({ action: 'open' });
-    expect(parseHubCommand('OPEN THIS!')).toEqual({ action: 'open' });
-  });
-  it('matches "tie this to <name>" and "tie this to #id"', () => {
-    expect(parseHubCommand('tie this to my GrowthBook topic')).toEqual({ action: 'tie', targetTopicName: 'my GrowthBook topic' });
-    expect(parseHubCommand('tie this to #1234')).toEqual({ action: 'tie', targetTopicId: 1234 });
-    expect(parseHubCommand('bind this to 1234')).toEqual({ action: 'tie', targetTopicId: 1234 });
-  });
-  it('returns null for ordinary prose (falls through to the agent)', () => {
-    expect(parseHubCommand('can you open this and explain what it is?')).toBeNull();
-    expect(parseHubCommand('open the door for me')).toBeNull();
-    expect(parseHubCommand('what is this thread about?')).toBeNull();
-    expect(parseHubCommand('')).toBeNull();
-    expect(parseHubCommand('I want to tie this to something but not sure which')).toBeNull();
+describe('regression: the keyword hub-command recognizer is gone (the standard)', () => {
+  it('hubCommands.ts no longer ships a parseHubCommand regex decision', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/threadline/hubCommands.ts'), 'utf-8');
+    // The DECLARATION must be gone (the docstring may still narrate the history).
+    expect(src).not.toContain('export function parseHubCommand');
+    // No executable regex decision remains: the `.test(`/`.match(` calls that
+    // classified the message are gone (the docstring narrates the old regexes as
+    // prose, but there is no runtime matcher left).
+    expect(src).not.toMatch(/\.test\(t\)/);
+    expect(src).not.toMatch(/t\.match\(/);
   });
 });
 
@@ -102,5 +98,57 @@ describe('bindHubConversation', () => {
     expect(r.ok).toBe(true);
     // The created topic name reflects the gist, not "codey · t-named".
     expect(tg.created.some(n => /GrowthBook/i.test(n))).toBe(true);
+  });
+
+  // ── CMT-567: brief deps (LLM name + summary first message) ──────────────
+  function briefDeps(messages: number, evaluate?: (p: string) => Promise<string>): import('../../src/threadline/openConversationBrief.js').BriefDeps {
+    return {
+      observability: { getThread: () => ({ messages: Array.from({ length: messages }, (_, i) => ({ direction: (i % 2 === 0 ? 'in' : 'out') as 'in' | 'out', text: `m${i}`, remoteAgentName: 'Codey', timestamp: `2026-05-27T19:0${i}:00Z` })) }) },
+      llmQueue: evaluate ? ({ enqueue: async (_l: string, fn: (s: AbortSignal) => Promise<string>) => fn(new AbortController().signal) } as unknown as import('../../src/threadline/openConversationBrief.js').BriefDeps['llmQueue']) : null,
+      intelligence: evaluate ? { evaluate } : null,
+      topicNameFallback: (_c: unknown, t: string) => `codey · ${t.slice(0, 8)}`,
+    };
+  }
+
+  it('open with brief + LLM → topic named from PURPOSE, summary is first message', async () => {
+    const tg = fakeTelegram(); const store = new ConversationStore(stateDir); const surfacer = new CollaborationSurfacer({ telegram: tg as unknown as SurfacerTelegram, stateDir });
+    await store.mutate('t-llm', (c) => { c.participants = { peers: ['codey'] }; return c; });
+    await surfacer.surface({ threadId: 't-llm', senderName: 'codey', text: 'hi', hasParentTopic: false, warrants: true });
+    const d = { ...deps(tg, surfacer, store), brief: briefDeps(4, async () => 'PURPOSE: GrowthBook rollout plan\n\nCodey wants to coordinate the GrowthBook rollout. Awaiting your sign-off.') };
+    const r = await bindHubConversation(d, { action: 'open', threadId: 't-llm' });
+    expect(r.ok).toBe(true);
+    expect(tg.created.some(n => /GrowthBook rollout plan/i.test(n))).toBe(true);
+    expect(tg.posts.some(p => /Codey wants to coordinate/i.test(p.text))).toBe(true);
+    expect(tg.posts.some(p => /now tied to this topic/i.test(p.text))).toBe(false); // NOT the legacy marker
+  });
+
+  it('open with brief but LLM throws → slug name + template summary (NOT empty marker)', async () => {
+    const tg = fakeTelegram(); const store = new ConversationStore(stateDir); const surfacer = new CollaborationSurfacer({ telegram: tg as unknown as SurfacerTelegram, stateDir });
+    await store.mutate('t-fb', (c) => { c.participants = { peers: ['codey'] }; c.messageCount = 4; return c; });
+    await surfacer.surface({ threadId: 't-fb', senderName: 'codey', text: 'hi', hasParentTopic: false, warrants: true });
+    const d = { ...deps(tg, surfacer, store), brief: briefDeps(4, async () => { throw new Error('LLM timeout'); }) };
+    const r = await bindHubConversation(d, { action: 'open', threadId: 't-fb' });
+    expect(r.ok).toBe(true);
+    expect(tg.posts.some(p => /Conversation with/i.test(p.text))).toBe(true); // template brief
+  });
+
+  it('open with brief but no backing conversation messages → slug + legacy marker', async () => {
+    const tg = fakeTelegram(); const store = new ConversationStore(stateDir); const surfacer = new CollaborationSurfacer({ telegram: tg as unknown as SurfacerTelegram, stateDir });
+    await surfacer.surface({ threadId: 't-empty', senderName: 'codey', text: 'hi', hasParentTopic: false, warrants: true });
+    const d = { ...deps(tg, surfacer, store), brief: briefDeps(0, async () => 'PURPOSE: x\n\ny') };
+    const r = await bindHubConversation(d, { action: 'open', threadId: 't-empty' });
+    expect(r.ok).toBe(true);
+    expect(tg.posts.some(p => /now tied to this topic/i.test(p.text))).toBe(true); // Tier-C legacy marker
+  });
+
+  it('tie with brief deps → operator name + legacy marker, brief NOT invoked', async () => {
+    const tg = fakeTelegram(); const store = new ConversationStore(stateDir); const surfacer = new CollaborationSurfacer({ telegram: tg as unknown as SurfacerTelegram, stateDir });
+    await surfacer.surface({ threadId: 't-tie2', senderName: 'codey', text: 'x', hasParentTopic: false, warrants: true });
+    let called = false;
+    const d = { ...deps(tg, surfacer, store), brief: briefDeps(4, async () => { called = true; return 'PURPOSE: x\n\ny'; }) };
+    const r = await bindHubConversation(d, { action: 'tie', threadId: 't-tie2', targetTopicId: 9999 });
+    expect(r.ok).toBe(true);
+    expect(called).toBe(false);
+    expect(tg.posts.some(p => /now tied to this topic/i.test(p.text))).toBe(true);
   });
 });

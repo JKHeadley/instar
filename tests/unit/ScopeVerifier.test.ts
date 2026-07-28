@@ -92,14 +92,28 @@ describe('ScopeVerifier', () => {
   });
 
   describe('check() — topic-project alignment', () => {
-    it('fails when topic has no binding', () => {
+    it('marks topic alignment indeterminate when topic has no binding', () => {
       const gate = new ScopeVerifier(makeConfig(projectDir, stateDir));
       const result = gate.check('deploy', { topicId: 123 });
 
       const topicCheck = result.checks.find(c => c.name === 'topic-project-alignment');
       expect(topicCheck).toBeDefined();
-      expect(topicCheck!.passed).toBe(false);
+      expect(topicCheck!.passed).toBeNull();
       expect(topicCheck!.severity).toBe('warning');
+    });
+
+    it('summarizes indeterminate topic alignment without counting it as passed', () => {
+      vi.spyOn(process, 'cwd').mockReturnValue(projectDir);
+      fs.writeFileSync(path.join(stateDir, 'AGENT.md'), '# TestAgent\n');
+
+      const gate = new ScopeVerifier(makeConfig(projectDir, stateDir));
+      const result = gate.check('deploy', { topicId: 123 });
+
+      expect(result.passed).toBe(false);
+      expect(result.recommendation).toBe('warn');
+      expect(result.summary).toContain('3 of 4 coherence checks passed');
+      expect(result.summary).toContain('1 indeterminate');
+      expect(result.summary).not.toContain('All 4 coherence checks passed');
     });
 
     it('passes when topic is bound to current project', () => {

@@ -201,6 +201,7 @@ export function buildCanaryLlmFallback(
         model: 'fast',
         maxTokens: 16,
         temperature: 0,
+        attribution: { component: 'InteractivePoolCanaryJudge' },
       });
       const verdict = raw.trim().toLowerCase();
       if (verdict.startsWith('complete')) return 'complete';

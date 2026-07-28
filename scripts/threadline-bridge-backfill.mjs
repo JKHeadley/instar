@@ -192,10 +192,16 @@ function parseArgs(argv) {
 }
 
 function readAuthToken() {
+  // INSTAR_AUTH_TOKEN env first — survives the secret-externalization refactor
+  // that moved authToken out of config.json into the encrypted store. Legacy
+  // plaintext-config fallback uses a string-type guard so the
+  // { "secret": true } placeholder produced by SecretMigrator never leaks
+  // through as a bogus Bearer.
+  if (process.env.INSTAR_AUTH_TOKEN) return process.env.INSTAR_AUTH_TOKEN;
   try {
     const raw = fs.readFileSync(path.join(STATE_DIR, 'config.json'), 'utf-8');
     const cfg = JSON.parse(raw);
-    return cfg.authToken ?? '';
+    return typeof cfg.authToken === 'string' ? cfg.authToken : '';
   } catch { return ''; }
 }
 

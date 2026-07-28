@@ -139,3 +139,7 @@ No new judgmental gates over message content or agent intent.
 ## Rollback
 
 All three layers are independently revertable. The WorktreeManager refactor falls back to `git worktree add` cleanly (no schema changes in bindings). The two sentinels are new files; removing them and their wire-up restores PR-#331-state behavior.
+
+## Update — honesty pass (HONEST-PROGRESS-MESSAGING-SPEC)
+
+The ActiveWorkSilenceSentinel described above escalated purely on "threshold + failed nudge", which cried wolf on any session legitimately mid-task (a long build, a sub-agent, or a long tool call all look frozen by screen-repaint). It now **corroborates against the LIVE frame before claiming a freeze** — if the frame still shows an active-work indicator, a sub-agent is live, or it's a clean idle prompt, it stays silent; the whole corroboration path fails closed (errors → suppress, never a false "it's stuck"). The detection threshold moved 15m→30m and a 90m frozen-indicator backstop keeps a genuine mid-tool hang from being permanently hidden. The escalation wording is now evidence-with-uncertainty, not an asserted conclusion. The sentinel remains a SIGNAL — it never gates an action. See `docs/specs/HONEST-PROGRESS-MESSAGING-SPEC.md`.

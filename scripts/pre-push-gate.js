@@ -14,11 +14,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateGuideContent } from './upgrade-guide-validator.mjs';
+import { assembleNextMd, gatherFragmentInputs, hasInternalOnlyMarker } from './assemble-next-md.mjs';
+import { isReleaseRelevant } from './release-relevant-paths.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const upgradesDir = path.join(ROOT, 'upgrades');
-const nextPath = path.join(ROOT, 'upgrades', 'NEXT.md');
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
 const version = pkg.version;
 
@@ -34,38 +35,66 @@ const REQUIRED_SECTIONS = [
 let errors = [];
 let warnings = [];
 
-// ── 1. NEXT.md validation ─────────────────────────────────────────────
+// ── 1. Release-note validation (fragment-aware) ───────────────────────
+//
+// Release notes are authored as per-PR FRAGMENTS in upgrades/next/<slug>.md
+// (so concurrent PRs never collide on a single shared NEXT.md). The pre-push
+// gate validates the ASSEMBLED result — fragments folded together with any
+// legacy upgrades/NEXT.md — so a PR that ships only a fragment passes the same
+// section/content checks the publish gate enforces. We assemble in-memory and
+// NEVER write NEXT.md to disk here: the PR keeps its fragment, not a generated
+// guide. publish.yml runs the real assemble step before publishing.
 
 const versionedGuidePath = path.join(upgradesDir, `${version}.md`);
 const versionedGuideExists = fs.existsSync(versionedGuidePath);
-const nextExists = fs.existsSync(nextPath);
 
-// Pick the active guide for this push. NEXT.md wins if present (in-flight
-// release notes); fall back to the versioned guide once NEXT.md has been
-// renamed during a publish.
-const activeGuidePath = nextExists
-  ? nextPath
-  : (versionedGuideExists ? versionedGuidePath : null);
-const activeGuideLabel = nextExists
-  ? 'NEXT.md'
+// Assemble fragments + legacy NEXT.md in-memory.
+let assembledContent = null;
+let assembleError = null;
+{
+  const { inputs } = gatherFragmentInputs(upgradesDir);
+  if (inputs.length > 0) {
+    try {
+      assembledContent = assembleNextMd(inputs);
+    } catch (err) {
+      assembleError = err instanceof Error ? err.message : String(err);
+    }
+  }
+}
+
+// The active guide for validation: the assembled fragments/NEXT.md (in-flight
+// release notes) win when present; otherwise fall back to the versioned guide
+// (post-release-cut state, when NEXT.md has been renamed and no new fragment is
+// staged yet).
+const activeGuideLabel = assembledContent !== null
+  ? 'assembled release notes (upgrades/next/*.md + NEXT.md)'
   : (versionedGuideExists ? `${version}.md` : null);
 
-if (activeGuidePath && activeGuideLabel) {
-  const content = fs.readFileSync(activeGuidePath, 'utf-8');
-
+if (assembleError) {
+  // A malformed fragment must fail the push loudly — the same loud failure the
+  // publish workflow would hit.
+  errors.push(`Release-note fragments are malformed: ${assembleError}`);
+} else if (assembledContent !== null) {
   // Run the shared validator (same checks as check-upgrade-guide.js at publish
   // time). This catches the publish-blocker bugs that previously slipped past
   // pre-push: inline code / fenced blocks / camelCase config keys in "What to
   // Tell Your User", and missing "## Evidence" when "What Changed" claims a fix.
   // Before this gate, those defects only surfaced as silently-dropped publish
   // runs on main — agents never received the merged code.
-  const validatorIssues = validateGuideContent(content);
+  const validatorIssues = validateGuideContent(assembledContent);
   for (const issue of validatorIssues) {
     errors.push(`${activeGuideLabel}: ${issue}`);
   }
+} else if (versionedGuideExists) {
+  const content = fs.readFileSync(versionedGuidePath, 'utf-8');
+  const validatorIssues = validateGuideContent(content);
+  for (const issue of validatorIssues) {
+    errors.push(`${version}.md: ${issue}`);
+  }
 } else {
   errors.push(
-    `No upgrade guide found. Create upgrades/NEXT.md with sections: ${REQUIRED_SECTIONS.join(', ')}`
+    `No upgrade guide found. Create a release-note fragment ` +
+    `upgrades/next/<slug>.md (or legacy upgrades/NEXT.md) with sections: ${REQUIRED_SECTIONS.join(', ')}`
   );
 }
 
@@ -119,8 +148,23 @@ if (latestPublished) {
 
 try {
   const { execSync } = await import('node:child_process');
-  // Get files changed since the remote tracking branch
-  const remoteBranch = execSync('git rev-parse --abbrev-ref @{u} 2>/dev/null || echo origin/main', { encoding: 'utf-8' }).trim();
+  // Compute "what this PR changes" against its MERGE TARGET (main), not the
+  // branch's own upstream (@{u}). Using @{u} breaks when a PR is updated by
+  // MERGING main in (the no-force-push path): `@{u}...HEAD` then includes all of
+  // main's already-shipped changes, producing false "src changed without a
+  // release-note fragment" errors (which forced INSTAR_PRE_PUSH_SKIP=1 on merge-
+  // updated PRs). A three-dot diff against main is the PR's TRUE diff in both the
+  // normal-incremental and merge-from-main cases, and never UNDER-reports the
+  // PR's own changes (merge-base of main and HEAD is the branch point).
+  const pickRef = (cands) => {
+    for (const r of cands) {
+      try { execSync(`git rev-parse --verify --quiet ${r}`, { stdio: 'pipe', encoding: 'utf-8' }); return r; }
+      catch { /* ref not present in this clone */ }
+    }
+    return null;
+  };
+  const remoteBranch = pickRef(['JKHeadley/main', 'origin/main', 'upstream/main', 'main'])
+    || execSync('git rev-parse --abbrev-ref @{u} 2>/dev/null || echo origin/main', { encoding: 'utf-8' }).trim();
   const changedFiles = execSync(`git diff --name-only ${remoteBranch}...HEAD 2>/dev/null || git diff --name-only HEAD~1 2>/dev/null`, { encoding: 'utf-8' })
     .trim()
     .split('\n')
@@ -137,6 +181,56 @@ try {
       (srcChanges.length > 5 ? `\n      • ...and ${srcChanges.length - 5} more` : '')
     );
   }
+
+  // ── 3b. Release-fragment gate (#23: src change without a release note) ─
+  // A shippable src/ change MUST carry a release-note fragment. publish.yml
+  // SILENTLY skips the release when there is no upgrades/next/<slug>.md fragment
+  // (and no upgrades/NEXT.md) — so the fix merges but never ships, with no
+  // signal. Mirror of the src→tests check above. The "chore: release" cut commit
+  // touches upgrades/ but not src/, so it never trips this. Bypass genuine WIP
+  // with INSTAR_PRE_PUSH_SKIP=1.
+  const fragmentChanges = changedFiles.filter(f =>
+    f.startsWith('upgrades/next/') || f === 'upgrades/NEXT.md'
+  );
+  // Release-relevance is now the SHARED predicate (scripts/release-relevant-paths.mjs),
+  // the same one the server-side Layer-1 PR gate uses — so "needs a release note?"
+  // has one answer in both places. This BROADENS the old src/**.ts-only check to
+  // also catch scripts/, .github/workflows/, package.json, and skill code/templates
+  // (all of which ship behavior but previously slipped this local gate).
+  const releaseRelevantChanges = changedFiles.filter(isReleaseRelevant);
+  if (releaseRelevantChanges.length > 0 && fragmentChanges.length === 0) {
+    errors.push(
+      `${releaseRelevantChanges.length} release-relevant file(s) changed but no release-note fragment was added. ` +
+      `Without upgrades/next/<slug>.md (or upgrades/NEXT.md), publish.yml SILENTLY SKIPS the ` +
+      `release — your change would merge but never ship. Add a fragment describing the change:\n` +
+      releaseRelevantChanges.slice(0, 5).map(f => `      • ${f}`).join('\n') +
+      (releaseRelevantChanges.length > 5 ? `\n      • ...and ${releaseRelevantChanges.length - 5} more` : '')
+    );
+  }
+
+  // ── 3c. Internal-only lane verification (objective gate) ──────────────
+  // A release fragment marked <!-- internal-only --> may omit the user-facing
+  // sections — the assembler auto-fills "None — internal" for an all-internal
+  // release. That is ONLY valid for changes with no shipped runtime surface.
+  // Verify against the diff: if any staged internal-only fragment accompanies a
+  // runtime src/ change, REJECT — a user-facing change must not skip
+  // "What to Tell Your User" / "Summary of New Capabilities". This is the
+  // objective gate that keeps the marker from being misused (the agent sets it,
+  // the diff verifies it). tests/docs/scripts-only changes are fine.
+  const internalOnlyFragments = fragmentChanges.filter(f => {
+    try { return hasInternalOnlyMarker(fs.readFileSync(path.join(ROOT, f), 'utf-8')); }
+    catch { return false; }
+  });
+  if (internalOnlyFragments.length > 0 && srcChanges.length > 0) {
+    errors.push(
+      `Internal-only release fragment(s) accompany ${srcChanges.length} runtime src/ change(s):\n` +
+      internalOnlyFragments.slice(0, 5).map(f => `      • ${f} (marked <!-- internal-only -->)`).join('\n') + '\n' +
+      `      The internal-only lane (which auto-fills the user-facing release sections) is ONLY for changes ` +
+      `with no shipped runtime surface (tests / docs / scripts). Either remove the marker and write the ` +
+      `"What to Tell Your User" + "Summary of New Capabilities" sections, or split the src/ change into its own PR.`
+    );
+  }
+
   // ── 4. Adapter contract test gate ─────────────────────────────────────
   // If messaging adapter source files changed, require contract test evidence.
   // This prevents shipping integration code verified only by mocked unit tests.
@@ -156,6 +250,30 @@ try {
   if (adapterChanges.length > 0) {
     const evidencePath = path.join(ROOT, '.contract-test-evidence.json');
     let evidenceValid = false;
+
+    // Marker escape (mirrors check-e2e-pairing.cjs's 'E2E-PAIRING: EXEMPT'):
+    // a changed adapter file may carry "CONTRACT-EVIDENCE: EXEMPT — <reason>"
+    // when the diff touches NO API-contract surface (type-only changes,
+    // attribution metadata on internal LLM calls, comments). The marker is
+    // in-diff and reviewable — a reviewer sees both the exemption and its
+    // reason next to the change it covers. Real API changes must still run
+    // `npm run test:contract` against the live API.
+    const exemptFiles = adapterChanges.filter((f) => {
+      try {
+        const content = fs.readFileSync(path.join(ROOT, f), 'utf-8');
+        return /CONTRACT-EVIDENCE:\s*EXEMPT\s*(—|--|-)/.test(content);
+      } catch {
+        return false;
+      }
+    });
+    if (exemptFiles.length === adapterChanges.length) {
+      evidenceValid = true;
+      console.log(
+        `  ⚠️  Contract-evidence gate: ALL ${adapterChanges.length} changed adapter file(s) carry ` +
+        `a CONTRACT-EVIDENCE: EXEMPT marker — accepting without live-API evidence. ` +
+        `(Remove the marker when the file's API surface next changes.)`
+      );
+    }
 
     if (fs.existsSync(evidencePath)) {
       try {
@@ -221,48 +339,63 @@ if (!process.env.CI) {
     /\bnew\b/i,
   ];
 
-  // When NEXT.md exists, it represents the *next* shipment being prepared in
-  // this push — prefer it over the (frozen) versioned guide, which describes
-  // the already-released version and isn't what this PR is changing. This is
-  // the post-release-cut + new-PR state: both files coexist, but only NEXT.md
-  // is in flight. Falls back to the versioned guide when no NEXT.md is staged.
-  const guidePath = nextExists ? nextPath : (versionedGuideExists ? versionedGuidePath : null);
-  if (guidePath && fs.existsSync(guidePath)) {
-    const guideContent = fs.readFileSync(guidePath, 'utf-8');
+  // The in-flight release notes (assembled fragments + legacy NEXT.md) represent
+  // the *next* shipment being prepared in this push — prefer them over the
+  // (frozen) versioned guide, which describes the already-released version and
+  // isn't what this PR is changing. Falls back to the versioned guide when no
+  // fragment / NEXT.md is staged (post-release-cut state).
+  const inFlight = assembledContent !== null;
+
+  // This check is a RELEASE-LEVEL re-check on the notes THIS PUSH is shipping —
+  // which means it only has a subject when in-flight notes exist. It deliberately
+  // does NOT fall back to the versioned guide.
+  //
+  // Why (three recurrences, 2026: v1.3.492, v1.3.802, v1.3.1009): the release cut
+  // renames upgrades/next/*.md into upgrades/<version>.md and bumps package.json,
+  // but side-effects artifacts are named per CHANGE SLUG, never per version — so
+  // upgrades/side-effects/<version>.md is a file the release flow never creates.
+  // Falling back to the frozen guide therefore demanded a filename that cannot
+  // exist, on EVERY push from a clean post-release tree, for a release that had
+  // already shipped and already been reviewed.
+  //
+  // The damage was not the refusal, it was the REMEDY the message named: three
+  // separate times someone hand-wrote a placeholder upgrades/side-effects/<version>.md
+  // to get past it (see 1.3.492.md and 1.3.802.md, both of which say so in their
+  // own text). A gate whose advice is unfollowable teaches people to write junk
+  // that satisfies it.
+  //
+  // Nothing is weakened. Per-change enforcement lives in the pre-COMMIT gate
+  // (scripts/instar-dev-precommit.js — refuses in-scope staged files without an
+  // ELI16 + side-effects artifact), and check 3b above already refuses a
+  // release-relevant push that ships no fragment, with an actionable remedy.
+  if (inFlight) {
     // Extract "## What Changed" section
-    const whatChangedMatch = guideContent.match(/## What Changed\s*([\s\S]*?)(?=\n##\s|$)/);
+    const whatChangedMatch = assembledContent.match(/## What Changed\s*([\s\S]*?)(?=\n##\s|$)/);
     const whatChanged = whatChangedMatch ? whatChangedMatch[1] : '';
 
     const qualifies = FIX_PATTERNS.some((p) => p.test(whatChanged));
 
     if (qualifies) {
       const sideEffectsDir = path.join(ROOT, 'upgrades', 'side-effects');
-      // If NEXT.md is the active guide, any fresh artifact (last 24h) counts —
-      // the versioned-filename requirement only applies when a versioned guide
-      // is being validated without an in-flight NEXT.md.
-      const artifactName = (!nextExists && versionedGuideExists) ? `${version}.md` : null;
       let artifactFound = false;
 
       if (fs.existsSync(sideEffectsDir)) {
         const files = fs.readdirSync(sideEffectsDir).filter((f) => f.endsWith('.md'));
-        if (artifactName) {
-          artifactFound = files.includes(artifactName);
-        } else {
-          // For NEXT.md, any fresh artifact from the last 24h counts.
-          // The expectation is that during release cut, NEXT.md -> <version>.md
-          // rename will pair with the artifact rename as well.
-          const recent = files.filter((f) => {
-            const stat = fs.statSync(path.join(sideEffectsDir, f));
-            return Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000;
-          });
-          artifactFound = recent.length > 0;
-        }
+        // Any fresh artifact from the last 24h counts — the in-flight notes name
+        // the change, the artifact reviews it, and the two are paired by the PR
+        // rather than by filename.
+        const recent = files.filter((f) => {
+          const stat = fs.statSync(path.join(sideEffectsDir, f));
+          return Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000;
+        });
+        artifactFound = recent.length > 0;
       }
 
       if (!artifactFound) {
         errors.push(
-          `Upgrade notes claim a fix/feature but no matching side-effects review artifact found in upgrades/side-effects/. ` +
-          `Every change qualifying for review must ship with an artifact produced via the /instar-dev skill. ` +
+          `Your release-note fragment claims a fix/feature but no side-effects review artifact was written in the last 24h. ` +
+          `Add upgrades/side-effects/<slug>.md for this change (produced via the /instar-dev skill) — ` +
+          `do NOT create a version-named file to satisfy this check. ` +
           `See skills/instar-dev/SKILL.md and docs/signal-vs-authority.md.`
         );
       }
@@ -315,6 +448,12 @@ try {
   warnings.push(`lint-no-direct-llm-http failed to run: ${err.message}`);
 }
 
+// (The scrape-fixture-realness lint is enforced via the `npm run lint` chain in
+// package.json, which CI runs — not duplicated here. A direct gate invocation
+// would run against this gate's resolved ROOT, which is a scratch dir under the
+// gate's own unit tests, where the registered fixtures don't exist; the chain in
+// `npm run lint` runs in the real repo and is the authoritative enforcement.)
+
 // ── 6. URL.pathname filesystem guard ──────────────────────────────────
 // new URL(..., import.meta.url).pathname preserves %20-encoded spaces,
 // breaking filesystem operations. Use __dirname (via fileURLToPath) instead.
@@ -339,6 +478,46 @@ try {
   }
 } catch {
   // grep not available — skip gracefully
+}
+
+// ── 7. Duplicate-build advisory (docs/specs/duplicate-build-guard.md FD1) ──
+//
+// warnings[] ONLY — NEVER errors[]: a duplicate build is recoverable (close
+// the PR), so the irreversible-action carve-out does not apply and a
+// deterministic push-block would be brittle authority over a judgment call
+// (docs/signal-vs-authority.md). The teeth live at build-start (the PreToolUse
+// gate) + the precommit presence backstop; this is the last-look signal.
+//
+// Honors INSTAR_PRE_PUSH_SKIP (mirrors the husky skip) and the
+// INSTAR_DUP_BUILD_CHECK=off master switch; the open-PR scan is skipped under
+// CI inside the library (§3.3/§5). The library re-fetches origin/main and
+// re-keys its cache at phase 'pre-push' so a merge that landed mid-build is
+// actually seen at push time (§3.2). ANY failure degrades to silence — the
+// guard's own breakage must never block or delay a push (FD5).
+
+if (process.env.INSTAR_PRE_PUSH_SKIP !== '1') {
+  try {
+    const dup = await import('./lib/duplicate-build-check.mjs');
+    if (!dup.isGuardOff(process.env, ROOT)) {
+      const specPath = dup.resolveSpecForAdvisory(ROOT);
+      if (specPath) {
+        const result = dup.runDuplicateBuildCheck({ specPath, root: ROOT, phase: 'pre-push', env: process.env });
+        if (result && (result.verdict === 'likely-duplicate' || result.verdict === 'verify')) {
+          const top = (result.evidence || []).slice(0, 3).map((e) => `      • ${e.id} [${e.source}] ${e.detail}`);
+          warnings.push(
+            `Duplicate-build check: ${result.verdict}` +
+            (result.cause ? ` (cause: ${result.cause})` : '') +
+            ` for spec ${path.relative(ROOT, specPath)}.` +
+            (top.length ? `\n${top.join('\n')}` : '') +
+            `\n      Advisory only (never blocks a push) — review the overlap before merging.` +
+            `\n      docs/specs/duplicate-build-guard.md | off-switch: INSTAR_DUP_BUILD_CHECK=off`
+          );
+        }
+      }
+    }
+  } catch {
+    // Advisory only — the guard's own failure never blocks a push (FD5).
+  }
 }
 
 // ── Report ────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@
  * Uses supertest + a real MentorOnboardingRunner with fake services, so the
  * route↔runner contract is exercised over the full HTTP pipeline.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes } from '../../src/server/routes.js';
@@ -60,6 +60,19 @@ describe('Mentor routes (integration)', () => {
     expect(res.body).toMatchObject({ enabled: false, mode: 'off', menteeFramework: 'codex-cli', inFlight: false });
   });
 
+  it('GET /mentor/status asks the runner for fresh config on each request', async () => {
+    let cfg: MentorConfig = { ...DEFAULT_MENTOR_CONFIG };
+    const runner = new MentorOnboardingRunner(fakeServices(), () => cfg);
+    const app = appWith(runner);
+
+    expect((await request(app).get('/mentor/status')).body).toMatchObject({ enabled: false, mode: 'off' });
+
+    cfg = { ...DEFAULT_MENTOR_CONFIG, enabled: true, mode: 'dry-run', menteeFramework: 'cursor' };
+    const res = await request(app).get('/mentor/status');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ enabled: true, mode: 'dry-run', menteeFramework: 'cursor' });
+  });
+
   it('POST /mentor/tick returns {ran:false, reason:"disabled"} by default (dormant)', async () => {
     const runner = new MentorOnboardingRunner(fakeServices(), () => ({ ...DEFAULT_MENTOR_CONFIG }));
     const res = await request(appWith(runner)).post('/mentor/tick');
@@ -78,5 +91,75 @@ describe('Mentor routes (integration)', () => {
     const status = await request(app).get('/mentor/status');
     expect(status.body.lastResult?.ran).toBe(true);
     expect(status.body.lastResult?.mode).toBe('dry-run');
+  });
+
+  it('GET /mentor/status preserves a delivery-breaker refusal as a distinct result', async () => {
+    const cfg: MentorConfig = { ...DEFAULT_MENTOR_CONFIG, enabled: true, mode: 'live' };
+    const svc: MentorRunnerServices = {
+      ...fakeServices(),
+      deliverToMentee: async () => ({
+        delivered: false,
+        reason: 'identical-content-retry-exhausted',
+      }),
+    };
+    const app = appWith(new MentorOnboardingRunner(svc, () => cfg));
+
+    expect((await request(app).post('/mentor/tick')).status).toBe(202);
+    await new Promise((r) => setTimeout(r, 10));
+    const status = await request(app).get('/mentor/status');
+    expect(status.body.lastResult).toMatchObject({
+      ran: true,
+      delivered: false,
+      deliveryReason: 'identical-content-retry-exhausted',
+    });
+  });
+
+  it('POST /mentor/tick routes to the autonomous-fix guardian when enabled; spawns a loop session', async () => {
+    const spawnLoopSession = vi.fn(async () => ({ sessionName: 'mentor-autoloop-int' }));
+    const cfg: MentorConfig = {
+      ...DEFAULT_MENTOR_CONFIG,
+      enabled: true,
+      mode: 'off', // guardian runs regardless of mode
+      autonomousFix: { enabled: true, model: 'opus', sessionNamePrefix: 'mentor-autoloop' },
+    };
+    const svc: MentorRunnerServices = {
+      ...fakeServices(),
+      loopSessionAlive: () => false,
+      spawnLoopSession,
+      buildAutoloopGoal: () => 'GOAL',
+    };
+    const runner = new MentorOnboardingRunner(svc, () => cfg);
+    const app = appWith(runner);
+    const res = await request(app).post('/mentor/tick');
+    expect(res.status).toBe(202);
+    expect(res.body.accepted).toBe(true);
+    await new Promise((r) => setTimeout(r, 10));
+    const status = await request(app).get('/mentor/status');
+    expect(status.body.lastResult?.reason).toBe('spawned');
+    expect(status.body.lastResult?.sessionName).toBe('mentor-autoloop-int');
+    expect(spawnLoopSession).toHaveBeenCalledOnce();
+  });
+
+  it('POST /mentor/tick guardian path respects single-instance over HTTP (loop-active, no spawn)', async () => {
+    const spawnLoopSession = vi.fn(async () => ({ sessionName: 'x' }));
+    const cfg: MentorConfig = {
+      ...DEFAULT_MENTOR_CONFIG,
+      enabled: true,
+      mode: 'off',
+      autonomousFix: { enabled: true, model: 'opus', sessionNamePrefix: 'mentor-autoloop' },
+    };
+    const svc: MentorRunnerServices = {
+      ...fakeServices(),
+      loopSessionAlive: () => true, // a cycle is already running
+      spawnLoopSession,
+      buildAutoloopGoal: () => 'GOAL',
+    };
+    const runner = new MentorOnboardingRunner(svc, () => cfg);
+    const app = appWith(runner);
+    await request(app).post('/mentor/tick');
+    await new Promise((r) => setTimeout(r, 10));
+    const status = await request(app).get('/mentor/status');
+    expect(status.body.lastResult?.reason).toBe('loop-active');
+    expect(spawnLoopSession).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,42 @@
+{
+  "chat": {
+    "id": -1001111111111,
+    "is_forum": true,
+    "title": "Echo",
+    "type": "supergroup"
+  },
+  "date": 1782978960,
+  "from": {
+    "first_name": "Echo Agent",
+    "id": 2222222222,
+    "is_bot": true,
+    "username": "echo_instar_bot"
+  },
+  "is_topic_message": true,
+  "message_id": 30115,
+  "message_thread_id": 30112,
+  "reply_to_message": {
+    "chat": {
+      "id": -1001111111111,
+      "is_forum": true,
+      "title": "Echo",
+      "type": "supergroup"
+    },
+    "date": 1782978958,
+    "forum_topic_created": {
+      "icon_color": 7322096,
+      "name": "🧪 fixture capture (auto-deletes)"
+    },
+    "from": {
+      "first_name": "Echo Agent",
+      "id": 2222222222,
+      "is_bot": true,
+      "username": "echo_instar_bot"
+    },
+    "is_topic_message": true,
+    "message_id": 30112,
+    "message_thread_id": 30112
+  },
+  "sender_tag": "Admin",
+  "text": "Let's defer those two specs to a later session — don't build them now."
+}

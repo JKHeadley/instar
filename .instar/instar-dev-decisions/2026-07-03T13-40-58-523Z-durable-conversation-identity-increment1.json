@@ -1,0 +1,13 @@
+{
+  "ts": "2026-07-03T13:40:58.523Z",
+  "slug": "durable-conversation-identity-increment1",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 14,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}

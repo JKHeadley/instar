@@ -15,6 +15,8 @@
  */
 import { defineConfig } from 'vitest/config';
 
+import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval.js';
+
 const FLAKY_TESTS = [
   // ── Supertest timeouts / port collisions ──────────────────────────
   'tests/integration/scope-coherence-routes.test.ts',
@@ -29,10 +31,37 @@ const FLAKY_TESTS = [
   'tests/e2e/lifecycle.test.ts',
 
   // ── Environment-dependent / non-deterministic ─────────────────────
-  'tests/unit/agent-registry.test.ts',
-  'tests/unit/builtin-manifest.test.ts',
-  'tests/unit/feature-delivery-completeness.test.ts',
-  'tests/unit/security.test.ts',
+  // (empty — see the two re-arm notes below)
+  //
+  // agent-registry.test.ts + builtin-manifest.test.ts — RE-ARMED 2026-07-27,
+  // for the SAME reason as the 2026-06-05 pair below: the
+  // "environment-dependent" label was wrong on both. Measured on current main,
+  // three consecutive runs each: agent-registry 42/42/42, builtin-manifest
+  // 9/9/9. Neither is flaky.
+  //   builtin-manifest was additionally SUSPECTED of depending on
+  //   src/data/builtin-manifest.json — a generated, gitignored artifact that a
+  //   CI job which never builds would not have. That hypothesis was TESTED and
+  //   FALSIFIED: deleting the file changes nothing, because the test's own
+  //   beforeAll regenerates it via scripts/generate-builtin-manifest.cjs. It
+  //   was already self-sufficient by design.
+  //   Both arrived here in f193df789 ("exclude pre-existing flaky tests from
+  //   push gate") — a BULK exclusion, not an individual diagnosis. That is the
+  //   actual defect: the label was applied to a batch and then read, forever
+  //   after, as a finding about each member.
+  // This block is deliberately verbose because the note two entries down
+  // already said all of this on 2026-06-05, and two more tests were sitting
+  // mislabelled directly above it anyway. Writing the lesson next to the
+  // unfixed case did not fix the next one.
+  //
+  // security.test.ts + feature-delivery-completeness.test.ts — RE-ARMED
+  // 2026-06-05. Both are DETERMINISTIC source-content guards (the old
+  // "environment-dependent" label was wrong) and both rotted while parked:
+  // a bare execSync reached src/monitoring/mcpProcessReaperDeps.ts, and the
+  // whole coordination-mandate capability family (mandate gate /
+  // ReviewExchange / cutover-readiness) shipped untracked by the
+  // template↔migrator↔shadow parity guard. Those are fixed and the gates now
+  // gate again. (Same lesson as the ESM-compliance re-arm above: a parked
+  // gate is no gate.)
 
   // ── Non-deterministic data / race conditions ──────────────────────
   'tests/integration/semantic-memory.test.ts',
@@ -43,8 +72,12 @@ const FLAKY_TESTS = [
   'tests/e2e/memory-exporter-lifecycle.test.ts',
   'tests/e2e/dispatch-update-feedback.test.ts',
 
-  // ── ESM compliance — catches new require() from dependencies ────
-  'tests/unit/esm-compliance.test.ts',
+  // ── ESM compliance — RE-ARMED 2026-06-03. Was quarantined here, which let
+  //    3 latent bare-require() bugs reach main (reflect.ts/SessionWatchdog.ts/
+  //    PostUpdateMigrator.ts — ReferenceError in this "type":"module" pkg). Those
+  //    are fixed and the guard now recognizes the legitimate createRequire pattern,
+  //    so it gates again instead of silently allowing the exact bug class it exists
+  //    to catch. (Structure > Willpower: a parked gate is no gate.)
 
   // ── HTTP response corruption / parse errors ───────────────────────
   'tests/e2e/system-reviewer-e2e.test.ts',
@@ -68,8 +101,16 @@ const FLAKY_TESTS = [
   // ── Port assertion mismatch on some environments ──────────────────
   'tests/integration/fresh-install.test.ts',
 
-  // ── Error message format mismatch ─────────────────────────────────
-  'tests/unit/TunnelManager.test.ts',
+  // TunnelManager.test.ts — RE-ARMED 2026-06-05 (closes the commitment
+  // "Rewrite TunnelManager unit suite"). The old suite predated the
+  // provider/tier rewrite (mocked the `cloudflared` module directly; 22/29
+  // failed against the real reachability probe). Rewritten against the
+  // provider/lifecycle architecture using the constructor injection seams
+  // (injections.providers + injections.fetch) and the public deterministic
+  // drivers (runSelfHealCheck/grantConsent/declineConsent) — no real timers,
+  // processes, or network. 51 deterministic tests now gate the lifecycle:
+  // provider-pool fallback, reachability probing, consent flow + cooldown,
+  // self-heal stability gate, and mandatory credential rotation.
 
   // ── Supertest body size limit vs express limit mismatch ─────────
   'tests/integration/view-tunnel-routes.test.ts',
@@ -118,7 +159,9 @@ const FLAKY_TESTS = [
   'tests/unit/gdpr-commands.test.ts',
   'tests/unit/memory-index.test.ts',
   'tests/unit/topic-summarizer.test.ts',
-  'tests/unit/no-silent-fallbacks.test.ts',
+  // no-silent-fallbacks RE-ARMED 2026-06-03 (was misfiled in this sqlite section —
+  // it's a pure regex-over-src guard, no native binding). Baseline corrected to the
+  // true count (was a bogus 186 set by a [skip ci] release while reality was 431).
   'tests/integration/user-agent-topology.test.ts',
   'tests/integration/output-privacy-routing.test.ts',
   'tests/integration/privacy-scoping.test.ts',
@@ -186,7 +229,7 @@ const FLAKY_TESTS = [
   'tests/unit/slack-stall-active-gate.test.ts',
 ];
 
-export default defineConfig({
+export default defineConfig(withTestRunnerBound('push', {
   test: {
     include: ['tests/unit/**/*.test.ts', 'tests/integration/**/*.test.ts', 'tests/e2e/**/*.test.ts'],
     exclude: FLAKY_TESTS,
@@ -195,4 +238,4 @@ export default defineConfig({
     testTimeout: 10000,
     fileParallelism: false,
   },
-});
+}));

@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-21T20:58:29.663Z",
+  "slug": "sleepwake-stall-not-sleep",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 86,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The detector classified drift using system loadavg only; that signal is structurally blind to a single-process event-loop block on a many-core host (one pinned Node thread doesn't move a 16-core loadavg above maxLoadRatio). The misclassification was always present but only surfaced as a visible bug now, when event-loop wedges on a caffeinated host were logged as 'wake after ~Ns sleep'. Fixed by adding the per-process CPU-burn discriminator."
+  },
+  "verdict": "pass"
+}

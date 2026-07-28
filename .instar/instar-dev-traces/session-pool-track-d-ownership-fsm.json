@@ -1,0 +1,1 @@
+{ "phase": "complete", "slug": "session-pool-track-d-ownership-fsm", "coveredFiles": ["src/core/SessionOwnership.ts"], "artifactPath": "upgrades/side-effects/session-pool-track-d-ownership-fsm.md", "artifactSha256": "4b90f1f6230974698d595a9f9b9416403207c6efaa2729bbefc5592437eac4c0", "specPath": "docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md", "createdAt": "2026-05-29T11:22:34Z" }

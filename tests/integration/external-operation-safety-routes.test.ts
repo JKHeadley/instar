@@ -130,6 +130,47 @@ describe('External Operation Safety API routes', () => {
   });
 
   describe('POST /operations/evaluate', () => {
+    it('returns only the canonical action vocabulary', async () => {
+      const canonicalActions = ['proceed', 'show-plan', 'suggest-alternative', 'block'];
+      const cases = [
+        {
+          service: 'gmail',
+          mutability: 'read',
+          reversibility: 'reversible',
+          description: 'Fetch emails',
+        },
+        {
+          service: 'gmail',
+          mutability: 'write',
+          reversibility: 'reversible',
+          description: 'Send an email',
+        },
+        {
+          service: 'gmail',
+          mutability: 'delete',
+          reversibility: 'irreversible',
+          description: 'Delete an email',
+        },
+        {
+          service: 'analytics',
+          mutability: 'write',
+          reversibility: 'reversible',
+          description: 'Post event',
+        },
+      ];
+
+      for (const body of cases) {
+        const res = await request(app)
+          .post('/operations/evaluate')
+          .set(auth())
+          .send(body);
+
+        expect(res.status).toBe(200);
+        expect(canonicalActions).toContain(res.body.action);
+        expect(res.body.action).not.toBe('allow');
+      }
+    });
+
     it('blocks deleted operations on gmail (per config)', async () => {
       const res = await request(app)
         .post('/operations/evaluate')

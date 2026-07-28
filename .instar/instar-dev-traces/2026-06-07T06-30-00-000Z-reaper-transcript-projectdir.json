@@ -1,0 +1,23 @@
+{
+    "slug": "reaper-transcript-projectdir",
+    "sessionId": "96c61421-860a-48f9-92b4-26328f5640f1",
+    "timestamp": "2026-06-07T06:30:00.000Z",
+    "artifactPath": "upgrades/side-effects/reaper-transcript-projectdir.md",
+    "artifactSha256": "8b353fccb873ae94e01817cab20eb244e4278e42ac817a0addd67b74fd0194ba",
+    "coveredFiles": [
+        "src/monitoring/SessionReaper.ts",
+        "src/commands/server.ts",
+        "tests/unit/session-reaper.test.ts"
+    ],
+    "phase": "complete",
+    "tier": 1,
+    "tierReasoning": "Two-call-site bugfix: the SessionReaper fallback probe + StaleSessionBackstop probe were called with projectDir:'' so transcripts never resolved (transcript-unresolved for every session → reaper could never verify idle). Fix passes the agent's real projectDir (new optional transcriptProjectDir dep wired from config.projectDir; server.ts uses config.projectDir directly). Makes the idle-proof MORE accurate, never more reckless (a wrong/absent projectDir still resolves unresolved → KEEP, the safe default; the unique claudeSessionId filename prevents cross-session mis-resolution). No gate/flow/state/API change; reaper still opt-in + dry-run-first. Both sides of the boundary hermetically unit-tested (HOME override). No converged spec required for Tier 1.",
+    "eli16Path": "docs/eli16/reaper-transcript-projectdir.eli16.md",
+    "sideEffectsPath": "upgrades/side-effects/reaper-transcript-projectdir.md",
+    "causalAutopsy": {
+        "origin": "latent",
+        "notes": "The probe's projectDir:'' argument has been wrong since the probe was introduced — a standalone pre-existing bug. It went unhit because the reaper's earlier KEEP-guards (open-commitment, then active-process) short-circuited before the transcript check ever ran. The 2026-06-06 #955/#958 fixes peeled those layers so the reaper REACHED the transcript probe, surfacing the latent '' bug as a universal transcript-unresolved (0 reap-eligible in the post-deploy dry-run on echo v1.3.394). The transcripts always existed at the correct non-empty encoded path (echo: 151,814 files / 5.9GB); the probe simply never pointed there. Fix points it at config.projectDir. Operator directive: make the reaper work correctly and robustly."
+    },
+    "secondPass": "not-required",
+    "reviewerConcurred": null
+}

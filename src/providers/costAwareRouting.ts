@@ -60,6 +60,45 @@ export interface CostAwareRoutingOptions {
   safetyMarginFraction?: number;
 }
 
+/**
+ * Pure SDK-pot-vs-subscription decision — the single source of truth shared
+ * by CostAwareRoutingPolicy (registry-level adapter resolution) and
+ * AnthropicSubscriptionRouter (intelligence-funnel routing). Keeping ONE
+ * implementation prevents the two routing layers from drifting apart on
+ * threshold semantics.
+ *
+ *   - Unknown state (null snapshot) → subscription floor (conservative).
+ *   - At/below the safety margin → subscription floor.
+ *   - Above the margin → SDK credit path (drain the prepaid pot first —
+ *     the routing default locked 2026-05-15, spec 04 §Routing default).
+ */
+export function decideSdkVsSubscription(
+  snapshot: AgentSdkCreditSnapshot | null,
+  safetyMarginFraction: number,
+): { path: 'sdk-credit' | 'subscription'; reason: string } {
+  if (snapshot === null) {
+    return {
+      path: 'subscription',
+      reason: 'sdk-credit-state-unknown-fall-to-subscription-floor',
+    };
+  }
+  const margin = safetyMarginFraction * snapshot.totalUsd;
+  if (snapshot.remainingUsd <= margin) {
+    return {
+      path: 'subscription',
+      reason:
+        `sdk-credit-at-or-below-safety-margin `
+        + `(remaining=$${snapshot.remainingUsd.toFixed(2)} <= margin=$${margin.toFixed(2)})`,
+    };
+  }
+  return {
+    path: 'sdk-credit',
+    reason:
+      `sdk-credit-preferred `
+      + `(remaining=$${snapshot.remainingUsd.toFixed(2)} > margin=$${margin.toFixed(2)})`,
+  };
+}
+
 export class CostAwareRoutingPolicy implements RoutingPolicy {
   private readonly safetyMarginFraction: number;
 
@@ -90,32 +129,11 @@ export class CostAwareRoutingPolicy implements RoutingPolicy {
         snapshot = null;
       }
 
-      if (snapshot === null) {
-        return {
-          chosen: subCand.id,
-          reason: 'sdk-credit-state-unknown-fall-to-subscription-floor',
-          fallbacks: [sdkCand.id],
-        };
+      const decision = decideSdkVsSubscription(snapshot, this.safetyMarginFraction);
+      if (decision.path === 'subscription') {
+        return { chosen: subCand.id, reason: decision.reason, fallbacks: [sdkCand.id] };
       }
-
-      const margin = this.safetyMarginFraction * snapshot.totalUsd;
-      if (snapshot.remainingUsd <= margin) {
-        return {
-          chosen: subCand.id,
-          reason:
-            `sdk-credit-at-or-below-safety-margin `
-            + `(remaining=$${snapshot.remainingUsd.toFixed(2)} <= margin=$${margin.toFixed(2)})`,
-          fallbacks: [sdkCand.id],
-        };
-      }
-
-      return {
-        chosen: sdkCand.id,
-        reason:
-          `sdk-credit-preferred `
-          + `(remaining=$${snapshot.remainingUsd.toFixed(2)} > margin=$${margin.toFixed(2)})`,
-        fallbacks: [subCand.id],
-      };
+      return { chosen: sdkCand.id, reason: decision.reason, fallbacks: [subCand.id] };
     }
 
     // Only one Anthropic adapter in the candidate set — use it.

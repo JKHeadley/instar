@@ -25,9 +25,11 @@ import {
   ArcCheck,
   parseArcCheckResponse,
   buildArcCheckPrompt,
+  createArcCheckClassifyFn,
   type ArcCheckClassifyFn,
   type ArcCheckClassification,
 } from '../../src/core/TopicIntentArcCheck.js';
+import type { IntelligenceProvider } from '../../src/core/types.js';
 
 let tempDir: string;
 let store: TopicIntentStore;
@@ -179,5 +181,48 @@ describe('buildArcCheckPrompt', () => {
     expect(userPrompt).toContain('I will use Path A for the OAuth flow');
     expect(userPrompt).toContain('ref-A');
     expect(userPrompt).toContain('use Path A');
+  });
+});
+
+describe('createArcCheckClassifyFn', () => {
+  it('returns an empty classification (degrade-safe) when no provider is configured', async () => {
+    let reason: string | undefined;
+    const classify = createArcCheckClassifyFn(undefined, r => { reason = r; });
+    const out = await classify('draft', []);
+    expect(out).toEqual({ actsOn: [], contradicts: [] });
+    expect(reason).toBe('no-intelligence');
+  });
+
+  it('calls the provider at the FAST tier with attribution and parses JSON', async () => {
+    let seenOpts: { model?: string; attribution?: { component?: string } } | undefined;
+    const provider: IntelligenceProvider = {
+      async evaluate(_prompt, options) {
+        seenOpts = options;
+        return '{"actsOn":["ref-X"],"contradicts":["ref-Y"]}';
+      },
+    };
+    const classify = createArcCheckClassifyFn(provider);
+    const out = await classify('draft text', [] as never);
+    expect(out).toEqual({ actsOn: ['ref-X'], contradicts: ['ref-Y'] });
+    expect(seenOpts?.model).toBe('fast');
+    expect(seenOpts?.attribution?.component).toBe('TopicIntentArcCheck');
+  });
+
+  it('returns an empty classification (degrade-safe) when the provider throws', async () => {
+    let reason: string | undefined;
+    const provider: IntelligenceProvider = { async evaluate() { throw new Error('timeout'); } };
+    const classify = createArcCheckClassifyFn(provider, r => { reason = r; });
+    const out = await classify('draft', []);
+    expect(out).toEqual({ actsOn: [], contradicts: [] });
+    expect(reason).toBe('error');
+  });
+
+  it('tolerates code-fenced provider responses', async () => {
+    const provider: IntelligenceProvider = {
+      async evaluate() { return '```json\n{"actsOn":[],"contradicts":["ref-Z"]}\n```'; },
+    };
+    const classify = createArcCheckClassifyFn(provider);
+    const out = await classify('draft', []);
+    expect(out).toEqual({ actsOn: [], contradicts: ['ref-Z'] });
   });
 });

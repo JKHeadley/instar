@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-28T02:28:47.800Z",
+  "slug": "extraction-gap-signal-reason",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 129,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

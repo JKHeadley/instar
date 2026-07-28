@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "sessionId": "telegram-458-worktree-husky-hook-shim",
+  "timestamp": "2026-05-29T13:14:46.439Z",
+  "artifactPath": "upgrades/side-effects/worktree-husky-hook-shim.md",
+  "artifactSha256": "3033180f3c3384ddde9b66550f51f8f712be5f2a6b0adecea1bd68fdd83f8c58",
+  "specPath": "docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md",
+  "coveredFiles": [
+    "docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md",
+    "docs/specs/AGENT-WORKTREE-CONVENTION-ELI16.md",
+    "src/core/InstarWorktreeManager.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/InstarWorktreeManager.test.ts",
+    "tests/integration/instar-worktree-create.test.ts",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/worktree-husky-hook-shim.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

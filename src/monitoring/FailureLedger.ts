@@ -28,6 +28,7 @@
  *    back into the commit / reconciler / route that observed the failure.
  */
 import Database from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -53,6 +54,12 @@ export type FailureCategory =
   | 'logic'
   | 'migration'
   | 'test-gap'
+  // Ingestion-sources spec §7: added for the automatic feeds (ci/revert/regression).
+  // Without these, coerceCategory clamped them to 'unknown', defeating byCategory
+  // analytics and flattening the dedupeKey.
+  | 'build-failure'
+  | 'test-failure'
+  | 'regression'
   | 'unknown';
 
 export type AttributionMode = 'automatic' | 'one-tap' | 'inferred';
@@ -81,6 +88,13 @@ export interface FailureRecord {
   summary: string;
   detail: FailureDetail;
   category: FailureCategory;
+  /**
+   * Judgment Within Floors (ownership-gated-spawn spec §3.6): the failure traces
+   * to a STATIC HEURISTIC at a competing-signals decision point — a candidate
+   * for a judgment point within a deterministic floor. Set by the filer;
+   * clustered by the analyzer into the judgment-candidate recommendation.
+   */
+  judgmentCandidate?: boolean;
   // attribution
   initiativeId?: string;
   projectId?: string;
@@ -161,6 +175,8 @@ export interface OpenFailureInput {
   summary: string;
   detail: FailureDetail;
   category?: FailureCategory;
+  /** See {@link FailureRecord.judgmentCandidate}. */
+  judgmentCandidate?: boolean;
   initiativeId?: string;
   projectId?: string;
   specPath?: string;
@@ -215,7 +231,17 @@ export interface FailureLedgerOptions {
   machineId?: string;
   /** Sink for fail-open write errors (defaults to console.error). */
   onError?: (where: string, err: unknown) => void;
+  /**
+   * Ingestion-sources spec §5: cap on `failure_occurrences` rows kept per
+   * dedupeKey. The occurrence table is a bounded FORENSIC log — the analyzer
+   * computes diversity from deduped `failure_records`, never from this table —
+   * so pruning old rows cannot affect any analysis decision. Default 200.
+   */
+  maxOccurrencesPerKey?: number;
 }
+
+/** Default forensic-log retention per dedupeKey (spec §5). */
+const DEFAULT_MAX_OCCURRENCES_PER_KEY = 200;
 
 // ── Schema ────────────────────────────────────────────────────────────
 
@@ -297,6 +323,10 @@ const SCHEMA = [
    )`,
   // Insight pagination index (Process Health tab §3): keyset on discovered_at DESC.
   `CREATE INDEX IF NOT EXISTS idx_insights_discovered ON failure_insights(discovered_at)`,
+  // Judgment Within Floors (§3.6): filer-set flag marking a failure as tracing
+  // to a static heuristic at a competing-signals decision point. ALTER TABLE is
+  // idempotent via the duplicate-column swallow in the constructor's exec loop.
+  `ALTER TABLE failure_records ADD COLUMN judgment_candidate INTEGER NOT NULL DEFAULT 0`,
 ];
 
 // ── FailureLedger ─────────────────────────────────────────────────────
@@ -305,12 +335,17 @@ export class FailureLedger {
   private db: BetterSqliteDatabase;
   private readonly machineId: string;
   private readonly onError: (where: string, err: unknown) => void;
+  private readonly maxOccurrencesPerKey: number;
 
   constructor(opts: FailureLedgerOptions) {
     this.machineId = (opts.machineId || os.hostname() || 'local')
       .replace(/[^a-zA-Z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .slice(0, 24) || 'local';
+    this.maxOccurrencesPerKey =
+      opts.maxOccurrencesPerKey && opts.maxOccurrencesPerKey > 0
+        ? opts.maxOccurrencesPerKey
+        : DEFAULT_MAX_OCCURRENCES_PER_KEY;
     this.onError =
       opts.onError ?? ((where, err) => console.error(`[FailureLedger] ${where}:`, err));
 
@@ -323,7 +358,19 @@ export class FailureLedger {
     );
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
-    for (const ddl of SCHEMA) this.db.exec(ddl);
+    for (const ddl of SCHEMA) {
+      try {
+        this.db.exec(ddl);
+      } catch (err) {
+        // ALTER TABLE … ADD COLUMN is idempotent at the column level but SQLite
+        // throws if the column already exists. Swallow that one case; rethrow
+        // anything else (the TokenLedger precedent).
+        const msg = (err as Error).message || '';
+        if (!/duplicate column name/i.test(msg)) throw err;
+      }
+    }
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
   }
 
   /** Deterministic dedupe key (spec §4.2 M5). */
@@ -366,6 +413,20 @@ export class FailureLedger {
           )
           .run(dedupeKey, input.filedBy, input.causeCommitOid ?? null, detectedAt);
 
+        // Ingestion-sources spec §5: bounded forensic log — prune occurrence rows
+        // for this dedupeKey beyond the most-recent N. Safe because the analyzer
+        // computes diversity from deduped `failure_records`, never this table.
+        this.db
+          .prepare(
+            `DELETE FROM failure_occurrences
+              WHERE dedupe_key = @dedupeKey
+                AND id NOT IN (
+                  SELECT id FROM failure_occurrences
+                   WHERE dedupe_key = @dedupeKey
+                   ORDER BY id DESC LIMIT @keep)`,
+          )
+          .run({ dedupeKey, keep: this.maxOccurrencesPerKey });
+
         const existing = this.db
           .prepare(`SELECT id FROM failure_records WHERE dedupe_key = ?`)
           .get(dedupeKey) as { id: string } | undefined;
@@ -382,20 +443,31 @@ export class FailureLedger {
         }
 
         const id = this.nextId();
-        this.db
+        // Ingestion-sources spec §5: ON CONFLICT upsert so a cross-process race
+        // (another instance inserting the same dedupeKey between our SELECT and
+        // INSERT) increments instead of dropping the record (the prior plain
+        // INSERT hit the UNIQUE constraint → fail-open catch → lost occurrence).
+        // RETURNING id yields the SURVIVING row's id (new on insert, existing on
+        // conflict), so we never return a phantom id.
+        const row = this.db
           .prepare(
             `INSERT INTO failure_records
                (id, dedupe_key, occurrence_count, detected_at, filed_by, source, severity,
-                summary, detail_redacted, detail_full, category, initiative_id, project_id,
+                summary, detail_redacted, detail_full, category, judgment_candidate, initiative_id, project_id,
                 spec_path, cause_commit_oid, pr_number, toolchain_ref, build_skill, provenance,
                 attribution, attribution_confidence, status, created_at, updated_at, version)
              VALUES
                (@id, @dedupeKey, 1, @detectedAt, @filedBy, @source, @severity,
-                @summary, @detailRedacted, @detailFull, @category, @initiativeId, @projectId,
+                @summary, @detailRedacted, @detailFull, @category, @judgmentCandidate, @initiativeId, @projectId,
                 @specPath, @causeCommitOid, @prNumber, @toolchainRef, @buildSkill, @provenance,
-                @attribution, @attributionConfidence, 'open', @createdAt, @updatedAt, 1)`,
+                @attribution, @attributionConfidence, 'open', @createdAt, @updatedAt, 1)
+             ON CONFLICT(dedupe_key) DO UPDATE SET
+               occurrence_count = occurrence_count + 1,
+               updated_at = excluded.updated_at,
+               version = version + 1
+             RETURNING id`,
           )
-          .run({
+          .get({
             id,
             dedupeKey,
             detectedAt,
@@ -406,6 +478,7 @@ export class FailureLedger {
             detailRedacted: input.detail.redacted,
             detailFull: input.detail.full,
             category,
+            judgmentCandidate: input.judgmentCandidate ? 1 : 0,
             initiativeId: input.initiativeId ?? null,
             projectId: input.projectId ?? null,
             specPath: input.specPath ?? null,
@@ -418,8 +491,8 @@ export class FailureLedger {
             attributionConfidence: input.attributionConfidence ?? 0,
             createdAt: now,
             updatedAt: now,
-          });
-        return id;
+          }) as { id: string };
+        return row.id;
       });
 
       const id = txn();
@@ -517,6 +590,17 @@ export class FailureLedger {
       )
       .get(dedupeKey) as { sessions: number; commits: number } | undefined;
     return { sessions: row?.sessions ?? 0, causeCommits: row?.commits ?? 0 };
+  }
+
+  /**
+   * Raw forensic-log row count (Ingestion-sources spec §5). Observability +
+   * test hook for the retention cap — total rows, or rows for one dedupeKey.
+   */
+  countOccurrences(dedupeKey?: string): number {
+    const row = dedupeKey
+      ? this.db.prepare(`SELECT COUNT(*) c FROM failure_occurrences WHERE dedupe_key = ?`).get(dedupeKey)
+      : this.db.prepare(`SELECT COUNT(*) c FROM failure_occurrences`).get();
+    return ((row as { c: number } | undefined)?.c) ?? 0;
   }
 
   /**
@@ -726,6 +810,7 @@ export class FailureLedger {
       summary: r.summary as string,
       detail: { redacted: (r.detail_redacted as string) ?? '', full: (r.detail_full as string) ?? '' },
       category: r.category as FailureCategory,
+      judgmentCandidate: (r.judgment_candidate as number) === 1 ? true : undefined,
       initiativeId: (r.initiative_id as string) ?? undefined,
       projectId: (r.project_id as string) ?? undefined,
       specPath: (r.spec_path as string) ?? undefined,

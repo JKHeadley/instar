@@ -100,9 +100,9 @@ describe('E2E: Process Health tab — feature ON', () => {
     const { c, els, panel } = mountTab(baseUrl);
     c.start();
     await c.tick();
-    expect(els.headline.textContent).toContain('Watching — 1 issue recorded');
-    expect(els.captured.textContent).toContain('A concurrency issue');
-    expect(els.captured.textContent).toContain('the failure-learning loop'); // friendly label, not raw id
+    expect(els.headline.textContent).toContain('Keeping an eye out — 1 thing noticed');
+    expect(els.captured.textContent).toContain('A timing problem'); // ELI16 friendly category
+    expect(els.captured.textContent).toContain('the failure-watching feature'); // ELI16 friendly label, not raw id
     expect(els.captured.textContent).not.toContain('failure-learning-loop');
     // The redaction contract holds end-to-end: the full path is absent from the DOM.
     expect(panel.textContent).not.toContain('secret/Reconciler');
@@ -120,7 +120,7 @@ describe('E2E: Process Health tab — feature ON', () => {
     await c.tick();
     const stages = [...els.maturation.querySelectorAll('.ph-stage')];
     const last = stages[stages.length - 1];
-    expect(last.textContent).toContain('Default for all agents');
+    expect(last.textContent).toContain('On for everyone by default');
     expect(last.textContent).not.toContain('you’re here');
     expect(last.classList.contains('ph-stage-here')).toBe(false);
     c.stop();
@@ -130,14 +130,14 @@ describe('E2E: Process Health tab — feature ON', () => {
     const { c, els } = mountTab(baseUrl);
     c.start();
     await c.tick();
-    expect(els.headline.textContent).toContain('Watching — 1 issue recorded');
+    expect(els.headline.textContent).toContain('Keeping an eye out — 1 thing noticed');
     ledger.open({
       filedBy: 's2', source: 'bugfix-commit', severity: 'low',
       summary: 'a config typo', detail: { redacted: 'typo', full: 'typo' },
       category: 'config-parse', initiativeId: 'failure-learning-loop', causeCommitOid: 'c2', attribution: 'automatic',
     });
     await c.tick();
-    expect(els.headline.textContent).toContain('Watching — 2 issues recorded');
+    expect(els.headline.textContent).toContain('Keeping an eye out — 2 things noticed');
     c.stop();
   });
 });

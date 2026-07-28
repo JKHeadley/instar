@@ -110,3 +110,52 @@ describe('GET /sessions/reaper (integration)', () => {
     expect(killed).toBe(0);
   });
 });
+
+describe('GET /sessions/reaper/audit (integration)', () => {
+  let tmpDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reaper-audit-routes-'));
+    stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(stateDir, { recursive: true });
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/session-reaper-routes.test.ts' });
+  });
+
+  function app(): express.Express {
+    const a = express();
+    a.use(express.json());
+    a.use('/', createRoutes(ctxWith(stateDir, null)));
+    return a;
+  }
+
+  function writeAudit(rows: Array<Record<string, unknown>>): void {
+    const logPath = path.join(stateDir, '..', 'logs', 'reaper-audit.jsonl');
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.writeFileSync(logPath, rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+  }
+
+  it('returns an empty list when no audit trail exists yet', async () => {
+    const res = await request(app()).get('/sessions/reaper/audit');
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toEqual([]);
+  });
+
+  it('returns the audit tail and honors ?limit', async () => {
+    writeAudit([
+      { event: 'decision', session: 'a', verdict: 'keep', keptBy: 'active-process' },
+      { event: 'decision', session: 'a', verdict: 'reap-eligible', keptBy: 'all-clear' },
+      { event: 'reaped', session: 'a', tier: 'critical' },
+    ]);
+    const res = await request(app()).get('/sessions/reaper/audit');
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toHaveLength(3);
+    expect(res.body.entries[2]).toMatchObject({ event: 'reaped', tier: 'critical' });
+
+    const limited = await request(app()).get('/sessions/reaper/audit?limit=1');
+    expect(limited.body.entries).toHaveLength(1);
+    expect(limited.body.entries[0]).toMatchObject({ event: 'reaped' });
+  });
+});

@@ -83,6 +83,49 @@ describe('AgentServer', () => {
       expect(res.status).toBe(200);
       expect(res.body.node).toBe(process.version);
     });
+
+    it('includes auto-updater restart deferral details when configured', async () => {
+      const localProject = createTempProject();
+      const localServer = new AgentServer({
+        config: fakeConfig,
+        sessionManager: createMockSessionManager() as any,
+        state: localProject.state,
+        autoUpdater: {
+          getStatus: () => ({
+            running: true,
+            lastCheck: '2026-05-29T08:00:00.000Z',
+            lastApply: '2026-05-29T08:01:00.000Z',
+            lastAppliedVersion: '1.3.78',
+            config: {},
+            pendingUpdate: null,
+            lastError: null,
+            coalescingUntil: null,
+            pendingUpdateDetectedAt: null,
+            deferralReason: '1 active session(s): topic-458',
+            deferralElapsedMinutes: 7,
+            maxDeferralHours: 4,
+            restartDeferral: {
+              active: true,
+              targetVersion: '1.3.78',
+              firstDeferredAt: '2026-05-29T08:01:00.000Z',
+              reason: '1 active session(s): topic-458',
+              currentBlockers: ['topic-458'],
+              nextRetryAt: '2026-05-29T08:06:00.000Z',
+              updatedAt: '2026-05-29T08:01:00.000Z',
+            },
+          }),
+        } as any,
+      });
+
+      const res = await request(localServer.getApp()).get('/health');
+      localProject.cleanup();
+
+      expect(res.status).toBe(200);
+      expect(res.body.autoUpdater.restartDeferral).toMatchObject({
+        targetVersion: '1.3.78',
+        currentBlockers: ['topic-458'],
+      });
+    });
   });
 
   describe('GET /status', () => {
@@ -137,6 +180,25 @@ describe('AgentServer', () => {
         .send({ name: 'test' });
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('required');
+    });
+
+    it('passes gemini-cli framework through to session manager', async () => {
+      const res = await request(app)
+        .post('/sessions/spawn')
+        .send({
+          name: 'test-gemini',
+          prompt: 'hello from dashboard',
+          framework: 'gemini-cli',
+          model: 'gemini-2.5-flash',
+        });
+
+      expect(res.status).toBe(201);
+      expect(mockSM._lastSpawnArgs).toMatchObject({
+        name: 'test-gemini',
+        prompt: 'hello from dashboard',
+        framework: 'gemini-cli',
+        model: 'gemini-2.5-flash',
+      });
     });
   });
 

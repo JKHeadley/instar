@@ -130,6 +130,48 @@ const DEFAULT_GENERATED_PATTERNS = [
   // resolution. See docs/specs/integrated-being-ledger-v1.md §Multi-machine.
   '.instar/shared-state.jsonl',
   '.instar/shared-state.jsonl.*',
+  // Agent-local runtime and generated state. These may be valuable locally, but
+  // they are not source-controlled sync artifacts.
+  '.instar/autonomous/',
+  '.instar/backups/',
+  '.instar/bin/',
+  '.instar/episodes/',
+  '.instar/hook-events/',
+  '.instar/ledger/',
+  '.instar/logs/',
+  '.instar/messages/',
+  '.instar/reports/',
+  '.instar/server-data/',
+  '.instar/sessions/',
+  '.instar/shadow-install*',
+  '.instar/telegram-images/',
+  '.instar/telegram-inbound/',
+  '.instar/threadline/',
+  '.instar/views/',
+  '.instar/worktree-monitor/',
+  // Standby-write reconciliation §3.1 (I9 second axis — the wave-1 build
+  // item): these stores are classified MACHINE-LOCAL (per-machine single
+  // writer with a logical convergence story — WS2.5 replication for the
+  // evolution action queue; pool-scope GET merge + WS4.1 for attention), so
+  // their FILES must not ride git-sync: two machines rewriting the same
+  // git-synced file manufacture recurring merge conflicts no matter how the
+  // logical state converges (the round-2 S1 lesson). Deliberately NOT the
+  // whole `.instar/state/` tree — only the paths whose classification names
+  // `git-sync-excluded` as its file-level arm.
+  '.instar/state/attention-items.json',
+  '.instar/state/evolution/',
+  // Context-aware outbound review (§D9.4b) — the review-canary-battery route's
+  // write targets, classified MACHINE-LOCAL with an ephemeral-rebuildable
+  // story: the per-machine topic-memory SQLite (canary fixtures transit its
+  // reserved negative topic ids; a live binary db must never git-sync) and the
+  // D8 decision log (per-machine soak evidence, never converged).
+  '.instar/topic-memory.db',
+  'logs/response-review-decisions.jsonl',
+  // External-hog sentinel arm marker — per-machine PIN consent to LIVE kills
+  // on THIS machine. Classified MACHINE-LOCAL with git-sync-excluded on BOTH
+  // axes: syncing the marker would silently arm a peer's sentinel the operator
+  // never consented to (the silent-re-arm class the armEpoch design prevents).
+  '.instar/state/external-hog-arm.json',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [
@@ -138,6 +180,16 @@ const DEFAULT_SECRET_PATTERNS = [
   '*credentials*', '*secret*',
   'id_rsa', 'id_ed25519', 'id_ecdsa',
   '.npmrc',  // may contain tokens
+  '.claude.json',
+  '.mcp.json',
+  '.instar/agent-tokens/',
+  '.instar/cloudflared-*.yml',
+  '.instar/config.json',
+  '.instar/config.json.*',
+  '.instar/identity.json',
+  '.instar/machine/identity.json',
+  '.instar/machine/*key*',
+  '.instar/secrets/',
 ];
 
 const SOURCE_CODE_EXTENSIONS = new Set([
@@ -375,6 +427,8 @@ export class FileClassifier {
         reason: 'Both sides modified the binary file — needs human decision',
       };
     } catch {
+      // @silent-fallback-ok — inability to inspect binary stages escalates to
+      // conflict resolution, not a silent accept.
       return { resolution: 'conflict', reason: 'Error reading git stages for binary file' };
     }
   }
@@ -382,23 +436,9 @@ export class FileClassifier {
   // ── Private Helpers ────────────────────────────────────────────────
 
   private isSecret(relPath: string, basename: string): boolean {
+    const normalized = relPath.replace(/\\/g, '/');
     for (const pattern of this.secretPatterns) {
-      if (pattern.startsWith('*') && pattern.endsWith('*')) {
-        // *pattern* → contains
-        const inner = pattern.slice(1, -1);
-        if (basename.toLowerCase().includes(inner)) return true;
-      } else if (pattern.startsWith('*.')) {
-        // *.ext → extension match
-        const ext = pattern.slice(1);
-        if (basename.endsWith(ext)) return true;
-      } else if (pattern.includes('.*')) {
-        // .env.* → prefix match
-        const prefix = pattern.split('.*')[0];
-        if (basename.startsWith(prefix)) return true;
-      } else {
-        // Exact match
-        if (basename === pattern) return true;
-      }
+      if (this.matchesPattern(normalized, basename, pattern)) return true;
     }
     return false;
   }
@@ -406,18 +446,36 @@ export class FileClassifier {
   private isGenerated(relPath: string): boolean {
     const normalized = relPath.replace(/\\/g, '/');
     for (const pattern of this.generatedPatterns) {
-      if (pattern.endsWith('/')) {
-        // Directory pattern
-        if (normalized.startsWith(pattern) || normalized.includes('/' + pattern)) return true;
-      } else if (pattern.startsWith('*.')) {
-        // Extension glob
-        const ext = pattern.slice(1);
-        if (normalized.endsWith(ext)) return true;
-      } else {
-        if (normalized === pattern || normalized.endsWith('/' + pattern)) return true;
-      }
+      if (this.matchesPattern(normalized, path.basename(normalized), pattern)) return true;
     }
     return false;
+  }
+
+  private matchesPattern(normalizedRelPath: string, basename: string, pattern: string): boolean {
+    const normalizedPattern = pattern.replace(/\\/g, '/');
+    const lowerBase = basename.toLowerCase();
+    const lowerRel = normalizedRelPath.toLowerCase();
+    const lowerPattern = normalizedPattern.toLowerCase();
+
+    if (lowerPattern.endsWith('/')) {
+      return lowerRel.startsWith(lowerPattern) || lowerRel.includes('/' + lowerPattern);
+    }
+
+    if (lowerPattern.startsWith('*.')) {
+      return lowerBase.endsWith(lowerPattern.slice(1));
+    }
+
+    if (lowerPattern.startsWith('*') && lowerPattern.endsWith('*')) {
+      return lowerBase.includes(lowerPattern.slice(1, -1));
+    }
+
+    if (lowerPattern.includes('*')) {
+      const escaped = lowerPattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      const re = new RegExp(`^${escaped}$`);
+      return re.test(lowerRel) || re.test(lowerBase);
+    }
+
+    return lowerBase === lowerPattern || lowerRel === lowerPattern || lowerRel.endsWith('/' + lowerPattern);
   }
 
   private isLockfile(basename: string): string | null {

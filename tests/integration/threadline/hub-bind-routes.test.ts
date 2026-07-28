@@ -98,4 +98,55 @@ describe('POST /threadline/hub/bind (integration)', () => {
     expect(res.status).toBe(200);
     expect(store.get('t-tie')?.boundTopicId).toBe(4242);
   });
+
+  // ── CMT-567: briefDeps on ctx (LLM topic-name + summary) ────────────────
+  function briefDepsFor(evaluate: ((p: string) => Promise<string>) | null): RouteContext['briefDeps'] {
+    const messages = Array.from({ length: 4 }, (_, i) => ({ direction: (i % 2 === 0 ? 'in' : 'out') as 'in' | 'out', text: `m${i}`, remoteAgentName: 'Codey', timestamp: `2026-05-27T19:0${i}:00Z` }));
+    return {
+      observability: { getThread: () => ({ messages }) },
+      llmQueue: evaluate ? ({ enqueue: async (_l: string, fn: (s: AbortSignal) => Promise<string>) => fn(new AbortController().signal) } as any) : null,
+      intelligence: evaluate ? { evaluate } : null,
+    };
+  }
+
+  it('200 open with briefDeps + LLM: topic named from PURPOSE, summary is first message', async () => {
+    const tg = fakeTelegram();
+    const store = new ConversationStore(stateDir);
+    const surfacer = new CollaborationSurfacer({ telegram: tg, stateDir });
+    await store.mutate('t-llm', (c) => { c.participants = { peers: ['codey'] }; return c; });
+    await surfacer.surface({ threadId: 't-llm', senderName: 'codey', text: 'hi', hasParentTopic: false, warrants: true });
+    const ctx = { ...baseCtx(), telegram: tg as any, conversationStore: store, commitmentTracker: null, collaborationSurfacer: surfacer,
+      briefDeps: briefDepsFor(async () => 'PURPOSE: GrowthBook rollout plan\n\nCodey wants to coordinate the rollout. Awaiting your sign-off.') };
+    const res = await request(appWith(ctx)).post('/threadline/hub/bind').send({ action: 'open' });
+    expect(res.status).toBe(200);
+    expect(res.body.topicName).toMatch(/GrowthBook rollout plan/i);
+    expect(tg.posts.some(p => /Codey wants to coordinate/i.test(p.text))).toBe(true);
+  });
+
+  it('200 open with briefDeps but LLM throws: bind still succeeds, template summary posted', async () => {
+    const tg = fakeTelegram();
+    const store = new ConversationStore(stateDir);
+    const surfacer = new CollaborationSurfacer({ telegram: tg, stateDir });
+    await store.mutate('t-fb', (c) => { c.participants = { peers: ['codey'] }; c.messageCount = 4; return c; });
+    await surfacer.surface({ threadId: 't-fb', senderName: 'codey', text: 'hi', hasParentTopic: false, warrants: true });
+    const ctx = { ...baseCtx(), telegram: tg as any, conversationStore: store, commitmentTracker: null, collaborationSurfacer: surfacer,
+      briefDeps: briefDepsFor(async () => { throw new Error('LLM timeout'); }) };
+    const res = await request(appWith(ctx)).post('/threadline/hub/bind').send({ action: 'open' });
+    expect(res.status).toBe(200); // regression guard: LLM failure NEVER fails the bind
+    expect(store.get('t-fb')?.boundTopicId).toBe(res.body.topicId);
+    expect(tg.posts.some(p => /Conversation with/i.test(p.text))).toBe(true);
+  });
+
+  it('200 open with briefDeps intelligence:null: bind still succeeds (template/slug)', async () => {
+    const tg = fakeTelegram();
+    const store = new ConversationStore(stateDir);
+    const surfacer = new CollaborationSurfacer({ telegram: tg, stateDir });
+    await store.mutate('t-null', (c) => { c.participants = { peers: ['codey'] }; c.messageCount = 4; return c; });
+    await surfacer.surface({ threadId: 't-null', senderName: 'codey', text: 'hi', hasParentTopic: false, warrants: true });
+    const ctx = { ...baseCtx(), telegram: tg as any, conversationStore: store, commitmentTracker: null, collaborationSurfacer: surfacer,
+      briefDeps: briefDepsFor(null) };
+    const res = await request(appWith(ctx)).post('/threadline/hub/bind').send({ action: 'open' });
+    expect(res.status).toBe(200);
+    expect(store.get('t-null')?.boundTopicId).toBe(res.body.topicId);
+  });
 });

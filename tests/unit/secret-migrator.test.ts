@@ -15,9 +15,28 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { migrateSecrets, mergeConfigWithSecrets } from '../../src/core/SecretMigrator.js';
+import { migrateSecrets, mergeConfigWithSecrets, isSecretPlaceholder } from '../../src/core/SecretMigrator.js';
 import { SecretStore } from '../../src/core/SecretStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+describe('isSecretPlaceholder', () => {
+  it('true only for the { secret: true } externalization placeholder', () => {
+    expect(isSecretPlaceholder({ secret: true })).toBe(true);
+  });
+  it('false for a plaintext string token, empty string, null, undefined, number', () => {
+    expect(isSecretPlaceholder('a-real-token')).toBe(false);
+    expect(isSecretPlaceholder('')).toBe(false);
+    expect(isSecretPlaceholder(null)).toBe(false);
+    expect(isSecretPlaceholder(undefined)).toBe(false);
+    expect(isSecretPlaceholder(123)).toBe(false);
+  });
+  it('false for lookalike objects (secret not strictly true)', () => {
+    expect(isSecretPlaceholder({})).toBe(false);
+    expect(isSecretPlaceholder({ secret: false })).toBe(false);
+    expect(isSecretPlaceholder({ secret: 'true' })).toBe(false);
+    expect(isSecretPlaceholder({ secret: 1 })).toBe(false);
+  });
+});
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'instar-migrator-test-'));

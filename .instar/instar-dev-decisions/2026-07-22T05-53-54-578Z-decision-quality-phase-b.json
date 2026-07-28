@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-22T05:53:54.578Z",
+  "slug": "decision-quality-phase-b",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 110,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

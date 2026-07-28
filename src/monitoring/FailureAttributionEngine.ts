@@ -164,7 +164,8 @@ export class FailureAttributionEngine {
   /** Pick a category enum value defensively — never trust free text (§4.4). */
   static coerceCategory(value: string | undefined): FailureCategory {
     const allowed: FailureCategory[] = [
-      'concurrency', 'config-parse', 'wiring', 'logic', 'migration', 'test-gap', 'unknown',
+      'concurrency', 'config-parse', 'wiring', 'logic', 'migration', 'test-gap',
+      'build-failure', 'test-failure', 'regression', 'unknown',
     ];
     return allowed.includes(value as FailureCategory) ? (value as FailureCategory) : 'unknown';
   }

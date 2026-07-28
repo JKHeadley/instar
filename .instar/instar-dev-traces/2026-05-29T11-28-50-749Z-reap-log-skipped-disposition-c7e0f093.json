@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "sessionId": "c001de80-4f1a-4717-aafe-a4362d76b0ef",
+  "timestamp": "2026-05-29T11:28:50.749Z",
+  "artifactPath": "upgrades/side-effects/reap-log-skipped-disposition.md",
+  "artifactSha256": "dcd21023490d0751c871b84f396d590fcc244804d153c60e78f161380b6bd89c",
+  "specPath": "docs/specs/reap-log-skipped-disposition.md",
+  "coveredFiles": [
+    "docs/specs/reap-log-skipped-disposition.eli16.md",
+    "docs/specs/reap-log-skipped-disposition.md",
+    "src/data/builtin-manifest.json",
+    "src/monitoring/ReapLog.ts",
+    "tests/e2e/reap-log-lifecycle.test.ts",
+    "tests/integration/reap-log-route.test.ts",
+    "tests/unit/reap-log.test.ts",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/reap-log-skipped-disposition.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

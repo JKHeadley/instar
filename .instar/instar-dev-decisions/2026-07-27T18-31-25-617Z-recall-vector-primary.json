@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-27T18:31:25.617Z",
+  "slug": "recall-vector-primary",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 92,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

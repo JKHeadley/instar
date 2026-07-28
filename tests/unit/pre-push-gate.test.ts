@@ -63,6 +63,44 @@ describe('Pre-push gate script', () => {
     const content = fs.readFileSync(gatePath, 'utf-8');
     expect(content).toContain('Did you forget to bump the version');
   });
+
+  it('errors when src/ changed but no release-note fragment was added (#23)', () => {
+    const content = fs.readFileSync(gatePath, 'utf-8');
+    // The guard mirrors the src→tests check: it inspects the branch diff for a
+    // src/ change with no upgrades/next/<slug>.md (or NEXT.md) fragment — which
+    // would make publish.yml silently skip the release.
+    expect(content).toContain('no release-note fragment was added');
+    expect(content).toContain('SILENTLY SKIPS');
+    expect(content).toContain("f.startsWith('upgrades/next/')");
+  });
+
+  it('verifies the internal-only lane marker against the diff (objective gate)', () => {
+    // Like #23 above, the git-diff path is exercised by source inspection here;
+    // the behavioural core (marker detection + assembler auto-fill) is covered by
+    // tests/unit/assemble-next-md.test.ts. This asserts the gate REJECTS an
+    // <!-- internal-only --> fragment that accompanies a runtime src/ change, so
+    // the marker (which lets a fragment skip the user-facing sections) can't be
+    // misused to hide a user-facing change.
+    const content = fs.readFileSync(gatePath, 'utf-8');
+    expect(content).toContain('hasInternalOnlyMarker');
+    expect(content).toContain('Internal-only release fragment(s) accompany');
+    expect(content).toContain('internalOnlyFragments.length > 0 && srcChanges.length > 0');
+  });
+
+  it('diffs against the main merge-target ref, not @{u}, so merge-from-main updates are not false-flagged', () => {
+    // A PR updated by MERGING main in (the no-force-push path) must NOT see all of
+    // main's already-shipped files as its own changes — that produced false
+    // "src changed without a fragment" errors (forcing INSTAR_PRE_PUSH_SKIP=1).
+    // The gate now prefers the main merge-target ref over the branch's upstream,
+    // so the three-dot diff is the PR's true diff. Source-presence (like #23):
+    // the git-diff path is not executed in unit tests.
+    const content = fs.readFileSync(gatePath, 'utf-8');
+    expect(content).toContain('pickRef');
+    expect(content).toContain("'JKHeadley/main'");
+    expect(content).toContain('never UNDER-reports');
+    // still falls back to @{u} when no main ref resolves in the clone
+    expect(content).toContain('@{u}');
+  });
 });
 
 // ── Integration: malformed NEXT.md rejection ─────────────────────────
@@ -98,7 +136,7 @@ describe('Pre-push gate integration — malformed NEXT.md', () => {
     // script would still see the production __dirname and walk the production
     // tree — making the integration test sensitive to unrelated changes in
     // the rest of the repo. Copying isolates the test to its scratch dir.
-    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
+    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'release-relevant-paths.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
       fs.copyFileSync(
         path.join(ROOT, 'scripts', file),
         path.join(scratch, 'scripts', file),
@@ -252,5 +290,233 @@ describe('Pre-push gate integration — malformed NEXT.md', () => {
 
     const { status } = runGate();
     expect(status).toBe(0);
+  });
+});
+
+// ── Integration: fragment-aware validation ───────────────────────────
+//
+// Release notes are now authored as per-PR fragments (upgrades/next/<slug>.md)
+// so concurrent PRs never collide on a shared NEXT.md. The pre-push gate must
+// validate the ASSEMBLED result so a PR that ships ONLY a fragment (no NEXT.md)
+// still passes the same section/content checks. It must also reject a malformed
+// fragment loudly, and must NOT write a generated NEXT.md to disk.
+
+describe('Pre-push gate integration — release-note fragments', () => {
+  let scratch: string;
+
+  beforeEach(() => {
+    scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'prepush-frag-'));
+    fs.mkdirSync(path.join(scratch, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(scratch, 'upgrades', 'next'), { recursive: true });
+    fs.mkdirSync(path.join(scratch, 'upgrades', 'side-effects'), { recursive: true });
+    fs.mkdirSync(path.join(scratch, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(scratch, 'package.json'),
+      JSON.stringify({ name: 'instar-test', version: '0.28.999' }),
+    );
+    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'release-relevant-paths.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
+      fs.copyFileSync(path.join(ROOT, 'scripts', file), path.join(scratch, 'scripts', file));
+    }
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(scratch, { recursive: true, force: true, operation: 'tests/unit/pre-push-gate.test.ts:afterEach' });
+  });
+
+  function runGate(): { status: number | null; stdout: string; stderr: string } {
+    const result = spawnSync(process.execPath, [path.join(scratch, 'scripts', 'pre-push-gate.js')], {
+      cwd: scratch,
+      encoding: 'utf-8',
+      env: { ...process.env, CI: '', NODE_ENV: 'test' },
+    });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  }
+
+  it('ACCEPTS a fragment-only push (no NEXT.md) and writes no NEXT.md', () => {
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', 'side-effects', 'frag-artifact.md'),
+      '# Side-Effects Review (test scratch)\n\nMinimal placeholder.\n',
+    );
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', 'next', 'my-feature.md'),
+      [
+        '# Upgrade Guide — vNEXT',
+        '',
+        '<!-- bump: minor -->',
+        '',
+        '## What Changed',
+        '',
+        'A small improvement to the agent infrastructure.',
+        '',
+        '## What to Tell Your User',
+        '',
+        'Your agent picked up a small tune-up. Nothing changes about how it talks to you.',
+        '',
+        '## Summary of New Capabilities',
+        '',
+        '| Capability | How to Use |',
+        '|-----------|-----------|',
+        '| Tune-up | automatic |',
+        '',
+      ].join('\n'),
+    );
+
+    const { status } = runGate();
+    expect(status).toBe(0);
+    // The gate assembles in-memory only — it must NOT leave a NEXT.md on disk.
+    expect(fs.existsSync(path.join(scratch, 'upgrades', 'NEXT.md'))).toBe(false);
+    // The fragment itself is untouched.
+    expect(fs.existsSync(path.join(scratch, 'upgrades', 'next', 'my-feature.md'))).toBe(true);
+  });
+
+  it('REJECTS a fragment-only push when WTTYU has inline code (validates assembled result)', () => {
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', 'next', 'bad-wttyu.md'),
+      [
+        '# Upgrade Guide — vNEXT',
+        '',
+        '<!-- bump: patch -->',
+        '',
+        '## What Changed',
+        '',
+        'A general improvement.',
+        '',
+        '## What to Tell Your User',
+        '',
+        'Your agent now reads from `~/.instar/config.json` automatically.',
+        '',
+        '## Summary of New Capabilities',
+        '',
+        '| Capability | How to Use |',
+        '|-----------|-----------|',
+        '| Auto-config | automatic |',
+        '',
+      ].join('\n'),
+    );
+
+    const { status, stdout } = runGate();
+    expect(status).not.toBe(0);
+    expect(stdout).toContain('contains inline code');
+  });
+
+  it('REJECTS a malformed fragment (no "## " section) loudly', () => {
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', 'next', 'broken.md'),
+      'just some prose with no section headings at all',
+    );
+
+    const { status, stdout } = runGate();
+    expect(status).not.toBe(0);
+    expect(stdout).toContain('Release-note fragments are malformed');
+  });
+
+  // ── post-release-cut state (the three-time recurrence) ────────────────────
+  //
+  // After a release cut the tree has: upgrades/<version>.md (the frozen guide for
+  // the version that just shipped), no fragments, and NO
+  // upgrades/side-effects/<version>.md — because side-effects artifacts are named
+  // per change slug and the release flow never creates a version-named one.
+  //
+  // The gate used to fall back to that frozen guide and demand exactly that
+  // impossible filename, refusing EVERY push from a clean post-release tree. The
+  // recurrence is documented in the repo itself: upgrades/side-effects/1.3.492.md
+  // and 1.3.802.md are hand-written placeholders whose own text says they exist
+  // only to satisfy this check.
+
+  function writeFrozenGuideClaimingAFix(version: string) {
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', `${version}.md`),
+      [
+        `# Upgrade Guide — v${version}`,
+        '',
+        '## What Changed',
+        '',
+        'Fixes a bug in the scheduler.',
+        '',
+        '## Evidence',
+        '',
+        'Reproduced first: with the old code the scheduler skipped every job whose cron',
+        'expression contained a step value, so a job set to every 15 minutes never ran at',
+        'all. Observed 0 runs across a 2 hour window. After the fix the same job ran 8',
+        'times in the same window. Reverting the one-line change reproduced the failure',
+        'again, which is how the cause was confirmed rather than assumed.',
+        '',
+        '## What to Tell Your User',
+        '',
+        'Your agent picked up a small repair. Nothing changes about how it talks to you.',
+        '',
+        '## Summary of New Capabilities',
+        '',
+        '| Capability | How to Use |',
+        '|-----------|-----------|',
+        '| Repair | automatic |',
+        '',
+      ].join('\n'),
+    );
+  }
+
+  it('ACCEPTS a post-release-cut tree with no fragment and no version-named artifact', () => {
+    // package.json is pinned to 0.28.999 by beforeEach; the frozen guide for THAT
+    // version is what the cut leaves behind.
+    writeFrozenGuideClaimingAFix('0.28.999');
+    // Deliberately NO upgrades/next/*.md and NO upgrades/side-effects/0.28.999.md.
+    expect(fs.existsSync(path.join(scratch, 'upgrades', 'side-effects', '0.28.999.md'))).toBe(false);
+
+    const { status, stdout } = runGate();
+    expect(status).toBe(0);
+    expect(stdout).not.toContain('side-effects review artifact');
+  });
+
+  it('does not demand a version-named side-effects artifact even when one has never existed', () => {
+    writeFrozenGuideClaimingAFix('0.28.999');
+
+    const { stdout } = runGate();
+    // The old message named upgrades/side-effects/<version>.md as the remedy,
+    // which is what taught three placeholder files into the repo. Assert the
+    // gate never asks for a version-named artifact again. (The frozen guide's own
+    // FILENAME may still appear in unrelated content-validation messages — what
+    // must not appear is the side-effects artifact demand.)
+    expect(stdout).not.toContain('side-effects review artifact');
+    expect(stdout).not.toContain('side-effects/0.28.999.md');
+  });
+
+  it('STILL refuses an in-flight fix-claiming fragment with no fresh side-effects artifact', () => {
+    // The check is not removed — it is scoped to the notes this push is actually
+    // shipping. With a fragment present and no artifact, it must still refuse,
+    // otherwise this fix would have traded a false positive for a false negative.
+    fs.writeFileSync(
+      path.join(scratch, 'upgrades', 'next', 'a-real-fix.md'),
+      [
+        '# Upgrade Guide — vNEXT',
+        '',
+        '<!-- bump: patch -->',
+        '',
+        '## What Changed',
+        '',
+        'Fixes a crash in the relay.',
+        '',
+        '## Evidence',
+        '',
+        'Reproduced the crash, applied the fix, confirmed it no longer reproduces.',
+        '',
+        '## What to Tell Your User',
+        '',
+        'Your agent no longer drops messages when the relay restarts.',
+        '',
+        '## Summary of New Capabilities',
+        '',
+        '| Capability | How to Use |',
+        '|-----------|-----------|',
+        '| Repair | automatic |',
+        '',
+      ].join('\n'),
+    );
+    // side-effects dir exists but is empty — no fresh artifact.
+
+    const { status, stdout } = runGate();
+    expect(status).not.toBe(0);
+    expect(stdout).toContain('side-effects review artifact was written in the last 24h');
+    // And the remedy it names must be the slug form, never a version-named file.
+    expect(stdout).toContain('upgrades/side-effects/<slug>.md');
   });
 });

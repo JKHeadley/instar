@@ -1,0 +1,36 @@
+# Dashboard UX Standard — the plain-English version
+
+The operator opened the dashboard on 2026-07-08 and found it hard to use: tabs squished into a narrow strip, most of the 25 tabs unreachable, and several tabs that gave no hint of what they were for. Rather than polish it once and watch it drift again, we turned the operator's bar — "everything must be VERY clearly self-explanatory, easy to navigate, and responsive" — into a written standard with hard rules (F1–F9), each backed by an automatic check that fails the build if a future change breaks it. That way the dashboard can't silently rot back into the squished, confusing state; the rules are enforced by tests, not by anyone remembering to be careful.
+
+**Added 2026-07-10 (topic 29836): F9 — a background refresh never clobbers an open interaction.** The Subscriptions tab's self-refresh was wiping a half-typed PIN back into a button and swapping the paste-your-code step for a spinner mid-paste. F9 makes it a rule for every tab that refreshes itself: anything the operator is in the middle of using (an open step, a focused box, a half-typed field) keeps its exact place on screen until it finishes, fails, expires, or the operator backs out — the refresh may only update things around it, like a live countdown. Shipped first on the Subscriptions tab (shared helpers + tests, including a control proving the old behavior really destroyed typed input); rolling the helpers out to the other self-refreshing tabs is the tracked follow-up in the spec.
+
+**Added 2026-07-10 (topic 29836): F10 + F11 — the "glance floors".** You looked at the dashboard and said, roughly, "every main view should be simple and digestible at a glance with almost no jargon, and everything should be clickable to drill into detail." The nine earlier rules make the dashboard reachable and stable, but a tab can pass all of them and still dump a wall of raw records on its front page — the Commitments tab literally showed 23 internal records with IDs, "cadence: 1800s", and "atRisk" as the *first thing you see*. F10 and F11 fix that with a three-layer shape that every main view will share:
+
+- **Layer 1, the glance:** one plain-English headline ("I'm carrying 664 open promises; 3 need attention soon, none are overdue.") plus at most five big labeled tiles in everyday words. No insider vocabulary at this layer — no internal IDs, no state-machine words like "atRisk", no config field names, no "1800s" cadences. And the whole front page has to fit in 150 words before you touch anything.
+- **Layer 2, the list:** click a tile or a number and you see the actual rows behind it, still in plain words ("Promised Justin a code — waiting on the vendor since June 2").
+- **Layer 3, the record:** click a row and you get everything, including the raw technical detail — the IDs, timestamps, and JSON. Nothing is deleted; the jargon just moves one or two clicks down instead of living on the front page.
+
+**F10 (glance floor)** is the "≤ 150 words, ≤ 5 tiles, no jargon" rule. **F11 (universal drill-down)** is the "every tile/number/row is clickable and opens the next layer — no dead ends" rule.
+
+**Added 2026-07-11 (topic 29836): Phase 4 — the sweep, plus two annoyances fixed.** Six more tabs got the glance treatment: **PR Pipeline**, **Tokens**, **LLM Activity**, **Secrets**, **Resource Usage**, and **Initiatives**. Each now opens with one plain sentence and a few big tiles instead of a wall of tables — tap a tile to see the items behind that number, tap one for the full detail. Nothing was removed; on Secrets, the open/copy/cancel buttons just moved onto each request's detail view. Two things that annoyed you are also gone: (1) after a new version shipped, the dashboard used to show a blank tab for up to four hours until you hard-refreshed — now it always loads the matching code (issue #1441); and (2) refreshing the page used to bounce you back to the Sessions tab — now it keeps you on the tab you were on (issue #1442). The remaining fourteen tabs are *interactive tools* — things you use to run a job, toggle a feature, approve a request, provision an account, or browse and edit files — not read-only summaries. Turning those into a read-only glance would take away their buttons, so they stay as they are, listed in the pull request for you to okay. The "grandfather" ceiling ratcheted down from 20 to 14, and no new tab may ship below the floor.
+
+**How they're enforced so they can't rot:** one shared piece of code (`dashboard/glance.js`) builds the headline-plus-tiles template, and it *refuses* to build a glance that breaks the budget or sneaks in jargon — so the rule is baked into the component, not left to anyone remembering it. Two automatic tests back it up: one checks the word/tile/jargon budget, the other clicks every single tile and fails the build if any tile is a dead end that doesn't open a detail view.
+
+**What actually ships in THIS change (Phase 1 only):** the two rules written into the standard, the shared component, the two tests, and ONE real example — the Commitments tab gets its new glance layer (headline + tiles) that drills down into the list it already had. The 26 other tabs are "grandfathered" (allowed to stay as-is for now) against a survey scorecard, and they get fixed in later phases (2–4). The grandfather list can only shrink — a tab leaves it only by actually passing the two tests, and no new tab is allowed to ship below the floor. You approved this exact shape (three layers, two floors, four phases) in topic 29836 on 2026-07-10.
+
+A note on how the dashboard *works*: none of the glance-floor change touches the server or your data. It is a new front-end component plus display wiring on one tab, so rolling it back is just reverting the commit. Behaviour is untouched — the Commitments tab shows the same promises, just headline-first with the raw detail one click down instead of dumped on the page.
+
+## What shipped in this increment (glance floors, Phase 1)
+- F10 + F11 written into the standard, with the survey scorecard as the grandfathered conformance baseline.
+- The shared `dashboard/glance.js` component (headline + ≤5 tiles + drill-down container; refuses an over-budget or jargon-carrying glance; honours the F9 interaction-hold rule).
+- Two enforcement tests in the normal unit shard: `tests/unit/dashboard-glance-word-budget.test.ts` (F10) and `tests/unit/dashboard-glance-drilldown.test.ts` (F11).
+- The Commitments tab wired onto the component as the reference implementation (glance layer → existing list → full record).
+
+*(Earlier increment, for history: **F3 — every tab carries a plain-language purpose line** — added the shared `.tab-purpose` class + purpose lines on all registered tabs and the `tests/unit/dashboard-tab-purpose.test.ts` floor.)*
+
+## Open questions / decisions
+- **None blocking.** The three-layer shape, the two floors (F10/F11), and the four-phase order were approved by the operator in topic 29836 on 2026-07-10. This PR is Phase 1 only; Phases 2–4 (the retrofit of the grandfathered tabs) are tracked in the spec.
+
+## What comes next (out of scope here)
+- **F4** — the body must never scroll sideways, especially on a phone (ships next, with a browser-gated viewport check).
+- **F5–F8** — labeled controls, self-explaining empty states, and the shared style vocabulary.

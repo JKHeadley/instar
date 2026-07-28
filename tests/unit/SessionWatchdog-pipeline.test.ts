@@ -49,26 +49,26 @@ describe('SessionWatchdog pipeline guard', () => {
   });
 
   describe('hasActivePipelineSibling', () => {
-    it('returns false for commands that are not stdin consumers', () => {
-      const result = (watchdog as any).hasActivePipelineSibling(1234, 'python3 script.py');
+    it('returns false for commands that are not stdin consumers', async () => {
+      const result = await (watchdog as any).hasActivePipelineSibling(1234, 'python3 script.py');
       expect(result).toBe(false);
     });
 
-    it('returns false for tail with a file argument (tail -f /var/log/foo)', () => {
+    it('returns false for tail with a file argument (tail -f /var/log/foo)', async () => {
       // Even though we might have pgid siblings, a file-arg tail is really
       // tailing that file, not reading from a pipe.
-      const result = (watchdog as any).hasActivePipelineSibling(1234, 'tail -f /var/log/foo.log');
+      const result = await (watchdog as any).hasActivePipelineSibling(1234, 'tail -f /var/log/foo.log');
       expect(result).toBe(false);
     });
 
-    it('returns false for tail with -n N numeric arg only (still a pipe consumer)', () => {
+    it('returns false for tail with -n N numeric arg only (still a pipe consumer)', async () => {
       // The intent of this test is: bare `tail -N` without a file is a pipe
       // consumer. With no pgid siblings mocked, the peer lookup returns
       // nothing and the guard returns false — that's fine, we also need
       // to verify the positive case below.
       (watchdog as any).hasActivePipelineSibling = SessionWatchdog.prototype['hasActivePipelineSibling'].bind(watchdog);
       // No mocking of the shell — will return false because pgid lookup fails
-      const result = (watchdog as any).hasActivePipelineSibling(99999999, 'tail -40');
+      const result = await (watchdog as any).hasActivePipelineSibling(99999999, 'tail -40');
       expect(typeof result).toBe('boolean');
     });
   });
@@ -185,16 +185,42 @@ describe('SessionWatchdog pipeline guard', () => {
       expect((watchdog as any).temporaryExclusions.has(77777)).toBe(true);
     });
 
-    it('STILL escalates non-consumer stuck command at 3 minutes (preserves normal behavior)', async () => {
+    it('does NOT escalate a non-consumer at 3 min when the LLM judge is unavailable (fail-closed)', async () => {
+      // Was fail-OPEN (Ctrl+C'd anything past 3 min when the LLM couldn't run),
+      // which under load interrupted legitimate builds/tests. Now fails CLOSED
+      // below the 30-min default hard ceiling.
       (watchdog as any).getChildProcesses = vi.fn().mockReturnValue([
-        { pid: 77777, command: 'python3 /broken/script.py', elapsedMs: 200_000 },
+        { pid: 77777, command: 'python3 /broken/script.py', elapsedMs: 200_000 }, // 3.3m
       ]);
       (watchdog as any).hasActivePipelineSibling = vi.fn().mockReturnValue(false);
       (watchdog as any).intelligence = null;
 
       await (watchdog as any).checkSession('test-session');
 
-      // Non-consumer commands still escalate at the normal 3-min threshold
+      expect(sessionManager.sendKey).not.toHaveBeenCalled();
+    });
+
+    it('DOES escalate a non-consumer past the hard ceiling without an LLM (deterministic recovery)', async () => {
+      (watchdog as any).getChildProcesses = vi.fn().mockReturnValue([
+        { pid: 77777, command: 'python3 /broken/script.py', elapsedMs: 31 * 60_000 }, // 31m > 30m ceiling
+      ]);
+      (watchdog as any).hasActivePipelineSibling = vi.fn().mockReturnValue(false);
+      (watchdog as any).intelligence = null;
+
+      await (watchdog as any).checkSession('test-session');
+
+      expect(sessionManager.sendKey).toHaveBeenCalledWith('test-session', 'C-c');
+    });
+
+    it('escalates a non-consumer at 3 min when the LLM positively confirms stuck', async () => {
+      (watchdog as any).getChildProcesses = vi.fn().mockReturnValue([
+        { pid: 77777, command: 'python3 /broken/script.py', elapsedMs: 200_000 },
+      ]);
+      (watchdog as any).hasActivePipelineSibling = vi.fn().mockReturnValue(false);
+      (watchdog as any).intelligence = { evaluate: vi.fn().mockResolvedValue('stuck') };
+
+      await (watchdog as any).checkSession('test-session');
+
       expect(sessionManager.sendKey).toHaveBeenCalledWith('test-session', 'C-c');
     });
   });

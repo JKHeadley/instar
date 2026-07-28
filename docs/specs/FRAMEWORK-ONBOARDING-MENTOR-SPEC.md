@@ -374,6 +374,13 @@ regressedFromIssueId  if a regression of a previously-fixed issue (nullable)
 playbookStatus      none | candidate | extracted | superseded
 wontFixReason       required when status=wont-fix (§13.7)
 relatedSpec         optional spec slug
+rootGapInfrastructure  REQUIRED (§13.9) — what is lacking in current infrastructure
+                    that allowed this gap?
+rootGapSentinel     REQUIRED (§13.9) — failing | missing | neither-unpromoted: does
+                    this signal a FAILING sentinel or a MISSING one?
+                    (neither-unpromoted = the guard exists but sits watch-only/dark)
+rootGapStandard     REQUIRED (§13.9) — what standard would have guided past
+                    development to close this class ahead of time?
 createdAt / updatedAt
 ```
 Indexes: `framework_issues(dedupKey)`, composite on `(framework, playbookStatus)` for the playbook
@@ -443,6 +450,29 @@ through a single-writer / CAS `mutate()` pattern (the CommitmentTracker preceden
 ticks / multi-framework jobs can't drop observations on `SQLITE_BUSY`. All queries use parameterized
 prepared statements (no string interpolation); enum columns (`bucket`, `status`, `playbookStatus`)
 validated against fixed allowlists on write.
+
+### 13.9 Fundamental-gap analysis is REQUIRED on every issue (the three questions)
+
+Operator directive (2026-07-17, topic 29723, apprenticeship drive 5): observing a
+failure and logging it is tracking, not diagnosis. Every `framework_issues` record
+MUST answer three questions before it counts as logged — write-time validation
+refuses an insert without them, exactly like the `bucket` requirement (§6):
+
+1. **`rootGapInfrastructure`** — what is lacking in current infrastructure that
+   allowed this gap?
+2. **`rootGapSentinel`** — does this signal a FAILING sentinel or a MISSING one?
+   Enum `failing | missing | neither-unpromoted`; the third value names the drive-5
+   recurring case where the guard exists but sits watch-only/dark, so the answer is
+   a promotion decision rather than new machinery.
+3. **`rootGapStandard`** — what standard would have guided past development to close
+   this class ahead of time?
+
+A defect without root-gap analysis is incomplete the same way a feature without tests
+is incomplete. This converts the operator's questioning discipline into schema —
+Structure > Willpower applied to judgment itself. Canonical concept statement:
+`docs/apprenticeship/PROGRAM-CONCEPTS.md` §4. First entries in this schema: drive-5
+defects #9 (interrupted-conversation stall), #10 (stream-disconnect stall), #11
+(operator pin erased by agent-authority unpin).
 
 ## 14. Migration & deployment (three distinct mechanisms — named)
 
@@ -531,3 +561,60 @@ set from evidence, not guesswork.
    tab may ship as a fast-follow). <!-- tracked: topic-13435 -->
 
 Ships staged (off → dry-run on Echo↔Codey → live) per the graduated-rollout standard.
+
+## Amendment (2026-05-29): active task-driving via an onboarding agenda
+
+**In-scope for the original approval** (it makes the existing `assign-next` action usable instead of dormant). Surfaced directly by the live Codey dogfooding run (topic 13435): the highest-signal interactions were the ones where the human DROVE Codey through concrete tasks (capability checks + real dev work); passive "how's it going?" check-ins on an idle mentee were low-signal ("nothing to do"). Two concrete gaps were found:
+
+1. **`getSurface` was a stub** (`(framework) => ({ framework, threadlineHistory: '' })`), so Stage A was BLIND — an empty surface can only ever yield `observe-only` or a generic check-in. The action set already included `assign-next`, but the mentor had nothing to assign and no conversation to reason over.
+2. **No backlog.** Even with a real surface, the mentor had no list of concrete onboarding tasks to assign.
+
+### Change
+
+- **`ConversationSurface.onboardingAgenda?: string[]`** — the mentor's own ordered backlog (capability checks + starter dev tasks). It is the mentor's *plan*, not a mentee internal, so it is surface-legitimate: `surfaceText` includes it, and assigning an agenda item is therefore NOT a leak.
+- **`buildStageAContext`** gains an agenda block ONLY when an agenda is present: it instructs the mentor, when the mentee is idle (no task in flight / said done / nothing actionable), to `assign-next` the next agenda item not already covered in the conversation — else `observe-only` (mid-task / agenda exhausted) or `unblock`/`answer` (blocked / asked). An empty agenda omits the block entirely → **unchanged passive-observe behaviour**.
+- **`getSurface` now builds a real surface**: `onboardingAgenda` from `mentor.onboardingAgenda` config + `threadlineHistory` from the mentee's recent replies (`mentor-replies.jsonl`, parsed defensively) + `timeSinceLastContactMs` from the latest reply. Pure logic (`buildConversationSurface`, `parseMenteeReplies`) is unit-tested; the server is thin glue (read file → parse → build).
+- **`MentorConfig.onboardingAgenda?: string[]`** — the opt-in source.
+
+### Ships dark (double-gated)
+
+The mentor is already off by default (`enabled:false`/`mode:'off'`). The agenda is additionally empty by default, so even an enabled mentor keeps today's passive behaviour until an operator sets `mentor.onboardingAgenda`. No fleet behaviour change without explicit opt-in.
+
+### Operator decisions to flag before live rollout
+
+- **Should the automated mentor proactively assign onboarding tasks to mentees fleet-wide?** (a UX/product call for the operator before populating an agenda + enabling.)
+- **Fuller conversation surface.** This PR feeds the mentor the mentee's *replies* but not the mentor's *own* prior prompts (their content isn't logged today — `a2a-sent.jsonl` is metadata-only). So agenda rotation is inferred from the mentee's replies. Logging the mentor's sent-prompt content for a complete two-sided surface can be handled as a separate scoped change; acceptable for a dark feature, and the mentor-outstanding tracker already prevents back-to-back duplicate sends.
+
+### Acceptance Criteria (amendment)
+
+M1. With an agenda configured, `buildStageAContext` includes the agenda + assign-next steering; with none, the block is omitted (unchanged prompt).
+M2. `surfaceText` includes agenda items so assigning one does not trip `detectStageALeak`.
+M3. `buildConversationSurface` renders mentee replies into `threadlineHistory`, caps to the most recent N, computes `timeSinceLastContactMs`, and sets `onboardingAgenda` only when non-empty.
+M4. `parseMenteeReplies` is defensive (skips blank/garbage/empty-message lines, coerces `ts`, filters to the named mentee) and never throws.
+M5. Empty agenda + no replies → behaviour identical to the prior stub (the passive default).
+
+### Rollback (amendment)
+
+Revert the `onboardingAgenda` field + the `buildStageAContext` agenda block + the `getSurface` builder back to the empty-surface stub. No state/migration/contract change; the reverted-to state is today's passive mentor.
+
+## Amendment (2026-05-29): hot-read mentor config
+
+The active task-driving amendment made `mentor.onboardingAgenda` the operator's opt-in source for the mentor's concrete task list. Dogfooding then surfaced a runtime usability gap: `AgentServer.buildMentorRunner` captured the mentor block from startup config once, so editing the agenda or related mentor settings in the agent config file had no effect until the whole server restarted. That undermines the purpose of an operator-curated onboarding agenda, especially while tuning the curriculum live.
+
+### Change
+
+- **`AgentServer.buildMentorRunner` getConfig hot-reads the mentor block** from the current agent config file each time the runner asks for config.
+- **Startup config remains the safe fallback.** The server keeps the startup mentor config snapshot and returns it if the runtime config file is missing, unreadable, malformed JSON, or has a malformed mentor block.
+- **Good runtime reads merge with defaults.** A valid on-disk mentor object still inherits `DEFAULT_MENTOR_CONFIG`, preserving existing default behavior while reflecting changed agenda and settings immediately.
+- **The runner abstraction stays unchanged.** `MentorOnboardingRunner` still receives a `() => MentorConfig`; the server owns file I/O and defensive fallback.
+
+### Safety and behavior
+
+This does not introduce a new delivery path, topic creation path, or authority surface. It only changes how the already-gated mentor runner reads its existing config. The mentor remains off by default, agenda remains empty by default, and malformed runtime config edits degrade to the startup snapshot instead of throwing into a tick.
+
+### Acceptance Criteria (hot-read amendment)
+
+H1. Changing the on-disk `mentor.onboardingAgenda` is reflected on the next mentor config read without restarting the server.
+H2. A missing, unreadable, malformed, or bad-shape runtime config read returns the startup mentor config snapshot and never throws into a status check or tick.
+H3. Server-backed mentor status reflects a valid runtime config edit without reconstructing `AgentServer`.
+H4. The hot-read logic has unit coverage for agenda updates and fallback-on-bad-read, route coverage for fresh config reads, and server-backed e2e coverage for no-restart behavior.

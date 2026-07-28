@@ -310,6 +310,51 @@ describe('MachineIdentityManager', () => {
     });
   });
 
+  describe('loadSigningKey (legacy fallback)', () => {
+    it('falls back to signing-private.pem when the canonical signing-key.pem is absent', async () => {
+      await manager.generateIdentity();
+      const canonical = manager.signingKeyPath;
+      const key = fs.readFileSync(canonical, 'utf-8');
+      // Simulate a machine keyed under the pre-canonical-rename name: only the
+      // legacy 'signing-private.pem' exists. (2026-05-31: such a machine threw
+      // ENOENT here, aborting its whole lease-coordinator setup.)
+      const legacy = path.join(path.dirname(canonical), 'signing-private.pem');
+      fs.renameSync(canonical, legacy);
+      expect(fs.existsSync(canonical)).toBe(false);
+      expect(manager.loadSigningKey()).toBe(key);
+    });
+
+    it('still throws when neither the canonical nor the legacy key exists', async () => {
+      await manager.generateIdentity();
+      const canonical = manager.signingKeyPath;
+      // Move it to a name that is neither canonical nor the legacy fallback.
+      fs.renameSync(canonical, canonical + '.gone');
+      expect(() => manager.loadSigningKey()).toThrow();
+    });
+  });
+
+  describe('loadEncryptionKey (legacy fallback)', () => {
+    it('falls back to encryption-private.pem when the canonical encryption-key.pem is absent', async () => {
+      await manager.generateIdentity();
+      const canonical = manager.encryptionKeyPath;
+      const key = fs.readFileSync(canonical, 'utf-8');
+      // The mesh transport loads the encryption key too; a legacy-keyed machine
+      // (2026-05-31: the mini) had only 'encryption-private.pem', so the canonical
+      // read threw ENOENT and the transport setup could not fully initialize.
+      const legacy = path.join(path.dirname(canonical), 'encryption-private.pem');
+      fs.renameSync(canonical, legacy);
+      expect(fs.existsSync(canonical)).toBe(false);
+      expect(manager.loadEncryptionKey()).toBe(key);
+    });
+
+    it('still throws when neither the canonical nor the legacy key exists', async () => {
+      await manager.generateIdentity();
+      const canonical = manager.encryptionKeyPath;
+      fs.renameSync(canonical, canonical + '.gone');
+      expect(() => manager.loadEncryptionKey()).toThrow();
+    });
+  });
+
   describe('loadIdentity', () => {
     it('loads a previously generated identity', async () => {
       const original = await manager.generateIdentity();
@@ -416,6 +461,48 @@ describe('MachineIdentityManager', () => {
 
     it('throws for unknown machine', () => {
       expect(() => manager.updateRole('m_nonexistent', 'awake')).toThrow(/not found/);
+    });
+  });
+
+  describe('registerMachine — sticky revocation (no resurrection across updates)', () => {
+    // 2026-06-07 (topic 21816): a revoked Mac Mini peer came back "active" after
+    // an update because a re-register clobbered status to 'active' via the spread.
+    // A revoked machine must STAY revoked across updates; only an explicit
+    // un-revoke restores it. (mergeRegistry already keeps the merge path sticky;
+    // this guards the direct re-register door.)
+    function peerIdentity(machineId: string, name: string): any {
+      return {
+        machineId,
+        name,
+        platform: 'darwin',
+        signingPublicKey: 'pk',
+        encryptionPublicKey: 'ek',
+        createdAt: new Date().toISOString(),
+        capabilities: ['relay'],
+      };
+    }
+    const MINI = 'm_' + '1'.repeat(32);
+    const FRESH = 'm_' + '2'.repeat(32);
+
+    it('refuses to re-register a revoked machine as active', async () => {
+      await manager.generateIdentity(); // self (awake)
+      manager.registerMachine(peerIdentity(MINI, 'mac-mini'), 'standby');
+      manager.revokeMachine(MINI, 'm_operator', 'stale peer');
+
+      // A post-update re-join attempts to register the same machine again.
+      manager.registerMachine(peerIdentity(MINI, 'mac-mini'), 'standby');
+
+      const entry = manager.loadRegistry().machines[MINI];
+      expect(entry.status).toBe('revoked');   // still revoked — NOT resurrected
+      expect(entry.role).toBe('standby');
+      expect(entry.revokedAt).toBeTruthy();    // revocation metadata preserved
+      expect(entry.revokedBy).toBe('m_operator');
+    });
+
+    it('still registers a brand-new (never-revoked) machine normally', async () => {
+      await manager.generateIdentity();
+      manager.registerMachine(peerIdentity(FRESH, 'fresh-box'), 'standby');
+      expect(manager.loadRegistry().machines[FRESH].status).toBe('active');
     });
   });
 

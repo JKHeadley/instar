@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-25T08:00:58.698Z",
+  "slug": "tone-gate-advisory-migration",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 24,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

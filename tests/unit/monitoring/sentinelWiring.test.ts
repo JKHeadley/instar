@@ -18,6 +18,7 @@ import {
   makeAttentionPoster,
   buildSocketDisconnectDeps,
   buildActiveWorkSilenceDeps,
+  buildContextWedgeDeps,
   OutputActivityTracker,
   looksActivelyWorking,
   type SentinelSessionSurface,
@@ -136,6 +137,101 @@ describe('buildSocketDisconnectDeps — wiring integrity', () => {
   it('listSessionNames maps running sessions to their tmux names', () => {
     const surface = makeSurface({ sessions: [{ tmuxSession: 'a' }, { tmuxSession: 'b' }] });
     const deps = buildSocketDisconnectDeps({ sessions: surface, escalate: async () => {} });
+    expect(deps.listSessionNames!()).toEqual(['a', 'b']);
+  });
+});
+
+describe('buildContextWedgeDeps — wiring integrity + recovery policy', () => {
+  it('all deps are real functions, not null/no-op', () => {
+    const deps = buildContextWedgeDeps({
+      sessions: makeSurface(),
+      escalate: async () => {},
+      autoRecovery: { enabled: false },
+      freshRespawn: async () => true,
+    });
+    expect(typeof deps.getRecentOutput).toBe('function');
+    expect(typeof deps.recoverFn).toBe('function');
+    expect(typeof deps.notifyFn).toBe('function');
+    expect(typeof deps.listSessionNames).toBe('function');
+  });
+
+  it('getRecentOutput delegates to captureOutput and coerces null → empty string', () => {
+    const captureCalls: Call[] = [];
+    const surface = makeSurface({ output: null, captureCalls });
+    const deps = buildContextWedgeDeps({
+      sessions: surface, escalate: async () => {},
+      autoRecovery: { enabled: false }, freshRespawn: async () => true,
+    });
+    expect(deps.getRecentOutput('agent-1')).toBe('');
+    expect(captureCalls.length).toBe(1);
+  });
+
+  it("recoverFn → 'detect-only' when autoRecovery disabled (freshRespawn NOT called)", async () => {
+    let respawnCalls = 0;
+    const deps = buildContextWedgeDeps({
+      sessions: makeSurface(), escalate: async () => {},
+      autoRecovery: { enabled: false },
+      freshRespawn: async () => { respawnCalls++; return true; },
+    });
+    expect(await deps.recoverFn('agent-1')).toBe('detect-only');
+    expect(respawnCalls).toBe(0);
+  });
+
+  it("recoverFn → 'dry-run' when enabled + dryRun (freshRespawn NOT called)", async () => {
+    let respawnCalls = 0;
+    const deps = buildContextWedgeDeps({
+      sessions: makeSurface(), escalate: async () => {},
+      autoRecovery: { enabled: true, dryRun: true },
+      freshRespawn: async () => { respawnCalls++; return true; },
+    });
+    expect(await deps.recoverFn('agent-1')).toBe('dry-run');
+    expect(respawnCalls).toBe(0);
+  });
+
+  it("recoverFn → 'respawned' when enabled + live and freshRespawn succeeds", async () => {
+    const deps = buildContextWedgeDeps({
+      sessions: makeSurface(), escalate: async () => {},
+      autoRecovery: { enabled: true, dryRun: false },
+      freshRespawn: async () => true,
+    });
+    expect(await deps.recoverFn('agent-1')).toBe('respawned');
+  });
+
+  it("recoverFn → 'failed' when freshRespawn returns false", async () => {
+    const deps = buildContextWedgeDeps({
+      sessions: makeSurface(), escalate: async () => {},
+      autoRecovery: { enabled: true, dryRun: false },
+      freshRespawn: async () => false,
+    });
+    expect(await deps.recoverFn('agent-1')).toBe('failed');
+  });
+
+  it("recoverFn → 'failed' when freshRespawn throws (no crash)", async () => {
+    const deps = buildContextWedgeDeps({
+      sessions: makeSurface(), escalate: async () => {},
+      autoRecovery: { enabled: true, dryRun: false },
+      freshRespawn: async () => { throw new Error('boom'); },
+    });
+    expect(await deps.recoverFn('agent-1')).toBe('failed');
+  });
+
+  it('notifyFn delegates the (sessionName, text) pair to escalate', async () => {
+    const calls: Array<{ name: string; text: string }> = [];
+    const deps = buildContextWedgeDeps({
+      sessions: makeSurface(),
+      escalate: async (name, text) => { calls.push({ name, text }); },
+      autoRecovery: { enabled: false }, freshRespawn: async () => true,
+    });
+    await deps.notifyFn('agent-1', 'wedged');
+    expect(calls).toEqual([{ name: 'agent-1', text: 'wedged' }]);
+  });
+
+  it('listSessionNames maps running sessions to tmux names', () => {
+    const surface = makeSurface({ sessions: [{ tmuxSession: 'a' }, { tmuxSession: 'b' }] });
+    const deps = buildContextWedgeDeps({
+      sessions: surface, escalate: async () => {},
+      autoRecovery: { enabled: false }, freshRespawn: async () => true,
+    });
     expect(deps.listSessionNames!()).toEqual(['a', 'b']);
   });
 });
@@ -288,5 +384,65 @@ describe('buildActiveWorkSilenceDeps — wiring integrity', () => {
     });
     await deps.notifyFn('agent-1', 'went quiet');
     expect(calls).toEqual([{ name: 'agent-1', text: 'went quiet' }]);
+  });
+
+  it('notifyFn routes to the stalled session\'s OWN topic when it resolves (not the escalate feed)', async () => {
+    const escalateCalls: Array<{ name: string; text: string }> = [];
+    const delivered: Array<{ topicId: number; text: string }> = [];
+    const surface = makeSurface();
+    const tracker = new OutputActivityTracker(surface);
+    const deps = buildActiveWorkSilenceDeps({
+      tracker, sessions: surface,
+      escalate: async (name, text) => { escalateCalls.push({ name, text }); },
+      getTopicForSession: () => 4242,
+      deliverToTopic: async (topicId, text) => { delivered.push({ topicId, text }); return true; },
+    });
+    await deps.notifyFn('agent-1', 'auto-recovering it now');
+    expect(delivered).toEqual([{ topicId: 4242, text: 'auto-recovering it now' }]);
+    expect(escalateCalls.length).toBe(0); // did NOT fall back to the consolidated feed
+  });
+
+  it('notifyFn falls back to escalate when the topic can\'t be resolved', async () => {
+    const escalateCalls: Array<{ name: string; text: string }> = [];
+    const surface = makeSurface();
+    const tracker = new OutputActivityTracker(surface);
+    const deps = buildActiveWorkSilenceDeps({
+      tracker, sessions: surface,
+      escalate: async (name, text) => { escalateCalls.push({ name, text }); },
+      getTopicForSession: () => null,
+      deliverToTopic: async () => true,
+    });
+    await deps.notifyFn('agent-1', 'went quiet');
+    expect(escalateCalls).toEqual([{ name: 'agent-1', text: 'went quiet' }]);
+  });
+
+  it('notifyFn falls back to escalate when topic delivery fails', async () => {
+    const escalateCalls: Array<{ name: string; text: string }> = [];
+    const surface = makeSurface();
+    const tracker = new OutputActivityTracker(surface);
+    const deps = buildActiveWorkSilenceDeps({
+      tracker, sessions: surface,
+      escalate: async (name, text) => { escalateCalls.push({ name, text }); },
+      getTopicForSession: () => 4242,
+      deliverToTopic: async () => false, // delivery failed
+    });
+    await deps.notifyFn('agent-1', 'went quiet');
+    expect(escalateCalls).toEqual([{ name: 'agent-1', text: 'went quiet' }]);
+  });
+
+  it('recoverFn is passed through when provided, and undefined otherwise (dark by default)', async () => {
+    const surface = makeSurface();
+    const tracker = new OutputActivityTracker(surface);
+    const without = buildActiveWorkSilenceDeps({ tracker, sessions: surface, escalate: async () => {} });
+    expect(without.recoverFn).toBeUndefined();
+
+    const recoverCalls: string[] = [];
+    const withRecover = buildActiveWorkSilenceDeps({
+      tracker, sessions: surface, escalate: async () => {},
+      recoverFn: async (name) => { recoverCalls.push(name); return true; },
+    });
+    expect(typeof withRecover.recoverFn).toBe('function');
+    expect(await withRecover.recoverFn!('agent-1')).toBe(true);
+    expect(recoverCalls).toEqual(['agent-1']);
   });
 });

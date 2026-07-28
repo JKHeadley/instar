@@ -104,4 +104,37 @@ describe('authMiddleware live-token resolution', () => {
     const mw = authMiddleware(() => undefined);
     expect(run(mw, mockReq({ path: '/status' }), mockRes())).toBe(true);
   });
+
+  // Dynamic-MCP operator-approval TAP pages are opened by the operator's browser,
+  // which carries no Bearer token (it has the dashboard PIN). The page route must be
+  // exempt from the bearer gate — the opaque requestId in the URL + the PIN on submit
+  // are the auth. Regression: a live-as-self test found the browser got a 401 here
+  // because the route was behind the bearer middleware (the integration tests bypass
+  // the middleware, so they missed it).
+  describe('dynamic-MCP approval tap-page bearer exemption', () => {
+    const mw = authMiddleware('static-token');
+    it('GET /mcp/approve/<requestId> is exempt (no Bearer → next())', () => {
+      expect(run(mw, mockReq({ path: '/mcp/approve/abc123', method: 'GET' }), mockRes())).toBe(true);
+    });
+    it('POST /mcp/approve/<requestId> is exempt (browser form submit, no Bearer → next(); PIN-gated in handler)', () => {
+      expect(run(mw, mockReq({ path: '/mcp/approve/abc123', method: 'POST' }), mockRes())).toBe(true);
+    });
+    it('the exact agent-only /mcp/approve (no requestId) stays Bearer-gated (401 without a token)', () => {
+      const res = mockRes();
+      expect(run(mw, mockReq({ path: '/mcp/approve', method: 'POST' }), res)).toBe(false);
+      expect(res.statusCode).toBe(401);
+    });
+    it('/mcp/approval-link stays Bearer-gated (agent-only registration; 401 without a token)', () => {
+      const res = mockRes();
+      expect(run(mw, mockReq({ path: '/mcp/approval-link', method: 'POST' }), res)).toBe(false);
+      expect(res.statusCode).toBe(401);
+    });
+    it('the agent data routes /mcp/load|offload|session stay Bearer-gated', () => {
+      for (const p of ['/mcp/load', '/mcp/offload', '/mcp/session/5']) {
+        const res = mockRes();
+        expect(run(mw, mockReq({ path: p, method: 'POST' }), res)).toBe(false);
+        expect(res.statusCode).toBe(401);
+      }
+    });
+  });
 });

@@ -1,0 +1,116 @@
+{
+  "_comment": "Engineering-discovered codex-cli framework issues found while onboarding Codey (codex) onto Instar, May 2026. These are the substantive compat issues found by code-auditing + fixing — the ones the live mentor-tick forensics never sees. Backfilled into the FrameworkIssueLedger via POST /framework-issues/observe so they feed the next-framework onboarding playbook (the framework-limitation + instar-integration-gap buckets generalize). dedupKey is stable so re-running is idempotent.",
+  "framework": "codex-cli",
+  "findings": [
+    {
+      "dedupKey": "codex-jsonlexists-claude-only",
+      "bucket": "instar-integration-gap",
+      "severity": "high",
+      "title": "Thread/TopicResumeMap jsonlExists was Claude-only → get() returned null for ALL codex sessions (no resume)",
+      "evidence": "PR #572; ThreadResumeMap/TopicResumeMap.jsonlExists assumed ~/.claude/projects",
+      "observedVersion": "1.3.121",
+      "fixedInVersion": "1.3.122",
+      "status": "fixed"
+    },
+    {
+      "dedupKey": "codex-watchdog-exec-json-blind",
+      "bucket": "instar-integration-gap",
+      "severity": "high",
+      "title": "SessionWatchdog was claude-PID/pane-only → an 8.5h-hung codex `exec` job went uncaught",
+      "evidence": "PR #574; silence-watchdog gained codex `exec --json` coverage",
+      "observedVersion": "1.3.121",
+      "fixedInVersion": "1.3.122",
+      "status": "fixed"
+    },
+    {
+      "dedupKey": "codex-relay-dup-reply-mcp-retry",
+      "bucket": "instar-integration-gap",
+      "severity": "medium",
+      "title": "Relay duplicate-reply on codex: MCP retries emit a fresh event id per retry → id-dedup misses it",
+      "evidence": "PR #573 content-hash dedup; symptom: 2 distinct-id messages 23s apart",
+      "observedVersion": "1.3.126",
+      "fixedInVersion": "1.3.127",
+      "status": "fixed"
+    },
+    {
+      "dedupKey": "codex-ratelimitsentinel-blind",
+      "bucket": "instar-integration-gap",
+      "severity": "high",
+      "title": "RateLimitSentinel was codex-blind in BOTH detection (claude pane strings) and recovery (claude-only readJsonlBaseline)",
+      "evidence": "PR #33 (codex parity v2); account-wide newest-rollout growth signal",
+      "observedVersion": "1.3.133",
+      "fixedInVersion": "1.3.134",
+      "status": "fixed"
+    },
+    {
+      "dedupKey": "codex-compactionsentinel-blind",
+      "bucket": "instar-integration-gap",
+      "severity": "high",
+      "title": "CompactionSentinel recovery-verification was codex-blind → re-injected recovery xN then false compaction:failed every codex compaction",
+      "evidence": "PR #593; findNewestRolloutSync codex branch in readJsonlBaseline",
+      "observedVersion": "1.3.135",
+      "fixedInVersion": "1.3.136",
+      "status": "fixed"
+    },
+    {
+      "dedupKey": "codex-no-autonomous-loop-driver",
+      "bucket": "framework-limitation",
+      "bucketPrimary": "framework-limitation",
+      "severity": "high",
+      "title": "Codex `exec` runs ONE turn then exits — no native Stop-hook-driven multi-turn loop, so codex can't sustain autonomous multi-turn work",
+      "evidence": "PR #28; autonomous-stop-hook.sh --codex rides the existing codex Stop group (dark)",
+      "observedVersion": "1.3.128",
+      "fixedInVersion": "1.3.129",
+      "status": "fixed"
+    },
+    {
+      "dedupKey": "codex-stophook-arm-trust-gap",
+      "bucket": "instar-integration-gap",
+      "severity": "high",
+      "title": "Codex hook trust-flow does not trust the newly-armed autonomous Stop slot (stop:0:N) → driver registered but unarmed; trusted_hash is opaque",
+      "evidence": "CMT-826; live-verify on Codey showed stop:0:4 not trusted; must-fix BEFORE enabling codexLoopDriver",
+      "observedVersion": "1.3.130",
+      "status": "open"
+    },
+    {
+      "dedupKey": "codex-status-usage-reader",
+      "bucket": "instar-integration-gap",
+      "severity": "medium",
+      "title": "No codex usage observability — needed a /codex/usage reader of the codex rollout rate-limit windows (claude had none equivalent)",
+      "evidence": "directive #4a; GET /codex/usage reads codex session rollout primary/secondary windows",
+      "observedVersion": "1.3.120",
+      "fixedInVersion": "1.3.123",
+      "status": "fixed"
+    },
+    {
+      "dedupKey": "codex-autoswap-spark-on-limit",
+      "bucket": "instar-integration-gap",
+      "severity": "medium",
+      "title": "No model-swap on codex rate-limit exhaustion — auto-swap to a fallback codex model when the secondary window is spent",
+      "evidence": "directive #4b; ships dark, awaiting confirmed GPT-5.3-Codex-Spark model id + live fall-back proof",
+      "observedVersion": "1.3.120",
+      "status": "spec'd"
+    },
+    {
+      "dedupKey": "codex-shipgate-llm-bound-cost",
+      "bucket": "framework-limitation",
+      "bucketPrimary": "framework-limitation",
+      "severity": "medium",
+      "title": "The instar ship-gate is disproportionately costly for codex agents — codex is LLM-bound for every step (no programmatic fast-path), so the gate stalls a loaded box",
+      "evidence": "task #25; codex exec spawns ephemeral per-turn processes that narrate intent with no persistent worker",
+      "observedVersion": "1.3.120",
+      "status": "open"
+    },
+    {
+      "dedupKey": "codex-no-subagent-lifecycle-events",
+      "bucket": "framework-limitation",
+      "bucketPrimary": "framework-limitation",
+      "severity": "low",
+      "title": "Codex emits no SubagentStart/Stop lifecycle events (capability FALSE) → the ReapGuard active-subagent guard is blind for codex",
+      "evidence": "capabilities.ts:12 SubagentLifecycleHooks:FALSE; verified SessionReaper transcript-growth + positive-idle layers (SessionReaper.ts:242,263) are codex-aware and still protect the session, so the guard is redundant",
+      "observedVersion": "1.3.136",
+      "status": "wont-fix",
+      "wontFixReason": "Codex declares no subagent lifecycle events by design; the SessionReaper's codex-aware transcript-growth + positive-idle layers already protect a codex session running a subagent, so the per-subagent guard is redundant, not a wrong-reaping risk."
+    }
+  ]
+}

@@ -92,6 +92,39 @@ describe('RateLimitSentinel', () => {
     expect(sentinel.isRecoveryActive('s1')).toBe(false);
   });
 
+  // REGRESSION (2026-06-06 echo-api-errors incident): the session record's
+  // claudeSessionId pointed at a transcript that did not exist (conversation
+  // UUID rotated on a fresh respawn; the bridge was write-once). The exact-path
+  // lookup returned null on every verify, so recovery could NEVER be observed —
+  // the sentinel ran the full ladder against an actively-answering session and
+  // falsely escalated "no jsonl growth after 6 attempts". A stale uuid must
+  // degrade to the newest-jsonl heuristic (same as the no-uuid case).
+  it('falls back to newest jsonl when the stored claudeSessionId transcript is missing (phantom uuid)', async () => {
+    build({}, { getClaudeSessionId: () => '563a7027-432d-4b46-9706-caf43daa1016' });
+    jsonl.write('live-conversation.jsonl', 100); // the REAL transcript (different uuid)
+    sentinel.report('echo-api-errors', 'watchdog-poll');
+    await vi.advanceTimersByTimeAsync(FIRST_BACKOFF + 100); // nudge fires
+    jsonl.write('live-conversation.jsonl', 900);            // session is alive and answering
+    await vi.advanceTimersByTimeAsync(VERIFY + 500);
+    expect(events.some(e => e.type === 'rate-limit:recovered')).toBe(true);
+    expect(events.some(e => e.type === 'rate-limit:escalated')).toBe(false);
+    expect(sentinel.isRecoveryActive('echo-api-errors')).toBe(false);
+  });
+
+  it('still prefers the exact uuid transcript when it exists — sibling growth alone does not count', async () => {
+    // Both sides of the boundary: with a VALID uuid mapping, growth in a
+    // sibling session's jsonl must NOT be read as this session's recovery.
+    build({ maxAttempts: 2, backoffScheduleMs: [1000, 1000, 1000] },
+          { getClaudeSessionId: () => 'my-uuid' });
+    jsonl.write('my-uuid.jsonl', 100);     // this session's transcript (flat)
+    jsonl.write('sibling.jsonl', 100);
+    sentinel.report('s1', 'watchdog-poll');
+    await vi.advanceTimersByTimeAsync(1000 + 100); // nudge 1
+    jsonl.write('sibling.jsonl', 5000);            // ANOTHER session produces output
+    await vi.advanceTimersByTimeAsync(VERIFY + 500);
+    expect(events.some(e => e.type === 'rate-limit:recovered')).toBe(false);
+  });
+
   // ─── Escalation ───
 
   it('escalates after maxAttempts with no jsonl growth', async () => {
@@ -210,5 +243,47 @@ describe('RateLimitSentinel', () => {
     expect(sentinel.isRecoveryActive('a')).toBe(true);
     expect(sentinel.isRecoveryActive('b')).toBe(true);
     expect(events.filter(e => e.type === 'rate-limit:detected')).toHaveLength(2);
+  });
+
+  // ─── Generic transient-API-error class (the 2026-05-29 generalization) ───
+  describe("errorClass: 'transient-api'", () => {
+    const TRANSIENT_FIRST_BACKOFF = 5_000;
+
+    it('uses the FAST first backoff (5s, not the 30s throttle schedule)', async () => {
+      jsonl.write('foo.jsonl', 100);
+      sentinel.report('s1', 'idle-error', { errorClass: 'transient-api' });
+      await vi.advanceTimersByTimeAsync(TRANSIENT_FIRST_BACKOFF - 500);
+      expect(resumeFn).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000); // crosses 5s → re-engages (throttle would wait 30s)
+      expect(resumeFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends a transient-API-worded notice (not the throttle wording)', async () => {
+      jsonl.write('foo.jsonl', 100);
+      sentinel.report('s1', 'idle-error', { errorClass: 'transient-api' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(notifyFn.mock.calls[0][1]).toMatch(/transient API error/i);
+      expect(notifyFn.mock.calls[0][1]).not.toMatch(/throttle/i);
+    });
+
+    it('rides the full lifecycle: backoff → resume → verify(jsonl growth) → recovered', async () => {
+      jsonl.write('foo.jsonl', 100);
+      sentinel.report('s1', 'idle-error', { errorClass: 'transient-api' });
+      await vi.advanceTimersByTimeAsync(TRANSIENT_FIRST_BACKOFF + 100); // resume fires
+      jsonl.write('foo.jsonl', 5000);                                  // session produced output
+      await vi.advanceTimersByTimeAsync(VERIFY + 100);                 // verify window
+      expect(events.some(e => e.type === 'rate-limit:recovered')).toBe(true);
+      const recoveredNotice = notifyFn.mock.calls.map(c => c[1]).find((t: string) => /back online/i.test(t));
+      expect(recoveredNotice).toMatch(/API error cleared/i);
+    });
+
+    it('records its errorClass + listActive reflects the short schedule', async () => {
+      jsonl.write('foo.jsonl', 100);
+      sentinel.report('s1', 'idle-error', { errorClass: 'transient-api' });
+      await vi.advanceTimersByTimeAsync(0);
+      const active = sentinel.listActive();
+      expect(active[0].errorClass).toBe('transient-api');
+      expect(active[0].nextBackoffMs).toBe(TRANSIENT_FIRST_BACKOFF);
+    });
   });
 });

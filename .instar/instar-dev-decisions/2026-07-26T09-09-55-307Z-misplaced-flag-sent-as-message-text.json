@@ -1,0 +1,20 @@
+{
+  "ts": "2026-07-26T09:09:55.307Z",
+  "slug": "misplaced-flag-sent-as-message-text",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 112,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Not a code regression. The tone-reaction flags shipped with the advisory migration but were documented nowhere agent-facing, while the agent template mandates the relay script and documents only the HTTP metadata shape — so the invocation had to be invented. The parse loop then swallowed a misplaced flag into MSG=$* and sent it as message text, exit 0. Two silent layers: an undocumented capability, and a tool permissive about the only usage an uninstructed caller would try. Detected only because the swallowed flags produced a downstream verdict absurd enough to investigate — and that investigation itself mis-graded a correct check."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

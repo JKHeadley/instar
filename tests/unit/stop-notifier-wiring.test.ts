@@ -36,7 +36,9 @@ describe('notify-on-stop Layer B — wiring integrity', () => {
   it('server.ts constructs a StopNotifier and passes it into AgentServer', () => {
     const src = read('src/commands/server.ts');
     expect(src).toMatch(/new StopNotifier\(/);
-    expect(src).toMatch(/unjustifiedStopGate, stopGateDb, stopNotifier \}/);
+    // stopNotifier is passed into the AgentServer construction (tolerant of
+    // additional trailing fields appended after it, e.g. liveTestGate).
+    expect(src).toMatch(/unjustifiedStopGate, stopGateDb, stopNotifier[,\s}]/);
   });
 
   it('AgentServer accepts stopNotifier and forwards it to the routes ctx', () => {

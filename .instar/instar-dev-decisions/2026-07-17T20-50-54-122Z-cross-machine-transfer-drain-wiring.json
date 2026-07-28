@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-17T20:50:54.122Z",
+  "slug": "cross-machine-transfer-drain-wiring",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 65,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

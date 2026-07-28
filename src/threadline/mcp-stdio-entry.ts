@@ -30,7 +30,7 @@ import { AgentTrustManager } from './AgentTrustManager.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { RegistryRestClient } from './client/RegistryRestClient.js';
 import type { RegistryClient, RelayDiscoverer } from './ThreadlineMCPServer.js';
-import { sendMessageViaHttp, getThreadHistoryViaHttp } from './mcp-http-client.js';
+import { sendMessageViaHttp, getThreadHistoryViaHttp, requestSecretViaHttp } from './mcp-http-client.js';
 import { DEFAULT_RELAY_URL } from './constants.js';
 
 // ── Parse CLI args ───────────────────────────────────────────────────
@@ -168,15 +168,19 @@ async function main(): Promise<void> {
     fs.mkdirSync(threadlineDir, { recursive: true });
   }
 
-  // Read server port and auth token from config
+  // Read server port and auth token. Token: INSTAR_AUTH_TOKEN env first
+  // (survives the secret-externalization refactor that moved authToken out of
+  // config.json into the encrypted store), legacy plaintext-config fallback with
+  // a string-type guard so the { "secret": true } placeholder produced by
+  // SecretMigrator cannot leak through as a bogus Bearer.
   const configPath = path.join(stateDir, 'config.json');
   let serverPort = 4040;
-  let agentToken = '';
+  let agentToken = process.env.INSTAR_AUTH_TOKEN || '';
   if (fs.existsSync(configPath)) {
     try {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
       serverPort = config.port ?? 4040;
-      agentToken = config.authToken ?? '';
+      if (!agentToken && typeof config.authToken === 'string') agentToken = config.authToken;
     } catch {
       // Use defaults
     }
@@ -211,6 +215,9 @@ async function main(): Promise<void> {
       sendMessage: (params) => sendMessageViaHttp(params, serverPort, agentToken),
       getThreadHistory: (threadId, limit, before) =>
         getThreadHistoryViaHttp(threadId, limit, serverPort, agentToken, before),
+      // Sealed-handoff keystone: self-mint over the loopback route (no bearer —
+      // the on-disk authToken is vault-externalized).
+      requestSecret: (params) => requestSecretViaHttp(params, serverPort),
       registry: registryClient,
       relayClient: createHttpRelayDiscoverer(serverPort, agentToken),
     },

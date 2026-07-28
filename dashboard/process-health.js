@@ -116,35 +116,51 @@ export function safeUrl(value) {
 
 // ── Friendly wording (§4.2c) ───────────────────────────────────────────────
 const CATEGORY_WORDS = {
-  concurrency: 'A concurrency issue',
-  'config-parse': 'A config problem',
-  'type-error': 'A type error',
-  'logic-error': 'A logic bug',
-  'test-failure': 'A failing test',
-  'build-failure': 'A build break',
-  'integration-gap': 'An integration gap',
-  regression: 'A regression',
-  'wiring-gap': 'A wiring gap',
-  unknown: 'An issue',
+  concurrency: 'A timing problem (two things ran at once)',
+  'config-parse': 'A settings problem',
+  'type-error': 'A data mix-up (wrong kind of value)',
+  'logic-error': 'A logic mistake',
+  'test-failure': 'A test that failed',
+  'build-failure': 'The build broke',
+  'integration-gap': "Two parts that didn't connect",
+  regression: 'Something that used to work broke',
+  'wiring-gap': "Something that wasn't hooked up",
+  unknown: 'A problem',
 };
 
 export function friendlyCategory(category) {
   const key = typeof category === 'string' ? category : 'unknown';
-  return CATEGORY_WORDS[key] || 'An issue';
+  return CATEGORY_WORDS[key] || 'A problem';
 }
+
+// Short plural nouns for the Detail drawer's per-type counts (plain English, no
+// raw category codes like "config-parse"). Unknown keys fall back to the
+// sanitized raw key (defense-in-depth — these are server-controlled enum values).
+const TYPE_WORDS = {
+  concurrency: 'Timing problems',
+  'config-parse': 'Settings problems',
+  'type-error': 'Data mix-ups',
+  'logic-error': 'Logic mistakes',
+  'test-failure': 'Failing tests',
+  'build-failure': 'Build breaks',
+  'integration-gap': 'Parts that didn’t connect',
+  regression: 'Things that broke again',
+  'wiring-gap': 'Things not hooked up',
+  unknown: 'Other',
+};
 
 // initiativeId → human label. NEVER expose the raw initiativeId (§4.2c). Seeded
 // with the known instar initiatives; unmapped IDs fall back to a generic phrase.
 export const ATTRIBUTION_LABELS = {
-  'failure-learning-loop': 'the failure-learning loop',
-  'process-health-dashboard-tab': 'the process-health tab',
-  'ledger-spine': 'the ledger spine',
-  'threadline-keystone': 'the agent-network keystone',
+  'failure-learning-loop': 'the failure-watching feature',
+  'process-health-dashboard-tab': 'this Process Health page',
+  'ledger-spine': 'the record-keeping feature',
+  'threadline-keystone': 'the agent-to-agent messaging feature',
 };
 
 export function attributionLabel(initiativeId, labelMap = ATTRIBUTION_LABELS) {
   if (typeof initiativeId === 'string' && labelMap[initiativeId]) return labelMap[initiativeId];
-  return 'a tracked feature';
+  return 'a feature we were working on';
 }
 
 export function relativeTime(iso, now = Date.now()) {
@@ -188,16 +204,21 @@ export function renderHeadline(doc, target, { failures, stale, staleAgeMin }) {
   target.replaceChildren();
   if (stale) {
     target.appendChild(
-      el(doc, 'div', 'ph-headline', `Connection paused — showing the last view${staleAgeMin != null ? ` from ${staleAgeMin}m ago` : ''}`),
+      el(doc, 'div', 'ph-headline', `Can't refresh right now — showing the last update${staleAgeMin != null ? ` from ${staleAgeMin} min ago` : ''}`),
     );
-    target.appendChild(el(doc, 'div', 'ph-subline', "Couldn't refresh just now — showing the last good view. Will retry."));
+    target.appendChild(el(doc, 'div', 'ph-subline', "We'll keep trying — nothing is lost."));
     return;
   }
   const list = Array.isArray(failures) ? failures : [];
   const n = list.length;
   const open = list.filter((f) => f && f.status !== 'resolved' && f.status !== 'closed').length;
-  target.appendChild(el(doc, 'div', 'ph-headline', `Watching — ${n} issue${n === 1 ? '' : 's'} recorded so far`));
-  const subline = n === 0 ? 'Nothing recorded yet — capture-only mode' : open === 0 ? 'all linked to a known cause · capture-only mode' : `${open} still being traced · capture-only mode`;
+  const headline = n === 0 ? 'Keeping an eye out — all quiet so far' : `Keeping an eye out — ${n} thing${n === 1 ? '' : 's'} noticed so far`;
+  target.appendChild(el(doc, 'div', 'ph-headline', headline));
+  const subline = n === 0
+    ? "Nothing has come up yet. We're just quietly watching — no alerts."
+    : open === 0
+      ? "We know what caused each one. Just quietly watching — no alerts yet."
+      : `Still looking into ${open} of them. Just quietly watching — no alerts yet.`;
   target.appendChild(el(doc, 'div', 'ph-subline', subline));
 }
 
@@ -214,9 +235,9 @@ export function renderDisabled(doc, els) {
     det.setAttribute('class', 'ph-operator');
     const sum = doc.createElement('summary');
     sum.setAttribute('class', 'ph-operator-summary');
-    sum.textContent = 'for operators';
+    sum.textContent = 'For whoever set this up';
     det.appendChild(sum);
-    det.appendChild(el(doc, 'p', 'ph-operator-hint', 'An operator can enable it by turning the failure-learning monitor on in the agent settings.'));
+    det.appendChild(el(doc, 'p', 'ph-operator-hint', 'You can switch it on in this agent’s settings.'));
     els.headline.appendChild(det);
   }
   for (const k of ['patterns', 'captured', 'maturation', 'detail']) {
@@ -225,38 +246,139 @@ export function renderDisabled(doc, els) {
   if (els.stamp) els.stamp.textContent = '';
 }
 
-/** Patterns cards (§4.2b — awareness-only, NO action authority). */
+/** Insight lifecycle wording — informational only, no action-implying language. */
+const INSIGHT_STATUS_WORDS = {
+  discovered: 'Just noticed',
+  'acted-on': 'Being looked into',
+  verified: 'Confirmed no longer happening',
+  reopened: 'Came back after the previous attempt',
+};
+function friendlyInsightStatus(status) {
+  return INSIGHT_STATUS_WORDS[status] || 'Not set';
+}
+
+/**
+ * Patterns cards (§4.2b — awareness-only, NO action authority). Each card is
+ * an expandable <details> element: the headline summary is visible by default;
+ * the recommendation, evidence breakdown, and lifecycle are revealed on tap.
+ * The renderer-owned "verify before acting" framing stays on the summary so
+ * the no-action-authority signal is never hidden behind a tap.
+ */
 export function renderPatterns(doc, target, insights) {
   if (!target) return;
   target.replaceChildren();
   const list = Array.isArray(insights) ? insights : [];
   if (list.length === 0) {
     target.appendChild(
-      el(doc, 'p', 'ph-empty', 'Nothing flagged yet. The monitor needs to see a wider variety of issues before it surfaces a pattern — that’s expected this early.'),
+      el(doc, 'p', 'ph-empty', 'Nothing to flag yet. We need to see a few more different problems before a real pattern shows up — totally normal this early.'),
     );
     return;
   }
   for (const ins of list) {
-    const card = el(doc, 'div', 'ph-card');
-    card.appendChild(el(doc, 'div', 'ph-card-summary', sanitizeForDisplay(ins && ins.summary, 'summary')));
-    // Renderer-owned framing line (static literal — NOT a data-restateable prefix).
-    card.appendChild(el(doc, 'div', 'ph-card-frame', 'A pattern the monitor noticed — verify before acting.'));
-    if (ins && ins.recommendation) {
-      card.appendChild(el(doc, 'div', 'ph-card-rec', sanitizeForDisplay(ins.recommendation, 'recommendation')));
-    }
+    const card = doc.createElement('details');
+    card.setAttribute('class', 'ph-item ph-card');
+    const sum = doc.createElement('summary');
+    sum.setAttribute('class', 'ph-item-summary');
+    sum.appendChild(statusDot(doc, ins && ins.status));
+    // Just the pattern headline — the section title + subtitle above already
+    // establish "this is a kind of problem that has repeated", so a per-card
+    // restatement would be the third echo of the same idea. The "informational
+    // only, not a prompt to act" signal is structural now (the rendered card
+    // has nothing actionable on it), not chrome.
+    const text = el(doc, 'div', 'ph-item-text');
+    text.appendChild(el(doc, 'div', 'ph-card-summary', sanitizeForDisplay(ins && ins.summary, 'summary')));
+    sum.appendChild(text);
+    card.appendChild(sum);
+    // Body: same fixed label vocabulary as captured items, in the same order.
+    // Status · Times seen · First noticed. (Where/Cause don't apply to a class.)
+    // The recommendation field is intentionally omitted: this tab informs,
+    // doesn't direct — actionable insight is the deferred §10 surface.
+    const body = el(doc, 'div', 'ph-item-body');
+    body.appendChild(labeledRow(doc, 'Status', friendlyInsightStatus(ins && ins.status)));
     const ds = ins && Number.isFinite(ins.distinctSessions) ? ins.distinctSessions : 0;
-    card.appendChild(el(doc, 'div', 'ph-card-evidence', `Seen across ${ds} change${ds === 1 ? '' : 's'}.`));
+    const dc = ins && Number.isFinite(ins.distinctCauseCommits) ? ins.distinctCauseCommits : 0;
+    const timesSeen = dc > 0
+      ? `Across ${ds} different change${ds === 1 ? '' : 's'} (from ${dc} separate fix${dc === 1 ? '' : 'es'})`
+      : `Across ${ds} different change${ds === 1 ? '' : 's'}`;
+    body.appendChild(labeledRow(doc, 'Times seen', timesSeen));
+    if (ins && ins.discoveredAt) {
+      body.appendChild(labeledRow(doc, 'First noticed', relativeTime(ins.discoveredAt)));
+    }
+    card.appendChild(body);
     target.appendChild(card);
   }
 }
 
-/** What's been captured (§4.2c — operator-safe subset only, sentences not rows). */
+/**
+ * Friendly status / cause-confidence wording for the expandable body (§4.2c).
+ * Plain ELI16, no Instar-internal jargon. Unknown values fall back to a generic
+ * phrase — the body never shows raw status/attribution codes.
+ */
+// Terser status values — these pair with a bold "Status:" label in the body
+// (so the value carries the state, the label carries the noun).
+const STATUS_WORDS = {
+  open: 'Still looking into this',
+  attributed: 'We know what caused it',
+  verified: 'Confirmed worked out',
+  resolved: 'Worked out',
+  closed: 'Closed',
+};
+function friendlyStatus(status) {
+  return STATUS_WORDS[status] || 'Not set';
+}
+
+const CAUSE_CONFIDENCE_WORDS = {
+  automatic: 'Auto-spotted from the fix commit — we’re confident',
+  'one-tap': 'Tagged by hand by whoever found it',
+  inferred: 'Best guess from the surrounding context',
+};
+function friendlyCauseConfidence(attribution) {
+  return CAUSE_CONFIDENCE_WORDS[attribution] || 'Not recorded';
+}
+
+/**
+ * Map an upstream status (failure or insight) to a status-dot CSS class.
+ * The dot is a scan-aid only — colors are calm (amber/blue/green/gray),
+ * never alarm reds.
+ */
+export function statusDotClass(status) {
+  switch (status) {
+    case 'open': case 'reopened': case 'discovered': return 'status-open';
+    case 'attributed': case 'acted-on': return 'status-attributed';
+    case 'verified': case 'resolved': return 'status-verified';
+    case 'closed': return 'status-closed';
+    default: return 'status-closed';
+  }
+}
+
+/**
+ * Build a labeled-row inside the expanded body: `<bold-label>:<value>`. Keeps
+ * the structure scannable without paragraph-walls. Both halves are textContent
+ * (the safety contract is unaffected).
+ */
+function labeledRow(doc, label, value) {
+  const row = el(doc, 'div', 'ph-item-row');
+  row.appendChild(el(doc, 'span', 'ph-label', `${label}:`));
+  row.appendChild(doc.createTextNode(' '));
+  row.appendChild(el(doc, 'span', 'ph-value', value));
+  return row;
+}
+
+/** Status-dot span (always at the left edge of an item summary; color-coded by status). */
+function statusDot(doc, status) {
+  const dot = doc.createElement('span');
+  dot.setAttribute('class', `ph-status-dot ${statusDotClass(status)}`);
+  dot.setAttribute('aria-hidden', 'true');
+  return dot;
+}
+
+/** What's been captured (§4.2c — operator-safe subset only, expandable for depth on demand). */
 export function renderCaptured(doc, target, failures, labelMap = ATTRIBUTION_LABELS, now = Date.now()) {
   if (!target) return;
   target.replaceChildren();
   const list = Array.isArray(failures) ? failures.slice(0, 10) : [];
   if (list.length === 0) {
-    target.appendChild(el(doc, 'p', 'ph-empty', 'No issues recorded yet — that just means nothing has come through since this was turned on.'));
+    target.appendChild(el(doc, 'p', 'ph-empty', 'Nothing yet — that just means nothing has come up since this was switched on.'));
     return;
   }
   for (const f of list) {
@@ -265,22 +387,45 @@ export function renderCaptured(doc, target, failures, labelMap = ATTRIBUTION_LAB
     const summary = sanitizeForDisplay(f.summary, 'summary');
     const label = attributionLabel(f.initiativeId, labelMap); // NEVER raw initiativeId
     const when = relativeTime(f.detectedAt, now);
-    // ONE plain-English sentence. Separator + wording are renderer-owned literals.
-    const text = `${cat}: ${summary}${CHROME.sep}attributed to ${label}${CHROME.sep}${when}.`;
-    const row = el(doc, 'p', 'ph-record', text);
-    if (isMixedScript(f.summary)) row.setAttribute('class', 'ph-record ph-record-inert');
-    target.appendChild(row);
+    // The collapsed summary line — one plain-English sentence, as before.
+    const summaryText = `${cat}: ${summary}${CHROME.sep}came up while building ${label}${CHROME.sep}${when}.`;
+    const item = doc.createElement('details');
+    item.setAttribute('class', isMixedScript(f.summary) ? 'ph-item ph-item-inert' : 'ph-item');
+    const sum = doc.createElement('summary');
+    sum.setAttribute('class', 'ph-item-summary');
+    sum.appendChild(statusDot(doc, f.status));
+    sum.appendChild(el(doc, 'div', 'ph-item-text', summaryText));
+    item.appendChild(sum);
+    // Expanded body: a fixed-shape fact sheet. Same labels in the same order
+    // are used by patterns (§4.2b) where applicable — predictable scanning.
+    // Order: Status · Where · Times seen · First noticed · Cause.
+    const body = el(doc, 'div', 'ph-item-body');
+    body.appendChild(labeledRow(doc, 'Status', friendlyStatus(f.status)));
+    if (f.detail && typeof f.detail.redacted === 'string' && f.detail.redacted.trim()) {
+      body.appendChild(labeledRow(doc, 'Where', sanitizeForDisplay(f.detail.redacted, 'detail')));
+    }
+    const occ = Number.isFinite(f.occurrenceCount) ? f.occurrenceCount : 1;
+    body.appendChild(labeledRow(doc, 'Times seen', occ > 1 ? `${occ} times so far` : 'Just once'));
+    body.appendChild(labeledRow(doc, 'First noticed', relativeTime(f.detectedAt, now)));
+    body.appendChild(labeledRow(doc, 'Cause', friendlyCauseConfidence(f.attribution)));
+    item.appendChild(body);
+    target.appendChild(item);
   }
 }
 
 /** Maturation track (§4.2d). 4th stage is permanently-future (no per-agent flag). */
 const STAGES = [
-  { key: 'dark', label: 'Dark' },
-  { key: 'capture-only', label: 'Capture-only' },
-  { key: 'insight-push', label: 'Insight push' },
-  { key: 'default-on', label: 'Default for all agents' },
+  { key: 'dark', label: 'Not switched on yet', description: 'Not switched on for this agent yet — nothing is being recorded.' },
+  { key: 'capture-only', label: 'Quietly watching', description: 'Quietly recording what comes up. No alerts go anywhere — we’re just building up evidence to learn from.' },
+  { key: 'insight-push', label: 'Watching + flagging patterns to you', description: 'Same quiet recording, plus a heads-up when the same kind of problem keeps showing up. Only fires on real patterns, never on one-offs.' },
+  { key: 'default-on', label: 'On for everyone by default', description: 'Switched on for every agent by default — the fully-rolled-out end state.' },
 ];
 
+/**
+ * Maturation track (§4.2d). Each stage is an expandable <details> row so the
+ * label stays glanceable but the meaning is one tap away. The 4th stage is
+ * permanently-future (no per-agent flag).
+ */
 export function renderMaturation(doc, target, rollout) {
   if (!target) return;
   target.replaceChildren();
@@ -290,12 +435,17 @@ export function renderMaturation(doc, target, rollout) {
     const s = STAGES[i];
     const isHere = i === currentIdx;
     const done = currentIdx >= 0 && i < currentIdx;
-    const row = el(doc, 'div', isHere ? 'ph-stage ph-stage-here' : 'ph-stage');
+    const row = doc.createElement('details');
+    row.setAttribute('class', isHere ? 'ph-stage ph-stage-here' : 'ph-stage');
+    const sum = doc.createElement('summary');
+    sum.setAttribute('class', 'ph-stage-summary');
     // glyph + label + marker are ALL renderer-owned static literals
-    row.appendChild(el(doc, 'span', 'ph-stage-glyph', done || isHere ? CHROME.stageDone : CHROME.stageFuture));
-    row.appendChild(el(doc, 'span', 'ph-stage-label', s.label));
-    if (isHere) row.appendChild(el(doc, 'span', 'ph-stage-marker', CHROME.hereMarker));
-    else if (done) row.appendChild(el(doc, 'span', 'ph-stage-note', 'done'));
+    sum.appendChild(el(doc, 'span', 'ph-stage-glyph', done || isHere ? CHROME.stageDone : CHROME.stageFuture));
+    sum.appendChild(el(doc, 'span', 'ph-stage-label', s.label));
+    if (isHere) sum.appendChild(el(doc, 'span', 'ph-stage-marker', CHROME.hereMarker));
+    else if (done) sum.appendChild(el(doc, 'span', 'ph-stage-note', 'done'));
+    row.appendChild(sum);
+    row.appendChild(el(doc, 'div', 'ph-stage-body', s.description));
     target.appendChild(row);
   }
 }
@@ -309,16 +459,17 @@ export function renderDetail(doc, target, analysis) {
     return;
   }
   const add = (label, val) => target.appendChild(el(doc, 'div', 'ph-detail-row', `${label}: ${val}`));
-  add('Total recorded', String(analysis.total ?? 0));
-  add('Linked to a known cause', String(analysis.attributed ?? 0));
-  add('Not yet linked to a feature', String(analysis.noFeatureLink ?? 0));
+  add('Total noticed', String(analysis.total ?? 0));
+  add('Ones we know the cause of', String(analysis.attributed ?? 0));
+  add('Not yet tied to a feature', String(analysis.noFeatureLink ?? 0));
   const byCat = analysis.byCategory && typeof analysis.byCategory === 'object' ? analysis.byCategory : {};
   for (const [k, v] of Object.entries(byCat)) {
-    add(`Category — ${sanitizeForDisplay(k, 'label')}`, String(v));
+    const typeLabel = TYPE_WORDS[k] || sanitizeForDisplay(k, 'label');
+    add(typeLabel, String(v));
   }
   const unknown = analysis.unknownToolchainByAuthor && typeof analysis.unknownToolchainByAuthor === 'object' ? analysis.unknownToolchainByAuthor : {};
   const unknownTotal = Object.values(unknown).reduce((a, b) => a + (Number(b) || 0), 0);
-  add('Records with an unknown toolchain', String(unknownTotal));
+  add("Ones where we're not sure which tools were involved", String(unknownTotal));
 }
 
 // ── Polling controller (§4.3 — visibility-gated, abort-safe, coordinated, diff-aware) ──

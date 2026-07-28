@@ -1,0 +1,20 @@
+{
+  "ts": "2026-07-15T17:21:46.346Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 7,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Not a self-triggered action. The diff only adds { formatMode: 'html' } to an EXISTING sendToTopic call in routeToAgentHealthLane — a formatting flag on an already-decided, externally-driven attention-item post. No controller, loop, restart, swap, respawn, or retry is introduced or modified; the send already existed and fires once per attention-raise from an external caller, not a self-perpetuating loop."
+  },
+  "verdict": "blocked"
+}
