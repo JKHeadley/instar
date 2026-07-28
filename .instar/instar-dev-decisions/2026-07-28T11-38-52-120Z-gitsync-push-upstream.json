@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-28T11:38:52.120Z",
+  "slug": "gitsync-push-upstream",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 18,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

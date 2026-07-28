@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-03T21:36:29.931Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 611,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}

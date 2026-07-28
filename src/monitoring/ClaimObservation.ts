@@ -86,6 +86,39 @@ const PROTECTED: Record<string, RegExp> = {
   injection: /(?:ignore previous|ignore above|system prompt|developer message|<system|do not extract)/i,
 };
 
+/**
+ * Why a protected-cue span was booked as an extraction gap (spec §2.1).
+ * `no-overlapping-claim` — the model extracted nothing over this span.
+ * `unendorsed-overlap`   — a claim DID overlap, but only quoted/hedged/non-endorsed, so the
+ *                          deterministic lane still books a gap. Distinguishing this from
+ *                          `no-overlapping-claim` is the whole point of the reason field: the
+ *                          extractor is being charged for a span it classified correctly.
+ * `invalid-envelope`     — the model envelope failed validation, so extraction is unknowable.
+ */
+export type ExtractionGapReason = 'no-overlapping-claim' | 'unendorsed-overlap' | 'invalid-envelope';
+
+/** Deterministic non-LLM recall floor (spec §2.1). Never a factual claim, never a verdict. */
+export interface ExtractionGapSignal {
+  kind: string;
+  minimumCriticality: ClaimCriticality;
+  reason: ExtractionGapReason;
+  span: { startByte: number; endByte: number };
+}
+
+/**
+ * Spec §2.1: `high` for protected approval/capacity/completion/credential cues, and
+ * `irreversible-precondition` when a consequential-action premise may be present.
+ * Anything else falls to the §2.3 `medium` default. Uncertainty rounds UP, never down (§2.3).
+ */
+const CUE_MINIMUM_CRITICALITY: Record<string, ClaimCriticality> = {
+  capacity: 'high',
+  completion: 'high',
+  attribution: 'high',
+  injection: 'high',
+  action: 'irreversible-precondition',
+  state: 'medium',
+};
+
 export function buildClaimCandidates(message: string): PreparedClaimObservation['candidates'] {
   const out: PreparedClaimObservation['candidates'] = [];
   const bytes = Buffer.from(message, 'utf8');
@@ -312,19 +345,46 @@ function compare(actual: number | string, expected: number | string, comparator:
   }
 }
 
-export function protectedCueGaps(message: string, claims: ExtractedClaim[]): string[] {
-  const ranges = claims.filter((claim) => claim.endorsed && !claim.quoted && !claim.hedged)
-    .map((claim) => [claim.sourceStartByte, claim.sourceEndByte] as const);
+/**
+ * Spec §2.1: emit one `ExtractionGapSignal` per protected-cue SPAN with no endorsed overlap —
+ * "every protected-cue span is placed in a deterministic shadow stratum". This is the coarse
+ * non-LLM recall floor: a high-criticality observation, NOT a normalized factual claim, so it
+ * can neither support nor refute anything and holds no blocking authority.
+ *
+ * Scans every candidate for every cue family. The prior implementation stopped at the first
+ * candidate matching each family and collapsed the result to a bare family name, which both
+ * under-counted (a later unmatched span was never examined) and erased the reason a span was
+ * booked — making the resulting gap totals uninterpretable.
+ */
+export function extractionGapSignals(
+  message: string,
+  claims: ExtractedClaim[],
+  opts: { envelopeValid?: boolean } = {},
+): ExtractionGapSignal[] {
   const candidates = buildClaimCandidates(message);
-  const gaps: string[] = [];
+  const signals: ExtractionGapSignal[] = [];
   for (const [name, pattern] of Object.entries(PROTECTED)) {
+    const minimumCriticality = CUE_MINIMUM_CRITICALITY[name] ?? 'medium';
     for (const candidate of candidates) {
       if (!pattern.test(candidate.text)) continue;
-      if (!ranges.some(([start, end]) => start < candidate.sourceEndByte && end > candidate.sourceStartByte)) gaps.push(name);
-      break;
+      const span = { startByte: candidate.sourceStartByte, endByte: candidate.sourceEndByte };
+      if (opts.envelopeValid === false) {
+        signals.push({ kind: name, minimumCriticality, reason: 'invalid-envelope', span });
+        continue;
+      }
+      const overlapping = claims.filter((claim) => claim.sourceStartByte < span.endByte
+        && claim.sourceEndByte > span.startByte);
+      if (overlapping.some((claim) => claim.endorsed && !claim.quoted && !claim.hedged)) continue;
+      signals.push({ kind: name, minimumCriticality,
+        reason: overlapping.length > 0 ? 'unendorsed-overlap' : 'no-overlapping-claim', span });
     }
   }
-  return [...new Set(gaps)];
+  return signals;
+}
+
+/** Deduped cue-family names, retained for existing counters and the audit row's `gapKinds`. */
+export function protectedCueGaps(message: string, claims: ExtractedClaim[]): string[] {
+  return [...new Set(extractionGapSignals(message, claims).map((signal) => signal.kind))];
 }
 
 export function newMessageAttemptId(): string { return randomUUID(); }
@@ -424,13 +484,58 @@ export class ClaimObservationRecorder {
     } catch { /* @silent-fallback-ok: failed settlement remains pending and reports false */ return false; }
   }
   recordEvent(input: Record<string, unknown>): boolean {
-    const allowed: Record<string, unknown> = { schemaVersion: 1, eventUuid: randomUUID() };
+    // schemaVersion 2 == this row may carry gapSignals. Rows written before the ExtractionGapSignal
+    // conformance fix are schemaVersion 1 and carry only a bare gapKinds list, so gap-rate figures
+    // must NOT be compared across the boundary: v1 rows undercount (the old scan stopped at the
+    // first matching candidate per family) and record no reason. Split on this, not on key-absence.
+    const allowed: Record<string, unknown> = { schemaVersion: 2, eventUuid: randomUUID() };
     for (const key of ['ts', 'evaluated', 'flagged', 'dryRun', 'event', 'verdict', 'actionKind', 'hadToolCalls', 'reason'] as const) {
       const value = input[key];
       if (typeof value === 'string') allowed[key] = value.slice(0, 128);
       else if (typeof value === 'boolean') allowed[key] = value;
     }
     if (Array.isArray(input.gapKinds)) allowed.gapKinds = input.gapKinds.filter((v): v is string => typeof v === 'string').slice(0, 8);
+    // Structural only: cue family, reason enum, criticality enum, and integer byte offsets.
+    // No message text, and these rows carry no messagePseudonym/topicPseudonym/claimId, so the
+    // offsets have no join key back to a message or topic.
+    //
+    // The cap is PER FAMILY, not a flat head-slice. extractionGapSignals emits family-outer
+    // (capacity, completion, attribution, action, state, injection), so a flat slice would drop
+    // whole trailing families — completion first, which is the family the gap-reason statistic is
+    // actually about, and injection (the adversarial family) entirely. That would bias the sample
+    // in the exact direction that makes it useless, and do it invisibly.
+    if (Array.isArray(input.gapSignals)) {
+      const perFamily = new Map<string, Array<Record<string, unknown>>>();
+      let dropped = false;
+      for (const raw of input.gapSignals) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+        const signal = raw as Record<string, unknown>;
+        const span = (signal.span && typeof signal.span === 'object' ? signal.span : {}) as Record<string, unknown>;
+        const offset = (value: unknown): number => (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0);
+        const kind = typeof signal.kind === 'string' ? signal.kind.slice(0, 32) : 'unknown';
+        const bucket = perFamily.get(kind) ?? [];
+        if (bucket.length >= 8) { dropped = true; continue; }
+        bucket.push({
+          kind,
+          reason: typeof signal.reason === 'string' ? signal.reason.slice(0, 32) : 'unknown',
+          minimumCriticality: CRITICALITIES.has(signal.minimumCriticality as ClaimCriticality)
+            ? signal.minimumCriticality as ClaimCriticality : 'medium',
+          span: { startByte: offset(span.startByte), endByte: offset(span.endByte) },
+        });
+        perFamily.set(kind, bucket);
+      }
+      // The per-family cap alone bounds the array at 8 x DISTINCT KINDS, and `kind` is
+      // caller-supplied. The in-tree producer only ever emits the 6 PROTECTED families (<=48), but
+      // recordEvent is an untrusted-input boundary, and appendBounded rotates-then-writes rather
+      // than rejecting an oversized row — so an unbounded row would cost audit history, not just
+      // space. Keep an unconditional ceiling too, and mark it when it bites.
+      const flattened = [...perFamily.values()].flat();
+      const signals = flattened.slice(0, 48);
+      if (signals.length < flattened.length) dropped = true;
+      if (signals.length > 0) allowed.gapSignals = signals;
+      // Loss is never silent: an analyst must be able to see that a cap trimmed a row.
+      if (dropped) allowed.gapSignalsTruncated = true;
+    }
     return this.appendBounded(this.auditPath, allowed, this.opts.maxAuditBytes ?? 50 * 1024 * 1024, true);
   }
   readPoolAggregates(limit = 100): Array<Record<string, unknown>> {

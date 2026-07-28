@@ -8,7 +8,7 @@ import type { EvidenceActionKind, TurnEvidence } from './TurnEvidence.js';
 import { ClaimClauseArbiter, type ClaimClauseArbitration } from './ClaimClauseArbiter.js';
 import { ClaimObservationAdmissionQueue } from './ClaimObservationAdmissionQueue.js';
 import {
-  applyClaimCriticalityFloor, assessClaim, prepareClaimObservation, protectedCueGaps,
+  applyClaimCriticalityFloor, assessClaim, extractionGapSignals, prepareClaimObservation,
   ClaimObservationRecorder, newMessageAttemptId, type ClaimAssessment, type ClaimCriticality,
 } from './ClaimObservation.js';
 
@@ -172,7 +172,9 @@ export class CompletionClaimVerifier {
       if (arbitration.authoritative) this.bump('classifiedTurns');
       if (this.opts.generalObservation) {
         const claims = arbitration.general?.claims ?? [];
-        const gaps = protectedCueGaps(prepared.message, claims);
+        const gapSignals = extractionGapSignals(prepared.message, claims,
+          { envelopeValid: !!arbitration.general });
+        const gaps = [...new Set(gapSignals.map((signal) => signal.kind))];
         for (const _claim of claims) this.bump('generalClaims');
         for (const _gap of gaps) this.bump('protectedCueGaps');
         if (arbitration.general?.saturated || gaps.length > 0) this.bump('coverageIncompleteTurns');
@@ -189,7 +191,7 @@ export class CompletionClaimVerifier {
             outputTokens: arbitration.generalModel?.outputTokens })) this.bump('corpusDrops');
         }
         if (gaps.length > 0) this.appendAudit({ ts: new Date().toISOString(), evaluated: true,
-          event: 'protected-cue-unextracted', gapKinds: gaps, dryRun: this.opts.dryRun });
+          event: 'protected-cue-unextracted', gapKinds: gaps, gapSignals, dryRun: this.opts.dryRun });
       }
       if (!arbitration.authoritative) {
         this.bump('invalidOutputTurns');

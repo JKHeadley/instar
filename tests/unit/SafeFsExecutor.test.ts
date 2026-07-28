@@ -1,5 +1,5 @@
 // safe-git-allow: this is the test file for SafeFsExecutor; direct fs usage is for fixture setup only.
-import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -330,5 +330,48 @@ describe('safeRm/safeRmSync — transient-error retry defaults (CI tmpdir-cleanu
     await SafeFsExecutor.safeRm(file, { force: true, operation: 'nonrecursive-test' });
     expect(fs.existsSync(file)).toBe(false);
     fs.rmdirSync(dir);
+  });
+});
+
+/**
+ * The rm retry budget had NO coverage before 2026-07-28, which is how a CI
+ * failure on main (`ENOTEMPTY` tearing down a temp dir holding a live git repo)
+ * reached a state where the retries were in force and simply too small.
+ *
+ * These assert the two BEHAVIOURS, deliberately not the numbers — pinning the
+ * constant would just restate it, and the budget is expected to be tuned.
+ */
+describe('SafeFsExecutor — rm retry budget', () => {
+  let sandbox: string;
+  beforeEach(() => { sandbox = mkSandbox('sfe-retry-'); });
+  afterEach(() => { rmrf(sandbox); });
+
+  it('applies a retry budget when recursive+force and the caller gave none', () => {
+    const target = path.join(sandbox, 'doomed');
+    fs.mkdirSync(target);
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation(() => undefined);
+    try {
+      SafeFsExecutor.safeRmSync(target, { recursive: true, force: true, operation: 'rm-retry-test' });
+      const opts = spy.mock.calls[0]?.[1] as fs.RmOptions;
+      expect(opts?.maxRetries).toBeGreaterThan(0);
+      expect(opts?.retryDelay).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('never overrides a maxRetries the caller chose explicitly', () => {
+    const target = path.join(sandbox, 'doomed2');
+    fs.mkdirSync(target);
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation(() => undefined);
+    try {
+      SafeFsExecutor.safeRmSync(target, {
+        recursive: true, force: true, maxRetries: 1, operation: 'rm-retry-explicit',
+      });
+      const opts = spy.mock.calls[0]?.[1] as fs.RmOptions;
+      expect(opts?.maxRetries).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

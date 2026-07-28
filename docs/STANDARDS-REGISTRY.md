@@ -618,6 +618,12 @@ that reset-safe posture must be explicit and tested rather than assumed.
 **Traces to the goal.** A self-evolving agent that cannot account for what its own machinery spends cannot be trusted with a budget; observable cost is part of Observable Intelligence.
 **Applied through.** `scripts/lint-llm-attribution.js` (lint chain, empty-baseline allowlist), the provider usage-contract test (`tests/unit/intelligence-provider-usage-contract.test.ts`), and the allowlist ratchet test (`tests/unit/llm-attribution-ratchet.test.ts`).
 
+### User-Facing Fixes Ship Live
+**Rule.** A change whose purpose is to fix what the user experiences ships live fleet-wide by default. The dark/developmentAgent gate is for new capabilities whose failure could break something — never for UX bug fixes, whose worst case is the bug persisting.
+**In practice.** Before reaching for the dark gate, ask: is this a new capability, or a correction to a surface the user already sees? A correction shipped dark is invisible on exactly the agents whose behavior was reported — the reporter concludes nothing improved while the system believes it's fixed. If the fix's judgment genuinely needs validating, bake the *judgment* in production (fail-open, audit logs, per-agent off-switch) — not the *visibility*.
+**Earned from.** The update-noise fixes (#698/#755, 2026-06-04): the relevance gate was drafted dark-on-fleet, so the user whose screenshots of noisy fleet agents motivated the fix would have seen zero improvement on the agents he was watching. Caught pre-merge, by him.
+**Traces to the goal.** A fix the user can't see doesn't close their loop — coherence includes the user's experience of the system actually changing when they ask it to.
+
 ---
 
 ## Interaction — the agent's surface to the user and the world
