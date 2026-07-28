@@ -150,6 +150,51 @@ describe('GitSyncManager', () => {
       expect(pushCalls.length).toBe(1);
     });
 
+    // A branch with NO upstream cannot be pushed by a bare `git push`. That
+    // failure returns the SAME `false` this method returns for "nothing to
+    // commit", so a dead sync is indistinguishable from an idle one.
+    it('does NOT add an explicit upstream when the bare push succeeds', () => {
+      const config = createConfig();
+      const manager = new GitSyncManager(config);
+      vi.mocked(execFileSync)
+        .mockReturnValueOnce('')                  // git status --porcelain -z
+        .mockReturnValueOnce('')                  // git add
+        .mockReturnValueOnce('some-file.json\n')  // git diff --cached --name-only
+        .mockReturnValueOnce('')                  // git commit
+        .mockReturnValueOnce('');                 // git push (succeeds)
+
+      manager.commitAndPush('test commit');
+
+      const upstreamPushes = vi.mocked(execFileSync).mock.calls.filter(
+        (call) => call[0] === 'git' && (call[1] as string[]).join(' ').includes('push -u origin'),
+      );
+      expect(upstreamPushes.length).toBe(0);
+    });
+
+    it('retries with an explicit upstream when the bare push fails', () => {
+      const config = createConfig();
+      const manager = new GitSyncManager(config);
+      vi.mocked(execFileSync)
+        .mockReturnValueOnce('')                  // git status --porcelain -z
+        .mockReturnValueOnce('')                  // git add
+        .mockReturnValueOnce('some-file.json\n')  // git diff --cached --name-only
+        .mockReturnValueOnce('')                  // git commit
+        .mockImplementationOnce(() => {           // git push -> no upstream
+          throw new Error('fatal: The current branch has no upstream branch');
+        })
+        .mockReturnValueOnce('main\n')            // git symbolic-ref --short HEAD
+        .mockReturnValueOnce('');                 // git push -u origin main
+
+      const ok = manager.commitAndPush('test commit');
+
+      const upstreamPushes = vi.mocked(execFileSync).mock.calls.filter(
+        (call) => call[0] === 'git' && (call[1] as string[]).join(' ') === 'push -u origin main',
+      );
+      expect(upstreamPushes.length).toBe(1);
+      // the retry SUCCEEDING must not be reported as a failed sync
+      expect(ok).toBe(true);
+    });
+
     it('respects autoPush=false', () => {
       const config = createConfig({ autoPush: false });
       const manager = new GitSyncManager(config);

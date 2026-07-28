@@ -1,0 +1,35 @@
+<!-- bump: patch -->
+
+## What Changed
+
+`GitSync.commitAndPush` pushed with a bare `git push`. On a branch with no upstream that fails, and the
+catch returned `false` — the **same value** the method returns for "no dirty paths" and "nothing
+staged". So a machine whose pushes were all failing was indistinguishable from one with nothing to
+sync: commits landed locally, never reached origin, and nothing reported a problem.
+
+This is the cross-machine coordination path. PR #489 reported the consequence from real hardware in
+May — lease epochs committing locally and never reaching origin, with zero logs. Reading `main` today,
+there is no `set-upstream` anywhere in that file.
+
+The bare push is still attempted first. Only if it fails does the code resolve the branch and retry
+once as `push -u origin <branch>`, which is a no-op when tracking already exists.
+
+## What to Tell Your User
+
+Nothing to do. On a multi-machine setup this removes a way for machine-to-machine sync to stop working
+without saying so.
+
+## Summary of New Capabilities
+
+None. It makes an existing sync path report and recover instead of failing silently.
+
+## Evidence
+
+- Red → green with a control: without the fix the retry test fails (1 failed / 37 passed); with it,
+  38/38. The happy-path control — asserting NO extra push when the bare push succeeds — passes in both
+  directions, which is what shows the change is additive.
+- Verified on `origin/main` that `set-upstream` / `-u origin` / `branch --set` appear **zero** times in
+  `src/core/GitSync.ts`.
+- The `false`-means-three-things conflation is deliberately NOT fixed here: it is a semantic change to
+  a value `GitLeaseStore` and `RegistrySyncDebouncer` branch on, and `GitLeaseStore:80` already handles
+  it defensively. Tracked separately.
