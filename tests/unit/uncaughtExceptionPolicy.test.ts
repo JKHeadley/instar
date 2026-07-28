@@ -39,10 +39,29 @@ describe('isNonFatalUncaught', () => {
     ).toBe(true);
   });
 
+  it('treats network-class outbound failures as recoverable (CMT-1548 — a transient outage must not crash the agent)', () => {
+    // The exact crasher: an uncaught `fetch failed` during an upstream/peer
+    // outage (e.g. the multi-machine lease-wire broadcast to an offline peer)
+    // took the whole server down on 2026-06-15. A failed outbound call is
+    // isolated; the owning subsystem retries.
+    expect(isNonFatalUncaught(new Error('fetch failed'))).toBe(true);
+    expect(isNonFatalUncaught(new TypeError('fetch failed'))).toBe(true); // undici throws a TypeError
+    expect(isNonFatalUncaught(new Error('connect ECONNREFUSED 127.0.0.1:4042'))).toBe(true);
+    expect(isNonFatalUncaught(new Error('read ECONNRESET'))).toBe(true);
+    expect(isNonFatalUncaught(new Error('connect ETIMEDOUT'))).toBe(true);
+    expect(isNonFatalUncaught(new Error('getaddrinfo ENOTFOUND relay.example.com'))).toBe(true);
+    expect(isNonFatalUncaught(new Error('getaddrinfo EAI_AGAIN relay.example.com'))).toBe(true);
+    expect(isNonFatalUncaught(new Error('socket hang up'))).toBe(true);
+  });
+
   it('treats an UNKNOWN error as fatal (crash is the safe default)', () => {
     expect(isNonFatalUncaught(new Error('mutex lock failed'))).toBe(false);
     expect(isNonFatalUncaught(new Error('Cannot read properties of undefined'))).toBe(false);
     expect(isNonFatalUncaught(new Error('better-sqlite3 database is closed'))).toBe(false);
+    // A non-network "failed" message must NOT be caught by the network patterns
+    // (boundary stays tight — we match specific tokens, not a bare "failed").
+    expect(isNonFatalUncaught(new Error('assertion failed'))).toBe(false);
+    expect(isNonFatalUncaught(new Error('migration failed'))).toBe(false);
   });
 
   it('is robust to non-Error inputs', () => {

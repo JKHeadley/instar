@@ -286,6 +286,83 @@ describe('CutoverReadiness (spec §7 G2.4)', () => {
     expect(s).toMatchObject({ ran: true, passed: false, abortedPreImport: 'fingerprint-collision' });
   });
 
+  // ── the REAL integrity pass (LOAD-BEARING: greens/flips the canonical integrity leg) ──
+
+  function buildWithIntegrity(runIntegrityImport: (() => Promise<import('../../src/feedback-factory/migration/importRunner.js').ImportRunResult>) | null) {
+    return new CutoverReadiness({
+      parityMonitor: monitor,
+      integrityReportPath: path.join(dir, 'integrity-report.json'),
+      runParityCheck: null,
+      runIntegrityImport,
+      now: () => nowMs,
+    });
+  }
+
+  it('a PASSING integrity pass records to the CANONICAL path and greens the integrity leg (with parity → door ready)', async () => {
+    const r = buildWithIntegrity(async () => PASSED_RUN);
+    const outcome = await r.runIntegrityPass();
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.recorded).toBe(true);
+    // UNLIKE the dry-run, this greens the canonical integrity leg.
+    expect(r.integrityStatus()).toMatchObject({ ran: true, passed: true });
+    expect(fs.existsSync(path.join(dir, 'integrity-report.json'))).toBe(true);
+    feedCleanWindow();
+    expect(r.status().ready).toBe(true);
+  });
+
+  it('a FAILING integrity pass records the failing report → integrity leg flips CLOSED (overwrites a prior green; latest-verdict honesty)', async () => {
+    const r = buildWithIntegrity(async () => ({ report: FAILED_REPORT, imported: { clusters: 1, feedback: 0 }, abortedPreImport: null, passed: false }));
+    r.recordIntegrityReport(PASSED_REPORT); // pre-seed a green
+    expect(r.integrityStatus().passed).toBe(true);
+    const outcome = await r.runIntegrityPass();
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.recorded).toBe(true);
+    expect(r.integrityStatus().passed).toBe(false); // flipped closed by the real failing run
+  });
+
+  it('a pre-import abort (null report) records NOTHING and leaves prior state', async () => {
+    const r = buildWithIntegrity(async () => ({
+      report: null, imported: { clusters: 0, feedback: 0 },
+      abortedPreImport: { reason: 'fingerprint-collision' as const, collisions: [{ fingerprint: 'x', clusterIds: ['a', 'b'] }] },
+      passed: false,
+    }));
+    const outcome = await r.runIntegrityPass();
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.recorded).toBe(false);
+      expect(outcome.result.abortedPreImport?.reason).toBe('fingerprint-collision');
+    }
+    expect(r.integrityStatus().ran).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'integrity-report.json'))).toBe(false);
+  });
+
+  it('a FAILED fetch (throw) records nothing and returns ok:false', async () => {
+    const r = buildWithIntegrity(async () => { throw new Error('portal unreachable'); });
+    const outcome = await r.runIntegrityPass();
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toContain('portal unreachable');
+    expect(r.integrityStatus().ran).toBe(false);
+  });
+
+  it('refuses when no integrity import source is configured', async () => {
+    const r = buildWithIntegrity(null);
+    const outcome = await r.runIntegrityPass();
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toContain('no import source configured');
+  });
+
+  it('shares the single-flight guard — a concurrent integrity pass is refused', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((res) => { release = res; });
+    const r = buildWithIntegrity(async () => { await gate; return PASSED_RUN; });
+    const first = r.runIntegrityPass();          // sets the in-flight guard, then awaits the gate
+    const second = await r.runIntegrityPass();   // while first is in flight
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.reason).toContain('already in flight');
+    release();
+    await first;
+  });
+
   it('REFUSES wiring the dry-run report onto the canonical integrity path (structural guard)', () => {
     expect(() => new CutoverReadiness({
       parityMonitor: monitor,

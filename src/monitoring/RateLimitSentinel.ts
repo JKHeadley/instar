@@ -118,6 +118,21 @@ export interface RateLimitSentinelDeps {
   /** Defer (skip starting) recovery when this returns true — e.g. compaction recovery in flight. */
   deferIf?: (sessionName: string) => boolean;
 
+  /**
+   * Returns false when this session is NOT a legitimate recovery target — it is
+   * unknown, or its status is completed/failed/killed, or it is no longer in the
+   * running set. A FINISHED session is "idle at a prompt" with whatever throttle
+   * string last printed still in its scrollback, so the idle-error detector
+   * mistakes it for a live-but-throttled session and reports it here. Without this
+   * guard the recovery runs its full backoff→resume→verify lifecycle against a
+   * session that will never produce new output — every verify fails, so it burns
+   * all `maxAttempts` resume nudges + check-ins, spamming the user with
+   * RATE_LIMIT_RESUME_NUDGE for a session that is simply done (live incident
+   * 2026-06-24). Dep ABSENT ⇒ today's behavior (recover anything reported), so
+   * bare/test installs are unchanged.
+   */
+  isSessionRecoverable?: (sessionName: string) => boolean;
+
   /** Override JSONL lookup root (tests). Defaults to $HOME/.claude/projects/<project-hash>. */
   jsonlRoot?: string;
 
@@ -176,6 +191,7 @@ export interface RateLimitSentinelEvents {
   'rate-limit:resuming': [RateLimitRecoveryState & { backoffMs: number }];
   'rate-limit:recovered': [RateLimitRecoveryState & { jsonlDelta: number }];
   'rate-limit:escalated': [RateLimitRecoveryState & { reason: string }];
+  'rate-limit:aborted': [RateLimitRecoveryState & { reason: string }];
 }
 
 function humanizeMs(ms: number): string {
@@ -238,6 +254,14 @@ export class RateLimitSentinel extends EventEmitter {
     const errorClass: ApiErrorClass = opts?.errorClass ?? 'throttle';
 
     if (this.active.has(sessionName)) return;            // recovery in flight
+    // A finished/killed session is "idle at a prompt" with stale throttle scrollback;
+    // the idle-error detector mis-reports it. Never start a recovery (nor send the
+    // "throttled, backing off" notice) for a session that is not a live recovery
+    // target (live incident 2026-06-24).
+    if (this.deps.isSessionRecoverable && !this.deps.isSessionRecoverable(sessionName)) {
+      console.log(`[RateLimitSentinel] ignoring ${trigger} for "${sessionName}" — not a live recovery target (finished/killed/unknown)`);
+      return;
+    }
     if (this.deferIf?.(sessionName)) return;             // another recovery owns it (S6)
     const lastReport = this.recentReports.get(sessionName);
     if (lastReport && now - lastReport < this.cfg.dedupeWindowMs) return;
@@ -298,6 +322,24 @@ export class RateLimitSentinel extends EventEmitter {
     this.active.delete(sessionName);
   }
 
+  /**
+   * Silent terminal stop for a recovery whose session is no longer a live target
+   * (it finished/was killed mid-flight). Unlike `finalize('escalated', ...)` this
+   * emits NO user-facing escalation event — there is nothing to tell the user, the
+   * session simply ended. Audited to the log + the `rate-limit:aborted` event for
+   * observability; clears all state so a genuinely-new throttle can recover later.
+   */
+  private abort(state: RateLimitRecoveryState, reason: string): void {
+    console.log(`[RateLimitSentinel] aborted "${state.sessionName}": ${reason}`);
+    this.emit('rate-limit:aborted', { ...state, reason });
+    // Clear timers + active state, but KEEP the recentReports entry: it acts as a
+    // dedupe cooldown so a session flapping around the liveness oracle (running →
+    // briefly-absent → running) cannot abort-then-immediately-rearm a fresh recovery
+    // on every flap. The entry ages out of the dedupe window normally.
+    // (spec-converge finding: deleting recentReports on abort enabled flap churn.)
+    this.clear(state.sessionName);
+  }
+
   stop(): void {
     for (const handle of this.timers.values()) this.clearTimer(handle);
     this.timers.clear();
@@ -337,6 +379,15 @@ export class RateLimitSentinel extends EventEmitter {
 
   private async attemptResume(state: RateLimitRecoveryState): Promise<void> {
     this.timers.delete(state.sessionName);
+    // The session may have FINISHED while we were backing off. Re-check before
+    // injecting: a done session will never grow its jsonl, so continuing would
+    // burn the remaining attempts and ping the user about a session that is gone.
+    // Abort silently (no user-facing "still throttled" notice — there is nothing
+    // to tell the user; the session simply ended).
+    if (this.deps.isSessionRecoverable && !this.deps.isSessionRecoverable(state.sessionName)) {
+      this.abort(state, 'session no longer recoverable (finished/killed during backoff)');
+      return;
+    }
     state.attempts += 1;
     state.lastInjectAt = this.now();
     state.status = 'resuming';
@@ -371,6 +422,16 @@ export class RateLimitSentinel extends EventEmitter {
 
   private async verify(state: RateLimitRecoveryState): Promise<void> {
     this.timers.delete(state.sessionName);
+    // The session may have FINISHED during the verify window. Without this check,
+    // verify() would see no jsonl growth (a done session never grows), and on the
+    // final attempt ESCALATE — sending the user a "Still can't get through after N
+    // tries" notice for a session that simply ended. Re-check and abort silently,
+    // matching the attemptResume() guard. (spec-converge finding: the guard was at
+    // report()/attemptResume() but not verify() — the finished-mid-verify hole.)
+    if (this.deps.isSessionRecoverable && !this.deps.isSessionRecoverable(state.sessionName)) {
+      this.abort(state, 'session no longer recoverable (finished/killed during verify window)');
+      return;
+    }
     const v = this.vendor(state.sessionName);
 
     const current = this.readJsonlBaseline(state.sessionName);

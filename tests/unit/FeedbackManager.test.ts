@@ -59,7 +59,7 @@ describe('FeedbackManager', () => {
 
     it('marks as forwarded when webhook succeeds', async () => {
       const originalFetch = global.fetch;
-      global.fetch = vi.fn().mockResolvedValue({ ok: true });
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null } });
 
       const item = await manager.submit({
         type: 'feature',
@@ -185,12 +185,61 @@ describe('FeedbackManager', () => {
       expect(manager.list()[0].forwarded).toBe(false);
 
       // Retry succeeds
-      global.fetch = vi.fn().mockResolvedValue({ ok: true });
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null } });
       const result = await manager.retryUnforwarded();
 
       expect(result.retried).toBe(1);
       expect(result.succeeded).toBe(1);
       expect(manager.list()[0].forwarded).toBe(true);
+
+      global.fetch = originalFetch;
+    });
+
+    // The 2026-06-20 storm fix (L364): a 429 must HALT the batch — not re-POST the
+    // whole backlog — and back off so the very next cycle does not POST at all.
+    it('a 429 halts the batch after one POST and backs off the next cycle', async () => {
+      const originalFetch = global.fetch;
+
+      // Seed a backlog of 3 unforwarded items (submit offline so none forward).
+      global.fetch = vi.fn().mockRejectedValue(new Error('offline'));
+      for (let i = 0; i < 3; i++) {
+        await manager.submit({
+          type: 'bug', title: `b${i}`, description: 'd', agentName: 't',
+          instarVersion: '0.1.0', nodeVersion: 'v20.0.0', os: 'darwin arm64',
+        });
+      }
+      expect(manager.list().filter(f => !f.forwarded).length).toBe(3);
+
+      // Endpoint is rate-limiting. The batch must stop after the FIRST POST.
+      const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429, statusText: 'Too Many Requests', headers: { get: () => null } });
+      global.fetch = fetchMock;
+      const r1 = await manager.retryUnforwarded();
+      expect(fetchMock).toHaveBeenCalledTimes(1);      // halted after one, NOT 3
+      expect(r1.succeeded).toBe(0);
+      expect(manager.list().filter(f => !f.forwarded).length).toBe(3); // none lost
+
+      // Next cycle is inside the backoff window → zero POSTs (the storm is dead).
+      const fetchMock2 = vi.fn().mockResolvedValue({ ok: false, status: 429, headers: { get: () => null } });
+      global.fetch = fetchMock2;
+      const r2 = await manager.retryUnforwarded();
+      expect(fetchMock2).not.toHaveBeenCalled();
+      expect(r2).toEqual({ retried: 0, succeeded: 0 });
+
+      global.fetch = originalFetch;
+    });
+
+    it('honors a Retry-After header on a 429 (backoff window)', async () => {
+      const originalFetch = global.fetch;
+      global.fetch = vi.fn().mockRejectedValue(new Error('offline'));
+      await manager.submit({ type: 'bug', title: 'b', description: 'd', agentName: 't', instarVersion: '0.1.0', nodeVersion: 'v20.0.0', os: 'darwin arm64' });
+
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 429, headers: { get: (h: string) => (h.toLowerCase() === 'retry-after' ? '120' : null) } });
+      await manager.retryUnforwarded();
+      // Inside the 120s window the next cycle must not POST.
+      const fm = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null } });
+      global.fetch = fm;
+      await manager.retryUnforwarded();
+      expect(fm).not.toHaveBeenCalled();
 
       global.fetch = originalFetch;
     });

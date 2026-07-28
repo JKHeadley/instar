@@ -42,12 +42,21 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   CommitmentSentinel: 'sentinel',
   PresenceProxy: 'sentinel',
   PromiseBeacon: 'sentinel',
+  ExternalHogClassifier: 'sentinel',
   MessageSentinel: 'sentinel',
   ProjectDriftChecker: 'sentinel',
   TemporalCoherenceChecker: 'sentinel',
   CompletionEvaluator: 'sentinel',
   SessionWatchdog: 'sentinel',
+  // Tier-1 observe-only resume sanity check (reap-notify spec P7) — runs on
+  // the shared LlmQueue background lane before a queued mid-work resume.
+  ResumeQueueDrainer: 'sentinel',
   TopicIntentArcCheck: 'sentinel',
+  // Canary-completion judge inside the anthropic-interactive-pool adapter
+  // (token-audit-completeness baseline-zero pass).
+  InteractivePoolCanaryJudge: 'sentinel',
+  // Slack stuck/quiet-session alert suppression judge (same pass).
+  SlackAdapter: 'sentinel',
 
   // ── Gates (pre-action allow/deny advisories) ──
   PromptGate: 'gate',
@@ -59,6 +68,28 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   CoherenceGate: 'gate',
   MessagingToneGate: 'gate',
   CoherenceReviewer: 'gate',
+  // Move-intent recognizer — infers "move/run/pin this on <nickname>?" over the
+  // message + recent conversation, replacing the keyword verb-list that hijacked
+  // discussion (docs/specs/nickname-move-intent-llm-rebuild.md). It gates whether
+  // the inbound message is a relocation command vs passed through to the agent.
+  MoveIntentClassifier: 'gate',
+  // Hub-intent recognizer — infers "open this"/"tie this to <topic>?" over the
+  // message + recent conversation, replacing the anchored regexes that swallowed
+  // the message before the agent saw it (docs/specs/keyword-intent-conversions-1-and-3.md,
+  // Conversion #3). It gates whether an inbound hub message is a bind command vs
+  // passed through to the agent.
+  HubIntentClassifier: 'gate',
+  // Profile-intent recognizer — infers "change this topic's framework/model/thinking?"
+  // over the message + recent conversation, replacing the keyword regexes removed from
+  // parseProfileTrigger (docs/specs/keyword-intent-conversions-1-and-3.md). It gates
+  // whether the inbound message actuates a topic-profile write vs passing to the agent.
+  ProfileIntentClassifier: 'gate',
+  // Inbound-content sanitizer (token-audit-completeness baseline-zero pass).
+  LLMSanitizer: 'gate',
+  // uxConfirm pre-routing judgment calls (same pass).
+  OverrideDetector: 'gate',
+  TaskClassifier: 'gate',
+  FeedbackReadinessArbiter: 'gate',
 
   // ── Reflectors / reviewers (deeper after-the-fact analysis) ──
   JobReflector: 'reflector',
@@ -70,9 +101,55 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   RelationshipManager: 'reflector',
   StandardsConformanceReviewer: 'reflector',
   DiscoveryEvaluator: 'reflector',
+  // DashboardInsightEngine — the Live-LLM-Insights read surface
+  // (docs/specs/dashboard-live-insights.md). Summarizes a dashboard page's own
+  // data into a plain-English Insight Strip. Category 'reflector' so it runs
+  // OFF Claude by default (Provider-Fallback Default Policy) — awareness-only
+  // background summarization should never spend Anthropic quota.
+  DashboardInsightEngine: 'reflector',
 
   // ── Jobs (scheduled work) ──
   PipeSessionSpawner: 'job',
+  // The doc-freshness sweep author (spec #2). Category 'job' so an operator can
+  // route it OFF Claude via sessions.componentFrameworks.categories.job — the
+  // background summary authoring then never spends Anthropic quota. The runtime
+  // routing probe (CartographerSweepEngine.probeRouting) enforces off-Claude;
+  // this registration guards the categoryForComponent path so a missing entry
+  // fails the wiring test rather than silently routing to the default framework.
+  CartographerSweep: 'job',
+  // The OPTIONAL dark LLM-enrichment path of the standards enforcement-coverage
+  // audit (cartographer-conformance-audit spec #3). Category 'job' so an operator
+  // can route it OFF Claude via sessions.componentFrameworks.categories.job — the
+  // enrichment then never spends Anthropic quota. Only used by the dark
+  // llmEnrichment path; the shipped deterministic auditor makes no LLM calls.
+  StandardsCoverageEnrichment: 'job',
+
+  // ── Previously-uncategorized LLM callsites (LLM Routing Registry audit,
+  //    2026-07-01). Each calls an intelligence provider's .evaluate() but was
+  //    absent from this map AND passes no explicit attribution.category, so it
+  //    resolved to 'other' → the agent default framework (Claude) — silently
+  //    spending Anthropic quota instead of routing off-Claude like its peers.
+  //    Categorized by function (sentinel = background judgment call, gate =
+  //    pre-action allow/deny, reflector = extraction/summarization/analysis).
+  //    The drift-guard test (componentCategories-evaluate-coverage.test.ts)
+  //    keeps this map exhaustive over .evaluate() callsites going forward. ──
+  InputClassifier: 'sentinel',           // input auto-approve vs relay classification
+  SessionSummarySentinel: 'sentinel',    // summarize tmux output → task/phase/files
+  TelegramAdapter: 'sentinel',           // stall/idle alert-suppression judge (parity with SlackAdapter)
+  ResumeValidator: 'gate',               // does a resume UUID match the topic? (pre-resume gate)
+  Usher: 'reflector',                    // route a turn to candidate topics
+  TopicIntentExtractor: 'reflector',     // extract topic intent from a turn
+  GoalPriorityExtractor: 'reflector',    // extract verified operator priorities at intake
+  AlignmentReviewer: 'reflector',        // compare active run focus with the durable priority digest
+  PreCompactionFlush: 'reflector',       // extract durable facts before compaction
+  TreeSynthesis: 'reflector',            // synthesize knowledge fragments → answer
+  LLMConflictResolver: 'reflector',      // resolve divergent multi-machine state
+  openConversationBrief: 'reflector',    // generate an A2A conversation brief
+  'a2a-checkin': 'reflector',            // summarize A2A check-in threads (server:a2a-checkin)
+  'correction-learning': 'reflector',    // distill recurring corrections → preference (server:correction-learning)
+  'correction-class-review': 'reflector', // standards/process class review proposal for each correction
+  'completion-claim-verify': 'reflector', // observe-only completion evidence assessment
+  'mentor-stage-b': 'reflector',         // classify mentor signals → forensic findings
 };
 
 /**

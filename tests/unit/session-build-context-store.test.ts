@@ -87,7 +87,7 @@ describe('SessionBuildContextStore', () => {
     expect(store.getRestore('home')).toBeNull();
   });
 
-  it('writes through the crash-safe state sidecar path', () => {
+  it('writes through the crash-safe state sidecar path — under the PER-MACHINE key (standby-write-reconciliation §3.3)', () => {
     const renameSpy = vi.spyOn(fs, 'renameSync');
     const home = path.join(tmpDir, 'agent-home');
     const worktree = path.join(home, '.worktrees', 'feature');
@@ -99,9 +99,43 @@ describe('SessionBuildContextStore', () => {
     });
     store.record('agent-topic', home, worktree);
 
-    const target = path.join(tmpDir, 'state', 'session-build-context.json');
+    // Identity-less installs embed the literal 'local' (§3.3 round-2 L3) —
+    // never the LEGACY shared 'session-build-context' key.
+    const target = path.join(tmpDir, 'state', 'session-build-context-local.json');
     expect(fs.existsSync(target)).toBe(true);
     expect(renameSpy.mock.calls.some(([, to]) => to === target)).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, 'state', 'session-build-context.json'))).toBe(false);
+  });
+
+  it('re-keys per machine (standby-write-reconciliation §3.3): a mesh identity embeds its jailed id; each machine reads ONLY its own key', () => {
+    const home = path.join(tmpDir, 'agent-home');
+    const worktree = path.join(home, '.worktrees', 'feature');
+    fs.mkdirSync(worktree, { recursive: true });
+
+    // The machine id resolves LATE via a getter (the mesh identity is assigned
+    // after SessionManager construction at server boot).
+    let machineId: string | null = null;
+    const store = new SessionBuildContextStore(state, {
+      now: () => now,
+      execFileSync: vi.fn(() => '') as any,
+      machineId: () => machineId,
+    });
+    expect(store.stateKey()).toBe('session-build-context-local');
+    machineId = 'mesh.id/with weird chars';
+    expect(store.stateKey()).toBe('session-build-context-mesh_id_with_weird_chars');
+
+    store.record('agent-topic', home, worktree);
+    expect(fs.existsSync(path.join(tmpDir, 'state', 'session-build-context-mesh_id_with_weird_chars.json'))).toBe(true);
+
+    // A DIFFERENT machine's store never sees this machine's entries — single
+    // writer per file by construction, reads never need peers' keys.
+    const otherStore = new SessionBuildContextStore(state, {
+      now: () => now,
+      execFileSync: vi.fn(() => '') as any,
+      machineId: 'other-machine',
+    });
+    expect(otherStore.getRestore('agent-topic')).toBeNull();
+    expect(store.getRestore('agent-topic')).not.toBeNull();
   });
 
   it('formats restore notes without a branch line when branch enrichment is absent', () => {

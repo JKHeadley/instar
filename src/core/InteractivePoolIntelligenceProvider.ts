@@ -55,6 +55,12 @@ export class InteractivePoolIntelligenceProvider implements IntelligenceProvider
       ) as OneShotCompletion;
     }
 
+    // Observable Intelligence: this lane runs Claude via the interactive
+    // subscription pool. The exact model is fixed at session spawn and not known
+    // at this layer, so we attribute the framework (claude-code) and a truthful
+    // lane label rather than a fabricated model id.
+    try { options?.onModel?.({ model: 'interactive-pool', framework: 'claude-code' }); } catch { /* @silent-fallback-ok: onModel is pure observability — a throw must never break the LLM path */ }
+
     const result = await this.oneShot.evaluate(prompt, {
       // Advisory on this path — the pool runs one model fixed at spawn.
       model: options?.model ?? 'fast',

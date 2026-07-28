@@ -22,9 +22,13 @@ try {
   const status = execSync('git status --porcelain -- src/', { cwd: ROOT, encoding: 'utf-8' }).trim();
   if (status) {
     console.warn('\n⚠️  WARNING: Working tree has uncommitted changes in src/.');
-    console.warn('   The generated manifest may not match committed source.');
-    console.warn('   CI test "is up-to-date with current source" will fail if you commit this.');
-    console.warn('   Stash WIP first: git stash push -u\n');
+    console.warn('   The generated manifest reflects your WORKING TREE, not committed source.');
+    // The old wording named a test that no longer exists and said the manifest
+    // could be committed. It cannot: src/data/builtin-manifest.json is
+    // gitignored (.gitignore:87). The test compares the ON-DISK artifact
+    // against a fresh regeneration, so the remedy is always to rebuild.
+    console.warn('   The manifest is a gitignored build artifact — it is never committed.');
+    console.warn('   Stash WIP first if you want a clean-source manifest: git stash push -u\n');
   }
 } catch { /* not a git repo or git not available — skip check */ }
 
@@ -426,8 +430,18 @@ function main() {
     manifest.entries[entry.id] = entry;
   }
 
-  // Write to src/data/
-  const outputPath = path.join(ROOT, 'src/data/builtin-manifest.json');
+  // Write to src/data/ — or to an explicit override.
+  //
+  // WHY THE OVERRIDE EXISTS: the up-to-date CHECK in
+  // tests/unit/builtin-manifest.test.ts used to run this generator against the
+  // real path and diff the file before/after — i.e. a test that verifies the
+  // committed manifest is current by OVERWRITING the committed manifest. Under
+  // the parallel suite that races tests/unit/package-completeness.test.ts,
+  // whose full `npx tsc` build regenerates the same file, producing a random
+  // red on a green tree. A verifier must not mutate the artifact it verifies.
+  const outputPath = process.env.INSTAR_BUILTIN_MANIFEST_OUT
+    ? path.resolve(process.env.INSTAR_BUILTIN_MANIFEST_OUT)
+    : path.join(ROOT, 'src/data/builtin-manifest.json');
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(manifest, null, 2) + '\n');
 

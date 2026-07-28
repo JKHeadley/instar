@@ -32,8 +32,16 @@ exit 0
 let tmpDir: string;
 let fakeCodexPath: string;
 let nonGitDir: string;
+let prevExecJson: string | undefined;
 
 beforeAll(() => {
+  // This file pins the PLAIN-mode (kill-switch) invocation contract — the
+  // fake codex echoes argv to stdout, which is only the result channel in
+  // plain mode. The default exec-json path's contracts (args, stdin prompt,
+  // file-only result, usage parse) are pinned by
+  // tests/unit/codex-cli-provider-execjson.test.ts.
+  prevExecJson = process.env.INSTAR_CODEX_EXEC_JSON;
+  process.env.INSTAR_CODEX_EXEC_JSON = '0';
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-provider-test-'));
   fakeCodexPath = path.join(tmpDir, 'fake-codex');
   fs.writeFileSync(fakeCodexPath, FAKE_CODEX_SCRIPT, { mode: 0o755 });
@@ -42,6 +50,8 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  if (prevExecJson === undefined) delete process.env.INSTAR_CODEX_EXEC_JSON;
+  else process.env.INSTAR_CODEX_EXEC_JSON = prevExecJson;
   SafeFsExecutor.safeRmSync(tmpDir, {
     recursive: true,
     force: true,
@@ -152,6 +162,71 @@ describe('CodexCliIntelligenceProvider — per-call timeout (IntelligenceOptions
   it('without timeoutMs the 30s default is unchanged — a sub-default call still resolves', async () => {
     const provider = new CodexCliIntelligenceProvider({ codexPath: slowCodexPath, workingDirectory: nonGitDir });
     await expect(provider.evaluate('hi')).resolves.toContain('DONE');
+  });
+});
+
+describe('CodexCliIntelligenceProvider — retired-model fallback', () => {
+  function fallbackFixture(firstError: string, fallbackAlsoFails = false): { binary: string; calls: string } {
+    const fixture = fs.mkdtempSync(path.join(tmpDir, 'retired-model-'));
+    const calls = path.join(fixture, 'calls');
+    const binary = path.join(fixture, 'fake-codex');
+    fs.writeFileSync(binary, `#!/bin/sh
+model=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--model" ]; then model="$arg"; fi
+  prev="$arg"
+done
+echo "$model" >> "${calls}"
+if [ "$model" != "gpt-5.4-mini" ]; then
+  echo "${firstError}" >&2
+  exit 1
+fi
+${fallbackAlsoFails ? 'echo "fallback failed" >&2\nexit 1' : 'echo "RECOVERED"\nexit 0'}
+`, { mode: 0o755 });
+    return { binary, calls };
+  }
+
+  function callsFrom(file: string): string[] {
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf-8').trim().split('\n') : [];
+  }
+
+  it('retries the exact ChatGPT model-retirement failure once on the known-good floor', async () => {
+    const fixture = fallbackFixture(
+      "Error 400: The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+    );
+    const models: string[] = [];
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fixture.binary });
+
+    await expect(provider.evaluate('hi', {
+      model: 'gpt-5.5',
+      onModel: ({ model }) => models.push(model),
+    })).resolves.toBe('RECOVERED');
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
+    expect(models).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
+  });
+
+  it.each([
+    ['rate limit', 'Error 429: rate limit exceeded'],
+    ['auth', 'Error 401: unauthorized'],
+    ['different 400', 'Error 400: invalid request body'],
+  ])('does not fall back on %s failures', async (_label, message) => {
+    const fixture = fallbackFixture(message);
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fixture.binary });
+
+    await expect(provider.evaluate('hi', { model: 'gpt-5.5' })).rejects.toThrow(message);
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5']);
+  });
+
+  it('surfaces a fallback failure after exactly one retry', async () => {
+    const fixture = fallbackFixture(
+      "Error 400: The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+      true,
+    );
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fixture.binary });
+
+    await expect(provider.evaluate('hi', { model: 'gpt-5.5' })).rejects.toThrow('fallback failed');
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
   });
 });
 

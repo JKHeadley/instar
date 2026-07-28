@@ -55,7 +55,10 @@ describe('CompletionEvaluator', () => {
 
   it('defaults to the fast model tier', () => {
     const e = new CompletionEvaluator({ intelligence: stubProvider('MET\nok') });
-    expect(e.promptVersion).toBe('completion-eval-v1');
+    // Bumped to v2 for the signal extension (objective-signals block + fenced
+    // transcript + folded milestone floor, spec §2b.4); v3 for the field-gated
+    // scope-accretion context block (autonomous-scope-accretion-completion.md).
+    expect(e.promptVersion).toBe('completion-eval-v3');
   });
 });
 
@@ -92,5 +95,31 @@ describe('CompletionEvaluator.evaluateStopRationale (P13 "The Stop Reason Is the
   it('fails OPEN (stopAllowed:true) when the provider throws', async () => {
     const e = new CompletionEvaluator({ intelligence: stubProvider(async () => { throw new Error('LLM down'); }) });
     expect((await e.evaluateStopRationale('x')).stopAllowed).toBe(true);
+  });
+
+  // --- Extended P13 facets (2026-06-08): a dependency on another agent is NOT a
+  // --- terminal blocker (the agent must keep pursuing it), and "a waiting/polling
+  // --- loop burns resources" is NOT a valid stop reason. ---
+  it('instructs the judge to BLOCK a "blocked on another agent" stop and a "burns resources" stop', async () => {
+    let captured = '';
+    const capturing: IntelligenceProvider = {
+      async evaluate(prompt: string): Promise<string> { captured = prompt; return 'STOP_OK\nok'; },
+    };
+    const e = new CompletionEvaluator({ intelligence: capturing });
+    await e.evaluateStopRationale('holding — blocked on Dawn to send her data; the loop just spins');
+    const lc = captured.toLowerCase();
+    // peer-dependency-as-terminal-blocker is named as a BLOCK case, with the pursuit obligation
+    expect(lc).toContain('another agent');
+    expect(lc).toContain('keep pursuing');
+    // the resource-burn rationalization is named as a BLOCK case
+    expect(lc).toContain('burns resources');
+  });
+
+  it('default STOP_BLOCKED guidance (no reason line) steers toward pursuing the peer, not stopping', async () => {
+    const e = new CompletionEvaluator({ intelligence: stubProvider('STOP_BLOCKED') });
+    const v = await e.evaluateStopRationale('standing down — waiting on a peer agent and the loop just burns the box');
+    expect(v.stopAllowed).toBe(false);
+    expect(v.guidance.toLowerCase()).toContain('blocked on another agent');
+    expect(v.guidance.toLowerCase()).toContain('keep pursuing');
   });
 });

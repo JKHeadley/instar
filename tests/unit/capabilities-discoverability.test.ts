@@ -84,6 +84,20 @@ describe('Capabilities Discoverability', () => {
     expect(internalPrefixes).not.toContain('secrets');
   });
 
+  it('reports Codex continuation enablement from the same live-config source as the routes', () => {
+    const entry = CAPABILITY_INDEX.find((candidate) => candidate.key === 'codexTaskContinuation');
+    expect(entry).toBeDefined();
+    const result = entry!.build({
+      ctx: {
+        config: { autonomousSessions: { codexTaskContinuation: { enabled: false } } },
+        liveConfig: { get: () => ({ enabled: true }) },
+      },
+      scripts: [],
+      secretDrop: {},
+    } as never) as { enabled: boolean };
+    expect(result.enabled).toBe(true);
+  });
+
   it('no prefix is both claimed by CAPABILITY_INDEX and listed in INTERNAL_PREFIXES', () => {
     const collisions: string[] = [];
     for (const prefix of capabilityPrefixToKey.keys()) {

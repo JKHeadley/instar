@@ -92,14 +92,19 @@ describe('SQLite close-on-exit — server.ts wiring (ordering)', () => {
     expect(closeAfterStop).toBeGreaterThan(stopIdx); // close LAST, after the server stops
   });
 
-  it('the uncaughtException handler closes ALL sqlite (not just topic/semantic memory)', () => {
+  it('the uncaughtException handler closes ALL sqlite via the shared fatal-path cleanup', () => {
+    // The handler now delegates to handleProcessLevelError (net #1 — so the
+    // uncaughtException + unhandledRejection handlers share ONE policy), passing
+    // an onFatalCleanup that closes ALL registered sqlite handles (not just
+    // topic/semantic memory) before the FATAL exit. Assert that wiring.
+    const onFatalIdx = serverSrc.indexOf('const onFatalCleanup');
+    expect(onFatalIdx).toBeGreaterThan(0);
+    expect(serverSrc.slice(onFatalIdx, onFatalIdx + 200)).toMatch(/closeAllSqlite\(\)/);
+
     const uncaughtStart = serverSrc.indexOf("process.on('uncaughtException'");
     expect(uncaughtStart).toBeGreaterThan(0);
-    // Window generous enough to span the whole handler (the suppressed-error
-    // branch now logs a first-seen stack before the FATAL branch's
-    // closeAllSqlite() call — so a tight window would miss it).
-    const body = serverSrc.slice(uncaughtStart, uncaughtStart + 2000);
-    expect(body).toMatch(/closeAllSqlite\(\)/);
+    const body = serverSrc.slice(uncaughtStart, uncaughtStart + 300);
+    expect(body).toMatch(/handleProcessLevelError\([\s\S]*?onFatalCleanup/);
   });
 
   it('the old hand-maintained 2-store close-list is gone from the exit paths', () => {

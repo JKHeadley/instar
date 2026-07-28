@@ -1,6 +1,7 @@
 /**
  * BurnDetector — emits a structured signal when a single attribution_key
- * crosses configured spend thresholds.
+ * crosses configured fresh-cost thresholds. Cache reads remain visible in the
+ * ledger's gross totals but never increase burn share or rate.
  *
  * Phase 3 of docs/specs/token-burn-detection-and-self-heal.md.
  *
@@ -28,6 +29,11 @@
 import type { TokenLedger, AttributionKeyRow } from './TokenLedger.js';
 import type { DegradationReporter } from './DegradationReporter.js';
 import { PRE_ATTRIBUTION_KEY } from './AttributionResolver.js';
+
+/** Backward-compatible for test doubles and older ledger adapters. */
+function burnTokens(row: AttributionKeyRow): number {
+  return row.freshTokens ?? row.totalTokens;
+}
 
 export interface BurnDetectionConfig {
   enabled: boolean;
@@ -87,6 +93,13 @@ export interface BurnDetectorDeps {
   config?: Partial<BurnDetectionConfig>;
   /** Injectable clock for tests. Defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Model-tier escalation §8 mid-run cap monitor (UltraSessionCapMonitor).
+   * Rides THIS detector's tick cadence so no new poller exists
+   * (FABLE-MODEL-ESCALATION-SPEC round-3 Integration-NEW-2). Its tick()
+   * never throws. Optional — absent on agents without the feature wired.
+   */
+  ultraCapMonitor?: { tick(): void };
 }
 
 export class BurnDetector {
@@ -94,6 +107,7 @@ export class BurnDetector {
   private readonly reporter: BurnDetectorDeps['reporter'];
   private readonly config: BurnDetectionConfig;
   private readonly now: () => number;
+  private readonly ultraCapMonitor?: { tick(): void };
   /** First time a given attribution_key was seen. Used for cold-start cutoff. */
   private readonly firstSeen = new Map<string, number>();
   /** Last alert emit time per key — gates per-key alert cooldown. */
@@ -105,6 +119,7 @@ export class BurnDetector {
     this.reporter = deps.reporter;
     this.config = { ...DEFAULT_BURN_DETECTION_CONFIG, ...(deps.config ?? {}) };
     this.now = deps.now ?? (() => Date.now());
+    this.ultraCapMonitor = deps.ultraCapMonitor;
   }
 
   start(): void {
@@ -136,6 +151,10 @@ export class BurnDetector {
    */
   tick(): BurnSignal[] {
     if (!this.config.enabled) return [];
+    // §8 ultra-cap monitor rides this cadence — BEFORE the empty-ledger
+    // early-returns below, so a quiet attribution ledger can't starve the
+    // per-session cap check. Its tick() is self-guarding (never throws).
+    this.ultraCapMonitor?.tick();
     const now = this.now();
     const since24h = now - 24 * 60 * 60 * 1000;
     const since1h = now - 60 * 60 * 1000;
@@ -143,7 +162,7 @@ export class BurnDetector {
 
     const keys24h = this.ledger.byAttributionKey({ sinceMs: since24h });
     if (keys24h.length === 0) return [];
-    const total24h = keys24h.reduce((sum, k) => sum + k.totalTokens, 0);
+    const total24h = keys24h.reduce((sum, k) => sum + burnTokens(k), 0);
     if (total24h <= 0) return [];
 
     // Update first-seen map.
@@ -158,9 +177,10 @@ export class BurnDetector {
     const keys1hMap = new Map(keys1h.map((k) => [k.attributionKey, k]));
 
     for (const key24h of keys24h) {
-      const share = key24h.totalTokens / total24h;
+      const tokens24h = burnTokens(key24h);
+      const share = tokens24h / total24h;
       const key1h = keys1hMap.get(key24h.attributionKey);
-      const tokens1h = key1h ? key1h.totalTokens : 0;
+      const tokens1h = key1h ? burnTokens(key1h) : 0;
       const projectedDaily = tokens1h * 24;
 
       // Skip exempt runbook self-attribution prefix (defence in depth — Phase 4
@@ -216,7 +236,7 @@ export class BurnDetector {
           const keys7d = this.ledger.byAttributionKey({ sinceMs: since7d });
           const key7d = keys7d.find((k) => k.attributionKey === key24h.attributionKey);
           if (key7d) {
-            baselineMedian7d = key7d.totalTokens / (7 * 24);
+            baselineMedian7d = burnTokens(key7d) / (7 * 24);
             if (tokens1h > this.config.rollingBaselineMultiplier * baselineMedian7d) {
               trigger = 'baseline-divergence';
             }
@@ -231,7 +251,7 @@ export class BurnDetector {
         trigger,
         emittedAt: new Date(now).toISOString(),
         observed: {
-          tokens24h: key24h.totalTokens,
+          tokens24h,
           share24h: share,
           tokensLast1h: tokens1h,
           projectedDaily,

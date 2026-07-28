@@ -223,3 +223,27 @@ describe('PeerStreamProxy — input relay + close', () => {
     expect(() => h.proxy.close()).not.toThrow();
   });
 });
+
+describe('PeerStreamProxy — read-only frame relay (history, §2.2)', () => {
+  it('relayFrame forwards a history request only while active; dropped while connecting or closed', () => {
+    const h = harness();
+    h.proxy.subscribe('s1', 'c1');
+    h.proxy.relayFrame({ type: 'history', session: 's1', lines: 5000 }); // connecting → dropped
+    h.last().handlers.onOpen();
+    h.proxy.relayFrame({ type: 'history', session: 's1', lines: 7000 }); // active → sent
+    h.proxy.close();
+    h.proxy.relayFrame({ type: 'history', session: 's1', lines: 9000 }); // closed → dropped
+    const hist = h.last().sent.filter((f) => f.type === 'history');
+    expect(hist).toEqual([{ type: 'history', session: 's1', lines: 7000 }]);
+  });
+
+  it('a history reply frame from the peer fans out to local clients like output', () => {
+    const h = harness();
+    h.proxy.subscribe('s1', 'c1');
+    h.last().handlers.onOpen();
+    h.last().handlers.onFrame({ type: 'history', session: 's1', data: 'scrollback', lines: 5000 });
+    expect(h.framesToClients).toEqual([
+      { session: 's1', frame: { type: 'history', session: 's1', data: 'scrollback', lines: 5000 } },
+    ]);
+  });
+});

@@ -39,3 +39,17 @@ On top of that:
 ## What you need to decide
 
 Whether to approve building this as specified. You already asked for it ("a long-lived queue so communications never just die out") — this is that, built on the pieces that already exist, recording-only so it can't break sending, and with alerts aggregated so it can't spam you (alerts arrive in the follow-on piece). The full PR1 — the delivery tracker, the wiring into both send/receive paths, the peer-health routes, and 31 tests across all three tiers — is written and passing. A multi-agent review pass caught one real wiring bug (the "got it" detection was keyed on the wrong identifier and would never have fired in production) — it's now fixed and guarded by a real round-trip test.
+
+## PR4a — making a silent block impossible (added 2026-06-07)
+
+The peer-health surface tells you *whether* a channel is alive. PR4a tells you
+*why* an inbound died. The inbound gate used to block a message and say nothing —
+no log line, just an internal counter that resets on restart. So when Dawn's
+messages stopped reaching Echo, there was no trace to follow; the channel was
+dark for over a day before anyone noticed. Now the gate writes a plain line to
+the log for every inbound it sees: what it decided (let-through or blocked), why,
+and what trust level it resolved the sender to. Fingerprints are clipped short and
+no message text is ever logged. Nothing about routing changes — it just stops the
+gate from failing in silence, so the next test from Dawn will say in plain words
+whether the gate rejected her (and exactly why) or her message never arrived at
+all. That answer points straight at the real fix.

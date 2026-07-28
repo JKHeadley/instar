@@ -118,6 +118,29 @@ describe('WorkingSetPullCoordinator — trigger gating (§3.3)', () => {
     expect(out.skipReason).toBe('not-owner');
   });
 
+  it('not-owner does not consume the reflex window before ownership converges', async () => {
+    writeRunStream('peers', PEER_A, [runEntry(PEER_A, 1, 10, '2026-06-06T00:00:01.000Z')]);
+    let owner = PEER_A;
+    const ledger = new PendingPullLedger({ stateDir: tmpDir });
+    const pulls: number[] = [];
+    const coord = new WorkingSetPullCoordinator({
+      stateDir: tmpDir,
+      ownMachineId: SELF,
+      reader: new CoherenceJournalReader({ stateDir: tmpDir }),
+      ledger,
+      makePuller: () => fakePuller(async (topic) => { pulls.push(topic); return okReport(topic); }),
+      ownerOf: () => ({ owner, epoch: 5 }),
+      reflexMinIntervalMs: 60_000,
+    });
+
+    const before = await coord.fetchWorkingSet(10);
+    expect(before.skipReason).toBe('not-owner');
+    owner = SELF;
+    const after = await coord.fetchWorkingSet(10);
+    expect(after.scheduled).toBe(true);
+    expect(pulls).toEqual([10]);
+  });
+
   it('(topic,epoch) op-key dedupe is DURABLE — a new coordinator instance still dedupes the move trigger', async () => {
     writeRunStream('peers', PEER_A, [runEntry(PEER_A, 1, 10, '2026-06-06T00:00:01.000Z')]);
     const first = makeCoordinator({});

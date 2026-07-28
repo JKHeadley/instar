@@ -26,6 +26,35 @@ export interface Authority {
   requiresCondition?: string;
 }
 
+/**
+ * A user→agent authority grant carried INSIDE a signed mandate. This is the
+ * extension that lets the human (the mandate author) delegate a Slack FLOOR
+ * action (money / prod-deploy / credentials / destructive / external / grant)
+ * to a SPECIFIC verified Slack user for a bounded time — the same deny-by-default,
+ * signed, expiring, revocable model the mandate already enforces for A2A authority.
+ *
+ * The grant is covered by the mandate's `authProof` (it is appended to the canonical
+ * byte sequence when present), so an agent cannot mint or widen a grant: only the
+ * PIN-gated issuance path can sign one in.
+ *
+ * `expiresAt` is independent of (and MUST be <= ) the mandate's own `expiresAt` —
+ * the grant can never outlive the delegation that carries it. The store-side query
+ * clamps to the mandate expiry, so a grant is void the moment EITHER clock passes.
+ */
+export interface UserAuthorityGrant {
+  /** The Slack FLOOR action this grant authorizes (e.g. 'prod-deploy'). Matched
+   *  against the gate's `scope` (the floorAction) on lookup. */
+  floorAction: string;
+  /** The VERIFIED Slack user id (U…) this grant is for — never a content name. */
+  grantedTo: string;
+  /** Who authorized it (the human author / operator). Requester ≠ authorizer. */
+  authorizedBy: string;
+  /** ISO timestamp after which the grant is void. MUST be <= the mandate's expiresAt. */
+  expiresAt: string;
+  /** Optional bounds carried for audit/future enforcement (advisory at the floor). */
+  bounds?: Record<string, unknown>;
+}
+
 /** The human-authored delegation. `authProof` covers all other fields. */
 export interface CoordinationMandate {
   id: string;
@@ -40,6 +69,13 @@ export interface CoordinationMandate {
   expiresAt: string;
   /** Set when revoked; checked on every action. */
   revoked: { at: string; reason: string } | null;
+  /**
+   * Optional user→agent authority grants (the Slack-floor delegation extension).
+   * Covered by `authProof` ONLY when present and non-empty — a mandate with no
+   * grants canonicalizes byte-for-byte identically to a pre-extension mandate, so
+   * existing signed mandates keep verifying (backward-compat is non-negotiable).
+   */
+  grants?: UserAuthorityGrant[];
   /** Authorship proof — an HMAC over the canonical (proof-excluded) mandate bytes,
    *  produced ONLY by the PIN-gated issuance path. An agent cannot mint or widen its
    *  own mandate without it; a forged/edited mandate fails verification. */

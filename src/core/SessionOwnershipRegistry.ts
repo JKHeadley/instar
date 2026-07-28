@@ -38,6 +38,11 @@ import {
  */
 export class InMemorySessionOwnershipStore {
   private recs = new Map<string, import('./SessionOwnership.js').SessionOwnershipRecord>();
+  /** Interface-level commit hook (standby-write-reconciliation §3.2, round-2
+   *  S4): fired at THIS substrate's own mutation point (`casWrite` — it has no
+   *  `persist()` funnel), so a WriteAdmission ownership index warmed against
+   *  this store is never warm-once-then-permanently-stale. */
+  onCommit?: (record: import('./SessionOwnership.js').SessionOwnershipRecord) => void;
   read(sessionKey: string) {
     return this.recs.get(sessionKey) ?? null;
   }
@@ -52,6 +57,13 @@ export class InMemorySessionOwnershipStore {
     // and proposes an epoch ≤ the landed one).
     if (candidate.ownershipEpoch > curEpoch) {
       this.recs.set(candidate.sessionKey, candidate);
+      try {
+        this.onCommit?.(candidate);
+      } catch {
+        /* @silent-fallback-ok — the commit hook is an observability consumer
+           (WriteAdmission ownership index); a listener throw must never fail the
+           ownership CAS itself. The index's own ingest never throws by design. */
+      }
       return { ok: true, observed: candidate };
     }
     return { ok: false, observed: current };
@@ -71,6 +83,24 @@ export interface SessionOwnershipStore {
    * freshly-reread record) if a peer advanced first (non-fast-forward reject).
    */
   casWrite(candidate: SessionOwnershipRecord): { ok: boolean; observed: SessionOwnershipRecord | null };
+  /**
+   * Every known record from the store's in-memory cache (StrandedTopicSentinel
+   * scan). Optional: a store that can't enumerate cheaply omits it and the
+   * registry's `all()` reads empty. Both shipped stores (InMemory + Local)
+   * implement it.
+   */
+  all?(): SessionOwnershipRecord[];
+  /**
+   * Interface-level commit hook (standby-write-reconciliation §3.2, round-2
+   * S4): assignable listener each substrate fires at its OWN mutation point —
+   * `LocalSessionOwnershipStore` inside `persist()` (after `cache.set`),
+   * `InMemorySessionOwnershipStore` inside `casWrite()` at its `recs.set`.
+   * BOTH mutation paths (`registry.cas()` and `OwnershipApplier`) funnel
+   * through the store's commit point, so a consumer (the WriteAdmission
+   * ownership index) can never miss a transition the local store saw.
+   * A listener throw must never fail the CAS (substrates guard the call).
+   */
+  onCommit?: (record: SessionOwnershipRecord) => void;
 }
 
 export interface SessionOwnershipRegistryDeps {
@@ -111,6 +141,16 @@ export class SessionOwnershipRegistry {
 
   read(sessionKey: string): SessionOwnershipRecord | null {
     return this.d.store.read(sessionKey);
+  }
+
+  /**
+   * Every known ownership record from the underlying store's in-memory cache
+   * (StrandedTopicSentinel scan — stranded-inbound-self-heal). A store without an
+   * `all()` (none ship today) reads as empty: the sentinel then has nothing to
+   * scan (the safe direction — it can only raise an item it has evidence for).
+   */
+  all(): SessionOwnershipRecord[] {
+    return this.d.store.all?.() ?? [];
   }
 
   /** The current owner machine of a session (null if none / released). */

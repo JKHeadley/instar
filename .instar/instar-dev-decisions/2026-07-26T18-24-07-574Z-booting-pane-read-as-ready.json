@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-26T18:24:07.574Z",
+  "slug": "booting-pane-read-as-ready",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 223,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

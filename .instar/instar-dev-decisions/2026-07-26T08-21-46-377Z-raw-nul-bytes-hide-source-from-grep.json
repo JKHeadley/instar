@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-26T08:21:46.377Z",
+  "slug": "raw-nul-bytes-hide-source-from-grep",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/relayContentDedup.ts matches relay / delivery path"
+  ],
+  "belowFloor": true,
+  "files": 22,
+  "loc": 54,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

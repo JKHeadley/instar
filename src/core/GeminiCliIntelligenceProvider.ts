@@ -20,6 +20,14 @@
  * and the env allowlist + billing-var hard-delete live in
  * providers/adapters/gemini-cli/transport/geminiSpawn.ts, imported here so
  * the alive path and the registry adapter can never diverge on safety.
+ *
+ * CANNOT-SURFACE-USAGE (token-audit-completeness, documented exemption):
+ * this provider NEVER invokes options.onUsage — the gemini CLI's one-shot
+ * plain-text output carries no per-call token usage block, so there is
+ * nothing to parse. gemini-cli is therefore an `exempt: true` row in
+ * /metrics/features usageCoverage. If a future gemini CLI gains a usage
+ * surface, remove the exemption in FeatureMetricsLedger.USAGE_EXEMPT_FRAMEWORKS
+ * and wire the parse — the provider usage-contract test pins this contract.
  */
 
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
@@ -86,6 +94,10 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
     // eslint-disable-next-line no-constant-condition
     while (true) {
     const args = buildGeminiOneShotArgv(currentModel, prompt);
+    // Observable Intelligence: surface the model actually being run this attempt
+    // (currentModel can change across capacity-retries) so the funnel records the
+    // provider/model that produced the result.
+    try { options?.onModel?.({ model: currentModel, framework: 'gemini-cli' }); } catch { /* @silent-fallback-ok: onModel is pure observability — a throw must never break the LLM path */ }
     const result = await spawnGeminiAndWait(this.geminiPath, args, {
       timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       env: childEnv,

@@ -178,9 +178,19 @@ export class PeerStreamProxy {
 
   /** Forward an input/key frame for a session (caller already gated allowRemoteInput). */
   relayInput(frame: Record<string, unknown>): void {
-    if (this.state === 'active') this.transport?.send(frame);
+    this.relayFrame(frame);
     // Not active → input is dropped (caller's terminal shows the live state);
     // we never queue keystrokes across a reconnect (stale input is worse than none).
+  }
+
+  /** Forward a read-only request frame (e.g. a `history` scrollback fetch) to
+   *  the owning machine. Spec §2.2: capture happens ONLY on the owning machine
+   *  — history for a remote session must travel upstream, never hit local
+   *  tmux. Dropped unless the link is active (a request racing a reconnect is
+   *  simply re-issued by the user's next scroll; stale queued requests are
+   *  worse than none). */
+  relayFrame(frame: Record<string, unknown>): void {
+    if (this.state === 'active') this.transport?.send(frame);
   }
 
   // ── connection lifecycle ───────────────────────────────────────────────

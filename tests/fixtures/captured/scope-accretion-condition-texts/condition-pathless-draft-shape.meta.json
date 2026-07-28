@@ -1,0 +1,8 @@
+{
+  "source": "REAL registered completion-condition text from .instar/autonomous/29836.local.md (the scope-accretion fix session itself) — a long condition with NO deliverable-glob path tokens",
+  "command": "re.search(r'^completion_condition: \"(.*)\"$', open(state_file).read(), re.M).group(1)",
+  "capturedAt": "2026-07-02T08:00:44Z",
+  "machine": "echo laptop (Justin MacBook, darwin 24.6.0)",
+  "redactions": "none",
+  "note": "The pathless \"draft five specs\" incident shape: parseDeclaredDeliverables must return the EMPTY set (spec §2.4)."
+}

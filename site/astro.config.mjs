@@ -67,6 +67,14 @@ export default defineConfig({
           ],
         },
         {
+          label: 'EXO 3.0',
+          items: [
+            { label: 'EXO 3.0 Alignment', slug: 'features/exo3' },
+            { label: 'Case Study: Governed vs Ungoverned (the control)', slug: 'features/exo3-case-study-meridian' },
+            { label: 'Case Study: Unorthodox Values (Ironwood)', slug: 'features/exo3-case-study-ironwood' },
+          ],
+        },
+        {
           label: 'Features',
           items: [
             { label: 'Job Scheduler', slug: 'features/scheduler' },
@@ -94,6 +102,7 @@ export default defineConfig({
             { label: 'Self-Healing Remediator', slug: 'features/remediator' },
             { label: 'Task Flows', slug: 'features/task-flows' },
             { label: 'Correction & Preference Learning', slug: 'features/correction-preference-learning' },
+            { label: 'Scope-Accretion Completion Discipline', slug: 'features/scope-accretion' },
           ],
         },
         {

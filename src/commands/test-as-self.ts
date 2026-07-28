@@ -245,6 +245,69 @@ export async function runTestAsSelf(opts: TestAsSelfOptions): Promise<{ report: 
   }
 }
 
+/**
+ * `instar test-as-self --slack` — the credential-free Slack permission demonstration
+ * (Pillar 4, §8.4). Extends the throwaway-agent primitive from "is the agent alive?"
+ * to "does it enforce the RIGHT decision for each (principal, request) pair?".
+ *
+ * Runs the audit-asserting scenario suite IN-PROCESS (no throwaway home, no Slack
+ * tokens): every row flows through the SAME observer the live SlackAdapter calls
+ * (resolver → gate → decision ledger), and BOTH the verdict AND the matching
+ * audit/ledger entry are asserted per row. Prints a per-row report and returns
+ * exit 0 iff every row produced its expected decision AND its audit entry.
+ */
+export async function runTestAsSelfSlack(opts: { reportJson?: string } = {}): Promise<{ report: object; exitCode: number }> {
+  const { runAuditedScenarioSuite } = await import('../permissions/testing/SlackScenarioHarness.js');
+  console.log(pc.bold('  test-as-self --slack — permission demonstration (verified, not narrated)'));
+  const suite = await runAuditedScenarioSuite();
+
+  for (const r of suite.rows) {
+    const mark = r.pass ? pc.green('✓') : pc.red('✗');
+    const got = r.verdict ? `${r.verdict.decision}/${r.verdict.basis}` : 'null';
+    const expected = `${r.scenario.expectedDecision}/${r.scenario.expectedBasis}`;
+    const audit = r.auditOk ? pc.dim('audit✓') : pc.red('audit✗');
+    console.log(
+      `  ${mark} ${r.scenario.id} ` +
+        pc.dim(`[${r.scenario.principal.name}/${r.scenario.principal.role}]`) +
+        ` → ${got} ${audit}` +
+        (r.pass ? '' : pc.red(`  (expected ${expected}${r.mismatch ? ` — ${r.mismatch}` : ''})`)),
+    );
+  }
+
+  const allOk = suite.summary.failed === 0;
+  const report = {
+    mode: 'slack-permission-demonstration',
+    summary: suite.summary,
+    ledgerPath: suite.ledgerPath,
+    rows: suite.rows.map((r) => ({
+      id: r.scenario.id,
+      principal: r.scenario.principal.name,
+      role: r.scenario.principal.role,
+      request: r.scenario.text,
+      expected: `${r.scenario.expectedDecision}/${r.scenario.expectedBasis}`,
+      got: r.verdict ? `${r.verdict.decision}/${r.verdict.basis}` : 'null',
+      verdictOk: r.verdictOk,
+      auditOk: r.auditOk,
+      pass: r.pass,
+      proves: r.scenario.proves,
+    })),
+    verdict: allOk ? 'PASS' : 'FAIL',
+    ts: new Date().toISOString(),
+  };
+  if (opts.reportJson) {
+    try {
+      fs.mkdirSync(path.dirname(opts.reportJson), { recursive: true });
+      fs.writeFileSync(opts.reportJson, JSON.stringify(report, null, 2));
+    } catch { /* best-effort */ }
+  }
+  console.log(
+    allOk
+      ? pc.green(`  VERDICT: PASS — ${suite.summary.passed}/${suite.summary.total} rows (decision AND audit entry)`)
+      : pc.red(`  VERDICT: FAIL — ${suite.summary.failed}/${suite.summary.total} rows did not enforce the expected decision+audit`),
+  );
+  return { report, exitCode: allOk ? 0 : 1 };
+}
+
 /** Signal-safe teardown: stop processes, remove the throwaway home. */
 function teardown(ctx: RunContext): void {
   try { ctx.lifelineProc?.kill('SIGTERM'); } catch { /* */ }

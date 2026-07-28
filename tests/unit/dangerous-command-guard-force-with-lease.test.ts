@@ -102,6 +102,19 @@ describe('dangerous-command-guard.sh: force-with-lease runtime behavior', () => 
     expect(r.code, `expected exit 0, got code=${r.code} stderr=${r.stderr}`).toBe(0);
   });
 
+  it('ALLOWS force-with-lease to a feature branch when trailing command text mentions a protected word', () => {
+    // Regression for the 2026-06-07 false-positive (topic 19437): the carve-out scanned
+    // the WHOLE command input, so a chained status/log message mentioning "release
+    // cadence" or "main" elsewhere flipped the protected-branch check and blocked a
+    // legitimate PR-branch force-with-lease update. Only the `git push …` invocation is
+    // scanned now — the push targets a feature branch, so it MUST be allowed.
+    const r = runGuard(
+      'git push --force-with-lease origin echo/provider-swap && echo "advancing the release cadence on main"',
+    );
+    expect(r.code, `expected exit 0 (ALLOWED), got code=${r.code} stderr=${r.stderr}`).toBe(0);
+    expect(r.stderr).not.toContain('destructive');
+  });
+
   it('BLOCKS plain git push --force (no lease)', () => {
     const r = runGuard('git push --force origin echo/my-feature');
     expect(r.code, '--force without lease must stay blocked').toBe(2);

@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/instar">npm</a> · <a href="https://github.com/JKHeadley/instar">GitHub</a> · <a href="https://instar.sh">instar.sh</a> · <a href="https://instar.sh/introduction/">Docs</a>
+  <a href="https://www.npmjs.com/package/instar">npm</a> · <a href="https://github.com/JKHeadley/instar">GitHub</a> · <a href="https://instar.sh">instar.sh</a> · <a href="https://instar.sh/introduction/">Docs</a> · <a href="https://instar.sh/exo3">EXO&nbsp;3.0</a>
 </p>
 
 ---
@@ -116,6 +116,14 @@ An agent that forgets what you discussed yesterday, doesn't recognize someone it
 
 > **Deep dive:** [The Coherence Problem](https://instar.sh/concepts/coherence/) · [Values & Identity](https://instar.sh/concepts/values/) · [Coherence Is Safety](https://instar.sh/concepts/safety/)
 
+## EXO 3.0 — governed by your organization's intent
+
+Instar independently converged on Salim Ismail's **EXO 3.0 / "The Organizational Singularity"** framework: the idea that an organization's purpose should be encoded as *machine-readable* intent — "in code, not culture" — that actually **governs** its agents rather than just inspiring them. Instar was built around coherence before the framework existed, and the overlap turned out to be close to the line.
+
+We didn't just claim it works. We ran controlled experiments — same model, same requests, with the organization's intent switched off as the control — to show the intent itself is what changes the agent's behavior. The engine stays **neutral**: it enforces whatever intent a deploying organization gives it, never Instar's own values. Two case studies enforce two very different fictional companies' values equally well, neither of them ours.
+
+> **See the controlled proof → [instar.sh/exo3](https://instar.sh/exo3)** — two governed-vs-ungoverned case studies, with full transcripts.
+
 ## Features
 
 | Feature | Description | Docs |
@@ -133,7 +141,7 @@ An agent that forgets what you discussed yesterday, doesn't recognize someone it
 | **Coherence Gate** | LLM-powered response review. PEL + gate reviewer + 9 specialist reviewers catch quality issues before delivery | [→](https://instar.sh/features/coherence-gate/) |
 | **Intent Alignment** | Decision journaling, drift detection, organizational constraints | [→](https://instar.sh/features/intent/) |
 | **EXO 3.0 Alignment** | MTP protocol refusal/endorsement tests (`IntentTestHarness`, `OrgIntentIdentityLayer`), agent-readiness scoring (`AgentReadinessScorer`), agent digital passports (`AgentPassport`), learning-velocity metrics (`LearningVelocityScorer`) | [→](https://instar.sh/features/exo3/) |
-| **Multi-Machine** | Ed25519/X25519 crypto identity, encrypted sync, automatic failover | [→](https://instar.sh/features/multi-machine/) |
+| **Multi-Machine** | Ed25519/X25519 crypto identity, encrypted sync, automatic failover, and evidence-gated session-pool promotion (`POST /session-pool/promote`) | [→](https://instar.sh/features/multi-machine/) |
 | **Serendipity Protocol** | Sub-agents capture out-of-scope discoveries without breaking focus. HMAC-signed, secret-scanned | [→](https://instar.sh/features/serendipity/) |
 | **Threadline Protocol** | Agent-to-agent conversations with canonical identity, three-layer trust model, authorization policy, Ed25519 invitations, Sybil protection, MoltBridge network discovery, rich agent profiles (auto-compiled from agent data with human review gate), discovery waterfall, message security, tamper-proof audit logging, framework-agnostic interop, persistent listener daemon (always-on relay connection, pipe-mode sessions, sub-30s cross-machine failover), eleven MCP tools (seven core + four registry-conditional). 80 modules, roughly 3,800 test cases across 74 dedicated test files plus 125 cross-cutting | [→](https://instar.sh/features/threadline/) |
 | **A2A Delivery Health** | Durable agent-to-agent delivery tracking (`threadline/A2ADeliveryTracker`) so a message between agents never silently dies out — a reply on the thread is the acknowledgement, and `GET /threadline/peers/health` answers "is my channel to this peer alive?" as a lookup, not a guess. The `monitoring/A2ARedeliverySentinel` adds active recovery: re-send unacknowledged messages with backoff, then one aggregated escalation per dark peer. Recording-only; never gates a send | [→](https://instar.sh/features/a2a-delivery-health/) |
@@ -154,7 +162,7 @@ started, stopped, or restarted for fleet maintenance.
 
 ## Agent Skills
 
-Instar ships fourteen skills total — twelve user-facing, plus two internal skills (`instar-dev` and `spec-converge`) used only by the agent that develops instar itself. The standard is the [Agent Skills open standard](https://agentskills.io) -- portable across Claude Code, Codex, Cursor, VS Code, and 35+ other platforms.
+Instar ships fifteen skills total — thirteen user-facing, plus two internal skills (`instar-dev` and `spec-converge`) used only by the agent that develops instar itself. The standard is the [Agent Skills open standard](https://agentskills.io) -- portable across Claude Code, Codex, Cursor, VS Code, and 35+ other platforms.
 
 **Standalone skills** work with zero dependencies. Copy a SKILL.md into your project and go:
 
@@ -167,6 +175,7 @@ Instar ships fourteen skills total — twelve user-facing, plus two internal ski
 | [smart-web-fetch](skills/smart-web-fetch/) | Fetch web content with automatic markdown conversion and intelligent extraction |
 | [knowledge-base](skills/knowledge-base/) | Ingest and search a local knowledge base |
 | [systematic-debugging](skills/systematic-debugging/) | Structured debugging methodology for complex issues |
+| [iterative-converging-audit](skills/iterative-converging-audit/) | Run any find-all audit, review, or research sweep as an audit→fix→re-audit loop until a clean pass finds nothing new |
 
 **Instar-powered skills** unlock capabilities that need persistent infrastructure:
 

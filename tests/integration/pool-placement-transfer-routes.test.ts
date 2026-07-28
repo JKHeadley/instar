@@ -45,6 +45,13 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
   let pinStore: TopicPlacementPinStore;
   let server: Server;
   let placements: Array<Record<string, unknown>>;
+  let sendDrainCalls: Array<{ owner: string; sk: string; target: string; epoch: number }>;
+  let sendDrainImpl: (owner: string, sk: string, target: string, epoch: number) => { ok: boolean; status?: string; reason?: string; runSuspended?: boolean; claimLanded?: boolean };
+  let remoteAutonomousRun: { goal: string | null; remainingMinutes: number | null } | null;
+  let remoteProbeImpl: (() => Promise<{ goal: string | null; remainingMinutes: number | null } | null>) | null;
+  let remoteProbeCapabilityPresent: boolean;
+  let workingSetKicks: Array<{ machineId: string; topic: number }>;
+  let routeCtx: any;
   const SELF = 'm_a'; // "Mac Mini" — the holder answering these requests
   const PEER = 'm_b'; // "Laptop"
 
@@ -80,26 +87,43 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
     pinStore = new TopicPlacementPinStore({ filePath: path.join(dir, 'topic-pins.json') });
 
     const coordinator: any = {
-      getSyncStatus: () => ({ enabled: true, role: 'awake', leaseHolder: SELF, leaseEpoch: 3, holdsLease: true, splitBrainState: 'clear', protocolVersion: 1, awakeMachineCount: 1 }),
+      getSyncStatus: () => ({ enabled: true, role: 'awake', leaseHolder: SELF, leaseEpoch: 3, holdsLease: true, splitBrainState: 'clear', protocolVersion: 1, awakeMachineCount: 1, awakeMachineCountSource: 'lease-live' }),
       managers: { identityManager: idMgr },
     };
     placements = [];
-    const ctx: any = {
+    sendDrainCalls = [];
+    sendDrainImpl = () => ({ ok: true, status: 'drained' });
+    remoteAutonomousRun = null;
+    remoteProbeImpl = null;
+    remoteProbeCapabilityPresent = true;
+    workingSetKicks = [];
+    routeCtx = {
       config: { authToken: 'test', stateDir: dir, port: 0 },
       stateDir: dir,
       coordinator,
+      // WS1.2 drain seam: records every order; per-test impl shapes the outcome.
+      sendDrain: (owner: string, sk: string, target: string, epoch: number) => {
+        sendDrainCalls.push({ owner, sk, target, epoch });
+        return Promise.resolve(sendDrainImpl(owner, sk, target, epoch));
+      },
       machinePoolRegistry: registry,
       sessionOwnershipRegistry: ownReg,
       topicPinStore: pinStore,
       meshSelfId: SELF,
+      kickWorkingSetOnMachine: (machineId: string, topic: number) => workingSetKicks.push({ machineId, topic }),
       resolveRouterUrl: () => null, // we are the holder → answer locally
       // Coherence journal seam (finding #5): capture every placement entry the
       // transfer handler emits, exactly as the live journal would receive it.
       state: { getCoherenceJournal: () => ({ emitPlacement: (topic: number, data: Record<string, unknown>) => placements.push({ topic, ...data }) }) },
     };
+    Object.defineProperty(routeCtx, 'autonomousRunOnMachine', {
+      get: () => remoteProbeCapabilityPresent
+        ? async () => remoteProbeImpl ? remoteProbeImpl() : remoteAutonomousRun
+        : null,
+    });
     const app = express();
     app.use(express.json());
-    app.use(createRoutes(ctx));
+    app.use(createRoutes(routeCtx));
     server = await listen(app);
   });
   afterEach(async () => {
@@ -111,6 +135,28 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
     const res = await fetch(server.url + p, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) } });
     return { status: res.status, body: await res.json().catch(() => ({})) };
   }
+
+  it('kicks the destination carrier after a proxied holder proves the seat moved', async () => {
+    const holderApp = express();
+    holderApp.use(express.json());
+    holderApp.post('/pool/transfer', (_req, res) => {
+      res.json({ ok: true, seatMoved: true, topicId: '3550', targetMachine: SELF });
+    });
+    const holder = await listen(holderApp);
+    routeCtx.resolveRouterUrl = () => holder.url;
+    try {
+      const r = await api('/pool/transfer', {
+        method: 'POST',
+        body: JSON.stringify({ topic: 3550, to: 'Mac Mini' }),
+      });
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({ seatMoved: true, handledBy: 'holder-proxy' });
+      expect(workingSetKicks).toEqual([{ machineId: SELF, topic: 3550 }]);
+    } finally {
+      await holder.close();
+      routeCtx.resolveRouterUrl = () => null;
+    }
+  });
 
   // ── GET /pool/placement ──────────────────────────────────────────────
   it('GET /pool/placement requires a topic (400)', async () => {
@@ -152,6 +198,25 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
     const r = await api('/pool/placement?topic=102');
     expect(r.body.isThisMachine).toBe(true);
     expect(r.body.thisMachine).toBe(SELF);
+  });
+
+  // ── WS1.3: pendingReplacement — pin/owner divergence is a first-class state ──
+  it('surfaces pendingReplacement + pendingSince when the pin disagrees with the owner (the 2026-06-12 stuck-divergence)', async () => {
+    own('13481', PEER);            // owner says PEER…
+    pinStore.set('13481', SELF);   // …but the pin says HERE — mid-reconcile
+    const r = await api('/pool/placement?topic=13481');
+    expect(r.status).toBe(200);
+    expect(r.body.pendingReplacement).toBe(true);
+    expect(typeof r.body.pendingSince).toBe('string');
+    expect(Number.isFinite(Date.parse(r.body.pendingSince))).toBe(true);
+  });
+
+  it('pendingReplacement is false when pin and owner agree (and pendingSince is absent)', async () => {
+    own('103', PEER);
+    pinStore.set('103', PEER, true);
+    const r = await api('/pool/placement?topic=103');
+    expect(r.body.pendingReplacement).toBe(false);
+    expect(r.body.pendingSince).toBeUndefined();
   });
 
   // ── POST /pool/transfer ──────────────────────────────────────────────
@@ -280,8 +345,199 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
     const noConfirm = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 204, to: 'Studio' }) });
     expect(noConfirm.status).toBe(409);
     expect(noConfirm.body.needsConfirmation).toBe(true);
-    const withConfirm = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 205, to: 'Studio', confirm: true }) });
+    const withConfirm = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 204, to: 'Studio', confirm: true, confirmationChallenge: noConfirm.body.confirmationChallenge }) });
     expect(withConfirm.status).toBe(200);
     expect(withConfirm.body.targetMachine).toBe('m_c');
+  });
+
+  // ── WS1.2 drain leg (active-conversation transfers COMPLETE) ──────────
+  describe('WS1.2 drain leg', () => {
+    it('REMOTE owner with a live autonomous run requires confirmation before any drain', async () => {
+      own('309', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      remoteAutonomousRun = { goal: 'long-running build', remainingMinutes: 42 };
+
+      const noConfirm = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 309, to: 'Mac Mini' }) });
+      expect(noConfirm.status).toBe(409);
+      expect(noConfirm.body.needsConfirmation).toBe(true);
+      expect(noConfirm.body.detail).toContain('autonomous-run-in-flight');
+      expect(sendDrainCalls).toHaveLength(0);
+
+      sendDrainImpl = () => ({ ok: true, status: 'drained', claimLanded: true });
+      const confirmed = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 309, to: 'Mac Mini', confirm: true, confirmationChallenge: noConfirm.body.confirmationChallenge }) });
+      expect(confirmed.status).toBe(200);
+      expect(sendDrainCalls).toHaveLength(1);
+      expect(workingSetKicks).toContainEqual({ machineId: SELF, topic: 309 });
+    });
+
+    it('REMOTE owner without a preflight capability fails closed behind confirmation', async () => {
+      own('310', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      // Exercise an explicitly absent callback, matching a partially wired or
+      // version-skewed holder rather than treating absence as "no run".
+      remoteProbeCapabilityPresent = false;
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 310, to: 'Mac Mini' }) });
+      expect(r.status).toBe(409);
+      expect(r.body.needsConfirmation).toBe(true);
+      expect(sendDrainCalls).toHaveLength(0);
+    });
+
+    it('owner/epoch change during remote run probe returns retry-required before drain', async () => {
+      own('311', PEER);
+      remoteProbeImpl = async () => {
+        ownReg.cas({ type: 'transfer', from: PEER, to: SELF }, { sessionKey: '311', sender: 'ROUTER', nonce: 'move-during-probe' });
+        return null;
+      };
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 311, to: 'Mac Mini' }) });
+      expect(r.status).toBe(409);
+      expect(r.body.retryRequired).toBe(true);
+      expect(sendDrainCalls).toHaveLength(0);
+    });
+
+    it('a challenge cannot confirm conditions that changed after the prompt', async () => {
+      own('312', PEER);
+      remoteAutonomousRun = { goal: 'run A', remainingMinutes: 42 };
+      const first = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 312, to: 'Mac Mini' }) });
+      expect(first.status).toBe(409);
+      remoteAutonomousRun = { goal: 'run B', remainingMinutes: 42 };
+      const changed = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 312, to: 'Mac Mini', confirm: true, confirmationChallenge: first.body.confirmationChallenge }) });
+      expect(changed.status).toBe(409);
+      expect(changed.body.needsConfirmation).toBe(true);
+      expect(changed.body.confirmationChallenge).not.toBe(first.body.confirmationChallenge);
+      expect(sendDrainCalls).toHaveLength(0);
+    });
+
+    it('a challenge cannot confirm a replaced SELF-owned autonomous run', async () => {
+      own('313', SELF);
+      const autonomousDir = path.join(dir, 'autonomous');
+      fs.mkdirSync(autonomousDir, { recursive: true });
+      const runFile = path.join(autonomousDir, '313.local.md');
+      fs.writeFileSync(runFile, '---\nactive: true\npaused: false\nreport_topic: "313"\ngoal: "local run A"\nstarted_at: "2026-07-17T20:00:00Z"\nduration_seconds: 7200\n---\n');
+
+      const first = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 313, to: 'Laptop' }) });
+      expect(first.status).toBe(409);
+      fs.writeFileSync(runFile, '---\nactive: true\npaused: false\nreport_topic: "313"\ngoal: "local run B"\nstarted_at: "2026-07-17T20:30:00Z"\nduration_seconds: 7200\n---\n');
+
+      const changed = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 313, to: 'Laptop', confirm: true, confirmationChallenge: first.body.confirmationChallenge }) });
+      expect(changed.status).toBe(409);
+      expect(changed.body.confirmationChallenge).not.toBe(first.body.confirmationChallenge);
+      expect(sendDrainCalls).toHaveLength(0);
+    });
+
+    it('SELF-owned topic → drain ordered on the local owner BEFORE the pin, outcome in the response', async () => {
+      own('300', SELF);
+      const epochBefore = ownReg.read('300')!.ownershipEpoch;
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 300, to: 'Laptop' }) });
+      expect(r.status).toBe(200);
+      expect(sendDrainCalls).toHaveLength(1);
+      expect(sendDrainCalls[0]).toMatchObject({ owner: SELF, sk: '300', target: PEER, epoch: epochBefore });
+      expect(r.body.drain).toMatchObject({ attempted: true, ok: true, status: 'drained' });
+      expect(pinStore.get('300')?.preferredMachine).toBe(PEER);
+      expect(workingSetKicks).toContainEqual({ machineId: PEER, topic: 300 });
+    });
+
+    it('REMOTE owner advertising ws12DrainReceive → drain ordered on that peer', async () => {
+      own('301', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 301, to: 'Mac Mini' }) });
+      expect(r.status).toBe(200);
+      expect(sendDrainCalls).toHaveLength(1);
+      expect(sendDrainCalls[0].owner).toBe(PEER);
+      expect(sendDrainCalls[0].target).toBe(SELF);
+    });
+
+    it('REMOTE owner claim proof makes seatMoved true while the router echo is still stale', async () => {
+      own('307', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      sendDrainImpl = () => ({ ok: true, status: 'drained', claimLanded: true });
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 307, to: 'Mac Mini' }) });
+      expect(r.status).toBe(200);
+      expect(r.body.seatMoved).toBe(true);
+      expect(r.body.drain).toMatchObject({ attempted: true, ok: true, claimLanded: true });
+      // The injected local registry deliberately remains stale at the response
+      // boundary; the signed owner-side claim result is the direct proof.
+      expect(ownReg.ownerOf('307')).toBe(PEER);
+    });
+
+    it('an inconsistent failed drain cannot smuggle claim proof into seatMoved', async () => {
+      own('308', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      sendDrainImpl = () => ({ ok: false, status: 'refused-cas-lost', claimLanded: true });
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 308, to: 'Mac Mini' }) });
+      expect(r.status).toBe(200);
+      expect(r.body.seatMoved).toBe(false);
+      expect(r.body.drain).toMatchObject({ attempted: true, ok: false, claimLanded: true });
+    });
+
+    it('REMOTE owner WITHOUT the capability flag → no drain order (degrades to today\'s path)', async () => {
+      own('302', PEER);
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 302, to: 'Mac Mini' }) });
+      expect(r.status).toBe(200);
+      expect(sendDrainCalls).toHaveLength(0);
+      expect(r.body.drain).toBeUndefined();
+      expect(pinStore.get('302')?.preferredMachine).toBe(SELF);
+    });
+
+    it('aborted-emergency-stop → 409 failedNeedsRetry, NO pin, ownership untouched', async () => {
+      own('303', SELF);
+      sendDrainImpl = () => ({ ok: false, status: 'aborted-emergency-stop', reason: 'transfer-aborted-topic-stays' });
+      const epochBefore = ownReg.read('303')!.ownershipEpoch;
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 303, to: 'Laptop' }) });
+      expect(r.status).toBe(409);
+      expect(r.body.failedNeedsRetry).toBe(true);
+      expect(pinStore.get('303')).toBeNull();
+      expect(ownReg.read('303')!.ownerMachineId).toBe(SELF);
+      expect(ownReg.read('303')!.ownershipEpoch).toBe(epochBefore);
+    });
+
+    it('a drain failure that is NOT an abort degrades to today\'s pin path (recorded, never blocking)', async () => {
+      own('304', SELF);
+      sendDrainImpl = () => { throw new Error('mesh unreachable'); };
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 304, to: 'Laptop' }) });
+      expect(r.status).toBe(200);
+      expect(r.body.drain).toMatchObject({ attempted: true, ok: false });
+      expect(pinStore.get('304')?.preferredMachine).toBe(PEER);
+    });
+
+    it('transfer to the machine that already owns it → no drain order (noop)', async () => {
+      own('305', PEER);
+      pinStore.set('305', PEER, true);
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 305, to: 'Laptop' }) });
+      expect(r.status).toBe(200);
+      expect(sendDrainCalls).toHaveLength(0);
+    });
+
+    it('drain-reported run suspension surfaces as autonomousRunSuspended', async () => {
+      own('306', SELF);
+      sendDrainImpl = () => ({ ok: true, status: 'drained', runSuspended: true });
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 306, to: 'Laptop' }) });
+      expect(r.status).toBe(200);
+      expect(r.body.autonomousRunSuspended).toBe(true);
+    });
   });
 });

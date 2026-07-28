@@ -1,5 +1,7 @@
 # Cross-Machine Secret Sync — Plain-English Overview
 
+This work serves the constitutional principle **Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions**: a secret entrusted to one machine must remain safely usable by the same agent on its other machines without turning machine-local encryption keys into replicated state.
+
 > The one-line version: a credential you hand the agent on one of your machines should just work on its other machines too — without you typing it twice, and without it ever sitting in plaintext.
 
 ## The problem in one breath

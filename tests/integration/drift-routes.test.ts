@@ -169,12 +169,18 @@ describe('Drift & Alignment Routes (integration)', () => {
   // ── GET /intent/alignment ─────────────────────────────────────────
 
   describe('GET /intent/alignment', () => {
-    it('returns score for empty journal', async () => {
+    it('reports an empty journal as NOT ASSESSED, not as a failing grade', async () => {
+      // Previously asserted `grade === 'F'`, which locked in the defect at the
+      // API layer: an API consumer reading `.grade` could not tell "no data"
+      // from "assessed and failing". The route passes the score through
+      // verbatim, so the honest state has to be in the payload itself.
       const res = await request(app).get('/intent/alignment');
 
       expect(res.status).toBe(200);
       expect(res.body.score).toBe(0);
-      expect(res.body.grade).toBe('F');
+      expect(res.body.grade).toBe('N/A');
+      expect(res.body.assessable).toBe(false);
+      expect(res.body.summary).toMatch(/cannot be assessed/i);
       expect(res.body.sampleSize).toBe(0);
       expect(res.body.components).toBeTruthy();
       expect(res.body.components.conflictFreedom).toBe(0);

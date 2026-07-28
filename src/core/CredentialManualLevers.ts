@@ -1,0 +1,115 @@
+/**
+ * CredentialManualLevers — the detective-control bookkeeping for the manual swap/set-default
+ * levers (spec §2.4 manual levers + §0.g force budget). Machine-local, in-memory, pure.
+ *
+ * The levers stay agent-callable (single-operator autonomy directive), so the control is
+ * DETECTIVE + structural + non-suppressible, not a PIN gate:
+ *   - per-PAIR cooldown      — a manual swap respects the per-pair cooldown by default; `force:true`
+ *                              overrides it, and the override is FLAGGED in the audit + notification.
+ *   - force budget (§0.g)    — the `force:true` bypass carries its OWN bounded budget:
+ *                              `maxForcedManualSwapsPerWindow`. Exhaustion refuses further FORCED
+ *                              manual swaps until the window rolls — `force` is not the one uncapped
+ *                              bypass left in the spec. A non-forced swap is never blocked by it.
+ *
+ * Every guard here makes "no safe action available" a SURFACED refusal (a named reason returned to
+ * the caller), never a silent drop and never an unbounded retry (§0.g(c)).
+ */
+
+const DEFAULT_PAIR_COOLDOWN_MS = 15 * 60 * 1000; // 1× the default 15-min poll interval (§2.4)
+const DEFAULT_MAX_FORCED_PER_WINDOW = 10; // generous under single-operator autonomy (§2.4)
+const DEFAULT_FORCED_WINDOW_MS = 60 * 60 * 1000; // 1h rolling window
+
+export interface CredentialManualLeversDeps {
+  /** Per-pair cooldown ms (≥1× poll interval). */
+  pairCooldownMs?: number;
+  /** §0.g force budget: max FORCED manual swaps per window. */
+  maxForcedPerWindow?: number;
+  /** §0.g force budget window length ms. */
+  forcedWindowMs?: number;
+  now?: () => number;
+}
+
+/** A cooldown/budget verdict — allow, or a named refusal (surfaced, never silent). */
+export type LeverVerdict =
+  | { allowed: true; forced: boolean }
+  | { allowed: false; reason: string; code: 'pair-cooldown' | 'force-budget-exhausted' };
+
+/** Canonical, order-independent key for a slot pair. */
+function pairKey(a: string, b: string): string {
+  return [a, b].sort().join('\u0000');
+}
+
+export class CredentialManualLevers {
+  private readonly pairCooldownMs: number;
+  private readonly maxForcedPerWindow: number;
+  private readonly forcedWindowMs: number;
+  private readonly now: () => number;
+
+  /** pairKey → last actuation epoch ms. */
+  private readonly lastActuation = new Map<string, number>();
+  /** Forced-swap timestamps within the rolling window. */
+  private forcedTimestamps: number[] = [];
+
+  constructor(deps: CredentialManualLeversDeps = {}) {
+    this.pairCooldownMs = deps.pairCooldownMs ?? DEFAULT_PAIR_COOLDOWN_MS;
+    this.maxForcedPerWindow = deps.maxForcedPerWindow ?? DEFAULT_MAX_FORCED_PER_WINDOW;
+    this.forcedWindowMs = deps.forcedWindowMs ?? DEFAULT_FORCED_WINDOW_MS;
+    this.now = deps.now ?? (() => Date.now());
+  }
+
+  /**
+   * Evaluate whether a manual swap of (slotA, slotB) may proceed. `force` overrides the per-pair
+   * cooldown BUT is itself bounded by the force budget. Read-only — call `recordSwap` after a
+   * swap actually commits so the cooldown/budget advance only on real actuation.
+   */
+  evaluateSwap(slotA: string, slotB: string, force: boolean): LeverVerdict {
+    const now = this.now();
+    const key = pairKey(slotA, slotB);
+    const last = this.lastActuation.get(key);
+    const onCooldown = last !== undefined && now - last < this.pairCooldownMs;
+
+    if (!force) {
+      if (onCooldown) {
+        const remainMs = this.pairCooldownMs - (now - last!);
+        return {
+          allowed: false,
+          code: 'pair-cooldown',
+          reason: `pair is on cooldown (${Math.ceil(remainMs / 1000)}s remaining); pass force:true to override`,
+        };
+      }
+      return { allowed: true, forced: false };
+    }
+
+    // force:true — bypasses the cooldown, but the bypass carries its OWN budget (§0.g).
+    this.pruneForcedWindow(now);
+    if (this.forcedTimestamps.length >= this.maxForcedPerWindow) {
+      return {
+        allowed: false,
+        code: 'force-budget-exhausted',
+        reason: `forced-manual-swap budget exhausted (${this.maxForcedPerWindow} per ${Math.round(this.forcedWindowMs / 60000)}m window) — refusing further forced swaps until the window rolls`,
+      };
+    }
+    return { allowed: true, forced: true };
+  }
+
+  /** Record an actually-committed swap: advances the pair cooldown and (if forced) the budget. */
+  recordSwap(slotA: string, slotB: string, forced: boolean): void {
+    const now = this.now();
+    this.lastActuation.set(pairKey(slotA, slotB), now);
+    if (forced) {
+      this.pruneForcedWindow(now);
+      this.forcedTimestamps.push(now);
+    }
+  }
+
+  /** Forced swaps remaining in the current window (for observability). */
+  forcedBudgetRemaining(): number {
+    this.pruneForcedWindow(this.now());
+    return Math.max(0, this.maxForcedPerWindow - this.forcedTimestamps.length);
+  }
+
+  private pruneForcedWindow(now: number): void {
+    const cutoff = now - this.forcedWindowMs;
+    this.forcedTimestamps = this.forcedTimestamps.filter((t) => t > cutoff);
+  }
+}

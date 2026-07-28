@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-16T19:48:00.000Z",
+  "slug": "apprenticeship-cross-agent-role-coverage",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "cross-agent authenticated information flow",
+    "multi-store observability aggregation"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 559,
+  "causalAutopsy": "Role coverage derived program-wide health from only the serving agent's SQLite store, so valid cycles owned by peer agents were invisible and could produce a false starved keystone signal.",
+  "classClosure": null,
+  "verdict": "pass"
+}

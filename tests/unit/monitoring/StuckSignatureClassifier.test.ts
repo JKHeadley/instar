@@ -141,3 +141,40 @@ describe('extractResetHint', () => {
     expect(extractResetHint('you hit your limit')).toBeUndefined();
   });
 });
+
+describe('classifyStuckSignature — approval-prompt-waiting (framework permission floor)', () => {
+  // The real Claude Code 2.1.176-177 cd-redirection prompt.
+  const APPROVAL_PROMPT_TAIL = [
+    'Compound command contains cd with output redirection — manual approval required',
+    'to prevent path resolution bypass.',
+    'Do you want to proceed?',
+    '❯ 1. Yes',
+    '  2. No',
+    '  Esc to cancel',
+  ].join('\n');
+
+  it('names a live glyph-led approval menu as approval-prompt-waiting', () => {
+    expect(classifyStuckSignature(APPROVAL_PROMPT_TAIL)?.kind).toBe('approval-prompt-waiting');
+  });
+
+  it('is PROSE-AGNOSTIC: names a drifted/unrecognized prompt whose wording changed', () => {
+    // Different prose the registry does not know — but the ❯-led menu + a
+    // generic affordance are present, so Layer 3 still NAMES it (drift detector).
+    const drifted = [
+      'Some brand-new approval wording the prose patterns do not recognize',
+      '❯ 1. Allow',
+      '  2. Deny',
+      '  Esc to cancel',
+    ].join('\n');
+    expect(classifyStuckSignature(drifted)?.kind).toBe('approval-prompt-waiting');
+  });
+
+  it('does NOT fire without a blocking affordance (a bare numbered list is not a focused menu)', () => {
+    const notAMenu = ['Here are the options I considered:', '❯ 1. first idea', '  2. second idea'].join('\n');
+    expect(classifyStuckSignature(notAMenu)?.kind).not.toBe('approval-prompt-waiting');
+  });
+
+  it('a real rate-limit wedge still wins over an incidental menu (precedence)', () => {
+    expect(classifyStuckSignature(RATE_LIMIT_TAIL)?.kind).toBe('rate-limited');
+  });
+});

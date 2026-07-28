@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "_doc": "L0 zombie-free delivery invariant (drive12 UX-first enforcement spec, Increment 1): per-queue-class max age, enforced at DEQUEUE time. A queued outbound entry older than its class policy can never auto-deliver; it retires to dead-letter with a dropped-stale record and an aggregated operator digest. maxAgeHours 0 means NO EXPIRY for that class — the rollback sentinel: disabling the invariant is a data edit, not a code revert. This file is a protected path (a 0-flip requires an operator label and raises a loud digest event).",
+  "queues": {
+    "delivery-recovery": { "maxAgeHours": 24 }
+  }
+}

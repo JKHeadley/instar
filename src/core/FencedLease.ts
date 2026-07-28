@@ -52,6 +52,58 @@ export interface TunnelAcceptDecision {
   reason: string;
 }
 
+/**
+ * F2 (staleHolderTakeover) inputs to `canAcquire`, passed ONLY when the dark
+ * `multiMachine.leaseSelfHeal.staleHolderTakeover` flag is enabled. All times
+ * are the OBSERVER's OWN monotonic clock (no remote wall-clock subtraction) so
+ * the takeover decision is clock-skew immune. `freshObservedMonoMs` is stamped
+ * when the holder's signed nonce watermark last advanced on a VERIFIED tunnel
+ * fold-in; `undefined` ⇒ never observed ⇒ fail-closed (no takeover).
+ */
+export interface StaleHolderTakeoverOpts {
+  monotonicNowMs: number;
+  freshObservedMonoMs: number | undefined;
+  /** ttlMs × nonRenewalMissedObservations */
+  nonRenewalThresholdMs: number;
+}
+
+/**
+ * U4.4 (lease hand-back, R-r2-1) — the SIGNED, epoch-bound, TTL-bounded,
+ * SINGLE-USE holder consent token. `canAcquire` returns `held-by-live-peer`
+ * for a live, healthy holder — which is EXACTLY the hand-back state (the
+ * holder is alive and CONSENTING, not stale). The consent token is the
+ * holder's cryptographic authorization for ONE named target to claim at the
+ * next epoch. Minted by the holder (signed with its machine key), bound to
+ * the holder's CURRENT epoch + the offered target + an expiry + a fresh
+ * nonce. Presented at acquire time via `HandbackTakeoverOpts` (the
+ * `handbackOpts` analogue of `StaleHolderTakeoverOpts`).
+ */
+export interface HandbackConsentToken {
+  /** The consenting CURRENT holder (the signer). */
+  holder: string;
+  /** The holder's current epoch the consent is bound to. */
+  epoch: number;
+  /** The ONLY machine this token authorizes to claim. */
+  target: string;
+  /** ISO expiry — a token older than this is dead (TTL-bounded). */
+  expiresAt: string;
+  /** Single-use id, holder-scoped (the acquirer records used nonces). */
+  nonce: number;
+  /** Holder's Ed25519 signature over the canonical form. */
+  signature: string;
+}
+
+/**
+ * U4.4 inputs to `canAcquire`, passed ONLY when a handback-offer delivered a
+ * consent token. FAIL-CLOSED default: absent / invalid / expired / replayed /
+ * reused token ⇒ the legacy `held-by-live-peer` refusal, unchanged.
+ */
+export interface HandbackTakeoverOpts {
+  token: HandbackConsentToken;
+  /** Single-use enforcement: the caller's used-(holder,nonce) check. */
+  alreadyUsed: boolean;
+}
+
 const DEFAULT_CAS_MAX_RETRIES = 5;
 
 export class FencedLease {
@@ -78,21 +130,85 @@ export class FencedLease {
    * signature covers exactly these so a holder cannot later be impersonated
    * by re-ordering fields or smuggling extra keys.
    */
-  static canonicalize(lease: Pick<LeaseRecord, 'holder' | 'epoch' | 'acquiredAt' | 'expiresAt' | 'nonce'>): string {
-    return JSON.stringify([lease.holder, lease.epoch, lease.acquiredAt, lease.expiresAt, lease.nonce]);
+  static canonicalize(
+    lease: Pick<LeaseRecord, 'holder' | 'epoch' | 'acquiredAt' | 'expiresAt' | 'nonce'> & { released?: boolean },
+  ): string {
+    const base: Array<string | number | boolean> = [
+      lease.holder,
+      lease.epoch,
+      lease.acquiredAt,
+      lease.expiresAt,
+      lease.nonce,
+    ];
+    // OMIT-WHEN-FALSE (multi-machine-lease-self-heal F3, load-bearing invariant):
+    // a non-released lease canonicalizes to the IDENTICAL legacy 5-element form,
+    // so (a) existing signed leases from un-upgraded peers still verify byte-for-
+    // byte and (b) an upgraded signer's normal `released:false` renewal verifies
+    // on an un-upgraded verifier. ONLY a genuine tombstone (released===true)
+    // appends the 6th element — and that `true` is INSIDE the signature, so a
+    // relay can neither strip nor inject it.
+    if (lease.released === true) base.push(true);
+    return JSON.stringify(base);
   }
 
-  /** Build + sign a lease record naming THIS machine as holder. */
-  signLease(epoch: number, acquiredAtIso: string, expiresAtIso: string, nonce: number): LeaseRecord {
+  /**
+   * Build + sign a lease record naming THIS machine as holder. Pass
+   * `released:true` to mint a tombstone (F3 relinquish) — the bit is signed.
+   */
+  signLease(
+    epoch: number,
+    acquiredAtIso: string,
+    expiresAtIso: string,
+    nonce: number,
+    released = false,
+  ): LeaseRecord {
     const base = {
       holder: this.crypto.selfMachineId,
       epoch,
       acquiredAt: acquiredAtIso,
       expiresAt: expiresAtIso,
       nonce,
+      // conditional spread: a non-tombstone record carries NO `released` field
+      // at all (so it is byte-identical to a legacy record), a tombstone carries
+      // released:true (covered by the signature via canonicalize).
+      ...(released ? { released: true as const } : {}),
     };
     const signature = this.crypto.sign(FencedLease.canonicalize(base));
     return { ...base, signature };
+  }
+
+  // ── U4.4 hand-back consent token (mint + verify) ──────────────────
+
+  /** Stable, field-ordered serialization of the signable consent fields. The
+   *  leading discriminator prevents cross-protocol confusion with a lease
+   *  record's canonical form (a consent token can never verify as a lease). */
+  static canonicalizeHandbackConsent(
+    t: Pick<HandbackConsentToken, 'holder' | 'epoch' | 'target' | 'expiresAt' | 'nonce'>,
+  ): string {
+    return JSON.stringify(['handback-consent', t.holder, t.epoch, t.target, t.expiresAt, t.nonce]);
+  }
+
+  /** Mint a consent token naming THIS machine as the consenting holder.
+   *  The CALLER (LeaseCoordinator) is responsible for only minting while it
+   *  actually holds the lease at `epoch`. */
+  signHandbackConsent(epoch: number, target: string, expiresAtIso: string, nonce: number): HandbackConsentToken {
+    const base = {
+      holder: this.crypto.selfMachineId,
+      epoch,
+      target,
+      expiresAt: expiresAtIso,
+      nonce,
+    };
+    return { ...base, signature: this.crypto.sign(FencedLease.canonicalizeHandbackConsent(base)) };
+  }
+
+  /** Verify a consent token's signature against its claimed holder's
+   *  REGISTERED key (an unknown/forged holder never verifies). */
+  verifyHandbackConsent(token: HandbackConsentToken): boolean {
+    if (!token || typeof token.holder !== 'string' || typeof token.epoch !== 'number') return false;
+    if (typeof token.target !== 'string' || typeof token.expiresAt !== 'string') return false;
+    if (typeof token.nonce !== 'number' || typeof token.signature !== 'string') return false;
+    return this.crypto.verify(FencedLease.canonicalizeHandbackConsent(token), token.signature, token.holder);
   }
 
   /** Verify a lease's signature against its claimed holder's registered key. */
@@ -190,6 +306,8 @@ export class FencedLease {
     currentLease: LeaseRecord | undefined | null,
     presumedDeadHolders: ReadonlySet<string>,
     nowMs: number,
+    staleHolderOpts?: StaleHolderTakeoverOpts,
+    handbackOpts?: HandbackTakeoverOpts,
   ): AcquireDecision {
     if (!currentLease) return { can: true, reason: 'no-current-lease' };
     if (this.isExpired(currentLease, nowMs)) return { can: true, reason: 'current-lease-expired' };
@@ -198,6 +316,53 @@ export class FencedLease {
     }
     if (presumedDeadHolders.has(currentLease.holder)) {
       return { can: true, reason: `holder-presumed-dead (${currentLease.holder})` };
+    }
+    // F2 (staleHolderTakeover) — DARK by default: opts are passed ONLY when the
+    // flag is on, so with no opts this method is byte-for-byte the legacy
+    // behavior. A holder whose signed nonce watermark hasn't advanced for
+    // `nonRenewalThresholdMs` of the OBSERVER'S OWN monotonic time is not
+    // renewing. Single-clock (no remote wall-clock subtraction) ⇒ skew-immune;
+    // unforgeable (the watermark advances only on a VERIFIED tunnel fold-in).
+    // FAIL-CLOSED: an absent/NaN observation never grants takeover.
+    if (staleHolderOpts) {
+      const { monotonicNowMs, freshObservedMonoMs, nonRenewalThresholdMs } = staleHolderOpts;
+      if (
+        typeof freshObservedMonoMs === 'number' &&
+        Number.isFinite(freshObservedMonoMs) &&
+        nonRenewalThresholdMs > 0 &&
+        monotonicNowMs - freshObservedMonoMs > nonRenewalThresholdMs
+      ) {
+        const stalledS = Math.round((monotonicNowMs - freshObservedMonoMs) / 1000);
+        return { can: true, reason: `holder-not-renewing (nonce watermark stalled ${stalledS}s)` };
+      }
+    }
+    // U4.4 (preferredCaptainHandback, R-r2-1) — the consent-authorized
+    // acquisition branch. `held-by-live-peer` is EXACTLY the hand-back state
+    // (the holder is alive and consenting, not stale), so a claim is granted
+    // ONLY when the presented consent token:
+    //   • verifies against the HOLDER's registered key (unforgeable),
+    //   • names THIS machine as the target,
+    //   • matches the LIVE lease's holder AND epoch (epoch-bound — a token
+    //     minted for an older epoch is dead the moment the lease moves),
+    //   • is unexpired (TTL-bounded), and
+    //   • is unused (single-use — the caller's used-nonce check).
+    // FAIL-CLOSED default: absent/invalid/expired/replayed/reused token ⇒ the
+    // legacy `held-by-live-peer` refusal below, byte-for-byte unchanged.
+    if (handbackOpts) {
+      const t = handbackOpts.token;
+      const expMs = Date.parse(t?.expiresAt ?? '');
+      if (
+        !handbackOpts.alreadyUsed &&
+        t &&
+        t.target === this.crypto.selfMachineId &&
+        t.holder === currentLease.holder &&
+        t.epoch === currentLease.epoch &&
+        Number.isFinite(expMs) &&
+        nowMs < expMs &&
+        this.verifyHandbackConsent(t)
+      ) {
+        return { can: true, reason: `handback-consent (from ${t.holder} at epoch ${t.epoch})` };
+      }
     }
     return { can: false, reason: `held-by-live-peer (${currentLease.holder})` };
   }

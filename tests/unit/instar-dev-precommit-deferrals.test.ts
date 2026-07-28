@@ -77,14 +77,21 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
       'export function verifyProposalDerivedRunbooks() { return { ok: true, reason: "no-proposal-derived-runbooks-or-all-verified" }; }\n',
     );
 
-    // Copy the hook script under test + its new pure tier classifier dependency
-    // (scripts/lib/classify-tier.mjs) into the sandbox.
-    fs.mkdirSync(path.join(sandbox, 'scripts', 'lib'), { recursive: true });
-    fs.copyFileSync(
-      path.join(path.dirname(HOOK_SCRIPT), 'lib', 'classify-tier.mjs'),
-      path.join(sandbox, 'scripts', 'lib', 'classify-tier.mjs'),
+    // Copy the WHOLE scripts/lib dir so every one of the hook's pure lib imports
+    // (classify-tier.mjs, convergence-recognition.mjs, operator-surface.mjs, …)
+    // resolves in the sandbox. Copying the whole dir — rather than enumerating
+    // each file — means a NEW lib import added to the hook can't silently break
+    // this test with ERR_MODULE_NOT_FOUND.
+    fs.cpSync(
+      path.join(path.dirname(HOOK_SCRIPT), 'lib'),
+      path.join(sandbox, 'scripts', 'lib'),
+      { recursive: true },
     );
     fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
+    // audit-convergence-enforcement §2: the hook now imports these two sibling
+    // scripts — copy them so the sandbox hook resolves its imports.
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'write-audit-convergence.mjs'), path.join(sandbox, 'scripts', 'write-audit-convergence.mjs'));
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'audit-secret-patterns.mjs'), path.join(sandbox, 'scripts', 'audit-secret-patterns.mjs'));
   });
 
   afterEach(() => {

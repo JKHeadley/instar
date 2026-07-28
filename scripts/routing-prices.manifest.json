@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "version": 1,
+  "_doc": "Canonical, human-reviewed price authority for the Routing Control Room spend view (docs/specs/routing-control-room-spend-alerts.md, Layer 1). USD per MILLION tokens, per door+model, effective-dated. APPEND-ONLY: a change or correction ADDS a point; points are never edited in place. GENERIC PUBLISHED prices only — operator-specific deals live in the machine-local overlay (.instar/routing-prices.overlay.json), never here. Written ONLY by a human path (a reviewed git commit, or — in Increment B — the PIN-gated promotion action). Every point's effectiveAt MUST be UTC-day-aligned (T00:00:00Z). In Increment A this manifest feeds the REPORTING view only; no money gate consumes it yet (the gate is Increment B).",
+  "doors": {
+    "gemini-api": {
+      "freshnessSlaDays": 45,
+      "staleMode": "book-conservative-max",
+      "conservativeMax": { "inPerMtok": 2.0, "outPerMtok": 12.0 }
+    },
+    "openrouter-api": {
+      "freshnessSlaDays": 45,
+      "staleMode": "book-conservative-max",
+      "conservativeMax": { "inPerMtok": 15.0, "outPerMtok": 90.0 }
+    },
+    "groq-api": {
+      "freshnessSlaDays": 45,
+      "staleMode": "book-conservative-max",
+      "conservativeMax": { "inPerMtok": 2.0, "outPerMtok": 8.0 }
+    }
+  },
+  "points": [
+    {
+      "door": "gemini-api",
+      "modelId": "gemini-3.1-flash-lite",
+      "inPerMtok": 0.25,
+      "outPerMtok": 1.5,
+      "effectiveAt": "2026-07-01T00:00:00Z",
+      "recordedAt": "2026-07-05T00:00:00Z",
+      "source": "published-generic-list",
+      "corrects": null
+    },
+    {
+      "door": "openrouter-api",
+      "modelId": "openai/gpt-5.5",
+      "inPerMtok": 5.0,
+      "outPerMtok": 30.0,
+      "effectiveAt": "2026-07-01T00:00:00Z",
+      "recordedAt": "2026-07-05T00:00:00Z",
+      "source": "published-generic-list",
+      "corrects": null
+    },
+    {
+      "door": "openrouter-api",
+      "modelId": "anthropic/claude-opus-4-8",
+      "inPerMtok": 5.0,
+      "outPerMtok": 25.0,
+      "effectiveAt": "2026-07-01T00:00:00Z",
+      "recordedAt": "2026-07-05T00:00:00Z",
+      "source": "published-generic-list",
+      "corrects": null
+    },
+    {
+      "door": "groq-api",
+      "modelId": "openai/gpt-oss-120b",
+      "inPerMtok": 0.2,
+      "outPerMtok": 0.8,
+      "effectiveAt": "2026-07-01T00:00:00Z",
+      "recordedAt": "2026-07-05T00:00:00Z",
+      "source": "published-generic-list",
+      "corrects": null
+    }
+  ]
+}

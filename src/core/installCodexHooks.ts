@@ -129,6 +129,15 @@ export function buildInstarCodexHookGroups(
     Stop: [
       { matcher: '', hooks: [node('stop-gate-router.js'), { ...node('response-review.js'), timeout: 10000 }, node('claim-intercept-response.js'), node('scope-coherence-checkpoint.js'), autonomousLoopHook()] },
     ],
+    // Post-action reporter (scope-accretion R18/R16 framework parity): forwards
+    // each tool event — including the Write/Edit `file_path` — to the server's
+    // /hooks/events receiver, feeding the ADVISORY scope-accretion artifact
+    // ledger on Codex exactly as the Claude registration does. Advisory-only:
+    // the load-bearing git-truth sweep needs no hook at all. matcher '.*' (a
+    // bare '*' matches NOTHING in Codex — see the PreToolUse note above).
+    PostToolUse: [
+      { matcher: '.*', hooks: [node('hook-event-reporter.js')] },
+    ],
     // Identity/context injection.
     SessionStart: [
       { matcher: '', hooks: [sh('session-start.sh')] },

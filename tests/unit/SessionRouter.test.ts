@@ -29,7 +29,7 @@ function makeRouter(over: Partial<SessionRouterDeps> = {}, registry: MachineCapa
     deliverMessage: async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck,
     handleLocally: vi.fn(async () => {}),
     spawnOnMachine: vi.fn(async () => {}),
-    queueMessage: vi.fn(),
+    queueMessage: vi.fn(() => 'refused' as const),
     raiseAttention: vi.fn(),
     markOwnerSuspect: vi.fn(),
     sleep: vi.fn(async () => {}),
@@ -255,5 +255,86 @@ describe('isRemotelyHandled (inbound dispatch short-circuit — bug #8)', () => 
     expect(isRemotelyHandled(oc('spawned', 'm_mini'), null)).toBe(true);
     // self unknown + owner unknown → not provably remote → fall through (local)
     expect(isRemotelyHandled(oc('spawned', null), null)).toBe(false);
+  });
+});
+
+// ── WS1.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC invariant 5): the version-skew gate ──
+// A LIVE owner that does not advertise the ws11DeliverReceive capability must
+// never be forwarded to: the forward would 501 → retry → failover-STEAL from a
+// live machine. The message waits in OUR durable queue instead.
+describe('SessionRouter — ownerSupportsForward skew gate (WS1.1)', () => {
+  const remoteOwned = () => ({ owner: 'm_remote', epoch: 7, status: 'active' }) as OwnershipView;
+
+  it('owner advertises support (true) → forwards normally', async () => {
+    const deliver = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck);
+    const { router } = makeRouter({ resolveOwnership: remoteOwned, deliverMessage: deliver, ownerSupportsForward: () => true });
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'forwarded', acked: true });
+    expect(deliver).toHaveBeenCalled();
+  });
+
+  it('owner does NOT advertise support (false) → message queues durably, NO forward, NO ownership steal', async () => {
+    const deliver = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck);
+    const queue = vi.fn(() => 'queued' as const);
+    const cas = vi.fn((_s: string, _m: string, e: number) => ({ ok: true, epoch: e + 1 }));
+    const { router } = makeRouter({
+      resolveOwnership: remoteOwned, deliverMessage: deliver,
+      ownerSupportsForward: () => false, queueMessage: queue, casClaimOwnership: cas,
+    });
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'queued', detail: 'owner-lacks-ws11-receive', acked: true });
+    expect(deliver).not.toHaveBeenCalled(); // never a doomed forward
+    expect(cas).not.toHaveBeenCalled();     // never a steal from a live owner
+  });
+
+  it('capability unknown (null) → proceeds to forward (back-compat)', async () => {
+    const deliver = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck);
+    const { router } = makeRouter({ resolveOwnership: remoteOwned, deliverMessage: deliver, ownerSupportsForward: () => null });
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'forwarded' });
+    expect(deliver).toHaveBeenCalled();
+  });
+
+  it('dep absent → exactly today\'s behavior (forwards)', async () => {
+    const deliver = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck);
+    const { router } = makeRouter({ resolveOwnership: remoteOwned, deliverMessage: deliver });
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'forwarded' });
+  });
+});
+
+describe('SessionRouter — channel-scope threading (placement-platform-workspace-aware, WIRING-INTEGRITY)', () => {
+  it('threads msg.channel into decide() (the failover bug path: a Slack channel must carry its workspace into placement)', async () => {
+    const decideSpy = vi.fn(() => ({ chosenMachine: SELF, score: 1, reason: 'least-loaded', outcome: 'placed' as const }));
+    const { router } = makeRouter({
+      placement: { decide: decideSpy } as unknown as PlacementExecutor,
+      resolveOwnership: () => ({ owner: null, epoch: 0, status: null }) as OwnershipView,
+    });
+    await router.route(msg({ channel: { platform: 'slack', workspaceId: 'W-live', channelId: 'C1' } }));
+    expect(decideSpy).toHaveBeenCalled();
+    const req = decideSpy.mock.calls[0][0] as { channel?: unknown };
+    expect(req.channel).toEqual({ platform: 'slack', workspaceId: 'W-live', channelId: 'C1' });
+  });
+
+  it('behavioral: a Slack channel places on the machine connected to its workspace, not the cheaper non-serving one (the live-test bug)', async () => {
+    const registry = [
+      cap(SELF, { servesChannels: { slack: { workspaceIds: ['W-other'] } }, loadAvg: 0 }),       // cheaper, WRONG workspace
+      cap('m_remote', { servesChannels: { slack: { workspaceIds: ['W-live'] } }, loadAvg: 5 }),   // costlier, serves W-live
+    ];
+    const { deps, router } = makeRouter({ resolveOwnership: () => ({ owner: null, epoch: 0, status: null }) as OwnershipView }, registry);
+    await router.route(msg({ channel: { platform: 'slack', workspaceId: 'W-live', channelId: 'C1' } }));
+    // placement must choose m_remote (serves W-live) over the cheaper SELF (wrong workspace) → claimed there.
+    expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', expect.any(Number));
+  });
+
+  it('no channel (telegram/shared or legacy) → decide() gets no channel → fail-open (unchanged routing)', async () => {
+    const decideSpy = vi.fn(() => ({ chosenMachine: SELF, score: 1, reason: 'least-loaded', outcome: 'placed' as const }));
+    const { router } = makeRouter({
+      placement: { decide: decideSpy } as unknown as PlacementExecutor,
+      resolveOwnership: () => ({ owner: null, epoch: 0, status: null }) as OwnershipView,
+    });
+    await router.route(msg()); // no channel
+    const req = decideSpy.mock.calls[0][0] as { channel?: unknown };
+    expect(req.channel).toBeUndefined();
   });
 });

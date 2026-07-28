@@ -15,6 +15,7 @@ import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
   resolveInteractiveFramework,
+  resolveInteractiveLaunchModel,
   resolveModelForFramework,
 } from '../../src/core/frameworkSessionLaunch.js';
 import { __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
@@ -40,6 +41,28 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
         binaryPath: '/usr/local/bin/claude',
       });
       expect(spec.argv).toEqual(['/usr/local/bin/claude', '--dangerously-skip-permissions']);
+    });
+
+    it('injects CLAUDE_CONFIG_DIR when a configHome is set (P1.3 account swap)', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        configHome: '/Users/x/.claude-personal',
+      });
+      expect(spec.envOverrides.CLAUDE_CONFIG_DIR).toBe('/Users/x/.claude-personal');
+      // Conversation continuity is account-agnostic: --resume still applies.
+      const resumed = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        configHome: '/Users/x/.claude-work',
+        resumeSessionId: 'uuid-1',
+      });
+      expect(resumed.envOverrides.CLAUDE_CONFIG_DIR).toBe('/Users/x/.claude-work');
+      expect(resumed.argv).toContain('--resume');
+      expect(resumed.argv).toContain('uuid-1');
+    });
+
+    it('does NOT set CLAUDE_CONFIG_DIR when no configHome (inherits parent — unchanged default)', () => {
+      const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/usr/local/bin/claude' });
+      expect(spec.envOverrides.CLAUDE_CONFIG_DIR).toBeUndefined();
     });
 
     it('appends --resume <id> when a resumeSessionId is provided', () => {
@@ -129,6 +152,12 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
   });
 
   describe('codex-cli', () => {
+    it('reports the same concrete default model the interactive builder launches', () => {
+      expect(resolveInteractiveLaunchModel('codex-cli', undefined)).toBe('gpt-5.5');
+      expect(resolveInteractiveLaunchModel('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
+      expect(resolveInteractiveLaunchModel('codex-cli', undefined, 'ollama')).toBe('llama3.2:latest');
+    });
+
     it('passes --model gpt-5.5 + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
       const spec = buildInteractiveLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',

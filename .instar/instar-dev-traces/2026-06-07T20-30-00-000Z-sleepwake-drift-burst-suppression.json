@@ -1,0 +1,19 @@
+{
+    "slug": "sleepwake-drift-burst-suppression",
+    "sessionId": "96c61421-860a-48f9-92b4-26328f5640f1",
+    "timestamp": "2026-06-07T20:30:00.000Z",
+    "artifactPath": "upgrades/side-effects/sleepwake-drift-burst-suppression.md",
+    "artifactSha256": "a7d553444a9d23a4e91531600d658c7ba3cad2efd6367b5ca300f6754a1e7697",
+    "coveredFiles": ["src/core/SleepWakeDetector.ts","tests/unit/sleep-wake-starvation-guard.test.ts"],
+    "phase": "complete",
+    "tier": 1,
+    "tierReasoning": "Adds a load-independent consecutive-drift burst guard to SleepWakeDetector: count back-to-back drift ticks (reset by any on-time tick); the Nth+ consecutive SHORT drift is suppressed as CPU starvation regardless of the lagging/fluctuating 1-min load ratio. This closes the gap the maxLoadRatio guard (#867) missed — on a load-churning box, 10-42s lag-drifts fired wakes whenever the 1-min average momentarily dipped below maxLoadRatio, producing a tunnel-restart storm. New optional config field driftBurstSuppressFloor (default 2; 0 disables) → absent restores prior behavior. Long sleeps (>= longSleepFloorSeconds) are exempt; the first drift in any burst still falls through to the existing checks, so an isolated real wake is unaffected. No API/route/state-schema/migration; suppressions counted under existing cpu-starvation reason. Both sides unit-tested incl. the floor-0 contrast proving the guard, the counter-reset, and the long-sleep exemption. No converged spec required for Tier 1.",
+    "eli16Path": "docs/eli16/sleepwake-drift-burst-suppression.eli16.md",
+    "sideEffectsPath": "upgrades/side-effects/sleepwake-drift-burst-suppression.md",
+    "causalAutopsy": {
+        "origin": "latent",
+        "notes": "SleepWakeDetector has inferred sleep from timer drift since it was written; #867 added the load-ratio starvation guard (short drift + high 1-min load ratio => suppress). That guard is correct but the 1-min load average lags and fluctuates, leaving a latent gap: on a box bouncing between load ~8 and ~20, a lag-drift landing during a momentary dip below maxLoadRatio still fired a wake. 2026-06-07 grounding: a tunnel-restart storm every 1-3min (some timing out) under exactly this churn. No prior PR regressed it; #867 improved the common case and this completes it for the fluctuating-load case. Fix B of the operator-requested A+B pair (A = #975 durable reaper candidacy, which survives whatever restart churn remains; B reduces the churn at its source). Related prior work: #867 (laptop-eventloop-stall load-ratio guard)."
+    },
+    "secondPass": "not-required",
+    "reviewerConcurred": null
+}

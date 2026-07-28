@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-17T09:22:52.091Z",
+  "slug": "session-pool-self-placement-confirmation",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

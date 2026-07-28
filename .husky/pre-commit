@@ -1,4 +1,32 @@
+# Fail on the FIRST failing check.
+#
+# Without this, the hook is a plain command sequence and its exit status is the
+# LAST command's. Every blocking check except the final one was therefore
+# ADVISORY: `scripts/instar-dev-precommit.js` would print its full
+# "commit BLOCKED" banner, exit 1, and then the three checks after it would each
+# exit 0 — so git saw 0 and accepted the commit. Verified 2026-07-25 by landing a
+# commit through a printed block (b2efded2f, since reverted).
+#
+# A gate that computes the right verdict and has it discarded one line later is
+# worse than no gate: it produces false confidence in the process it claims to
+# enforce. (ACT-1264; convergence-towards-coherence Tier 1 item 0.)
+set -e
+
 npm run lint
+node scripts/lint-migration-consumer-completeness.js --staged
+
+# Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
+# The precommit script reads no config (it runs pre-compile), so we export the
+# specReview.requireConvergenceReport flag as an env var here. Fail-open: any read
+# error leaves the var unset → the precommit's report branch stays inert (today's
+# behavior). Read-point (audit-convergence-enforcement §6): commits happen in
+# WORKTREES, which do NOT carry .instar/config.json — resolve the MAIN checkout
+# root via `git rev-parse --git-common-dir` (worktree → main checkout, where the
+# live config sits) FIRST, then fall back to the local checkout paths.
+if node -e 'const fs=require("fs"),path=require("path"),cp=require("child_process");const paths=[];try{const gcd=cp.execSync("git rev-parse --git-common-dir",{encoding:"utf8"}).trim();const mainRoot=path.dirname(path.resolve(gcd));paths.push(path.join(mainRoot,".instar","config.json"),path.join(mainRoot,"instar.config.json"))}catch{}paths.push(".instar/config.json","instar.config.json");for(const p of paths){try{const c=JSON.parse(fs.readFileSync(p,"utf8"));if(c&&c.specReview&&c.specReview.requireConvergenceReport===true)process.exit(0)}catch{}}process.exit(1)' 2>/dev/null; then
+  export INSTAR_DEV_REQUIRE_CONVERGENCE_REPORT=1
+fi
+
 node scripts/instar-dev-precommit.js
 node scripts/check-rule3-coverage.cjs
 node scripts/protect-migration-guarantee.js

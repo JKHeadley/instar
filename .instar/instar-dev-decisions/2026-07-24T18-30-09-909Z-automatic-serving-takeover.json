@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-24T18:30:09.909Z",
+  "slug": "automatic-serving-takeover",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 41,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

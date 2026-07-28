@@ -140,7 +140,7 @@ describe('judgeRefusal', () => {
     expect(o.model).toBe('fast');
     expect(o.temperature).toBe(0);
     expect(o.timeoutMs).toBe(8000);
-    expect(o.attribution).toEqual({ component: 'IntentLlmJudge', category: 'gate' });
+    expect(o.attribution).toEqual({ component: 'IntentLlmJudge', category: 'gate', gating: true }); // gating: swaps provider before falling to keyword (No Silent Degradation)
     expect(calls[0].prompt).toContain('1. Never present unverified work as completed');
   });
 
