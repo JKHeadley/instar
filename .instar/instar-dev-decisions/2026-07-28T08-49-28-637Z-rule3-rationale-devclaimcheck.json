@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-28T08:49:28.637Z",
+  "slug": "rule3-rationale-devclaimcheck",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 23,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
