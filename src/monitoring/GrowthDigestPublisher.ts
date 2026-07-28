@@ -526,6 +526,9 @@ export class GrowthDigestPublisher {
     try {
       this.deps.audit?.(entry);
     } catch (err) {
+      // @silent-fallback-ok: not a swallow — the failure is reported through
+      // deps.onError. An audit-sink fault must not abort the digest it is
+      // merely recording, so reporting and continuing IS the safe direction.
       this.deps.onError?.('audit', err);
     }
   }
@@ -539,6 +542,10 @@ export class GrowthDigestPublisher {
     try {
       return this.deps.blockedDigestEscalationEnabled?.() === true;
     } catch (err) {
+      // @silent-fallback-ok: not a swallow — reported through deps.onError and
+      // fails toward LEGACY (consume + record 'send-blocked'), the conservative
+      // default documented above. A config-read fault must never switch
+      // un-droppable delivery ON by accident; false is the safe answer.
       this.deps.onError?.('blockedDigestEscalationEnabled', err);
       return false;
     }
