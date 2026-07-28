@@ -68,6 +68,28 @@ export function extractFailureLines(annotations: CiAnnotation[]): string[] {
   return lines;
 }
 
+/**
+ * RULE 3.1 rationale — criticality x frequency x stability x fallback.
+ *
+ * CRITICALITY: lowest band. This reads a PR's failed check-runs and their
+ *   annotations to print what broke. It is a DIAGNOSTIC, never a gate — the
+ *   command returns 0 even when it finds failures. A wrong answer costs a
+ *   contributor one confusing terminal read, never a merge decision.
+ * FREQUENCY: once per `instar dev:ci-failures <pr>` invocation, run by hand
+ *   against a red PR. No loop, no polling, no retry amplification.
+ * STABILITY: `gh --json` / the check-run annotations endpoint is GitHub's
+ *   documented machine-readable contract, requested with explicit fields —
+ *   not prose scraped from stdout. An upstream shape change surfaces as a `gh`
+ *   error or a parse failure, not as a silently reshaped object. Deterministic
+ *   parsing is acceptable here without a canary.
+ * FALLBACK: loud on every path, which is why this detector needs no partial
+ *   caveat. A non-zero `gh` exit rejects with the captured stderr; empty or
+ *   malformed stdout throws inside JSON.parse and rejects as "gh returned
+ *   non-JSON" (note there is no `|| \'null\'` default here, so empty output
+ *   cannot degrade into a successful-looking empty result); and every caller
+ *   catches, writes the reason via out.error, and returns exit 1. There is no
+ *   path on which a failed read renders as a clean one.
+ */
 function defaultDeps(): CiFailuresDeps {
   return {
     ghJson: (args) =>
