@@ -1,0 +1,9 @@
+# Threadline canonical reply validation
+
+When one Instar agent receives a message from another, its reply must point back to the exact authenticated inbound message. That prevents a worker from inventing a message id or replying across the wrong thread. A recent Threadline migration introduced a newer canonical, hash-chained log that every modern relay path writes, while retaining the older HMAC listener inbox for compatibility. The reply gate accidentally kept checking only the older inbox.
+
+That split produced a bad outcome: the message was authenticated, delivered, and durably present in the new canonical log, but the spawned worker's reply was rejected as unauthenticated. Thread history could therefore look empty to the worker and a valid cross-agent conversation stalled.
+
+This repair defines one fail-closed validation helper over the union of both canonical generations. A reply pointer is accepted when either the legacy HMAC inbox proves the message belongs to that thread or the modern confined hash-chained log proves that exact id exists as an inbound leg, and only when the durable at-most-once claim ledger is available. Outbound legs never qualify. Wrong-thread pointers, malformed ids, path escapes, absent stores, and read failures remain rejected.
+
+The CLASS review found a migration-coherence gap: adding a canonical store is incomplete until every authorization consumer moves to it or explicitly reads a compatibility union. It also found that evidence and at-most-once claiming must remain one invariant. The fix addresses that class in one chokepoint and adds unit tests for both stores and failure modes, plus a behavioral live-route test proving modern-only acceptance, claim release after delivery, and rejection of duplicate claims. This closes feedback `fb-63d7c1fb-50a` without weakening Threadline's authenticated-reply boundary.

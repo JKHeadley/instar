@@ -1,0 +1,14 @@
+{
+  "ts": "2026-06-27T08:45:00.000Z",
+  "slug": "config-dynamicmcp-loadpath-passthrough",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": ["bugfix: loadConfig drops sessions.dynamicMcp — feature un-enablable on every deployed agent"],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 30,
+  "causalAutopsy": { "origin": "existing-code-bug" },
+  "verdict": "pass",
+  "notes": "Live-as-self test (driving a real config-file enable + use) caught that loadConfig's sessions allowlist (Config.ts) never copied sessions.dynamicMcp from the file. #1293 added the feature + /mcp/* routes (read options.config.sessions.dynamicMcp.enabled) + SessionManager.buildSessionMcpFlags (reads config.sessions.dynamicMcp), but the loader dropped the field — so enabling it did nothing (routes 503'd, sessions never trimmed). THIRD instance of this exact load-path gap (componentFrameworks 2026-06-06, frameworkDefaultModels 2026-06-25, now dynamicMcp); e2e/integration tests build config objects in-memory, bypassing loadConfig, so the gap never surfaced. Fix mirrors the prior two passthroughs + adds a Config.test.ts regression pair (preserves + omits-when-absent). Verified live by hotpatch+restart: sessions now spawn lean (--strict-mcp-config) and load/offload trim the running session."
+}

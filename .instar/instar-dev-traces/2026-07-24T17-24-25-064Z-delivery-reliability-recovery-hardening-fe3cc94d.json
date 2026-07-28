@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "delivery-reliability-recovery-hardening",
+  "sessionId": "b6982ce3-180b-44cb-a89d-531869e095e5",
+  "timestamp": "2026-07-24T17:24:25.064Z",
+  "artifactPath": "upgrades/side-effects/delivery-reliability-recovery-hardening.md",
+  "artifactSha256": "aa12b7be43ae660383f52f3df9f7a65b36711ff210c52ea1553821a3db228016",
+  "specPath": "docs/specs/delivery-reliability-recovery-hardening.md",
+  "coveredFiles": [
+    "src/monitoring/delivery-failure-sentinel.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Preserve existing circuit-breaker suspend/resume contract.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Existing circuit breaker and bounded recovery tests."
+    }
+  }
+}

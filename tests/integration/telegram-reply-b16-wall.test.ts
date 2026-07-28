@@ -17,12 +17,22 @@
  * deterministically); the route, the gate, and the 422 plumbing are all real.
  */
 
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
 import express from 'express';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createRoutes } from '../../src/server/routes.js';
 import { MessagingToneGate } from '../../src/core/MessagingToneGate.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+
+// UNIQUE per-run stateDir — never a shared literal '/tmp'. The routes wire a
+// DURABLE OutboundContentDedup store at `<stateDir>/outbound-dedup.db`; a shared
+// '/tmp' makes the happy-path delivery test's fixed text a cross-run duplicate
+// within the 15-min dedup window (same landmine as the b15 sibling test).
+const tmpStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'b16-wall-'));
 
 interface TestServer { url: string; close: () => Promise<void>; }
 async function listen(app: express.Express): Promise<TestServer> {
@@ -48,7 +58,7 @@ function buildApp(opts: {
   const app = express();
   app.use(express.json());
   const ctx: any = {
-    config: { authToken: 'test', stateDir: '/tmp', port: 0, projectName: 'echo' },
+    config: { authToken: 'test', stateDir: tmpStateDir, port: 0, projectName: 'echo' },
     messagingToneGate: opts.toneGate,
     telegram: {
       sendToTopic: async (topicId: number, text: string) => {
@@ -68,6 +78,13 @@ const WALL_MESSAGE =
 describe('B16_UNVERIFIED_WALL — POST /telegram/reply integration', () => {
   let server: TestServer;
   afterEach(async () => { await server?.close(); });
+  afterAll(() => {
+    SafeFsExecutor.safeRmSync(tmpStateDir, {
+      recursive: true,
+      force: true,
+      operation: 'tests/integration/telegram-reply-b16-wall.test.ts',
+    });
+  });
 
   async function reply(topicId: number, text: string) {
     const res = await fetch(`${server.url}/telegram/reply/${topicId}`, {

@@ -248,7 +248,7 @@ export async function judgeRefusal(
       maxTokens: 250,
       temperature: 0,
       timeoutMs: opts?.timeoutMs ?? 8000,
-      attribution: { component: 'IntentLlmJudge', category: 'gate' },
+      attribution: { component: 'IntentLlmJudge', category: 'gate', gating: true },
     });
   } catch {
     // @silent-fallback-ok — judge unavailable (circuit open / provider error); caller keeps the heuristic verdict and labels it honestly

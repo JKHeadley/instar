@@ -1,0 +1,24 @@
+{
+    "slug": "agent-data-spotlight-exclusion",
+    "sessionId": "96c61421-860a-48f9-92b4-26328f5640f1",
+    "timestamp": "2026-06-07T01:38:00.000Z",
+    "artifactPath": "upgrades/side-effects/agent-data-spotlight-exclusion.md",
+    "artifactSha256": "e63cd94e278d3ffceb7c9e52dfade4a7542e6865a51329458781f1916900494f",
+    "coveredFiles": [
+        "src/core/InstarWorktreeManager.ts",
+        "src/core/PostUpdateMigrator.ts",
+        "tests/unit/worktree-spotlight-exclusion.test.ts",
+        ".gitignore"
+    ],
+    "phase": "complete",
+    "tier": 1,
+    "tierReasoning": "Small, low-risk OS resource-hygiene addition that mirrors the existing worktree/node_modules/transcript Spotlight-exclusion pattern exactly: one helper that drops a .metadata_never_index marker in the agent's own .instar churn subdirs + an idempotent PostUpdateMigrator backfill + two .gitignore lines. No gate, no message-flow change, no persistent-state change, no API route. Filesystem-additive only (empty marker files inside existing dirs), reversible, graceful no-op on failure/non-macOS. Unit + migration tests cover both sides of every boundary. No converged spec required for Tier 1.",
+    "eli16Path": "docs/eli16/agent-data-spotlight-exclusion.eli16.md",
+    "sideEffectsPath": "upgrades/side-effects/agent-data-spotlight-exclusion.md",
+    "causalAutopsy": {
+        "origin": "latent",
+        "notes": "Not a prior-PR regression. The agent's own .instar runtime data (telegram-images, server-data SQLite, logs, state) has been indexed by macOS Spotlight + analyzed by mediaanalysisd since agents began writing it. The prior Spotlight-exclusion PRs (#588 worktrees, #606 node_modules, #903 Claude transcripts) progressively closed the largest known trees but never extended to the agent's own data dir, which 2026-06-06 grounding (ps/uptime census during Justin's load-average-30 resource investigation) showed was the live mediaanalysisd (~72-78% CPU, analyzing telegram-images) + mds_stores (~28-48%, re-indexing server-data WAL) fuel. This closes that latent gap by reusing the same marker mechanism. Fix in the resource-efficiency initiative; the immediate machine relief was a manual ~/.instar marker, this is the durable fleet-wide code fix."
+    },
+    "secondPass": "not-required",
+    "reviewerConcurred": null
+}

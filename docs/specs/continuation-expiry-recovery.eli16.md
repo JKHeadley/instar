@@ -1,0 +1,9 @@
+# Continuation expiry recovery — ELI16 overview
+
+Codex can keep an ordinary task moving across turn boundaries by using a local continuation ledger. That ledger is deliberately bounded: it has a maximum number of continuations and a wall-clock deadline. When either limit is reached, the Stop hook allows the session to stop. Those limits are important because a forgotten task must not turn into an endless self-driving loop.
+
+The missing piece was safe renewal. After a real four-hour drive crossed its deadline, the hook correctly stopped it, but the only practical recovery was to rebuild the checklist or edit local state. Rebuilding risks losing which tasks are already complete; editing a timestamp bypasses the generation ordering and audit trail that make operator stop authoritative. The CLI also failed after authentication moved out of the config file because it still assumed the token was stored inline.
+
+This change adds an explicit renew operation. Renewal reads the structurally valid existing ledger, verifies that work remains, mints a higher generation than the ledger and every stop marker, keeps the checklist byte-for-byte, resets only the bounded time and continuation counters, and waits for the next Stop hook to bind the new session. It records `renewed` in the audit trail so renewal is distinguishable from a brand-new start. Status now exposes both start and expiry timestamps, returning no expiry rather than throwing if old state contains a bad date. The CLI resolves the externalized environment token first while retaining compatibility with older inline configuration.
+
+The safety contract is unchanged: renewal is an explicit authenticated write, all requested limits remain clamped to configuration, operator-stop generations still outrank older work, malformed state is refused, and no automatic component renews a ledger. The result is a safe button for extending an intentional drive, not an unbounded loop.

@@ -155,6 +155,22 @@ describe('PresenceProxy honest turn-receipts — fireTier3', () => {
     const tooLongMsg = sent.find(s => /conversation.*too long|got too long/i.test(s.text));
     expect(tooLongMsg).toBeUndefined();
   });
+
+  it('durable context latch overrides misleading live-process evidence', async () => {
+    const { proxy, sent, stateDir } = mkProxy({
+      captureSessionOutput: () => '⏺ ordinary stale tail\n✻ Crunching (12s)',
+      hasContextExhaustionLatch: () => true,
+      recoverContextExhaustion: async () => ({ recovered: false }),
+    });
+    cleanup.push(stateDir);
+    const state = seedState(proxy, 105);
+    await (proxy as any).fireTier3(105, state);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toMatch(/context limit|too long/i);
+    expect(sent[0].text).not.toMatch(/actively working|active child/i);
+    expect(state.tier3Assessment).toBe('dead');
+  });
 });
 
 describe('PresenceProxy honest turn-receipts — server.ts wiring (dead-code guard)', () => {
@@ -174,5 +190,10 @@ describe('PresenceProxy honest turn-receipts — server.ts wiring (dead-code gua
     // veto uses — so PresenceProxy stays silent while a sentinel is recovering.
     const block = serverSrc.slice(serverSrc.indexOf('isStuckRecoveryActive:'));
     expect(block.slice(0, 200)).toContain('wedgeRecoveryActive');
+  });
+
+  it('server.ts wires the durable context latch into PresenceProxy', () => {
+    expect(serverSrc).toContain('hasContextExhaustionLatch:');
+    expect(serverSrc).toContain('_contextExhaustionFreshRequired');
   });
 });

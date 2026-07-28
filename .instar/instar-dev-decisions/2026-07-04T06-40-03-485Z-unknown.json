@@ -1,0 +1,19 @@
+{
+  "ts": "2026-07-04T06:40:03.485Z",
+  "slug": "unknown",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1367
+    ],
+    "notes": "main gained the keyword-intent classification-ratchet family when the move-intent exemplar (PR #1367) merged; rebasing this conversion onto it requires registering HubIntentClassifier (a new COMPONENT_CATEGORY key) across every classification map, mirroring #1367 MoveIntentClassifier, and decrementing the keyword-intent-decision baseline 5->4 for the now-converted hubCommands."
+  },
+  "verdict": "pass"
+}

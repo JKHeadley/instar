@@ -178,8 +178,81 @@ describe('Coordination Mandate routes (spec §4)', () => {
       expect((await fetch(`${s2.url}/mandate`)).status).toBe(503);
       expect((await fetch(`${s2.url}/mandate/audit`)).status).toBe(503);
       expect((await fetch(`${s2.url}/mandate/evaluate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'a', agentFp: 'f', mandateId: 'm' }) })).status).toBe(503);
+      expect((await fetch(`${s2.url}/mandate/m/grants`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: PIN, grants: [] }) })).status).toBe(503);
     } finally {
       await s2.close();
     }
+  });
+
+  // ── user→agent grants route ──
+
+  const VALID_GRANT = { floorAction: 'prod-deploy', grantedTo: 'U_AMIR', authorizedBy: 'justin', expiresAt: '2998-01-01T00:00:00Z' };
+
+  async function addGrant(body: object) {
+    return fetch(`${server.url}/mandate/m-test/grants`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+  }
+
+  it('SECURITY: adding a grant WITHOUT the operator PIN is refused (Bearer alone cannot grant)', async () => {
+    await issueWithPin(PIN);
+    const res = await addGrant({ grants: [VALID_GRANT] });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/PIN required/i);
+  });
+
+  it('adds a grant with the PIN (201), re-signs so authorshipValid stays true, and the grant is on the mandate', async () => {
+    await issueWithPin(PIN);
+    const res = await addGrant({ pin: PIN, grants: [VALID_GRANT] });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.granted).toBe(true);
+    expect(body.mandate.authorshipValid).toBe(true);
+    expect(body.mandate.grants).toHaveLength(1);
+    expect(body.mandate.grants[0].grantedTo).toBe('U_AMIR');
+    // Lists back still verified.
+    const list = await (await fetch(`${server.url}/mandate`)).json();
+    expect(list.mandates[0].authorshipValid).toBe(true);
+    expect(list.mandates[0].grants).toHaveLength(1);
+  });
+
+  it('accepts a single grant via the `grant` field too', async () => {
+    await issueWithPin(PIN);
+    const res = await addGrant({ pin: PIN, grant: VALID_GRANT });
+    expect(res.status).toBe(201);
+    expect((await res.json()).mandate.grants).toHaveLength(1);
+  });
+
+  it('rejects a grant whose expiresAt exceeds the mandate expiresAt (400) and audits the rejection', async () => {
+    await issueWithPin(PIN); // mandate expires FUTURE = 2999-01-01
+    const beforeAudit = (await (await fetch(`${server.url}/mandate/audit`)).json()).total;
+    const res = await addGrant({ pin: PIN, grants: [{ ...VALID_GRANT, expiresAt: '3000-01-01T00:00:00Z' }] });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/must be <= mandate expiresAt/);
+    const afterAudit = await (await fetch(`${server.url}/mandate/audit`)).json();
+    expect(afterAudit.total).toBe(beforeAudit + 1);
+    expect(afterAudit.entries[0].decision).toBe('deny'); // rejection audited
+    expect(afterAudit.chain).toEqual({ ok: true });
+  });
+
+  it('404 for a grant on a non-existent mandate; 400 for an empty grants payload', async () => {
+    const notFound = await fetch(`${server.url}/mandate/ghost/grants`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: PIN, grants: [VALID_GRANT] }),
+    });
+    expect(notFound.status).toBe(404);
+    await issueWithPin(PIN);
+    const empty = await addGrant({ pin: PIN, grants: [] });
+    expect(empty.status).toBe(400);
+  });
+
+  it('a granted floor action verifies through evaluate-style flow: the grant is audited on accept', async () => {
+    await issueWithPin(PIN);
+    const before = (await (await fetch(`${server.url}/mandate/audit`)).json()).total;
+    await addGrant({ pin: PIN, grants: [VALID_GRANT] });
+    const auditRes = await (await fetch(`${server.url}/mandate/audit`)).json();
+    expect(auditRes.total).toBe(before + 1);
+    expect(auditRes.entries[0].decision).toBe('allow');
+    expect(auditRes.entries[0].action).toBe('grant-floor:prod-deploy');
+    expect(auditRes.chain).toEqual({ ok: true });
   });
 });

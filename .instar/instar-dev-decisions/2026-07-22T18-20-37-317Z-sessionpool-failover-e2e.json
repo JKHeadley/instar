@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-22T18:20:37.317Z",
+  "slug": "sessionpool-failover-e2e",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 130,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "Real two-node sessionPool failover E2E (owner offline -> standby force-claim -> serves). Test-only, additive. Built directly by Echo; mentee offline. Typecheck clean, 1/1 green."
+}

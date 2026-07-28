@@ -1,0 +1,30 @@
+{
+  "ts": "2026-07-19T23:51:48.365Z",
+  "slug": "lease-tick-uninitialized-liveness",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 48,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1233,
+      1283
+    ],
+    "notes": "PR #1233 introduced the watchdog's zero watermark without a first-fire baseline; PR #1283 surfaced every re-arm as a user-visible degradation, exposing the latent boot false-positive."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/e2e/lease-tick-watchdog-boot-lifecycle.test.ts",
+      "howCaught": "The real self-triggered watchdog timer stays at zero recovery actions during healthy startup; a deliberately lost pre-first-fire interval produces exactly one recovery/report after the positive arm baseline becomes stale, preserving both convergence and liveness."
+    },
+    "component": "MultiMachine.leaseTickWatchdog"
+  },
+  "verdict": "pass"
+}

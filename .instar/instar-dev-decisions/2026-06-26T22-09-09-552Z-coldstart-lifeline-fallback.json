@@ -1,0 +1,22 @@
+{
+  "ts": "2026-06-26T22:09:09.552Z",
+  "slug": "coldstart-lifeline-fallback",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 208,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1288
+    ],
+    "notes": "G2 (#1288) added the 'Agent Is Always Reachable' standard + the pressure-held REVIVAL notice but explicitly deferred G1 — the user-facing cold-START fallback reply (operator request 2026-06-26, topic 28130). This is that deferred increment."
+  },
+  "verdict": "pass"
+}

@@ -18,6 +18,7 @@ import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import DatabaseCtor from 'better-sqlite3';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
@@ -27,6 +28,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { ApprenticeshipCycleStore } from '../../src/monitoring/ApprenticeshipCycleStore.js';
 import { ApprenticeshipCycleSlaMonitor } from '../../src/monitoring/ApprenticeshipCycleSlaMonitor.js';
 import { FrameworkIssueLedger } from '../../src/monitoring/FrameworkIssueLedger.js';
+import { generateAgentToken, deleteAgentToken } from '../../src/messaging/AgentTokenManager.js';
 
 const AUTH = 'apprenticeship-routes-token';
 const auth = () => ({ Authorization: `Bearer ${AUTH}` });
@@ -65,6 +67,7 @@ function ctxFor(
   program: ApprenticeshipProgram | null,
   cycleStore: ApprenticeshipCycleStore | null = null,
   cycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null,
+  peerCycleReader: RouteContext['apprenticeshipPeerCycleReader'] = null,
 ): RouteContext {
   return {
     config: {
@@ -79,6 +82,7 @@ function ctxFor(
     watchdog: null, triageNurse: null, topicMemory: null, feedbackAnomalyDetector: null,
     discoveryEvaluator: null, correctionLedger: null, apprenticeshipProgram: program,
     apprenticeshipCycleStore: cycleStore, apprenticeshipCycleSlaMonitor: cycleSlaMonitor,
+    apprenticeshipPeerCycleReader: peerCycleReader,
     startTime: new Date(),
   } as unknown as RouteContext;
 }
@@ -109,11 +113,21 @@ describe('/apprenticeship routes (integration)', () => {
   });
 
   afterEach(() => {
+    deleteAgentToken('apprenticeship-routes');
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/apprenticeship-routes.test.ts:afterEach' });
   });
 
   function makeProgram(deps?: Partial<GateDeps>): ApprenticeshipProgram {
     return new ApprenticeshipProgram({ stateDir, projectDir, deps });
+  }
+
+  async function makeActiveProgram(): Promise<ApprenticeshipProgram> {
+    const p = makeProgram({ readHarvest: () => buildHarvest(), validate: validateRetroHarvest });
+    for (const id of ['echo-to-codey', 'other-instance', 'tuned', 'dorm']) {
+      p.createInstance({ id, instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
+      expect((await p.transition(id, 'active')).ok).toBe(true);
+    }
+    return p;
   }
 
   function makeCycleStore(): ApprenticeshipCycleStore {
@@ -163,7 +177,7 @@ describe('/apprenticeship routes (integration)', () => {
 
   it('records, lists, gets, filters, and closes cycle rows over HTTP', async () => {
     const store = makeCycleStore();
-    const app = appWith(ctxFor(stateDir, makeProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
 
     const bad = await request(app)
       .post('/apprenticeship/cycles')
@@ -255,9 +269,63 @@ describe('/apprenticeship routes (integration)', () => {
     store.close();
   });
 
+  it('refuses unknown and non-active instance ids at cycle-record time', async () => {
+    const store = makeCycleStore();
+    const p = makeProgram();
+    p.createInstance({ id: 'pending-one', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
+    p.createInstance({ id: 'abandoned-one', instanceType: 'mentorship', mentor: 'echo', mentee: 'wrong', framework: 'codex-cli' });
+    expect((await p.transition('abandoned-one', 'abandoned')).ok).toBe(true);
+    const app = appWith(ctxFor(stateDir, p, store));
+    const base = { cycleNumber: 1, task: 't', menteeOutput: 'o', operatorSeatUx: UXOK };
+
+    for (const [instanceId, expected] of [
+      ['ghost', 'does not exist'],
+      ['pending-one', 'only while the instance is active'],
+      ['abandoned-one', 'only while the instance is active'],
+    ] as const) {
+      const res = await request(app).post('/apprenticeship/cycles').set(auth()).send({ ...base, instanceId });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain(expected);
+    }
+    expect(store.list()).toEqual([]);
+    store.close();
+  });
+
+  it('reports legacy dangling cycles without mutating them', async () => {
+    const store = makeCycleStore();
+    store.record({ instanceId: 'phantom', cycleNumber: 1, task: 'legacy', menteeOutput: 'kept', operatorSeatUx: UXOK });
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
+
+    const report = await request(app).get('/apprenticeship/cycles/integrity').set(auth());
+    expect(report.status).toBe(200);
+    expect(report.body).toMatchObject({ scanned: 1, danglingCount: 1, truncated: false });
+    expect(report.body.dangling[0]).toMatchObject({ instanceId: 'phantom' });
+    expect(store.list()).toHaveLength(1);
+    store.close();
+  });
+
+  it('reports a dangling legacy bad-kind cycle instead of failing the integrity read', async () => {
+    const dbPath = path.join(stateDir, 'legacy-bad-kind.db');
+    let store = new ApprenticeshipCycleStore({ dbPath });
+    store.record({ id: 'legacy-bad-kind', instanceId: 'phantom', cycleNumber: 1, task: 'legacy', menteeOutput: 'kept', operatorSeatUx: UXOK });
+    store.close();
+    const db = new DatabaseCtor(dbPath);
+    db.prepare(`UPDATE apprenticeship_cycles SET kind = 'mentorship' WHERE id = ?`).run('legacy-bad-kind');
+    db.close();
+    store = new ApprenticeshipCycleStore({ dbPath });
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
+
+    const report = await request(app).get('/apprenticeship/cycles/integrity').set(auth());
+    expect(report.status).toBe(200);
+    expect(report.body).toMatchObject({ scanned: 1, danglingCount: 1 });
+    expect(report.body.dangling[0]).toMatchObject({ cycleId: 'legacy-bad-kind', instanceId: 'phantom' });
+    expect(store.list()).toMatchObject([{ id: 'legacy-bad-kind', kind: 'unknown' }]);
+    store.close();
+  });
+
   it('REFUSES a cycle without operatorSeatUx over HTTP with the self-describing shape (UX-blindspot gate)', async () => {
     const store = makeCycleStore();
-    const app = appWith(ctxFor(stateDir, makeProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
 
     const refused = await request(app)
       .post('/apprenticeship/cycles')
@@ -276,7 +344,7 @@ describe('/apprenticeship routes (integration)', () => {
 
   it('records manual overseer cycle rows with their execution channel', async () => {
     const store = makeCycleStore();
-    const app = appWith(ctxFor(stateDir, makeProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
 
     const created = await request(app)
       .post('/apprenticeship/cycles')
@@ -320,7 +388,7 @@ describe('/apprenticeship routes (integration)', () => {
 
   it('role-coverage honors the ?oversightStarvationThreshold tuning query', async () => {
     const store = makeCycleStore();
-    const app = appWith(ctxFor(stateDir, makeProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
     const base = (id: string, n: number, kind: string, at: string) => ({
       id, instanceId: 'tuned', cycleNumber: n, task: 't', menteeOutput: 'm', kind, createdAt: at, operatorSeatUx: UXOK,
     });
@@ -341,9 +409,58 @@ describe('/apprenticeship routes (integration)', () => {
     store.close();
   });
 
+  it('role-coverage merges remote agent cycles and names incomplete peer reads', async () => {
+    const store = makeCycleStore();
+    const peerCycle = {
+      id: 'peer-keystone', instanceId: 'echo-to-codey', cycleNumber: 7,
+      createdAt: '2026-06-03T07:30:00.000Z', task: 'Echo drove Codey', menteeOutput: 'output',
+      mentorFlagged: [], overseerDifferential: [], coaching: '', infraItems: [],
+      kind: 'mentor-mentee-differential' as const, status: 'open', channel: 'threadline-backup' as const,
+      operatorSeatUx: null, transcriptAudit: null,
+    };
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store, null, async () => ({
+      cycles: [peerCycle],
+      sources: [
+        { agent: 'echo', port: 4042, cycleCount: 1, truncated: false },
+        { agent: 'gemini', port: 4048, cycleCount: 0, truncated: false, error: 'HTTP 503' },
+      ],
+      complete: false,
+      omittedPeerCount: 0,
+    })));
+
+    const response = await request(app).get('/apprenticeship/instances/echo-to-codey/role-coverage').set(auth());
+    expect(response.status).toBe(200);
+    expect(response.body.axes['mentor-mentee-differential']).toMatchObject({ fired: true, cycleCount: 1 });
+    expect(response.body.keystoneBalance.starved).toBe(false);
+    expect(response.body.aggregation).toMatchObject({ scope: 'registered-agents', complete: false });
+    expect(response.body.aggregation.peerSources).toContainEqual(expect.objectContaining({ agent: 'gemini', error: 'HTTP 503' }));
+    store.close();
+  });
+
+  it('serves the bounded peer-cycle read only to the target agent token', async () => {
+    const store = makeCycleStore();
+    store.record({
+      id: 'peer-readable-cycle', instanceId: 'echo-to-codey', cycleNumber: 1,
+      task: 'drive', menteeOutput: 'output', operatorSeatUx: UXOK,
+    });
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
+
+    await request(app)
+      .get('/a2a/apprenticeship/cycles?instanceId=echo-to-codey')
+      .set({ Authorization: 'Bearer wrong-token' })
+      .expect(401);
+    const token = generateAgentToken('apprenticeship-routes');
+    const response = await request(app)
+      .get('/a2a/apprenticeship/cycles?instanceId=echo-to-codey')
+      .set({ Authorization: `Bearer ${token}` });
+    expect(response.status).toBe(200);
+    expect(response.body.cycles).toContainEqual(expect.objectContaining({ id: 'peer-readable-cycle' }));
+    store.close();
+  });
+
   it('role-coverage surfaces dormancy and honors the ?keystoneDormancyMs tuning query', async () => {
     const store = makeCycleStore(); // fixed now() = 2026-06-03T08:00:00Z
-    const app = appWith(ctxFor(stateDir, makeProgram(), store));
+    const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
     // one keystone drive 8h before now, nothing since — the masked-as-healthy shape
     await request(app).post('/apprenticeship/cycles').set(auth()).send({
       id: 'k', instanceId: 'dorm', cycleNumber: 1, task: 't', menteeOutput: 'm',
@@ -393,7 +510,7 @@ describe('/apprenticeship routes (integration)', () => {
 
     it('REFUSES a telegram-playwright cycle without the audit, teaching the producing CLI', async () => {
       const store = makeCycleStore();
-      const app = appWith(ctxFor(stateDir, makeProgram(), store));
+      const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
       const refused = await request(app).post('/apprenticeship/cycles').set(auth()).send(tpCycle());
       expect(refused.status).toBe(400);
       expect(refused.body.error).toContain('transcriptAudit is required for telegram-playwright cycles');
@@ -403,7 +520,7 @@ describe('/apprenticeship routes (integration)', () => {
 
     it('ACCEPTS a dry-run audit block and round-trips it on GET', async () => {
       const store = makeCycleStore();
-      const app = appWith(ctxFor(stateDir, makeProgram(), store));
+      const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store));
       const created = await request(app).post('/apprenticeship/cycles').set(auth())
         .send(tpCycle({ id: 'cycle-audited', transcriptAudit: AUDIT_OK }));
       expect(created.status).toBe(201);
@@ -419,7 +536,7 @@ describe('/apprenticeship routes (integration)', () => {
     it("REFUSES a ledger:'local' claim whose dedup keys do NOT resolve in the real ledger (anti-fabrication)", async () => {
       const store = makeCycleStore();
       const ledger = makeLedger();
-      const ctx = ctxFor(stateDir, makeProgram(), store);
+      const ctx = ctxFor(stateDir, await makeActiveProgram(), store);
       (ctx as unknown as Record<string, unknown>).frameworkIssueLedger = ledger;
       const app = appWith(ctx);
 
@@ -447,7 +564,7 @@ describe('/apprenticeship routes (integration)', () => {
         title: 'Post-drive transcript asked the operator to resend',
         dedupKey,
       });
-      const ctx = ctxFor(stateDir, makeProgram(), store);
+      const ctx = ctxFor(stateDir, await makeActiveProgram(), store);
       (ctx as unknown as Record<string, unknown>).frameworkIssueLedger = ledger;
       const app = appWith(ctx);
 
@@ -468,7 +585,7 @@ describe('/apprenticeship routes (integration)', () => {
 
     it('skips the ledger cross-check gracefully when no ledger is wired (declaration still recorded)', async () => {
       const store = makeCycleStore();
-      const app = appWith(ctxFor(stateDir, makeProgram(), store)); // no frameworkIssueLedger on ctx
+      const app = appWith(ctxFor(stateDir, await makeActiveProgram(), store)); // no frameworkIssueLedger on ctx
       const created = await request(app).post('/apprenticeship/cycles').set(auth()).send(tpCycle({
         transcriptAudit: {
           ...AUDIT_OK,
@@ -628,12 +745,36 @@ describe('/apprenticeship routes (integration)', () => {
     expect(created.status).toBe(201);
     expect(created.body.harvestFrom).toBe('echo');
     expect(created.body.status).toBe('pending');
+    expect(created.body.ladderRung).toBe(0);
 
     const fetched = await request(app).get('/apprenticeship/instances/echo-to-codey').set(auth());
     expect(fetched.status).toBe(200);
     expect(fetched.body.id).toBe('echo-to-codey');
 
     const missing = await request(app).get('/apprenticeship/instances/no-such').set(auth());
+    expect(missing.status).toBe(404);
+  });
+
+  it('transitions ladder rung only with adjacent evidence-backed changes', async () => {
+    const app = appWith(ctxFor(stateDir, makeProgram()));
+    await request(app).post('/apprenticeship/instances').set(auth()).send({
+      id: 'ladder-route', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli',
+    }).expect(201);
+
+    const noEvidence = await request(app)
+      .post('/apprenticeship/instances/ladder-route/rung-transition').set(auth()).send({ to: 1 });
+    expect(noEvidence.status).toBe(409);
+
+    const promoted = await request(app)
+      .post('/apprenticeship/instances/ladder-route/rung-transition').set(auth())
+      .send({ to: 1, evidenceRef: 'cycle:5faea978; prs:1479,1480,1481' });
+    expect(promoted.status).toBe(200);
+    expect(promoted.body.instance.ladderRung).toBe(1);
+    expect(promoted.body.instance.rungHistory).toHaveLength(2);
+
+    const missing = await request(app)
+      .post('/apprenticeship/instances/no-such/rung-transition').set(auth())
+      .send({ to: 1, evidenceRef: 'pr:1' });
     expect(missing.status).toBe(404);
   });
 
@@ -644,6 +785,22 @@ describe('/apprenticeship routes (integration)', () => {
       .set(auth())
       .send({ id: 'Bad/Id', instanceType: 'mentorship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli' });
     expect(res.status).toBe(400);
+  });
+
+  it('disposes a mistaken pending instance as retained terminal abandoned', async () => {
+    const app = appWith(ctxFor(stateDir, makeProgram()));
+    await request(app).post('/apprenticeship/instances').set(auth()).send({
+      id: 'wrong-type', instanceType: 'apprenticeship', mentor: 'echo', mentee: 'codey', framework: 'codex-cli',
+    }).expect(201);
+    const disposed = await request(app)
+      .post('/apprenticeship/instances/wrong-type/transition').set(auth()).send({ to: 'abandoned' });
+    expect(disposed.status).toBe(200);
+    expect(disposed.body.instance.status).toBe('abandoned');
+    const retained = await request(app).get('/apprenticeship/instances/wrong-type').set(auth());
+    expect(retained.body.status).toBe('abandoned');
+    const restart = await request(app)
+      .post('/apprenticeship/instances/wrong-type/transition').set(auth()).send({ to: 'active' });
+    expect(restart.status).toBe(409);
   });
 
   // ── create → transition gating end to end ─────────────────────────────

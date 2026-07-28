@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-24T15:48:00.394Z",
+  "slug": "tone-candidate-body-capture.side-effects",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 193,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

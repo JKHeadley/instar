@@ -80,6 +80,24 @@ describe('CoherenceJournal — paths & sanitization (§3.1)', () => {
     j.close();
   });
 
+  it("accepts the WS1.3 'reconcile' placement reason — the runtime allowlist matches the PlacementReason union (second-pass finding, 2026-06-12)", () => {
+    // The type annotation on the validator's allowlist cannot enforce
+    // completeness (a subset of the union is type-legal), so extending
+    // PlacementReason without the allowlist silently schema-rejects the new
+    // reason AT THE SOURCE. This is the semantic-correctness test for every
+    // reconciler-driven CAS's journal pairing.
+    const j = makeJournal();
+    const before = j.getDegradation().schemaRejects;
+    j.emitPlacement(13481, { owner: 'm_a', epoch: 7, reason: 'reconcile' });
+    j.flush();
+    expect(j.getDegradation().schemaRejects).toBe(before); // NOT rejected
+    expect(fs.existsSync(streamFile('topic-placement'))).toBe(true);
+    const lines = fs.readFileSync(streamFile('topic-placement'), 'utf-8').trim().split('\n');
+    const last = JSON.parse(lines[lines.length - 1]);
+    expect(last.data?.reason).toBe('reconcile');
+    j.close();
+  });
+
   it('sanitizes machine ids that contain path-unsafe characters (mirrors MachineHeartbeat)', () => {
     expect(sanitizeMachineId('a/b')).toBe('a%2fb'); // slash encoded
     expect(sanitizeMachineId('../x')).toBe('%2e%2e%2fx'); // dots + slash all encoded (traversal-safe)
@@ -225,6 +243,24 @@ describe('CoherenceJournal — unflushed entries lost on crash (§3.1, §6)', ()
 });
 
 describe('CoherenceJournal — typed-schema rejection (§3.2, §6)', () => {
+  it('replicates only the typed, signed mutual-SSH proof projection', () => {
+    const j = makeJournal();
+    const proof = {
+      sourceMachineId: 'm-a', targetMachineId: 'm-b', pairingEpoch: 7,
+      observerBootId: 'boot-a-12345678', endpointId: 'private:abc',
+      sourceClientKeyGeneration: 2, targetHostKeyGeneration: 3,
+      targetHostKeyFingerprint: 'SHA256:host', verifiedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), challengeDigest: 'digest',
+      machineSignature: 'signature'.repeat(8),
+    };
+    j.emitSshDirectionProof({ ...proof, secret: 'must-drop' } as typeof proof);
+    j.flush();
+    const rows = readLines(streamFile('ssh-direction-proof'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data).toEqual(proof);
+    expect(j.getDegradation().droppedFields).toBeGreaterThan(0);
+    j.close();
+  });
   it('rejects free-text / extra free-form fields by dropping unknown fields (counted)', () => {
     const j = makeJournal();
     j.emitPlacement(1, {
@@ -625,8 +661,8 @@ describe('CoherenceJournal — getOwnAdvert (§3.4 rule 5)', () => {
     const j = makeJournal();
     // Nothing written yet → every kind advertises lastSeq 0.
     const empty = j.getOwnAdvert();
-    expect(Object.keys(empty).sort()).toEqual(['autonomous-run', 'session-lifecycle', 'threadline-conversation', 'topic-placement']);
-    for (const kind of ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation'] as JournalKind[]) {
+    expect(Object.keys(empty).sort()).toEqual(['autonomous-run', 'class-review-record', 'evolution-action-record', 'guard-latch', 'knowledge-record', 'learning-record', 'pref-record', 'relationship-record', 'session-lifecycle', 'ssh-direction-proof', 'subscription-account-meta', 'threadline-conversation', 'threadline-pairing-record', 'topic-claim-annotation', 'topic-operator-record', 'topic-pin-record', 'topic-placement', 'user-record', 'working-set-artifact']);
+    for (const kind of ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'class-review-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta'] as JournalKind[]) {
       expect(empty[kind].lastSeq).toBe(0);
     }
     const incarnation = empty['topic-placement'].incarnation;

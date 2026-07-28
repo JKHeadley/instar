@@ -9,13 +9,15 @@ These subsystems are mostly invisible until something goes wrong. When they do s
 
 ## Token burn detection
 
-Components: `BurnDetector`, `BurnDetectionSubscriber`, `BurnThrottleRunbook`, `BurnVerifier`, `BurnAlertButtons`.
+Components: `BurnDetector`, `BurnDetectionSubscriber`, `BurnThrottleRunbook`, `BurnVerifier`, `BurnAlertButtons`, `BurnAlertDelivery`.
 
 The burn detector watches token consumption per-session and per-job. If a session burns through tokens at an unusually high rate — measured against the agent's historical pattern — the detector fires a burn-alert. The alert lands in Telegram with action buttons so you can pause the offending session, throttle the responsible job, or acknowledge and continue.
 
 The throttle runbook is automated: once a burn alert escalates past a configured threshold without user response, the runbook engages and reduces job concurrency to a safe rate. This prevents an unattended burn from running the daily cap to zero.
 
 The verifier double-checks the detector's signals. Burn detection is a brittle signal by design (rates can spike legitimately during heavy work); the verifier asks a higher-context check (is this session doing meaningful work, or stuck in a retry loop?) before escalating.
+
+`BurnAlertDelivery` owns terminal delivery state. If Telegram reports that the configured burn-alert topic is permanently gone, it quarantines that destination across restarts and transfers the warning to the durable Attention hub. The original warning remains pending until the hub accepts custody, while temporary network failures remain retryable.
 
 ## LLM rate-limit circuit breaker
 
@@ -81,6 +83,23 @@ Components: `SessionActivitySentinel`, `ActivityPartitioner`.
 Long-running sessions accumulate a lot of activity. The session activity sentinel partitions that activity into meaningful episodes — a coherent unit of work with a beginning and an end — and writes summaries that the memory system can later recall. This is what makes "what did you do yesterday around noon?" actually answerable.
 
 The partitioner is the algorithm that decides where one episode ends and the next begins. It uses signals like topic switches, long pauses, explicit user marking, and job-boundary events.
+
+## Goal re-alignment (Phase 1)
+
+Component: `GoalRealignment`.
+
+On development agents, Phase 1 keeps an append-only ledger of verified operator
+priorities and periodically compares that durable compass with the current run
+focus. Priorities do not expire with age: they remain active until explicitly
+superseded or confirmed addressed. The reviewer is dry-run only. It records
+`aligned`, `diverged`, or `indeterminate` verdicts but cannot inject prompts,
+write planner state, notify the operator, block work, or correct a session.
+
+The authenticated `GET /goal-realignment` route exposes a bounded status view for
+soak analysis: intake counts, source-completeness state, ledger projection
+metadata, and the latest verdict. It never returns raw operator messages or model
+transcripts. Incomplete or conflicting evidence produces `indeterminate` at zero
+confidence rather than a guess.
 
 ## Release readiness (instar-dev / maintainer environments)
 
@@ -184,3 +203,32 @@ The agent's own behavior responds to these signals too. The Coherence Gate consu
 ## Related: learning from corrections
 
 The `HumanAsDetectorLog` signal above ("what the user still had to catch") is also the front door of the [Correction & Preference Learning](/features/correction-preference-learning/) loop — the conversational twin of the Failure-Learning Loop. Where failure learning closes the gap on code that broke, that loop closes the gap on *interaction* failures: a recurring correction is captured by `CorrectionCaptureLoop`, distilled, deduplicated into the `CorrectionLedger`, gated for genuine recurrence by `CorrectionAnalyzer`, and routed by the authority-guarded `CorrectionLoopDriver` — either upstream as `/feedback` or into a durable user preference via `PreferencesManager`. It is signal-only and ships dark; see its dedicated page for the full pipeline. If the distillation call is rate-limited at capture time, the scrubbed capture is held in a bounded durable backlog (`CorrectionCaptureBacklog`) and distilled later when the LLM has headroom, so a sustained throttle can no longer silently lose a correction. The same loop also turns the agent's *own* slips into evidence: when a learned preference carries a violation pattern and the agent then sends a message that contradicts it, the `SelfViolationDetector` records that self-violation in the `CorrectionLedger` so the preference's recurrence climbs — observe-only, never blocking the message.
+
+## Idle-error recovery (session-stall detection)
+
+When a session goes quiet at its prompt, a background loop decides whether it stalled on a transient API error (and should be nudged back to life) or simply stopped normally. That decision is a deterministic *signal*, not a gate: `IdleErrorClassifier` (`classifyIdleError`) inspects the live tail of the session's terminal and fires only when a terminal-error token sits in the last ~20 non-empty lines **on a line the harness actually emitted as an error** — a two-tier rule (the line begins with `API Error:`, or it is led by Claude's own bullet/tree glyph and begins with one of the known error tokens). A token merely mentioned mid-line (prose, a quoted log, a tool's own `Error:`) does not count, which kills the stale-scrollback and quoted-content false positives the old bare substring scan suffered.
+
+The tail-gating itself lives in one shared helper, `paneTail` (`liveTail` / `stripLineLead` / `wasGlyphLed`), so "what counts as the live tail" has a single definition rather than a copy per consumer — the same helper `StuckSignatureClassifier` uses for its honest turn-receipts. The capture is widened to clear Claude Code's input-box chrome (which renders well below the error line), so a genuine error can't be pushed off-screen.
+
+The classifier's signal feeds the **existing** recovery actuator — it emits `apiErrorAtIdle`, which `RateLimitSentinel` turns into a non-destructive backoff → nudge → verify → escalate loop (it never restarts a session on its own; the worst case of a wrong signal is one wasted nudge the verify step proves was a no-op). Every classify decision (fired vs suppressed) is recorded once per idle episode, so a wave of suppressions on genuine errors is observable rather than a silent under-fire. This keeps the idle-error path consistent with the broader [Signal vs. Authority](/foundations/north-star/) posture: the brittle detector signals, the full-context actuator decides.
+
+## Process footprint (the climb measurement)
+
+CPU and memory sampling tells you how *hard* the machine is working, but not how *many*
+processes are running — and it was the slow climb of the process count (several agent
+stacks plus their heavy, mostly-idle MCP servers: a whole Chromium for Playwright, an
+Electron) that went unwatched until the host hit a kernel limit and panicked on
+2026-06-26. The `ProcessFootprintMonitor` adds exactly that missing measurement. On an
+interval it counts the agent-relevant processes on the machine and classifies them —
+agent CLIs, MCP servers (matched by the same allow-listed signatures the MCP cleanup
+sweep uses), and other node — keeping a bounded rolling window so a TREND (rising /
+stable / falling) is visible.
+
+It is **observe-only**: it never kills, throttles, or gates anything (reclaiming
+processes is the reapers' job). Read it at `GET /resources/footprint` → `{ enabled,
+latest: { total, byKind, rssBytes }, trend, overThreshold, samples }`. It ships dark
+(rides the developmentAgent gate, so it dogfoods on a dev agent before any fleet
+rollout) and every reading path fails safe (a failed scan keeps the last sample rather
+than crashing). An optional threshold heads-up exists but is **off by default** —
+measure first. It registers in the guard posture, so `GET /guards` shows whether it is
+on.

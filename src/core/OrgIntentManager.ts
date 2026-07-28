@@ -280,7 +280,20 @@ export class OrgIntentManager {
       : [];
 
     const values = valuesSection ? extractListItems(valuesSection) : [];
-    const tradeoffHierarchy = tradeoffSection ? extractListItems(tradeoffSection) : [];
+    let tradeoffHierarchy = tradeoffSection ? extractListItems(tradeoffSection) : [];
+    // The Tradeoff Hierarchy is documented (and scaffolded by `instar intent org-init`)
+    // as a single chained line — "Safety > Operator trust > Correctness > ..." — not a
+    // bulleted list, so extractListItems returns []. Accept the chained form too so the
+    // resolver actually sees the order. (exo3-harness mtp-tradeoff: was "no hierarchy".)
+    if (tradeoffHierarchy.length === 0 && tradeoffSection) {
+      const chain = tradeoffSection
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .split('\n').map(l => l.trim()).filter(Boolean)
+        .find(l => /[>›»]/.test(l));
+      if (chain) {
+        tradeoffHierarchy = chain.split(/\s*[>›»]\s*/).map(s => s.trim()).filter(Boolean);
+      }
+    }
     const identity = parseIdentityLayer(raw) ?? undefined;
 
     // If all sections are empty after parsing, treat as template-only

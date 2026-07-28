@@ -74,6 +74,19 @@ export interface HttpParitySourceConfig {
    * runner. Off by default — parity mode only needs the typed cluster projection.
    */
   captureRaw?: boolean;
+  /**
+   * When true, `prepare()` fetches ONLY the cluster snapshot and stops after the
+   * first page — Portal returns the COMPLETE cluster set in `data.clusters` on
+   * every page (verified: offset 0/70k/143k and even `limit=1` all return the
+   * full 1,370 clusters), so paginating the entire 145K-row feedback table just
+   * to collect clusters is pure waste. The parity-pass only needs the clusters
+   * (invariant-1 fingerprint), so this fast path lets it complete in ~1s instead
+   * of grinding 146 pages and blowing the single-flight max-hold budget (#948 —
+   * the server's contended event loop turns the full fetch into a >12min wall).
+   * Mutually exclusive with `captureRaw` (the import rehearsal genuinely needs
+   * every feedback row); if both are set, `captureRaw` wins and this is ignored.
+   */
+  clustersOnly?: boolean;
 }
 
 /** Shape returned by Portal at `/api/instar/read` (only the fields we read). */
@@ -265,6 +278,15 @@ export class HttpParitySource implements ParitySource {
       // pages and stabilise quickly via the byId dedup above).
       const returned = envelope?.meta?.returned_count ?? pageClusters.length;
       if (returned < this.pageSize) break;
+
+      // Clusters-only fast path (#948 fix): Portal returns the COMPLETE cluster
+      // set in every page's `data.clusters`, so after page 0 `byId` already holds
+      // them all. The parity-pass needs only the clusters (invariant-1
+      // fingerprint), so stop here instead of grinding all ~146 feedback pages —
+      // that full grind is what blows the single-flight max-hold budget on the
+      // contended server. captureRaw (the import rehearsal) genuinely needs every
+      // feedback row, so it never takes this path.
+      if (this.config.clustersOnly && !this.config.captureRaw) break;
     }
 
     this.snapshot = [...byId.values()];

@@ -376,12 +376,14 @@ describe('ContentClassifier', () => {
       expect(result.classification).toBe('blocked');
     });
 
-    it('handles malformed LLM response gracefully (fail-open)', async () => {
+    it('handles malformed LLM response by FAILING CLOSED to sensitive', async () => {
+      // Regression for "No Silent Degradation to Brittle Fallback": an unparseable
+      // classifier reply is not evidence the content is safe to send to a peer.
       const mockLLM = vi.fn().mockResolvedValue('I am not sure about this content.');
       const classifier = createClassifier({ llmClassify: mockLLM });
 
       const result = await classifier.classify('Some text', defaultContext);
-      expect(result.classification).toBe('safe'); // Fail-open
+      expect(result.classification).toBe('sensitive'); // fail-CLOSED, not 'safe'
     });
 
     it('applies blockSensitive to LLM-classified sensitive', async () => {
@@ -399,13 +401,16 @@ describe('ContentClassifier', () => {
   // ── Error Handling (Fail-Open) ─────────────────────────────────
 
   describe('error handling', () => {
-    it('fails open when LLM throws', async () => {
+    it('FAILS CLOSED to sensitive when LLM throws (never silently safe)', async () => {
+      // Regression: a classification error (rate-limit, circuit-open, timeout) must
+      // NOT downgrade outbound-leak protection to "safe" — hold the content as
+      // sensitive instead. ("No Silent Degradation to Brittle Fallback".)
       const mockLLM = vi.fn().mockRejectedValue(new Error('LLM API timeout'));
       const classifier = createClassifier({ llmClassify: mockLLM });
 
       const result = await classifier.classify('Some text', defaultContext);
-      expect(result.classification).toBe('safe');
-      expect(result.reason).toContain('fail-open');
+      expect(result.classification).toBe('sensitive'); // fail-CLOSED, not 'safe'
+      expect(result.reason).toContain('fail-closed');
       expect(result.reason).toContain('LLM API timeout');
     });
 

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-04T21:53:19.011Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 108,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The kill loop's respawn brake (ExternalHogKillLedger isBreakerTripped/recordKill — K=3 per rolling 1h window per signature, class-level fallback for volatile keys, in-flight set) is registered as external-hog-kill-breaker in SELF_ACTION_CONTROLLERS; the model drives the REAL pure functions under the pinned always-respawning fixture and settles at 3 kills, horizon-independent within the window (steady state: rate-bounded at K/window/signature with one deduped degradation)."
+    }
+  },
+  "verdict": "blocked"
+}

@@ -17,6 +17,7 @@ import path from 'node:path';
 import type { IntelligenceProvider } from '../core/types.js';
 import type { CommitmentTracker, CommitmentType } from './CommitmentTracker.js';
 import { DegradationReporter } from './DegradationReporter.js';
+import { readJsonlTailLines } from '../utils/jsonl-tail.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -227,8 +228,12 @@ export class CommitmentSentinel {
     if (!fs.existsSync(this.messagesPath)) return [];
 
     try {
-      const content = fs.readFileSync(this.messagesPath, 'utf-8');
-      const lines = content.trim().split('\n');
+      // Bounded TAIL read — never the whole file. This scanner only ever
+      // inspects the last `maxPerScan*10` lines, so loading the full multi-MB
+      // telegram-messages.jsonl on a 5-minute timer was a pure event-loop
+      // freeze (2026-06-22 batch). The 512KB window holds ~2,600 recent lines,
+      // far more than maxPerScan*10, while staying O(window) regardless of size.
+      const lines = readJsonlTailLines(this.messagesPath).lines;
       const messages: TelegramMessage[] = [];
       const maxPerScan = this.config.maxMessagesPerScan ?? 20;
 
@@ -328,6 +333,22 @@ IMPORTANT: Only return genuine commitments where the user asked for something du
         maxTokens: 500,
         temperature: 0,
         attribution: { component: 'CommitmentSentinel' }, // attribution for /metrics/features
+        // Observable Intelligence: the sentinel ACTS (fired) when it detects at
+        // least one genuine commitment; an empty array is a no-op. Mirrors the
+        // parse below so /metrics/features reports a real fireRate.
+        classifyVerdict: (result) => {
+          try {
+            const t = result.trim();
+            const j = t.startsWith('```') ? t.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '') : t;
+            const arr = JSON.parse(j);
+            const acted = Array.isArray(arr) && arr.some((c: any) =>
+              c?.type && c.userRequest && c.agentResponse &&
+              ['config-change', 'behavioral', 'one-time-action'].includes(c.type));
+            return { acted };
+          } catch {
+            return { acted: false };
+          }
+        },
       });
 
       // Parse JSON from response

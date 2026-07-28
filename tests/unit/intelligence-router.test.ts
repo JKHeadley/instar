@@ -182,3 +182,70 @@ describe('IntelligenceRouter — for() diagnostic surface', () => {
     expect(router.for('PresenceProxy')).toMatchObject({ framework: 'codex-cli', available: false });
   });
 });
+
+describe('IntelligenceRouter — failure-swap (No Silent Degradation to Brittle Fallback)', () => {
+  const throwing = (msg = 'provider down'): IntelligenceProvider => ({
+    async evaluate() { throw new Error(msg); },
+  });
+  function okProvider(label: string) {
+    const state = { calls: 0 };
+    const provider: IntelligenceProvider = { async evaluate() { state.calls++; return label; } };
+    return { provider, state };
+  }
+  function router(opts: {
+    defaultProvider: IntelligenceProvider;
+    built?: Partial<Record<IntelligenceFramework, IntelligenceProvider | null>>;
+    config?: ComponentFrameworksConfig;
+    onDegrade?: (i: unknown) => void;
+  }) {
+    return new IntelligenceRouter({
+      defaultProvider: opts.defaultProvider,
+      defaultFramework: 'claude-code',
+      resolveConfig: () => opts.config,
+      buildProvider: (fw: IntelligenceFramework) => opts.built?.[fw] ?? null,
+      onDegrade: opts.onDegrade as never,
+    });
+  }
+  const gating = { attribution: { component: 'ExternalOperationGate', gating: true } } as IntelligenceOptions;
+  const notGating = { attribution: { component: 'ExternalOperationGate' } } as IntelligenceOptions;
+
+  it('swaps a gating call to the next healthy framework when the primary fails', async () => {
+    const codex = okProvider('codex');
+    const degrades: unknown[] = [];
+    const r = router({ defaultProvider: throwing('claude rate-limited'), built: { 'codex-cli': codex.provider }, config: { failureSwap: ['codex-cli'] }, onDegrade: (i) => degrades.push(i) });
+    expect(await r.evaluate('p', gating)).toBe('codex');
+    expect(codex.state.calls).toBe(1);
+    expect(degrades).toHaveLength(1);
+  });
+
+  it('fails CLOSED (re-throws) when the primary AND every swap target are down', async () => {
+    const r = router({ defaultProvider: throwing(), built: { 'codex-cli': throwing() }, config: { failureSwap: ['codex-cli'] } });
+    await expect(r.evaluate('p', gating)).rejects.toThrow();
+  });
+
+  it('does NOT swap a NON-gating call (keeps today’s propagate-to-heuristic; no herd)', async () => {
+    const codex = okProvider('codex');
+    const r = router({ defaultProvider: throwing(), built: { 'codex-cli': codex.provider }, config: { failureSwap: ['codex-cli'] } });
+    await expect(r.evaluate('p', notGating)).rejects.toThrow();
+    expect(codex.state.calls).toBe(0);
+  });
+
+  it('does NOT swap when no failureSwap is configured', async () => {
+    const codex = okProvider('codex');
+    const r = router({ defaultProvider: throwing(), built: { 'codex-cli': codex.provider }, config: {} });
+    await expect(r.evaluate('p', gating)).rejects.toThrow();
+    expect(codex.state.calls).toBe(0);
+  });
+
+  it('skips a swap target whose circuit is open and uses the next healthy one (herd-aware)', async () => {
+    const pi = okProvider('pi');
+    const r = router({ defaultProvider: throwing(), built: { 'codex-cli': throwing('codex circuit open'), 'pi-cli': pi.provider }, config: { failureSwap: ['codex-cli', 'pi-cli'] } });
+    expect(await r.evaluate('p', gating)).toBe('pi');
+    expect(pi.state.calls).toBe(1);
+  });
+
+  it('unconfigured (no routing) leaves a gating call exactly as today — error propagates', async () => {
+    const r = router({ defaultProvider: throwing(), config: undefined });
+    await expect(r.evaluate('p', gating)).rejects.toThrow();
+  });
+});

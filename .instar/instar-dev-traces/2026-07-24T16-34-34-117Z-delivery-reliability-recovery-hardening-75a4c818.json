@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "slug": "delivery-reliability-recovery-hardening",
+  "sessionId": "b6982ce3-180b-44cb-a89d-531869e095e5",
+  "timestamp": "2026-07-24T16:34:34.117Z",
+  "artifactPath": "upgrades/side-effects/delivery-reliability-recovery-hardening.md",
+  "artifactSha256": "aa12b7be43ae660383f52f3df9f7a65b36711ff210c52ea1553821a3db228016",
+  "specPath": "docs/specs/delivery-reliability-recovery-hardening.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-07-24T16-17-46-158Z-delivery-reliability-recovery-hardening.json",
+    ".instar/instar-dev-decisions/2026-07-24T16-18-26-087Z-delivery-reliability-recovery-hardening.json",
+    ".instar/instar-dev-decisions/2026-07-24T16-18-47-732Z-delivery-reliability-recovery-hardening.json",
+    ".instar/instar-dev-decisions/2026-07-24T16-19-14-768Z-delivery-reliability-recovery-hardening.json",
+    ".instar/instar-dev-decisions/2026-07-24T16-19-48-370Z-delivery-reliability-recovery-hardening.json",
+    ".instar/instar-dev-traces/2026-07-24T16-17-29-139Z-delivery-reliability-recovery-hardening-aae0c362.json",
+    ".instar/instar-dev-traces/2026-07-24T16-19-31-860Z-delivery-reliability-recovery-hardening-57133358.json",
+    "docs/specs/delivery-reliability-recovery-hardening.eli16.md",
+    "docs/specs/delivery-reliability-recovery-hardening.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/monitoring/AutonomousLivenessReconciler.ts",
+    "src/monitoring/delivery-failure-sentinel.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/delivery-reliability-recovery-hardening.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Runtime recovery, liveness, and attention acceptance gates; operator-tracked CMT-1002/CMT-1003.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Queue watchdog, stale-age withholding, liveness debounce, and attention idempotency provide bounded convergence."
+    }
+  }
+}

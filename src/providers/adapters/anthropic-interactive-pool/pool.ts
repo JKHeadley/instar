@@ -356,25 +356,32 @@ export class InteractivePool extends EventEmitter {
         console.error('[interactive-pool] canary infrastructure error:', canaryErr);
       }
       if (canaryResult?.status === 'fail') {
-        // Canary returned a structured failure — surface and refuse to
-        // bring the session ready. Report to DegradationReporter so the
-        // surface lands in the right place (echo Telegram by default).
+        // Graceful degradation (2026-06-07 incident, topic 21816): a canary
+        // failure must NOT refuse the whole pool. Throwing here rejected
+        // start()'s Promise.all → the entire subscription-path pool failed to
+        // start → ALL Anthropic work stranded on the SDK credit pot, and under
+        // transient load (a slow/garbled empty-prompt round-trip during CPU
+        // starvation) it re-failed every spawn and tripped the LLM circuit in a
+        // loop. The empty-prompt detector is protection-in-depth (exactly as the
+        // infra-error branch above already states: "missing canary is
+        // protection-in-depth, not a primary failure path") — a session that
+        // can't verify the empty-prompt SIGNATURE can still serve real prompts.
+        // So: report the degradation, keep the canary marked as run (don't retry
+        // it on every spawn), and bring the session READY anyway. A genuinely
+        // broken session is caught by the per-call retire/replace path, not by
+        // refusing service to everyone.
         const { DegradationReporter } = await import('../../../monitoring/DegradationReporter.js');
         DegradationReporter.getInstance().report({
           feature: 'anthropic-interactive-pool.empty-prompt-canary',
           primary: 'Empty-prompt detector verified by startup canary',
-          fallback: 'Pool refuses to start; consumers route to anthropic-headless via registry',
+          fallback: 'Canary unverified — pool starts anyway; empty-prompt detection is best-effort this lifetime',
           reason: canaryResult.message,
           impact:
-            'Subscription-path pool unavailable — Anthropic work routes through the Agent SDK '
-            + 'credit pot instead. May exhaust credits faster than usual.',
+            'Empty-prompt detection runs in best-effort mode until the next successful canary. '
+            + 'The pool still serves real prompts (no SDK-credit fallback, no circuit trip).',
         });
-        session.state = 'dead';
-        this.sessions.delete(id);
-        this.emit('session:died', session);
-        throw new UnexpectedError(
-          `Pool session ${id} failed empty-prompt canary: ${canaryResult.message}`,
-          ANTHROPIC_INTERACTIVE_POOL_ID,
+        console.warn(
+          `[interactive-pool] empty-prompt canary failed (non-fatal — pool starts anyway): ${canaryResult.message}`,
         );
       }
       if (canaryResult?.status === 'self-healed') {

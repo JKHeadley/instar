@@ -46,9 +46,11 @@ describe('StateManager', () => {
     });
 
     it('lists sessions by status', () => {
-      state.saveSession(makeSession({ id: 'a', status: 'running' }));
-      state.saveSession(makeSession({ id: 'b', status: 'completed' }));
-      state.saveSession(makeSession({ id: 'c', status: 'running' }));
+      // Distinct tmux names: two RUNNING records sharing one tmux name is the
+      // ghost-record case the supersession invariant (below) now closes.
+      state.saveSession(makeSession({ id: 'a', status: 'running', tmuxSession: 'tmux-a' }));
+      state.saveSession(makeSession({ id: 'b', status: 'completed', tmuxSession: 'tmux-b' }));
+      state.saveSession(makeSession({ id: 'c', status: 'running', tmuxSession: 'tmux-c' }));
 
       const running = state.listSessions({ status: 'running' });
       expect(running).toHaveLength(2);
@@ -56,11 +58,82 @@ describe('StateManager', () => {
     });
 
     it('lists all sessions without filter', () => {
-      state.saveSession(makeSession({ id: 'a', status: 'running' }));
-      state.saveSession(makeSession({ id: 'b', status: 'completed' }));
+      state.saveSession(makeSession({ id: 'a', status: 'running', tmuxSession: 'tmux-a' }));
+      state.saveSession(makeSession({ id: 'b', status: 'completed', tmuxSession: 'tmux-b' }));
 
       const all = state.listSessions();
       expect(all).toHaveLength(2);
+    });
+  });
+
+  describe('Ghost-record supersession (one running record per tmux name)', () => {
+    const makeSession = (overrides?: Partial<Session>): Session => ({
+      id: 'test-123',
+      name: 'test-session',
+      status: 'running',
+      tmuxSession: 'project-test-session',
+      startedAt: new Date().toISOString(),
+      ...overrides,
+    });
+
+    it('a new running record supersedes an older running record with the same tmux name', () => {
+      state.saveSession(makeSession({ id: 'old', status: 'running' }));
+      state.saveSession(makeSession({ id: 'new', status: 'running' }));
+
+      const oldRec = state.getSession('old')!;
+      expect(oldRec.status).toBe('completed');
+      expect(oldRec.endedReason).toBe('superseded');
+      expect(oldRec.supersededBy).toBe('new');
+      expect(oldRec.endedAt).toBeTruthy();
+      expect(state.getSession('new')!.status).toBe('running');
+      // The dashboard's view: exactly ONE running record for the tmux name.
+      expect(state.listSessions({ status: 'running' })).toHaveLength(1);
+    });
+
+    it('collapses MULTIPLE accumulated ghosts in one registration (the Mac Mini case)', () => {
+      // Simulate the pre-fix corruption: ghost files written directly on disk
+      // (the state these agents are already in), then one fresh respawn.
+      for (const id of ['g1', 'g2', 'g3', 'g4']) {
+        fs.writeFileSync(
+          path.join(tmpDir, 'state', 'sessions', `${id}.json`),
+          JSON.stringify(makeSession({ id, status: 'running' })),
+        );
+      }
+      state.saveSession(makeSession({ id: 'fresh', status: 'running' }));
+
+      const running = state.listSessions({ status: 'running' });
+      expect(running.map(s => s.id)).toEqual(['fresh']);
+      for (const id of ['g1', 'g2', 'g3', 'g4']) {
+        expect(state.getSession(id)!.supersededBy).toBe('fresh');
+      }
+    });
+
+    it('a stale STARTING record is superseded too', () => {
+      state.saveSession(makeSession({ id: 'stuck', status: 'starting' }));
+      state.saveSession(makeSession({ id: 'new', status: 'running' }));
+      expect(state.getSession('stuck')!.status).toBe('completed');
+      expect(state.getSession('stuck')!.supersededBy).toBe('new');
+    });
+
+    it('re-saving the SAME record (status update / metadata save) never supersedes itself', () => {
+      state.saveSession(makeSession({ id: 'a', status: 'running' }));
+      state.saveSession(makeSession({ id: 'a', status: 'running', model: 'opus' }));
+      const rec = state.getSession('a')!;
+      expect(rec.status).toBe('running');
+      expect(rec.supersededBy).toBeUndefined();
+    });
+
+    it('records for DIFFERENT tmux names are untouched', () => {
+      state.saveSession(makeSession({ id: 'a', status: 'running', tmuxSession: 'tmux-a' }));
+      state.saveSession(makeSession({ id: 'b', status: 'running', tmuxSession: 'tmux-b' }));
+      expect(state.getSession('a')!.status).toBe('running');
+      expect(state.getSession('b')!.status).toBe('running');
+    });
+
+    it('a COMPLETED save never triggers supersession (terminal saves are not registrations)', () => {
+      state.saveSession(makeSession({ id: 'a', status: 'running' }));
+      state.saveSession(makeSession({ id: 'b', status: 'completed' }));
+      expect(state.getSession('a')!.status).toBe('running');
     });
   });
 

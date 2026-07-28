@@ -1,0 +1,19 @@
+{
+  "ts": "2026-07-16T22:15:00.000Z",
+  "slug": "playwright-seat-lease",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "blocking authority at the MCP PreToolUse chokepoint",
+    "host-wide cross-process lease state"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 430,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The profile registry modeled account placement and activation but not exclusive use. Separate drives could therefore operate the same physical logged-in profile concurrently. The missing primitive was host-wide ownership at the tool chokepoint, not another profile record or a copy of live browser state."
+  },
+  "verdict": "pass"
+}

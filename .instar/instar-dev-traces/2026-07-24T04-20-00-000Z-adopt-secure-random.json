@@ -1,0 +1,17 @@
+{
+  "version": 3,
+  "slug": "adopt-secure-random",
+  "sessionId": "echo-topic-29723-drive11",
+  "timestamp": "2026-07-24T04:20:00.000Z",
+  "tier": 2,
+  "artifactPath": "upgrades/side-effects/adopt-secure-random.md",
+  "artifactSha256": "bcdad3300413c73b173f527f4d16f8dd7d69910a1f7b7902823b7d0f9397514f",
+  "specPath": "docs/specs/adopt-secure-random.md",
+  "eli16Path": "docs/specs/adopt-secure-random.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/adopt-secure-random.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/monitoring/CoherenceMonitor.ts",
+    "src/core/PostUpdateMigrator.ts"
+  ]
+}

@@ -167,7 +167,8 @@ describe('silently-stopped sentinels — production lifecycle (alive on boot)', 
       vi.setSystemTime(Date.now() + 60_000);
       frame = 'Bash(npm test) step 2 (esc to interrupt)'; // observed change
       r.sentinel.tick();
-      vi.setSystemTime(Date.now() + 16 * 60_000);
+      // Past the silence threshold (raised 15m→30m by HONEST-PROGRESS-MESSAGING A4).
+      vi.setSystemTime(Date.now() + 31 * 60_000);
       r.sentinel.tick(); // freeze past threshold → detect → nudge → escalate
       await vi.advanceTimersByTimeAsync(100);
       await r.notifier.flushNow();

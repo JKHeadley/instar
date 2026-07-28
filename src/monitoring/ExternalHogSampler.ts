@@ -1,0 +1,131 @@
+/**
+ * ExternalHogSampler — the PURE stage-1 candidacy state machine of the External-Hog sentinel
+ * (CMT-1901, docs/specs/external-hog-zombie-autokill-sentinel.md §1).
+ *
+ * Given two successive `ps` snapshots, compute the stage-1 CANDIDATES: external (own-uid,
+ * not-instar-owned) processes whose cross-tick `Δcputime / Δwall` crosses the core threshold.
+ * This is the cheap whole-table pass that selects the small set (typically 0–3) the expensive
+ * N-window confirmation + classifier then act on. PURE over its inputs (the actual `ps` spawn
+ * + the wall clock live in the thin I/O worker shell) so the candidacy logic is fully testable.
+ *
+ * Two round-reviewed properties carried here:
+ *  - candidacy uses the DELTA (Δcputime/Δwall), NOT `ps %cpu` — a process idle for 23h that
+ *    only NOW pins cores is caught (its lifetime average is diluted, but its cross-tick delta
+ *    is high). The map is rebuilt from the current table each tick (bounded; no accumulate).
+ *  - a LIVENESS HEARTBEAT (`lastSnapshotAt`) advances on any SUCCESSFUL parse (≥1 plausible
+ *    row), regardless of candidate count — so an idle no-hog machine is never read as
+ *    sampler-dead, and a failed/empty parse does NOT advance it (→ eventually sampler-dead).
+ */
+
+import { computeCoreEquivalents, isUnknown, type CpuSample } from './ExternalHogCpuDelta.js';
+import { isInstarOwned, type ProcTree, type OwnedRefs } from './ExternalHogOwnership.js';
+import type { ProcTableRow } from './ExternalHogProcTable.js';
+
+/** Identity key for a process across ticks: pid + start-time (defeats pid reuse). */
+function idKey(pid: number, startTime: string): string {
+  return `${pid}\u0000${startTime}`;
+}
+
+export interface SamplerState {
+  /** Previous tick's identity-key → { cumulativeCpuSeconds, monotonicWallMs }. */
+  readonly prev: ReadonlyMap<string, CpuSample>;
+  /** The liveness heartbeat — advances on any successful (plausible) parse. */
+  readonly lastSnapshotAt: number | null;
+}
+
+export const EMPTY_SAMPLER_STATE: SamplerState = { prev: new Map(), lastSnapshotAt: null };
+
+export interface Candidate {
+  readonly pid: number;
+  readonly startTime: string;
+  readonly comm: string;
+  readonly coreEquivalents: number;
+}
+
+export interface SamplerTick {
+  readonly nextState: SamplerState;
+  readonly candidates: readonly Candidate[];
+  /** True when this tick's parse was plausible (heartbeat advanced). */
+  readonly parsedOk: boolean;
+}
+
+export interface SamplerOpts {
+  readonly ownEuid: number;
+  readonly cpuCoreThreshold: number;
+  readonly sampleWindowMs: number;
+  readonly maxAncestorHops: number;
+  /** Minimum plausible row count for a "successful" parse (heartbeat gate). Default 1. */
+  readonly minPlausibleRows?: number;
+}
+
+/**
+ * Advance the sampler by one tick. `table` is the current parsed `ps` snapshot; `tree`/`owned`
+ * are built from it by the caller (the ownership sets). `monotonicWallMs` is a monotonic-clock
+ * reading. Returns the next state (with the rebuilt map + advanced heartbeat) and the stage-1
+ * candidates. Pure — mutates nothing.
+ */
+export function advanceSampler(
+  state: SamplerState,
+  table: readonly ProcTableRow[],
+  tree: ProcTree,
+  owned: OwnedRefs,
+  monotonicWallMs: number,
+  opts: SamplerOpts,
+): SamplerTick {
+  const minRows = opts.minPlausibleRows ?? 1;
+  const parsedOk = Array.isArray(table) && table.length >= minRows && Number.isFinite(monotonicWallMs);
+
+  // A failed/implausible parse: do NOT advance the heartbeat and produce no candidates (the
+  // §4 floor + the liveness sentinel handle the consequences). Keep the previous map so a
+  // single transient hiccup doesn't lose the delta baseline.
+  if (!parsedOk) {
+    return { nextState: state, candidates: [], parsedOk: false };
+  }
+
+  // Rebuild the identity-key → sample map from the CURRENT table (bounded; dead keys dropped).
+  const next = new Map<string, CpuSample>();
+  const candidates: Candidate[] = [];
+
+  for (const row of table) {
+    if (!Number.isInteger(row.pid) || row.pid <= 0) continue;
+    const key = idKey(row.pid, row.startTime);
+    // cputime may be undefined (malformed time → CPU-delta UNKNOWN); still record presence so
+    // the pid stays tracked, but such a row can never become a candidate this tick.
+    const cpuSec = row.cputimeSeconds;
+    const sample: CpuSample = {
+      cumulativeCpuSeconds: typeof cpuSec === 'number' && Number.isFinite(cpuSec) ? cpuSec : Number.NaN,
+      monotonicWallMs,
+    };
+    next.set(key, sample);
+
+    // Candidacy: external (own-uid, not instar-owned) + a fresh delta over threshold.
+    if (row.uid !== opts.ownEuid) continue;
+    if (typeof cpuSec !== 'number' || !Number.isFinite(cpuSec)) continue; // unknown cputime → not a candidate
+    if (isInstarOwned(row.pid, tree, owned, opts.maxAncestorHops)) continue;
+
+    const prevSample = state.prev.get(key);
+    if (!prevSample) continue; // first sight → no delta yet (needs a baseline)
+    const core = computeCoreEquivalents(prevSample, sample, { intendedWindowMs: opts.sampleWindowMs });
+    if (isUnknown(core)) continue;
+    if (core >= opts.cpuCoreThreshold) {
+      candidates.push({ pid: row.pid, startTime: row.startTime, comm: row.comm, coreEquivalents: core });
+    }
+  }
+
+  return {
+    nextState: { prev: next, lastSnapshotAt: monotonicWallMs },
+    candidates,
+    parsedOk: true,
+  };
+}
+
+/**
+ * Is the sampler DEAD (heartbeat too old)? Never-run (null heartbeat) is NOT dead — it just
+ * hasn't started. A non-finite `now` fails toward not-declaring-dead (avoid a false restart on
+ * a bad clock read). `deadThresholdMs = max(2*scanInterval, N*window)` per §1.
+ */
+export function isSamplerDead(state: SamplerState, nowMs: number, deadThresholdMs: number): boolean {
+  if (state.lastSnapshotAt === null) return false;
+  if (!Number.isFinite(nowMs) || !Number.isFinite(deadThresholdMs)) return false;
+  return nowMs - state.lastSnapshotAt > deadThresholdMs;
+}

@@ -11,8 +11,8 @@
  *   - manifestVersion: monotonic counter from the per-slug manifest
  *   - toolAllowlist, unrestrictedTools, clampedAllowlist: allowlist resolution
  *
- * Row size is capped at 2 KB. Larger rows truncate non-essential fields
- * and emit a degradation event; essential fields are always preserved.
+ * Row size is capped at 2 KB. Larger rows condense non-essential fields and
+ * record a durable outcome; only an impossible-to-fit row is a degradation.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -221,7 +221,7 @@ describe('JobRunHistory row-size cap (Phase 1b, integration)', () => {
     expect(run!.clampedAllowlist).toBe(false);
   });
 
-  it('truncates non-essential fields when a row exceeds the 2 KB cap', () => {
+  it('condenses non-essential fields without reporting healthy cap enforcement as a defect', () => {
     // Create a base row then record a completion with a huge outputSummary.
     const runId = history.recordStart({
       slug: 'big',
@@ -249,13 +249,8 @@ describe('JobRunHistory row-size cap (Phase 1b, integration)', () => {
     expect(run!.result).toBe('success');
     expect(run!.origin).toBe('user');
 
-    // Degradation event reported:
-    expect(reportSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        feature: 'JobRunHistory.appendLine',
-        reason: expect.stringContaining('exceeded'),
-      }),
-    );
+    expect(history.stats('big').budgetCondensedRuns).toBe(1);
+    expect(reportSpy).not.toHaveBeenCalled();
   });
 
   it('does NOT truncate or report when the row is within the cap', () => {

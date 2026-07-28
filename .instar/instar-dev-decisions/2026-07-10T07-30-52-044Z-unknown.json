@@ -1,0 +1,28 @@
+{
+  "ts": "2026-07-10T07:30:52.044Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 22,
+  "loc": 5997,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The generalized convergence ratchet drives every registered controller's worst-case emissions THROUGH SelfActionGovernor.admit() in enforce mode and asserts the steady-state action count stays bounded at each model's proven boundK (horizon-independent — no episode reset for relief classes; the demote latch re-promotes only after a clean cooldown dwell, so the floor cannot flap); eternal sentinels stay rate-floored, and the P19 breaker + count ceilings make every retrofitted loop converge rather than storm."
+    }
+  },
+  "verdict": "blocked"
+}

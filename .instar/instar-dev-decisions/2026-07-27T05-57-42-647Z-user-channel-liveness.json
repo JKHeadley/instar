@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-27T05:57:42.647Z",
+  "slug": "user-channel-liveness",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 242,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

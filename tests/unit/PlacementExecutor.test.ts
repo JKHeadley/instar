@@ -61,6 +61,25 @@ describe('PlacementExecutor.decide (§L4)', () => {
     expect(d).toMatchObject({ chosenMachine: null, outcome: 'queued', escalationReason: 'hard-pin-unsatisfiable' });
   });
 
+  it('U4.1 §2E: hard pin to a NOT-YET-SUSTAINED machine QUEUES (never re-routes) — fulfilment hysteresis', () => {
+    const gated = new PlacementExecutor(undefined, { sustainedOnline: (m) => m !== 'mini' });
+    const tp: TopicPlacement = { preferredMachine: 'mini', pinned: true };
+    const d = gated.decide(req({ topicMetadata: tp, machineRegistry: [machine('mini'), machine('other')] }));
+    // The flapped-back-on pinned machine reads as unavailable: queued-never-rerouted.
+    expect(d).toMatchObject({ chosenMachine: null, outcome: 'queued', reason: 'hard-pin-unavailable', escalationReason: 'hard-pin-unsatisfiable' });
+  });
+
+  it('U4.1 §2E: hard pin to a SUSTAINED machine places; absent seam = today\'s exact behavior', () => {
+    const gated = new PlacementExecutor(undefined, { sustainedOnline: () => true });
+    const tp: TopicPlacement = { preferredMachine: 'mini', pinned: true };
+    expect(gated.decide(req({ topicMetadata: tp, machineRegistry: [machine('mini'), machine('other')] })).chosenMachine).toBe('mini');
+    // Seam absent (default construction) — plain-online eligibility, unchanged.
+    expect(exec.decide(req({ topicMetadata: tp, machineRegistry: [machine('mini')] })).chosenMachine).toBe('mini');
+    // A throwing seam fails toward placement (plain-online), never toward a wedge.
+    const throwing = new PlacementExecutor(undefined, { sustainedOnline: () => { throw new Error('tracker down'); } });
+    expect(throwing.decide(req({ topicMetadata: tp, machineRegistry: [machine('mini')] })).chosenMachine).toBe('mini');
+  });
+
   it('soft preference: places on the preferred machine if eligible, else degrades to least-loaded', () => {
     const pref: TopicPlacement = { preferredMachine: 'mini' };
     expect(exec.decide(req({ topicMetadata: pref, machineRegistry: [machine('mini', { loadAvg: 5 }), machine('x', { loadAvg: 0 })] }))).toMatchObject({ chosenMachine: 'mini', reason: 'preference' });
@@ -147,6 +166,22 @@ describe('PlacementExecutor.decide — quota gate', () => {
     expect(d.escalationReason).toBeUndefined();
   });
 
+  it('avoids a machine blocked by an OPEN llm-circuit (the new cause flows through to placement)', () => {
+    // The live-test finding: a circuit-open machine is least-loaded but cannot serve. The
+    // selfQuotaState fix now reports {blocked:true, reason:'llm-circuit-open'} for it, and
+    // placement must steer off it exactly as it does for an account-quota block.
+    const circuitBlocked = { blocked: true, reason: 'llm-circuit-open' };
+    const d = exec.decide(req({
+      machineRegistry: [
+        machine('rate-limited-mini', { loadAvg: 0.1, quotaState: circuitBlocked }),
+        machine('healthy-laptop', { loadAvg: 5 }),
+      ],
+    }));
+    expect(d.outcome).toBe('placed');
+    expect(d.chosenMachine).toBe('healthy-laptop');
+    expect(d.escalationReason).toBeUndefined();
+  });
+
   it('a quota-blocked current owner loses stickiness (the topic moves off the silent machine)', () => {
     const d = exec.decide(req({
       currentOwner: 'limited',
@@ -222,5 +257,84 @@ describe('PlacementExecutor.decide — quota gate', () => {
     }));
     expect(d.outcome).toBe('queued');
     expect(d.reason).toBe('hard-pin-unavailable');
+  });
+});
+
+describe('PlacementExecutor.decide — platform/workspace-aware serve filter (placement-platform-workspace-aware)', () => {
+  const sl = (ws: string[]) => ({ servesChannels: { slack: { workspaceIds: ws } } });
+  const tg = (cs: string[]) => ({ servesChannels: { telegram: { chatIds: cs } } });
+
+  it('slack: places on the machine that serves the workspace, not the one that does not (the live-test bug)', () => {
+    const d = exec.decide(req({
+      reason: 'failover',
+      channel: { platform: 'slack', workspaceId: 'W-LIVE', channelId: 'C1' },
+      machineRegistry: [machine('laptop', { ...sl(['W-LIVE']), loadAvg: 5 }), machine('mini', { ...sl(['W-OTHER']), loadAvg: 0 })],
+    }));
+    expect(d.outcome).toBe('placed');
+    expect(d.chosenMachine).toBe('laptop'); // mini is load-cheaper but cannot serve W-LIVE
+  });
+
+  it('yes ranks ABOVE unknown: a known-reachable machine wins over an old (unknown) peer even when the peer is cheaper', () => {
+    const d = exec.decide(req({
+      channel: { platform: 'slack', workspaceId: 'W1', channelId: 'C1' },
+      machineRegistry: [machine('known', { ...sl(['W1']), loadAvg: 5 }), machine('oldpeer', { loadAvg: 0 })], // oldpeer has no servesChannels → unknown
+    }));
+    expect(d.chosenMachine).toBe('known'); // unknown must not outrank yes by load
+  });
+
+  it('all machines structurally cannot serve → queued + no-machine-serves-channel (never a black-hole pick)', () => {
+    const d = exec.decide(req({
+      channel: { platform: 'slack', workspaceId: 'W-LIVE', channelId: 'C1' },
+      machineRegistry: [machine('a', sl(['W-OTHER'])), machine('b', sl(['W-OTHER2']))],
+    }));
+    expect(d.outcome).toBe('queued');
+    expect(d.reason).toBe('no-machine-serves-channel');
+    expect(d.escalationReason).toBe('no-machine-serves-channel');
+    expect(d.chosenMachine).toBeNull();
+  });
+
+  it('telegram shared chat: both machines are yes (no exclusion) → normal least-loaded', () => {
+    const d = exec.decide(req({
+      channel: { platform: 'telegram', chatId: '-100SHARED', channelId: '5' },
+      machineRegistry: [machine('a', { ...tg(['-100SHARED']), loadAvg: 5 }), machine('b', { ...tg(['-100SHARED']), loadAvg: 0 })],
+    }));
+    expect(d.chosenMachine).toBe('b');
+  });
+
+  it('fail-open: all machines absent signal (unknown) → places normally (rolling deploy)', () => {
+    const d = exec.decide(req({
+      channel: { platform: 'slack', workspaceId: 'W1', channelId: 'C1' },
+      machineRegistry: [machine('a', { loadAvg: 5 }), machine('b', { loadAvg: 0 })],
+    }));
+    expect(d.outcome).toBe('placed');
+    expect(d.chosenMachine).toBe('b');
+  });
+
+  it('absent req.channel (legacy caller) → filter no-ops (unchanged behavior)', () => {
+    const d = exec.decide(req({
+      machineRegistry: [machine('a', sl(['W-OTHER'])), machine('b', sl(['W-OTHER2']))], // would be all-no IF channel were set
+    }));
+    expect(d.outcome).toBe('placed'); // no channel → no filter → normal placement
+  });
+
+  it('hard-pin to a machine that structurally CANNOT serve → hard-pin-unsatisfiable (not honored onto a non-serving machine)', () => {
+    const tp: TopicPlacement = { preferredMachine: 'mini', pinned: true };
+    const d = exec.decide(req({
+      topicMetadata: tp,
+      channel: { platform: 'slack', workspaceId: 'W-LIVE', channelId: 'C1' },
+      machineRegistry: [machine('mini', sl(['W-OTHER'])), machine('laptop', sl(['W-LIVE']))],
+    }));
+    expect(d.outcome).toBe('queued');
+    expect(d.escalationReason).toBe('hard-pin-unsatisfiable');
+  });
+
+  it('hard-pin to an UNKNOWN (absent-signal) machine → still honored (fail-open)', () => {
+    const tp: TopicPlacement = { preferredMachine: 'oldpeer', pinned: true };
+    const d = exec.decide(req({
+      topicMetadata: tp,
+      channel: { platform: 'slack', workspaceId: 'W-LIVE', channelId: 'C1' },
+      machineRegistry: [machine('oldpeer', { loadAvg: 1 }), machine('laptop', sl(['W-LIVE']))], // oldpeer unknown
+    }));
+    expect(d).toMatchObject({ chosenMachine: 'oldpeer', outcome: 'placed', reason: 'hard-pin' });
   });
 });

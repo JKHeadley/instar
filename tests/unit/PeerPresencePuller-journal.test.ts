@@ -173,3 +173,31 @@ describe('PeerPresencePuller — journal-delta drive (REPLICATION-GATED)', () =>
     expect(applyDelta).toHaveBeenCalledWith('m_mini', [served]);
   });
 });
+
+describe('forged-heartbeat-from-non-owner-rejected (U4.2 — freshness binds to the DIALED identity)', () => {
+  it('a response body smuggling a foreign machineId can NEVER refresh that foreign machine\'s observation', async () => {
+    // U4.2's death evidence keys on observer-stamped freshness folded in from
+    // THIS pull path. The observation is recorded under the id of the machine
+    // WE dialed (m.machineId from the registered peer entry) — never an id the
+    // response body asserts. So a live peer cannot keep a dead owner looking
+    // alive (or vice versa) by impersonating it in its capacity payload.
+    const recorded: string[] = [];
+    const forged = {
+      loadAvg: 0.1,
+      selfReportedLastSeen: new Date().toISOString(),
+      // Smuggled identity claim — NOT a PeerCapacity field; cast to prove the
+      // puller ignores unknown body fields entirely.
+      machineId: 'm_owner',
+    } as unknown as PeerCapacity;
+    const puller = new PeerPresencePuller({
+      selfMachineId: 'm_self',
+      listPeers: () => [{ machineId: 'm_mini', url: URL_MINI }],
+      fetchPeerCapacity: async () => forged,
+      recordHeartbeat: (obs) => recorded.push(obs.machineId),
+    });
+    const res = await puller.pullOnce();
+    expect(res.recorded).toEqual(['m_mini']);
+    expect(recorded).toEqual(['m_mini']);
+    expect(recorded).not.toContain('m_owner');
+  });
+});

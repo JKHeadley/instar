@@ -1,0 +1,16 @@
+{
+  "phase": "complete",
+  "slug": "pool-rope-condition",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "src/server/poolRopeCondition.ts"
+  ],
+  "artifactPath": "upgrades/side-effects/pool-rope-condition.md",
+  "artifactSha256": "9c36d69710bcc1e0f8196683a63456d9807b9c54458fabb25ea9a32fae5a8c10",
+  "createdAt": "2026-07-24T12:45:21Z",
+  "specPath": "docs/specs/pool-rope-condition.md",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Semantic conflation present since the pool view's introduction: the display consumed only the placement-oriented online flag (failoverThresholdMs staleness symbol), with no faster reachability signal available to render. Surfaced live by the 2026-07-23 A3 laptop-offline test (rope-health peer-offline <1min vs pool online:true ~15min)."
+  }
+}

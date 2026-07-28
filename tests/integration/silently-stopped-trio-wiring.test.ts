@@ -102,7 +102,8 @@ describe('silently-stopped trio — end-to-end through SentinelNotifier', () => 
     sentinel.tick();
     expect(sentinel.isRecoveryActive('agent-1')).toBe(false);
 
-    vi.setSystemTime(Date.now() + 16 * 60_000);
+    // Past the silence threshold (raised 15m→30m by HONEST-PROGRESS-MESSAGING A4).
+    vi.setSystemTime(Date.now() + 31 * 60_000);
     sentinel.tick();
     await vi.advanceTimersByTimeAsync(50);
     await notifier.flushNow();

@@ -157,6 +157,18 @@ describe('Multi-Machine E2E — split-brain detection + pull-based convergence',
     expect(aLc.currentHolder()).toBe('B');
     expect(bLc.currentHolder()).toBe('B');
     reflect();
-    expect(awakeCount()).toBe(1); // ← heal → converges to 1
+    expect(awakeCount()).toBe(1); // ← heal → converges to 1 (registry-role basis)
+
+    // ── 4. machine-coherence-guard §5b — the SAME convergence at the LEASE-LIVE
+    //    count level, derived from each machine's OWN pulled observations (the
+    //    basis getSyncStatus() now uses; observedByPeer() was populated by the
+    //    phase-3 pulls over the real HttpLeaseTransport). Each machine honestly
+    //    reports exactly ONE awake after heal. ──
+    const STALE = 10 * 60_000; // well within freshness (observations stamped at NOW)
+    // A demoted (holds=false) but its pull of B recorded B's live epoch-2 self-lease.
+    expect(aLc.deriveLiveAwakeCount(STALE)).toBe(1);
+    // B holds (1); A now re-serves B's epoch-2 lease, so B's pull of A is
+    // hearsay-about-B (holder !== the dialed peer id) and adds nothing.
+    expect(bLc.deriveLiveAwakeCount(STALE)).toBe(1);
   });
 });

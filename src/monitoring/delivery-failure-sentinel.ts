@@ -76,6 +76,22 @@ export interface SentinelConfig {
   circuitBreakerCount?: number;
   circuitBreakerWindowMs?: number;
   /**
+   * L0 zombie-free delivery invariant (drive12 UX-first enforcement spec,
+   * Increment 1): a queued entry older than `maxAgeMs` at DEQUEUE time can
+   * never auto-deliver — it retires to dead-letter with a dropped-stale
+   * record and an aggregated operator digest. Distinct from
+   * `restorePurgeAgeMs`, which runs ONCE at startup: this is the invariant
+   * on every drain pass, closing the 2026-07-24 zombie-replay class (rows
+   * that dodge the startup purge and later become claimable).
+   *
+   * SHIPS DARK: `enabled` defaults false (today's behavior byte-identical).
+   * `maxAgeMs: 0` ⇒ no expiry even when enabled (the data-edit rollback
+   * sentinel). Policy source: src/data/outbound-queue-expiry.json
+   * ("delivery-recovery" class) + the per-install `outboundQueueExpiry`
+   * config flag, wired at the server construction site.
+   */
+  l0AgeGuard?: { enabled?: boolean; maxAgeMs?: number };
+  /**
    * Restore-purge threshold — entries older than this at startup are
    * dropped, not recovered (spec §3h). Default 60 minutes.
    *
@@ -120,6 +136,11 @@ export interface SentinelDeps {
     text: string,
     deliveryId: string,
     isSystem?: boolean,
+    /** Serialized queue-row metadata (kind/senderClass/advisoryAck) — the
+     *  redrive forwards it whole so a queued automated send is never
+     *  mis-kinded (spec outbound-jargon-filepath-gap §2.5). Null on legacy
+     *  rows. */
+    metadataJson?: string | null,
   ) => Promise<{ status: number; body: string }>;
   /** Whoami cache — defaults to a fresh instance with default deps. */
   whoamiCache?: WhoamiCache;
@@ -134,6 +155,7 @@ const DEFAULTS: Required<SentinelConfig> = {
   circuitBreakerCount: 5,
   circuitBreakerWindowMs: 60 * 60 * 1000,
   restorePurgeAgeMs: 60 * 60 * 1000,
+  l0AgeGuard: { enabled: false, maxAgeMs: 24 * 60 * 60 * 1000 },
 };
 
 // ── Sentinel ─────────────────────────────────────────────────────────
@@ -147,6 +169,8 @@ export interface SentinelEvents {
   'sentinel:escalated': [{ delivery_id: string; topic_id: number; category: string }];
   'sentinel:circuit-breaker-tripped': [{ consecutiveFailures: number }];
   'sentinel:circuit-breaker-resumed': [];
+  /** L0 age-guard: rows retired at dequeue time for exceeding the class max age. */
+  'sentinel:stale-retired': [{ count: number; topicIds: number[]; maxAgeMs: number }];
 }
 
 export class DeliveryFailureSentinel extends EventEmitter {
@@ -161,6 +185,11 @@ export class DeliveryFailureSentinel extends EventEmitter {
   private escalationFailures: number[] = []; // ms timestamps
   private inFlight = 0;
   private lastTopicDelivery = new Map<number, number>(); // topic → last delivered ms
+  /** L0 age-guard digest coalescing: at most one Attention digest per window. */
+  private static readonly L0_DIGEST_COALESCE_MS = 6 * 60 * 60 * 1000;
+  private lastStaleDigestAt = 0;
+  private staleDigestPending = 0;
+  private staleDigestTopics = new Set<number>();
   /** Templates verified at start(). False disables escalation path. */
   private templatesValid = true;
   /** Restored on first start(); used to keep restore-purge a one-shot. */
@@ -177,6 +206,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
       circuitBreakerCount: config.circuitBreakerCount ?? DEFAULTS.circuitBreakerCount,
       circuitBreakerWindowMs: config.circuitBreakerWindowMs ?? DEFAULTS.circuitBreakerWindowMs,
       restorePurgeAgeMs: config.restorePurgeAgeMs ?? DEFAULTS.restorePurgeAgeMs,
+      l0AgeGuard: config.l0AgeGuard ?? DEFAULTS.l0AgeGuard,
     };
     this.deps = {
       store: deps.store,
@@ -312,7 +342,13 @@ export class DeliveryFailureSentinel extends EventEmitter {
     const counters = { processed: 0, recovered: 0, escalated: 0 };
 
     // Pull rows that are ready (queued, or claimed-but-stale).
-    const candidates = this.selectClaimable();
+    let candidates = this.selectClaimable();
+
+    // L0 zombie-free delivery invariant (dequeue-time age guard). Runs on
+    // EVERY pull, before any row can reach processRow — no path to delivery
+    // exists for a row older than the class policy. Dark by default.
+    candidates = await this.applyL0AgeGuard(candidates);
+
     if (candidates.length === 0) {
       this.emit('sentinel:tick-complete', counters);
       return counters;
@@ -361,12 +397,133 @@ export class DeliveryFailureSentinel extends EventEmitter {
 
   // ── Internals ──────────────────────────────────────────────────────
 
+  /**
+   * L0 zombie-free delivery invariant (drive12 UX-first spec, Increment 1).
+   *
+   * Partition the claimable rows by age against the class policy; rows past
+   * the max age RETIRE to dead-letter (audited 'expired-stale' reason in
+   * status_history via transition()) and are summarized in ONE aggregated
+   * digest — never delivered, never per-message spam. Age basis is
+   * `attempted_at`: the ORIGINAL failed-send time, so no amount of retry
+   * churn can refresh a row's age.
+   *
+   * Fail-safe posture: the guard only ever REMOVES rows from the delivery
+   * path; an error inside it (store transition failure, digest failure)
+   * must never block the drain of fresh rows, and a disabled/0-age policy
+   * makes it a strict pass-through (today's behavior byte-identical).
+   */
+  private async applyL0AgeGuard(candidates: PendingRelayRow[]): Promise<PendingRelayRow[]> {
+    const policy = this.cfg.l0AgeGuard;
+    if (!policy?.enabled) return candidates;
+    const maxAgeMs = policy.maxAgeMs ?? 0;
+    if (maxAgeMs <= 0) return candidates; // 0 ⇒ no expiry (rollback sentinel)
+
+    const now = this.deps.now();
+    const fresh: PendingRelayRow[] = [];
+    const stale: PendingRelayRow[] = [];
+    for (const row of candidates) {
+      const bornAt = Date.parse(row.attempted_at);
+      if (Number.isFinite(bornAt) && now - bornAt > maxAgeMs) stale.push(row);
+      else fresh.push(row); // unparseable age ⇒ treat as fresh (never guess-drop)
+    }
+    if (stale.length === 0) return fresh;
+
+    const retiredTopics: number[] = [];
+    for (const row of stale) {
+      try {
+        const ageHours = Math.round((now - Date.parse(row.attempted_at)) / 3_600_000);
+        const ok = this.deps.store.transition(row.delivery_id, 'dead-letter', {
+          claimed_by: null,
+          error_body: `expired-stale: L0 age-guard retired at dequeue (age ~${ageHours}h > policy ${Math.round(maxAgeMs / 3_600_000)}h; never delivered)`,
+        });
+        if (ok) retiredTopics.push(row.topic_id);
+      } catch {
+        // @silent-fallback-ok: a failed retire leaves the row for the next
+        // pass; it still never delivers THIS pass (it is not in `fresh`).
+        // Deliberate fail-safe direction — never block the drain on the
+        // guard's own bookkeeping.
+      }
+    }
+
+    if (retiredTopics.length > 0) {
+      console.log(
+        `[sentinel:l0-age-guard] retired ${retiredTopics.length} stale row(s) at dequeue (policy ${Math.round(maxAgeMs / 3_600_000)}h; topics: ${[...new Set(retiredTopics)].join(', ')})`,
+      );
+      this.emit('sentinel:stale-retired', { count: retiredTopics.length, topicIds: [...new Set(retiredTopics)], maxAgeMs });
+      await this.postStaleDigest(retiredTopics, maxAgeMs);
+    }
+    return fresh;
+  }
+
+  /**
+   * ONE aggregated operator digest for retired-stale rows, coalesced to at
+   * most one Attention item per `L0_DIGEST_COALESCE_MS` window (calm-alerting
+   * — a steady trickle of expiring rows becomes accumulated counts, never a
+   * per-pass stream). Best-effort: a digest failure never affects the drain.
+   */
+  private async postStaleDigest(topicIds: number[], maxAgeMs: number): Promise<void> {
+    this.staleDigestPending += topicIds.length;
+    for (const t of topicIds) this.staleDigestTopics.add(t);
+    const now = this.deps.now();
+    if (now - this.lastStaleDigestAt < DeliveryFailureSentinel.L0_DIGEST_COALESCE_MS) return;
+    const count = this.staleDigestPending;
+    const topics = [...this.staleDigestTopics];
+    try {
+      const { port, authToken } = this.deps.readConfig();
+      const posted = await new Promise<boolean>((resolve) => {
+        const req = http.request(
+          {
+            host: '127.0.0.1',
+            port,
+            path: '/attention',
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+            timeout: 5000,
+          },
+          (res) => {
+            const ok = (res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300;
+            res.resume();
+            res.on('end', () => resolve(ok));
+          },
+        );
+        req.on('error', () => resolve(false));
+        req.on('timeout', () => {
+          req.destroy();
+          resolve(false);
+        });
+        req.end(
+          JSON.stringify({
+            title: `Stale queued replies retired (${count})`,
+            body: `The delivery age-guard retired ${count} queued outbound message(s) older than ${Math.round(maxAgeMs / 3_600_000)}h at dequeue time instead of delivering them late (conversations: ${topics.join(', ')}). Nothing was sent; each row is preserved as a dead-letter record with its reason.`,
+            priority: 'low',
+            source: 'delivery-l0-age-guard',
+          }),
+        );
+      });
+      // Counters clear (and the coalesce window stamps) ONLY on a confirmed
+      // 2xx — a failed/timed-out/non-2xx post keeps accumulating so the
+      // counts are retried on a later pass, never silently lost. The retired
+      // rows themselves are already safe regardless (audited dead-letters +
+      // the emitted event + log line).
+      if (posted) {
+        this.lastStaleDigestAt = now;
+        this.staleDigestPending = 0;
+        this.staleDigestTopics.clear();
+      }
+    } catch {
+      // @silent-fallback-ok: the digest is observability, never a gate —
+      // counters are retained and retried on a later pass; the retired rows
+      // are already audited dead-letters regardless.
+    }
+  }
+
   private selectClaimable(): PendingRelayRow[] {
     const nowIso = new Date(this.deps.now()).toISOString();
     try {
       const rows = this.deps.store.selectClaimable(nowIso, 100);
-      // Filter claimed rows whose lease has not expired AND whose bootId matches
-      // (otherwise reclaimable).
+      // A boot-id change does not itself make an active network send stale.
+      // Reclaim only after the timestamped lease expires; the owner renews it
+      // while awaiting I/O.
       return rows.filter((row) => {
         if (row.state !== 'claimed') return true;
         return this.isLeaseStale(row);
@@ -382,8 +539,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
     // Format: "<bootId>:<pid>:<leaseUntilIso>"
     const parts = row.claimed_by.split(':');
     if (parts.length < 3) return true;
-    const [bootId, , leaseUntilIso] = [parts[0], parts[1], parts.slice(2).join(':')];
-    if (bootId !== this.deps.bootId) return true;
+    const leaseUntilIso = parts.slice(2).join(':');
     const lease = Date.parse(leaseUntilIso);
     if (Number.isNaN(lease)) return true;
     return lease < this.deps.now();
@@ -392,12 +548,40 @@ export class DeliveryFailureSentinel extends EventEmitter {
   private async processRow(row: PendingRelayRow): Promise<'recovered' | 'escalated' | 'tone-gated' | 'retry' | 'ambiguous'> {
     // Claim the row — write the lease.
     const leaseUntil = new Date(this.deps.now() + this.cfg.leaseDurationMs).toISOString();
-    const claimedBy = `${this.deps.bootId}:${process.pid}:${leaseUntil}`;
-    const claimed = this.deps.store.transition(row.delivery_id, 'claimed', { claimed_by: claimedBy });
+    let claimedBy = `${this.deps.bootId}:${process.pid}:${leaseUntil}`;
+    // Atomic claim at the drain chokepoint. `transition()` was read-then-write:
+    // two sentinel instances that selected the same queued row could both
+    // report success and both POST it. CAS binds the claim to the selected
+    // state/owner so exactly one drain may send a delivery_id.
+    const claimed = this.deps.store.claimCas(row.delivery_id, claimedBy, {
+      state: row.state,
+      claimed_by: row.claimed_by,
+    });
     if (!claimed) {
       // Lost the race — another instance grabbed it (shared worktree case).
       return 'retry';
     }
+
+    let ownershipLost = false;
+    const renew = (): boolean => {
+      if (ownershipLost) return false;
+      const nextLease = new Date(this.deps.now() + this.cfg.leaseDurationMs).toISOString();
+      const nextToken = `${this.deps.bootId}:${process.pid}:${nextLease}`;
+      if (!this.deps.store.renewClaim(row.delivery_id, claimedBy, nextToken)) {
+        ownershipLost = true;
+        return false;
+      }
+      claimedBy = nextToken;
+      return true;
+    };
+    const heartbeat = setInterval(renew, Math.max(1, Math.floor(this.cfg.leaseDurationMs / 3)));
+    heartbeat.unref();
+    const transitionOwned = (
+      state: Parameters<PendingRelayStore['transitionClaimed']>[2],
+      fields: Parameters<PendingRelayStore['transitionClaimed']>[3] = {},
+    ): boolean => !ownershipLost && this.deps.store.transitionClaimed(row.delivery_id, claimedBy, state, fields);
+
+    try {
 
     // Re-resolve config — operator may have rotated port/token since enqueue.
     const cfg = this.deps.readConfig();
@@ -414,7 +598,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
         attempts: row.attempts,
         timeSinceFirstMs: this.deps.now() - Date.parse(row.attempted_at),
         now: this.deps.now,
-      }));
+      }), undefined, transitionOwned);
     }
     if (whoami.agentId !== cfg.agentId) {
       return this.handlePolicyDecision(row, evaluatePolicy({
@@ -423,7 +607,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
         attempts: row.attempts,
         timeSinceFirstMs: this.deps.now() - Date.parse(row.attempted_at),
         now: this.deps.now,
-      }));
+      }), undefined, transitionOwned);
     }
 
     // Re-tone-gate the queued text. Apply redaction first so secrets in
@@ -435,12 +619,13 @@ export class DeliveryFailureSentinel extends EventEmitter {
       channel: 'telegram',
     });
     if (!toneResult.passed) {
-      return this.finalizeToneGated(row, toneResult.rule);
+      return this.finalizeToneGated(row, transitionOwned, toneResult.rule);
     }
 
     // POST /telegram/reply with the delivery-id header for server-side dedup.
     let resp: { status: number; body: string };
     try {
+      if (!renew()) return 'retry';
       resp = await this.deps.postReply(
         cfg.port,
         cfg.authToken,
@@ -448,6 +633,8 @@ export class DeliveryFailureSentinel extends EventEmitter {
         row.topic_id,
         text,
         row.delivery_id,
+        false,
+        row.message_metadata ?? null,
       );
     } catch (err) {
       return this.handlePolicyDecision(row, evaluatePolicy({
@@ -456,7 +643,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
         attempts: row.attempts + 1,
         timeSinceFirstMs: this.deps.now() - Date.parse(row.attempted_at),
         now: this.deps.now,
-      }));
+      }), undefined, transitionOwned);
     }
 
     const decision = evaluatePolicy({
@@ -470,11 +657,11 @@ export class DeliveryFailureSentinel extends EventEmitter {
     if (decision.action === 'finalize-success') {
       // Update last-delivery time for per-topic rate cap.
       this.lastTopicDelivery.set(row.topic_id, this.deps.now());
-      this.deps.store.transition(row.delivery_id, 'delivered-recovered', {
+      if (!transitionOwned('delivered-recovered', {
         attempts: row.attempts + 1,
         http_code: resp.status,
         error_body: null,
-      });
+      })) return 'retry';
       this.emit('sentinel:recovered', { delivery_id: row.delivery_id, topic_id: row.topic_id });
       // Fire-and-forget recovered-marker follow-up (~2s later, gated on 200).
       const shortId = row.delivery_id.slice(0, 8);
@@ -490,13 +677,20 @@ export class DeliveryFailureSentinel extends EventEmitter {
       return 'recovered';
     }
 
-    return this.handlePolicyDecision(row, decision, resp.status);
+    return this.handlePolicyDecision(row, decision, resp.status, transitionOwned);
+    } finally {
+      clearInterval(heartbeat);
+    }
   }
 
-  private async finalizeToneGated(row: PendingRelayRow, rule?: string): Promise<'tone-gated'> {
-    this.deps.store.transition(row.delivery_id, 'delivered-tone-gated', {
+  private async finalizeToneGated(
+    row: PendingRelayRow,
+    transitionOwned: (state: Parameters<PendingRelayStore['transitionClaimed']>[2], fields?: Parameters<PendingRelayStore['transitionClaimed']>[3]) => boolean,
+    rule?: string,
+  ): Promise<'tone-gated' | 'retry'> {
+    if (!transitionOwned('delivered-tone-gated', {
       attempts: row.attempts + 1,
-    });
+    })) return 'retry';
     this.emit('sentinel:tone-gated', { delivery_id: row.delivery_id, topic_id: row.topic_id, rule });
 
     // Send the tone-gate-rejection meta-notice on the original topic.
@@ -515,6 +709,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
     row: PendingRelayRow,
     decision: PolicyDecision,
     httpCode?: number,
+    transitionOwned?: (state: Parameters<PendingRelayStore['transitionClaimed']>[2], fields?: Parameters<PendingRelayStore['transitionClaimed']>[3]) => boolean,
   ): Promise<'recovered' | 'escalated' | 'retry' | 'ambiguous' | 'tone-gated'> {
     switch (decision.action) {
       case 'finalize-success':
@@ -522,34 +717,40 @@ export class DeliveryFailureSentinel extends EventEmitter {
         return 'recovered';
 
       case 'finalize-tone-gated':
-        return this.finalizeToneGated(row);
+        if (!transitionOwned) return 'retry';
+        return this.finalizeToneGated(row, transitionOwned);
 
       case 'finalize-ambiguous':
-        this.deps.store.transition(row.delivery_id, 'delivered-ambiguous', {
+        if (!transitionOwned?.('delivered-ambiguous', {
           attempts: row.attempts + 1,
           http_code: httpCode ?? null,
-        });
+        })) return 'retry';
         return 'ambiguous';
 
       case 'retry':
-        this.deps.store.transition(row.delivery_id, 'queued', {
+        if (!transitionOwned?.('queued', {
           attempts: row.attempts + 1,
           next_attempt_at: decision.nextAttemptAt ?? null,
           claimed_by: null,
           http_code: httpCode ?? null,
-        });
+        })) return 'retry';
         return 'retry';
 
       case 'escalate':
-        return this.escalate(row, decision);
+        if (!transitionOwned) return 'retry';
+        return this.escalate(row, decision, transitionOwned);
     }
   }
 
-  private async escalate(row: PendingRelayRow, decision: PolicyDecision): Promise<'escalated'> {
+  private async escalate(
+    row: PendingRelayRow,
+    decision: PolicyDecision,
+    transitionOwned: (state: Parameters<PendingRelayStore['transitionClaimed']>[2], fields?: Parameters<PendingRelayStore['transitionClaimed']>[3]) => boolean,
+  ): Promise<'escalated' | 'retry'> {
     const category = reasonToCategory(decision.reason);
-    this.deps.store.transition(row.delivery_id, 'escalated', {
+    if (!transitionOwned('escalated', {
       attempts: row.attempts + 1,
-    });
+    })) return 'retry';
     this.emit('sentinel:escalated', { delivery_id: row.delivery_id, topic_id: row.topic_id, category });
 
     if (!this.templatesValid) {
@@ -661,36 +862,9 @@ export class DeliveryFailureSentinel extends EventEmitter {
   }
 
   private purgeStaleRows(): void {
-    const cutoff = new Date(this.deps.now() - this.cfg.restorePurgeAgeMs).toISOString();
-    try {
-      // LOUD purge: a restore-purge deletes a queued-undelivered outbound
-      // message — the only silent-deletion path left in the delivery stack
-      // until 2026-06-05, when five legitimate messages (including a user
-      // milestone report) vanished this way during restart churn. List the
-      // victims first so every loss is traceable, and report the
-      // degradation so the agent learns its outbound message evaporated
-      // (and can decide to resend) instead of believing it delivered.
-      const victims = this.deps.store.listStaleClaimable(cutoff);
-      if (victims.length === 0) return;
-      for (const v of victims) {
-        console.warn(
-          `[delivery-sentinel] restore-purge dropping ${v.delivery_id} (topic ${v.topic_id}, queued since ${v.attempted_at}): "${(v.text ?? '').slice(0, 60)}"`,
-        );
-      }
-      const deleted = this.deps.store.purgeStaleClaimable(cutoff);
-      console.log(`[delivery-sentinel] restore-purged ${deleted} stale rows (older than ${this.cfg.restorePurgeAgeMs}ms)`);
-      try {
-        DegradationReporter.getInstance().report({
-          feature: 'delivery-restore-purge',
-          primary: 'pending-relay rows recovered and delivered after restart',
-          fallback: `purged ${deleted} queued-undelivered outbound message(s) older than ${Math.round(this.cfg.restorePurgeAgeMs / 60000)}min at boot`,
-          reason: `restore-purge cutoff ${cutoff}; victims: ${victims.map((v) => `${v.delivery_id}@topic${v.topic_id}`).join(', ')}`,
-          impact: 'These outbound messages were never delivered and will not be retried — the intended recipients never saw them.',
-        });
-      } catch { /* best-effort — the per-row warns above are the floor */ }
-    } catch (err) {
-      console.warn('[delivery-sentinel] purgeStaleRows raised:', err);
-    }
+    // Recovery must never destructively purge accepted outbound work. Older
+    // rows remain durable for the bounded stale-incident/attention drain.
+    return;
   }
 }
 
@@ -728,9 +902,21 @@ async function defaultPostReply(
   text: string,
   deliveryId: string,
   isSystem = false,
+  metadataJson: string | null = null,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({ text });
+    // Forward the queued row's kind metadata whole (§2.5) — a malformed
+    // stored value is dropped rather than failing the redrive.
+    let metadata: unknown;
+    if (metadataJson) {
+      try {
+        metadata = JSON.parse(metadataJson);
+      } catch {
+        /* @silent-fallback-ok — §2.5: a malformed stored metadata value is dropped rather than failing the redrive */
+        metadata = undefined;
+      }
+    }
+    const payload = JSON.stringify(metadata ? { text, metadata } : { text });
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Content-Length': String(Buffer.byteLength(payload, 'utf-8')),

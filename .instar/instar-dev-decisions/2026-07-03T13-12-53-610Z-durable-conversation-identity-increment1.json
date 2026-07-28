@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-03T13:12:53.610Z",
+  "slug": "durable-conversation-identity-increment1",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 1624,
+  "causalAutopsy": null,
+  "verdict": "blocked"
+}

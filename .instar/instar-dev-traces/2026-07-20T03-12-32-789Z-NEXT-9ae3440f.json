@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "slug": "NEXT",
+  "sessionId": "783f1baa-7352-4229-8bda-00de9b0ec3cf",
+  "timestamp": "2026-07-20T03:12:32.789Z",
+  "artifactPath": "upgrades/side-effects/NEXT.md",
+  "artifactSha256": "063830e039c4d7da5d80f951318e6b2ba9a02a152d0f238ac5e451991ef28a33",
+  "specPath": "docs/specs/correction-class-review-and-verify-before-done.md",
+  "coveredFiles": [
+    "src/data/llmBenchCoverage.ts",
+    "tests/unit/llm-bench-coverage-ratchet.test.ts",
+    "tests/unit/nature-routing-injection-exposure-ratchet.test.ts",
+    "upgrades/side-effects/NEXT.md"
+  ],
+  "phase": "complete",
+  "tier": 3,
+  "tierReasoning": "Full CI exposed missing exhaustive LLM companion-axis enrollment for two new judgment components",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-second-pass",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}
