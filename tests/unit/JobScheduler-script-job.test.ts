@@ -109,4 +109,36 @@ describe('JobScheduler — script jobs run directly (no model session)', () => {
     expect(mockSM._spawnCount).toBe(0);
     await waitFor(() => fs.existsSync(markerPath));
   });
+
+  it('exposes authToken and projectName to script job shell', async () => {
+    project = createTempProject();
+    const mockSM = createMockSessionManager();
+    const markerPath = path.join(project.stateDir, 'script-auth-env.txt');
+    const jobs: JobDefinition[] = [{
+      slug: 'script-auth-env',
+      name: 'Script Auth Env',
+      description: 'captures scheduler auth env',
+      schedule: '0 0 * * *',
+      priority: 'low',
+      expectedDurationMinutes: 1,
+      model: 'haiku',
+      enabled: true,
+      execute: { type: 'script', value: `printf 'token=%s agent=%s' "$INSTAR_AUTH_TOKEN" "$INSTAR_AGENT_ID" > "${markerPath}"` },
+    }];
+    const jobsFile = path.join(project.stateDir, 'script-auth-env-jobs.json');
+    fs.writeFileSync(jobsFile, JSON.stringify(jobs, null, 2));
+
+    scheduler = new JobScheduler(
+      { ...config(jobsFile), authToken: 'script-token', projectName: 'script-agent' },
+      mockSM as any,
+      project.state,
+      project.stateDir,
+    );
+    scheduler.start();
+
+    const result = await scheduler.triggerJob('script-auth-env', 'test');
+    expect(result).toBe('triggered');
+    await waitFor(() => fs.existsSync(markerPath));
+    expect(fs.readFileSync(markerPath, 'utf-8')).toBe('token=script-token agent=script-agent');
+  });
 });

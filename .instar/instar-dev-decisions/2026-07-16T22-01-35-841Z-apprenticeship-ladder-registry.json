@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-16T22:01:35.841Z",
+  "slug": "apprenticeship-ladder-registry",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "causalAutopsy": "The ladder route was added without declaring its cross-machine write domain, so the conformance ratchet correctly refused the PR. The route family is now conservatively cluster-shared and the legacy baseline shrinks.",
+  "classClosure": null,
+  "verdict": "pass"
+}

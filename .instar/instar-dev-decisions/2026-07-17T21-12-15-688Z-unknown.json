@@ -1,0 +1,18 @@
+{
+  "ts": "2026-07-17T21:12:15.688Z",
+  "slug": "cross-machine-transfer-drain-wiring",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 140,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

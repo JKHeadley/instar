@@ -59,6 +59,42 @@ describe('Shared Infrastructure Delegation', () => {
   }
 
   describe('MessageLogger delegation (Phase 1b)', () => {
+    it.each([false, true])('dedupes one platform message across replay and adapter restart (shared=%s)', async (useSharedMessageLogger) => {
+      const logPath = path.join(stateDir, 'telegram-messages.jsonl');
+      const first = await createAdapter({ useSharedMessageLogger });
+      const firstCallbacks: unknown[] = [];
+      first.onMessageLogged = (entry) => firstCallbacks.push(entry);
+
+      first.logInboundMessage({
+        messageId: 9001,
+        topicId: 42,
+        text: 'one real Telegram message',
+        timestamp: '2026-07-17T00:00:00.000Z',
+      });
+      first.logInboundMessage({
+        messageId: 9001,
+        topicId: 42,
+        text: 'one real Telegram message',
+        timestamp: '2026-07-17T00:00:00.000Z',
+      });
+
+      const restarted = await createAdapter({ useSharedMessageLogger });
+      const restartCallbacks: unknown[] = [];
+      restarted.onMessageLogged = (entry) => restartCallbacks.push(entry);
+      restarted.logInboundMessage({
+        messageId: 9001,
+        topicId: 42,
+        text: 'redelivered after restart',
+        timestamp: '2026-07-17T00:00:00.000Z',
+      });
+
+      const lines = fs.readFileSync(logPath, 'utf-8').trim().split('\n');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]).text).toBe('one real Telegram message');
+      expect(firstCallbacks).toHaveLength(1);
+      expect(restartCallbacks).toHaveLength(0);
+    });
+
     it('writes to JSONL when flag is disabled (legacy path)', async () => {
       const adapter = await createAdapter({ useSharedMessageLogger: false });
       const logPath = path.join(stateDir, 'telegram-messages.jsonl');
@@ -105,7 +141,7 @@ describe('Shared Infrastructure Delegation', () => {
     });
 
     it('fires onMessageLogged callback in both paths', async () => {
-      for (const useShared of [false, true]) {
+      for (const [index, useShared] of [false, true].entries()) {
         const adapter = await createAdapter({ useSharedMessageLogger: useShared });
         const logged: any[] = [];
 
@@ -113,7 +149,7 @@ describe('Shared Infrastructure Delegation', () => {
         adapterAny.onMessageLogged = (entry: any) => logged.push(entry);
 
         adapterAny.appendToLog({
-          messageId: 1,
+          messageId: index + 1,
           topicId: 42,
           text: `callback test (shared=${useShared})`,
           fromUser: true,

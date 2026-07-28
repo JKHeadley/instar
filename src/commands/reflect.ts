@@ -16,10 +16,14 @@ import { ExecutionJournal } from '../core/ExecutionJournal.js';
 import { JobReflector } from '../core/JobReflector.js';
 import { PatternAnalyzer } from '../core/PatternAnalyzer.js';
 import { ReflectionConsolidator } from '../core/ReflectionConsolidator.js';
-import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProvider.js';
-import { wrapIntelligenceWithCircuitBreaker } from '../core/CircuitBreakingIntelligenceProvider.js';
 import type { IntelligenceProvider } from '../core/types.js';
 import type { DetectedPattern, PatternReport } from '../core/PatternAnalyzer.js';
+import { createRequire } from 'node:module';
+
+// ESM module (package "type":"module" / tsconfig Node16): a bare CJS `require`
+// is undefined and throws at runtime. Bind a real require via createRequire so
+// the lazy load below is genuinely ESM-legal (mirrors NativeModuleHealer.ts).
+const require = createRequire(import.meta.url);
 
 interface ReflectJobOptions {
   dir?: string;
@@ -353,13 +357,30 @@ function resolveIntelligence(claudePath?: string): IntelligenceProvider | null {
   // Lazy require — keeps the unit-test surface focused.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { buildIntelligenceProvider, frameworkFromEnv } = require('../core/intelligenceProviderFactory.js');
+  const { createCodexExecJsonConfigResolver } = require('../core/CodexCliIntelligenceProvider.js');
   const framework = frameworkFromEnv() ?? 'claude-code';
   const built = buildIntelligenceProvider({
     framework,
     binaryPath: framework === 'claude-code' ? claudePath : undefined,
+    // codex exec-json kill-switch — `instar reflect` runs in the project dir,
+    // so the resolver's default cwd-relative config path is correct here.
+    resolveExecJson: createCodexExecJsonConfigResolver(),
   });
   if (built) return built;
-  if (claudePath) return wrapIntelligenceWithCircuitBreaker(new ClaudeCliIntelligenceProvider(claudePath));
+  // Subscription-path note (june15-headless-spawn-reroute, Class 8): this
+  // fallback stays UNROUTED deliberately. `instar reflect` is a standalone
+  // CLI process — there is no server boot, no adapter registration, and no
+  // interactive pool to route into, so the factory's subscriptionPath option
+  // can never apply here. Volume is operator-invoked (not background), so
+  // the post-June-15 SDK-pot exposure is negligible and visible to the
+  // human running it.
+  //
+  // Fork-bomb-prevention (forkbomb-prevention-simple §P1): route this raw
+  // fallback THROUGH the factory (binaryPath-pinned) so it inherits the
+  // host-wide spawn-cap funnel exactly like every other provider. The factory
+  // applies both the spawn cap and the circuit breaker, so no callsite can
+  // construct an un-capped ClaudeCliIntelligenceProvider directly.
+  if (claudePath) return buildIntelligenceProvider({ framework: 'claude-code', binaryPath: claudePath });
   return null;
 }
 

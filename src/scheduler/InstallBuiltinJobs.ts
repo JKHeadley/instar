@@ -191,6 +191,15 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
           : frontmatter.telegramNotify === 'on-alert'
             ? 'on-alert'
             : coerceBool(frontmatter.telegramNotify),
+      // Closed two-value set; anything else (typo, absent) → undefined = legacy
+      // full-project-MCP behavior. validateManifest re-checks the enum below.
+      mcpAccess:
+        frontmatter.mcpAccess === 'none' || frontmatter.mcpAccess === 'project'
+          ? frontmatter.mcpAccess
+          : undefined,
+      // Spec §2.8/D11 — carry the per-machine-independent flag from frontmatter
+      // (FAILSAFE_SCHEMA parses it as the string "true"/"false"; coerceBool handles both).
+      perMachineIndependent: coerceBool(frontmatter.perMachineIndependent),
       disabledAtBodyHash: existingDisabledAtBodyHash,
     });
 

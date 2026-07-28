@@ -1,0 +1,18 @@
+{
+  "ts": "2026-06-27T03:22:28.341Z",
+  "slug": "dynamic-mcp-nonce-store",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 91,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "C4 authorization substrate for dynamic-MCP."
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "sessionId": "c734d944-32d0-49d1-b87c-7d994cf4a8ce",
+  "timestamp": "2026-07-15T22:45:56.683Z",
+  "artifactPath": "upgrades/side-effects/subscription-pool-identity-repair.md",
+  "artifactSha256": "2a68ab2ac91209949b8affee95e1a916b092ec9055e514d8be784babca1ce4da",
+  "specPath": "docs/specs/live-credential-repointing-rebalancer.md",
+  "coveredFiles": [
+    "src/core/QuotaPoller.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Tier 2 follow-up: shared credential-routing substrate fix preserving ledger authority through identity reconciliation; all direct ledger consumers were rerun.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-side-effects",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 3
+      }
+    ]
+  }
+}

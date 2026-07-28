@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-03T04:55:34.614Z",
+  "slug": "swap-continuity-antithrash",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 2548,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}

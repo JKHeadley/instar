@@ -11,7 +11,17 @@
  * dispose→reload→identical-output behavior was verified live).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { EmbeddingProvider } from '../../src/memory/EmbeddingProvider.js';
+import { EmbeddingProvider, ONNX_SESSION_OPTIONS } from '../../src/memory/EmbeddingProvider.js';
+
+describe('ONNX_SESSION_OPTIONS (resident-spin cap, task #17)', () => {
+  it('caps the ORT intra/inter-op thread pools to 1', () => {
+    // Guards the fleet-wide idle-CPU fix: a resident embedding model with the
+    // default (unbounded) ORT pool busy-spins ~6 extra threads. Runtime-verified
+    // via a thread-count probe (resident pool 18→12, identical 384-dim output).
+    expect(ONNX_SESSION_OPTIONS.intraOpNumThreads).toBe(1);
+    expect(ONNX_SESSION_OPTIONS.interOpNumThreads).toBe(1);
+  });
+});
 
 function makeMockPipeline() {
   const dispose = vi.fn().mockResolvedValue(undefined);

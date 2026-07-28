@@ -1,0 +1,18 @@
+{
+  "ts": "2026-07-17T00:56:00.000Z",
+  "slug": "telegram-local-ingest-dedup",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "changes canonical conversation-history admission",
+    "suppresses downstream callbacks for duplicate platform events"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Telegram polling and cross-machine delivery had retry identity, but the local JSONL append accepted every invocation. The same platform event could therefore create two canonical rows before any owner receipt gate ran. The repair makes the append itself idempotent and seeds identity from the canonical log across restart."
+  },
+  "verdict": "pass"
+}

@@ -162,6 +162,45 @@ describe('PostUpdateMigrator — CLAUDE.md Secret Drop rewrite', () => {
     expect(result.skipped.some(s => s.includes('Secret Drop already documents hardened helper'))).toBe(true);
   });
 
+  // A CLAUDE.md that already has the hardened helper (so the rewrite above is
+  // skipped) must still LEARN about the new --run atomic use-and-consume mode.
+  // Anchors on the stable leak-class sentence shipped with the hardened bullet.
+  const hardenedWithAnchor = [
+    '# CLAUDE.md — test',
+    '',
+    '**Secret Drop** — secure secret intake.',
+    '- **Retrieve the secret (HARDENED — required)**: `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name`',
+    '- **NEVER use `curl /secrets/retrieve` directly** — leaks the value. The hardened script exists specifically to close that leak class (origin: 2026-05-20 incident).',
+    '- List pending: ...',
+    '',
+  ].join('\n');
+
+  it('ADDS the --run atomic use-and-consume guidance when the hardened helper is already documented', () => {
+    fs.writeFileSync(claudeMdPath, hardenedWithAnchor);
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('--run -- ');
+    expect(after).toContain('Atomic use-and-consume');
+    // Inserted right after the leak-class anchor sentence, before "List pending".
+    expect(after.indexOf('Atomic use-and-consume')).toBeGreaterThan(after.indexOf('2026-05-20 incident'));
+    expect(after.indexOf('Atomic use-and-consume')).toBeLessThan(after.indexOf('List pending'));
+    expect(result.upgraded.some(u => u.includes('--run atomic use-and-consume'))).toBe(true);
+  });
+
+  it('is idempotent — re-running does not insert a second --run bullet', () => {
+    fs.writeFileSync(claudeMdPath, hardenedWithAnchor);
+    runMigrateClaudeMd(createMigrator(projectDir)); // first pass inserts it
+    const result = runMigrateClaudeMd(createMigrator(projectDir)); // second pass
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    // Exactly one --run bullet — the guard (!includes('--run -- ')) blocks re-insert.
+    expect(after.split('Atomic use-and-consume').length - 1).toBe(1);
+    expect(result.upgraded.some(u => u.includes('--run atomic use-and-consume'))).toBe(false);
+  });
+
   it('ADDS the full Secret Drop section when a stale CLAUDE.md lacks it entirely', () => {
     // codey's exact situation: CLAUDE.md predates the Secret Drop template
     // section, so it has Private Viewing + Tunnel but no Secret Drop at all.
@@ -304,5 +343,141 @@ describe('PostUpdateMigrator — CLAUDE.md Secret Drop rewrite', () => {
     expect(after).toContain('curl -H "Authorization: Bearer $AUTH" http://localhost:4042/capabilities');
     expect(after).not.toContain('curl http://localhost:4042/capabilities');
     expect(result.upgraded.some(u => u.includes('added Self-Discovery section'))).toBe(true);
+  });
+
+  // Secret Drop "agent-retrieves-first" inversion (2026-06-07 UX-violation fix).
+  // Existing agents carry the harmful "use Secret Drop … the ONLY correct way"
+  // trigger; the migration must flip it to agent-retrieves-first so the agent
+  // fetches secrets it can reach itself (Vercel/GitHub/vault) and only falls
+  // back to Secret Drop as a last resort.
+  it('rewrites the legacy "ONLY correct way" trigger to agent-retrieves-first', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md — test',
+      '',
+      '**Secret Drop** — secure secret intake.',
+      '- **When to use** (PROACTIVE — this is the trigger): the moment a user offers to give you a credential (API key, password, token) or you realize you need one, use Secret Drop. It is the ONLY correct way to collect a secret. NEVER accept it pasted into Telegram or chat.',
+      '',
+    ].join('\n'));
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).not.toContain('It is the ONLY correct way to collect a secret');
+    expect(after).toContain('FIRST fetch it yourself from an account');
+    expect(after).toContain('vercel env pull');
+    expect(result.upgraded.some(u => u.includes('agent-retrieves-first'))).toBe(true);
+  });
+
+  it('is idempotent — agent-retrieves-first wording is not rewritten again', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md — test',
+      '',
+      '**Secret Drop** — secure secret intake.',
+      '- **When to use — AGENT-RETRIEVES-FIRST; Secret Drop is the LAST resort** (PROACTIVE): When you need a credential, FIRST fetch it yourself from an account you already have access to.',
+      '',
+    ].join('\n'));
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('AGENT-RETRIEVES-FIRST');
+    expect(result.upgraded.some(u => u.includes('agent-retrieves-first'))).toBe(false);
+    expect(result.skipped.some(s => s.includes('agent-retrieves-first already present'))).toBe(true);
+  });
+
+  it('a freshly injected Secret Drop section carries agent-retrieves-first (no stale inject)', () => {
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md — test\n\n**Cloudflare Tunnel** — tunnel stuff.\n');
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('**Secret Drop**');
+    expect(after).toContain('AGENT-RETRIEVES-FIRST');
+    expect(after).not.toContain('It is the ONLY correct way to collect a secret');
+  });
+});
+
+// Store-first durable persistence (2026-06-04): existing agents' Security
+// bullet still claims submissions are "in-memory only (never written to
+// disk)" — stale once submissions persist to the encrypted SecretStore.
+// The migration rewrites the bullet; idempotent on the new wording.
+describe('PostUpdateMigrator — CLAUDE.md Secret Drop store-first Security bullet', () => {
+  let projectDir: string;
+  let claudeMdPath: string;
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-secret-drop-storefirst-'));
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    claudeMdPath = path.join(projectDir, 'CLAUDE.md');
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(projectDir, {
+      recursive: true,
+      force: true,
+      operation: 'tests/unit/PostUpdateMigrator-secretDropHardenedRetrieve.test.ts',
+    });
+  });
+
+  const oldBullet = '- **Security**: One-time use, expires after 15 minutes, in-memory only (never written to disk), CSRF-protected.';
+
+  it('rewrites the stale in-memory-only Security bullet to the store-first durable wording', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md — test',
+      '',
+      '**Secret Drop** — secure secret intake.',
+      '- **Retrieve the secret (HARDENED — required)**: `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name`',
+      oldBullet,
+      '',
+    ].join('\n'));
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).not.toContain('in-memory only (never written to disk)');
+    expect(after).toContain('persisted store-first to the durable AES-256-GCM encrypted SecretStore');
+    expect(after).toContain('secrets.persistDrops: false');
+    expect(result.upgraded.some(u => u.includes('store-first durable persistence'))).toBe(true);
+  });
+
+  it('is idempotent — the durable wording is not rewritten again', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md — test',
+      '',
+      '**Secret Drop** — secure secret intake.',
+      '- **Retrieve the secret (HARDENED — required)**: `node .instar/scripts/secret-drop-retrieve.mjs TOKEN field-name`',
+      '- **Security**: One-time link, expires after 15 minutes, CSRF-protected. The moment a secret is SUBMITTED it is also persisted store-first to the durable AES-256-GCM encrypted SecretStore — so it survives session restarts, compaction, and cross-machine handoff instead of evaporating with the in-memory copy. Retrieval transparently falls back to the durable copy, and a successful consume deletes both. (Opt out with `secrets.persistDrops: false` in `.instar/config.json`.)',
+      '',
+    ].join('\n'));
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    // Other migrations may patch unrelated sections of this minimal fixture;
+    // assert only what THIS migration owns: the durable bullet survives
+    // verbatim exactly once, and the pass records a skip, not an upgrade.
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after.split('persisted store-first to the durable AES-256-GCM encrypted SecretStore').length - 1).toBe(1);
+    expect(after).not.toContain('in-memory only (never written to disk)');
+    expect(result.upgraded.some(u => u.includes('store-first durable persistence'))).toBe(false);
+    expect(result.skipped.some(s => s.includes('store-first durability already documented'))).toBe(true);
+  });
+
+  it('a freshly injected Secret Drop section already carries the durable wording (no stale inject)', () => {
+    // No Secret Drop section at all — the section-inject migration adds it and
+    // must include the NEW Security wording, never the stale in-memory claim.
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md — test\n\n**Cloudflare Tunnel** — tunnel stuff.\n');
+
+    const result = runMigrateClaudeMd(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('**Secret Drop**');
+    expect(after).not.toContain('in-memory only (never written to disk)');
+    expect(after).toContain('persisted store-first to the durable AES-256-GCM encrypted SecretStore');
   });
 });

@@ -54,37 +54,16 @@ describe('ThreadlineBootstrap', () => {
 
     expect(result.handshakeManager).toBeDefined();
     expect(result.discovery).toBeDefined();
-    expect(result.identityKeys).toBeDefined();
-    expect(result.identityKeys.publicKey).toBeInstanceOf(Buffer);
-    expect(result.identityKeys.privateKey).toBeInstanceOf(Buffer);
     expect(result.shutdown).toBeInstanceOf(Function);
 
     await result.shutdown();
   });
 
-  it('persists identity keys across restarts', async () => {
-    const result1 = await bootstrapThreadline({
-      agentName: 'test-agent',
-      stateDir,
-      projectDir,
-      port: 4040,
-    });
-    await result1.shutdown();
-
-    const result2 = await bootstrapThreadline({
-      agentName: 'test-agent',
-      stateDir,
-      projectDir,
-      port: 4040,
-    });
-    await result2.shutdown();
-
-    // Same keys across restarts
-    expect(result1.identityKeys.publicKey.toString('hex'))
-      .toBe(result2.identityKeys.publicKey.toString('hex'));
-    expect(result1.identityKeys.privateKey.toString('hex'))
-      .toBe(result2.identityKeys.privateKey.toString('hex'));
-  });
+  // NOTE: tests asserting orphan `identity-keys.json` creation / persistence /
+  // permissions / corrupted-file regeneration were removed when
+  // loadOrCreateIdentityKeys was deleted — that orphan keypair is no longer minted
+  // (see docs/specs/threadline-duplicate-identity-resolution.md, change D). The
+  // canonical routing identity is covered by the advertisement tests below.
 
   it('creates threadline directory structure', async () => {
     const result = await bootstrapThreadline({
@@ -96,10 +75,9 @@ describe('ThreadlineBootstrap', () => {
     await result.shutdown();
 
     expect(fs.existsSync(path.join(stateDir, 'threadline'))).toBe(true);
-    expect(fs.existsSync(path.join(stateDir, 'threadline', 'identity-keys.json'))).toBe(true);
   });
 
-  it('writes identity keys with restrictive permissions', async () => {
+  it('does NOT create the orphan identity-keys.json (loadOrCreateIdentityKeys removed)', async () => {
     const result = await bootstrapThreadline({
       agentName: 'test-agent',
       stateDir,
@@ -108,11 +86,19 @@ describe('ThreadlineBootstrap', () => {
     });
     await result.shutdown();
 
-    const keyFile = path.join(stateDir, 'threadline', 'identity-keys.json');
-    const stat = fs.statSync(keyFile);
-    // File should be owner-only (0o600)
-    const mode = stat.mode & 0o777;
-    expect(mode).toBe(0o600);
+    expect(fs.existsSync(path.join(stateDir, 'threadline', 'identity-keys.json'))).toBe(false);
+  });
+
+  it('CI guard: ThreadlineBootstrap mints no orphan identity (cannot be re-introduced)', () => {
+    // Per docs/specs/threadline-duplicate-identity-resolution.md change D: gate on the
+    // orphan-minting FUNCTION name, not the filename string — `identity-keys.json` is
+    // still legitimately named in explanatory comments here and in PostUpdateMigrator.ts
+    // (the #479 routing-identity note explaining what NOT to advertise).
+    const src = fs.readFileSync(
+      path.join(process.cwd(), 'src/threadline/ThreadlineBootstrap.ts'),
+      'utf-8',
+    );
+    expect(src).not.toContain('loadOrCreateIdentityKeys');
   });
 
   it('registers MCP server in .mcp.json', async () => {
@@ -252,25 +238,6 @@ describe('ThreadlineBootstrap', () => {
     expect(agentInfo.publicKey).toBe(expected.publicKeyHex);
     expect(agentInfo.publicKey).not.toBe(orphan.publicKey.toString('hex'));
     expect(agentInfo.fingerprint).toBe(expected.fingerprint);
-  });
-
-  it('handles corrupted identity key file gracefully', async () => {
-    // Write corrupted key file
-    const threadlineDir = path.join(stateDir, 'threadline');
-    fs.mkdirSync(threadlineDir, { recursive: true });
-    fs.writeFileSync(path.join(threadlineDir, 'identity-keys.json'), 'not valid json');
-
-    const result = await bootstrapThreadline({
-      agentName: 'test-agent',
-      stateDir,
-      projectDir,
-      port: 4040,
-    });
-    await result.shutdown();
-
-    // Should have regenerated valid keys
-    expect(result.identityKeys.publicKey.length).toBe(32);
-    expect(result.identityKeys.privateKey.length).toBe(32);
   });
 
   it('uses default description when none provided', async () => {

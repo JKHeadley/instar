@@ -76,6 +76,32 @@ two ways:
    re-captures. The wedge is confirmed only if the signature is STILL the tail
    (the session made no progress). A transient or a discussing-session clears.
 
+### Second signature family — AUP-rejection loop (added 2026-06-05)
+
+Triggering incident: the EXO 3.0 session's transcript accumulated literal
+red-team test payloads (prompt-injection probes, token-sharing asks) generated
+during MTP security-harness work. The API's Usage Policy classifier began
+rejecting the WHOLE conversation: `API Error: Claude Code is unable to respond
+to this request, which appears to violate our Usage Policy`. Every turn
+re-sends the full transcript, so every reply failed in ~8–10s — the same
+permanent-death shape as the thinking-block 400 (still emitting output, so the
+silence + socket sentinels miss it), and the same recovery (a resume re-sends
+the poisoned content and re-wedges; only a fresh respawn clears it).
+
+`detectAupRejection(text)` matches the rejection phrase;
+`classifyWedgeTail(text)` returns which family (if any) is the live tail.
+The AUP family carries one EXTRA discriminator beyond the tail gate + confirm
+window: the signature must appear on **more than one line** of the capture. A
+single policy rejection can be a benign one-off (one bad request; the next
+message works fine) and must NOT cost the session its conversation; the wedge
+loop always repeats because every turn re-fails. Events carry `kind`
+(`thinking-block-400` | `aup-rejection`) into the sentinel audit trail and the
+escalation wording.
+
+Prevention guidance (documented in the CLAUDE.md template): literal
+adversarial payloads belong in files on disk, referenced by path — never
+pasted into a conversation transcript.
+
 ### Recovery — fresh respawn (NOT a nudge)
 
 The corrupted turn is permanent in the transcript, so recovery is a **clean
@@ -87,6 +113,12 @@ resuming the corrupted one. Without this, a naive kill would re-wedge on the
 next message — the kill saves the UUID, the next inbound message `--resume`s it,
 and the same 400 fires (an infinite re-wedge loop). `SessionRefresh`'s existing
 rate-guard caps respawns.
+
+Fresh-mode is also reachable via the API (added 2026-06-05): `POST
+/sessions/refresh` accepts `fresh: true` and forwards it to
+`SessionRefresh.refreshSession`. Before this, only the sentinel's internal
+wiring could fresh-respawn — recovering the EXO AUP wedge manually required
+hand-editing `topic-resume-map.json`.
 
 ### Recovery policy + Graduated Feature Rollout
 

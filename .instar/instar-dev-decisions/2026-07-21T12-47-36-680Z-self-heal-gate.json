@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-21T12:47:36.680Z",
+  "slug": "self-heal-gate",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 481,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

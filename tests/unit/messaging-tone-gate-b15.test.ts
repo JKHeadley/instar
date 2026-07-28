@@ -52,12 +52,13 @@ describe('MessagingToneGate — B15_CONTEXT_DEATH_STOP', () => {
     const gate = new MessagingToneGate(provider);
     await gate.review('Any candidate at all.', { channel: 'telegram' });
     const prompt = getPrompt();
-    // Markers the operator listed; the LLM must be told to look for them.
+    // Post-rework (gate-prompts-judge-by-meaning): the phrase list is
+    // ILLUSTRATIVE (judged by meaning), never a necessary trigger. The prompt
+    // still surfaces example framings AND tells the model they aren't a checklist.
     expect(prompt).toContain('"fresh session"');
-    expect(prompt).toContain('"next session"');
-    expect(prompt).toContain('"tail of this session"');
-    expect(prompt).toContain('"hand off cleanly"');
     expect(prompt).toContain('"pick this up later"');
+    expect(prompt).toMatch(/ILLUSTRATIVE, NOT a checklist/i);
+    expect(prompt).toMatch(/JUDGE BY MEANING/i);
   });
 
   it('documents the legitimate-stop carve-outs in the prompt', async () => {
@@ -65,9 +66,11 @@ describe('MessagingToneGate — B15_CONTEXT_DEATH_STOP', () => {
     const gate = new MessagingToneGate(provider);
     await gate.review('Any candidate at all.', { channel: 'telegram' });
     const prompt = getPrompt();
-    expect(prompt).toContain('LEGITIMATE STOP CLAUSES');
-    expect(prompt).toContain('completion report');
-    expect(prompt).toContain('genuine error / blocker');
+    // The reason-gate's NO-branch enumerates the legitimate (non-agent-state) reasons.
+    expect(prompt).toMatch(/external blocker/i);
+    expect(prompt).toMatch(/design fork/i);
+    expect(prompt).toMatch(/completion/i);
+    expect(prompt).toMatch(/operator instruction/i);
   });
 
   it('allows B15 as the response format rule list', async () => {
@@ -75,8 +78,12 @@ describe('MessagingToneGate — B15_CONTEXT_DEATH_STOP', () => {
     const gate = new MessagingToneGate(provider);
     await gate.review('Any candidate.', { channel: 'telegram' });
     const prompt = getPrompt();
-    // The response-format section enumerates allowed rule ids; B15 must be there.
-    expect(prompt).toMatch(/B1[–-]B9.*B11.*B12.*B13.*B14.*B15/);
+    // The response-format constraint demands the FULL rule identifier (the
+    // short-id enumeration was removed 2026-07-02 — it taught models the form
+    // the parser rejects); B15's full id must be citable from the rule lists.
+    expect(prompt).toMatch(/FULL identifier/);
+    expect(prompt).toMatch(/B15_CONTEXT_DEATH_STOP/);
+    expect(prompt).not.toMatch(/rule MUST be exactly one of B1[–-]B9/);
   });
 
   it('accepts B15 as a valid rule id without fail-opening (no invalidRule flag)', async () => {
@@ -136,9 +143,10 @@ describe('MessagingToneGate — B15_CONTEXT_DEATH_STOP', () => {
     expect(result.pass).toBe(true);
   });
 
-  it('still treats unknown rules as invalidRule fail-open (drift detection preserved)', async () => {
+  it('treats unknown rules as drift → re-prompt → fail-CLOSED (§Design 6)', async () => {
     // Sanity: adding B15 didn't accidentally widen the gate to accept any
-    // rule id the LLM invents.
+    // rule id the LLM invents. Drift now HOLDS (fail-closed) instead of
+    // fail-opening — a wanted-block with a bad rule id is never silently passed.
     const { provider } = captureProvider({
       pass: false,
       rule: 'B16_INVENTED_RULE',
@@ -147,8 +155,7 @@ describe('MessagingToneGate — B15_CONTEXT_DEATH_STOP', () => {
     });
     const gate = new MessagingToneGate(provider);
     const result = await gate.review('Whatever.', { channel: 'telegram' });
-    expect(result.pass).toBe(true);
-    expect(result.invalidRule).toBe(true);
-    expect(result.failedOpen).toBe(true);
+    expect(result.pass).toBe(false);
+    expect(result.failedClosed).toBe(true);
   });
 });

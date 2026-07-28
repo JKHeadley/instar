@@ -1,0 +1,18 @@
+{
+  "ts": "2026-07-23T22:46:35.374Z",
+  "slug": "quota-snapshot-hardening",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 74,
+  "causalAutopsy": null,
+  "classClosure": {
+    "class": "bounded-read-path-classification",
+    "closure": "n/a",
+    "reason": "No recurring or autonomous action is introduced."
+  },
+  "verdict": "blocked"
+}

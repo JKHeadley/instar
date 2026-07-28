@@ -38,8 +38,12 @@ PORT="${INSTAR_PORT:-4040}"
 # string-type guard so the { "secret": true } placeholder produced by
 # SecretMigrator cannot leak through as a bogus Bearer.
 AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+AGENT_ID="${INSTAR_AGENT_ID:-}"
 if [ -z "$AUTH_TOKEN" ] && [ -f ".instar/config.json" ]; then
   AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+fi
+if [ -z "$AGENT_ID" ] && [ -f ".instar/config.json" ]; then
+  AGENT_ID=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)
 fi
 
 # Escape for JSON
@@ -53,6 +57,7 @@ if [ -n "$AUTH_TOKEN" ]; then
   RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:${PORT}/whatsapp/send/${JID}" \
     -H 'Content-Type: application/json' \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -H "X-Instar-AgentId: ${AGENT_ID}" \
     -d "{\"text\":${JSON_MSG}}")
 else
   RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "http://localhost:${PORT}/whatsapp/send/${JID}" \

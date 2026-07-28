@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ModelTier, Session } from './types.js';
 import type { GenericModelTier } from './frameworkSessionLaunch.js';
+import { parseUserAnnouncement, renderAnnouncementBrief } from './upgradeAnnouncement.js';
 
 export interface UpgradeNotifyConfig {
   /** Path to pending-upgrade-guide.md */
@@ -200,35 +201,61 @@ export class UpgradeNotifyManager {
       : `http://localhost:${this.config.port}/dashboard`;
     const hasReplyScript = !!replyScript;
 
+    // Silent-by-default polarity: the user only hears about changes the release
+    // author explicitly promoted to `audience: user` in the guide's
+    // `user_announcement` front-matter. No such entries ⇒ Step 1 is a no-op
+    // (Steps 2 & 3 still run, so the agent still LEARNS the capability — the
+    // user just isn't told). When there ARE entries, the message is composed
+    // ONLY from them, each carrying its maturity framing + badge so an
+    // experimental/preview feature can't be narrated as finished.
+    const announcementBrief = renderAnnouncementBrief(parseUserAnnouncement(guideContent));
+
+    const step1Lines = announcementBrief
+      ? [
+          '## Step 1: Notify your user',
+          '',
+          'Compose a brief, personalized message for your user using ONLY the announcement(s) below.',
+          'Each announcement carries a maturity and framing — HONOR IT EXACTLY. Do not invent features',
+          'not listed here, and do not upgrade an experimental/preview feature into sounding finished.',
+          '   RULES:',
+          '   - Write like you\'re texting a friend — warm, conversational, no jargon',
+          '   - This should NOT look like a changelog or release notes',
+          '   - Apply each announcement\'s maturity framing and badge verbatim in spirit (experimental ⇒ say it is early and not ready for general use)',
+          '   - Include CONCRETE details — actual URLs, PINs, things they can click/use right now (only for STABLE features they can actually use)',
+          '   - NEVER mention "bearer tokens", "auth tokens", version numbers in headers, or internal implementation details',
+          '   - NO bullet lists, NO markdown headers, NO technical formatting — just natural sentences',
+          '',
+          '   ANNOUNCEMENTS (compose only from these):',
+          announcementBrief,
+          '',
+          '   CONCRETE DETAILS YOU MAY USE:',
+          `   - Dashboard URL: ${dashboardUrl}`,
+          dashboardPin ? `   - Dashboard PIN: ${dashboardPin}` : '   - No dashboard PIN set',
+          `   - Current version: ${currentVersion}`,
+          '',
+          'Send the message via Telegram:',
+          hasReplyScript && notifyTopicId
+            ? `   Run: cat <<'MSGEOF' | bash ${replyScript} ${notifyTopicId}\nYOUR_MESSAGE_HERE\nMSGEOF`
+            : '   Use the telegram-reply script in .instar/scripts/ to send to the updates topic.',
+          '',
+        ]
+      : [
+          '## Step 1: Notify your user — SKIP',
+          '',
+          'This update has NO user-facing announcement (it is internal/infra, or not yet ready for general use).',
+          'Do NOT send the user any message about this update. Sending a message here is a mistake —',
+          'silence is correct. Proceed straight to Step 2.',
+          '',
+        ];
+
     return [
       'IMPORTANT: You are a SHORT-LIVED session with a SPECIFIC task. Do NOT search for files or explore the codebase. Everything you need is in this prompt.',
       '',
-      'You have been updated to a new Instar version. Read the upgrade guide below, then do ALL THREE steps.',
+      'You have been updated to a new Instar version. Read the upgrade guide below, then do the steps below.',
       'IMPORTANT: The guide below contains ONLY what is new in THIS update. Do not mention features from previous updates.',
       '',
       '',
-      '## Step 1: Notify your user',
-      '',
-      'Compose a brief, personalized message (3-8 sentences) for your user about the new features.',
-      '   RULES:',
-      '   - Write like you\'re texting a friend — warm, conversational, no jargon',
-      '   - This should NOT look like a changelog or release notes',
-      '   - Lead with the biggest USER-VISIBLE feature',
-      '   - Include CONCRETE details — actual URLs, PINs, things they can click/use right now',
-      '   - NEVER mention "bearer tokens", "auth tokens", version numbers in headers, or internal implementation details',
-      '   - Focus on what matters to THEM, not internal plumbing',
-      '   - NO bullet lists, NO markdown headers, NO technical formatting — just natural sentences',
-      '',
-      '   CONCRETE DETAILS TO INCLUDE:',
-      `   - Dashboard URL: ${dashboardUrl}`,
-      dashboardPin ? `   - Dashboard PIN: ${dashboardPin}` : '   - No dashboard PIN set',
-      `   - Current version: ${currentVersion}`,
-      '',
-      'Send the message via Telegram:',
-      hasReplyScript && notifyTopicId
-        ? `   Run: cat <<'MSGEOF' | bash ${replyScript} ${notifyTopicId}\nYOUR_MESSAGE_HERE\nMSGEOF`
-        : '   Use the telegram-reply script in .instar/scripts/ to send to the updates topic.',
-      '',
+      ...step1Lines,
       '## Step 2: Update your memory with new capabilities',
       '',
       'Read the upgrade guide\'s "Summary of New Capabilities" section and add the relevant information to your MEMORY.md file (.instar/MEMORY.md).',
@@ -249,7 +276,7 @@ export class UpgradeNotifyManager {
       '',
       'Run: instar upgrade-ack',
       '',
-      'Do all three steps, then exit. Do not search for files or read config files beyond MEMORY.md.',
+      'Do the steps above in order, then exit. Do not search for files or read config files beyond MEMORY.md.',
       '',
       '--- UPGRADE GUIDE ---',
       guideContent,

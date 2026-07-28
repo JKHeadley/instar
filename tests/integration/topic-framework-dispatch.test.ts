@@ -74,6 +74,7 @@ function buildManager(): SessionManager {
     maxSessions: 5,
     protectedSessions: [],
     completionPatterns: [],
+    framework: 'claude-code',
     authToken: 'test-token',
     port: 9999,
   };

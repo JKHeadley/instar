@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-25T00:50:43.564Z",
+  "slug": "ux-first-enforcement-inc2",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

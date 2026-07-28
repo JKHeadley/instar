@@ -195,7 +195,13 @@ describe('ConversationStore', () => {
 
   it('retires stale non-pinned active and idle conversations without deleting them', async () => {
     const store = new ConversationStore(stateDir);
-    const now = new Date('2026-05-30T09:00:00.000Z');
+    // TIME-BOMB GUARD: `now` must be the REAL current time, not a pinned date.
+    // The store's commit() path prunes non-pinned conversations older than
+    // MAX_AGE_MS (7d) against the REAL clock — with a pinned now, the backdated
+    // records cross that horizon once the calendar moves far enough past the
+    // pinned date and get PRUNED before retireInactive ever sees them (this test
+    // detonated on 2026-06-05, exactly 7 days after its pinned 2026-05-29 data).
+    const now = new Date();
     const stale = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString();
     const fresh = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
 

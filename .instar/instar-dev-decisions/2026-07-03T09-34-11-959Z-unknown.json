@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-03T09:34:11.959Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 1696,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "New feature build from the converged r4 spec (tag dfdb7b21a): the context-aware reviewer layer did not exist; the veto data (2/12 wrong would-blocks, 2026-07-02 watch mode) motivated it — not a regression of prior PRs."
+  },
+  "verdict": "blocked"
+}

@@ -53,6 +53,18 @@ const ALLOWLIST = new Set([
   'src/providers/adapters/anthropic-headless/errors.ts',
   'src/providers/adapters/anthropic-headless/_smoketest.ts',
   'src/providers/adapters/anthropic-headless/capability/fileSystemAccess.ts',
+  // Subscription & Auth Standard P1.2: QuotaPoller calls the READ-ONLY
+  // /api/oauth/usage telemetry endpoint (the same one the official client's
+  // /usage screen calls) to read per-account quota — NOT an LLM inference call,
+  // so there is nothing for burn-detection to attribute. Same class as the
+  // anthropic-headless usageMeterProvider above.
+  'src/core/QuotaPoller.ts',
+  // Live credential re-pointing (spec live-credential-repointing-rebalancer.md §2.3/§2.11):
+  // the CredentialIdentityOracle calls the READ-ONLY /api/oauth/profile endpoint to read
+  // which account a slot's credential belongs to — identity bookkeeping, NOT an LLM
+  // inference call, so there is nothing for burn-detection to attribute. Same class as
+  // QuotaPoller's /api/oauth/usage call above.
+  'src/core/CredentialIdentityOracle.ts',
 ]);
 
 /**

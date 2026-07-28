@@ -20,6 +20,7 @@
 
 import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
+import { registerSqliteHandle } from '../../core/SqliteRegistry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -57,6 +58,7 @@ export interface PreferenceStoreOptions {
 
 export class PreferenceStore {
   private readonly db: BetterSqliteDatabase;
+  private _unregisterSqlite?: () => void;
 
   constructor(options: PreferenceStoreOptions) {
     if (options.dbPath !== ':memory:') {
@@ -71,6 +73,10 @@ export class PreferenceStore {
     this.db = new Database(options.dbPath);
     this.db.pragma('journal_mode = WAL');
     this.initSchema();
+    // Close-on-exit registry (SqliteRegistry.ts). Registered after the db is open.
+    this._unregisterSqlite = registerSqliteHandle(() => {
+      try { this.db?.close(); } catch { /* already closed — fine */ }
+    });
   }
 
   private initSchema(): void {
@@ -186,6 +192,7 @@ export class PreferenceStore {
 
   /** Close the underlying database connection. */
   close(): void {
+    if (this._unregisterSqlite) { this._unregisterSqlite(); this._unregisterSqlite = undefined; }
     this.db.close();
   }
 }

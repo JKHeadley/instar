@@ -1,0 +1,12 @@
+# Round-3 convergence findings (6 NEW material — all addressed in round-4 edits)
+## Decision-completeness: 0 new (FD table complete; 2 unstated backstop-timeout VALUES are FD1-class cheap, not forks). CONVERGED on this axis.
+## Integration: 0 new — VERIFIED ALL reuse claims against live code: pollerCount.ts (ok/dual/silence/indeterminate) real + wired in routes.ts; effectivePollIntent (pollIntent.ts) + TelegramLifeline.reconcilePolling real actuation seam; lifeline-poll-active.json real (FD10); FD2 540s = leaseTtl 90000×6 confirmed. Reuse is accurate, not aspirational.
+## Lessons-aware (2):
+- Les3-F1 (FIXED): serveProgressedMonoMs co-location was internally contradictory — lifeline is a SEPARATE process from server; lifeline-poll-active.json has no serve field + lifeline atomically rewrites it. FIX applied: serveProgressed → separate server-process record state/serve-progress.json (single-writer=dispatch seam); evaluator does explicit cross-process read of BOTH; framed as net-new wiring NOT reuse.
+- Les3-F2 (FIXED): §6 over-claimed "read live matching F1b." FIX: per-flag declaration — ownershipCheckedSpawn live (per-spawn read); jobLivenessBinding/nobodyPollingDetector live ONLY if evaluator re-reads enabled each tick (required + integration-test-verified), else restart-required.
+## Adversarial (4):
+- Adv3-F-A LOW (FIXED): re-election "excluding itself" locally-scoped/invisible to peers → ~1 heartbeat unselected-fit-peer delay. FIX: relinquish immediately advertises pollFresh:false + selfExcludedThisEpisode flag.
+- Adv3-F-B MEDIUM (FIXED): wedge "(no loss)" overclaims for claimed-but-unserved message. FIX: owner-death claim-reclaim of claimed-but-undelivered; honest possiblyNotInjected loss-notice where the thin window can't close.
+- Adv3-F-C LOW/MED (FIXED): escalation backstop zero-voice if pre-send suppress marker. FIX: send-FIRST + intrinsic episode-key dedup at telegram.sendToTopic chokepoint; NO pre-send marker; duplicate-over-silence.
+- Adv3-F-D MEDIUM (FIXED): poll-side "pending" defeated by default Telegram offset-advance-on-fetch. FIX: pending = lastFetchedUpdateId > lastServedUpdateId (two poll-side counters), NOT the Telegram-acked offset.
+## VERDICT round 3: 6 new material, ALL addressed in round-4 edits. Trajectory 30→13→6 (halving; precise refinements, no design/foundation breakage; integration verified code claims real). Round-4 re-check expected clean or near-clean. Cross-model still unavailable.

@@ -12,19 +12,31 @@ import {
 } from '../../src/core/intelligenceProviderFactory.js';
 import { CodexCliIntelligenceProvider } from '../../src/core/CodexCliIntelligenceProvider.js';
 import { ClaudeCliIntelligenceProvider } from '../../src/core/ClaudeCliIntelligenceProvider.js';
+import { GeminiCliIntelligenceProvider } from '../../src/core/GeminiCliIntelligenceProvider.js';
 import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
+import { SpawnCapIntelligenceProvider } from '../../src/core/SpawnCapIntelligenceProvider.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
 
-// The factory wraps every provider in the account-global rate-limit circuit
-// breaker (CircuitBreakingIntelligenceProvider). Assert both that the result
-// is wrapped AND that the correct framework provider is underneath.
+// The factory wraps every provider in TWO universal funnels (fork-bomb
+// prevention, forkbomb-prevention-simple §P1): the account-global rate-limit
+// circuit breaker (OUTER, CircuitBreakingIntelligenceProvider) around the
+// host-wide spawn cap (MIDDLE, SpawnCapIntelligenceProvider) around the actual
+// framework provider (INNER). Assert the full chain: breaker → spawn-cap → provider.
 function expectWraps(
   p: IntelligenceProvider | null,
   Inner: new (...args: never[]) => IntelligenceProvider,
 ): void {
   expect(p).toBeInstanceOf(CircuitBreakingIntelligenceProvider);
-  const inner = (p as unknown as { inner: IntelligenceProvider }).inner;
+  const spawnCap = (p as unknown as { inner: IntelligenceProvider }).inner;
+  expect(spawnCap).toBeInstanceOf(SpawnCapIntelligenceProvider);
+  const inner = (spawnCap as unknown as { inner: IntelligenceProvider }).inner;
   expect(inner).toBeInstanceOf(Inner);
+}
+
+/** Unwrap both funnel layers (breaker → spawn-cap) to reach the actual provider. */
+function innermost(p: IntelligenceProvider | null): IntelligenceProvider {
+  const spawnCap = (p as unknown as { inner: IntelligenceProvider }).inner;
+  return (spawnCap as unknown as { inner: IntelligenceProvider }).inner;
 }
 
 describe('buildIntelligenceProvider', () => {
@@ -42,6 +54,26 @@ describe('buildIntelligenceProvider', () => {
       binaryPath: '/usr/bin/codex',
     });
     expectWraps(p, CodexCliIntelligenceProvider);
+  });
+
+  it('returns a circuit-breaker-wrapped GeminiCliIntelligenceProvider when framework=gemini-cli and binary path supplied (the ALIVE path)', () => {
+    const p = buildIntelligenceProvider({
+      framework: 'gemini-cli',
+      binaryPath: '/usr/bin/gemini',
+    });
+    expectWraps(p, GeminiCliIntelligenceProvider);
+  });
+
+  it('passes quotaStateFile only to the gemini provider capacity policy', () => {
+    const p = buildIntelligenceProvider({
+      framework: 'gemini-cli',
+      binaryPath: '/usr/bin/gemini',
+      quotaStateFile: '/tmp/gemini-quota-state.json',
+    });
+    expectWraps(p, GeminiCliIntelligenceProvider);
+    const inner = innermost(p);
+    expect((inner as unknown as { capacityPolicy?: { quotaStateFile?: string } }).capacityPolicy?.quotaStateFile)
+      .toBe('/tmp/gemini-quota-state.json');
   });
 
   it('defaults to claude-code when framework is omitted', () => {
@@ -99,8 +131,14 @@ describe('frameworkFromEnv', () => {
     expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'CODEX' })).toBe('codex-cli');
   });
 
+  it('parses gemini-cli and the alias gemini', () => {
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'gemini-cli' })).toBe('gemini-cli');
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'gemini' })).toBe('gemini-cli');
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'GEMINI' })).toBe('gemini-cli');
+  });
+
   it('returns null for unrecognized values rather than throwing', () => {
-    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'gemini' })).toBeNull();
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'aider' })).toBeNull();
     expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'whatever' })).toBeNull();
   });
 });

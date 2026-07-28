@@ -26,7 +26,7 @@ import { createRoutes } from '../../src/server/routes.js';
 import { MeshRpcDispatcher, type MeshCommand } from '../../src/core/MeshRpc.js';
 import { MeshRpcClient } from '../../src/core/MeshRpcClient.js';
 import { MachinePoolRegistry } from '../../src/core/MachinePoolRegistry.js';
-import { PeerPresencePuller } from '../../src/core/PeerPresencePuller.js';
+import { PeerPresencePuller, narrowSessionStatusToPeerCapacity } from '../../src/core/PeerPresencePuller.js';
 import { generateSigningKeyPair, sign, verify } from '../../src/core/MachineIdentity.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -54,7 +54,15 @@ describe('PeerPresencePuller → /mesh/rpc round-trip marks a credential-less pe
       clockSkewToleranceMs: 60_000,
       failoverThresholdMs: 60_000,
     });
-    miniRegistry.recordHeartbeat({ machineId: 'MINI', selfReportedLastSeen: new Date().toISOString(), loadAvg: 1.5 });
+    // MINI advertises which replicated stores it can durably RECEIVE — the
+    // seamlessnessFlags.stateSyncReceive advert that must cross to LAPTOP for
+    // cross-machine replication to start (the propagation fix under test).
+    miniRegistry.recordHeartbeat({
+      machineId: 'MINI',
+      selfReportedLastSeen: new Date().toISOString(),
+      loadAvg: 1.5,
+      seamlessnessFlags: { ws11DeliverReceive: true, stateSyncReceive: { learnings: true, knowledge: true } },
+    });
 
     // MINI's signed /mesh/rpc dispatcher — answers session-status with its capacity.
     const seen = new Set<string>();
@@ -91,9 +99,17 @@ describe('PeerPresencePuller → /mesh/rpc round-trip marks a credential-less pe
     puller = new PeerPresencePuller({
       selfMachineId: 'LAPTOP',
       listPeers: () => [{ machineId: 'MINI', url: miniServer.url }],
+      // Use the SHARED production receive-mapping (the SAME function
+      // src/commands/server.ts:fetchPeerCapacity runs), so this round-trip proves
+      // the REAL narrowing — not a hand-copied mirror that can silently drop a
+      // field (the exact gap that let seamlessnessFlags go un-propagated). The
+      // journal advert needs closure context in production; this test has none, so
+      // it passes undefined (MINI serves no journal advert here).
       fetchPeerCapacity: async (machineId, url) => {
         const res = await meshClient.send({ machineId, url }, { type: 'session-status' }, 0);
-        return res.ok && res.result && typeof res.result === 'object' ? (res.result as { selfReportedLastSeen?: string; loadAvg?: number }) : null;
+        return res.ok && res.result && typeof res.result === 'object'
+          ? narrowSessionStatusToPeerCapacity(res.result, undefined)
+          : null;
       },
       recordHeartbeat: (obs) => { laptopRegistry.recordHeartbeat(obs); },
     });
@@ -117,6 +133,23 @@ describe('PeerPresencePuller → /mesh/rpc round-trip marks a credential-less pe
     expect(cap?.online).toBe(true);
     expect(cap?.loadAvg).toBe(1.5); // carried MINI's self-reported load over HTTP
     expect(laptopRegistry.isPlacementEligible('MINI')).toBe(true); // the placement engine will now transfer to it
+  });
+
+  it('MINI\'s seamlessnessFlags.stateSyncReceive advert CROSSES to LAPTOP and SURVIVES a sparse beat', async () => {
+    // Before the propagation fix: LAPTOP saw MINI with 0 stateSyncReceive keys, so the
+    // flag-coherence gate read "peer cannot receive" and blocked replication BOTH ways.
+    await puller.pullOnce();
+
+    let cap = laptopRegistry.getCapacity('MINI');
+    expect(cap?.online).toBe(true);
+    // The peer's receive advert landed over signed HTTP — the load-bearing proof.
+    expect(cap?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true, knowledge: true });
+
+    // The 30s sparse liveness echo (refreshPool's `{machineId,selfReportedLastSeen}`) must
+    // NOT wipe the pulled advert — otherwise the gate flaps back to "cannot receive".
+    laptopRegistry.recordHeartbeat({ machineId: 'MINI', selfReportedLastSeen: new Date().toISOString() });
+    cap = laptopRegistry.getCapacity('MINI');
+    expect(cap?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true, knowledge: true });
   });
 
   it('an unreachable peer is NOT marked online (the puller swallows the transport error)', async () => {

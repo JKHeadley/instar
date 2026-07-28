@@ -43,6 +43,30 @@ export interface CloudflareQuickProviderOptions {
   startTimeoutMs?: number;
 }
 
+/**
+ * Classify a cloudflared quick-tunnel failure into a fixed-substring reason the
+ * TunnelManager parses to a ProviderFailureReason. Pure + exported so the
+ * decision boundary (esp. the Cloudflare 429/1015 rate-limit detection) is
+ * unit-testable. Depends on the caller having captured cloudflared's real stderr
+ * (the 'stderr' event) into `stderr` — otherwise the rate-limit text never
+ * reaches the haystack and the classification falls through to generic.
+ */
+export function classifyQuickTunnelError(msg: string, stderr: string): Error {
+  const haystack = `${msg} ${stderr}`.toLowerCase();
+  // Cloudflare's quick-tunnel rate-limit surfaces as 429 / error 1015.
+  if (haystack.includes('429') || haystack.includes('1015') || haystack.includes('rate limit') || haystack.includes('too many requests')) {
+    return new Error(`rate-limited: cloudflared quick-tunnel rate-limited (${msg})`);
+  }
+  if (haystack.includes('enoent') || haystack.includes('not found') || haystack.includes('binary-missing')) {
+    return new Error(`binary-missing: ${msg}`);
+  }
+  if (haystack.includes('dns') || haystack.includes('eai_again') || haystack.includes('econnrefused') || haystack.includes('network')) {
+    return new Error(`network: ${msg}`);
+  }
+  // Preserve as-is so the manager's classifier sees the original prefix.
+  return new Error(msg);
+}
+
 export class CloudflareQuickProvider implements TunnelProvider {
   readonly name: ProviderName = 'cloudflare-quick';
   readonly tier: ProviderTier = 1;
@@ -125,6 +149,17 @@ export class CloudflareQuickProvider implements TunnelProvider {
       }
     }, this.startTimeoutMs);
 
+    // Capture cloudflared's REAL stderr. The `cloudflared` wrapper emits a
+    // 'stderr' event per child stderr line (incl. the "429 Too Many Requests /
+    // error code 1015" rate-limit line). Without listening here, stderrTail
+    // stayed empty → 'exit' logged "no stderr captured" → classifyError's
+    // 429/1015 detection was DEAD for the exit path, so the manager could never
+    // recognize (or back off on) a Cloudflare rate-limit. (Found live 2026-05-31:
+    // a quick tunnel 429'd but surfaced only as opaque "process-exit code 1".)
+    tunnel.on('stderr', (data: string) => {
+      stderrTail = (stderrTail + ' ' + data).slice(-2000);
+    });
+
     tunnel.once('url', (url: string) => {
       if (resolved) return;
       resolved = true;
@@ -168,20 +203,7 @@ export class CloudflareQuickProvider implements TunnelProvider {
   }
 
   private classifyError(msg: string, stderr: string): Error {
-    const haystack = `${msg} ${stderr}`.toLowerCase();
-    // Cloudflare's quick-tunnel rate-limit surfaces as 429 / error 1015.
-    // Both substrings appear in cloudflared's stderr on rate-limit.
-    if (haystack.includes('429') || haystack.includes('1015') || haystack.includes('rate limit') || haystack.includes('too many requests')) {
-      return new Error(`rate-limited: cloudflared quick-tunnel rate-limited (${msg})`);
-    }
-    if (haystack.includes('enoent') || haystack.includes('not found') || haystack.includes('binary-missing')) {
-      return new Error(`binary-missing: ${msg}`);
-    }
-    if (haystack.includes('dns') || haystack.includes('eai_again') || haystack.includes('econnrefused') || haystack.includes('network')) {
-      return new Error(`network: ${msg}`);
-    }
-    // Preserve as-is so the manager's classifier sees the original prefix.
-    return new Error(msg);
+    return classifyQuickTunnelError(msg, stderr);
   }
 
   private async stopHandle(tunnel: Tunnel): Promise<void> {

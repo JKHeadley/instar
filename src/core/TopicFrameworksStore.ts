@@ -52,6 +52,10 @@ export interface TopicFrameworksStoreOptions {
 export const SUPPORTED_FRAMEWORKS: ReadonlyArray<IntelligenceFramework> = [
   'claude-code',
   'codex-cli',
+  'gemini-cli',
+  // pi (PI-HARNESS-INTEGRATION-SPEC Phase A) — additive fourth framework;
+  // ships dark (only reachable when an agent's enabledFrameworks opts in).
+  'pi-cli',
 ];
 
 export class TopicFrameworksStore {

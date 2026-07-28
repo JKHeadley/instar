@@ -12,11 +12,14 @@
  * Part of the Claude Code Feature Integration Audit (Item 1: Worktree Support).
  */
 
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import type { Session } from '../core/types.js';
+
+const execFileAsync = promisify(execFile);
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -113,7 +116,7 @@ export class WorktreeMonitor extends EventEmitter {
    * Called from the sessionComplete event handler.
    */
   async onSessionComplete(session: Session): Promise<WorktreeReport> {
-    const report = this.scanWorktrees();
+    const report = await this.scanWorktrees();
 
     // Copy serendipity findings from worktrees before alerting
     for (const wt of report.worktrees) {
@@ -211,17 +214,18 @@ export class WorktreeMonitor extends EventEmitter {
    * Periodic health scan: detect stale worktrees and orphan branches.
    */
   async periodicScan(): Promise<WorktreeReport> {
-    const report = this.scanWorktrees();
+    const report = await this.scanWorktrees();
 
-    // Check for stale worktrees
+    // Check for stale worktrees (getWorktreeAge is async — resolve ages first, then filter)
     const staleThreshold = this.config.staleThresholdMs ?? DEFAULT_STALE_THRESHOLD;
-    const staleWorktrees = report.worktrees.filter(wt => {
-      const age = this.getWorktreeAge(wt);
+    const ages = await Promise.all(report.worktrees.map(wt => this.getWorktreeAge(wt)));
+    const staleWorktrees = report.worktrees.filter((_wt, i) => {
+      const age = ages[i];
       return age !== null && age > staleThreshold;
     });
 
     if (staleWorktrees.length > 0) {
-      const message = this.formatPeriodicAlert(report, staleWorktrees);
+      const message = await this.formatPeriodicAlert(report, staleWorktrees);
       report.actions.push(`Stale worktree alert: ${staleWorktrees.length} worktree(s)`);
       await this.sendAlert(message);
     }
@@ -234,7 +238,7 @@ export class WorktreeMonitor extends EventEmitter {
   /**
    * Core scan: list all worktrees and analyze their state.
    */
-  scanWorktrees(): WorktreeReport {
+  async scanWorktrees(): Promise<WorktreeReport> {
     const report: WorktreeReport = {
       timestamp: new Date().toISOString(),
       worktrees: [],
@@ -244,17 +248,17 @@ export class WorktreeMonitor extends EventEmitter {
     };
 
     // List all worktrees
-    const worktrees = this.listWorktrees();
+    const worktrees = await this.listWorktrees();
     report.worktrees = worktrees.filter(wt => !wt.isMain);
 
     // Get default branch for comparison
-    const defaultBranch = this.getDefaultBranch();
+    const defaultBranch = await this.getDefaultBranch();
 
     // Check each non-main worktree for unmerged work
     for (const wt of report.worktrees) {
       if (!wt.branch) continue;
 
-      const diff = this.checkUnmergedWork(wt, defaultBranch);
+      const diff = await this.checkUnmergedWork(wt, defaultBranch);
       if (diff && diff.commitsAhead > 0) {
         report.withUnmergedWork.push(diff);
       }
@@ -262,7 +266,7 @@ export class WorktreeMonitor extends EventEmitter {
 
     // Find orphan worktree branches (branches matching worktree-* pattern with no worktree)
     // This can find branches even when no active worktrees exist
-    const orphans = this.findOrphanBranches(worktrees);
+    const orphans = await this.findOrphanBranches(worktrees);
     report.orphanBranches = orphans;
 
     return report;
@@ -273,8 +277,8 @@ export class WorktreeMonitor extends EventEmitter {
   /**
    * Parse `git worktree list --porcelain` output into structured data.
    */
-  listWorktrees(): Worktree[] {
-    const output = this.gitCommand('worktree list --porcelain');
+  async listWorktrees(): Promise<Worktree[]> {
+    const output = await this.gitCommand('worktree list --porcelain');
     if (!output.trim()) return [];
 
     const worktrees: Worktree[] = [];
@@ -319,11 +323,11 @@ export class WorktreeMonitor extends EventEmitter {
   /**
    * Check how many commits a worktree branch has ahead of the default branch.
    */
-  checkUnmergedWork(wt: Worktree, defaultBranch: string): WorktreeWithDiff | null {
+  async checkUnmergedWork(wt: Worktree, defaultBranch: string): Promise<WorktreeWithDiff | null> {
     if (!wt.branch) return null;
 
     // Count commits ahead
-    const countOutput = this.gitCommand(
+    const countOutput = await this.gitCommand(
       `rev-list --count ${defaultBranch}..${wt.branch}`
     );
     const commitsAhead = parseInt(countOutput.trim(), 10) || 0;
@@ -331,7 +335,7 @@ export class WorktreeMonitor extends EventEmitter {
     if (commitsAhead === 0) return null;
 
     // Get changed files
-    const diffOutput = this.gitCommand(
+    const diffOutput = await this.gitCommand(
       `diff --name-only ${defaultBranch}...${wt.branch}`
     );
     const filesChanged = diffOutput.trim().split('\n').filter(f => f.trim());
@@ -342,8 +346,8 @@ export class WorktreeMonitor extends EventEmitter {
   /**
    * Find branches matching worktree-* pattern that have no corresponding worktree.
    */
-  findOrphanBranches(activeWorktrees: Worktree[]): string[] {
-    const branchOutput = this.gitCommand("branch --list 'worktree-*'");
+  async findOrphanBranches(activeWorktrees: Worktree[]): Promise<string[]> {
+    const branchOutput = await this.gitCommand("branch --list 'worktree-*'");
     if (!branchOutput.trim()) return [];
 
     const allWorktreeBranches = branchOutput
@@ -363,15 +367,15 @@ export class WorktreeMonitor extends EventEmitter {
   /**
    * Get the default branch name (main, master, etc.)
    */
-  getDefaultBranch(): string {
+  async getDefaultBranch(): Promise<string> {
     // Try symbolic ref first
-    const symbolic = this.gitCommand('symbolic-ref refs/remotes/origin/HEAD 2>/dev/null').trim();
+    const symbolic = (await this.gitCommand('symbolic-ref refs/remotes/origin/HEAD 2>/dev/null')).trim();
     if (symbolic) {
       return symbolic.replace('refs/remotes/origin/', '');
     }
 
     // Fallback: check if main or master exists
-    const branches = this.gitCommand('branch --list main master 2>/dev/null').trim();
+    const branches = (await this.gitCommand('branch --list main master 2>/dev/null')).trim();
     if (branches.includes('main')) return 'main';
     if (branches.includes('master')) return 'master';
 
@@ -381,9 +385,9 @@ export class WorktreeMonitor extends EventEmitter {
   /**
    * Get the age of a worktree by checking its HEAD commit timestamp.
    */
-  getWorktreeAge(wt: Worktree): number | null {
+  async getWorktreeAge(wt: Worktree): Promise<number | null> {
     if (!wt.head) return null;
-    const timestamp = this.gitCommand(`show -s --format=%ct ${wt.head}`).trim();
+    const timestamp = (await this.gitCommand(`show -s --format=%ct ${wt.head}`)).trim();
     if (!timestamp) return null;
     const commitTime = parseInt(timestamp, 10) * 1000;
     return Date.now() - commitTime;
@@ -418,11 +422,11 @@ export class WorktreeMonitor extends EventEmitter {
     return lines.join('\n');
   }
 
-  private formatPeriodicAlert(report: WorktreeReport, staleWorktrees: Worktree[]): string {
+  private async formatPeriodicAlert(report: WorktreeReport, staleWorktrees: Worktree[]): Promise<string> {
     const lines = ['🔍 Stale worktrees detected:'];
 
     for (const wt of staleWorktrees) {
-      const ageMs = this.getWorktreeAge(wt);
+      const ageMs = await this.getWorktreeAge(wt);
       const ageHours = ageMs ? Math.round(ageMs / 3_600_000) : '?';
       lines.push(`  ${wt.branch ?? wt.path} — ${ageHours}h old`);
     }
@@ -442,14 +446,27 @@ export class WorktreeMonitor extends EventEmitter {
 
   /**
    * Run a git command. Uses shell execution to support glob patterns (e.g., worktree-*).
+   *
+   * ASYNC (was spawnSync): on a repo with many worktrees `git worktree list` can take
+   * seconds, and the scans below issue several git calls — running them synchronously
+   * blocked the server event loop for seconds per scan (5-min periodic + every
+   * session-end), which over a tunnel drops the dashboard websocket. Async `execFile`
+   * keeps the loop responsive while git runs. Semantics preserved: returns stdout even
+   * on a non-zero exit / timeout (matching the old spawnSync `result.stdout ?? ''`).
    */
-  private gitCommand(args: string): string {
-    const result = spawnSync('/bin/sh', ['-c', `git ${args}`], {
-      cwd: this.config.projectDir,
-      encoding: 'utf-8',
-      timeout: 10_000,
-    });
-    return result.stdout ?? '';
+  private async gitCommand(args: string): Promise<string> {
+    try {
+      const { stdout } = await execFileAsync('/bin/sh', ['-c', `git ${args}`], {
+        cwd: this.config.projectDir,
+        encoding: 'utf-8',
+        timeout: 10_000,
+      });
+      return stdout ?? '';
+    } catch (err) {
+      // spawnSync returned stdout even on a non-zero exit / timeout; preserve that.
+      const stdout = (err as { stdout?: unknown })?.stdout;
+      return typeof stdout === 'string' ? stdout : '';
+    }
   }
 
   private async sendAlert(message: string): Promise<void> {

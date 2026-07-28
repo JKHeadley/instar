@@ -235,3 +235,171 @@ describe('deferral-detector — orphan-TODO patterns', () => {
     expect(result.parsed?.decision).toBe('approve');
   });
 });
+
+describe('deferral-detector — time/fatigue deferral patterns (2026-06-09 gravity well)', () => {
+  it('fires on the exact incident phrasing ("rather than rush it at the tail of tonight")', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nI would rather not rush it at the tail of tonight, so I will do it carefully.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/TIME\/FATIGUE DEFERRAL DETECTED/);
+    expect(result.parsed?.additionalContext).toMatch(/tail_of_period|avoid_rushing/);
+  });
+
+  it('THE KEY FIX: still fires even when the deferral is "tracked" (infrastructure-backed does NOT launder the framing)', () => {
+    const result = runHook(
+      "cat <<EOF | telegram-reply.sh 100\nI've filed a /commit-action and a tracked commitment for it — rather than rush at the tail of the night, I'll queue it for the next session.\nEOF"
+    );
+    expect(result.exitCode).toBe(0);
+    // The orphan section is suppressed (infra-backed), but the TIME/FATIGUE section MUST still fire.
+    expect(result.parsed?.additionalContext).toMatch(/TIME\/FATIGUE DEFERRAL DETECTED/);
+    expect(result.parsed?.additionalContext || '').not.toMatch(/ORPHAN-TODO TRAP/);
+  });
+
+  it('fires on "it\'s late"', () => {
+    const result = runHook(
+      "cat <<EOF | telegram-reply.sh 100\nIt's late, so I'll hold off on the rest.\nEOF"
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/its_late/);
+  });
+
+  it('fires on "wrap up for now"', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nLet me wrap up here and we can continue another time.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/wind_down/);
+  });
+
+  it('fires on "tomorrow I\'ll"', () => {
+    const result = runHook(
+      "cat <<EOF | telegram-reply.sh 100\nTomorrow I'll pick up the remaining items.\nEOF"
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/do_it_tomorrow/);
+  });
+
+  it('fires on "defer it to next session"', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nThe durable fix — I will defer it to next session.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/defer_to_later_time|TIME\/FATIGUE/);
+  });
+
+  it('the checklist tells the agent to quote the actual injected current time', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nIt is getting late, let me call it a night here.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/CURRENT TIME|actual current time|check the clock/i);
+  });
+
+  it('does NOT fire on a clean message with no time/fatigue framing', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nBoth fixes verified live on v1.3.448. Continuing to the next item now.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed).toBeNull();
+  });
+
+  it('never blocks — decision stays approve', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nIt is late, I will wrap up.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.decision).toBe('approve');
+  });
+});
+
+describe('deferral-detector — merge-deferral patterns (2026-06-09: handing own PR merge to operator)', () => {
+  it('fires on the exact incident phrasing ("the merge call is yours")', () => {
+    const result = runHook(
+      "cat <<EOF | telegram-reply.sh 100\nCI is running now — it's core monitoring code, so the merge call is yours.\nEOF"
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/MERGE-DEFERRAL DETECTED/);
+    expect(result.parsed?.additionalContext).toMatch(/merge_call_is_yours/);
+  });
+
+  it('fires on the bare "the merge is yours" (no explicit call/decision word)', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nGreen now. The merge is yours.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/MERGE-DEFERRAL DETECTED/);
+    expect(result.parsed?.additionalContext).toMatch(/merge_call_is_yours/);
+  });
+
+  it('fires on permission-seeking "want me to merge?"', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nAll checks passed. Want me to merge it?\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/merge_permission_seeking/);
+  });
+
+  it('fires on "should I merge it" and "ready to merge"', () => {
+    const a = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nThe PR is green — should I merge it now?\nEOF'
+    );
+    expect(a.parsed?.additionalContext).toMatch(/merge_permission_seeking/);
+    const b = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nEverything passed; ready to merge whenever you say.\nEOF'
+    );
+    expect(b.parsed?.additionalContext).toMatch(/merge_permission_seeking/);
+  });
+
+  it('fires on "your call to merge"', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nIt is your call to merge this one.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/your_call_to_merge/);
+  });
+
+  it('THE KEY FIX: still fires even when the PR is "tracked" (infrastructure-backed does NOT launder handing the merge back)', () => {
+    const result = runHook(
+      "cat <<EOF | telegram-reply.sh 100\nI opened a tracked commitment and a follow-up PR for it — but the merge call is yours.\nEOF"
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/MERGE-DEFERRAL DETECTED/);
+  });
+
+  it('the checklist tells the agent to merge it itself on green and that it is never the operator\'s blocker', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nThe merge call is yours.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.additionalContext).toMatch(/MERGE IT YOURSELF|green CI = mergeable|safe-merge\.mjs/);
+    expect(result.parsed?.additionalContext).toMatch(/never be a blocker|gh pr merge/);
+  });
+
+  it('does NOT fire when the agent is DOING the merge itself ("I merged it myself on green")', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nCI went green so I squash-merged #1040 myself — no hand-back. Commit c5c4194.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed).toBeNull();
+  });
+
+  it('does NOT fire on "I will merge on green" / "merging now"', () => {
+    const a = runHook(
+      "cat <<EOF | telegram-reply.sh 100\nCI is finishing; I'll merge it the moment it is green and confirm.\nEOF"
+    );
+    expect(a.parsed).toBeNull();
+    const b = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nGreen across the board — merging now and will report when it lands.\nEOF'
+    );
+    expect(b.parsed).toBeNull();
+  });
+
+  it('never blocks — decision stays approve', () => {
+    const result = runHook(
+      'cat <<EOF | telegram-reply.sh 100\nThe merge call is yours on this one.\nEOF'
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.parsed?.decision).toBe('approve');
+  });
+});

@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "sessionId": "ux-first-inc2",
+  "timestamp": "2026-07-25T00:15:00.000Z",
+  "artifactPath": "upgrades/side-effects/ux-first-enforcement-inc2.md",
+  "artifactSha256": "7fb88a593696bcf6f9b9b13b2d199fd1c0797d743d2414c21ea193639e443691",
+  "specPath": "docs/specs/ux-first-enforcement-inc1.eli16.md",
+  "coveredFiles": ["scripts/eli16-overview-check.mjs", "scripts/ux-impact-lint.mjs"],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {"verdict": "clear", "cause": null, "causes": [], "degraded": true, "substrateIntroducing": false, "evidence": [], "notes": ["Increment 2 is the converged UX enforcement follow-up; no duplicate implementation found."], "specSlug": "ux-first-enforcement-inc1-eli16", "specPath": "docs/specs/ux-first-enforcement-inc1.eli16.md", "phase": "build-start", "disposition": {"decision": "proceed", "reason": "Dispatch explicitly adds author scope, verifier, artifact, safety, and ELI16 generator fixes.", "acknowledgedEvidenceIds": [], "recordedAt": "2026-07-25T00:15:00.000Z"}}
+}

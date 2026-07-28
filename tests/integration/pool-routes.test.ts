@@ -57,7 +57,7 @@ describe('Session Pool API — GET /pool + PATCH /pool/machines/:id (§L2)', () 
     registry.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date().toISOString(), loadAvg: 1.2 });
 
     const coordinator: any = {
-      getSyncStatus: () => ({ enabled: true, role: 'awake', leaseHolder: 'm_a', leaseEpoch: 3, holdsLease: true, splitBrainState: 'clear', protocolVersion: 1, awakeMachineCount: 1 }),
+      getSyncStatus: () => ({ enabled: true, role: 'awake', leaseHolder: 'm_a', leaseEpoch: 3, holdsLease: true, splitBrainState: 'clear', protocolVersion: 1, awakeMachineCount: 1, awakeMachineCountSource: 'lease-live' }),
       managers: { identityManager: idMgr },
     };
     const ctx: any = {
@@ -87,6 +87,9 @@ describe('Session Pool API — GET /pool + PATCH /pool/machines/:id (§L2)', () 
     expect(r.body.enabled).toBe(true);
     expect(r.body.router.holder).toBe('m_a');
     expect(r.body.router.holdsLease).toBe(true);
+    // machine-coherence-guard §5b — the awake count carries its source tag through /pool.
+    expect(r.body.router.awakeMachineCount).toBe(1);
+    expect(r.body.router.awakeMachineCountSource).toBe('lease-live');
     const byId = Object.fromEntries(r.body.machines.map((m: any) => [m.machineId, m]));
     expect(byId.m_a.nickname).toBe('Mac Mini');
     expect(byId.m_a.online).toBe(true);
@@ -94,6 +97,31 @@ describe('Session Pool API — GET /pool + PATCH /pool/machines/:id (§L2)', () 
     expect(byId.m_a.clockSkewStatus).toBe('ok');
     expect(byId.m_b.nickname).toBe('Laptop');
     expect(byId.m_b.online).toBe(false); // never sent a heartbeat
+    // WS4.2 contract: the dashboard's per-machine empty-state strip consumes
+    // nickname + online + selfReportedLastSeen — lock the last-seen field for
+    // a machine that HAS heartbeated, so "not reachable — last seen <t>" can
+    // always be rendered honestly.
+    expect(typeof byId.m_a.selfReportedLastSeen).toBe('string');
+  });
+
+  it('GET /pool/poller-count is alive: exactly one polling machine → ok (B5, Decision 11)', async () => {
+    // Both online; m_a is the poller, m_b is not.
+    registry.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date().toISOString(), pollingActive: true });
+    registry.recordHeartbeat({ machineId: 'm_b', selfReportedLastSeen: new Date().toISOString(), pollingActive: false });
+    const r = await api('/pool/poller-count');
+    expect(r.status).toBe(200);
+    expect(r.body.enabled).toBe(true);
+    expect(r.body.verdict).toBe('ok');
+    expect(r.body.activePollers).toBe(1);
+  });
+
+  it('GET /pool/poller-count: a dark peer → indeterminate, NEVER a false silence (B5)', async () => {
+    // m_a online + not polling; m_b never heartbeated (dark) → can't confirm the count.
+    registry.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date().toISOString(), pollingActive: false });
+    const r = await api('/pool/poller-count');
+    expect(r.status).toBe(200);
+    expect(r.body.verdict).toBe('indeterminate');
+    expect(r.body.hasVisibilityGap).toBe(true);
   });
 
   it('PATCH /pool/machines/:id renames a machine; GET reflects it', async () => {
@@ -124,5 +152,69 @@ describe('Session Pool API — GET /pool + PATCH /pool/machines/:id (§L2)', () 
   it('PATCH requires a string nickname (400)', async () => {
     const r = await api('/pool/machines/m_a', { method: 'PATCH', body: JSON.stringify({ nickname: 42 }) });
     expect(r.status).toBe(400);
+  });
+});
+
+describe('GET /pool — rope-condition decoration (offline-test honesty finding)', () => {
+  let dir: string;
+  let server: Server;
+
+  async function stand(ropeHealthMonitor: unknown): Promise<void> {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pool-rope-'));
+    const idMgr = new MachineIdentityManager(path.join(dir, '.instar'));
+    idMgr.registerMachine(identity('m_a', 'mac-mini'), 'awake');
+    idMgr.registerMachine(identity('m_b', 'laptop'), 'standby');
+    const registry = new MachinePoolRegistry({
+      listMachines: () =>
+        idMgr.getActiveMachines().map(({ machineId, entry }) => ({ machineId, nickname: entry.nickname })),
+      clockSkewToleranceMs: 300_000,
+      failoverThresholdMs: 60_000,
+    });
+    // BOTH heartbeat-fresh: the registry still says online — the exact window
+    // where the rope classification must carry the honest reachability signal.
+    registry.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date().toISOString() });
+    registry.recordHeartbeat({ machineId: 'm_b', selfReportedLastSeen: new Date().toISOString() });
+    const ctx: any = {
+      config: { authToken: 'test', stateDir: dir, port: 0 },
+      stateDir: dir,
+      machinePoolRegistry: registry,
+      ropeHealthMonitor,
+    };
+    const app = express();
+    app.use(express.json());
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+  }
+  afterEach(async () => {
+    await server.close();
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/pool-routes.test.ts' });
+  });
+
+  it('carries ropeCondition + ropeAllDownSince from the monitor while online is still true', async () => {
+    const allDown = Date.now() - 45_000;
+    await stand({
+      status: () => ({
+        peers: [{ machineId: 'm_b', condition: 'peer-offline', allDownSince: allDown }],
+      }),
+    });
+    const res = await fetch(server.url + '/pool');
+    const body = await res.json();
+    const b = body.machines.find((m: any) => m.machineId === 'm_b');
+    expect(b.online).toBe(true); // placement semantics untouched
+    expect(b.ropeCondition).toBe('peer-offline');
+    expect(b.ropeAllDownSince).toBe(new Date(allDown).toISOString());
+    const a = body.machines.find((m: any) => m.machineId === 'm_a');
+    expect('ropeCondition' in a).toBe(false); // untracked (self) row untouched
+  });
+
+  it('monitor dark (fleet default) → fields absent, response shape unchanged', async () => {
+    await stand(null);
+    const res = await fetch(server.url + '/pool');
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    for (const m of body.machines) {
+      expect('ropeCondition' in m).toBe(false);
+      expect('ropeAllDownSince' in m).toBe(false);
+    }
   });
 });

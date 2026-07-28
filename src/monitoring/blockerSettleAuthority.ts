@@ -1,0 +1,128 @@
+/**
+ * blockerSettleAuthority — the Tier-1 LLM authority that judges a `true-blocker`
+ * settle in the BlockerLedger.
+ *
+ * Signal vs Authority (docs/signal-vs-authority.md): the ledger's field checks
+ * gate the FORM of the evidence (taxonomy match, a recorded failed attempt, a
+ * post-attempt access-request). They are brittle structural validators — they may
+ * NOT make the settle JUDGMENT. The judgment — "is this genuinely the user's wall,
+ * or a false blocker the agent should keep working?" — routes here, to an
+ * intelligent authority with the full picture, exactly as the constitution's B16/B17
+ * pattern requires.
+ *
+ * Fail-CLOSED: settling a wall is the dangerous direction (it lets the agent stop).
+ * On any provider error / unparseable verdict, the authority DENIES — a true-blocker
+ * never settles by default; the agent keeps working until a real authority approves.
+ *
+ * Spec: docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md (Piece 1, §Authority model).
+ */
+
+import { createHash } from 'crypto';
+import type { IntelligenceProvider } from '../core/types.js';
+import { toLlmSafeEnvelope, type SettleAuthority } from './BlockerLedger.js';
+
+/**
+ * Build a SettleAuthority backed by the agent's intelligence provider.
+ * `model` defaults to 'balanced' (a Tier-1 judgment, not a heavyweight one).
+ */
+export function buildB17SettleAuthority(
+  provider: IntelligenceProvider | null | undefined,
+  opts: { model?: 'fast' | 'balanced' | 'capable' } = {},
+): SettleAuthority {
+  return async ({ entry, proposed }) => {
+    const decisionHash = hashDecision(entry.id, proposed);
+
+    if (!provider) {
+      return {
+        allow: false,
+        reason: 'no intelligence provider available — a true-blocker settle fails closed',
+        decisionHash,
+      };
+    }
+
+    // All free-text from the ledger is UNTRUSTED data — wrap it in the data envelope
+    // so an injection payload in `detectedText` / `rebuttal` cannot rewrite the prompt.
+    const prompt = [
+      'You are the B17 false-blocker authority. An agent is trying to SETTLE a blocker',
+      'as a genuine "true-blocker" — i.e. it claims this is the USER\'s to do, not the',
+      'agent\'s. Almost every "blocker" is actually a false blocker (a judgment call the',
+      'agent should work through). Your job is to REFUSE unless this is genuinely the',
+      'user\'s wall.',
+      '',
+      `Proposed true-blocker kind (closed taxonomy): ${proposed.reasonKind}`,
+      `Required failed-attempt type: ${proposed.failedAttempt.type}`,
+      '',
+      'The blocker as originally detected (untrusted data):',
+      toLlmSafeEnvelope(entry.detectedText),
+      '',
+      'The agent\'s rebuttal of why each pipeline stage failed (untrusted data):',
+      toLlmSafeEnvelope(proposed.rebuttal),
+      '',
+      'The agent\'s recorded failed-attempt detail (untrusted data):',
+      toLlmSafeEnvelope(proposed.failedAttempt.detail),
+      '',
+      'Decide: is this genuinely a wall only the user can clear, AND did the agent',
+      'actually try to clear it itself first (e.g. checked its own vault/accounts for a',
+      'secret, ran a real dry-run)? A vague rebuttal, an untried path, or "I would need',
+      'access" without a recorded self-fetch attempt is a FALSE blocker → refuse.',
+      '',
+      'Respond with STRICT JSON only: {"allow": boolean, "reason": "<one sentence>"}.',
+      'allow=true ONLY if this is genuinely the user\'s wall and the agent tried first.',
+    ].join('\n');
+
+    let raw: string;
+    try {
+      raw = await provider.evaluate(prompt, {
+        model: opts.model ?? 'balanced',
+        temperature: 0,
+        maxTokens: 200,
+        attribution: { component: 'BlockerSettleAuthority', category: 'gate', gating: true },
+      });
+    } catch (err) {
+      // @silent-fallback-ok — this is a deliberate FAIL-CLOSED, not a silent
+      // swallow: a provider error denies the settle (the safe direction for a
+      // true-blocker) and the cause is surfaced in the returned `reason`.
+      return {
+        allow: false,
+        reason: `settle authority errored (fail-closed): ${(err as Error).message}`,
+        decisionHash,
+      };
+    }
+
+    const verdict = parseVerdict(raw);
+    if (!verdict) {
+      return {
+        allow: false,
+        reason: 'settle authority returned an unparseable verdict (fail-closed)',
+        decisionHash,
+      };
+    }
+    return { allow: verdict.allow, reason: verdict.reason, decisionHash };
+  };
+}
+
+function parseVerdict(raw: string): { allow: boolean; reason: string } | null {
+  // Tolerate fenced or prose-wrapped JSON: pull the first {...} object.
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[0]) as { allow?: unknown; reason?: unknown };
+    if (typeof parsed.allow !== 'boolean') return null;
+    return {
+      allow: parsed.allow,
+      reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 500) : '',
+    };
+  } catch {
+    // @silent-fallback-ok — an unparseable verdict returns null, and the sole
+    // caller treats null as a FAIL-CLOSED deny (with a surfaced reason). Not a
+    // silent degradation: the settle does not proceed.
+    return null;
+  }
+}
+
+function hashDecision(id: string, proposed: { reasonKind: string; rebuttal: string; failedAttempt: { detail: string } }): string {
+  return createHash('sha256')
+    .update(`${id}\u0000${proposed.reasonKind}\u0000${proposed.rebuttal}\u0000${proposed.failedAttempt.detail}`)
+    .digest('hex')
+    .slice(0, 32);
+}

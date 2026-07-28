@@ -1,0 +1,1 @@
+{"timestamp":"20260724T052000Z","slug":"dashboard-throughput","riskFloor":2,"decision":"implement","scope":"read-only throughput route and dashboard tab","evidence":{"build":"tsc passes","dataContract":"prototype V40/S20/Q25/O15"}}

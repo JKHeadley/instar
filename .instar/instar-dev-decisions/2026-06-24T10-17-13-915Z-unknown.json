@@ -1,0 +1,19 @@
+{
+  "ts": "2026-06-24T10:17:13.915Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 1022,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The post-transfer closeout decision in SessionReaper keyed solely on the topic's ownership record (who SHOULD hold the topic) and never verified that the destination machine actually holds a LIVE session. The gap was always present but only surfaced as a visible bug when an ownership record went stale (owner still names the remote machine after that machine already finished) — the reaper then looped trying to terminate the one local session still doing real work. Fixed by liveness-gating the closeout: it proceeds only when the remote owner is confirmed live; owner-dead / unknown / unresolvable all resolve to the SAFE WITHHOLD direction (fail-closed), with a narrow recent-user-message bypass that re-checks every other KEEP-guard so a live-working session is never killed."
+  },
+  "verdict": "pass"
+}

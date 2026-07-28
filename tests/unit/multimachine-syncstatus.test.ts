@@ -43,7 +43,11 @@ describe('MultiMachineCoordinator.getSyncStatus — feature-alive surface', () =
     expect(['clear', 'contested', 'self-suspended']).toContain(s.splitBrainState);
     expect(s.splitBrainState).toBe('clear');
     expect(s.protocolVersion).toBe(SEAMLESSNESS_PROTOCOL_VERSION);
+    // machine-coherence-guard §5b — awakeMachineCount is now number | null with a
+    // source tag. A single-machine install has no lease coordinator, so it takes the
+    // registry-role basis and returns a plain number (never null here).
     expect(typeof s.awakeMachineCount).toBe('number');
+    expect(s.awakeMachineCountSource).toBe('registry-roles');
   });
 
   it('getSyncStatus never throws even if the registry is unreadable', () => {

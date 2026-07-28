@@ -1,0 +1,18 @@
+# Round 1 — Synthesis (material findings, deduped across 6 internal + 2 external + conformance gate)
+
+## External verdicts
+- codex-cli (gpt-5.5): SERIOUS ISSUES
+- gemini-cli (gemini-2.5-pro): MINOR ISSUES
+
+## Material findings
+- **M1 — Latency/slowness stacking (CRUX; scalability, adversarial, gemini#1).** A slow-but-not-erroring provider stalls each gating call to its timeout before swapping; the longer chain (Codex→PI→Gemini→Claude) can STACK timeouts and reintroduce the very delivery stall this spec fixes. failureSwap triggers on errors/breaker trips, NOT latency. → bound per-attempt timeout + total swap budget / latency-based trip.
+- **M2 — Failure-type-aware fallback / herd onto Claude (codex#2 SERIOUS).** Prior routing spec preferred heuristic fallback for RATE-LIMITED secondary providers to avoid a synchronized herd onto Claude. Making Claude the tail for ALL gating callers may recreate that herd, one hop later. → preserve failure-TYPE semantics: missing-binary falls through chain; rate-limit/circuit-open degrade-to-heuristic or be budget/concurrency-bounded before herding onto Claude.
+- **M3 — `job` category in/out (Q4; genuine split).** decision-completeness=INCLUDE; gemini+security+integration+lessons=EXCLUDE (routing job off-Claude silently FLIPS cost-bearing CartographerSweep from "refuse to author" to "author on Codex" as a side-effect, not operator-armed). → EXCLUDE job from the default; only sentinel+gate+reflector. Jobs stay on agent default.
+- **M4 — Boot-frozen active-set vs §5 self-heal claim (codex#1, lessons, adversarial).** §4.4 boot-once contradicts §5 "self-heals on CLI install/remove." → be honest: PRIMARY selection is boot-computed (restart to re-pick after installing a higher-preference CLI); the failureSwap TAIL already skips a missing binary live per-call (resolveProvider null→continue). Drop the blanket self-heal claim; document the precise semantics.
+- **M5 — In-place mutation vs operator-set detection (security, integration).** CartographerSweep auto-vivifies componentFrameworks in memory, which can defeat the "is componentFrameworks operator-set?" check (silently disables default or drops override). → detect operator-set from a boot snapshot of the RAW config value, not the in-memory possibly-mutated object.
+- **M6 — pi-cli grounding (codex#3).** PI may not be wired in the provider factory/tier-map/breaker/metrics. → active-filter (buildProvider null) excludes an unwired PI gracefully; document PI as included-if-active, verify unknown frameworks fail validation cleanly.
+- **M7 — `{}` rollback semantics (codex#4).** Confirm componentFrameworks:{} → router delegates to defaultFramework for all (well-defined). Verify against engine + document, or pick a clearer lever.
+- **M8 — Garbage-output poisoning (adversarial).** A provider returning bad-but-not-erroring output isn't breaker-trapped → gating decision poisoned. Pre-existing ENGINE property; spec broadens exposure. → acknowledge as known limitation / out-of-scope (output validation is caller's job).
+- **M9 — Resolve Q1/Q2/Q5 in-spec (decision-completeness: all type-B, zero user-decisions).** Q1→buildProvider(fw)!==null (a). Q2→runtime-computed (reconciled with M4 honesty). Q5→model tier is per-call in IntelligenceOptions, orthogonal by construction; confirm+test.
+- **M10 — Framework-Agnostic (conformance + lessons): resolves IN FAVOR.** operator-directed, fully-overridable, uniformly-applied, no-op on Claude-only = framework-OPTIMIZING not privileging — PENDING the order being a single NAMED documented constant (INTERNAL_FRAMEWORK_PREFERENCE).
+- **M11 — Test the gating CALLER's fail-closed, not just the router's (lessons).** Add explicit caller-fail-closed test.

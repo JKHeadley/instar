@@ -1,0 +1,14 @@
+{
+  "description": "The open-PR fixture reproducing the 2026-07-12 incident geometry (docs/specs/duplicate-build-guard.md §0/§4): PR #1458 is IN FLIGHT, ADDING the census substrate file src/data/provenanceCoverage.ts — the census does NOT exist on the fixture main. Injected via the test's fixture adapter; no gh, no network.",
+  "pr": {
+    "number": 1458,
+    "title": "LLM-Decision Quality Meter — uniform provenance + outcome grading (ACT-1193/1194)",
+    "headRefName": "codey/decision-quality-meter",
+    "body": "Records provenance for every LLM decision point: a census ratchet over decision points so a new LLM decision that skips provenance fails CI. Each enrolled callsite writes a decision_quality row with verdict, model, and outcome so gates can be graded. Adds the provenance coverage census file and wires the first decision points.",
+    "files": [
+      "src/data/provenanceCoverage.ts",
+      "src/monitoring/DecisionQualityStore.ts",
+      "tests/unit/provenance-coverage-ratchet.test.ts"
+    ]
+  }
+}
