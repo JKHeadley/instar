@@ -1,0 +1,19 @@
+{
+  "ts": "2026-07-02T18:01:37.158Z",
+  "slug": "u4-1-poolreference-skew-fix",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 87,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1332
+    ],
+    "notes": "PR #1332 shipped TopicPinFoldView honoring an OPTIONAL poolReference dep that no construction site supplied. The original suite passed because every test harness constructed a fresh fold clock adjacent to its records (reference ≈ record time), so the frozen-reference-on-a-quiet-stream path was never exercised. Live-reproduced 2026-07-02 as fb-1d51e996-0a3: a 46-min-stale boot-seed reference stickily quarantined honest pin records on both machines."
+  },
+  "verdict": "pass"
+}

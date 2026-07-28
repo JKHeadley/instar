@@ -1,0 +1,26 @@
+{
+  "ts": "2026-07-25T12:05:25.481Z",
+  "slug": "dated-commitment-reminder",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 626,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered as check-in-reminder-pass in selfActionRegistry.ts. Steady-state bound: the emit is gated by a DURABLE per-commitment attempt counter (CHECK_IN_MAX_ATTEMPTS=5) persisted through the CAS mutate BEFORE the send, so a crash-loop cannot buy fresh attempts and the restart model settles too. Settling brake: on success a durable checkInReminderSentAt stamp makes the commitment permanently ineligible; on repeated failure the attempt bound terminates it with a loud checkInReminderFailedAt. Modeled at worst case (every send fails, so only the counter can stop it) — without the bound the model emits once per tick forever and the ratchet fails. Per-pass cap of 25 additionally bounds instantaneous mass."
+    }
+  },
+  "verdict": "blocked"
+}

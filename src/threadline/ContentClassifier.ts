@@ -14,6 +14,8 @@
  * Part of PROP-relay-auto-connect, Layer 5.
  */
 
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+
 // ── Types ────────────────────────────────────────────────────────────
 
 export type ContentClassification = 'safe' | 'sensitive' | 'blocked';
@@ -135,8 +137,12 @@ function parseLLMResponse(response: string): ClassificationResult {
   const reasonLine = response.match(/REASON:\s*(.+)/i);
 
   if (!classLine) {
-    // If LLM didn't follow format, default to safe (fail-open for availability)
-    return { classification: 'safe' };
+    // FAIL-CLOSED: an unparseable LLM reply is NOT evidence the content is safe.
+    // The LLM is the layer that catches subtle outbound leaks (system prompts,
+    // business logic, contextual PII); defaulting to 'safe' silently ships them.
+    // Treat as 'sensitive' (blockSensitive policy escalates to blocked). See the
+    // "No Silent Degradation to Brittle Fallback" standard.
+    return { classification: 'sensitive', reason: 'Unparseable classifier reply — fail-closed to sensitive' };
   }
 
   const classification = classLine[1].toLowerCase() as ContentClassification;
@@ -247,11 +253,23 @@ export class ContentClassifier {
       return { classification: 'safe' };
     } catch (err) {
       this.metrics.errors++;
-      // Fail-open: classification errors don't block messages
-      // (availability > perfect security for a behavioral layer)
+      // FAIL-CLOSED: a classification error (LLM rate-limit, circuit-open, timeout)
+      // is NOT evidence the content is safe to send to an external peer. Defaulting
+      // to 'safe' silently downgrades real leak-protection to none. Treat as
+      // 'sensitive' (blockSensitive escalates to blocked) so unverifiable content
+      // is held, not leaked, and REPORT the degradation (never silent).
+      // ("No Silent Degradation to Brittle Fallback" standard; provider-swap
+      // upstream reduces how often this fires.)
+      DegradationReporter.getInstance().report({
+        feature: 'ContentClassifier.classify',
+        primary: 'LLM outbound-leak classification for an A2A message',
+        fallback: 'fail-closed to sensitive (held; blockSensitive escalates to blocked)',
+        reason: `Classification error: ${err instanceof Error ? err.message : 'unknown'}`,
+        impact: 'unverifiable outbound content is held as sensitive instead of silently shipped to a peer',
+      });
       return {
-        classification: 'safe',
-        reason: `Classification error (fail-open): ${err instanceof Error ? err.message : 'unknown'}`,
+        classification: 'sensitive',
+        reason: `Classification error (fail-closed to sensitive): ${err instanceof Error ? err.message : 'unknown'}`,
       };
     }
   }
@@ -270,4 +288,64 @@ export class ContentClassifier {
  */
 export function createDisabledClassifier(): ContentClassifier {
   return new ContentClassifier({ enabled: false });
+}
+
+// ── Commitment-class SIGNAL (Robustness Phase 1, FD-10 — advisory only) ──
+//
+// SIGNAL, NOT AUTHORITY. This deterministic lexicon surfaces a NUDGE to the
+// sending session ("this reads like a commitment — it carries no authority
+// unless you anchor it via a mandate/review-exchange"). It NEVER blocks, NEVER
+// refuses, and fails open to no-nudge. Because it has no authority, an
+// incomplete lexicon is not a safety hole (a missed nudge = no hint; prose is
+// inert either way — G2 does not depend on it). See
+// THREADLINE-SINGLE-NEGOTIATOR-SPEC.md §"Why G2 is prose-is-inert".
+
+export interface CommitmentSignal {
+  /** True when the text reads like an attempt to commit/lock an irreversible step. */
+  isCommitmentClass: boolean;
+  /** The binding terms that matched (for the advisory message). */
+  matchedTerms: string[];
+}
+
+/**
+ * Binding verbs/phrases that, over an irreversible or temporal object, read as a
+ * commitment. Deliberately colloquial-inclusive — the incident's own evidence
+ * ("see you at the gate", "yep, go ahead") had no formal keyword. This is recall
+ * for a NUDGE; it does not need to be exhaustive to be correct (FD-10).
+ */
+const COMMITMENT_TERMS: readonly string[] = [
+  'go ahead', 'go-ahead', 'green light', 'greenlight', 'green-light',
+  'sign off', 'sign-off', 'signed off', 'signing off',
+  "let's schedule", 'let us schedule', "let's lock", 'lock it in', 'locked in',
+  'move forward', 'go live', 'go-live', 'going live', 'ship it',
+  'confirmed for', 'confirm the', 'we agreed', 'we agree to', 'agreed to',
+  'i confirm', 'you are approved', 'approve the', 'approved the', 'approval to',
+  'lock the', 'locking the', 'schedule the cutover', 'cutover window',
+  'see you at the gate', 'commit to', 'committing to',
+];
+
+/**
+ * Detect commitment-class prose. PURE, deterministic, no I/O — safe to call
+ * off the send path with zero latency. Returns a signal only; the caller
+ * surfaces it as a non-blocking nudge (e.g. an advisory note on the send
+ * response). It is NEVER wired to a block path.
+ */
+export function detectCommitmentClass(content: string): CommitmentSignal {
+  const lower = (content ?? '').toLowerCase();
+  const matched: string[] = [];
+  for (const term of COMMITMENT_TERMS) {
+    if (lower.includes(term)) matched.push(term);
+  }
+  return { isCommitmentClass: matched.length > 0, matchedTerms: matched };
+}
+
+/** The fixed advisory nudge text shown when commitment-class prose is detected. */
+export function commitmentNudge(matchedTerms: string[]): string {
+  const sample = matchedTerms.slice(0, 3).join('", "');
+  return (
+    `This message reads like a commitment (matched "${sample}"). Prose carries NO ` +
+    `authority on Threadline — it can never lock an irreversible step. To make a ` +
+    `binding agreement with the peer, anchor it through a Coordination Mandate or ` +
+    `ReviewExchange (PIN-anchored). The message was sent unchanged; this is only a hint.`
+  );
 }

@@ -1,0 +1,24 @@
+{
+    "version": 2,
+    "slug": "spotlight-resource-hygiene",
+    "sessionId": "96c61421-860a-48f9-92b4-26328f5640f1",
+    "timestamp": "2026-06-06T23:30:00.000Z",
+    "artifactPath": "upgrades/side-effects/spotlight-resource-hygiene.md",
+    "artifactSha256": "fe98422d9baf8e68bce09288084d816e12a171a25f140bc0d025759df690d666",
+    "coveredFiles": [
+        "src/core/InstarWorktreeManager.ts",
+        "src/core/PostUpdateMigrator.ts",
+        "tests/unit/worktree-spotlight-exclusion.test.ts"
+    ],
+    "phase": "complete",
+    "tier": 1,
+    "tierReasoning": "Small, low-risk OS resource-hygiene addition that mirrors the existing node_modules/worktree Spotlight-exclusion pattern exactly: one pure-ish helper that drops a .metadata_never_index marker at the agent's Claude transcript dir + an idempotent PostUpdateMigrator backfill. No gate, no message-flow change, no persistent-state change, no API route. Filesystem-additive only (one empty marker file), reversible, graceful no-op on failure/non-macOS. Unit + migration tests cover both sides of every boundary. No converged spec required for Tier 1.",
+    "eli16Path": "docs/eli16/spotlight-resource-hygiene.eli16.md",
+    "sideEffectsPath": "upgrades/side-effects/spotlight-resource-hygiene.md",
+    "causalAutopsy": {
+        "origin": "latent",
+        "notes": "Not a prior-PR regression. The transcript-indexing cost has existed since Claude Code began writing JSONL session transcripts; the recent node_modules + worktree Spotlight-exclusion PRs addressed the static/throwaway trees but never extended to the constantly-churning transcript set (~18GB), which 2026-06-06 grounding (ps/mds_stores census during Justin's resource-hogging investigation) showed is the single largest mds_stores consumer. This closes that latent gap by reusing the same marker mechanism. Fix 1 of 4 in the resource-efficiency initiative."
+    },
+    "secondPass": "not-required",
+    "reviewerConcurred": null
+}

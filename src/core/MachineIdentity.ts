@@ -347,6 +347,21 @@ export class MachineIdentityManager {
     // re-register), else auto-assign a friendly, collision-free one derived from
     // the machine's own properties. Collision set = every OTHER machine's nickname.
     const existing = registry.machines[identity.machineId];
+
+    // Sticky revocation (2026-06-07 Mac Mini resurrection, topic 21816): a revoked
+    // machine must NOT be silently brought back to 'active' by a re-register
+    // (re-join / re-pair / post-update self-registration). The merge path already
+    // keeps revocation sticky (mergeRegistry.mergeEntry); this is the OTHER door —
+    // a direct re-register would clobber `status` to 'active' via the spread below.
+    // Staying revoked across updates is the requirement; the only path back to
+    // active is an explicit un-revoke. Refuse loudly and leave the entry untouched.
+    if (existing && (existing.status === 'revoked' || existing.revokedAt)) {
+      console.warn(
+        `[MachineIdentity] Refusing to re-register revoked machine ${identity.machineId} `
+        + `(${identity.name}) as active — it stays revoked across updates. Un-revoke explicitly to restore.`,
+      );
+      return;
+    }
     const existingNicknames = Object.entries(registry.machines)
       .filter(([id]) => id !== identity.machineId)
       .map(([, e]) => e.nickname)
@@ -482,6 +497,59 @@ export class MachineIdentityManager {
     const registry = this.loadRegistry();
     const entry = registry.machines[machineId];
     return entry?.lastKnownUrl ?? null;
+  }
+
+  /**
+   * multi-transport-mesh-comms — write this machine's advertised endpoint set into
+   * its registry entry. Rides the SAME authenticated registry-sync path as
+   * lastKnownUrl (syncSequence + authoredUnderEpoch + per-author replay guards),
+   * so a peer can only advertise endpoints under its own verified identity. The
+   * accept-ack's responder-identity verification is the load-bearing defense: a
+   * spoofed/bogus endpoint becomes a FAILED rope, never a trusted one.
+   */
+  updateMachineEndpoints(machineId: string, endpoints: import('./types.js').MeshEndpoint[]): void {
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) throw new Error(ERRORS.MACHINE_NOT_FOUND(machineId));
+    entry.endpoints = endpoints;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+  }
+
+  /** multi-transport-mesh-comms — read a machine's advertised endpoint set (or undefined). */
+  getMachineEndpoints(machineId: string): import('./types.js').MeshEndpoint[] | undefined {
+    const registry = this.loadRegistry();
+    return registry.machines[machineId]?.endpoints;
+  }
+
+  /**
+   * routing-control-room-spend Increment C (FD-6 rung 2, pool half) — publish
+   * this machine's created/adopted "💰 Routing & Spend Alerts" topic id as a
+   * content-free field on its registry entry (rides the SAME replicated
+   * registry-sync path as lastKnownUrl/endpoints).
+   */
+  updateRoutingSpendAlertTopic(machineId: string, topicId: number): void {
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) throw new Error(ERRORS.MACHINE_NOT_FOUND(machineId));
+    entry.routingSpendAlertTopicId = topicId;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+  }
+
+  /**
+   * Read the pool-published alerts-topic id from ANY (non-revoked) machine
+   * entry — first hit wins; a new serving-lease holder INHERITS the id instead
+   * of re-creating. Returns undefined when no machine has published one.
+   */
+  readAnyRoutingSpendAlertTopic(): number | undefined {
+    const registry = this.loadRegistry();
+    for (const entry of Object.values(registry.machines)) {
+      if (entry.revokedAt) continue;
+      const id = entry.routingSpendAlertTopicId;
+      if (typeof id === 'number' && Number.isFinite(id)) return id;
+    }
+    return undefined;
   }
 
   /**
@@ -648,6 +716,8 @@ const GITIGNORE_ENTRIES = [
   '.instar/pairing/',
   '# Sandbox-safe worktrees (per-machine; multi-GB foreign-repo contents)',
   '.worktrees/',
+  '# Judgment-call provenance rows (machine-local decision context — never commit)',
+  'state/judgment-provenance/',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

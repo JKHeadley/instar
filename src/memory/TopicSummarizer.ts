@@ -163,6 +163,7 @@ export class TopicSummarizer {
     const summary = await this.intelligence.evaluate(prompt, {
       model: 'fast',
       maxTokens: this.config.maxSummaryTokens,
+      attribution: { component: 'TopicSummarizer' }, // attribution for /metrics/features
     });
 
     if (!summary || summary.trim().length < 10) {

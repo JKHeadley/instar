@@ -29,6 +29,7 @@
  */
 
 import type { IntelligenceProvider } from './types.js';
+import { isCapacityUnavailable } from './SpawnCapIntelligenceProvider.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -94,6 +95,11 @@ export interface MessageSentinelConfig {
   enabled?: boolean;
   /** Skip LLM classification and use fast-path only (default: false) */
   fastPathOnly?: boolean;
+  /** Operator-channel-sacred circuit-breaker: rolling window (ms, default 600000). */
+  breakerWindowMs?: number;
+  /** Operator-channel-sacred circuit-breaker: max pause-consumes per window before
+   *  it trips and routes further pauses through (default 3). */
+  breakerMaxPerWindow?: number;
 }
 
 export interface SentinelStats {
@@ -121,6 +127,25 @@ export interface SentinelStats {
  * Slash commands (/stop, /pause) are exempt — always unambiguous regardless of length.
  */
 const MAX_FAST_PATH_WORDS = 4;
+
+/**
+ * Pause-directive length ceiling for the LLM layer.
+ *
+ * A genuine natural-language pause directive is short ("pause please",
+ * "hold on, wait for me to finish reading before you continue") — well
+ * under this bound. A LONG message classified 'pause' is task content
+ * whose closing phrase ("…and stand by") seduced the classifier; CONSUMING
+ * it as a control command destroys the content for zero safety payoff
+ * (pause's value is politeness, not safety). Live 2026-06-05: two ~200-word
+ * mentor coaching messages ending "…and stand by" were eaten this way on
+ * topic 1052 ("Session paused" posted at 14:22:58Z and 14:41:24Z; the
+ * messages were never routed and existed in no queue or drop ledger).
+ *
+ * ASYMMETRY (deliberate): emergency-stop is NOT length-gated at this layer —
+ * stopping unnecessarily on a long panic message is a tolerable false
+ * positive (the prompt's own safety-first rule). Only 'pause' downgrades.
+ */
+const MAX_PAUSE_DIRECTIVE_WORDS = 25;
 
 // ── Fast-Path Patterns ───────────────────────────────────────────────
 
@@ -170,6 +195,17 @@ const SLASH_PAUSE: ReadonlySet<string> = new Set([
 /**
  * Regex patterns for fast-path stop detection.
  * Tested before LLM classification.
+ *
+ * @intent-safety-floor-ok — This is the constitutional survivor #2 of the
+ * "Intelligence Infers, Keywords Only Guard" standard: a deterministic
+ * emergency-stop / pause FAST-PATH that runs BEFORE, and WITH, an LLM stage
+ * behind it (MessageSentinel.classify() routes everything that isn't an
+ * unambiguous fast-stop through the injected LLM classifier). The keyword
+ * lists here (FAST_STOP_PATTERNS / FAST_PAUSE_PATTERNS / CONTINUE_PING_TOKENS
+ * / INTENT_B_ADDITIVE / INTENT_C_QUESTION_STARTS) are a safety floor for a
+ * halt-now signal, never the sole decision-maker for natural-language intent.
+ * See docs/specs/standard-intelligence-infers-keywords-only-guard.md and the
+ * keyword-intent-decision ratchet (tests/unit/keyword-intent-decision-ratchet.test.ts).
  */
 const FAST_STOP_PATTERNS: readonly RegExp[] = [
   /^stop\b/i,                         // "stop" at start of message
@@ -278,6 +314,47 @@ export function classifyContinuePingIntent(message: string): ContinuePingIntent 
   return 'intent_a';
 }
 
+// ── Operator-Channel-Sacred: inbound disposition (CMT — topic 28130) ──
+//
+// Standard "The Operator Channel Is Sacred — Critical-Path Gates Fail Toward
+// Delivery" (docs/STANDARDS-REGISTRY.md). A 'pause' classification may CONSUME the
+// operator's inbound message ONLY on a DETERMINISTIC fast-path match — never on a
+// bare-LLM or capacity-shed guess (the LLM self-reports high confidence regardless
+// of correctness; the capacity-shed path defaults to 'pause' under spawn-cap
+// saturation — that is the 2026-06-25 lockout mechanism). A non-deterministic
+// 'pause' routes THROUGH, but first a NON-word-count-gated stop-token scan runs so a
+// long-form genuine "stop" (which the ≤4-word fast-path missed and the LLM may have
+// capacity-shed) still fails toward STOP rather than being silently delivered.
+
+/** Whole-word stop tokens (no word-count gate, anywhere in the message). */
+const STOP_TOKEN_SCAN: readonly RegExp[] = [
+  /\b(stop|abort|cancel|halt|cease|terminate)\b/i,
+  /\bkill\s+(it|this|that|the\s+\w+|everything|session)\b/i,
+];
+
+/**
+ * Non-word-count-gated deterministic scan: does this message contain a genuine
+ * STOP token anywhere? Used before routing a non-deterministic/capacity-shed result
+ * through, so a long-form real stop is never dropped. Slash-stop commands count too.
+ */
+export function hasStopToken(message: string): boolean {
+  const t = (message ?? '').toLowerCase().trim();
+  if (!t) return false;
+  for (const s of SLASH_STOP) if (t === s || t.startsWith(s + ' ')) return true;
+  for (const re of STOP_TOKEN_SCAN) if (re.test(t)) return true;
+  return false;
+}
+
+/** The disposition the inbound consume sites act on (the ONE place the standard lives). */
+export type InboundDisposition = 'kill' | 'pause' | 'route-through';
+export interface InboundDecision {
+  disposition: InboundDisposition;
+  category: SentinelCategory;
+  /** the underlying classification method (audit) */
+  method: 'fast-path' | 'llm' | 'default';
+  reason?: string;
+}
+
 // ── Sentinel Implementation ──────────────────────────────────────────
 
 export class MessageSentinel {
@@ -285,6 +362,15 @@ export class MessageSentinel {
   private stats: SentinelStats;
   private customStopExact: Set<string>;
   private customPauseExact: Set<string>;
+  /** Operator-channel-sacred disposition counters (observability — /metrics/features). */
+  public dispositionStats = { pauseConsumed: 0, pauseRoutedThrough: 0, breakerRecovered: 0, stopRescued: 0 };
+  /** Bounded-blast-radius circuit-breaker: per-topic pause-consume timestamps (rolling window).
+   *  Shared across BOTH inbound consume paths because both use this one MessageSentinel instance.
+   *  In-memory by design: the PRIMARY guard is deterministic-only-consume (below), so a restart
+   *  resetting this can never reintroduce the lockout — the breaker is defense-in-depth only. */
+  private recentPauseConsumes = new Map<number, number[]>();
+  private readonly breakerWindowMs: number;
+  private readonly breakerMaxPerWindow: number;
 
   constructor(config: MessageSentinelConfig = {}) {
     this.config = config;
@@ -303,6 +389,84 @@ export class MessageSentinel {
     this.customPauseExact = new Set(
       (config.customPausePatterns ?? []).map(p => p.toLowerCase().trim())
     );
+    // Circuit-breaker knobs (config-tunable per operator-channel-sacred FD2).
+    this.breakerWindowMs = config.breakerWindowMs ?? 10 * 60 * 1000;
+    this.breakerMaxPerWindow = config.breakerMaxPerWindow ?? 3;
+  }
+
+  /**
+   * Decide what to do with an inbound operator message — the SINGLE place the
+   * "Operator Channel Is Sacred" standard is enforced. Both inbound consume sites
+   * (TelegramAdapter.onSentinelIntercept and routes.ts /internal/telegram-forward)
+   * call this and act on the disposition, so the policy can never diverge between
+   * paths. `topicId` (optional) drives the bounded-blast-radius circuit-breaker.
+   *
+   *  - emergency-stop  → 'kill'  (prefer-stop; its false-positive is RECOVERABLE).
+   *  - pause + fast-path (deterministic match) → 'pause' (consume).
+   *  - pause + non-deterministic (LLM verdict OR capacity-shed) → NEVER consume:
+   *      if the message contains a stop token (long-form stop that bypassed the
+   *      ≤4-word fast-path / was capacity-shed) → 'kill'; else → 'route-through'.
+   *  - circuit-breaker (bounded blast radius): the breaker caps how many times a
+   *      topic can be pause-CONSUMED within the window (breakerMaxPerWindow). Once it
+   *      trips, even a deterministic 'pause' routes THROUGH (auto-recover) — so no
+   *      stream of pauses, deterministic OR not, can permanently seal the operator's
+   *      channel. emergency-stop ('kill') is NEVER gated by the breaker, and a
+   *      route-through ALWAYS delivers — the breaker can only ever convert a
+   *      consume into a delivery, never the reverse. Resets by window expiry.
+   */
+  async decideInboundDisposition(message: string, topicId?: number): Promise<InboundDecision> {
+    const c = await this.classify(message);
+    const method = c.method;
+
+    if (c.category === 'emergency-stop') {
+      return { disposition: 'kill', category: 'emergency-stop', method, reason: c.reason };
+    }
+
+    if (c.category === 'pause') {
+      const deterministic = method === 'fast-path';
+      if (deterministic && !this.breakerTripped(topicId)) {
+        this.recordPauseConsume(topicId);
+        this.dispositionStats.pauseConsumed++;
+        return { disposition: 'pause', category: 'pause', method, reason: c.reason };
+      }
+      // Non-deterministic 'pause' (bare LLM verdict, capacity-shed), OR a deterministic
+      // pause suppressed by the breaker: NEVER consume. First rescue a genuine stop.
+      if (hasStopToken(message)) {
+        this.dispositionStats.stopRescued++;
+        return {
+          disposition: 'kill', category: 'emergency-stop', method,
+          reason: 'stop token present on a non-deterministic/breaker-suppressed result — rescued to STOP (operator-channel-sacred)',
+        };
+      }
+      if (this.breakerTripped(topicId)) this.dispositionStats.breakerRecovered++;
+      this.dispositionStats.pauseRoutedThrough++;
+      return {
+        disposition: 'route-through', category: 'normal', method,
+        reason: 'non-deterministic pause routed through (operator-channel-sacred: never consume a benign message on a brittle/capacity-shed signal)',
+      };
+    }
+
+    return { disposition: 'route-through', category: c.category, method, reason: c.reason };
+  }
+
+  /** Has this topic been pause-consumed more than the cap within the rolling window? */
+  private breakerTripped(topicId?: number): boolean {
+    if (topicId == null) return false;
+    const arr = this.recentPauseConsumes.get(topicId);
+    if (!arr || arr.length === 0) return false;
+    const cutoff = Date.now() - this.breakerWindowMs;
+    const live = arr.filter(t => t >= cutoff);
+    if (live.length !== arr.length) this.recentPauseConsumes.set(topicId, live);
+    return live.length >= this.breakerMaxPerWindow;
+  }
+
+  /** Record a pause-consume timestamp for the breaker. */
+  private recordPauseConsume(topicId?: number): void {
+    if (topicId == null) return;
+    const cutoff = Date.now() - this.breakerWindowMs;
+    const arr = (this.recentPauseConsumes.get(topicId) ?? []).filter(t => t >= cutoff);
+    arr.push(Date.now());
+    this.recentPauseConsumes.set(topicId, arr);
   }
 
   /**
@@ -346,7 +510,7 @@ export class MessageSentinel {
 
     // Layer 2: LLM classification (if available and not fast-path-only)
     if (this.config.intelligence && !this.config.fastPathOnly) {
-      const llmResult = await this.llmClassify(message);
+      const llmResult = this.downgradeLongPause(await this.llmClassify(message), message);
       const latency = Date.now() - start;
       this.recordStats(llmResult.category, 'llm', latency);
       return {
@@ -368,6 +532,34 @@ export class MessageSentinel {
       action: { type: 'pass-through' },
       reason: 'No fast-path match, no LLM available',
       continuePingIntent,
+    };
+  }
+
+  /**
+   * Structural guard (Structure > Willpower): a 'pause' classification on a
+   * LONG message downgrades to 'normal' pass-through. The LLM prompt already
+   * ASKS for this judgment ("substantive content ⇒ NORMAL"), but a closing
+   * imperative ("…and stand by") intermittently wins anyway — and the
+   * forward route CONSUMES pause-classified messages, so the false positive
+   * silently destroys the message. Emergency-stop is deliberately untouched
+   * (see MAX_PAUSE_DIRECTIVE_WORDS). The fast path needs no equivalent: its
+   * 4-word gate already excludes long messages from pattern matches.
+   */
+  private downgradeLongPause(
+    result: Omit<SentinelClassification, 'method' | 'latencyMs'>,
+    message: string,
+  ): Omit<SentinelClassification, 'method' | 'latencyMs'> {
+    if (result.category !== 'pause') return result;
+    const wordCount = message.trim().split(/\s+/).length;
+    if (wordCount <= MAX_PAUSE_DIRECTIVE_WORDS) return result;
+    console.log(
+      `[sentinel] pause downgraded to normal: ${wordCount} words > ${MAX_PAUSE_DIRECTIVE_WORDS} (long messages are task content, not pause directives)`,
+    );
+    return {
+      category: 'normal',
+      confidence: result.confidence,
+      action: { type: 'pass-through' },
+      reason: `pause downgraded: ${wordCount}-word message exceeds the ${MAX_PAUSE_DIRECTIVE_WORDS}-word pause-directive ceiling (was: ${result.reason})`,
     };
   }
 
@@ -512,6 +704,14 @@ export class MessageSentinel {
       const response = await this.config.intelligence.evaluate(prompt, {
         maxTokens: 10,
         temperature: 0,
+        attribution: { component: 'MessageSentinel', gating: true }, // attribution for /metrics/features
+        // Observable Intelligence: the sentinel ACTS (fired) on any non-normal
+        // category (emergency-stop / pause / redirect); 'normal' is a no-op. Lets
+        // /metrics/features report a real fireRate instead of every call as noop.
+        classifyVerdict: (result) => {
+          const p = this.extractCategory(result);
+          return { acted: !!p && p.category !== 'normal' };
+        },
       });
 
       const parsed = this.extractCategory(response);
@@ -532,8 +732,24 @@ export class MessageSentinel {
         action: this.categoryToAction(parsed.category, message),
         reason: `LLM classification: ${parsed.category}${parsed.exact ? '' : ' (extracted)'}`,
       };
-    } catch {
-      // LLM failure → pass through (don't block on evaluation errors)
+    } catch (err) {
+      // Fork-bomb P3 fail-CLOSED (forkbomb-prevention-simple §D-DISPOSITION):
+      // a capacity shed (host spawn cap saturated) must NOT auto-pass as
+      // 'normal'. The deterministic emergency-stop pre-check (fastClassify,
+      // Layer 1) already ran BEFORE this LLM call and is exempt from the cap, so
+      // a genuine "stop everything" was never gated here. For an AMBIGUOUS
+      // message that we could not LLM-classify under capacity pressure, HOLD
+      // (pause the session) rather than pass it through un-reviewed — the safe
+      // do-not-auto-pass direction.
+      if (isCapacityUnavailable(err)) {
+        return {
+          category: 'pause',
+          confidence: 0.4,
+          action: { type: 'pause-session' },
+          reason: 'LLM classification unavailable (spawn capacity saturated) — held (fail-closed) instead of auto-passing',
+        };
+      }
+      // Any other LLM failure → pass through (don't block on evaluation errors)
       return {
         category: 'normal',
         confidence: 0.3,
@@ -620,8 +836,11 @@ export class MessageSentinel {
   /**
    * Get current stats.
    */
-  getStats(): SentinelStats {
-    return { ...this.stats };
+  getStats(): SentinelStats & { disposition: typeof MessageSentinel.prototype.dispositionStats } {
+    // dispositionStats surfaced here (operator-channel-sacred observability): the
+    // /sentinel/stats route exposes pause.consumed / .routed-through / breaker.recovered
+    // so "is the gate eating messages?" is a number, not a guess.
+    return { ...this.stats, disposition: { ...this.dispositionStats } };
   }
 
   /**

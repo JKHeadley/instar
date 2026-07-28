@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-26T22:32:41.433Z",
+  "slug": "alignment-score-not-assessed",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 47,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

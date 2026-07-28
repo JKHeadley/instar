@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-27T19:37:19.357Z",
+  "slug": "prepush-gate-frozen-guide",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 59,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

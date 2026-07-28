@@ -102,6 +102,73 @@ describe('evaluatePolicy — 403 branching', () => {
   });
 });
 
+describe('evaluatePolicy — 409 delivery-in-flight (spec R8-M1 Arm A)', () => {
+  it('structured 409 delivery-in-flight → retry at backoff (NOT escalate)', () => {
+    const d = evaluatePolicy({
+      httpCode: 409,
+      responseBody: JSON.stringify({ error: 'delivery-in-flight' }),
+      attempts: 1,
+      timeSinceFirstMs: 0,
+      now,
+    });
+    // The whole point of R8-M1 Arm A: a routine reservation race must NOT
+    // terminalize on the raw-HTTP Telegram redrive lane (evaluatePolicy has
+    // no funnel mapping table). It retries at the §3c backoff.
+    expect(d.action).toBe('retry');
+    expect(d.reason).toBe('delivery_in_flight_retry_30000ms');
+    expect(new Date(d.nextAttemptAt!).getTime()).toBe(FROZEN_NOW + BACKOFF_SCHEDULE_MS[0]);
+  });
+  it('409 delivery-in-flight is bounded (P19): escalates at MAX_ATTEMPTS, never loops forever', () => {
+    const d = evaluatePolicy({
+      httpCode: 409,
+      responseBody: JSON.stringify({ error: 'delivery-in-flight' }),
+      attempts: MAX_ATTEMPTS,
+      timeSinceFirstMs: 0,
+      now,
+    });
+    expect(d.action).toBe('escalate');
+    expect(d.reason).toBe('delivery_in_flight_attempts_exhausted');
+  });
+  it('409 delivery-in-flight escalates once the 24h TTL is exhausted', () => {
+    const d = evaluatePolicy({
+      httpCode: 409,
+      responseBody: JSON.stringify({ error: 'delivery-in-flight' }),
+      attempts: 2,
+      timeSinceFirstMs: TTL_MS + 1,
+      now,
+    });
+    expect(d.action).toBe('escalate');
+    expect(d.reason).toBe('delivery_in_flight_ttl_exhausted');
+  });
+  it('UNSTRUCTURED 409 → escalate (deployed default-deny preserved)', () => {
+    const d = evaluatePolicy({
+      httpCode: 409,
+      responseBody: 'Conflict',
+      attempts: 1,
+      timeSinceFirstMs: 0,
+      now,
+    });
+    expect(d.action).toBe('escalate');
+    expect(d.reason).toBe('http_409_unstructured');
+  });
+  it('409 with a DIFFERENT structured error → escalate (only delivery-in-flight retries)', () => {
+    const d = evaluatePolicy({
+      httpCode: 409,
+      responseBody: JSON.stringify({ error: 'some-other-conflict' }),
+      attempts: 1,
+      timeSinceFirstMs: 0,
+      now,
+    });
+    expect(d.action).toBe('escalate');
+    expect(d.reason).toBe('http_409_some-other-conflict');
+  });
+  it('409 with no body → escalate (default-deny)', () => {
+    const d = evaluatePolicy({ httpCode: 409, attempts: 1, timeSinceFirstMs: 0, now });
+    expect(d.action).toBe('escalate');
+    expect(d.reason).toBe('http_409_unstructured');
+  });
+});
+
 describe('evaluatePolicy — 5xx and conn-refused', () => {
   it('500 → retry with backoff[0]', () => {
     const d = evaluatePolicy({ httpCode: 500, attempts: 1, timeSinceFirstMs: 0, now });

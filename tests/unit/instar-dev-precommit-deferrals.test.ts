@@ -77,14 +77,21 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
       'export function verifyProposalDerivedRunbooks() { return { ok: true, reason: "no-proposal-derived-runbooks-or-all-verified" }; }\n',
     );
 
-    // Copy the hook script under test + its new pure tier classifier dependency
-    // (scripts/lib/classify-tier.mjs) into the sandbox.
-    fs.mkdirSync(path.join(sandbox, 'scripts', 'lib'), { recursive: true });
-    fs.copyFileSync(
-      path.join(path.dirname(HOOK_SCRIPT), 'lib', 'classify-tier.mjs'),
-      path.join(sandbox, 'scripts', 'lib', 'classify-tier.mjs'),
+    // Copy the WHOLE scripts/lib dir so every one of the hook's pure lib imports
+    // (classify-tier.mjs, convergence-recognition.mjs, operator-surface.mjs, …)
+    // resolves in the sandbox. Copying the whole dir — rather than enumerating
+    // each file — means a NEW lib import added to the hook can't silently break
+    // this test with ERR_MODULE_NOT_FOUND.
+    fs.cpSync(
+      path.join(path.dirname(HOOK_SCRIPT), 'lib'),
+      path.join(sandbox, 'scripts', 'lib'),
+      { recursive: true },
     );
     fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
+    // audit-convergence-enforcement §2: the hook now imports these two sibling
+    // scripts — copy them so the sandbox hook resolves its imports.
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'write-audit-convergence.mjs'), path.join(sandbox, 'scripts', 'write-audit-convergence.mjs'));
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'audit-secret-patterns.mjs'), path.join(sandbox, 'scripts', 'audit-secret-patterns.mjs'));
   });
 
   afterEach(() => {
@@ -95,15 +102,24 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     specFrontmatter: string;
     specBody: string;
     artifactBody?: string;
+    /** Skip the auto-injected parent-principle (to exercise Step 7.6's missing-parent block). */
+    omitParentPrinciple?: boolean;
   }): { specPath: string; artifactPath: string; tracePath: string } {
     const specRel = path.join('docs', 'specs', 'fixture.md');
     const eli16Rel = path.join('docs', 'specs', 'fixture.eli16.md');
     const artifactRel = path.join('upgrades', 'side-effects', 'fixture.md');
     const traceRel = path.join('.instar', 'instar-dev-traces', `${Date.now()}-fixture.json`);
 
+    // Every fixture spec needs a parent-principle (pre-commit Step 7.6 /
+    // Constitutional Traceability) so this test exercises the DEFERRALS path, not
+    // the traceability block. The sandbox has no STANDARDS-REGISTRY.md, so Step
+    // 7.6's article-resolution fails open — the line just needs to be present.
+    const fm = (opts.omitParentPrinciple || /^\s*parent-principle\s*:/m.test(opts.specFrontmatter))
+      ? opts.specFrontmatter
+      : `${opts.specFrontmatter}\nparent-principle: "Structure beats Willpower"`;
     fs.writeFileSync(
       path.join(sandbox, specRel),
-      `---\n${opts.specFrontmatter}\n---\n\n${opts.specBody}\n`,
+      `---\n${fm}\n---\n\n${opts.specBody}\n`,
     );
     // ELI16 sibling — hook requires it to be staged with the spec.
     fs.writeFileSync(
@@ -147,6 +163,17 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     expect(result.status).toBe(0);
   });
 
+  it('Step 7.6 (Constitutional Traceability): blocks a spec with no parent-principle', async () => {
+    stageFixture({
+      specFrontmatter: 'title: Unanchored spec\napproved: true\nreview-convergence: tactical\neli16-overview: x.md',
+      specBody: 'Everything is in scope and ships in this PR. Done.',
+      omitParentPrinciple: true,
+    });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/parent-principle|constitutional/i);
+  });
+
   // ─── BACK-COMPAT REGRESSION GUARD (Step A — tier classifier) ──────────────
   // The named guard required by the spec's Testing section: an EXISTING-SHAPE
   // trace with NO `tier` field + an approved converged spec must pass EXACTLY
@@ -172,11 +199,13 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     expect(result.stderr).toMatch(/converged \+ approved/);
   });
 
-  // The audit JSON line must record riskFloor (the NUMBER), not just belowFloor,
+  // The audit record must include riskFloor (the NUMBER), not just belowFloor,
   // so the decision record is self-contained for later review (convergence
   // Finding — audit field). The no-tier legacy fixture above touches only a
-  // benign src/touched.ts, so riskFloor is 1.
-  it('AUDIT: a commit appends one well-formed decisions.jsonl line including riskFloor (number)', async () => {
+  // benign src/touched.ts, so riskFloor is 1. Post-task-#80 the record is a
+  // per-entry file under .instar/instar-dev-decisions/ (one file per decision
+  // — parallel PRs can no longer conflict on a shared JSONL tail).
+  it('AUDIT: a commit writes one well-formed decision entry file including riskFloor (number)', async () => {
     stageFixture({
       specFrontmatter: 'title: Audit spec\napproved: true\nreview-convergence: tactical\neli16-overview: fixture.eli16.md',
       specBody: 'A normal change for audit-line shape verification.',
@@ -184,11 +213,11 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     const result = await runHook(process.env, sandbox);
     expect(result.status).toBe(0);
 
-    const auditPath = path.join(sandbox, '.instar', 'instar-dev-decisions.jsonl');
-    expect(fs.existsSync(auditPath)).toBe(true);
-    const lines = fs.readFileSync(auditPath, 'utf-8').trim().split('\n').filter(Boolean);
-    expect(lines.length).toBe(1);
-    const entry = JSON.parse(lines[0]);
+    const auditDir = path.join(sandbox, '.instar', 'instar-dev-decisions');
+    expect(fs.existsSync(auditDir)).toBe(true);
+    const entryFiles = fs.readdirSync(auditDir).filter(f => f.endsWith('.json'));
+    expect(entryFiles.length).toBe(1);
+    const entry = JSON.parse(fs.readFileSync(path.join(auditDir, entryFiles[0]), 'utf-8'));
     expect(entry).toHaveProperty('riskFloor');
     expect(typeof entry.riskFloor).toBe('number');
     expect(entry.riskFloor).toBe(1); // benign src/touched.ts → no risk signals

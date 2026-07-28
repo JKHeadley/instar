@@ -1,5 +1,7 @@
 # Mentor live-readiness — plain-English summary (for your approval)
 
+Constitutional anchor: **Know Your Principal — An Unverified Identity Is a Guess.**
+
 ## What this is, in one paragraph
 
 The mentor's "user-hat" side now uses Telegram (your channel for talking to Codey), the

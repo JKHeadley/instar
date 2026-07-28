@@ -233,6 +233,23 @@ describe('UpgradeNotifyManager', () => {
   });
 
   describe('buildPrompt()', () => {
+    // Silent-by-default (mature-update-announcements spec): the dashboard
+    // URL/PIN/version/reply-script are injected only when there is a user-facing
+    // announcement to compose. A guide carrying a `user_announcement` user entry
+    // exercises that announce branch.
+    const ANNOUNCE_GUIDE = [
+      '---',
+      'user_announcement:',
+      '  - audience: user',
+      '    maturity: stable',
+      '    headline: New thing',
+      '    body: you can use it now',
+      '---',
+      '# Guide',
+      '## What Changed',
+      'Big stuff',
+    ].join('\n');
+
     it('includes guide content', () => {
       const manager = new UpgradeNotifyManager(config, spawnSession, isSessionComplete, logActivity, TEST_TIMING);
       const prompt = manager.buildPrompt('# My Guide\n## What Changed\nBig stuff');
@@ -243,23 +260,23 @@ describe('UpgradeNotifyManager', () => {
       expect(prompt).toContain('--- END GUIDE ---');
     });
 
-    it('includes dashboard URL with tunnel when available', () => {
+    it('includes dashboard URL with tunnel when available (announce branch)', () => {
       const manager = new UpgradeNotifyManager(config, spawnSession, isSessionComplete, logActivity, TEST_TIMING);
-      const prompt = manager.buildPrompt('guide');
+      const prompt = manager.buildPrompt(ANNOUNCE_GUIDE);
 
       expect(prompt).toContain('https://test.trycloudflare.com/dashboard');
     });
 
-    it('includes dashboard PIN', () => {
+    it('includes dashboard PIN (announce branch)', () => {
       const manager = new UpgradeNotifyManager(config, spawnSession, isSessionComplete, logActivity, TEST_TIMING);
-      const prompt = manager.buildPrompt('guide');
+      const prompt = manager.buildPrompt(ANNOUNCE_GUIDE);
 
       expect(prompt).toContain('123456');
     });
 
-    it('includes current version', () => {
+    it('includes current version (announce branch)', () => {
       const manager = new UpgradeNotifyManager(config, spawnSession, isSessionComplete, logActivity, TEST_TIMING);
-      const prompt = manager.buildPrompt('guide');
+      const prompt = manager.buildPrompt(ANNOUNCE_GUIDE);
 
       expect(prompt).toContain('0.9.9');
     });
@@ -274,20 +291,31 @@ describe('UpgradeNotifyManager', () => {
       expect(prompt).toContain('instar upgrade-ack');
     });
 
-    it('includes Telegram reply instruction when script exists', () => {
+    it('includes Telegram reply instruction when script exists (announce branch)', () => {
       const manager = new UpgradeNotifyManager(config, spawnSession, isSessionComplete, logActivity, TEST_TIMING);
-      const prompt = manager.buildPrompt('guide');
+      const prompt = manager.buildPrompt(ANNOUNCE_GUIDE);
 
       expect(prompt).toContain('telegram-reply.sh');
       expect(prompt).toContain('997');
     });
 
-    it('uses localhost when no tunnel URL', () => {
+    it('uses localhost when no tunnel URL (announce branch)', () => {
       const noTunnelConfig = { ...config, tunnelUrl: '' };
       const manager = new UpgradeNotifyManager(noTunnelConfig, spawnSession, isSessionComplete, logActivity);
-      const prompt = manager.buildPrompt('guide');
+      const prompt = manager.buildPrompt(ANNOUNCE_GUIDE);
 
       expect(prompt).toContain('http://localhost:4040/dashboard');
+    });
+
+    it('skips the user message when the guide has no user-facing announcement (silent by default)', () => {
+      const manager = new UpgradeNotifyManager(config, spawnSession, isSessionComplete, logActivity, TEST_TIMING);
+      const prompt = manager.buildPrompt('# Guide\n## What Changed\ninfra only');
+
+      expect(prompt).toContain('## Step 1: Notify your user — SKIP');
+      expect(prompt).not.toContain('Lead with the biggest USER-VISIBLE feature');
+      // Steps 2 & 3 still run so the agent still learns the capability.
+      expect(prompt).toContain('## Step 2: Update your memory');
+      expect(prompt).toContain('## Step 3: Acknowledge');
     });
   });
 

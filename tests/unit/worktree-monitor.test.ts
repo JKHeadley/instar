@@ -146,17 +146,17 @@ describe('WorktreeMonitor', () => {
   // ── Worktree Listing ─────────────────────────────────────────
 
   describe('listWorktrees()', () => {
-    it('returns only main worktree when no extras exist', () => {
-      const wts = monitor.listWorktrees();
+    it('returns only main worktree when no extras exist', async () => {
+      const wts = await monitor.listWorktrees();
       expect(wts).toHaveLength(1);
       expect(wts[0].isMain).toBe(true);
       expect(wts[0].branch).toBe('main');
     });
 
-    it('detects a created worktree', () => {
+    it('detects a created worktree', async () => {
       createWorktree(repoDir, 'feature-auth');
 
-      const wts = monitor.listWorktrees();
+      const wts = await monitor.listWorktrees();
       expect(wts).toHaveLength(2);
 
       const extra = wts.find(w => !w.isMain);
@@ -165,12 +165,12 @@ describe('WorktreeMonitor', () => {
       expect(extra!.path).toContain('feature-auth');
     });
 
-    it('detects multiple worktrees', () => {
+    it('detects multiple worktrees', async () => {
       createWorktree(repoDir, 'feature-a');
       createWorktree(repoDir, 'feature-b');
       createWorktree(repoDir, 'feature-c');
 
-      const wts = monitor.listWorktrees();
+      const wts = await monitor.listWorktrees();
       expect(wts).toHaveLength(4); // main + 3
 
       const nonMain = wts.filter(w => !w.isMain);
@@ -186,24 +186,24 @@ describe('WorktreeMonitor', () => {
   // ── Unmerged Work Detection ──────────────────────────────────
 
   describe('checkUnmergedWork()', () => {
-    it('returns null when worktree has no commits ahead', () => {
+    it('returns null when worktree has no commits ahead', async () => {
       createWorktree(repoDir, 'empty');
 
-      const wts = monitor.listWorktrees();
+      const wts = await monitor.listWorktrees();
       const wt = wts.find(w => w.branch === 'worktree-empty')!;
-      const result = monitor.checkUnmergedWork(wt, 'main');
+      const result = await monitor.checkUnmergedWork(wt, 'main');
       expect(result).toBeNull();
     });
 
-    it('detects commits ahead of main', () => {
+    it('detects commits ahead of main', async () => {
       createWorktree(repoDir, 'with-work', {
         addCommits: 3,
         files: ['auth.ts', 'config.ts', 'test.ts'],
       });
 
-      const wts = monitor.listWorktrees();
+      const wts = await monitor.listWorktrees();
       const wt = wts.find(w => w.branch === 'worktree-with-work')!;
-      const result = monitor.checkUnmergedWork(wt, 'main');
+      const result = await monitor.checkUnmergedWork(wt, 'main');
 
       expect(result).not.toBeNull();
       expect(result!.commitsAhead).toBe(3);
@@ -212,7 +212,7 @@ describe('WorktreeMonitor', () => {
       expect(result!.filesChanged).toContain('test.ts');
     });
 
-    it('returns null for worktree with no branch', () => {
+    it('returns null for worktree with no branch', async () => {
       const fakeBranchless: Worktree = {
         path: '/tmp/fake',
         head: 'abc123',
@@ -220,7 +220,7 @@ describe('WorktreeMonitor', () => {
         isMain: false,
         isBare: false,
       };
-      const result = monitor.checkUnmergedWork(fakeBranchless, 'main');
+      const result = await monitor.checkUnmergedWork(fakeBranchless, 'main');
       expect(result).toBeNull();
     });
   });
@@ -228,18 +228,18 @@ describe('WorktreeMonitor', () => {
   // ── Orphan Branch Detection ──────────────────────────────────
 
   describe('findOrphanBranches()', () => {
-    it('returns empty when no orphan branches exist', () => {
-      const wts = monitor.listWorktrees();
-      const orphans = monitor.findOrphanBranches(wts);
+    it('returns empty when no orphan branches exist', async () => {
+      const wts = await monitor.listWorktrees();
+      const orphans = await monitor.findOrphanBranches(wts);
       expect(orphans).toEqual([]);
     });
 
-    it('detects orphan worktree-* branches', () => {
+    it('detects orphan worktree-* branches', async () => {
       createOrphanBranch(repoDir, 'abandoned-feature');
       createOrphanBranch(repoDir, 'old-work');
 
-      const wts = monitor.listWorktrees();
-      const orphans = monitor.findOrphanBranches(wts);
+      const wts = await monitor.listWorktrees();
+      const orphans = await monitor.findOrphanBranches(wts);
 
       expect(orphans).toHaveLength(2);
       expect(orphans.sort()).toEqual([
@@ -248,12 +248,12 @@ describe('WorktreeMonitor', () => {
       ]);
     });
 
-    it('excludes branches that have active worktrees', () => {
+    it('excludes branches that have active worktrees', async () => {
       createWorktree(repoDir, 'active');
       createOrphanBranch(repoDir, 'orphaned');
 
-      const wts = monitor.listWorktrees();
-      const orphans = monitor.findOrphanBranches(wts);
+      const wts = await monitor.listWorktrees();
+      const orphans = await monitor.findOrphanBranches(wts);
 
       expect(orphans).toHaveLength(1);
       expect(orphans[0]).toBe('worktree-orphaned');
@@ -263,8 +263,8 @@ describe('WorktreeMonitor', () => {
   // ── Full Scan ────────────────────────────────────────────────
 
   describe('scanWorktrees()', () => {
-    it('returns clean report when no worktrees exist', () => {
-      const report = monitor.scanWorktrees();
+    it('returns clean report when no worktrees exist', async () => {
+      const report = await monitor.scanWorktrees();
 
       expect(report.worktrees).toEqual([]);
       expect(report.withUnmergedWork).toEqual([]);
@@ -272,21 +272,21 @@ describe('WorktreeMonitor', () => {
       expect(report.timestamp).toBeTruthy();
     });
 
-    it('detects worktrees with unmerged work', () => {
+    it('detects worktrees with unmerged work', async () => {
       createWorktree(repoDir, 'feature', { addCommits: 2, files: ['a.ts', 'b.ts'] });
 
-      const report = monitor.scanWorktrees();
+      const report = await monitor.scanWorktrees();
 
       expect(report.worktrees).toHaveLength(1);
       expect(report.withUnmergedWork).toHaveLength(1);
       expect(report.withUnmergedWork[0].commitsAhead).toBe(2);
     });
 
-    it('detects orphan branches alongside active worktrees', () => {
+    it('detects orphan branches alongside active worktrees', async () => {
       createWorktree(repoDir, 'active');
       createOrphanBranch(repoDir, 'orphaned');
 
-      const report = monitor.scanWorktrees();
+      const report = await monitor.scanWorktrees();
 
       expect(report.worktrees).toHaveLength(1); // active only (non-main)
       expect(report.orphanBranches).toHaveLength(1);
@@ -384,8 +384,8 @@ describe('WorktreeMonitor', () => {
   // ── Default Branch Detection ─────────────────────────────────
 
   describe('getDefaultBranch()', () => {
-    it('detects main as default branch', () => {
-      const branch = monitor.getDefaultBranch();
+    it('detects main as default branch', async () => {
+      const branch = await monitor.getDefaultBranch();
       expect(branch).toBe('main');
     });
   });

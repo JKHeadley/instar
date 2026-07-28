@@ -12,7 +12,7 @@ import {
   type AgentWorktreeReaperDeps,
   type WorktreeInfo,
 } from '../../src/monitoring/AgentWorktreeReaper.js';
-import { isBranchMerged, resolveBaseRef, makeAgentWorktreeReaperDeps, type ReadGit } from '../../src/monitoring/agentWorktreeGit.js';
+import { isBranchMerged, resolveBaseRef, makeAgentWorktreeReaperDeps, fetchMergedPrHeadOids, REAPER_RESIDUE_DENYLIST, type ReadGit, type RunGh } from '../../src/monitoring/agentWorktreeGit.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,6 +32,8 @@ function deps(over: Partial<AgentWorktreeReaperDeps> = {}): AgentWorktreeReaperD
     isClean: () => true,
     isMerged: () => true,
     isInUse: () => false,
+    currentBranch: () => 'echo/feature', // matches wt() default → reclaim race guard passes
+    hasActiveBuildMarker: () => false,
     removeWorktree: vi.fn(),
     now: () => NOW,
     ...over,
@@ -97,6 +99,62 @@ describe('AgentWorktreeReaper.reap — dry-run + blast radius', () => {
     expect(res.reaped).toHaveLength(2); // capped
     expect(removeWorktree).toHaveBeenCalledTimes(2);
   });
+});
+
+describe('AgentWorktreeReaper.reap — exec-time re-validation closes the enumerate→reclaim TOCTOU', () => {
+  const liveReap = (d: Partial<AgentWorktreeReaperDeps>) =>
+    new AgentWorktreeReaper(deps({ ...d }), { enabled: true, dryRun: false });
+
+  it('(a) branch changed since eval (builder checked out a new unmerged branch) → KEEP, not reaped', async () => {
+    // eval sees info.branch='echo/feature' merged/clean/idle ⇒ reap-eligible; at reclaim the
+    // LIVE branch is a DIFFERENT one, so isMerged(info) is stale and must not authorize a delete.
+    const removeWorktree = vi.fn();
+    const res = await liveReap({ removeWorktree, currentBranch: () => 'echo/dashboard-f5f8' }).reap();
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(res.reaped).toEqual([]);
+    expect(res.evaluations[0].verdict).toBe('keep');
+    expect(res.evaluations[0].reason).toBe('raced-changed-since-eval');
+  });
+
+  it('(b) worktree went dirty between eval and reclaim → KEEP', async () => {
+    const removeWorktree = vi.fn();
+    // clean at eval (1st call), dirty at the reclaim re-check (2nd)
+    const isClean = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    const res = await liveReap({ removeWorktree, isClean }).reap();
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(res.evaluations[0].reason).toBe('raced-now-dirty');
+  });
+
+  it('(c) worktree became in-use between eval and reclaim → KEEP', async () => {
+    const removeWorktree = vi.fn();
+    // idle at eval (1st), in-use at reclaim re-check (2nd)
+    const isInUse = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const res = await liveReap({ removeWorktree, isInUse }).reap();
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(res.evaluations[0].reason).toBe('raced-now-in-use');
+  });
+
+  it('(d) an .instar-build-active marker at reclaim time → KEEP (builder claim honored)', async () => {
+    const removeWorktree = vi.fn();
+    const res = await liveReap({ removeWorktree, hasActiveBuildMarker: () => true }).reap();
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(res.evaluations[0].reason).toBe('raced-build-active-marker');
+  });
+
+  it('(e) genuinely still merged-clean-idle-unchanged at reclaim → REAPS (unchanged happy path)', async () => {
+    const removeWorktree = vi.fn();
+    const res = await liveReap({ removeWorktree }).reap(); // defaults: branch matches, no marker
+    expect(removeWorktree).toHaveBeenCalledTimes(1);
+    expect(res.reaped).toHaveLength(1);
+    expect(res.evaluations[0].verdict).toBe('reap-eligible');
+  });
+
+  it('fail-closed: currentBranch read error (returns null) ≠ info.branch → KEEP, never reap on an unreadable branch', async () => {
+    const removeWorktree = vi.fn();
+    const res = await liveReap({ removeWorktree, currentBranch: () => null }).reap();
+    expect(removeWorktree).not.toHaveBeenCalled();
+    expect(res.evaluations[0].reason).toBe('raced-changed-since-eval');
+  });
 
   it('snapshot reports the reclaimable count without side effects', () => {
     const removeWorktree = vi.fn();
@@ -128,6 +186,99 @@ describe('isBranchMerged (git cherry) — conservative, never false-positive', (
   it('NOT merged (KEEP) when cherry cannot be computed (git throws)', () => {
     const throwing: ReadGit = () => { throw new Error('no such ref'); };
     expect(isBranchMerged(throwing, '/repo', 'main', 'sha')).toBe(false);
+  });
+});
+
+describe('fetchMergedPrHeadOids — gh-backed multi-commit-squash detection', () => {
+  const ghOut = (rows: Array<{ headRefName: string; headRefOid: string }>): RunGh => () => JSON.stringify(rows);
+
+  it('parses gh merged-PR JSON into a headRefName→headRefOid map', () => {
+    const m = fetchMergedPrHeadOids('/repo', { runGh: ghOut([
+      { headRefName: 'echo/feat-a', headRefOid: 'oidA' },
+      { headRefName: 'echo/feat-b', headRefOid: 'oidB' },
+    ]) });
+    expect(m.get('echo/feat-a')).toBe('oidA');
+    expect(m.get('echo/feat-b')).toBe('oidB');
+    expect(m.size).toBe(2);
+  });
+
+  it('keeps the FIRST (newest) entry when a branch name is reused', () => {
+    const m = fetchMergedPrHeadOids('/repo', { runGh: ghOut([
+      { headRefName: 'echo/reused', headRefOid: 'newest' },
+      { headRefName: 'echo/reused', headRefOid: 'older' },
+    ]) });
+    expect(m.get('echo/reused')).toBe('newest');
+  });
+
+  it('fail-safe to EMPTY map when gh is unavailable (null) — conservative KEEP', () => {
+    const m = fetchMergedPrHeadOids('/repo', { runGh: () => null });
+    expect(m.size).toBe(0);
+  });
+
+  it('fail-safe to EMPTY map on malformed JSON', () => {
+    const m = fetchMergedPrHeadOids('/repo', { runGh: () => 'not json' });
+    expect(m.size).toBe(0);
+  });
+
+  it('ignores rows missing name or oid', () => {
+    const m = fetchMergedPrHeadOids('/repo', { runGh: () => JSON.stringify([
+      { headRefName: 'ok', headRefOid: 'oidOk' },
+      { headRefName: '', headRefOid: 'x' },
+      { headRefOid: 'noName' },
+      { headRefName: 'noOid' },
+    ]) });
+    expect(m.get('ok')).toBe('oidOk');
+    expect(m.size).toBe(1);
+  });
+});
+
+describe('makeAgentWorktreeReaperDeps.isMerged — multi-commit squash via PR map', () => {
+  // readGit: rev-parse resolves a base; cherry reports UNMERGED (a "+" commit),
+  // which is exactly the multi-commit-squash blind spot.
+  const cherryUnmergedGit: ReadGit = (args) => {
+    if (args.includes('rev-parse')) return ''; // base resolves
+    if (args.includes('cherry')) return '+ aaa\n+ bbb'; // looks unmerged
+    throw new Error('unexpected git call: ' + args.join(' '));
+  };
+  const wt = (branch: string, headSha: string) => ({ path: '/x', branch, headSha });
+
+  it('MERGED when cherry says unmerged but a merged PR head-OID matches exactly', () => {
+    const deps = makeAgentWorktreeReaperDeps({
+      instarRepo: '/repo', worktreesDir: '/repo/.worktrees', readGit: cherryUnmergedGit,
+      githubMergeCheck: true,
+      mergedPrMap: () => new Map([['echo/feat', 'SQUASHED_OID']]),
+    });
+    expect(deps.isMerged(wt('echo/feat', 'SQUASHED_OID'))).toBe(true);
+  });
+
+  it('KEEP when the branch advanced past the merged PR (head-OID mismatch = unmerged work)', () => {
+    const deps = makeAgentWorktreeReaperDeps({
+      instarRepo: '/repo', worktreesDir: '/repo/.worktrees', readGit: cherryUnmergedGit,
+      githubMergeCheck: true,
+      mergedPrMap: () => new Map([['echo/feat', 'MERGED_OID']]),
+    });
+    // worktree HEAD is a NEW commit added after the merge → must be KEPT
+    expect(deps.isMerged(wt('echo/feat', 'NEWER_OID_WITH_UNMERGED_WORK'))).toBe(false);
+  });
+
+  it('KEEP when no merged PR exists for the branch', () => {
+    const deps = makeAgentWorktreeReaperDeps({
+      instarRepo: '/repo', worktreesDir: '/repo/.worktrees', readGit: cherryUnmergedGit,
+      githubMergeCheck: true,
+      mergedPrMap: () => new Map(),
+    });
+    expect(deps.isMerged(wt('echo/feat', 'anySha'))).toBe(false);
+  });
+
+  it('KEEP (legacy cherry-only) when githubMergeCheck is disabled — never calls the PR map', () => {
+    const prMap = vi.fn(() => new Map([['echo/feat', 'SQUASHED_OID']]));
+    const deps = makeAgentWorktreeReaperDeps({
+      instarRepo: '/repo', worktreesDir: '/repo/.worktrees', readGit: cherryUnmergedGit,
+      githubMergeCheck: false,
+      mergedPrMap: prMap,
+    });
+    expect(deps.isMerged(wt('echo/feat', 'SQUASHED_OID'))).toBe(false);
+    expect(prMap).not.toHaveBeenCalled();
   });
 });
 
@@ -267,5 +418,173 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
     expect(verdicts.merged).toBe('reap-eligible');
     expect(verdicts.dirty).not.toBe('reap-eligible');
     expect(verdicts.unmerged).not.toBe('reap-eligible');
+  });
+});
+
+describe('makeAgentWorktreeReaperDeps.isClean — residue-aware + FAIL-CLOSED (worktree-reaper-untracked-blindspot)', () => {
+  // A fake readGit that returns a fixed porcelain for the `status --porcelain` call.
+  const withStatus = (porcelain: string): ReadGit => (args) => {
+    if (args.includes('status')) return porcelain;
+    return '';
+  };
+  const mk = (readGit: ReadGit) =>
+    makeAgentWorktreeReaperDeps({ instarRepo: '/repo', worktreesDir: '/repo/.worktrees', readGit }).isClean('/repo/.worktrees/a');
+
+  it('CLEAN when the only entry is the instar Spotlight marker (the dominant blocker)', () => {
+    expect(mk(withStatus('?? .metadata_never_index\n'))).toBe(true);
+  });
+  it('CLEAN when entries are only narrow residue (dist/, node_modules/, trace dir)', () => {
+    expect(mk(withStatus('?? dist/\n?? node_modules/\n?? .instar/instar-dev-traces/run.json\n'))).toBe(true);
+  });
+  it('DIRTY (KEEP) on a tracked modification', () => {
+    expect(mk(withStatus(' M src/core/x.ts\n'))).toBe(false);
+  });
+  it('DIRTY (KEEP) on a hand-authored untracked source file (possibly-precious)', () => {
+    expect(mk(withStatus('?? src/newThing.ts\n'))).toBe(false);
+  });
+  it('DIRTY (KEEP) on broad entries the reaper denylist DELIBERATELY excludes (build/, *.log)', () => {
+    // These match DEFAULT_RESIDUE_DENYLIST but NOT REAPER_RESIDUE_DENYLIST — a
+    // user-authored build/deploy.md or analysis.log must never be silently reaped.
+    expect(mk(withStatus('?? build/deploy.md\n'))).toBe(false);
+    expect(mk(withStatus('?? analysis.log\n'))).toBe(false);
+    expect(mk(withStatus('?? out/report.txt\n'))).toBe(false);
+    expect(mk(withStatus('?? coverage/index.html\n'))).toBe(false);
+  });
+  it('FAIL-CLOSED: a git error → DIRTY (KEEP), never "looks clean → reapable" (the convergence BLOCKER)', () => {
+    const throwing: ReadGit = () => { throw new Error('git status failed (lock contention)'); };
+    expect(mk(throwing)).toBe(false);
+  });
+  it('CLEAN on a truly empty worktree (no changes at all)', () => {
+    expect(mk(withStatus(''))).toBe(true);
+  });
+  it('REAPER_RESIDUE_DENYLIST is narrow — excludes the broad user-authorable entries', () => {
+    expect(REAPER_RESIDUE_DENYLIST).toContain('.metadata_never_index');
+    expect(REAPER_RESIDUE_DENYLIST).not.toContain('out/');
+    expect(REAPER_RESIDUE_DENYLIST).not.toContain('build/');
+    expect(REAPER_RESIDUE_DENYLIST).not.toContain('*.log');
+  });
+});
+
+describe('AgentWorktreeReaper.start — one-time initial pass (reaper-never-fires fix)', () => {
+  // Root cause under test: start() used to schedule ONLY the 24h interval, and
+  // real servers restart more often than daily — so the interval reset forever
+  // and an enabled+armed reaper never ran a single pass (2026-07-02 incident:
+  // 86 worktrees / 25GB accumulated with the feature ON). The initial pass makes
+  // "enabled" mean "actually runs" on realistic server lifetimes.
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const DELAY = 15 * 60 * 1000;
+
+  it('fires ONE initial pass after initialPassDelayMs, before the 24h interval', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true, initialPassDelayMs: DELAY });
+    const passes: unknown[] = [];
+    r.on('pass', (p) => passes.push(p));
+    r.start();
+    await vi.advanceTimersByTimeAsync(DELAY - 1);
+    expect(passes).toHaveLength(0); // not before the delay
+    await vi.advanceTimersByTimeAsync(1);
+    expect(passes).toHaveLength(1); // exactly one initial pass
+    r.stop();
+  });
+
+  it('initial pass respects dry-run (classifies, never deletes)', async () => {
+    const removeWorktree = vi.fn();
+    const r = new AgentWorktreeReaper(deps({ removeWorktree }), { enabled: true, dryRun: true, initialPassDelayMs: DELAY });
+    r.start();
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(removeWorktree).not.toHaveBeenCalled();
+    r.stop();
+  });
+
+  it('no timers at all when the reaper is disabled', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: false, initialPassDelayMs: DELAY });
+    const passes: unknown[] = [];
+    r.on('pass', (p) => passes.push(p));
+    r.start();
+    await vi.advanceTimersByTimeAsync(25 * 3600 * 1000);
+    expect(passes).toHaveLength(0);
+  });
+
+  it('initialPassDelayMs <= 0 disables the initial pass (interval-only rollback lever)', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true, reapIntervalMs: 1000, initialPassDelayMs: 0 });
+    const passes: unknown[] = [];
+    r.on('pass', (p) => passes.push(p));
+    r.start();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(passes).toHaveLength(0); // nothing before the interval
+    await vi.advanceTimersByTimeAsync(1);
+    expect(passes).toHaveLength(1); // interval behavior unchanged
+    r.stop();
+  });
+
+  it('stop() cancels the pending initial pass', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true, initialPassDelayMs: DELAY });
+    const passes: unknown[] = [];
+    r.on('pass', (p) => passes.push(p));
+    r.start();
+    r.stop();
+    await vi.advanceTimersByTimeAsync(DELAY * 2);
+    expect(passes).toHaveLength(0);
+  });
+
+  it('the 24h interval cadence is unchanged and keeps firing after the initial pass', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true, reapIntervalMs: 24 * 3600 * 1000, initialPassDelayMs: DELAY });
+    const passes: unknown[] = [];
+    r.on('pass', (p) => passes.push(p));
+    r.start();
+    await vi.advanceTimersByTimeAsync(DELAY);            // initial pass
+    await vi.advanceTimersByTimeAsync(24 * 3600 * 1000); // first interval pass
+    await vi.advanceTimersByTimeAsync(24 * 3600 * 1000); // second interval pass
+    expect(passes).toHaveLength(3);
+    r.stop();
+  });
+
+  it('snapshot reports initialPassPending honestly (pending → fired/stopped)', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true, initialPassDelayMs: DELAY });
+    expect(r.snapshot().initialPassPending).toBe(false); // not started yet
+    r.start();
+    expect(r.snapshot().initialPassPending).toBe(true);
+    await vi.advanceTimersByTimeAsync(DELAY);
+    expect(r.snapshot().initialPassPending).toBe(false); // fired
+    r.stop();
+  });
+});
+
+describe('AgentWorktreeReaper — per-path reclaim-failure breaker (No Unbounded Loops)', () => {
+  it('stops attempting a path after the failure cap, surfaces keep(reclaim-failed), emits breaker once', async () => {
+    const removeWorktree = vi.fn(() => { throw new Error('cannot remove (permission)'); });
+    const r = new AgentWorktreeReaper(
+      deps({ removeWorktree }),
+      { enabled: true, dryRun: false, maxReclaimFailuresPerPath: 2 },
+    );
+    const trips: Array<{ path: string; failures: number }> = [];
+    r.on('reclaim-breaker', (e) => trips.push(e));
+    r.on('error', () => { /* swallow expected removal errors */ });
+
+    const p1 = await r.reap(); // fail #1 (count 1)
+    const p2 = await r.reap(); // fail #2 (count 2 == cap → trip)
+    const p3 = await r.reap(); // breaker open → not attempted
+
+    expect(removeWorktree).toHaveBeenCalledTimes(2);              // attempts stopped at the cap
+    expect(p1.evaluations[0].verdict).toBe('reap-eligible');
+    expect(p3.evaluations[0].reason).toBe('reclaim-failed');      // honest observability
+    expect(p3.evaluations[0].verdict).toBe('keep');
+    expect(trips).toHaveLength(1);                                // emitted exactly once
+    expect(trips[0].path).toBe('/wt/a');
+  });
+
+  it('a successful removal clears the breaker count (no false trip from transient failures)', async () => {
+    let calls = 0;
+    const removeWorktree = vi.fn(() => { calls++; if (calls === 1) throw new Error('transient'); });
+    const r = new AgentWorktreeReaper(
+      deps({ removeWorktree }),
+      { enabled: true, dryRun: false, maxReclaimFailuresPerPath: 2 },
+    );
+    r.on('error', () => {});
+    await r.reap();                 // fail #1 (count 1)
+    const ok = await r.reap();      // succeeds → count cleared
+    expect(ok.reaped).toEqual(['/wt/a']);
+    expect(removeWorktree).toHaveBeenCalledTimes(2);
   });
 });

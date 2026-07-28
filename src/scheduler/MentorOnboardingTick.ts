@@ -32,6 +32,24 @@ import type { CaptureRunInput, CaptureRunResult, ForensicFinding } from '../moni
  *  everything except deliver a message to the mentee; `live` is the full loop. */
 export type MentorMode = 'dry-run' | 'live';
 
+/**
+ * One mentor↔mentee differential cycle captured from a tick — the raw materials
+ * for an ApprenticeshipCycleStore `mentor-mentee-differential` record. The tick
+ * produces these; the host's injected `recordCycle` decides whether/where to
+ * persist them (it no-ops unless an apprenticeship instance is configured). This
+ * is what makes the AUTOMATED mentor loop fire the keystone differential axis,
+ * the structural fix for the program's #1 drift failure.
+ */
+export interface MentorCycleCapture {
+  framework: string;
+  /** Short descriptor of the work the mentee was driven through this tick. */
+  task: string;
+  /** The mentee's Stage-A transcript (its output). */
+  menteeOutput: string;
+  /** The overseer/forensics differential — one string per finding. */
+  differential: string[];
+}
+
 export interface MentorTickDeps {
   framework: string;
   mode: MentorMode;
@@ -56,13 +74,28 @@ export interface MentorTickDeps {
   /** Write findings + log the run to the ledger funnel (§19.2). */
   capture: (input: CaptureRunInput) => CaptureRunResult;
   /**
+   * Record one mentor↔mentee differential CYCLE (in addition to the per-finding
+   * ledger capture above). Injected + optional: the host wires it to the
+   * ApprenticeshipCycleStore only when a `mentor.apprenticeshipInstanceId` is
+   * configured, so by default it no-ops. This is the keystone-axis hook — the
+   * automated loop records `mentor-mentee-differential` cycles, not just findings.
+   */
+  recordCycle?: (input: MentorCycleCapture) => void;
+  /**
    * Deliver the Stage-A message to the mentee — called ONLY in `live` mode (§6).
    * The host's implementation MUST be persist-only (queue to a durable outbox the
    * mentee's already-running session picks up), never spawn-on-receive — that's
    * the structural fix for the cross-agent spawn loop. Omitted/undefined ⇒ no
    * delivery (the dormant + dry-run default).
    */
-  deliverToMentee?: (framework: string, message: string) => void;
+  deliverToMentee?: (
+    framework: string,
+    message: string,
+  ) =>
+    | void
+    | boolean
+    | MentorDeliveryOutcome
+    | Promise<void | boolean | MentorDeliveryOutcome>;
   /** Tick id for provenance/episode keying. */
   tickId?: string;
   now?: () => number;
@@ -78,12 +111,27 @@ export type MentorTickReason =
   | 'stage-a-failed'
   | 'ran';
 
+export type MentorDeliveryReason =
+  | 'prior-prompt-in-flight'
+  | 'identical-content-retry-exhausted'
+  | 'delivery-retry-ledger-full'
+  | 'delivery-state-unavailable'
+  | 'transport-unavailable'
+  | 'transport-failed';
+
+export interface MentorDeliveryOutcome {
+  delivered: boolean;
+  reason?: MentorDeliveryReason;
+}
+
 export interface MentorTickResult {
   ran: boolean;
   reason: MentorTickReason;
   mode?: MentorMode;
   /** True when the Stage-A message was delivered to the mentee (live mode only). */
   delivered?: boolean;
+  /** Distinct delivery-layer refusal/failure; never collapsed into "unanswered". */
+  deliveryReason?: MentorDeliveryReason;
   leakDetected?: boolean;
   observationsWritten?: number;
   findingsCount?: number;
@@ -178,12 +226,34 @@ export async function runMentorTick(deps: MentorTickDeps): Promise<MentorTickRes
   //    even if findings is empty (inert-writer guard).
   const captured = deps.capture({ framework: deps.framework, tickId, findings });
 
+  // 7b. Record the differential CYCLE (the keystone `mentor-mentee-differential`
+  //     axis) alongside the per-finding ledger capture. The mentee's transcript is
+  //     its output; the forensics findings ARE the differential. No-ops unless the
+  //     host wired `recordCycle` (i.e. a `mentor.apprenticeshipInstanceId` is set).
+  //     Guarded on a non-empty transcript — an empty/failed Stage A is not a cycle.
+  if (deps.recordCycle && transcript.trim()) {
+    deps.recordCycle({
+      framework: deps.framework,
+      task: `mentor-onboarding tick (${deps.framework})`,
+      menteeOutput: transcript,
+      differential: findings.map((f) => f.title),
+    });
+  }
+
   // 8. Deliver — ONLY in live mode, and ONLY via the host's persist-only path
   //    (§6). In dry-run we observe + capture but never contact the mentee.
   let delivered = false;
+  let deliveryReason: MentorDeliveryReason | undefined;
   if (deps.mode === 'live' && deps.deliverToMentee && transcript.trim()) {
-    deps.deliverToMentee(deps.framework, transcript);
-    delivered = true;
+    const outcome = await deps.deliverToMentee(deps.framework, transcript);
+    if (typeof outcome === 'object' && outcome !== null && 'delivered' in outcome) {
+      delivered = outcome.delivered;
+      deliveryReason = outcome.reason;
+    } else {
+      // Backward-compatible injected callbacks used by existing tests/plugins:
+      // explicit false means refused; void historically meant "accepted".
+      delivered = outcome !== false;
+    }
   }
 
   return {
@@ -191,14 +261,13 @@ export async function runMentorTick(deps: MentorTickDeps): Promise<MentorTickRes
     reason: 'ran',
     mode: deps.mode,
     delivered,
+    ...(deliveryReason ? { deliveryReason } : {}),
     leakDetected: leak.leaked,
     observationsWritten: captured.observationsWritten,
     findingsCount: findings.length,
-    // The tick SURFACES the Stage-A message it produced; it does NOT deliver it.
-    // No mentee-delivery path is wired yet — `live` mode is not reachable until
-    // the persist-only delivery (§6) is built + tested. Until then both dry-run
-    // and live only observe + capture. Delivery is a live-promotion blocker.
-    // <!-- tracked: topic-13435 -->
+    // The tick surfaces the exact Stage-A message for status/audit alongside
+    // the structured delivery outcome. Live delivery still occurs only through
+    // the injected host boundary above; dry-run never calls that boundary.
     stageAMessage: transcript,
   };
 }

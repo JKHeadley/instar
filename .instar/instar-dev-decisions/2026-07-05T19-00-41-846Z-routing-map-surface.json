@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-05T19:00:41.846Z",
+  "slug": "routing-map-surface",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 37,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

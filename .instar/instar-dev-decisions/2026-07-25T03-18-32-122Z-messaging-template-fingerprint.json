@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-25T03:18:32.122Z",
+  "slug": "messaging-template-fingerprint",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 26,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

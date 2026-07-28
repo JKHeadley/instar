@@ -139,6 +139,30 @@ describe('runMentorTick — gate order + structural guarantees', () => {
     expect(deliver).toHaveBeenCalledWith('codex-cli', 'next task: ship the X primitive');
   });
 
+  it('awaits the delivery decision and surfaces a retry-breaker refusal distinctly', async () => {
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const deliver = vi.fn(async () => {
+      await wait;
+      return { delivered: false, reason: 'identical-content-retry-exhausted' as const };
+    });
+    const { deps } = makeDeps({
+      canaryCheck: () => true,
+      mode: 'live',
+      deliverToMentee: deliver,
+    });
+
+    const pending = runMentorTick(deps);
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    release();
+    const r = await pending;
+    expect(r.delivered).toBe(false);
+    expect(r.deliveryReason).toBe('identical-content-retry-exhausted');
+  });
+
   it('does not deliver when there is no deliverToMentee wired (safe default)', async () => {
     const { deps } = makeDeps({ canaryCheck: () => true, mode: 'live', deliverToMentee: undefined });
     const r = await runMentorTick(deps);
@@ -155,5 +179,45 @@ describe('runMentorTick — gate order + structural guarantees', () => {
     expect(r.reason).toBe('stage-a-failed');
     expect(deps.runStageBForensics).not.toHaveBeenCalled();
     expect(captures[0].findings[0].signature).toBe('stage-a-spawn-failed');
+  });
+});
+
+describe('runMentorTick — keystone cycle capture (mentor-mentee-differential)', () => {
+  const finding = (title: string) => ({ title, severity: 'medium', bucket: 'generic-agent-mistake', dedupKey: title, evidence: 'e' } as unknown as import('../../src/monitoring/FrameworkIssueLedger.js').ForensicFinding);
+
+  it('records a differential cycle (transcript = menteeOutput, findings = differential) on a real tick', async () => {
+    const cycles: import('../../src/scheduler/MentorOnboardingTick.js').MentorCycleCapture[] = [];
+    const { deps } = makeDeps({
+      canaryCheck: () => true,
+      spawnStageA: vi.fn(async () => 'the mentee output here'),
+      runStageBForensics: vi.fn(async () => [finding('mentee missed the 0-is-falsy case'), finding('untyped param')]),
+      recordCycle: (c) => cycles.push(c),
+    });
+    const r = await runMentorTick(deps);
+    expect(r.ran).toBe(true);
+    expect(cycles).toHaveLength(1);
+    expect(cycles[0].framework).toBe('codex-cli');
+    expect(cycles[0].menteeOutput).toBe('the mentee output here');
+    expect(cycles[0].differential).toEqual(['mentee missed the 0-is-falsy case', 'untyped param']);
+    expect(cycles[0].task).toContain('codex-cli');
+  });
+
+  it('does NOT record a cycle when the transcript is empty (an empty Stage A is not a cycle)', async () => {
+    const cycles: unknown[] = [];
+    const { deps } = makeDeps({
+      canaryCheck: () => true,
+      spawnStageA: vi.fn(async () => '   '),
+      recordCycle: (c) => cycles.push(c),
+    });
+    const r = await runMentorTick(deps);
+    expect(r.ran).toBe(true);
+    expect(cycles).toHaveLength(0);
+  });
+
+  it('is a safe no-op when recordCycle is not wired (back-compat default)', async () => {
+    const { deps } = makeDeps({ canaryCheck: () => true, spawnStageA: vi.fn(async () => 'output') });
+    // recordCycle undefined → tick still runs cleanly
+    const r = await runMentorTick(deps);
+    expect(r.ran).toBe(true);
   });
 });

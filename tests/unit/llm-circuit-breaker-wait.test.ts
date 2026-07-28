@@ -84,6 +84,22 @@ describe('classifyRateLimit', () => {
     expect(c.retryAfterMs).toBe(180_000);
   });
 
+  // Gemini phrasing: "your quota will reset AFTER Ns" (not "in Ns"). Before the
+  // (?:in|after) fix this failed to parse → the breaker fell back to the blunt
+  // 15-min DEFAULT_OPEN_MS, turning an 8s provider reset into a 900s global
+  // pause (observed live on the gemini-cli agent, 2026-06-03).
+  it('parses Gemini "quota will reset after 8s" → 8000ms', () => {
+    const c = classifyRateLimit('You have exhausted your capacity on this model. Your quota will reset after 8s.');
+    expect(c.isLimit).toBe(true);
+    expect(c.retryAfterMs).toBe(8_000);
+  });
+
+  it('parses "reset after 5 minutes" → 300000ms', () => {
+    const c = classifyRateLimit('quota exhausted — reset after 5 minutes');
+    expect(c.isLimit).toBe(true);
+    expect(c.retryAfterMs).toBe(300_000);
+  });
+
   it('treats a plain 429 as a limit with no retryAfterMs', () => {
     const c = classifyRateLimit('HTTP 429 returned');
     expect(c.isLimit).toBe(true);
@@ -173,6 +189,24 @@ describe('LlmCircuitBreaker.onRateLimited with retryAfterMs', () => {
     expect(breaker.acquire().allow).toBe(false); // still inside 15min
     clock.advance(60 * 1000);
     expect(breaker.acquire().allow).toBe(true);
+  });
+
+  // End-to-end regression for the live Gemini over-pause: the real provider
+  // message must classify AND shorten the window. Before the (?:in|after) parse
+  // fix, retryAfterMs was undefined → 900s pause; now it floors to 30s and the
+  // agent recovers in ~30s instead of 15 minutes.
+  it('Gemini "quota will reset after 8s" recovers in ~30s, NOT the blunt 15min', () => {
+    const clock = makeClock(0);
+    const breaker = new LlmCircuitBreaker({ openMs: 15 * 60 * 1000, now: clock.now });
+    const msg = 'Gemini CLI exited 1 — Your quota will reset after 8s.';
+    const c = classifyRateLimit(msg);
+    expect(c.isLimit).toBe(true);
+    expect(c.retryAfterMs).toBe(8_000); // parsed (the fix); was undefined before
+    breaker.onRateLimited(msg, c.retryAfterMs); // 8s floored to the 30s minimum
+    clock.advance(29_000);
+    expect(breaker.acquire().allow).toBe(false); // still inside the floored 30s
+    clock.advance(2_000);
+    expect(breaker.acquire().allow).toBe(true); // recovered ~30s, not 900s
   });
 });
 

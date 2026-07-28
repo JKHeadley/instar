@@ -93,3 +93,51 @@ describe('disabled', () => {
     expect(res.status).toBe(503);
   });
 });
+
+describe('POST /spec/conformance-check — Constitutional Traceability fit verdict', () => {
+  // The route calls reviewer.review() (expects a findings array) AND, when a
+  // parent-principle is present, reviewer.judgeFit() (expects a {verdict} object) —
+  // both via the same IntelligenceProvider. Key the stub on the fit prompt's marker.
+  const fitStub: IntelligenceProvider = {
+    async evaluate(prompt: string) {
+      if (prompt.includes('Constitutional Traceability reviewer')) {
+        return '{"verdict":"fit","reason":"plainly an instance of the named standard"}';
+      }
+      return '[]';
+    },
+  };
+
+  it('attaches report.fit when the spec frontmatter names a resolvable parent-principle', async () => {
+    const md = '---\nparent-principle: "No Manual Work"\n---\n# Spec\nA design.';
+    const res = await request(app({ intelligence: fitStub })).post('/spec/conformance-check').send({ markdown: md });
+    expect(res.status).toBe(200);
+    expect(res.body.report.fit).toBeTruthy();
+    expect(res.body.report.fit.verdict).toBe('fit');
+    expect(res.body.report.fit.parentResolved).toBe(true);
+  });
+
+  it('accepts parentPrinciple from the request body', async () => {
+    const res = await request(app({ intelligence: fitStub }))
+      .post('/spec/conformance-check')
+      .send({ markdown: '# Spec\nno frontmatter here', parentPrinciple: 'Signal vs. Authority' });
+    expect(res.status).toBe(200);
+    expect(res.body.report.fit.parentResolved).toBe(true);
+    expect(res.body.report.fit.verdict).toBe('fit');
+  });
+
+  it('omits report.fit when no parent-principle is determinable', async () => {
+    const res = await request(app({ intelligence: fitStub }))
+      .post('/spec/conformance-check')
+      .send({ markdown: '# Spec\nno frontmatter, no parent.' });
+    expect(res.status).toBe(200);
+    expect(res.body.report.fit).toBeUndefined();
+  });
+
+  it('verdict "none" when the named parent does not resolve to a real standard', async () => {
+    const md = '---\nparent-principle: "Totally Made Up Standard"\n---\n# Spec\nx';
+    const res = await request(app({ intelligence: fitStub })).post('/spec/conformance-check').send({ markdown: md });
+    expect(res.status).toBe(200);
+    expect(res.body.report.fit.verdict).toBe('none');
+    expect(res.body.report.fit.parentResolved).toBe(false);
+  });
+});

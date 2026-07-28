@@ -24,6 +24,7 @@
  * idea was explicitly rejected by the user — see spec frontmatter.)
  */
 
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -62,12 +63,31 @@ export interface PreferenceEntry {
    * SIGNAL-ONLY: a match never blocks/alters the outbound message.
    */
   violationPattern?: string;
+  /**
+   * WS2.1 cross-machine replication (additive). The store `replicationSeq` at
+   * this entry's most recent upsert — the delta-window key the sync serve side
+   * pages on. Absent on a legacy entry ⇒ backfilled to 1 (serves on a from-0
+   * pull). Local-only bookkeeping; never part of the injected session block.
+   */
+  lastMutatedSeq?: number;
 }
 
 /** The full on-disk store shape. */
 export interface PreferencesStore {
   schemaVersion: number;
   preferences: PreferenceEntry[];
+  /**
+   * WS2.1 cross-machine replication (additive). Monotonic per-machine mutation
+   * counter — each `recordPreference` upsert bumps it and stamps the entry's
+   * `lastMutatedSeq`. Absent on a legacy store ⇒ seeded to 1 on next read.
+   */
+  replicationSeq?: number;
+  /**
+   * WS2.1 — opaque per-store incarnation. Re-minted when a restore rewinds the
+   * store below its high-water seq, so replica peers re-pull wholesale instead
+   * of stranding behind a backward seq. Absent on a legacy store ⇒ minted.
+   */
+  storeIncarnation?: string;
 }
 
 /** Input payload for `recordPreference()`. */
@@ -161,11 +181,35 @@ export function formatPreferencesForSessionStart(
 
 // ── Main Class ───────────────────────────────────────────────────────
 
+/**
+ * WS2.1 preferences-record replication emit seam (injected, dark by default). server.ts
+ * constructs the journal/clock AFTER the manager, so this is late-bound. PUT-ONLY by
+ * construction — recordPreference is the only writer and it upserts (keyed on dedupeKey);
+ * there is no delete path, so there is no emitDelete. Absent ⇒ strict single-machine no-op.
+ */
+export interface PreferenceReplicationEmitter {
+  /** Emit a `put` for a freshly upserted preference entry (called from recordPreference). */
+  emitPut(entry: PreferenceEntry): void;
+}
+
 export class PreferencesManager {
   private preferencesPath: string;
 
+  /** WS2.1 preferences-record replication emitter (injected, dark by default). Absent ⇒ no-op. */
+  private replication: PreferenceReplicationEmitter | null = null;
+
   constructor(private stateDir: string) {
     this.preferencesPath = path.join(stateDir, 'preferences.json');
+  }
+
+  /**
+   * Late-bind the WS2.1 preferences-record replication emitter (server.ts constructs the
+   * journal/clock AFTER the manager). Idempotent; passing undefined/null detaches (back to
+   * single-machine no-op). The emit funnel checks `this.replication` per write, so attaching
+   * mid-life takes effect on the next recordPreference.
+   */
+  setReplicationEmitter(emitter: PreferenceReplicationEmitter | null | undefined): void {
+    this.replication = emitter ?? null;
   }
 
   /** Absolute path to the backing file (for tests / observability). */
@@ -220,11 +264,35 @@ export class PreferencesManager {
       if (typeof p.violationPattern === 'string' && p.violationPattern.trim().length > 0) {
         entry.violationPattern = p.violationPattern;
       }
+      // WS2.1: preserve the replication seq; a legacy entry without one is
+      // backfilled to 1 so it serves on a from-0 pull.
+      entry.lastMutatedSeq =
+        typeof p.lastMutatedSeq === 'number' && Number.isFinite(p.lastMutatedSeq) ? p.lastMutatedSeq : 1;
       return entry;
     });
+    // WS2.1 replication bookkeeping (additive). Seed a legacy store with seq=1 +
+    // a fresh incarnation: peers hold nothing for a new incarnation, so the
+    // first sync is a FULL pull (never a 0-means-unchanged strand). Then, if the
+    // meta sidecar's high-water seq EXCEEDS our current seq, the store was
+    // rewound (restore) — re-mint the incarnation so peers re-pull wholesale.
+    const replicationSeq =
+      typeof store.replicationSeq === 'number' && Number.isFinite(store.replicationSeq) ? store.replicationSeq : 1;
+    let storeIncarnation =
+      typeof store.storeIncarnation === 'string' && store.storeIncarnation ? store.storeIncarnation : randomUUID();
+    try {
+      const metaRaw = fs.readFileSync(`${this.preferencesPath}.meta.json`, 'utf-8');
+      const meta = JSON.parse(metaRaw) as { highWaterSeq?: number };
+      if (typeof meta?.highWaterSeq === 'number' && replicationSeq < meta.highWaterSeq) {
+        storeIncarnation = randomUUID();
+      }
+    } catch {
+      // @silent-fallback-ok — no meta sidecar = no prior advert to rewind below (first boot); nothing to fence
+    }
     return {
       schemaVersion: typeof store.schemaVersion === 'number' ? store.schemaVersion : PREFERENCES_SCHEMA_VERSION,
       preferences,
+      replicationSeq,
+      storeIncarnation,
     };
   }
 
@@ -283,8 +351,35 @@ export class PreferencesManager {
       store.preferences.push(result);
     }
 
+    // WS2.1: every upsert is a state-meaningful mutation — bump the store's
+    // monotonic replication seq and stamp it on the upserted entry so the sync
+    // delta window catches it. The first write on a FRESH file takes read()'s
+    // file-absent early return (no seeded fields), so seed the incarnation here
+    // before persisting — otherwise each later read would mint a new one and
+    // the advert incarnation would never stabilize.
+    if (typeof store.storeIncarnation !== 'string' || !store.storeIncarnation) {
+      store.storeIncarnation = randomUUID();
+    }
+    const nextSeq = (typeof store.replicationSeq === 'number' ? store.replicationSeq : 1) + 1;
+    store.replicationSeq = nextSeq;
+    result.lastMutatedSeq = nextSeq;
+
     store.schemaVersion = PREFERENCES_SCHEMA_VERSION;
     this.writeAtomic(store);
+
+    // WS2.1 — best-effort preferences-record replication emission (dark by default; the
+    // emitter is only injected when multiMachine.stateSync.preferences.enabled is true).
+    // PUT-ONLY: recordPreference is the sole writer and upserts on dedupeKey, so a put on
+    // the upserted entry carries the latest state (a peer SEES the refreshed learning +
+    // bumped confidence). The emitter swallows its own errors, but we wrap defensively so a
+    // replication fault can NEVER break or roll back a local preference write — the durable
+    // on-disk state is already persisted above.
+    try {
+      this.replication?.emitPut(result);
+    } catch {
+      // @silent-fallback-ok: replication is best-effort and must never break the local write.
+      // The emitter counts its own failures internally.
+    }
     return result;
   }
 
@@ -322,5 +417,45 @@ export class PreferencesManager {
       fs.closeSync(fd);
     }
     fs.renameSync(tmp, this.preferencesPath);
+
+    // WS2.1 rewind fence: the meta sidecar tracks the high-water replicationSeq.
+    // Written AFTER the store rename (a crash between leaves the sidecar BEHIND
+    // the store — harmless; ahead would false-trip the rewind fence). The store
+    // fd is fsync'd before its rename above, so in program order the sidecar can
+    // never be persisted ahead of the store — the fence cannot false-trip on a
+    // reorder (review WS2.1 finding #6: ordering verified sufficient, no barrier
+    // needed). Best-effort: a sidecar write failure only weakens rewind detection.
+    try {
+      const seq = store.replicationSeq;
+      if (typeof seq === 'number') {
+        const metaTmp = `${this.preferencesPath}.meta.json.${process.pid}.tmp`;
+        fs.writeFileSync(metaTmp, JSON.stringify({ highWaterSeq: seq }));
+        fs.renameSync(metaTmp, `${this.preferencesPath}.meta.json`);
+      }
+    } catch {
+      // @silent-fallback-ok — sidecar write failure only weakens rewind detection; the store itself persisted
+    }
+  }
+
+  /**
+   * WS2.1 — the replication advert ({ incarnation, replicationSeq }) the
+   * `preferences-sync` serve side answers with. Sourced from the on-disk store
+   * (read() seeds both fields), so a fresh/legacy store yields a valid advert.
+   */
+  getReplicationAdvert(): { incarnation: string; replicationSeq: number } {
+    const store = this.read();
+    return {
+      incarnation: store.storeIncarnation ?? randomUUID(),
+      replicationSeq: typeof store.replicationSeq === 'number' ? store.replicationSeq : 1,
+    };
+  }
+
+  /**
+   * WS2.1 — the OWN preferences with their replication seqs, for the sync serve
+   * side (buildPreferencesSyncPage). Never includes replicas. Each entry's
+   * `lastMutatedSeq` is backfilled to 1 by read() when absent.
+   */
+  getAllForSync(): PreferenceEntry[] {
+    return this.read().preferences;
   }
 }

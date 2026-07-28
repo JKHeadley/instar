@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "slug": "token-burn-alert-terminal-delivery",
+  "sessionId": "telegram-458-item-m",
+  "timestamp": "2026-07-17T04:40:00.000Z",
+  "artifactPath": "upgrades/side-effects/token-burn-alert-terminal-delivery.md",
+  "artifactSha256": "e65cad2acf460105a11de9891898dd82cf2a5c785c2e6597915cc3f17357dd96",
+  "specPath": "docs/specs/token-burn-detection-and-self-heal.md",
+  "coveredFiles": [
+    "src/monitoring/BurnAlertDelivery.ts",
+    "src/monitoring/BurnThrottleRunbook.ts",
+    "src/monitoring/BurnVerifier.ts",
+    "src/server/AgentServer.ts",
+    "src/testing/selfActionRegistry.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Tier 2: closes an unbounded notification retry controller with restart-safe terminal state and durable rerouting, without changing throttle authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The burn runbook treated asynchronous Telegram delivery as fire-and-forget. A permanently deleted configured topic was indistinguishable from a transient failure, so later detector intervals retried it forever and no durable user-visible terminal notice existed."
+  },
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "local",
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Terminal topic quarantine bounds primary delivery to one attempt per dead topic under sustained hourly detector pressure; the N and 2N horizons both settle at one."
+    }
+  }
+}

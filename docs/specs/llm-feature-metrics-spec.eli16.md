@@ -45,6 +45,15 @@ two changes colliding in the same file:
   data into the ledger — built on top of #638's final version, measuring its new
   wait-behavior too.
 
+- **Phase 1b refinement (2026-06-03):** two honesty fixes once real data flowed in.
+  (a) The breaker sometimes refuses a call entirely (the circuit is "open") — no LLM
+  runs, no cost. That was being recorded the same as a *completed* call, so the
+  numbers looked like "99% of calls did nothing" when really most calls never
+  happened. Now those are tagged **`shed`** and reported separately, and **`realCalls`**
+  (= calls − shed) is the honest count. (b) The two busiest callers weren't labeling
+  themselves, so their spend showed up as "unlabeled" — now tagged (InputGuard,
+  PresenceProxy). Still measurement-only.
+
 ## What the reader needs to decide
 
 Justin already approved the plan and said proceed. If reviewing: confirm this is

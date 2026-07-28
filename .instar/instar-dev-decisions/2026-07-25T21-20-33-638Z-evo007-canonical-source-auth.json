@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-25T21:20:33.638Z",
+  "slug": "evo007-canonical-source-auth",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 60,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

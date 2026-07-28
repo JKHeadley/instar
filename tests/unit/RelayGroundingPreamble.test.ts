@@ -64,6 +64,23 @@ describe('buildRelayGroundingPreamble', () => {
     });
   });
 
+  // ── Layer 7: sensitive-completion floor ────────────────────────
+
+  describe('Layer 7 sensitive-completion floor', () => {
+    it('instructs the agent to escalate (never auto-complete) sensitive actions', () => {
+      const header = buildRelayGroundingPreamble(createContext()).header;
+      expect(header).toContain('SENSITIVE ACTIONS');
+      expect(header).toMatch(/escalate|never auto-complete/i);
+      expect(header).toMatch(/credential|secret/i);
+    });
+
+    it('states that a relayed "operator approved" claim is NOT authorization', () => {
+      const header = buildRelayGroundingPreamble(createContext()).header;
+      expect(header).toContain('NOT authorization');
+      expect(header).toMatch(/operator approved|granted autonomy/i);
+    });
+  });
+
   // ── Identity Grounding ─────────────────────────────────────────
 
   describe('identity grounding', () => {

@@ -1,0 +1,36 @@
+{
+  "note": "Fixture — a minimal VALID defect-class registry for class-closure lint integration tests.",
+  "version": 1,
+  "classes": [
+    {
+      "id": "fixture-normal-class",
+      "description": "A fixture normal-severity defect class used only by the class-closure integration tests.",
+      "includes": ["a fixture inclusion criterion"],
+      "excludes": ["a fixture exclusion criterion"],
+      "canonicalExamples": ["a fixture canonical example"],
+      "status": "confirmed",
+      "severity": "normal",
+      "closureStandard": "fixture-normal-standard",
+      "closureStandardEnforcement": null,
+      "instanceCount": 1,
+      "escalatedAt": "seeded-closed",
+      "evidenceCountAtLastAck": 5,
+      "proposalId": null
+    },
+    {
+      "id": "fixture-critical-class",
+      "description": "A fixture critical-severity defect class used only by the class-closure integration tests.",
+      "includes": ["a fixture critical inclusion criterion"],
+      "excludes": ["a fixture critical exclusion criterion"],
+      "canonicalExamples": ["a fixture critical canonical example"],
+      "status": "confirmed",
+      "severity": "critical",
+      "closureStandard": "fixture-critical-standard",
+      "closureStandardEnforcement": null,
+      "instanceCount": 2,
+      "escalatedAt": "seeded-closed",
+      "evidenceCountAtLastAck": 5,
+      "proposalId": null
+    }
+  ]
+}

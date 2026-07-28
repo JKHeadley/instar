@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-21T07:45:41.256Z",
+  "slug": "claim-verification-sentinel",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 22,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

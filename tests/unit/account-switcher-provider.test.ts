@@ -8,7 +8,11 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { AccountSwitcher } from '../../src/monitoring/AccountSwitcher.js';
-import { ClaudeConfigCredentialProvider } from '../../src/monitoring/CredentialProvider.js';
+import {
+  ClaudeConfigCredentialProvider,
+  setCredentialWriteRefusalGate,
+  DEFAULT_CREDENTIAL_SLOT,
+} from '../../src/monitoring/CredentialProvider.js';
 import type { CredentialProvider, ClaudeCredentials } from '../../src/monitoring/CredentialProvider.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -74,7 +78,42 @@ describe('AccountSwitcher with CredentialProvider', () => {
   });
 
   afterEach(() => {
+    setCredentialWriteRefusalGate(undefined);
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/account-switcher-provider.test.ts:77' });
+  });
+
+  // ── WS5.2 Step 6 census #9: competing-writer refusal at the MANAGER ──
+
+  it('census #9: REFUSES the switch (no write) when the default slot is repointing-owned', async () => {
+    const registry = createRegistry({
+      'dawn@sagemindai.io': { name: 'Dawn', token: 'dawn-token-123' },
+      'justin@sagemindai.io': { name: 'Justin', token: 'justin-token-456' },
+    }, 'dawn@sagemindai.io');
+    fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+    // Re-pointing owns the default slot — a direct switch would clobber the ledger's tenant.
+    setCredentialWriteRefusalGate({ shouldRefuse: (slot) => slot === DEFAULT_CREDENTIAL_SLOT });
+
+    const result = await switcher.switchAccount('justin');
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('set-default'); // points at the sanctioned replacement
+    expect(result.newAccount).toBeNull();
+    // NON-DESTRUCTIVE: the credential was never written, the active account is unchanged.
+    expect(await provider.readCredentials()).toBeNull();
+    const reg = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
+    expect(reg.activeAccountEmail).toBe('dawn@sagemindai.io');
+  });
+
+  it('census #9: with NO refusal gate installed → the switch proceeds (today\'s behavior)', async () => {
+    const registry = createRegistry({
+      'dawn@sagemindai.io': { name: 'Dawn', token: 'dawn-token-123' },
+      'justin@sagemindai.io': { name: 'Justin', token: 'justin-token-456' },
+    }, 'dawn@sagemindai.io');
+    fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+    setCredentialWriteRefusalGate(undefined);
+
+    const result = await switcher.switchAccount('justin');
+    expect(result.success).toBe(true);
+    expect((await provider.readCredentials())!.accessToken).toBe('justin-token-456');
   });
 
   it('exposes the provider via getProvider()', () => {

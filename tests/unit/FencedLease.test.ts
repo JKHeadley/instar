@@ -218,4 +218,84 @@ describe('FencedLease', () => {
       // Exactly one side yields → guaranteed progress.
     });
   });
+
+  // ── multi-machine-lease-self-heal: signed tombstone (F3) + F2 takeover gate ──
+  describe('lease self-heal (F2 takeover gate + F3 signed tombstone)', () => {
+    const iso = (ms: number) => new Date(ms).toISOString();
+
+    it('canonicalize OMITS released when false/undefined — legacy byte-for-byte', () => {
+      const legacy = { holder: 'A', epoch: 3, acquiredAt: iso(1000), expiresAt: iso(61000), nonce: 7 };
+      const canon = FencedLease.canonicalize(legacy);
+      expect(FencedLease.canonicalize({ ...legacy, released: false })).toBe(canon);
+      expect(FencedLease.canonicalize({ ...legacy, released: undefined })).toBe(canon);
+      // a genuine tombstone DOES extend the signed tuple
+      expect(FencedLease.canonicalize({ ...legacy, released: true })).not.toBe(canon);
+    });
+
+    it('a normal (non-released) lease verifies and carries no released field', () => {
+      const a = leaseA();
+      const lease = a.buildAcquisition(undefined, 1000, 1);
+      expect(lease.released).toBeUndefined();
+      expect(a.verifyLease(lease)).toBe(true);
+    });
+
+    it('a tombstone (released:true) is SIGNED; stripping or injecting the bit fails verification', () => {
+      const a = leaseA();
+      const tomb = a.signLease(5, iso(1000), iso(61000), 9, true);
+      expect(tomb.released).toBe(true);
+      expect(a.verifyLease(tomb)).toBe(true);
+      // STRIP the released bit → signature (over the 6-element form) no longer matches
+      const stripped = { ...tomb };
+      delete (stripped as { released?: boolean }).released;
+      expect(a.verifyLease(stripped)).toBe(false);
+      // INJECT released onto a normal renewal → signature was over the 5-element form
+      const normal = a.buildAcquisition(undefined, 1000, 1);
+      expect(a.verifyLease({ ...normal, released: true })).toBe(false);
+    });
+
+    it('canAcquire stale-holder gate OFF (no opts) = legacy held-by-live-peer', () => {
+      const a = leaseA();
+      const heldByB = leaseB().buildAcquisition(undefined, 1000, 1); // holder B, not expired
+      const d = a.canAcquire(heldByB, new Set(), 2000);
+      expect(d.can).toBe(false);
+      expect(d.reason).toContain('held-by-live-peer');
+    });
+
+    it('canAcquire F2: a renewing holder (watermark fresh) is NEVER holder-not-renewing', () => {
+      const a = leaseA();
+      const heldByB = leaseB().buildAcquisition(undefined, 1000, 1);
+      const d = a.canAcquire(heldByB, new Set(), 2000, {
+        monotonicNowMs: 100_000,
+        freshObservedMonoMs: 99_000, // 1s ago — fresh
+        nonRenewalThresholdMs: 6 * TTL,
+      });
+      expect(d.can).toBe(false);
+    });
+
+    it('canAcquire F2: FIRES when the nonce watermark is stalled beyond threshold', () => {
+      const a = leaseA();
+      // far-future expiry so the isExpired short-circuit does not apply; B not presumed-dead
+      const heldByB = leaseB().signLease(1, iso(1000), iso(10_000_000), 1);
+      const d = a.canAcquire(heldByB, new Set(), 2000, {
+        monotonicNowMs: 1_000_000,
+        freshObservedMonoMs: 100_000, // 900s stale > 360s threshold
+        nonRenewalThresholdMs: 6 * TTL,
+      });
+      expect(d.can).toBe(true);
+      expect(d.reason).toContain('holder-not-renewing');
+    });
+
+    it('canAcquire F2: FAIL-CLOSED when freshObservedMonoMs is undefined or NaN', () => {
+      const a = leaseA();
+      const heldByB = leaseB().signLease(1, iso(1000), iso(10_000_000), 1);
+      for (const fresh of [undefined, NaN]) {
+        const d = a.canAcquire(heldByB, new Set(), 2000, {
+          monotonicNowMs: 1_000_000,
+          freshObservedMonoMs: fresh as number | undefined,
+          nonRenewalThresholdMs: 6 * TTL,
+        });
+        expect(d.can).toBe(false);
+      }
+    });
+  });
 });

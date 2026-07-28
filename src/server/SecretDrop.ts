@@ -18,6 +18,12 @@
 
 import crypto from 'node:crypto';
 
+// E2E-PAIRING: EXEMPT — this change is internal retrieval-lifetime/timer logic on
+// an existing class; it adds no route and does not change the shape of the existing
+// /secrets/* routes. The behavior is time-windowed (15m sliding idle, 30m absolute
+// cap) and is verified deterministically by fake-timer unit tests in
+// tests/unit/SecretDrop.test.ts — a real-boot E2E cannot fast-forward those windows.
+
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface SecretField {
@@ -104,7 +110,20 @@ export interface CreateSecretRequestOptions {
 const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const MAX_PENDING = 20;
 const TOKEN_BYTES = 32; // 256-bit
-const RECEIVED_TTL_MS = 5 * 60 * 1000; // 5 minutes — auto-cleanup window for stored submissions
+/**
+ * Sliding idle window for a stored submission: the cleanup timer is (re)armed
+ * for this long on submit AND on every non-destructive retrieve, so a secret
+ * that is actively being worked never expires underneath the consumer. Raised
+ * from the original hard 5 min (which deleted submissions mid-flow regardless
+ * of activity — the 2026-06-02 "link expired while I was using it" incident).
+ */
+const RECEIVED_IDLE_TTL_MS = 15 * 60 * 1000; // 15 minutes since last touch
+/**
+ * Absolute cap from first receipt — the sliding window can never extend a
+ * stored submission past this, so even a relentlessly-polled secret is purged.
+ * Bounds the in-memory plaintext lifetime regardless of retrieve activity.
+ */
+const RECEIVED_ABSOLUTE_MAX_MS = 30 * 60 * 1000; // 30 minutes hard cap
 const STUCK_CONSUMER_GRACE_MS = 60 * 1000; // 60 seconds — emit a warning if a submission sits unconsumed past this
 
 /**
@@ -171,6 +190,9 @@ export class SecretDrop {
   private pending = new Map<string, SecretRequest>();
   private received = new Map<string, SecretSubmission>();
   private receivedTimers = new Map<string, NodeJS.Timeout>();
+  /** Absolute cleanup deadline (ms-since-epoch) per stored submission — the
+   *  sliding idle window can extend up to, but never past, this value. */
+  private receivedDeadline = new Map<string, number>();
   private stuckTimers = new Map<string, NodeJS.Timeout>();
   private stuckConsumerListeners: Array<(event: StuckConsumerEvent) => void> = [];
   private cleanupTimer: NodeJS.Timeout;
@@ -316,26 +338,23 @@ export class SecretDrop {
       topicId: request.topicId,
     };
 
-    // Store submission briefly for retrieval (auto-cleanup window).
-    // The submission is NOT removed on first retrieve — callers must
-    // either explicitly consume it via `consumeReceived` (or the
-    // `?consume=true` route parameter) or wait for the cleanup timer.
-    // Rationale: a buggy consumer that drops the response (parse error,
-    // exception in the writer step, etc.) historically lost the value
-    // with no recovery path; non-destructive retrieval lets the same
-    // caller retry within the 5-minute window.
+    // Store submission for retrieval behind a SLIDING idle window.
+    // The submission is NOT removed on first retrieve — callers must either
+    // explicitly consume it via `consumeReceived` (or the `?consume=true`
+    // route parameter) or let the idle/absolute cleanup fire.
+    // Rationale (two layered lessons):
+    //   1. A buggy consumer that drops the response (parse error, exception in
+    //      the writer step) historically lost the value with no recovery path,
+    //      so retrieval is non-destructive — the same caller can re-read.
+    //   2. A fixed short window deleted the submission mid-flow even while a
+    //      consumer was actively retrieving it (2026-06-02 incident: a long
+    //      multi-step credential handoff kept losing the secret at the 5-min
+    //      mark, forcing the user to resubmit repeatedly). The window now SLIDES
+    //      on every retrieve (see `armReceivedCleanup` / `peekReceived`), capped
+    //      by `RECEIVED_ABSOLUTE_MAX_MS`, so an in-use secret cannot expire.
     this.received.set(token, submission);
-    const cleanupTimer = setTimeout(() => {
-      this.received.delete(token);
-      this.receivedTimers.delete(token);
-      const stuck = this.stuckTimers.get(token);
-      if (stuck) {
-        clearTimeout(stuck);
-        this.stuckTimers.delete(token);
-      }
-    }, RECEIVED_TTL_MS);
-    cleanupTimer.unref();
-    this.receivedTimers.set(token, cleanupTimer);
+    this.receivedDeadline.set(token, Date.now() + RECEIVED_ABSOLUTE_MAX_MS);
+    this.armReceivedCleanup(token);
 
     // Schedule a stuck-consumer signal: if the submission has not been
     // explicitly consumed within the grace period, emit a structured
@@ -348,9 +367,7 @@ export class SecretDrop {
       // consumed it during the grace window).
       const stillPresent = this.received.get(token);
       if (!stillPresent) return;
-      const cleanupAt = submission.receivedAt
-        ? new Date(submission.receivedAt).getTime() + RECEIVED_TTL_MS
-        : Date.now() + RECEIVED_TTL_MS;
+      const cleanupAt = this.receivedDeadline.get(token) ?? (Date.now() + RECEIVED_IDLE_TTL_MS);
       const event: StuckConsumerEvent = {
         token,
         label: stillPresent.label,
@@ -384,17 +401,55 @@ export class SecretDrop {
   }
 
   /**
-   * Retrieve a received submission WITHOUT consuming it. The submission
-   * remains in the store until explicitly consumed via
-   * {@link consumeReceived} or until the {@link RECEIVED_TTL_MS} timer
-   * fires. Safe to call repeatedly — used by polling consumers that
-   * want retry semantics on top of the natural cleanup window.
+   * (Re)arm the idle cleanup timer for a stored submission. Fires after
+   * {@link RECEIVED_IDLE_TTL_MS} of no activity, but never later than the
+   * per-token absolute deadline in {@link receivedDeadline}. Called on submit
+   * and on every {@link peekReceived}, so the window SLIDES with activity —
+   * an in-use secret cannot be deleted out from under its consumer, while the
+   * absolute cap still bounds total in-memory lifetime.
+   */
+  private armReceivedCleanup(token: string): void {
+    const existing = this.receivedTimers.get(token);
+    if (existing) clearTimeout(existing);
+
+    const now = Date.now();
+    const absoluteDeadline = this.receivedDeadline.get(token) ?? (now + RECEIVED_ABSOLUTE_MAX_MS);
+    this.receivedDeadline.set(token, absoluteDeadline);
+    // Next fire = whichever comes first: one idle window from now, or the cap.
+    const fireIn = Math.max(0, Math.min(RECEIVED_IDLE_TTL_MS, absoluteDeadline - now));
+
+    const timer = setTimeout(() => {
+      this.received.delete(token);
+      this.receivedTimers.delete(token);
+      this.receivedDeadline.delete(token);
+      const stuck = this.stuckTimers.get(token);
+      if (stuck) {
+        clearTimeout(stuck);
+        this.stuckTimers.delete(token);
+      }
+    }, fireIn);
+    timer.unref();
+    this.receivedTimers.set(token, timer);
+  }
+
+  /**
+   * Retrieve a received submission WITHOUT consuming it. Each call SLIDES the
+   * idle cleanup window (see {@link armReceivedCleanup}), so a submission that
+   * is actively being retrieved stays available — capped only by the absolute
+   * {@link RECEIVED_ABSOLUTE_MAX_MS} deadline. Safe to call repeatedly; this is
+   * the path polling/multi-step consumers should use. Consume explicitly via
+   * {@link consumeReceived} only after the handoff has actually succeeded.
    *
    * @returns the submission or null if not present (never seen, already
-   *   consumed, or already cleaned up by the TTL).
+   *   consumed, or already cleaned up past the absolute cap).
    */
   peekReceived(token: string): SecretSubmission | null {
-    return this.received.get(token) ?? null;
+    const submission = this.received.get(token) ?? null;
+    if (submission) {
+      // Slide the idle window on activity (bounded by the absolute deadline).
+      this.armReceivedCleanup(token);
+    }
+    return submission;
   }
 
   /**
@@ -409,6 +464,7 @@ export class SecretDrop {
     const submission = this.received.get(token);
     if (!submission) return null;
     this.received.delete(token);
+    this.receivedDeadline.delete(token);
     const tCleanup = this.receivedTimers.get(token);
     if (tCleanup) {
       clearTimeout(tCleanup);
@@ -754,6 +810,7 @@ export class SecretDrop {
     for (const t of this.stuckTimers.values()) clearTimeout(t);
     this.receivedTimers.clear();
     this.stuckTimers.clear();
+    this.receivedDeadline.clear();
     this.stuckConsumerListeners.length = 0;
     this.pending.clear();
     this.received.clear();

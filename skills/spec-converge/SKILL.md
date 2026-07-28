@@ -1,6 +1,6 @@
 ---
 name: spec-converge
-description: Iteratively review an instar-development spec with multi-angle internal reviewers (security, scalability, adversarial, integration, lessons-aware) and a real cross-model external reviewer routed through the agent's own installed codex CLI (GPT-tier) until convergence, then produce a comprehensive ELI10 convergence report. Output is a spec tagged review-convergence — one of the two tags /instar-dev requires before it will touch instar source. NOT user-invocable; run by the instar-developing agent before any spec-driven /instar-dev work.
+description: Iteratively review an instar-development spec with multi-angle internal reviewers (security, scalability, adversarial, integration, decision-completeness, lessons-aware) and real cross-model external reviewers routed through the agent's own installed CLIs (codex → GPT-tier, gemini → Gemini-tier; one pass per available family) until convergence, then produce a comprehensive ELI10 convergence report. Output is a spec tagged review-convergence — one of the two tags /instar-dev requires before it will touch instar source. NOT user-invocable; run by the instar-developing agent before any spec-driven /instar-dev work.
 metadata:
   user_invocable: "false"
   audience: "instar-developing agent only — NOT end users"
@@ -61,6 +61,29 @@ The skill adds `review-convergence`, `review-iterations`, `review-completed-at`,
 
 ### Phase 1 — Initial review round
 
+**Standards-Conformance Gate auto-invocation (MANDATORY, every round).** Before
+spawning the reviewers, the agent calls the constitution inspector against the spec
+and feeds its report into the round as a reviewer input:
+
+```bash
+AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+PORT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null)
+curl -sS -m 90 -X POST -H "Authorization: Bearer ${AUTH:-$INSTAR_AUTH_TOKEN}" -H 'Content-Type: application/json' \
+  -d "{\"specPath\": \"$(realpath docs/specs/<slug>.md)\"}" \
+  "http://localhost:${PORT}/spec/conformance-check"
+```
+
+The report is SIGNAL-ONLY (it never blocks — Signal vs. Authority), but it is not
+optional to RUN: its per-standard flags are handed to the reviewers alongside the
+spec (the lessons-aware reviewer in particular must engage every flagged standard),
+and the convergence report's Iteration Summary records one line per round —
+`Standards-Conformance Gate: ran (N flags)` or, honestly, `unavailable: <reason>`
+(server down / route 503). An unavailable gate NEVER blocks convergence, but a
+SKIPPED-without-reason gate fails report validation. This closes the 2026-06-12
+finding (topic 13481): the gate shipped 2026-05-24 explicitly staged for this exact
+wiring, and the staging lived only in prose — zero runs in 19 days. Auto-invocation
+is now part of the round itself, not a remembered follow-up.
+
 The skill spawns reviewers in parallel:
 
 **Internal reviewers (Claude subagents):**
@@ -68,32 +91,45 @@ The skill spawns reviewers in parallel:
 - **Security.** Attack surfaces, leaks, privilege escalation, auth on endpoints, prompt injection vectors, rotation races.
 - **Scalability/performance.** Hot-path cost, concurrent writes, memory churn, fail-open semantics, hook latency.
 - **Adversarial.** Misbehaving-session scenarios — bad-entry poisoning, self-reinforcing loops, stale claims, authority ambiguity, kind gaming.
-- **Integration/deployment.** Migration, backup/restore, multi-machine, config knobs, dashboard surface, rollback.
-- **Lessons-aware.** Loads the canonical Instar Design Principles + Lessons Learned index (`docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md`) plus the running agent's local `.instar/memory/feedback_*.md` entries, then checks the spec for (a) direct contradictions of documented principles/lessons, (b) applicable lessons the spec fails to engage with, and (c) behavioral lessons violated by agent-facing surfaces the spec proposes. Catches the "Phase 2" anti-pattern and the spec-converge-pre-auth-circular failure mode (see `feedback_spec_converge_pre_auth_circular`).
+- **Integration/deployment.** Migration, backup/restore, multi-machine, config knobs, dashboard surface, rollback. **Multi-machine posture (Cross-Machine Coherence — mandatory check):** every feature/state surface the spec introduces must declare its posture when the agent runs on more than one machine — replicated (named replication path) / proxied-on-read (named merged read) / machine-local BY DESIGN (with the reason). A spec whose features silently assume a single machine is a MATERIAL finding: ~20 features shipped machine-blind before this check existed (2026-06-12 audit, topic 13481; MULTI-MACHINE-SEAMLESSNESS-SPEC is the cleanup bill). Probe specifically: user-facing notices (one-voice gating?), durable state (strands on topic transfer?), generated URLs (survive machine boundaries?). **Standard A — reject an UNDEFENDED machine-local (default is `unified`):** a *declared* posture is no longer enough — the DEFAULT posture is `unified`, and an undefended `machine-local` is itself a **MATERIAL FINDING** (this is the upgrade from "accepts a declaration" to "requires the correct default"; the tiered-intelligence consult-memory shipped machine-local-by-design and survived seven rounds because the check only tested for an *answer*). A machine-local surface is allowed ONLY with a `machine-local-justification: <key>` marker — one labeled `key: value` line per machine-local surface inside the spec's `## Multi-machine posture` section — whose `<key>` is drawn from a **CLOSED taxonomy**: `physical-credential-locality` (a login / key / token / service-binding that physically lives on one disk — e.g. a Claude OAuth login, a browser profile's cookies, a Telegram bot token + the forum/topic ids it namespaces), `hardware-bound-resource` (bound to specific physical hardware), or `operator-ratified-exception` (the operator explicitly ratified it — this key MUST cite a machine-verifiable, existence-checkable artifact ref: a commit SHA, a registry key, or a resolvable URL, NEVER a bare topic+date). Other locality reasons (availability, privacy/data-residency, cost/latency, an intentional per-machine cache) are DENIED by default — each is either not a real locality *requirement* or must be routed through `operator-ratified-exception`; a fourth key is a constitution-bound operator decision, never an author's convenience. The check is **BIDIRECTIONAL**: an *infeasible* `unified` (a surface that is inherently credential/hardware-bound but declared — or left to default — `unified`) is EQUALLY a MATERIAL FINDING, because "just claim unified" would otherwise be the trivial dodge (and invites an unsafe attempt to replicate a credential). The reviewer INDEPENDENTLY CONTESTS correctness in BOTH directions: a marker whose key is *present* but substantively *wrong* is still a finding — the marker's PRESENCE never satisfies the CORRECTNESS check (this spec's own first draft mislabeled its per-machine hub `hardware-bound-resource`; the correct key was `physical-credential-locality`, and this rule is what catches it). `operator-ratified-exception` is the escape hatch — treat each use as worth surfacing for operator visibility so the hatch can't quietly become the path of least resistance. (Signal vs. Authority: the `machine-local-justification` marker is the cheap deterministic signal; THIS reviewer holds the semantic authority. The purely-deterministic marker LINT lands with the registry ship, hard-sequenced — until then this reviewer + the per-spec `POST /spec/conformance-check` gate surface a missing/wrong marker; do NOT claim a no-LLM deterministic parse exists yet.)
+- **Decision-point classification (Judgment Within Floors — structurally-checked question).** *"Does `## Decision points touched` classify every decision point as `invariant` (with justification) or `judgment-candidate` (floor + arbiter declared, or an argued exemption)? Refuse the tag if the section or a classification is missing."* Every spec that touches a decision point — anything that gates information flow, blocks actions, constrains agent behavior, or chooses among competing signals — MUST carry a `## Decision points touched` section classifying each one: `invariant` (deterministic by design, with the justification stated) or `judgment-candidate` (the deterministic floor + arbiter are declared per the **Judgment Within Floors** standard in `docs/STANDARDS-REGISTRY.md`, or an argued exemption is recorded). The reviewer INDEPENDENTLY CONTESTS correctness in BOTH directions (symmetric to Standard A's marker-correctness rule): an `invariant` label on a genuinely competing-signals point is a MATERIAL FINDING — static rules at those points are the proven failure class (the 2026-07-10 duplicate-session incident's `open-commitment`/`not-lease-holder` heuristics); a `judgment-candidate` without a complete floor (bounded action space, conservative default, fallback ladder ending at a deterministic rung) is EQUALLY a finding. The deterministic half is enforced STRUCTURALLY: `write-convergence-tag.mjs` refuses to stamp the convergence tag when the section or a per-row classification is missing (Structure > Willpower; the section's presence is the cheap signal, THIS reviewer holds the semantic authority). Grandfathering: specs already past round 1 when this gate landed are exempt via the script's `GRANDFATHERED_SLUGS` allowlist (hardcoded in source, extended only by PR — never config). A spec with genuinely NO decision-point surface satisfies the gate with a section stating `*(none)*`.
+- **Self-Heal Before Notify (Standard B — escalation-gate review-check).** A spec that adds a **monitor / watcher / recurring-or-automated notice source** which raises operator notices MUST place its operator-facing attention-raise DOWNSTREAM of a `selfHealAttempted && selfHealExhausted` signal — the escalation path is UNREACHABLE on first detection. A first-detection escalation on a `recoverable` degradation is a **MATERIAL FINDING**. (Scope: a one-shot conversational reply is NOT a watcher and pays no self-heal cost.) The watcher MUST DECLARE, and the reviewer INDEPENDENTLY CONTESTS: (a) its self-heal step + `remediation-actions` — the concrete operations it invokes (re-register / restart / re-deliver); a no-op that merely flips `selfHealAttempted = true` to unlock escalation is a MATERIAL FINDING, and each side-effecting action MUST carry an idempotency guard + a compensation/rollback (a heal retried over a half-completed action is how these loops corrupt state); (b) that step's P19 brakes (per *No Unbounded Loops*) — `max-attempts`, `max-wall-clock`, `backoff`, `dedupe-key`, `breaker` (INCLUDING flapping: N heals of the same break within a window auto-reclassify to critical and escalate — a structural backstop a `recoverable` label can NEVER waive, per *Distrust Temporary Success*), `max-notification-latency` (an explicit duration WITH units, e.g. `120s`, and ≤ the constitutional ceiling at the registry key `standards.selfHealBeforeNotify.recoverableLatencyCeiling` — a recoverable watcher MUST tell the operator even while self-heal is still running once this ceiling passes; a missing/unitless value is a MATERIAL FINDING and a missing ceiling fails CLOSED = escalate-sooner), `audit-location` (a scrubbed, metadata-only trail — never raw secrets); (c) the severity `class` of each degradation — an **irreversible / data-loss / security** class escalates IMMEDIATELY (on the SAME detection tick, no heal-gate delay interposed) and self-heals CONCURRENTLY (notify-and-heal), while everything else is `recoverable`; a critical degradation MISLABELED `recoverable` to unlock the heal-first path is a MATERIAL FINDING (presence of a class field never satisfies the CORRECTNESS check — symmetric to Standard A's marker-correctness rule). Composes with *No Silent Degradation*: routing to self-heal is NEVER swallowing — every detection + heal attempt is audited, the audit trail IS the report, and the operator is the last resort, not the silent-drop alternative. The FIRST runtime application MUST extract the pattern into a reusable `SelfHealGate` — a THIN declaration + assertion layer over Instar's EXISTING in-process P19 breaker primitives (CrashLoopPauser and the breakers already threaded through the monitors), NEVER a new external workflow engine — plus a shared conformance fixture that exercises the stateful paths (unreachable-before-exhaustion, observable remediation evidence, flapping auto-escalation, and the latency backstop firing mid-heal). That runtime application is a downstream build task registered under Close the Loop, deliberately outside this review-check's own boundary — this bullet ships the review lens + the pattern, the code application follows.
+- **Decision-Completeness.** (Autonomy Principle 2 — `docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md` Piece 2.) Enumerates every point where the building agent would have to **stop mid-run and ask the user**. Each must be either **frontloaded** into a `## Frontloaded Decisions` section or explicitly tagged **cheap-to-change-after** because the work ships behind a named dark/dry-run/read-only phase. The reviewer **CONTESTS every cheap tag** — it independently asserts reversibility, and a closed non-cheap taxonomy overrides any tag: anything touching **durable external side-effects, money, identity, or a published/user-visible interface is NEVER cheap**, regardless of a "ships dark" label. A contested tag the reviewer rejects is a **material finding that blocks convergence**. Prompt: `templates/reviewer-decision-completeness.md`. Applies to ALL specs through this skill (D7) — no size gate, no per-spec override (D11; the rejected `disposition: override` escape hatch would reopen the exact skip-hatch Principle 2 closes).
+- **Lessons-aware.** Loads the canonical Instar Design Principles + Lessons Learned index (`docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md`) plus the running agent's local `.instar/memory/feedback_*.md` entries, then checks the spec for (a) direct contradictions of documented principles/lessons, (b) applicable lessons the spec fails to engage with, (c) behavioral lessons violated by agent-facing surfaces the spec proposes, and **(d) FOUNDATION/SUBSYSTEM AUDIT — the design the spec TESTS, EXTENDS, or BUILDS ON, not just the spec's own surface: does that foundation violate a known standard or repeat a known mistake?** The audit MUST reach one layer below the spec boundary. A spec can be internally clean while faithfully testing or extending a flawed foundation — e.g. a test-harness spec that correctly proves a permission gate which *itself* holds brittle blocking authority in violation of Signal-vs-Authority, or an extension spec built on a subsystem with an unaddressed gap. Taking the underlying subsystem "as given" is exactly how a standards violation survives review: the spec passes, the foundation's flaw is never weighed. When the foundation is flawed, the finding is "this spec is sound but the subsystem it depends on violates standard X / repeats mistake Y — surface it before building on/around it." Catches the "Phase 2" anti-pattern, the spec-converge-pre-auth-circular failure mode (see `feedback_spec_converge_pre_auth_circular`), and the foundation-not-audited gap (the Slack-permission-gate brittle-enum-as-authority that the harness convergence cleared because it audited only the harness, 2026-06-09).
 
-**External reviewer (cross-model, via the agent's own installed codex CLI):**
+**External reviewers (cross-model, via the agent's own installed CLIs — one pass PER AVAILABLE FAMILY):**
 
-The external "cross-model" pass is a single independent GPT-tier read that sits *outside* the Claude family to catch the blind spots Claude models share. It is **real**, routed through the agent's own `codex login` (no new API key, no new network dependency), and implemented in code — NOT a hand-wave. Run it like this:
+The external "cross-model" pass is a set of independent non-Claude reads that sit *outside* the Claude family to catch the blind spots Claude models share. It is **real**, routed through the agent's own CLI logins (`codex login` → GPT-tier, gemini OAuth → Gemini-tier; no new API key, no new network dependency), and implemented in code — NOT a hand-wave. **Family diversity is the point**: GPT and Gemini catch different failure classes, so the pass runs ONE review per available family (detect-all), not first-match-only. Run it like this:
 
-1. **Detect** whether a supported reviewer framework is installed + authed:
+1. **Detect** every supported reviewer framework that is installed + authed:
    ```bash
-   node skills/spec-converge/scripts/cross-model-review.mjs --spec <spec-path> --detect-only
+   node skills/spec-converge/scripts/cross-model-review.mjs --spec <spec-path> --detect-only --state-dir .instar
    ```
-   Returns `{ available, framework?, model?, reason? }`. `available:false` → skip the external pass, set the fallback flag (see §"No-codex fallback" below / Phase 5), and continue internal-only. **Never block.**
+   Returns `{ available, frameworks: [...all available...], framework?, model?, reason? }` (the single-framework fields remain for back-compat). `--state-dir` records the detection into the **durable framework-activation history** (`state/framework-activation-history.jsonl`) — the standing-framework baseline the mandatory-check in Phase 3 reads. `available:false` → set the fallback flag (see Phase 5) and continue internal-only **only if the mandatory-check permits it** (Phase 3). **Never block.**
 
-2. **Run** the external review when available — pass the spec plus the same architectural context docs the internal reviewers receive (the docs the spec references):
+2. **Run** one external review per available family — pass the spec plus the same architectural context docs the internal reviewers receive (the docs the spec references):
    ```bash
    node skills/spec-converge/scripts/cross-model-review.mjs \
-     --spec <spec-path> \
+     --spec <spec-path> --family codex-cli \
+     --context docs/foo.md --context docs/bar.md
+   node skills/spec-converge/scripts/cross-model-review.mjs \
+     --spec <spec-path> --family gemini-cli \
      --context docs/foo.md --context docs/bar.md
    ```
-   It emits a JSON `ReviewerResult` on stdout: `{ status, framework?, model?, verdict?, findings?, reason?, flag }`. Fold its `findings` into the round alongside the internal reviewers'. `status:'degraded'` (codex present but the call failed — timeout / error / rate-limited) is a *partial* cross-model pass for the round: fold in whatever came back and record the `degraded` flag — it does **not** collapse to `unavailable`.
+   Each emits a JSON `ReviewerResult` on stdout: `{ status, framework?, model?, verdict?, findings?, reason?, flag, crossFamily }`. Fold each `findings` into the round alongside the internal reviewers'. `status:'degraded'` (framework present but the call failed — timeout / error / rate-limited) is a *partial* cross-model pass for the round: fold in whatever came back and record the `degraded` flag — it does **not** collapse to `unavailable`. (Omitting `--family` keeps the old single-pass first-match behavior for existing callers.)
 
-The detection + invocation + parsing live in the unit-tested `src/core/crossModelReviewer.ts` module (built to `dist/core/crossModelReviewer.js`); the script is a thin file-I/O wrapper. codex is the **first** supported framework in an extensible registry (`SUPPORTED_REVIEWER_FRAMEWORKS`) — gemini-cli and others plug in there later with **no skill change**.
+**Anthropic clean-door reviewer (`--family claude-code`) — a clean-door SECOND READ, NOT a cross-model opinion (REVIEWER-DOOR-REWIRING).** A third family reads the spec through the clean `claude -p` door on the strongest model (`claude-fable-5`), off the measured-penalized `opus × coding-harness` pair. It is **config-gated** (`specConverge.reviewers.anthropic.enabled` — omitted ⇒ live on a development agent, DARK on the fleet) and its result carries `crossFamily: false`, so it books into its OWN disclosure field **`clean-door-anthropic-review: claude-code:<model>`** — NEVER the `cross-model-review:` flag. A claude-only round therefore aggregates to `degraded-all-rounds`/`unavailable` exactly as before; the clean-door read can never launder a cross-model pass. Run it (when enabled) exactly like the others: `--family claude-code`. **D7 per-round-model disclosure:** the six INTERNAL reviewers run on the authoring session's model (opus, or `claude-fable-5` under tier-escalation — a quota-refused escalation silently drops them to opus-via-harness); record the ACTUAL per-round session/subagent model in the iteration log so a silent drop to opus is VISIBLE, not assumed.
+
+Two structural guards on the pass:
+
+- **Fail-loud model canary.** Model selection is dynamic (the `'capable'` tier resolved per framework — never a pinned name), and a tier word that falls through resolution (`'capable'` is not a model) is caught by `isConcreteReviewerModel` BEFORE the provider is invoked: the round degrades loudly with reason `model-resolution-canary` instead of silently selecting a dead reviewer.
+- **Trusted-provider allowlist.** `--family` only accepts frameworks on `TRUSTED_REVIEWER_FRAMEWORKS` (`codex-cli`, `gemini-cli`, `claude-code` — first-party OAuth CLI adapters). The full spec text is handed to the reviewer, so it must NEVER be sent to a custom/base-URL endpoint; **pi-cli is deliberately excluded** from cross-model review for this reason (its provider may be a custom endpoint). An untrusted family is refused with `reason: 'untrusted-framework'`; a trusted-but-config-disabled family (the `claude-code` clean-door family on the fleet) is refused with `reason: 'no-supported-framework'` (trusted-egress ≠ enabled). The `claude-code` clean-door call is additionally hardened to codex-door parity for the untrusted spec text (empty allowed-tools, `--strict-mcp-config`, neutral scratch cwd, stdin prompt, env allowlist) — a spec under review is untrusted inbound text.
+
+The detection + invocation + parsing live in the unit-tested `src/core/crossModelReviewer.ts` module (built to `dist/core/crossModelReviewer.js`); the script is a thin file-I/O wrapper. codex and gemini are the supported frameworks in an extensible registry (`SUPPORTED_REVIEWER_FRAMEWORKS`) — further first-party CLIs plug in there with **no skill change**.
 
 Each internal reviewer receives the spec, the architectural context docs referenced in the spec (`docs/signal-vs-authority.md`, `docs/integrated-being.md`, relevant subsystem docs), and a prompt specific to their perspective. Each produces a structured finding list.
 
-The **five internal reviewers + the cross-model external pass** run in parallel (the external pass is one cross-model read through the first available supported framework — the honest mechanism, not three phantom API models). Their findings are collected.
+The **six internal reviewers + the cross-model external passes** run in parallel (one external read per available supported family — the honest mechanism, not three phantom API models). Their findings are collected.
 
 **Code-backed reviewer — the Standards-Conformance Gate (auto-invoked).** Alongside the internal reviewers + the cross-model external pass, call the live gate: `POST /spec/conformance-check` with the spec (body `{ "specPath": "<path-within-specsDir>" }`, or `{ "markdown": "<spec text>" }`). Unlike the prompt-driven reviewers, the gate is *code that reads the living constitution* (`docs/STANDARDS-REGISTRY.md`) and returns a per-standard report — `ok` / `at-risk` / `n/a` + a reason for every standing standard. Fold its `at-risk` entries into the round's findings. It is the structural complement to the Lessons-aware reviewer: lessons-aware reads the lessons doc + local memory (prompt-driven); the gate reads the constitution itself (code), so a registry edit can never be silently missed. **Signal-only:** advisory — it surfaces violations, it does not block (blocking authority is the separate, later `scg-blocking-authority` follow-up, per *Signal vs. Authority*). **Fail-open:** if the gate is disabled/unreachable (503) or returns `degraded: true`, note that the constitutional pass was not authoritative and continue — a down gate must never stall spec review. (This auto-invocation is the dogfood-to-ship enforcement of the **Self-Hosting** standard — the gate now *runs* at spec-review rather than being a step the author must remember.)
 
@@ -109,11 +145,77 @@ Every update preserves the spec's structure. Changes are additive (new sections 
 
 ### Phase 3 — Convergence check
 
-After the spec is updated, the skill runs another full review round (the five internal reviewers + the cross-model external pass, in parallel, on the updated spec).
+After the spec is updated, the skill runs another full review round (the six internal reviewers + the cross-model external passes, in parallel, on the updated spec).
 
-Convergence criterion: **the new round produces no material new issues.** "Material" means any finding that would require a spec change if unaddressed. Cosmetic findings, repeats of already-addressed concerns, and minor phrasing quibbles are non-material.
+#### Delta-gating the external passes (mandatory, but not blindly every round)
 
-A lightweight LLM (Haiku-class) compares the new round's findings to the prior round's findings and emits a boolean `converged: true|false` with reasoning. Human-readable comparison log is retained.
+The externals are **MANDATORY on round 1 and on any round where the spec's reviewable body changed** since the last external pass. "Changed" is decided by content hash, not memory:
+
+```bash
+node skills/spec-converge/scripts/cross-model-review.mjs --spec <spec-path> --hash-only
+```
+
+prints `{ hash }` — `hashSpecReviewableBody`'s sha256 of the spec with the leading YAML frontmatter stripped and line endings normalized, so tag-writes and approval edits never change it. Record the hash alongside each external pass; when a later round's hash equals the last external pass's hash, the externals for that round are **skipped-with-logged-note** (the iteration log records "externals delta-skipped: body unchanged since round N, hash <prefix>"). This is the cost answer — redundant re-reviews of an unchanged spec are killed — and it does **NOT** count as `skipped-abbreviated`: the spec still received its external review of this exact content.
+
+#### The mandatory-check (durable standing-framework baseline)
+
+The external passes are **NON-SKIPPABLE** whenever a non-Claude framework was **active at ANY point in the last 7 days** per the durable activation history:
+
+- The check is `wasNonClaudeFrameworkActiveWithin(stateDir, 7)` (exported from `src/core/crossModelReviewer.ts`), read from `state/framework-activation-history.jsonl` — the file every `--detect-only --state-dir` invocation appends to.
+- A **just-before-converge deactivation does not exempt the spec**: activation is judged against the recorded lookback window, never a just-in-time reading. A framework deactivated inside the window keeps externals mandatory.
+- A **mid-converge deactivation** (frameworks available at round 1, gone at round N) is logged in the iteration log and **fails report validation**.
+- The advisory "externals unavailable" floor (Phase 5's `unavailable` flag) is legitimate ONLY for an agent that has been genuinely single-framework across the whole lookback — a recorded standing fact, not a 30-second-old flip.
+
+Convergence criteria (BOTH must hold — additive, per Autonomy Principle 2):
+
+1. **No DESIGN-class findings for TWO consecutive rounds.**
+
+   **Why this replaced "no material new issues" (2026-07-27).** "Material" was defined as *any finding
+   that would require a spec change if unaddressed* — and a contract-precision or naming finding DOES
+   require a spec edit, so it counted. **On a spec that appends its own review history, the reviewable
+   surface grows every round, and a diligent reviewer will always find precision to add on a larger
+   surface. So the loop could not terminate BY CONSTRUCTION for that document shape**, and the 10-round
+   cap fired for a reason unrelated to whether the design was sound.
+   That is not a hypothesis. `standards-registry-ships-with-code` recorded 4–5 findings under a column
+   headed "Material findings" in *every one* of its ten rounds, while its own report observed that
+   rounds 5–10 *"produced no design defects at all — they produced contract precision, naming, and
+   scope-bound findings."* A second spec on the same problem hit the cap identically. A verdict that
+   does not measure its subject is this project's signature failure; here it lived in the stop
+   criterion itself.
+
+   **Each reviewer CLASSIFIES every finding it raises — the class is declared, never inferred by the
+   comparator from wording:**
+
+   - **DESIGN-class** — changes what would be BUILT or how it would BEHAVE. Architecture; a safety,
+     security, scalability, or integration property; a decision point's classification or floor; a
+     multi-machine posture; a missing failure mode; **or a statement in the spec that is factually
+     WRONG about the system** (round 10 of that spec caught a false rollback claim — that is
+     design-class, not precision, and must keep resetting the counter).
+   - **PRECISION-class** — improves the DOCUMENT without changing what would be built: contract
+     wording, naming, scope-bound phrasing, an added caveat, a clarified example.
+
+   **Precision findings are still addressed** — they are genuinely valuable and several changed
+   production code — but they do not reset the counter. Only a DESIGN-class finding does.
+
+   **Two consecutive rounds, not one**, because a single quiet round is weak evidence on a spec whose
+   surface keeps growing; requiring two makes the terminating condition harder to reach by luck while
+   still reachable at all. Under this rule the spec above converges at round 7 on its merits.
+
+   (A cheap-to-change-after tag the Decision-Completeness reviewer contested and rejected is
+   DESIGN-class — it asserts reversibility the reviewer denies, which is a claim about behaviour.)
+
+   **Honest limit:** the classification is made by a reviewer, so this trades one judgment for a
+   better-specified one rather than removing judgment. A reviewer that mislabels a design defect as
+   precision can end the loop early — which is why the taxonomy names the wrong-about-the-system case
+   explicitly, and why the report must record each round's class counts so a suspiciously quiet
+   round is visible rather than merely accepted.
+2. **Zero unresolved user-decisions remain in `## Open questions`.** A spec cannot converge while a live decision is still parked on the user — every open question must be resolved into a `## Frontloaded Decisions` entry (or a contested-and-surviving cheap-to-change-after tag) before convergence. This is enforced STRUCTURALLY: `write-convergence-tag.mjs` refuses to stamp the tag while `## Open questions` contains unresolved entries, so the criterion cannot be skipped by prose (Structure > Willpower).
+
+A lightweight LLM (Haiku-class) compares the new round's findings to the prior round's findings and emits a
+boolean `converged: true|false` with reasoning. It consumes each finding's DECLARED class — it must not
+re-classify from wording, because the reviewer that raised a finding is the one that knows whether it changes
+what would be built. It also emits `designFindings` and `precisionFindings` counts per round so the
+consecutive-quiet-round count is auditable rather than asserted. Human-readable comparison log is retained.
 
 **Not converged** → back to Phase 2.
 **Converged** → Phase 4.
@@ -182,9 +284,15 @@ review-convergence: "<ISO timestamp>"
 review-iterations: <N>
 review-completed-at: "<ISO timestamp>"
 review-report: "docs/specs/reports/<slug>-convergence.md"
-cross-model-review: "<flag>"          # codex-cli:<model> | unavailable | degraded-all-rounds | skipped-abbreviated
+cross-model-review: "<flag>"          # codex-cli:<model> | gemini-cli:<model> | unavailable | degraded-all-rounds | skipped-abbreviated
 cross-model-review-reason: "<reason>" # only when unavailable / degraded / degraded-all-rounds
+single-run-completable: true          # earned, not minted — written only when Open questions reached zero
+frontloaded-decisions: <N>            # count from the Decision-Completeness reviewer's final round
+cheap-to-change-tags: <N>             # cheap-to-change-after tags that survived contest
+contested-then-cleared: <N>           # cheap tags the reviewer contested that were then justified
 ```
+
+**The tag carries its evidence.** `single-run-completable: true` plus the three counts let a downstream reader (and an audit ratchet on the cheap-tag ratio across specs) see WHAT was frontloaded, not just that a boolean is true. The counts come from the Decision-Completeness reviewer's final-round report; pass them via `--frontloaded-decisions N --cheap-tags N --contested-cleared N`. Scope of the guarantee, honestly: the STRUCTURALLY-earned part is the open-questions invariant — the tag writer REFUSES to stamp convergence while `## Open questions` still contains unresolved entries (entries other than a none-marker like `*(none)*` / `None`), so the tag can never coexist with a live user-decision. The counts themselves are caller-supplied disclosure (the same trust model as `--cross-model-review`); their honesty is the convergence process's, not the script's. Two known parser limits, both backstopped by the Decision-Completeness reviewer: blockquote lines (`>`) under Open questions are treated as commentary by convention (a real question formatted as a blockquote evades the deterministic gate but not the reviewer), and the gate validates the section, not prose elsewhere in the document.
 
 The `cross-model-review` field records the **final spec-level** external-reviewer posture (the `aggregateRoundOutcomes` result — see "Aggregating per-round cross-model outcomes" in Phase 3) so the spec self-documents which external pass it received (or didn't). Pass it through the tag writer with the aggregated `flag`/`reason` (strip the leading `cross-model-review: ` prefix — the script writes the field name itself):
 
@@ -192,8 +300,11 @@ The `cross-model-review` field records the **final spec-level** external-reviewe
 node skills/spec-converge/scripts/write-convergence-tag.mjs \
   --spec <spec-path> --iterations <N> --report <report-path> \
   --cross-model-review "codex-cli:gpt-5.5"          # or "unavailable" / "degraded-all-rounds" / "skipped-abbreviated" / "codex-cli:gpt-5.5 (degraded: timeout)"
-  [--cross-model-reason "codex-not-installed"]
+  [--cross-model-reason "codex-not-installed"] \
+  --frontloaded-decisions <N> --cheap-tags <N> --contested-cleared <N>   # Decision-Completeness counts (final round)
 ```
+
+(Specs converged BEFORE the Decision-Completeness reviewer shipped carry no `single-run-completable` field — that is honest, not a defect; the field binds only specs converged after it. A spec that modifies spec-converge itself runs under the old spec-converge, per the documented bootstrap exception extended in spirit.)
 
 This is **DISCLOSURE, not a gate** — it does NOT change `/instar-dev`'s `review-convergence` + `approved: true` enforcement. An `unavailable` spec can still be approved (the user reads the report banner and makes an informed choice).
 
@@ -203,7 +314,18 @@ The `approved: true` tag is NOT written by this skill. That's the user's step.
 
 ### Phase 6 — User handoff
 
-The skill emits the link to the convergence report via the messaging layer (Telegram or equivalent) so the user can read the ELI10 report and decide.
+When a spec is handed to the user for review, it MUST go out with a **rendered, verified ELI16 tunnel link** the user can tap and read — never a bare filename or a PR they have to dig through. This is the required delivery step, enforced structurally (not by memory):
+
+```bash
+node skills/spec-converge/scripts/publish-spec-review.mjs \
+  --spec docs/specs/<SPEC>.md \
+  --pr <github-pr-url> \
+  --topic <telegram-topic-id> --send
+```
+
+`publish-spec-review.mjs` is the sanctioned path. It (1) resolves the ELI16 companion via the same convention the commit-time gate enforces (`scripts/eli16-overview-check.mjs`) and refuses if it is missing or a stub; (2) renders it as an auth-gated Private View (`POST /view` on port 4042, `INSTAR_AUTH_TOKEN`); (3) **verifies the tunnel link returns HTTP 200 before it is ever sent** — no broken links; (4) composes and delivers the review message (rendered ELI16 link first, full-spec PR link second).
+
+Backstop (Structure > Willpower): the pre-messaging gate (`convergence-check.sh`, criterion 8) **blocks** any hand-sent spec-review message that lacks a rendered `/view/` link, so the requirement cannot be silently skipped even if the script is bypassed.
 
 The skill does NOT auto-apply `approved: true`. That requires explicit human action — editing the frontmatter or running `instar spec approve <path>` (follow-on CLI command).
 
@@ -211,7 +333,7 @@ The skill does NOT auto-apply `approved: true`. That requires explicit human act
 
 - It does not build code. That's `/instar-dev`'s job, after both tags are present.
 - It does not relax convergence criteria to avoid iteration. 10-iteration cap exists to surface "this design is too confused to review" rather than to force false convergence.
-- It does not skip reviewer perspectives. The five internal reviewers + the cross-model external pass run on every round (subject to the abbreviated-convergence exception, which still runs the non-skippable lessons-aware reviewer).
+- It does not skip reviewer perspectives. The six internal reviewers + the cross-model external pass run on every round (subject to the abbreviated-convergence exception, which still runs the non-skippable lessons-aware and decision-completeness reviewers).
 - It does not auto-approve on behalf of the user. Approval is the user's structural contribution to the process.
 
 ## Bootstrap exception
@@ -229,7 +351,7 @@ The convergence check is structural. If the LLM comparator finds new material is
 A smaller finding count is NOT convergence. Convergence is zero material findings in a new round.
 
 ### Skipping a reviewer perspective to ship faster
-All five internal reviewers (security, scalability, adversarial, integration, lessons-aware) AND the cross-model external pass run on every round. Skipping is visible in the iteration log and fails the report validation. During pattern-instance abbreviated convergence, the external cross-model pass may be skipped to save cost — record that honestly as `cross-model-review: skipped-abbreviated` (distinct from `unavailable`: the framework may be present, but the author chose the fast path) — but the lessons-aware reviewer MUST run; it's the only structural defense against the spec-converge-pre-auth-circular failure mode.
+All six internal reviewers (security, scalability, adversarial, integration, decision-completeness, lessons-aware) AND the cross-model external passes run on every round (subject to Phase 3's delta-gating — an unchanged-body round delta-skips with a logged note, which is NOT a skip of the perspective). Skipping is visible in the iteration log and fails the report validation. **Abbreviated convergence may NO LONGER skip the external pass when the 7-day activation history shows a non-Claude framework** (`wasNonClaudeFrameworkActiveWithin` — see Phase 3's mandatory-check): a framework that was active at any point in the lookback makes externals mandatory, and a just-before-converge deactivation does not exempt the spec. `cross-model-review: skipped-abbreviated` remains a legitimate record ONLY for genuinely single-framework agents (no non-Claude framework anywhere in the lookback; distinct from `unavailable`). In ALL abbreviated runs the lessons-aware AND decision-completeness reviewers MUST still run; lessons-aware is the only structural defense against the spec-converge-pre-auth-circular failure mode.
 
 ### Rewriting the spec between iterations to hide findings
 Spec edits must address findings, not evade them. The iteration log records both the finding and the resolution. An edit that changes the spec to make the finding "not applicable" without actually solving the concern is caught at the next review round.

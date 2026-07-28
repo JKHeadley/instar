@@ -1,0 +1,1 @@
+{"ok":true,"result":{"messageId":"rope-probe:PROBER:cap-1","accepted":"sender-rejected"}}

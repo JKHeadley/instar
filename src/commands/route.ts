@@ -28,6 +28,7 @@ import {
   frameworkFromEnv,
   type IntelligenceFramework,
 } from '../core/intelligenceProviderFactory.js';
+import { createCodexExecJsonConfigResolver } from '../core/CodexCliIntelligenceProvider.js';
 import { PreferenceStore } from '../providers/uxConfirm/PreferenceStore.js';
 import { TaskClassifier } from '../providers/uxConfirm/TaskClassifier.js';
 import { OverrideDetector } from '../providers/uxConfirm/OverrideDetector.js';
@@ -50,6 +51,7 @@ const KNOWN_MODELS = [
   'sonnet-4.6',
   'haiku-4.5',
   'gpt-5.3-codex',
+  'gemini-2.5-flash',
   'gemini-2.5-pro',
   'deepseek-v4',
 ];
@@ -59,6 +61,7 @@ function resolveFramework(opt: string | undefined): IntelligenceFramework {
     const normalized = opt.toLowerCase();
     if (normalized === 'claude' || normalized === 'claude-code') return 'claude-code';
     if (normalized === 'codex' || normalized === 'codex-cli') return 'codex-cli';
+    if (normalized === 'gemini' || normalized === 'gemini-cli') return 'gemini-cli';
   }
   return frameworkFromEnv() ?? 'claude-code';
 }
@@ -78,6 +81,10 @@ export async function route(taskPrompt: string, options: RouteCommandOptions): P
     framework,
     binaryPath: framework === 'claude-code' ? config.sessions.claudePath : undefined,
     workingDirectory: config.stateDir,
+    // codex exec-json kill-switch — read from this project's config.json.
+    resolveExecJson: createCodexExecJsonConfigResolver(
+      path.join(options.dir ?? process.cwd(), '.instar', 'config.json'),
+    ),
   });
 
   if (!intelligence) {

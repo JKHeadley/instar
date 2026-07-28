@@ -42,8 +42,111 @@ export interface DecisionJournalStats {
   latest: string | null;
   /** Top principles referenced, sorted by frequency */
   topPrinciples: Array<{ principle: string; count: number }>;
+  /**
+   * Entries that DID name the principle/intent that guided the choice.
+   *
+   * Exists because `topPrinciples: []` is otherwise ambiguous between two
+   * very different journals: one with no entries at all, and one with many
+   * entries where nobody ever filled `principle`. The second is the failure
+   * this journal was built to detect (a decision kept, its reasoning
+   * discarded) and it previously rendered identically to a healthy empty
+   * journal — absence reading as presence.
+   */
+  principledCount: number;
+  /** Entries that did NOT name a guiding principle. */
+  unprincipledCount: number;
   /** Number of entries flagged as conflicting */
   conflictCount: number;
+}
+
+/** Fields a caller may submit over the agent-authored HTTP path. */
+export const DECISION_JOURNAL_WRITABLE_FIELDS = [
+  'sessionId',
+  'decision',
+  'principle',
+  'topicId',
+  'jobSlug',
+  'alternatives',
+  'confidence',
+  'context',
+  'conflict',
+  'tags',
+  'evidence',
+] as const;
+
+export interface DecisionSubmissionVerdict {
+  ok: boolean;
+  /** Machine-readable refusal reason; null when accepted. */
+  reason: 'missing-required' | 'unknown-fields' | null;
+  /** Human-facing explanation naming the offending fields. */
+  message: string | null;
+  /** Submitted keys that are not recorded by any reader. */
+  unknownFields: string[];
+  /** Required keys the submission omitted. */
+  missingFields: string[];
+}
+
+/**
+ * Validate an agent-authored decision submission BEFORE it is recorded.
+ *
+ * Two refusals, both earned from the same incident: an agent POSTed
+ * `reasoning` and `checkedAgainst`, believed it had recorded what the
+ * decision was checked against, and had not — neither key is read by
+ * anything. The write silently succeeded, so nothing could have caught it.
+ *
+ *  1. `principle` is REQUIRED. A decision recorded without naming what
+ *     guided it preserves THAT a choice was made and not WHY, which is the
+ *     one thing the journal exists to preserve.
+ *  2. Unknown fields are REFUSED rather than swallowed. Accepting a key no
+ *     reader consumes lets a caller believe it recorded something it did
+ *     not — the failure this function exists to make impossible.
+ *
+ * Pure: no I/O, no clock, no config. The machine-generated path
+ * (DispatchDecisionJournal → journal.log) deliberately does NOT run this —
+ * an auto-applied dispatch has no principle to cite and must not be blocked.
+ */
+export function validateDecisionSubmission(
+  body: Record<string, unknown> | null | undefined,
+): DecisionSubmissionVerdict {
+  const submitted = body && typeof body === 'object' ? body : {};
+  const allowed = new Set<string>(DECISION_JOURNAL_WRITABLE_FIELDS);
+
+  const unknownFields = Object.keys(submitted).filter(k => !allowed.has(k)).sort();
+
+  const missingFields = (['sessionId', 'decision', 'principle'] as const).filter(k => {
+    const v = (submitted as Record<string, unknown>)[k];
+    return typeof v !== 'string' || v.trim() === '';
+  });
+
+  if (missingFields.length > 0) {
+    return {
+      ok: false,
+      reason: 'missing-required',
+      message:
+        `Missing required field(s): ${missingFields.join(', ')}. ` +
+        `A decision must name the principle or intent that guided it — ` +
+        `recording the choice without the reasoning is what this journal exists to prevent.`,
+      unknownFields,
+      missingFields: [...missingFields],
+    };
+  }
+
+  if (unknownFields.length > 0) {
+    return {
+      ok: false,
+      reason: 'unknown-fields',
+      message:
+        `Unrecognised field(s): ${unknownFields.join(', ')}. ` +
+        `These would be stored but never read, so the submission would look ` +
+        `recorded without being recorded. Put the reasoning in 'context' and ` +
+        `the guiding intent in 'principle'. Writable fields: ` +
+        `${DECISION_JOURNAL_WRITABLE_FIELDS.join(', ')}.`,
+      unknownFields,
+      missingFields: [],
+    };
+  }
+
+  return { ok: true, reason: null, message: null, unknownFields: [], missingFields: [] };
 }
 
 export class DecisionJournal {
@@ -234,6 +337,8 @@ export class DecisionJournal {
         earliest: null,
         latest: null,
         topPrinciples: [],
+        principledCount: 0,
+        unprincipledCount: 0,
         conflictCount: 0,
       };
     }
@@ -244,10 +349,12 @@ export class DecisionJournal {
     // Count principles
     const principleCounts: Record<string, number> = {};
     let conflictCount = 0;
+    let principledCount = 0;
 
     for (const entry of entries) {
       if (entry.principle) {
         principleCounts[entry.principle] = (principleCounts[entry.principle] || 0) + 1;
+        principledCount++;
       }
       if (entry.conflict) {
         conflictCount++;
@@ -263,6 +370,8 @@ export class DecisionJournal {
       earliest: entries[0].timestamp,
       latest: entries[entries.length - 1].timestamp,
       topPrinciples,
+      principledCount,
+      unprincipledCount: entries.length - principledCount,
       conflictCount,
     };
   }

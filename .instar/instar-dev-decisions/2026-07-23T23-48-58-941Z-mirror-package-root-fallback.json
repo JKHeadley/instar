@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-23T23:48:58.941Z",
+  "slug": "mirror-package-root-fallback",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 70,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1580
+    ],
+    "notes": "PR #1580 shipped the first predictions mirror INSIDE the package at src/data/benchmarkPredictions.json, but mirrorStatus() resolved only against config.projectDir (the agent home). Verified on the serving machine: agent home is not a source checkout (no .git; src/data/ holds three unrelated files), so the shipped baseline was unreadable there while GET /benchmark-divergence reported the same benign present:false it reported before any baseline existed — indistinguishable from never-captured. Self-inflicted by #1580 and caught by verifying the deliverable end-to-end rather than trusting the merge."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

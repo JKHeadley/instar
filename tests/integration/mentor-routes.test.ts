@@ -93,6 +93,27 @@ describe('Mentor routes (integration)', () => {
     expect(status.body.lastResult?.mode).toBe('dry-run');
   });
 
+  it('GET /mentor/status preserves a delivery-breaker refusal as a distinct result', async () => {
+    const cfg: MentorConfig = { ...DEFAULT_MENTOR_CONFIG, enabled: true, mode: 'live' };
+    const svc: MentorRunnerServices = {
+      ...fakeServices(),
+      deliverToMentee: async () => ({
+        delivered: false,
+        reason: 'identical-content-retry-exhausted',
+      }),
+    };
+    const app = appWith(new MentorOnboardingRunner(svc, () => cfg));
+
+    expect((await request(app).post('/mentor/tick')).status).toBe(202);
+    await new Promise((r) => setTimeout(r, 10));
+    const status = await request(app).get('/mentor/status');
+    expect(status.body.lastResult).toMatchObject({
+      ran: true,
+      delivered: false,
+      deliveryReason: 'identical-content-retry-exhausted',
+    });
+  });
+
   it('POST /mentor/tick routes to the autonomous-fix guardian when enabled; spawns a loop session', async () => {
     const spawnLoopSession = vi.fn(async () => ({ sessionName: 'mentor-autoloop-int' }));
     const cfg: MentorConfig = {

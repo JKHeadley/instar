@@ -1,12 +1,13 @@
 /**
  * ThreadlineMCPServer — MCP Tool Server for Threadline Protocol.
  *
- * Exposes Threadline capabilities as up to 9 MCP tools:
+ * Exposes Threadline capabilities as up to 10 MCP tools:
  *   - threadline_discover         — Find Threadline-capable agents
  *   - threadline_send             — Send a message (with optional reply wait)
  *   - threadline_history          — Get conversation history (participant-only)
  *   - threadline_agents           — List known agents and status
  *   - threadline_delete           — Delete a thread permanently
+ *   - threadline_pair             — Inspect/drive verified pairings (verify/deny is PIN-gated)
  *   - threadline_registry_search  — Search the persistent agent registry (if registry available)
  *   - threadline_registry_update  — Update your registry listing (if registry available)
  *   - threadline_registry_status  — Check your registration status (if registry available)
@@ -119,6 +120,8 @@ export interface SendMessageParams {
   targetAgent: string;
   threadId?: string;
   message: string;
+  /** Exact inbound message id this outbound answers, when replying. */
+  inReplyTo?: string;
   waitForReply: boolean;
   timeoutSeconds: number;
   /** Optional originating Telegram topic ID. Per THREAD-TOPIC-LINKAGE-SPEC.md. */
@@ -138,6 +141,14 @@ export interface SendMessageResult {
   deliveryOutcome?: string;
   /** How the message was delivered (local, relay) */
   deliveryPath?: string;
+  /** Whether the content was actually delivered (false when withheld by the negotiator lease). */
+  delivered?: boolean;
+  /** True when the single-negotiator lease withheld this content send (G1 holding). */
+  held?: boolean;
+  /** Human-readable note (e.g. why content was withheld by the lease). */
+  note?: string;
+  /** Signal-only advisory nudge (e.g. commitment-class prose → anchor via mandate). */
+  advisory?: string;
 }
 
 export interface RequestSecretParams {
@@ -402,6 +413,7 @@ export class ThreadlineMCPServer {
     this.registerAgentsTool();
     this.registerDeleteTool();
     this.registerTrustTool();
+    this.registerPairTool();
     this.registerRelayTool();
 
     // Registry tools — only if registry client is available
@@ -553,6 +565,9 @@ export class ThreadlineMCPServer {
           'Thread ID to resume (omit for new conversation)'
         ),
         message: z.string().describe('Message content'),
+        inReplyTo: z.string().optional().describe(
+          'Exact inbound message id being answered. Required for replies so recovery can distinguish interleaved messages.'
+        ),
         waitForReply: z.boolean().default(false).describe(
           'Wait for the agent\'s response. Defaults to false so delivery acknowledgement returns promptly; set true only when the caller needs a synchronous reply.'
         ),
@@ -621,6 +636,7 @@ export class ThreadlineMCPServer {
             targetAgent: args.agentId,
             threadId: args.threadId,
             message: args.message,
+            inReplyTo: args.inReplyTo,
             waitForReply: args.waitForReply,
             timeoutSeconds: args.timeoutSeconds,
             originTopicId: args.originTopicId,
@@ -642,12 +658,22 @@ export class ThreadlineMCPServer {
             // the message. It's true unless the recipient reported an
             // error outcome. When no outcome info is available we default
             // to true (success path) — result.success is already checked above.
-            delivered: !(result.deliveryOutcome?.startsWith('error')),
+            // The single-negotiator lease can explicitly set delivered:false when
+            // it WITHHELD this non-owner content send (G1 holding) — honor it.
+            delivered: result.delivered !== undefined
+              ? result.delivered
+              : !(result.deliveryOutcome?.startsWith('error')),
             outcome: result.deliveryOutcome ?? 'accepted',
             deliveryPath: result.deliveryPath,
             threadId: result.threadId,
             messageId: result.messageId,
           };
+          // Surface the negotiator lease's holding note + the commitment-class
+          // advisory nudge so the sending session learns it is not the voice /
+          // is pointed at the anchored binding path (Robustness Phase 1).
+          if (result.held) response.held = true;
+          if (result.note) response.note = result.note;
+          if (result.advisory) response.advisory = result.advisory;
 
           if (args.waitForReply && result.reply) {
             response.reply = result.reply;
@@ -1111,6 +1137,125 @@ export class ThreadlineMCPServer {
               level: profile.level,
               source: profile.source,
               lastInteraction: profile.history.lastInteraction,
+            });
+          }
+
+          default:
+            return errorResult(`Unknown action: ${args.action}`);
+        }
+      },
+    );
+  }
+
+  // ── threadline_pair ───────────────────────────────────────────────
+  //
+  // Secure A2A Verified Pairing (docs/specs/secure-a2a-verified-pairing.md §3.6).
+  //
+  // `status` lists pairings and, for a pending-verification peer, surfaces the
+  // local SAS words for the operator to compare out-of-band against the peer's
+  // locally-rendered SAS (§3.9). This is the local-operator surface — same posture
+  // as threadline_trust (admin-only / local).
+  //
+  // `verify`/`deny` deliberately do NOT flip pairing state from here: the flip is
+  // PIN-gated at POST /threadline/pairing/:peerFp/verify (FD7 — the dashboard PIN,
+  // not the agent Bearer token, is the load-bearing authority). The MCP tool can
+  // SHOW the operator what to verify, but the confirmation itself must go through
+  // the dashboard verify panel (or the PIN-gated route). So these subcommands
+  // return guidance pointing the operator to the dashboard, never a silent flip.
+  private registerPairTool(): void {
+    this.mcpServer.tool(
+      'threadline_pair',
+      'Inspect and drive Secure A2A verified pairings (mutual SAS identity verification). ' +
+      'status: list pairings and show the local SAS words for a pending peer so the operator can ' +
+      'compare them out-of-band against the peer\'s SAS. verify/deny: the actual confirmation is ' +
+      'PIN-gated — these return the dashboard path the operator must use (the agent cannot self-confirm a pairing).',
+      {
+        action: z.enum(['status', 'verify', 'deny']).describe(
+          'status: list pairings (+ SAS for a pending peer). verify/deny: guidance to the PIN-gated dashboard flip.'
+        ),
+        fingerprint: z.string().optional().describe(
+          'Peer fingerprint — required for verify/deny; for status, scopes to one pairing (+ its SAS words if pending).'
+        ),
+      },
+      async (args) => {
+        // Admin-only / local-operator surface (mirrors threadline_trust).
+        const authError = this.checkAuth('threadline:admin');
+        if (authError && !this.requestContext.isLocal) {
+          return errorResult(authError);
+        }
+
+        const { trustManager } = this.deps;
+
+        switch (args.action) {
+          case 'status': {
+            if (args.fingerprint) {
+              const profile = trustManager.getProfileByFingerprint(args.fingerprint);
+              if (!profile || profile.pairingState === undefined) {
+                return errorResult(`No pairing for fingerprint "${args.fingerprint}"`);
+              }
+              const detail: Record<string, unknown> = {
+                peerFp: profile.fingerprint ?? args.fingerprint,
+                peerName: profile.agent,
+                state: profile.pairingState,
+                verifiedAt: profile.verifiedAt ?? null,
+                trustSource: profile.source,
+                peerAcked: profile.peerAcked ?? false,
+                pairingId: profile.pairingId ?? null,
+                sasFingerprint: profile.sasFingerprint ?? null,
+              };
+              // Local operator surface: show the SAS words for a pending pairing
+              // so the operator can compare them out-of-band against the peer's.
+              if (profile.pairingState === 'pending-verification') {
+                const pending = trustManager.getPendingPairing(args.fingerprint);
+                if (pending) {
+                  detail.sasWords = pending.sasWords;
+                  detail.instruction =
+                    'Compare these 6 SAS words IN ORDER with the peer\'s locally-rendered SAS over an ' +
+                    'out-of-band channel. If they match exactly, confirm via the dashboard Threadline ' +
+                    'pairing panel (PIN-gated). If they differ, deny — that is a MITM signal.';
+                }
+              }
+              return jsonResult({ pairing: detail });
+            }
+            const pairings = trustManager
+              .listProfiles()
+              .filter((p) => p.pairingState !== undefined)
+              .map((p) => ({
+                peerFp: p.fingerprint ?? null,
+                peerName: p.agent,
+                state: p.pairingState,
+                verifiedAt: p.verifiedAt ?? null,
+                trustSource: p.source,
+                peerAcked: p.peerAcked ?? false,
+              }));
+            return jsonResult({ count: pairings.length, pairings });
+          }
+
+          case 'verify':
+          case 'deny': {
+            if (!args.fingerprint) {
+              return errorResult(`fingerprint is required for ${args.action} action`);
+            }
+            const profile = trustManager.getProfileByFingerprint(args.fingerprint);
+            if (!profile || profile.pairingState === undefined) {
+              return errorResult(`No pairing for fingerprint "${args.fingerprint}"`);
+            }
+            // The flip is PIN-gated (FD7). The agent cannot confirm a pairing — the
+            // operator must do it through the dashboard pairing panel (or the
+            // PIN-gated POST /threadline/pairing/:peerFp/verify route). Return the
+            // path; NEVER a silent state change here.
+            const match = args.action === 'verify';
+            return jsonResult({
+              action: args.action,
+              peerFp: profile.fingerprint ?? args.fingerprint,
+              peerName: profile.agent,
+              currentState: profile.pairingState,
+              requiresOperatorPin: true,
+              message:
+                `Pairing ${args.action} is a human action gated by the dashboard PIN — the agent cannot ${args.action} a pairing. ` +
+                `Open the dashboard Threadline pairing panel and ${args.action} there, or POST ` +
+                `/threadline/pairing/${profile.fingerprint ?? args.fingerprint}/verify ` +
+                `with { "match": ${match}, "pin": "<dashboard PIN>" }.`,
             });
           }
 

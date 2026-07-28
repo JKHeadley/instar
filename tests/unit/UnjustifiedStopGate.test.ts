@@ -77,10 +77,12 @@ function baseInput(overrides: Partial<EvaluateInput> = {}): EvaluateInput {
 }
 
 describe('UnjustifiedStopGate — rule set constants', () => {
-  it('all nine rules are in ALL_RULES', () => {
-    expect(ALL_RULES.size).toBe(9);
+  it('all ten rules are in ALL_RULES', () => {
+    // 10 = the 9 original context-death rules + U_SELF_DEFERRAL (Phase-A
+    // Turn-End Self-Deferral Guard, an added allow-class rule).
+    expect(ALL_RULES.size).toBe(10);
     expect(CONTINUE_RULES).toHaveLength(3);
-    expect(ALLOW_RULES).toHaveLength(5);
+    expect(ALLOW_RULES).toHaveLength(6);
     expect(ESCALATE_RULES).toHaveLength(1);
   });
 

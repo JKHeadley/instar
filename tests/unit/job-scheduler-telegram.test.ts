@@ -221,7 +221,7 @@ describe('JobScheduler Telegram notifications', () => {
       await scheduler.notifyJobComplete(session.id, session.tmuxSession);
 
       // Should have tried original topic first, then created a new one
-      expect(mockTelegram.findOrCreateForumTopic).toHaveBeenCalledWith('⚙️ Job: Recreate Job', 13338331);
+      expect(mockTelegram.findOrCreateForumTopic).toHaveBeenCalledWith('⚙️ Job: Recreate Job', 13338331, { label: 'job-topics' });
       // Second sendToTopic call should be to the new topic
       expect(mockTelegram.sendToTopic).toHaveBeenCalledTimes(2);
       expect(mockTelegram.sendToTopic).toHaveBeenLastCalledWith(99, expect.any(String));

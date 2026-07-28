@@ -208,6 +208,7 @@ export class JobReflector {
         model,
         maxTokens,
         temperature: 0.3,
+        attribution: { component: 'JobReflector' }, // attribution for /metrics/features
       });
     } catch {
       return null;
