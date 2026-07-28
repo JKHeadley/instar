@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-22T20:40:00.000Z",
+  "slug": "failover-subprocess-check",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 120,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "makeSubprocessFailoverCheck: the injectable runFailoverCheck for SessionPoolFailoverRunner (#1552). Runs the merged #1551 real two-node failover E2E as a bounded subprocess and maps HONESTLY: exit0->green, non-zero->red, did-not-run-to-completion->THROW (runner records nothing; a transient infra failure never fabricates a green promotion or red demotion). Process spawn injected = pure module. Additive, dark (only used when the runner is enabled, which is itself dark). Built directly by Echo. tsc clean, 6/6 green."
+}

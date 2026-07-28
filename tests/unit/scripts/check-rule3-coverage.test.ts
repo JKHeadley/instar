@@ -30,9 +30,19 @@ delete childEnv.GIT_INDEX_FILE;
 delete childEnv.GIT_OBJECT_DIRECTORY;
 delete childEnv.GIT_COMMON_DIR;
 
+/**
+ * Run the COPY of the script inside the tmp repo, not the original.
+ *
+ * The script resolves the state-detector registry from `__dirname/../specs/`,
+ * so running the original made it read the real repo's registry while reading
+ * staged files from the tmp repo. `beforeEach` has always copied the script in
+ * — the copy was simply never executed, so every registry fixture was silently
+ * ignored and the "already in the registry" branch had no reachable coverage.
+ */
 function runCheck(cwd: string): { exitCode: number; stderr: string } {
+  const scriptInRepo = path.join(cwd, 'scripts', 'check-rule3-coverage.cjs');
   try {
-    execFileSync('node', [SCRIPT_PATH], { cwd, encoding: 'utf-8', stdio: 'pipe', env: childEnv });
+    execFileSync('node', [scriptInRepo], { cwd, encoding: 'utf-8', stdio: 'pipe', env: childEnv });
     return { exitCode: 0, stderr: '' };
   } catch (err) {
     const e = err as { status: number; stderr: Buffer | string };
@@ -45,6 +55,19 @@ function stage(cwd: string, filepath: string, content: string): void {
   fs.mkdirSync(path.dirname(full), { recursive: true });
   fs.writeFileSync(full, content, 'utf-8');
   execFileSync('git', ['add', filepath], { cwd, stdio: 'pipe', env: childEnv });
+}
+
+/**
+ * Overwrite the tmp repo's state-detector registry with the given table rows.
+ * The default fixture registry is empty, so the "already in the registry"
+ * branch of the gate was never exercised before these tests.
+ */
+function writeRegistry(cwd: string, ...rows: string[]): void {
+  fs.writeFileSync(
+    path.join(cwd, 'specs', 'provider-portability', '06-state-detector-registry.md'),
+    ['# Registry', '', '| Location | Status |', '|---|---|', ...rows, ''].join('\n'),
+    'utf-8',
+  );
 }
 
 describe('check-rule3-coverage.cjs', () => {
@@ -75,6 +98,39 @@ describe('check-rule3-coverage.cjs', () => {
     stage(repo, 'src/core/banal.ts', 'export const x = 1;');
     const result = runCheck(repo);
     expect(result.exitCode).toBe(0);
+  });
+
+  // A registry entry does NOT exempt on its own: the gate requires
+  // `inRegistry && (hasRationale || hasCanary)`. These two cases therefore
+  // stage a registered file that carries a rationale but no canary — the
+  // combination the registry branch exists to serve.
+  //
+  // The registry's Location column is section-relative. Most sections write
+  // paths relative to src/, but the provider-substrate section writes them
+  // relative to src/providers/ (21 of its 23 rows, measured on main).
+  const RATIONALE = '/** RULE 3.1 RATIONALE — advisory read; loud fallback. */';
+
+  it('accepts a registered file with a rationale when the registry path is relative to src/', () => {
+    writeRegistry(repo, '| `core/Widget.ts` — parses a subprocess result | 🔵 Exempt |');
+    stage(repo, 'src/core/Widget.ts', `${RATIONALE}\nexport const r = JSON.parse(stdout);`);
+    expect(runCheck(repo).exitCode).toBe(0);
+  });
+
+  it('accepts a registered provider file with a rationale when the registry path is relative to src/providers/', () => {
+    writeRegistry(
+      repo,
+      '| `adapters/openai-codex/observability/logTailer.ts` — parses a subprocess result | 🔵 Exempt |',
+    );
+    stage(
+      repo,
+      'src/providers/adapters/openai-codex/observability/logTailer.ts',
+      `${RATIONALE}\nexport const r = JSON.parse(stdout);`,
+    );
+    // Before the section-relative fix this failed: the gate stripped only
+    // `src/`, looked for `providers/adapters/...`, never matched the row that
+    // was right there, and refused the file for "registry entry or canary
+    // file" — telling the author to add a row that already existed.
+    expect(runCheck(repo).exitCode).toBe(0);
   });
 
   it('blocks when a staged source file fetches from Anthropic without canary or rationale', () => {
@@ -357,5 +413,100 @@ export const _x = OpenAI;`,
     );
     const result = runCheck(repo);
     expect(result.exitCode).toBe(0);
+  });
+});
+
+/**
+ * Merge semantics.
+ *
+ * A merge stages every file that differs between the branch base and the
+ * incoming ref. Judging that whole index as the committer's work makes anyone
+ * merging `main` into an older branch the author of all of `main` — so they are
+ * refused for pre-existing violations absent from their own diff, which they
+ * cannot see and did not write.
+ *
+ * The committer's real contribution to a merge is what differs from the
+ * INCOMING ref (`MERGE_HEAD`). A file taken verbatim from the incoming side was
+ * not authored here; a conflict resolution was.
+ */
+describe('check-rule3-coverage.cjs — merge semantics', () => {
+  let repo: string;
+  // `init.defaultBranch` varies by machine (main / master / anything). Capture
+  // the real name instead of hardcoding one — a hardcoded guess passes on the
+  // author's box and fails on everyone else's.
+  let baseBranch: string;
+
+  function git(cwd: string, ...args: string[]): string {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: 'pipe', env: childEnv });
+  }
+
+  beforeEach(() => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'rule3-merge-'));
+    git(repo, 'init', '-q');
+    git(repo, 'config', 'user.email', 'test@example.com');
+    git(repo, 'config', 'user.name', 'test');
+    fs.mkdirSync(path.join(repo, 'scripts'), { recursive: true });
+    fs.copyFileSync(SCRIPT_PATH, path.join(repo, 'scripts', 'check-rule3-coverage.cjs'));
+    fs.mkdirSync(path.join(repo, 'specs', 'provider-portability'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, 'specs', 'provider-portability', '06-state-detector-registry.md'),
+      '# Registry\n\n(Empty for tests.)\n',
+    );
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'base');
+    baseBranch = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim();
+    git(repo, 'branch', 'incoming');
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('does NOT judge a violating file that came verbatim from the incoming ref', () => {
+    // The incoming branch introduces the violation — as `main` did with
+    // devClaimCheck.ts. The merging author never touched it.
+    git(repo, 'checkout', '-q', 'incoming');
+    stage(repo, 'src/core/TheirViolation.ts', 'export const r = JSON.parse(stdout);');
+    git(repo, 'commit', '-q', '-m', 'incoming adds a detector');
+
+    git(repo, 'checkout', '-q', baseBranch);
+    stage(repo, 'src/core/OurUnrelated.ts', 'export const x = 1;');
+    git(repo, 'commit', '-q', '-m', 'ours');
+
+    // --no-commit leaves MERGE_HEAD set, which is the state the hook runs in.
+    try {
+      git(repo, 'merge', '--no-commit', '--no-ff', 'incoming');
+    } catch {
+      /* a no-commit merge exits non-zero by design; the index is what matters */
+    }
+    // Sanity: the file IS staged (so a pass here is not vacuous — it means the
+    // gate looked at the index and correctly attributed the file elsewhere).
+    expect(git(repo, 'diff', '--cached', '--name-only')).toContain('src/core/TheirViolation.ts');
+
+    expect(runCheck(repo).exitCode).toBe(0);
+  });
+
+  it('DOES judge a file the author resolved differently from the incoming ref', () => {
+    // Both sides touch the same file; the author resolves it with violating
+    // content. That content exists on neither parent — it was authored here.
+    git(repo, 'checkout', '-q', 'incoming');
+    stage(repo, 'src/core/Contested.ts', 'export const a = 1;\n');
+    git(repo, 'commit', '-q', '-m', 'incoming version');
+
+    git(repo, 'checkout', '-q', baseBranch);
+    stage(repo, 'src/core/Contested.ts', 'export const b = 2;\n');
+    git(repo, 'commit', '-q', '-m', 'our version');
+
+    try {
+      git(repo, 'merge', '--no-commit', '--no-ff', 'incoming');
+    } catch {
+      /* conflict expected */
+    }
+    // The author's resolution introduces the detector.
+    stage(repo, 'src/core/Contested.ts', 'export const r = JSON.parse(stdout);\n');
+
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('src/core/Contested.ts');
   });
 });

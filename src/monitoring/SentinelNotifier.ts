@@ -39,6 +39,7 @@ export type SentinelEventKind =
   | 'nudge-error'
   | 'recovery-error'
   | 'notify-error'
+  | 'recovering' // ActiveWorkSilenceSentinel auto-heal: respawn in progress
   // ContextWedgeSentinel transitions (thinking-block-400 wedge):
   | 'dry-run' // autoRecovery dry-run — would have fresh-respawned, killed nothing
   | 'false-alarm'; // confirm-window expired with the signature scrolled out of tail

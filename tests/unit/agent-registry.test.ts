@@ -502,4 +502,108 @@ describe('AgentRegistry', () => {
       expect(port).toBeGreaterThan(4045);
     });
   });
+
+  // ── Registry lost-update race (2026-06-05 incident) ─────────────────
+  // Back-to-back update restarts: the OLD server generation's shutdown ran
+  // `unregisterAgent(projectDir)` AFTER the successor had re-registered —
+  // removal-by-path deleted the successor's fresh entry, the agent vanished
+  // from the registry (live trace: "Registered agent \"echo\"" logged at
+  // 13:11 AND 13:18, entry absent at 13:21+), and heartbeat() silently
+  // no-oped on the missing entry forever. Fix: pid-guarded unregister +
+  // self-resurrecting heartbeat.
+  describe('registry lost-update race (pid-guarded unregister + resurrecting heartbeat)', () => {
+    it('pid-guarded unregister does NOT delete a successor generation\'s entry', async () => {
+      const { registerAgent, unregisterAgent, getAgent } = await getRegistry();
+      // Successor generation registers (pid 200)…
+      registerAgent('/tmp/race-project', 'race-agent', 4060, 'project-bound', 200);
+      // …then the OLD generation's late shutdown fires its pid-guarded
+      // unregister (its own pid was 100).
+      unregisterAgent('/tmp/race-project', { onlyIfPid: 100 });
+      const agent = getAgent('/tmp/race-project');
+      expect(agent).not.toBeNull();
+      expect(agent!.pid).toBe(200);
+    });
+
+    it('pid-guarded unregister removes the entry when the pid matches (normal shutdown)', async () => {
+      const { registerAgent, unregisterAgent, getAgent } = await getRegistry();
+      registerAgent('/tmp/race-project', 'race-agent', 4060, 'project-bound', 100);
+      unregisterAgent('/tmp/race-project', { onlyIfPid: 100 });
+      expect(getAgent('/tmp/race-project')).toBeNull();
+    });
+
+    it('unguarded unregister still removes regardless of pid (operator/CLI back-compat)', async () => {
+      const { registerAgent, unregisterAgent, getAgent } = await getRegistry();
+      registerAgent('/tmp/race-project', 'race-agent', 4060, 'project-bound', 12345);
+      unregisterAgent('/tmp/race-project');
+      expect(getAgent('/tmp/race-project')).toBeNull();
+    });
+
+    it('heartbeat returns true when the entry exists and false when it is missing', async () => {
+      const { registerAgent, heartbeat } = await getRegistry();
+      registerAgent('/tmp/hb-project', 'hb-agent', 4061, 'project-bound', process.pid);
+      expect(heartbeat('/tmp/hb-project')).toBe(true);
+      expect(heartbeat('/tmp/never-registered')).toBe(false);
+    });
+
+    it('startHeartbeat resurrects a deleted entry via the reRegister callback', async () => {
+      const { registerAgent, unregisterAgent, startHeartbeat, getAgent } = await getRegistry();
+      registerAgent('/tmp/resurrect-project', 'resurrect-agent', 4062, 'project-bound', process.pid);
+      // Simulate the race outcome: something deleted our registration while
+      // the server is still alive.
+      unregisterAgent('/tmp/resurrect-project');
+      expect(getAgent('/tmp/resurrect-project')).toBeNull();
+
+      // startHeartbeat's INITIAL beat finds the entry missing → reRegister.
+      const stop = startHeartbeat('/tmp/resurrect-project', 60_000, () => {
+        registerAgent('/tmp/resurrect-project', 'resurrect-agent', 4062, 'project-bound', process.pid);
+      });
+      try {
+        const agent = getAgent('/tmp/resurrect-project');
+        expect(agent).not.toBeNull();
+        expect(agent!.name).toBe('resurrect-agent');
+      } finally {
+        stop();
+      }
+    });
+
+    it('startHeartbeat without a reRegister callback leaves a missing entry missing (old behavior)', async () => {
+      const { startHeartbeat, getAgent } = await getRegistry();
+      const stop = startHeartbeat('/tmp/no-callback-project', 60_000);
+      try {
+        expect(getAgent('/tmp/no-callback-project')).toBeNull();
+      } finally {
+        stop();
+      }
+    });
+
+    it('a reRegister callback that throws is contained (heartbeat loop survives)', async () => {
+      const { startHeartbeat, getAgent } = await getRegistry();
+      const stop = startHeartbeat('/tmp/throwing-cb-project', 60_000, () => {
+        throw new Error('port conflict');
+      });
+      try {
+        // No crash, entry simply stays missing until a later beat succeeds.
+        expect(getAgent('/tmp/throwing-cb-project')).toBeNull();
+      } finally {
+        stop();
+      }
+    });
+
+    it('full race shape: register(old) → register(successor) → old pid-guarded shutdown → successor survives and heartbeats', async () => {
+      const { registerAgent, unregisterAgent, heartbeat, getAgent } = await getRegistry();
+      const OLD_PID = 1111;
+      const NEW_PID = 2222;
+      // Old generation running…
+      registerAgent('/tmp/full-race', 'full-race-agent', 4063, 'project-bound', OLD_PID);
+      // …update restart: successor registers (upsert by path — pid moves to successor)…
+      registerAgent('/tmp/full-race', 'full-race-agent', 4063, 'project-bound', NEW_PID);
+      // …old generation's late shutdown fires its guarded unregister.
+      unregisterAgent('/tmp/full-race', { onlyIfPid: OLD_PID });
+      // Successor's registration survives and its heartbeat finds it.
+      const agent = getAgent('/tmp/full-race');
+      expect(agent).not.toBeNull();
+      expect(agent!.pid).toBe(NEW_PID);
+      expect(heartbeat('/tmp/full-race')).toBe(true);
+    });
+  });
 });

@@ -55,10 +55,27 @@
       position: relative;
     }
 
-    /* Hamburger toggle — visible only on mobile, sits in the header row */
+    /* Navigation menu button — grouped-nav trigger at ALL widths (F2, dashboard-ux-standard).
+       Reachability floor: 25 tabs can't fit a flat bar, so a single grouped menu opens from here. */
     .nav-toggle {
-      display: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 16px;
+      padding: 8px 14px;
+      min-height: 38px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      flex-shrink: 0;
     }
+    .nav-toggle:hover { background: var(--bg-hover); }
+    .nav-toggle[aria-expanded="true"] { background: var(--bg-active); border-color: var(--accent); }
+    #navToggleLabel { font-weight: 600; color: var(--text-bright); }
 
     .header-left {
       display: flex;
@@ -212,9 +229,37 @@
       background: #3a2a1b;
       color: #fbbf24;
     }
-    /* A session running on ANOTHER machine — visible, but its terminal can't
-       stream here (open that machine's dashboard to interact). */
-    .session-item.remote { opacity: 0.8; cursor: default; }
+    /* Genuine cross-machine duplicate (CMT-1936 part c): the SAME conversation
+       has a live session on 2+ machines at once — the real incoherency, loud
+       and red. (The same recurring job on each machine is benign and never
+       gets this badge.) */
+    .duplicate-badge {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      background: #4e1b1b;
+      color: #f87171;
+    }
+    /* A session running on ANOTHER machine — now clickable; selecting it
+       streams its terminal here via the cross-machine relay (§2.2). The badge
+       already names the machine, so a slightly dimmed row is enough hint. */
+    .session-item.remote { opacity: 0.9; cursor: pointer; }
+    .session-item.remote:hover { opacity: 1; }
+    /* WS4.2: explicit per-machine state when a pool machine has no session
+       tiles — an idle machine must never look identical to a broken one.
+       Plain flex row; inherits the sidebar width (mobile-safe). */
+    .machine-status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--text-dim, #8b8fa3);
+      border-top: 1px dashed rgba(139, 143, 163, 0.25);
+    }
+    .machine-status-row.offline .machine-status-text { color: #f87171; }
+    .machine-status-row.online .machine-status-text { opacity: 0.85; }
 
     .type-badge {
       padding: 1px 6px;
@@ -511,6 +556,121 @@
       background: var(--bg);
     }
 
+    /* ── REQUIRED placement for every tab panel declared after </main> ──
+       Those panels are direct .app grid children. switchTab() hides the
+       sidebar too, so WITHOUT explicit grid placement the lone visible
+       panel auto-places into the 280px sidebar COLUMN — the "squished to
+       the side" bug (operator report 2026-07-08). Every after-main panel
+       MUST carry class="tab-panel" (or one of the container classes that
+       already sets grid-column: files/jobs/systems/features/dropzone, or
+       ph-root). Enforced structurally:
+       tests/unit/dashboard-panel-placement.test.ts fails on a bare panel. */
+    .tab-panel {
+      grid-column: 1 / -1;
+      min-width: 0;
+      background: var(--bg);
+    }
+
+    /* F3 — Dashboard UX Standard: every tab's plain-language purpose line.
+       One muted, readable sentence directly under the tab header telling a
+       non-expert what the tab is for and what they can do here. Enforced by
+       tests/unit/dashboard-tab-purpose.test.ts.
+
+       F7 — CANONICAL purpose-line class. `.tab-purpose` is the shared vocabulary
+       every NEW tab should use for its purpose line. Three legacy variants still
+       exist and carry their own deliberately-distinct sizing — `.ph-intro`
+       (Process-Health design-system intro, larger), `.features-subtitle`, and
+       `.dropzone-subtitle` — all recognized by the F3 floor test. Per the spec
+       (docs/specs/dashboard-ux-standard.md, FD-3) F7 is soft-first: consolidating
+       those three into `.tab-purpose` is a tracked migration (it changes their
+       visual size, so it is done deliberately, not big-bang). Until then: reach
+       for `.tab-purpose`; do not add a fifth variant or an inline-styled line. */
+    .tab-purpose {
+      font-size: 13px;
+      color: var(--text-dim);
+      line-height: 1.5;
+      margin: 0 0 4px 0;
+      max-width: 900px;
+    }
+
+    /* ── Glance component (Dashboard UX Standard F10/F11, topic 29836) ──
+       The shared three-layer template rendered by dashboard/glance.js: a
+       plain-English headline + ≤5 labeled tiles (Layer 1), each drilling into a
+       list (Layer 2) then a full record (Layer 3). Theme-consistent + mobile
+       responsive (tiles/records reflow; nothing scrolls the page sideways). */
+    .glance-root { display: flex; flex-direction: column; gap: 16px; }
+    .glance-layer { display: flex; flex-direction: column; gap: 16px; }
+    .glance-headline {
+      font-size: 20px; font-weight: 600; line-height: 1.4;
+      color: var(--text-bright); max-width: 900px;
+    }
+    .glance-tiles {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    }
+    .glance-tile {
+      display: flex; flex-direction: column; gap: 4px; align-items: flex-start;
+      padding: 16px; border: 1px solid var(--border); border-radius: 10px;
+      background: var(--bg-panel); color: var(--text); cursor: pointer;
+      text-align: left; min-width: 0;
+      transition: background .15s, border-color .15s;
+    }
+    .glance-tile:hover { background: var(--bg-hover); border-color: var(--accent-dim); }
+    .glance-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .glance-tile[aria-expanded="true"] { border-color: var(--accent); background: var(--bg-active); }
+    .glance-tile-value { font-size: 28px; font-weight: 700; color: var(--text-bright); }
+    .glance-tile-label { font-size: 13px; color: var(--text-dim); }
+    .glance-tile[data-tone="warn"] .glance-tile-value { color: var(--orange); }
+    .glance-tile[data-tone="muted"] .glance-tile-value { color: var(--text-dim); }
+    .glance-tile-degraded { justify-content: center; }
+    .glance-tile-degraded .glance-tile-label { color: var(--text); font-weight: 600; }
+    .glance-drilldown {
+      border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel);
+      padding: 16px; display: flex; flex-direction: column; gap: 12px;
+    }
+    .glance-drilldown[hidden] { display: none; }
+    .glance-drill-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .glance-drill-title { font-weight: 600; color: var(--text-bright); }
+    .glance-drill-back {
+      padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--bg-hover); color: var(--text); cursor: pointer; font-size: 12px;
+    }
+    .glance-drill-back:hover { border-color: var(--accent-dim); }
+    .glance-list { display: flex; flex-direction: column; gap: 8px; }
+    .glance-list-row {
+      text-align: left; padding: 12px 14px; border: 1px solid var(--border);
+      border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer;
+      line-height: 1.4; width: 100%;
+    }
+    .glance-list-row:hover { background: var(--bg-hover); border-color: var(--accent-dim); }
+    .glance-empty { padding: 24px; text-align: center; color: var(--text-dim); }
+    .glance-record { display: flex; flex-direction: column; gap: 10px; }
+    .glance-record-fields { display: flex; flex-direction: column; gap: 6px; }
+    .glance-record-row {
+      display: grid; grid-template-columns: minmax(80px, 140px) 1fr; gap: 10px; font-size: 13px;
+    }
+    .glance-record-key { color: var(--text-dim); }
+    .glance-record-val { color: var(--text); word-break: break-word; overflow-wrap: anywhere; }
+    .glance-record-action {
+      align-self: flex-start; margin-top: 8px; padding: 6px 12px;
+      border: 1px solid var(--border); border-radius: 6px; background: var(--bg-hover);
+      color: var(--text); cursor: pointer;
+    }
+    .glance-record-action:hover { border-color: var(--accent-dim); }
+    .glance-record-action { text-decoration: none; } /* also covers anchor actions */
+    /* Phase 4: a row of actions on a Layer-3 record (e.g. a secret's open/copy/cancel). */
+    .glance-record-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .glance-record-actions .glance-record-action { margin-top: 0; }
+    /* Phase 3: the #1429 editable nickname field (in a machine's Layer-3 record) and
+       the warn-toned Layer-2 rows (a machine or safety check that needs a look). */
+    .glance-record-input {
+      padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--bg); color: var(--text); font-size: 13px; max-width: 260px;
+    }
+    .glance-record-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+    .glance-record-input[data-rename-error] { border-color: var(--orange); }
+    .glance-list-row[data-tone="warn"] { border-left: 3px solid var(--orange); }
+
     .terminal-header {
       display: flex;
       align-items: center;
@@ -736,41 +896,69 @@
     ::-webkit-scrollbar-thumb:hover { background: #444; }
 
     /* ── Tab bar ──────────────────────────────────────────── */
+    /* Grouped navigation menu (F2, dashboard-ux-standard) — one dropdown at ALL widths,
+       opened by .nav-toggle. Hidden until .app.nav-open. Replaces the old horizontal bar
+       that clipped 17 of 25 tabs with no reachable affordance. */
     .tab-bar {
-      display: flex;
-      gap: 0;
-      margin-left: 24px;
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
-      scrollbar-width: none; /* hide scrollbar on Firefox */
+      position: absolute;
+      top: 100%;
+      left: 16px;
+      width: 320px;
+      max-width: calc(100vw - 32px);
+      display: none;
+      flex-direction: column;
+      gap: 2px;
+      padding: 8px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 0 0 10px 10px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+      z-index: 100;
+      max-height: calc(100vh - 64px);
+      overflow-y: auto;
     }
-    .tab-bar::-webkit-scrollbar { display: none; }
+    .app.nav-open .tab-bar { display: flex; }
+
+    /* Group headers inside the menu (grouped sections). */
+    .tab-group { display: flex; flex-direction: column; gap: 2px; }
+    .tab-group + .tab-group { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+    .tab-group-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      padding: 4px 10px 2px;
+    }
 
     .tab-bar .tab {
-      padding: 6px 16px;
-      border: 1px solid var(--border);
-      border-radius: 6px 6px 0 0;
-      background: var(--bg);
-      color: var(--text-dim);
-      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      width: 100%;
+      text-align: left;
+      padding: 9px 12px;
+      min-height: 40px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text);
+      font-size: 14px;
       font-weight: 500;
       cursor: pointer;
-      border-bottom: none;
-      margin-bottom: -1px;
       transition: color 0.15s, background 0.15s;
-      white-space: nowrap;
-      flex-shrink: 0;
     }
 
     .tab-bar .tab:hover {
-      color: var(--text);
+      color: var(--text-bright);
       background: var(--bg-hover);
     }
 
     .tab-bar .tab.active {
-      background: var(--bg-panel);
+      background: var(--bg-active);
       color: var(--accent);
-      border-color: var(--border);
+      border-color: var(--accent);
     }
 
     .tab-bar .tab-count {
@@ -790,6 +978,77 @@
       display: none !important;
     }
 
+    /* Mandates tab */
+    .mnd-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .mnd-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .mnd-scope { font-size: 17px; font-weight: 600; color: var(--text-bright); }
+    .mnd-badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+    .mnd-ok { color: #3fb950; border-color: #3fb95055; }
+    .mnd-bad { color: #f85149; border-color: #f8514955; font-weight: 700; }
+    .mnd-deny { color: #d29922; border-color: #d2992255; }
+    .mnd-dead { color: var(--text-dim); }
+    /* Internals (id, fingerprints, scope slug, action slugs) are SUPPORT
+       metadata only — de-emphasized, never the headline (Operator-Surface
+       Quality item 2). */
+    .mnd-meta { font-size: 12px; color: var(--text-dim); }
+    /* The card's plain-language headline sentence — the primary content. */
+    .mnd-summary { margin: 0; font-size: 15px; line-height: 1.5; color: var(--text-bright); }
+    .mnd-empty { font-size: 16px; color: var(--text-dim); line-height: 1.6; padding: 12px 0; }
+    .mnd-revoke-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 4px; }
+    .mnd-pin { width: 110px; } .mnd-reason { flex: 1; min-width: 160px; }
+    .mnd-btn { padding: 6px 14px; cursor: pointer; }
+    .mnd-btn-primary { font-weight: 600; }
+    /* Destructive action: quiet by design, never featured (item 3). */
+    .mnd-btn-danger { color: #f85149; font-weight: 400; }
+    .mnd-dead-note { font-size: 13px; color: var(--text-dim); font-style: italic; }
+    .mnd-grants-head { font-size: 13px; color: var(--text-dim); }
+    .mnd-grants { margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.7; }
+    .mnd-grant-id { color: var(--text-dim); font-size: 12px; }
+    /* The grant form is the card's PRIMARY action — an open, titled block, never
+       a collapsed toggle (Operator-Surface Quality item 1). */
+    .mnd-grant-block { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 2px; }
+    .mnd-grant-title { font-size: 14px; font-weight: 600; color: var(--text-bright); margin-bottom: 6px; }
+    .mnd-grant-sep { font-size: 13px; color: var(--text-dim); }
+    /* Revoke is demoted to a quiet, collapsed secondary control (item 3). */
+    .mnd-revoke-details { font-size: 13px; margin-top: 4px; }
+    .mnd-revoke-summary { cursor: pointer; color: var(--text-dim); font-size: 13px; }
+    .mnd-about { font-size: 14px; color: var(--text-dim); margin-top: -8px; }
+    .mnd-about summary { cursor: pointer; }
+    .mnd-about p { margin: 8px 0 0; line-height: 1.55; }
+    .mnd-grant-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 4px; }
+    .mnd-grant-field { min-width: 130px; max-width: 100%; padding: 6px 8px; }
+    .mnd-approval-card { border: 1px solid var(--accent, #2f81f7); border-radius: 12px; padding: 16px 18px; margin-bottom: 12px; background: rgba(47,129,247,0.06); display: flex; flex-direction: column; gap: 10px; }
+    .mnd-approval-ask { font-size: 13px; opacity: 0.75; }
+    .mnd-approval-headline { font-size: 18px; font-weight: 600; line-height: 1.4; }
+    .mnd-approval-reason { font-size: 13px; opacity: 0.7; border-left: 3px solid var(--border); padding-left: 10px; }
+    .mnd-btn-quiet { opacity: 0.7; font-weight: 400; }
+    .mnd-notice { min-height: 20px; font-size: 14px; color: #3fb950; }
+    .mnd-issue-form { display: flex; flex-direction: column; gap: 14px; max-width: 640px; padding: 12px 0; }
+    .mnd-issue-form label { display: flex; flex-direction: column; gap: 4px; font-size: 15px; color: var(--text-bright); }
+    .mnd-issue-form input, .mnd-issue-form textarea { font: inherit; padding: 8px 10px; border-radius: 6px; }
+    .mnd-issue-form textarea { font-family: ui-monospace, monospace; font-size: 13px; }
+    .mnd-hint { font-size: 13px; color: var(--text-dim); font-weight: 400; line-height: 1.45; }
+    .mnd-prefilled { font-size: 12px; color: var(--ph-accent, #4ade80); }
+    /* Issue-form feedback: PERSISTENT, not a transient toast. A failed issuance
+       the operator never sees (the 2026-06-05 incident) is worse than no form. */
+    .mnd-notice-err { border: 1px solid #b91c1c; background: rgba(185, 28, 28, 0.12); color: #fca5a5; padding: 12px 14px; border-radius: 8px; font-size: 15px; line-height: 1.5; white-space: pre-line; }
+    .mnd-notice-ok { border: 1px solid #15803d; background: rgba(21, 128, 61, 0.12); color: #86efac; padding: 12px 14px; border-radius: 8px; font-size: 17px; font-weight: 600; line-height: 1.5; }
+    .mnd-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .mnd-table th, .mnd-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .mnd-reason-cell { color: var(--text-dim); }
+    .mnd-audit-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+    .mnd-dim { font-size: 13px; color: var(--text-dim); }
+    /* Mobile-first (item 5): at phone width the 5-column audit table stacks into
+       labelled rows so the reason — the useful column — is never truncated. */
+    @media (max-width: 640px) {
+      .mnd-table thead { position: absolute; left: -9999px; }
+      .mnd-table tr { display: block; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; padding: 6px 4px; }
+      .mnd-table td { display: flex; justify-content: space-between; gap: 12px; border-bottom: none; padding: 4px 8px; }
+      .mnd-table td::before { content: attr(data-label); font-weight: 600; color: var(--text-dim); flex: 0 0 auto; }
+      .mnd-reason-cell { text-align: right; word-break: break-word; }
+      .mnd-grant-field, .mnd-pin, .mnd-reason { width: 100%; min-width: 0; flex: 1 1 100%; }
+    }
+
     /* ── process-health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC §4.1) ──
        Large, readable, calm. No monospace, no tables, no alarm colors.
        Measurable bars: headline ≥24px, section headers ≥20px, body ≥17px,
@@ -797,10 +1056,26 @@
        maturation "you're here" marker. */
     .ph-root {
       --ph-accent: #4ade80;
+      /* Grid placement for after-main panels is now the shared .tab-panel
+         contract (see the .tab-panel rule + the placement floor test:
+         tests/unit/dashboard-panel-placement.test.ts). ph-root keeps its own
+         grid-column because it ALSO constrains width for prose readability. */
+      grid-column: 1 / -1;
       max-width: 760px;
+      width: 100%;
       font-size: 18px;
       line-height: 1.55;
       color: var(--text-bright);
+    }
+    /* Subscriptions is an operational matrix, not a prose reading column.
+       Keep Process Health's calm 760px measure scoped to .ph-root while this
+       tab uses the full app canvas with responsive gutters. */
+    .subscriptions-root {
+      grid-column: 1 / -1;
+      max-width: none;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
     }
     .ph-title { font-size: 22px; font-weight: 600; color: var(--text-bright); line-height: 1.5; }
     .ph-stamp { font-size: 14px; color: var(--text-dim); }
@@ -900,6 +1175,7 @@
     .files-container {
       display: flex;
       grid-column: 1 / -1;
+      min-width: 0; /* F4 — a grid child must be able to shrink below content width, else it blows out the row and the body scrolls sideways */
       overflow: hidden;
       background: var(--bg);
     }
@@ -1339,6 +1615,7 @@
     .toast.success { background: #166534; border: 1px solid #22c55e; }
     .toast.error { background: #7f1d1d; border: 1px solid #ef4444; }
     .toast.warning { background: #713f12; border: 1px solid #eab308; }
+    .toast.info { background: #1e3a8a; border: 1px solid #60a5fa; }
 
     @keyframes toastIn {
       from { opacity: 0; transform: translateY(8px); }
@@ -1541,6 +1818,15 @@
       background: rgba(239, 68, 68, 0.1);
     }
 
+    /* In-flight close (REMOTE-SESSION-CLOSE-SPEC §2.2): a relayed close can
+       take up to ~5s against a dead peer — show pending, not an inert button
+       the user double-clicks into parallel relays. !important outranks the
+       hover/active opacity rules above. */
+    .session-close-btn:disabled {
+      opacity: 0.35 !important;
+      cursor: wait;
+    }
+
     .session-name-row {
       display: flex;
       align-items: center;
@@ -1701,6 +1987,7 @@
     .jobs-container {
       display: flex;
       grid-column: 1 / -1;
+      min-width: 0; /* F4 — grid child must shrink below content width (no body h-scroll) */
       overflow: hidden;
       background: var(--bg);
     }
@@ -2075,6 +2362,7 @@
     /* ── Features Tab (was Discovery) ──────────────────────────── */
     .features-container {
       grid-column: 1 / -1;
+      min-width: 0; /* F4 — grid child must shrink below content width (no body h-scroll) */
       overflow-y: auto;
       background: var(--bg);
       padding: 20px;
@@ -2166,7 +2454,7 @@
     .feat-reversibility { font-size: 12px; color: var(--text-dim); line-height: 1.5; padding: 12px 14px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; }
 
     /* ── Systems Tab ──────────────────────────────────────────── */
-    .systems-container { grid-column: 1 / -1; overflow-y: auto; background: var(--bg); padding: 20px; }
+    .systems-container { grid-column: 1 / -1; min-width: 0; overflow-y: auto; background: var(--bg); padding: 20px; }
     .systems-main { max-width: 960px; margin: 0 auto; }
     .systems-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
     .systems-header h2 { font-size: 16px; font-weight: 600; color: var(--text-bright); }
@@ -2632,26 +2920,50 @@
         <img class="logo" src="/dashboard/logo.png" alt="Instar">
         <h1>Instar Dashboard</h1>
         <button class="nav-toggle" id="navToggle" aria-label="Open navigation menu" aria-expanded="false" onclick="toggleNavMenu()">&#9776; <span id="navToggleLabel">Sessions</span></button>
-        <nav class="tab-bar" id="tabBar">
-          <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions <span class="tab-count" id="tabSessionCount">0</span></button>
-          <button class="tab" data-tab="files" onclick="switchTab('files')">Files</button>
-          <button class="tab" data-tab="dropzone" onclick="switchTab('dropzone')">Send Content</button>
-          <button class="tab" data-tab="secrets" onclick="switchTab('secrets')">Secrets <span class="tab-count" id="tabSecretCount">0</span></button>
-          <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
-          <button class="tab" data-tab="features" onclick="switchTab('features')">Features</button>
-          <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
-          <button class="tab" data-tab="integrated-being" onclick="switchTab('integrated-being')">Integrated-Being</button>
-          <button class="tab" data-tab="pr-pipeline" onclick="switchTab('pr-pipeline')">PR Pipeline</button>
-          <button class="tab" data-tab="projects" onclick="switchTab('projects')">Projects <span class="tab-count" id="tabProjectCount">0</span></button>
-          <button class="tab" data-tab="initiatives" onclick="switchTab('initiatives')">Initiatives <span class="tab-count" id="tabInitiativeCount">0</span></button>
-          <button class="tab" data-tab="commitments" onclick="switchTab('commitments')">Commitments <span class="tab-count" id="tabCommitmentCount">0</span></button>
-          <button class="tab" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
-          <button class="tab" data-tab="resources" onclick="switchTab('resources')">Resource Usage</button>
-          <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
-          <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
-          <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
-          <button class="tab" data-tab="preferences-learning" onclick="switchTab('preferences-learning')">Preferences</button>
-          <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
+        <nav class="tab-bar" id="tabBar" aria-label="Dashboard sections">
+          <div class="tab-group" role="group" aria-label="Runtime">
+            <div class="tab-group-label">Runtime</div>
+            <button class="tab" data-tab="insights" onclick="switchTab('insights')">Insights</button>
+            <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions <span class="tab-count" id="tabSessionCount">0</span></button>
+            <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
+            <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
+            <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
+          </div>
+          <div class="tab-group" role="group" aria-label="Work & Delivery">
+            <div class="tab-group-label">Work &amp; Delivery</div>
+            <button class="tab" data-tab="pr-pipeline" onclick="switchTab('pr-pipeline')">PR Pipeline</button>
+            <button class="tab" data-tab="projects" onclick="switchTab('projects')">Projects <span class="tab-count" id="tabProjectCount">0</span></button>
+            <button class="tab" data-tab="initiatives" onclick="switchTab('initiatives')">Initiatives <span class="tab-count" id="tabInitiativeCount">0</span></button>
+            <button class="tab" data-tab="commitments" onclick="switchTab('commitments')">Commitments <span class="tab-count" id="tabCommitmentCount">0</span></button>
+            <button class="tab" data-tab="blockers" onclick="switchTab('blockers')">Blockers</button>
+            <button class="tab" data-tab="evidence" onclick="switchTab('evidence')">Evidence</button>
+          </div>
+          <div class="tab-group" role="group" aria-label="Cost & Routing">
+            <div class="tab-group-label">Cost &amp; Routing</div>
+            <button class="tab" data-tab="spend" onclick="switchTab('spend')">Spend</button>
+            <button class="tab" data-tab="subscriptions" onclick="switchTab('subscriptions')">Subscriptions</button>
+            <button class="tab" data-tab="routing-map" onclick="switchTab('routing-map')">Routing Map</button>
+            <button class="tab" data-tab="llm-activity" onclick="switchTab('llm-activity')">LLM Activity</button>
+            <button class="tab" data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
+            <button class="tab" data-tab="resources" onclick="switchTab('resources')">Resource Usage</button>
+            <button class="tab" data-tab="throughput" onclick="switchTab('throughput')">Throughput</button>
+          </div>
+          <div class="tab-group" role="group" aria-label="Intelligence & Comms">
+            <div class="tab-group-label">Intelligence &amp; Comms</div>
+            <button class="tab" data-tab="threadline" onclick="switchTab('threadline')">Threadline</button>
+            <button class="tab" data-tab="integrated-being" onclick="switchTab('integrated-being')">Integrated-Being</button>
+            <button class="tab" data-tab="process-health" onclick="switchTab('process-health')">Process Health</button>
+            <button class="tab" data-tab="feedback-drain" onclick="switchTab('feedback-drain')">Feedback Drain</button>
+            <button class="tab" data-tab="preferences-learning" onclick="switchTab('preferences-learning')">Preferences</button>
+          </div>
+          <div class="tab-group" role="group" aria-label="Content & Access">
+            <div class="tab-group-label">Content &amp; Access</div>
+            <button class="tab" data-tab="files" onclick="switchTab('files')">Files</button>
+            <button class="tab" data-tab="dropzone" onclick="switchTab('dropzone')">Send Content</button>
+            <button class="tab" data-tab="secrets" onclick="switchTab('secrets')">Secrets <span class="tab-count" id="tabSecretCount">0</span></button>
+            <button class="tab" data-tab="features" onclick="switchTab('features')">Features</button>
+            <button class="tab" data-tab="mandates" onclick="switchTab('mandates')">Mandates</button>
+          </div>
         </nav>
       </div>
       <div class="vital-signs" id="vitalSigns">
@@ -2691,6 +3003,7 @@
           <button class="new-session-btn" onclick="openNewSessionModal()" title="New session">+</button>
         </div>
       </div>
+      <div class="tab-purpose" style="padding:0 12px 8px">Your agent's live sessions — pick one to watch its terminal in real time.</div>
       <div class="session-list" id="sessionList">
         <div class="empty-state" id="emptyState">
           <div class="icon">&#x1F4AD;</div>
@@ -2743,13 +3056,14 @@
         <div class="file-tree-header">
           <h2>Files</h2>
         </div>
+        <div class="tab-purpose" style="padding:0 12px">Browse and edit this project's files from any device — changes save straight to disk.</div>
         <div class="file-tree-list" id="fileTreeList">
           <div class="file-loading" id="fileTreeLoading">Loading...</div>
         </div>
       </div>
       <div class="file-content-panel" id="fileContentPanel">
         <div class="file-content-header" id="fileContentHeader" style="display:none">
-          <button class="files-back-btn" onclick="filesGoBack()">&larr;</button>
+          <button class="files-back-btn" onclick="filesGoBack()" title="Back" aria-label="Back">&larr;</button>
           <div class="breadcrumbs" id="fileBreadcrumbs"></div>
           <div class="file-badges" id="fileBadges"></div>
         </div>
@@ -2857,7 +3171,7 @@
             <option value="lastRun">Sort: Last Run</option>
           </select>
         </div>
-        <div style="font-size:11px;color:var(--text-dim);padding:0 12px 8px;line-height:1.4">Monitor and control your scheduled tasks</div>
+        <div class="tab-purpose" style="padding:0 12px 8px">Monitor and control your scheduled tasks — recurring jobs that run on their own.</div>
         <div id="jobsSummary" class="jobs-summary"></div>
         <div class="jobs-filter-bar" id="jobsFilterBar">
           <button class="jobs-filter-chip active" data-filter="all" onclick="setJobFilter('all')">All</button>
@@ -2881,13 +3195,14 @@
     </div>
 
     <!-- Integrated-Being Tab (Integrated-Being v1) -->
-    <div id="integratedBeingPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="integratedBeingPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Integrated-Being</h2>
         <div>
           <button onclick="loadIntegratedBeing()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
+      <div class="tab-purpose">A cross-session record of what other parts of this agent have been doing — the shared memory that keeps separate conversations aware of each other.</div>
       <div id="ibPerMachineNotice" style="font-size:12px;color:var(--text-dim);display:none">
         Integrated-Being on this machine only — cross-machine ledger visibility is not yet implemented.
       </div>
@@ -3002,37 +3317,34 @@
     <!-- Read-only: NO action buttons that mutate eligibility. All PR-authored -->
     <!-- content rendered via textContent, never innerHTML — XSS defense rule -->
     <!-- for the dashboard per spec §"Dashboard surface rules". -->
-    <div id="prPipelinePanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="prPipelinePanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">PR Pipeline</h2>
         <div>
           <button onclick="loadPrPipeline()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
-      <div id="prPipelinePhaseNotice" style="font-size:12px;color:var(--text-dim)"></div>
-      <div id="prPipelineEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
-        No PR activity to display.
-      </div>
-      <div id="prPipelineList" style="display:flex;flex-direction:column;gap:12px"></div>
+      <div class="tab-purpose">A live view of your open pull requests as they move through review and CI checks toward merge.</div>
+      <div id="prPipelineGlance" class="glance-root"></div>
     </div>
 
     <!-- Projects Tab — PROJECT-SCOPE-SPEC Phase 1.10 read-only view -->
-    <div id="projectsPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="projectsPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Projects</h2>
         <button onclick="loadProjects()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
-        Multi-spec project plans. Each project bundles related child initiatives across rounds with structurally-gated round advance.
+      <div class="tab-purpose">
+        Multi-spec project plans. Each project groups related pieces of work and only advances to its next round once its required checks pass.
       </div>
       <div id="projectsEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
-        No active projects. Create one via <code>POST /projects</code> with a plan-doc path.
+        No active projects yet. Ask your agent to start one from a plan document, and it'll appear here.
       </div>
       <div id="projectsList" style="display:flex;flex-direction:column;gap:12px"></div>
     </div>
 
     <!-- Initiatives Tab — multi-phase long-running work -->
-    <div id="initiativesPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="initiativesPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Initiatives</h2>
         <div style="display:flex;gap:8px;align-items:center">
@@ -3049,21 +3361,14 @@
           <button onclick="loadInitiatives()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
-        Multi-phase long-running work. Signals: <span style="color:#e27d3b">needs-user</span>,
-        <span style="color:#d65f5f">next-check-due</span>,
-        <span style="color:#4a9a4a">ready-to-advance</span>,
-        <span style="color:#888">stale (&gt;7d)</span>.
+      <div class="tab-purpose">
+        Long-running work that spans multiple phases — the headline says how many are in flight and how many need you; tap a tile to see which, tap one for the full record.
       </div>
-      <div id="initiativesDigest" style="display:none;padding:12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-dim)"></div>
-      <div id="initiativesEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
-        No initiatives to display. Create one via <code>POST /initiatives</code>.
-      </div>
-      <div id="initiativesList" style="display:flex;flex-direction:column;gap:12px"></div>
+      <div id="initiativesGlance" class="glance-root"></div>
     </div>
 
     <!-- Commitments Tab (Open Promises) -->
-    <div id="secretsPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="secretsPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
         <h2 style="margin:0">Secrets</h2>
         <div style="display:flex;gap:8px">
@@ -3071,107 +3376,194 @@
           <button onclick="loadSecrets()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
-        Secret Drop — one-time-use links for users to submit credentials safely (never through chat).
-        Links expire automatically and are destroyed after submission.
+      <div class="tab-purpose">
+        Secret Drop — create one-time links so someone can hand you a password or API key safely, never pasted into chat. Each link expires and is destroyed the moment it's used.
       </div>
-      <div id="secretsEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
-        No pending secret requests.
-      </div>
-      <div id="secretsList" style="display:flex;flex-direction:column;gap:12px"></div>
+      <div id="secretsGlance" class="glance-root"></div>
     </div>
 
-    <div id="commitmentsPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="commitmentsPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Commitments</h2>
         <button onclick="loadCommitments()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
-        Open promises — beacon-watched commitments (⏳). States:
-        <span style="color:#4a9a4a">pending</span>,
-        <span style="color:#e27d3b">atRisk</span>,
-        <span style="color:#888">suppressed</span>.
+      <div class="tab-purpose">
+        Your open promises at a glance — the headline says where things stand; tap a tile to see which promises, tap one for the full record.
       </div>
-      <div id="commitmentsEmpty" style="padding:40px;text-align:center;color:var(--text-dim);display:none">
-        No open promises.
-      </div>
-      <div id="commitmentsList" style="display:flex;flex-direction:column;gap:12px"></div>
+      <!-- Glance floors F10/F11 (topic 29836): the shared component renders the
+           headline + tiles + drill-down here. Reference implementation. -->
+      <div id="commitmentsGlance" class="glance-root"></div>
     </div>
 
     <!-- Tokens Tab — read-only token-usage observability -->
-    <div id="tokensPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="tokensPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Tokens</h2>
         <button onclick="loadTokens()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         Token usage rolled up from Claude Code session transcripts. Last 24 hours unless noted.
       </div>
-
-      <!-- Summary card -->
-      <div id="tokensSummaryCard" style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">Last 24h</div>
-        <div id="tokensSummaryBody" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Top sessions -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">Top Sessions</div>
-        <div id="tokensSessionsBody" style="font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
-
-      <!-- Orphans -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">Idle Sessions (&gt; 30 min)</div>
-        <div id="tokensOrphansBody" style="font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
-      </div>
+      <div id="tokensGlance" class="glance-root"></div>
     </div>
 
     <!-- Resource Usage tab — per-agent CPU + memory (ResourceLedger Phase B).
          Read-only observability; mirrors the Tokens tab. -->
-    <div id="resourcesPanel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="resourcesPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Resource Usage</h2>
         <button onclick="loadResources()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         How much CPU and memory this agent is using right now — the server process and each running session — sampled continuously. Last hour unless noted.
       </div>
+      <div id="resourcesGlance" class="glance-root"></div>
+    </div>
 
-      <!-- Right-now headline (aggregate) -->
-      <div id="resourcesHeadlineCard" style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">Right now (all processes)</div>
-        <div id="resourcesHeadlineBody" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
+    <!-- Blockers tab — Blocker Ledger read surface, rebuilt on the glance template
+         (Dashboard UX Standard F10/F11, topic 29836 Phase 2).
+         A blocker is a DECAYING HYPOTHESIS, not a settled wall: each entry moves through
+         candidate → authority-checked → access-requested → dry-run → live-run → resolved /
+         true-blocker. A true-blocker is "best current understanding — recheck after <date>",
+         never "stop trying". Read-only here; data from GET /blockers. detectedText and all
+         free-text are UNTRUSTED — the shared glance component renders every value through
+         sanitizeForDisplay + textContent (never innerHTML). 503 = feature off. -->
+    <div id="blockersPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0">Blockers</h2>
+        <button onclick="loadBlockers()" style="padding:6px 12px">Refresh</button>
+      </div>
+      <div class="tab-purpose">
+        Things that looked like they stopped progress, tracked as <b>decaying hypotheses</b> rather than settled walls —
+        the headline says where things stand; tap a tile to see which ones, tap one for the full record.
+        A "truly stuck" blocker is the best current understanding with a recheck date, never a permanent "give up".
+      </div>
+      <!-- Glance floors F10/F11 (topic 29836): the shared component renders the
+           headline + tiles + drill-down here. -->
+      <div id="blockersGlance" class="glance-root"></div>
+    </div>
+
+    <!-- LLM Activity tab — Observable Intelligence (docs/specs/observable-intelligence.md).
+         Every LLM call the system makes on its own behalf: which component, which
+         provider/model, whether it acted or no-op'd, was skipped, cost + latency.
+         Read-only; data from /metrics/features. -->
+    <div id="llmActivityPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <h2 style="margin:0">LLM Activity</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="llmActivityWindow" onchange="loadLlmActivity()" style="padding:6px 10px;background:transparent;color:var(--text);border:1px solid var(--border);border-radius:4px">
+            <option value="24">Last 24h</option>
+            <option value="168" selected>Last 7 days</option>
+            <option value="720">Last 30 days</option>
+          </select>
+          <button onclick="loadLlmActivity()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
-
-      <!-- Per-source breakdown (server vs each session) -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">By process</div>
-        <div id="resourcesSourcesBody" style="font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
-        </div>
+      <div class="tab-purpose">
+        Every decision the system's "autopilot" makes with an AI call — sentinels, gates, background checks.
+        For each one: which AI provider ran it, how often it actually <b>acted</b> on something vs. found
+        nothing to do, how often it was <b>skipped</b> to save on rate limits, and what it cost. A row that
+        only ever finds nothing is a quiet smoke detector; a row that's mostly skipped may be starved.
       </div>
 
-      <!-- Recent trend (last samples of the aggregate) -->
-      <div style="border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:8px">
-        <div style="font-weight:600">Recent trend</div>
-        <div id="resourcesTrendBody" style="font-size:13px">
-          <div style="color:var(--text-dim)">Loading...</div>
+      <div id="llmActivityGlance" class="glance-root"></div>
+    </div>
+
+    <!-- Routing Map tab — the read-only nature-axis routing map (FD11 readable canary,
+         docs/specs/nature-axis-routing.md). For every internal job-kind: which door +
+         model it uses and its full ordered fallback tier list, with injection-safe /
+         money-gated / critical-gate flags. Read-only display; data from
+         /intelligence/routing/chains. No controls — the map only DISPLAYS the routing. -->
+    <div id="routingMapPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <h2 style="margin:0">Routing Map</h2>
+        <button onclick="loadRoutingMap()" style="padding:6px 12px">Refresh</button>
+      </div>
+      <div class="tab-purpose">
+        Where the agent's background AI work runs — the headline says which model it uses first
+        and what backs it up; tap a tile to see a job group's ordered list of models, tap one for
+        the full setup. Read-only: it shows the map, it changes nothing.
+      </div>
+
+      <!-- Glance floors F10/F11 (topic 29836, Phase 3): the shared component renders the
+           headline + per-lane tiles + drill-down here. "Lane / nature / door" became plain
+           words at the glance; the ordered model lists and full config moved one drill down. -->
+      <div id="routingMapGlance" class="glance-root"></div>
+    </div>
+
+    <!-- Spend tab — the read-only Routing Control Room spend/caps view (Increment A,
+         docs/specs/routing-control-room-spend-alerts.md). Immutable token usage priced ON
+         READ + every metered paid-door key with its caps and honest not-live/$0 state.
+         Read-only: data from /routing-spend/summary + /routing-spend/caps. No money controls
+         (caps adjust, go-live, alerts are later, dark increments). -->
+    <div id="spendPanel" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <h2 style="margin:0">Spend</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="spendGrain" onchange="loadRoutingSpend()" style="padding:6px 8px">
+            <option value="day" selected>Daily</option>
+            <option value="hour">Hourly (30d)</option>
+            <option value="month">Monthly</option>
+            <option value="total">Total</option>
+          </select>
+          <button onclick="loadRoutingSpend()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
+      <div class="tab-purpose">
+        What the internal AI calls cost, and where the paid-door caps sit. The dollar figures are a
+        <b>reporting</b> view — immutable token counts priced against a reviewed price list on read, so a
+        price correction reflows automatically. <b>No paid door is live yet</b>, so metered spend is $0;
+        subscription/CLI doors are <b>$0 (not per-token billed)</b>. This is read-only — money caps and the
+        go-live control are a later increment.
+      </div>
+
+      <!-- Glance floors F10/F11 (topic 29836, Phase 3): the shared component renders
+           the headline + totals tiles + drill-down here. "Metered / paid door / reflows"
+           became plain words at the glance ("pay-per-use"); the per-model math and the
+           paid-door caps moved one drill down. -->
+      <div id="spendGlance" class="glance-root"></div>
     </div>
 
     <!-- Evidence Tab (WikiClaim Phase 4) — per-entity evidence + reverse "what cites this?" view.
          Spec: docs/specs/OPENCLAW-IMPORT-WIKICLAIM-EVIDENCE-SPEC.md § Phase 4 (line 343). -->
     <!-- process-health tab -->
+    <div id="throughputPanel" class="tab-panel" style="display:none;flex-direction:column;padding:28px;gap:20px;overflow-y:auto;width:100%;max-width:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><h2 style="margin:0">Throughput</h2><div style="display:flex;gap:8px"><select id="throughputAuthor" onchange="loadThroughput()"><option value="team">Team</option><option value="codey">Codey</option><option value="echo">Echo</option></select><select id="throughputDays" onchange="loadThroughput()"><option value="7">7 days</option><option value="14" selected>14 days</option><option value="30">30 days</option></select></div></div>
+      <p style="opacity:.7;margin:0">Window-normalized delivery, quality, and output signals. Read-only and refreshed on demand.</p>
+      <div id="throughputCharts" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px"></div>
+    </div>
+    <!-- insights tab (Dashboard Live-LLM-Insights — docs/specs/dashboard-live-insights.md) -->
+    <style>
+      .ins-strip { border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:16px 18px; margin-bottom:14px; display:flex; flex-direction:column; gap:10px; }
+      .ins-strip-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; }
+      .ins-strip-title { font-weight:600; font-size:14px; opacity:.75; }
+      .ins-strip-stamp { font-size:11px; opacity:.55; }
+      .ins-headline { font-size:16px; line-height:1.4; }
+      .ins-line { display:flex; gap:8px; align-items:flex-start; font-size:13px; line-height:1.45; }
+      .ins-dot { flex:0 0 auto; width:8px; height:8px; border-radius:50%; margin-top:6px; background:#8a8a8a; }
+      .ins-dot.watch { background:#e0a83a; }
+      .ins-dot.alert { background:#e0533a; }
+      .ins-line-body { flex:1; }
+      .ins-line-action { opacity:.6; }
+      .ins-drill { align-self:flex-start; font-size:12px; background:transparent; color:var(--text); border:1px solid var(--border,#2a2a2a); border-radius:6px; padding:5px 10px; cursor:pointer; }
+      .ins-badge { font-size:10px; text-transform:uppercase; letter-spacing:.04em; opacity:.55; border:1px solid var(--border,#2a2a2a); border-radius:4px; padding:1px 6px; }
+      .ins-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; }
+      .ins-metric { font-size:12px; }
+      .ins-metric-val { font-size:15px; font-weight:600; }
+      .ins-metric-label { opacity:.6; }
+      .ins-empty, .ins-disabled { font-size:13px; opacity:.7; padding:8px 0; }
+    </style>
+    <div id="insightsPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:20px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h2 class="ph-title">Insights</h2>
+        <div id="insStamp" class="ph-stamp" aria-live="polite"></div>
+      </div>
+      <p class="ph-intro">A plain-English read of what stands out across your dashboard right now — one short takeaway per page, with a button to open the page it came from. Insights only observe and explain; they never change anything.</p>
+      <div id="insBody" aria-live="polite">
+        <div class="ins-empty">Loading insights…</div>
+      </div>
+    </div>
+
     <div id="processHealthPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:baseline">
         <h2 class="ph-title">Process Health</h2>
@@ -3200,6 +3592,173 @@
       </details>
     </div>
 
+    <div id="feedbackDrainPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:20px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h2 class="ph-title">Feedback Drain</h2>
+        <div id="fdStamp" class="ph-stamp" aria-live="polite"></div>
+      </div>
+      <p class="ph-intro">The operated path from accepted feedback through agent readiness and durable Initiative handoff.</p>
+      <div id="fdPosture" class="ph-headline-wrap" aria-live="polite"></div>
+      <section class="ph-section"><h3 class="ph-h">Backlog</h3><div id="fdBacklog" class="ph-detail-body"></div></section>
+      <section class="ph-section"><h3 class="ph-h">Progress</h3><div id="fdProgress" class="ph-detail-body"></div></section>
+      <section class="ph-section"><h3 class="ph-h">Source integrity</h3><div id="fdSource" class="ph-detail-body"></div></section>
+    </div>
+
+    <!-- subscriptions tab (Subscription & Auth Standard P2.2 — live quota + pending logins) -->
+    <style>
+      .sub-account { border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
+      .sub-account-inuse { border-color:#16a34a; box-shadow:0 0 0 1px #16a34a44; }
+      .sub-account-inuse-badge { font-size:11px; font-weight:600; color:#22c55e; margin-right:auto; }
+      .sub-account-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+      .sub-account-nick { font-weight:600; font-size:15px; }
+      .sub-account-status { font-size:12px; opacity:.75; }
+      .sub-account-meta { font-size:12px; opacity:.6; margin:2px 0 2px; }
+      .sub-account-email { font-size:12px; opacity:.5; margin:0 0 10px; }
+      .sub-account-noquota { font-size:12px; opacity:.6; }
+      .sub-quota { margin:8px 0; }
+      .sub-quota-head { display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px; }
+      .sub-quota-label { opacity:.8; }
+      .sub-quota-pct { opacity:.65; }
+      .sub-quota-track { height:8px; border-radius:4px; background:var(--border,#2a2a2a); overflow:hidden; }
+      .sub-quota-fill { height:100%; background:linear-gradient(90deg,#4caf80,#3a9); }
+      .sub-pending { border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:12px 16px; margin-bottom:10px; }
+      .sub-pending-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+      .sub-pending-label { font-weight:600; }
+      .sub-pending-ttl { font-size:12px; opacity:.7; }
+      .sub-pending-code { font-family:monospace; font-size:14px; margin-top:6px; }
+      .sub-pending-url { font-size:12px; opacity:.7; word-break:break-all; margin-top:4px; }
+      .sub-pending-reissue { font-size:11px; opacity:.55; margin-top:4px; }
+      .sub-empty, .sub-disabled { font-size:13px; opacity:.7; padding:8px 0; }
+      /* account-machine-matrix grid */
+      .sub-matrix { border-collapse:collapse; width:100%; font-size:13px; }
+      #subMatrix { width:100%; min-width:0; overflow-x:auto; }
+      .sub-matrix th, .sub-matrix td { border:1px solid var(--border,#2a2a2a); padding:8px 10px; text-align:center; vertical-align:top; }
+      .sub-matrix-acct { text-align:left; font-weight:600; word-break:break-all; }
+      .sub-matrix-mach { font-weight:600; }
+      .sub-matrix-off { opacity:.55; }
+      .sub-matrix-cell.sub-matrix-offline { opacity:.5; }
+      .sub-matrix-glyph { font-size:13px; }
+      .sub-matrix-setup, .sub-matrix-confirm, .sub-matrix-code-submit { margin-top:4px; padding:4px 10px; cursor:pointer; }
+      .sub-matrix-pin, .sub-matrix-code-input { display:block; margin:4px auto; padding:3px 6px; width:90%; box-sizing:border-box; }
+      .sub-matrix-status { font-size:11px; opacity:.8; margin-top:4px; }
+      .sub-matrix-signin { display:inline-block; margin-top:4px; }
+      .sub-matrix-url { font-size:11px; opacity:.7; word-break:break-all; margin-top:4px; }
+      /* subs-setup-flow UX (topic 29836 D1–D5): in-cell flow, explicit terminal states */
+      .sub-matrix-flow-step { font-size:11px; opacity:.85; margin-top:4px; }
+      .sub-matrix-expected, .sub-pending-expected { font-size:12px; font-weight:600; color:#eab308; margin:6px 0 4px; }
+      .sub-matrix-notice { font-size:11px; opacity:.75; margin-top:4px; }
+      .sub-matrix-ttl { font-size:11px; opacity:.7; margin-top:4px; }
+      .sub-matrix-cancel, .sub-matrix-collapse { margin-top:4px; margin-left:4px; padding:2px 8px; cursor:pointer; font-size:11px; opacity:.85; }
+      .sub-matrix-held-detail { font-size:11px; color:#f87171; margin-top:4px; }
+      .sub-matrix-done-detail { font-size:11px; margin-top:4px; }
+      .sub-matrix-outcome { margin-top:6px; padding:7px 8px; border-radius:7px; text-align:left; font-size:12px; line-height:1.4; }
+      .sub-matrix-outcome-done { color:#22c55e; background:rgba(22,163,74,.10); border:1px solid rgba(22,163,74,.35); }
+      .sub-matrix-outcome-failed { color:#fca5a5; background:rgba(248,113,113,.08); border:1px solid rgba(248,113,113,.30); }
+      .sub-matrix-cell.sub-matrix-held .sub-matrix-glyph, .sub-matrix-cell.sub-matrix-expired .sub-matrix-glyph, .sub-matrix-cell.sub-matrix-broken .sub-matrix-glyph { color:#f87171; }
+      .sub-matrix-cell.sub-matrix-done .sub-matrix-glyph { color:#22c55e; font-weight:600; }
+      .sub-matrix-cell.sub-matrix-just-verified { background:rgba(22,163,74,.14); outline:2px solid #16a34a; animation:subVerifiedPulse 1.2s ease-in-out 3; }
+      @keyframes subVerifiedPulse { 0%,100% { box-shadow:none; } 50% { box-shadow:0 0 0 4px rgba(22,163,74,.28); } }
+      .sub-pending.sub-pending-done { border-color:#16a34a; background:rgba(22,163,74,.08); }
+      .sub-pending-done-head { color:#22c55e; font-weight:600; }
+      .sub-pending.sub-pending-failed { border-color:#f87171; background:rgba(248,113,113,.06); }
+      .sub-pending-failed-head { color:#f87171; font-weight:600; }
+      .sub-pending-outcome-body { font-size:12px; opacity:.85; margin-top:4px; }
+      .sub-pending-status { font-size:12px; opacity:.85; margin-top:6px; }
+      @media (max-width: 600px) {
+        .subscriptions-root { padding:18px 14px !important; gap:18px !important; }
+        .subscriptions-root .ph-h-sub { font-size:14px; }
+        .sub-matrix { min-width:620px; }
+        .sub-account { padding:12px; }
+      }
+    </style>
+    <div id="subscriptionsPanel" class="tab-panel subscriptions-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
+      <h2 class="ph-title">Subscriptions</h2>
+      <p class="ph-intro">Your subscription accounts, where each one is set up, and how much usage remains before it resets.</p>
+      <!-- One-tap follow-me Approve card(s) — rendered only when another machine could use one of
+           your subscriptions (ws52-operator-tap-not-text Part A). Leads the panel as the primary
+           action when present; silent otherwise. -->
+      <div id="subFollowMe"></div>
+      <!-- Account × Machine matrix (account-machine-matrix) — at-a-glance "which account is set up
+           on which machine," with a one-tap "Set up" per empty cell that runs the whole sign-in in
+           the dashboard (PIN → sign-in link → paste the code). Hidden when there's nothing to show. -->
+      <section class="ph-section">
+        <h3 class="ph-h">Accounts on each machine</h3>
+        <p class="ph-h-sub">Which subscription is set up on which machine. Tap “Set up” on an empty cell, or “Sign in” on a cell that needs attention — you’ll enter your PIN, open the sign-in link, and paste the code right here.</p>
+        <div id="subMatrix"></div>
+      </section>
+      <section class="ph-section">
+        <h3 class="ph-h">Accounts</h3>
+        <p class="ph-h-sub">Each account’s live usage (5-hour and weekly) and when it resets.</p>
+        <div id="subAccounts"></div>
+      </section>
+    </div>
+
+    <!-- mandates tab (coordination-mandate spec, decision 2A — the operator's PIN-gated surface) -->
+    <div id="mandatesPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h2 class="ph-title">Coordination Mandates</h2>
+        <div id="mndStamp" class="ph-stamp" aria-live="polite"></div>
+      </div>
+      <p class="ph-intro">Permission slips you sign with your PIN to let your agents do bounded work together.</p>
+      <details class="mnd-about">
+        <summary>What is this?</summary>
+        <p>These are your permission slips for autonomous agent-to-agent work — each one authorizes a specific, bounded task. The slip — never the agent — is the authorizer. Issuing and revoking require <strong>your dashboard PIN</strong>; an agent's own credentials are refused by design. With no slip issued, every delegated action is denied.</p>
+      </details>
+      <div id="mndNotice" class="mnd-notice" aria-live="polite"></div>
+      <section class="ph-section" id="mndApprovalsSection" style="display:none">
+        <h3 class="ph-h">Approvals waiting for you</h3>
+        <div id="mndApprovals"></div>
+      </section>
+      <section class="ph-section">
+        <h3 class="ph-h">Issued mandates</h3>
+        <div id="mndList"></div>
+      </section>
+      <!-- operator-surface-power-user: this dashboard file contains DELIBERATELY-ADVANCED,
+           non-default surfaces that necessarily take raw technical values — the collapsed
+           "Advanced — author a mandate by hand" mandate form below (raw agent fingerprints +
+           the authorities the agents may use) and the Threadline bridge fingerprint/name inputs.
+           These are NOT the default operator path: account-follow-me is the one-tap Approve card
+           (Subscriptions tab) and general grants go through the Agent-Proposes/Operator-Approves
+           approval surface. (Marker is file-level by the gate's design; granular per-region marking
+           + redesigning this legacy raw form to a builder are tracked follow-ups.) -->
+      <details class="ph-detail" id="mndIssueDetails">
+        <summary class="ph-detail-summary">Advanced — author a mandate by hand (PIN required)</summary>
+        <div class="mnd-issue-form">
+          <label>What is this permission slip for?
+            <span class="mnd-hint">A short name for the project the two agents may work on together, e.g. feedback-migration.</span>
+            <input type="text" id="mndIssueScope" value="feedback-migration" />
+          </label>
+          <label>This agent (Agent A)
+            <span class="mnd-hint">Pre-filled with this agent's own routing fingerprint — you normally don't need to touch it.</span>
+            <input type="text" id="mndIssueAgentA" placeholder="filling in automatically…" />
+            <span class="mnd-prefilled" id="mndAgentAPrefillNote"></span>
+          </label>
+          <label>The other agent (Agent B)
+            <span class="mnd-hint">The peer agent's routing fingerprint — find it on that agent's Threadline tab, or ask the agent "what's your routing fingerprint?".</span>
+            <input type="text" id="mndIssueAgentB" placeholder="e.g. 8c7928aa9f04fbda947172a2f9b2d81a" />
+          </label>
+          <label>What exactly may they do? (the authorities)
+            <span class="mnd-hint">Each entry is one delegated action with its bounds. The template below covers the standard credential-handoff + code-review pair — edit only if you know you need different bounds.</span>
+            <textarea id="mndIssueAuthorities" rows="9" spellcheck="false"></textarea>
+          </label>
+          <label>When does it expire?
+            <span class="mnd-hint">Pre-filled to one week from now. Every mandate expires; expired means denied.</span>
+            <input type="datetime-local" id="mndIssueExpires" />
+          </label>
+          <label>Your dashboard PIN
+            <span class="mnd-hint">Issuing is a human action — only your PIN can do it. Sent once, never stored.</span>
+            <input type="password" id="mndIssuePin" autocomplete="off" placeholder="typed at issuance, never stored" />
+          </label>
+          <button id="mndIssueBtn" class="mnd-btn">Issue mandate</button>
+        </div>
+      </details>
+      <section class="ph-section">
+        <h3 class="ph-h">Decision audit</h3>
+        <p class="ph-h-sub">Every allow and deny, hash-chained. A broken chain means tampering — treat it as an incident.</p>
+        <div id="mndAudit"></div>
+      </section>
+    </div>
+
     <!-- preferences-learning tab (Correction & Preference Learning Sentinel §10 Slice-2) -->
     <div id="preferencesLearningPanel" class="ph-root" style="display:none;flex-direction:column;padding:28px;gap:24px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:baseline">
@@ -3218,6 +3777,16 @@
         <p class="ph-h-sub">Patterns I've distilled from moments you corrected me. The exact words are never stored — just a short, scrubbed summary.</p>
         <div id="plCorrections"></div>
       </section>
+      <section class="ph-section">
+        <h3 class="ph-h">Class reviews and outcomes</h3>
+        <p class="ph-h-sub">The standard and process question each correction opened, with their independent durable outcomes.</p>
+        <div id="plClassReviews"></div>
+      </section>
+      <section class="ph-section">
+        <h3 class="ph-h">Claim Verification observations</h3>
+        <p class="ph-h-sub">Server-admitted only, privacy-scrubbed factual claim checks. This dark observer never blocks or changes a response.</p>
+        <div id="plCompletionAudit"></div>
+      </section>
     </div>
 
     <!-- machines tab (Multi-Machine Session Pool §L2) -->
@@ -3226,21 +3795,29 @@
         <h2 class="ph-title">Machines</h2>
         <div id="machinesStamp" class="ph-stamp" aria-live="polite"></div>
       </div>
-      <p class="ph-intro">Every computer this agent is set up on. Each one gets a friendly name you can change — and once it has a name, you can tell the agent "move this conversation to the mini" and it knows which machine you mean. The agent shares its conversations across these machines so it can handle more at once.</p>
-      <div id="machinesHeadline" class="ph-headline-wrap" aria-live="polite"></div>
-      <section class="ph-section">
-        <h3 class="ph-h">The machines</h3>
-        <p class="ph-h-sub">Click a name to rename it. The "dispatcher" is the one machine currently handing out new conversations.</p>
-        <div id="machinesList"></div>
+      <p class="tab-purpose ph-intro">Every computer this agent runs on, at a glance — the headline says whether they're all online and healthy; tap a tile to see which machines, tap one for its full detail (and to rename it). The "dispatcher" is the one machine currently handing out new conversations.</p>
+      <!-- Glance floors F10/F11 (topic 29836, Phase 3): the shared component renders the
+           headline + tiles + drill-down here. Rebuilt from the old insider "guards" line.
+           Nickname editing (issue #1429) lives one drill down, commits on Enter/blur. -->
+      <div id="machinesGlance" class="glance-root"></div>
+      <section aria-labelledby="mutualSshTitle" style="border:1px solid var(--border);border-radius:10px;padding:16px">
+        <h3 id="mutualSshTitle" style="margin:0 0 8px">Machine-to-machine SSH</h3>
+        <p style="margin:0 0 10px;color:var(--text-dim)">Restricted Instar subsystem connectivity. This does not enable Remote Login or change personal SSH files.</p>
+        <div id="mutualSshStatus" class="glance-empty" aria-live="polite">Loading connectivity…</div>
+      </section>
+      <section aria-labelledby="throughputFloorTitle" style="border:1px solid var(--border);border-radius:10px;padding:16px">
+        <h3 id="throughputFloorTitle" style="margin:0 0 8px">Autonomous throughput observations</h3>
+        <p style="margin:0 0 10px;color:var(--text-dim)">Pull-only evidence of project PR movement and manager communication. This view never notifies or changes a run.</p>
+        <div id="throughputFloorStatus" class="glance-empty" aria-live="polite">Loading observations…</div>
       </section>
     </div>
 
-    <div id="evidenceTab" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="evidenceTab" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Evidence</h2>
         <div style="font-size:12px;color:var(--text-dim)">Per-entity evidence + reverse citations</div>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         Inspect the evidence trail behind any memory entity, or ask "what cites this?" given a kind + sourceId.
         All results are viewer-scope filtered by SemanticMemory before they reach this view.
       </div>
@@ -3294,12 +3871,12 @@
     </div>
 
     <!-- Threadline Tab — agent-to-agent conversations + Telegram bridge settings -->
-    <div id="threadlineTab" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
+    <div id="threadlineTab" class="tab-panel" style="display:none;flex-direction:column;padding:20px;gap:16px;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Threadline</h2>
         <button onclick="loadThreadlineBridgeConfig()" style="padding:6px 12px">Refresh</button>
       </div>
-      <div style="font-size:12px;color:var(--text-dim);line-height:1.4">
+      <div class="tab-purpose">
         Threadline is your agent's secure channel to other AI agents. The Telegram bridge mirrors those conversations into per-thread Telegram topics so you can watch every exchange. Quiet by default — flip the master switch below to opt in.
       </div>
 
@@ -3387,28 +3964,18 @@
       </div>
     </div>
 
-    <!-- Health Tab (was Systems) -->
+    <!-- Health Tab (was Systems) — glance floors F10/F11 (topic 29836, Phase 3).
+         The old ~390-word subsystem prose became a plain headline + tiles; each
+         subsystem's full description / processes / metrics live one drill down.
+         The shared component renders the headline + tiles + drill-down here. -->
     <div class="systems-container" id="systemsTab" style="display:none">
       <div class="systems-main">
-        <!-- Overview (card grid) -->
-        <div id="systemsOverview">
-          <div class="systems-header">
-            <h2>Health</h2>
-            <button class="systems-refresh" onclick="loadSystems()">Refresh</button>
-          </div>
-          <div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;line-height:1.4">Your agent's health and running processes</div>
-          <div id="systemsBanner">
-            <div style="padding:20px;color:var(--text-dim);text-align:center">Loading...</div>
-          </div>
-          <div id="systemsIssues"></div>
-          <div id="systemsCapabilities"></div>
-          <div id="systemsEvents"></div>
+        <div class="systems-header">
+          <h2>Health</h2>
+          <button class="systems-refresh" onclick="loadSystems()">Refresh</button>
         </div>
-        <!-- Detail view (single capability) -->
-        <div class="cap-detail-view" id="systemsDetailView">
-          <button class="cap-detail-back" onclick="showSystemsOverview()">&#9664; Back to Health</button>
-          <div id="systemsDetailContent"></div>
-        </div>
+        <div class="tab-purpose" style="margin-bottom:16px">Your agent's health at a glance — the headline says whether everything's operational; tap a tile to see which subsystems, tap one for its full detail.</div>
+        <div id="systemsGlance" class="glance-root"></div>
       </div>
     </div>
 
@@ -3465,7 +4032,7 @@
   <!-- WhatsApp QR panel (hidden by default) -->
   <div class="wa-qr-backdrop" id="waQrBackdrop" style="display:none" onclick="closeQrPanel()"></div>
   <div class="wa-qr-panel" id="waQrPanel" style="display:none">
-    <button class="wa-close" onclick="closeQrPanel()">&times;</button>
+    <button class="wa-close" onclick="closeQrPanel()" title="Close" aria-label="Close">&times;</button>
     <h3>WhatsApp Connection</h3>
     <p id="waQrMsg">Scan this QR code with WhatsApp to connect</p>
     <div id="waQrContainer"></div>
@@ -3489,8 +4056,18 @@
     // Kept separate from `sessions` because the WebSocket replaces that array
     // with LOCAL sessions on every broadcast — merging would be wiped each tick.
     let remoteSessions = [];
+    // WS4.2 (multi-machine-seamlessness spec, F7): pool machine inventory for the
+    // per-machine empty-state strip. Populated only when the pool is enabled with
+    // 2+ machines — single-machine agents never see the strip (strict no-op).
+    let poolMachinesView = [];
+    // Session-listing hygiene (CMT-1936 part c): names of sessions the server
+    // flagged as GENUINE cross-machine duplicates (the SAME conversation live on
+    // >=2 machines at once). Same recurring job on each machine is benign and is
+    // never flagged. Fed by pool.duplicateTopics from /sessions?scope=pool.
+    let poolDuplicateSessionNames = new Set();
     let selfMachineNickname = null;
     let activeSession = null;
+    let activeMachineId = null; // non-null when the active session streams from a peer (§2.2)
     let term = null;
     let fitAddon = null;
     let historyLinesLoaded = 2000; // matches initial subscribe capture
@@ -3586,6 +4163,12 @@
       ws.onopen = () => {
         reconnectAttempts = 0;
         updateConnectionStatus(true);
+        // Resubscribe the active session after a (re)connect so a server
+        // restart doesn't strand the terminal (§2.5). Remote sessions carry
+        // their machineId so the resubscribe re-opens the relay.
+        if (activeSession) {
+          wsSend({ type: 'subscribe', session: activeSession, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
+        }
       };
 
       ws.onclose = () => {
@@ -3615,6 +4198,14 @@
         case 'sessions':
           sessions = msg.sessions;
           renderSessionList();
+          break;
+
+        case 'paste_delivered':
+        case 'paste_acknowledged':
+          // Drop-zone paste refresh. Handled here (in the live ws router) so it
+          // survives reconnects — the old parse-time addEventListener attached to a
+          // null ws and threw "Cannot read properties of null (reading 'onmessage')".
+          loadDzHistory();
           break;
 
         case 'output':
@@ -3677,7 +4268,21 @@
           break;
 
         case 'error':
-          console.error('[ws]', msg.message);
+          // Pool Dashboard Streaming (§2.4): every remote-stream failure state
+          // is shown honestly in the terminal — never a frozen/black screen or
+          // a silent swallow. Only surface errors for the session in view.
+          if (msg.code && term && (msg.session === activeSession || !msg.session)) {
+            const m = {
+              'machine-unreachable': '\r\n\x1b[31m--- That machine is unreachable. ---\x1b[0m\r\n',
+              'peer-stream-lost': '\r\n\x1b[33m--- Stream lost — reconnecting… ---\x1b[0m\r\n',
+              'input-not-allowed': '\r\n\x1b[33m[remote typing is disabled on this machine — turn it on in that machine\'s settings]\x1b[0m\r\n',
+              'session-transferred': `\r\n\x1b[33m--- This session moved to ${msg.newMachineId || 'another machine'} — reselect it to follow. ---\x1b[0m\r\n`,
+              'invalid-session': '\r\n\x1b[31m--- Invalid session name. ---\x1b[0m\r\n',
+              'session-not-found': '\r\n\x1b[31m--- Session not found on that machine. ---\x1b[0m\r\n',
+            }[msg.code];
+            if (m) { term.write(m); break; }
+          }
+          console.error('[ws]', msg.code || msg.message);
           break;
       }
     }
@@ -3729,6 +4334,9 @@
         empty.style.display = 'flex';
         // Clear any existing session items
         list.querySelectorAll('.session-item').forEach(el => el.remove());
+        // WS4.2: even with zero sessions anywhere, each pool machine still gets
+        // an explicit state row — an idle machine must never look broken.
+        renderMachineStatusStrip(list, all);
         return;
       }
 
@@ -3754,13 +4362,12 @@
           el = document.createElement('div');
           el.className = 'session-item';
           el.dataset.session = sessionRowKey(session);
-          if (session.remote) {
-            // A remote session's terminal streams on ITS machine's dashboard —
-            // clicking here can't subscribe to it, so the row is informational.
-            el.title = `Running on ${session.machineNickname || session.machineId || 'another machine'} — open that machine's dashboard to interact.`;
-          } else {
-            el.onclick = () => selectSession(session.tmuxSession, session);
-          }
+          // Pool Dashboard Streaming (§2.2): remote sessions are now clickable —
+          // selecting one streams it from its owning machine via the relay.
+          el.title = session.remote
+            ? `Running on ${session.machineNickname || session.machineId || 'another machine'} — click to stream it here.`
+            : '';
+          el.onclick = () => selectSession(session.tmuxSession, session);
           list.appendChild(el);
         }
 
@@ -3805,27 +4412,69 @@
         el.innerHTML = `
           <div class="session-name-row">
             <div class="session-name">${escapeHtml(session.platformName || session.name)}</div>
-            ${session.remote ? '' : `<button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}" onclick="event.stopPropagation();closeSession(this.dataset.tmux,this.dataset.name)" title="Close session">&times;</button>`}
+            <button class="session-close-btn" data-tmux="${escapeHtml(session.tmuxSession)}" data-name="${escapeHtml(session.name)}"${session.remote ? ` data-remote="1" data-uuid="${escapeHtml(session.id || '')}" data-machine-id="${escapeHtml(session.machineId || '')}" data-machine-nickname="${escapeHtml(session.machineNickname || '')}"` : ''} data-protected="${session.protected === true ? '1' : session.protected === false ? '0' : ''}"${closesInFlight.has(closeKey(session.remote ? session.machineId : null, session.tmuxSession)) ? ' disabled' : ''} onclick="event.stopPropagation();closeSessionFromBtn(this)" title="Close session">&times;</button>
           </div>
           <div class="session-meta">
             <span class="type-badge ${sType}">${sType}</span>
             <span class="model-badge ${model}">${model}</span>
             <span class="platform-badge ${platform}" title="${platformLabel}">${platformIcon}</span>
             ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(session.machineNickname)}</span>` : ''}
+            ${(session.duplicateTopic === true || poolDuplicateSessionNames.has(session.name)) ? `<span class="duplicate-badge" title="Genuine cross-machine duplicate: this conversation has a live session on more than one machine at once">⚠ duplicate</span>` : ''}
             <span>${elapsed}</span>
           </div>
           ${telemetryHtml}
         `;
       }
+
+      // WS4.2: per-machine state strip after the tiles.
+      renderMachineStatusStrip(list, all);
+    }
+
+    // WS4.2 (multi-machine-seamlessness spec, F7 — 2026-06-12 live incident):
+    // a machine with zero running sessions used to render as NOTHING, identical
+    // to a broken or unreachable machine. Render an explicit state row per pool
+    // machine that has no session tiles. The three states are computed SERVER-
+    // SIDE in pool.machines[].emptyState (honest derivation from the registry +
+    // the live fan-out) — the dashboard just styles + prints them:
+    //   - online      → "online — no active sessions" (idle but healthy)
+    //   - offline     → "offline since <t>"            (known absence)
+    //   - unreachable → "unreachable (last seen <t>)"  (was online, now silent)
+    // Pool disabled or single-machine → poolMachinesView is empty → zero rows,
+    // zero behavior change (single-machine strict no-op, spec invariant 6).
+    function machineStatusInfo(m) {
+      const es = m && m.emptyState;
+      if (es && es.kind && es.text) {
+        // 'online' is calm; 'offline'/'unreachable' both read as offline styling.
+        return { cls: es.kind === 'online' ? 'online' : 'offline', text: es.text };
+      }
+      // No server-computed empty-state present (shouldn't happen for a 0-session
+      // machine, but never fabricate "online" — surface the honest unknown).
+      return { cls: 'offline', text: 'state unknown' };
+    }
+    function renderMachineStatusStrip(list, allSessions) {
+      list.querySelectorAll('.machine-status-row').forEach(el => el.remove());
+      if (!poolMachinesView.length) return;
+      for (const m of poolMachinesView) {
+        // A machine WITH sessions already names itself via its tiles' badges.
+        if (m.sessionCount > 0) continue;
+        const label = m.nickname || m.machineId || 'unnamed machine';
+        const info = machineStatusInfo(m);
+        const row = document.createElement('div');
+        row.className = `machine-status-row ${info.cls}`;
+        row.innerHTML = `<span class="machine-badge">${escapeHtml(label)}</span><span class="machine-status-text">${escapeHtml(info.text)}</span>`;
+        list.appendChild(row);
+      }
     }
 
     // ── Terminal ──────────────────────────────────────────────
     function selectSession(tmuxSession, session) {
-      // Unsubscribe from previous
+      // Unsubscribe from previous (carry its machineId so a remote unsub routes).
       if (activeSession) {
-        wsSend({ type: 'unsubscribe', session: activeSession });
+        wsSend({ type: 'unsubscribe', session: activeSession, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
       }
 
+      // Pool Dashboard Streaming (§2.2): a remote session streams from its owner.
+      activeMachineId = session.remote ? (session.machineId || null) : null;
       activeSession = tmuxSession;
       userIsFollowing = true; // Reset scroll tracking on session switch
       hideResumeButton(); // Carry-over button from prior session would be misleading
@@ -3867,15 +4516,18 @@
         initTerminal();
       }
 
-      // Clear and subscribe
+      // Clear and subscribe (remote → carry machineId so the server relays).
       term.clear();
-      wsSend({ type: 'subscribe', session: tmuxSession });
+      if (activeMachineId) {
+        term.write(`\x1b[2m[streaming from ${session.machineNickname || activeMachineId}…]\x1b[0m\r\n`);
+      }
+      wsSend({ type: 'subscribe', session: tmuxSession, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
 
       // Update active state in sidebar
       renderSessionList();
 
       // Persist session in URL for refresh
-      updateFileUrl();
+      updateUrlState();
 
       // Focus input
       document.getElementById('termInput').focus();
@@ -4013,7 +4665,10 @@
       }
       historyLoading = true;
       showHistorySpinner();
-      wsSend({ type: 'history', session: activeSession, lines: nextBatch });
+      // Remote sessions carry their machineId so the server relays the
+      // scrollback fetch to the owning machine (§2.2) instead of capturing
+      // locally (which can only ever return empty for a remote session).
+      wsSend({ type: 'history', session: activeSession, lines: nextBatch, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
     }
 
     function showHistorySpinner() {
@@ -4108,29 +4763,32 @@
       document.getElementById('terminalView').style.display = 'none';
       document.getElementById('noSession').style.display = 'flex';
       renderSessionList();
-      updateFileUrl(); // Clear session from URL
+      updateUrlState(); // Clear session from URL
     }
 
     // ── Input ────────────────────────────────────────────────
+    // Remote sessions carry machineId so the server relays input to the owner
+    // (which enforces its own allowRemoteInput gate; a refusal returns an
+    // input-not-allowed error frame, surfaced in the terminal — never silent).
     function sendInput() {
       const input = document.getElementById('termInput');
       const text = input.value;
       if (!text || !activeSession) return;
 
-      wsSend({ type: 'input', session: activeSession, text });
+      wsSend({ type: 'input', session: activeSession, text, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
       input.value = '';
       input.focus();
     }
 
     function sendKey(key) {
       if (!activeSession) return;
-      wsSend({ type: 'key', session: activeSession, key });
+      wsSend({ type: 'key', session: activeSession, key, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
     }
 
     function sendSpecial(text) {
       if (!activeSession) return;
       // Send literal text without Enter
-      wsSend({ type: 'key', session: activeSession, key: text });
+      wsSend({ type: 'key', session: activeSession, key: text, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
     }
 
     // ── New Session Modal ────────────────────────────────────
@@ -4192,15 +4850,100 @@
     }
 
     // ── Close Session ─────────────────────────────────────────
-    async function closeSession(tmuxSession, sessionName) {
-      if (!confirm(`Close session "${sessionName}"?`)) return;
+    // Remote-session close (REMOTE-SESSION-CLOSE-SPEC §2.2): remote tiles
+    // render the same × as local tiles, relayed via
+    // POST /sessions/:name/remote-close. The confirm is the informed-consent
+    // surface — it names the machine and flags a PROTECTED session (close
+    // still proceeds on confirm; operator-origin semantics, there is no
+    // server-side refusal). A flag-less remote row (pre-feature peer) says
+    // "protection status unknown" rather than silently implying unprotected.
+    const closesInFlight = new Set(); // tile keys with a close pending — survives re-renders
+
+    function closeKey(machineId, tmuxSession) {
+      return (machineId || 'local') + ':' + tmuxSession;
+    }
+
+    function closeSessionFromBtn(btn) {
+      const d = btn.dataset;
+      closeSession(d.tmux, d.name, {
+        remote: d.remote === '1',
+        sessionUuid: d.uuid || undefined,
+        machineId: d.machineId || undefined,
+        machineNickname: d.machineNickname || undefined,
+        protected: d.protected === '1' ? true : d.protected === '0' ? false : undefined,
+        button: btn,
+      });
+    }
+
+    async function closeSession(tmuxSession, sessionName, opts) {
+      opts = opts || {}; // backward-compatible: local callers may pass (tmux, name) only
+      const nickname = opts.machineNickname || opts.machineId || 'another machine';
+
+      let prompt;
+      if (opts.protected === true) {
+        // Informed consent (spec §2.0/§2.2): protected sessions ARE closeable —
+        // the safety is that the operator closes them knowingly. The local ×
+        // gains this warning too (deliberate UX improvement, spec AC#6).
+        prompt = opts.remote
+          ? `"${sessionName}" is a PROTECTED session on ${nickname} — close it anyway?`
+          : `"${sessionName}" is a PROTECTED session — close it anyway?`;
+      } else {
+        prompt = opts.remote
+          ? `Close session "${sessionName}" on ${nickname}?`
+          : `Close session "${sessionName}"?`;
+      }
+      if (opts.remote && opts.protected === undefined) {
+        // Version skew: a pre-feature peer's records omit the additive
+        // `protected` flag — say so rather than implying unprotected.
+        prompt += ' (protection status unknown — machine needs update)';
+      }
+      if (!confirm(prompt)) return;
+
+      const key = closeKey(opts.remote ? opts.machineId : null, tmuxSession);
+      if (closesInFlight.has(key)) return; // a close for this tile is already in flight
+      closesInFlight.add(key);
+      if (opts.button) opts.button.disabled = true; // pending — no double-click into parallel relays
 
       try {
-        const resp = await fetch(`/sessions/${encodeURIComponent(tmuxSession)}`, {
-          method: 'DELETE',
-          headers: { 'Authorization': `Bearer ${token}` },
-        });
+        let resp;
+        if (opts.remote) {
+          resp = await fetch(`/sessions/${encodeURIComponent(sessionName)}/remote-close`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ machineId: opts.machineId, sessionUuid: opts.sessionUuid }),
+          });
+        } else {
+          resp = await fetch(`/sessions/${encodeURIComponent(tmuxSession)}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` },
+          });
+        }
         const data = await resp.json();
+
+        if (opts.remote) {
+          if (resp.ok && data.alreadyClosed) {
+            // Calm path (spec §2.3): a stale tile whose session already ended
+            // is a close that just won, not an error — simultaneous dashboard
+            // viewers are normal.
+            showToast(`Session "${sessionName}" already closed — refreshing`, 'success');
+          } else if (resp.ok) {
+            showToast(`Session "${sessionName}" closed on ${nickname}`, 'success');
+          } else if (data.outcomeUnknown) {
+            // Delivery honesty (spec §2.3): the peer may be mid-kill — report
+            // OBSERVED state via a refresh, never "closed nothing".
+            showToast(`Session "${sessionName}" — outcome unknown — refreshing`, 'info');
+            refreshPoolSessions();
+            return;
+          } else {
+            showToast(data.error || 'Failed to close remote session', 'error');
+            return;
+          }
+          refreshPoolSessions();
+          if (activeSession === tmuxSession && activeMachineId === (opts.machineId || null)) {
+            goBack();
+          }
+          return;
+        }
 
         if (!resp.ok) {
           showToast(data.error || 'Failed to close session', 'error');
@@ -4215,6 +4958,9 @@
         }
       } catch (err) {
         showToast('Network error: ' + (err.message || 'Cannot reach server'), 'error');
+      } finally {
+        closesInFlight.delete(key);
+        if (opts.button && opts.button.isConnected) opts.button.disabled = false;
       }
     }
 
@@ -4222,7 +4968,7 @@
       if (!activeSession) return;
       const session = sessions.find(s => s.tmuxSession === activeSession);
       const name = session ? session.name : activeSession;
-      closeSession(activeSession, name);
+      closeSession(activeSession, name, session ? { protected: session.protected } : undefined);
     }
 
     // ── Helpers ───────────────────────────────────────────────
@@ -4256,20 +5002,45 @@
     // multi-machine pool, poll the aggregated view so every session — on every
     // machine — shows in the list, each tagged with the machine it runs on.
     let poolPollTimer = null;
+    // Callable outside the poll loop too: a remote close triggers an immediate
+    // refresh so the list shows OBSERVED state (REMOTE-SESSION-CLOSE-SPEC §2.2).
+    async function refreshPoolSessions() {
+      try {
+        const r = await fetch('/sessions?scope=pool', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!r.ok) return;
+        const j = await r.json();
+        selfMachineNickname = (j.pool && j.pool.selfMachineNickname) || null;
+        // LIVE remote sessions only: a peer's plain /sessions returns its FULL
+        // registry (completed/killed records included), while the local sidebar
+        // is built from listRunningSessions(). Without this status filter,
+        // long-dead peer sessions render as live "click to stream" tiles
+        // (2026-06-11: five closed Mac Mini sessions reappeared on the laptop
+        // dashboard hours after they were closed).
+        remoteSessions = (j.sessions || []).filter(s => s.remote === true && (s.status === 'running' || s.status === 'starting'));
+        // WS4.2 (F7): the pooled sessions response now carries pool.machines —
+        // every registered machine with its session count and, when idle, an
+        // explicit SERVER-COMPUTED empty-state (online / offline / unreachable),
+        // honestly derived from the registry + the live fan-out. Render it so an
+        // idle machine reads "online — no active sessions" and a dark machine
+        // reads "offline since"/"unreachable" — never an indistinguishable blank.
+        // >=2 machines is the multi-machine case; single-machine stays empty (no-op).
+        poolMachinesView = (j.pool && j.pool.enabled && Array.isArray(j.pool.machines) && j.pool.machines.length >= 2)
+          ? j.pool.machines
+          : [];
+        // Genuine cross-machine duplicates (server-computed): collect the flagged
+        // session NAMES so both local (WS-fed) and remote tiles can badge — the
+        // local row never carries the flag itself (it arrives via WebSocket).
+        poolDuplicateSessionNames = new Set(
+          (j.pool && Array.isArray(j.pool.duplicateTopics) ? j.pool.duplicateTopics : [])
+            .flatMap(d => Array.isArray(d.sessions) ? d.sessions : [])
+        );
+        renderSessionList();
+      } catch { /* best-effort — peers may be offline; next tick retries */ }
+    }
     function startPoolSessionsPolling() {
       if (poolPollTimer) return;
-      const poll = async () => {
-        try {
-          const r = await fetch('/sessions?scope=pool', { headers: { 'Authorization': `Bearer ${token}` } });
-          if (!r.ok) return;
-          const j = await r.json();
-          selfMachineNickname = (j.pool && j.pool.selfMachineNickname) || null;
-          remoteSessions = (j.sessions || []).filter(s => s.remote === true);
-          renderSessionList();
-        } catch { /* best-effort — peers may be offline; next tick retries */ }
-      };
-      poll();
-      poolPollTimer = setInterval(poll, 15000);
+      refreshPoolSessions();
+      poolPollTimer = setInterval(refreshPoolSessions, 15000);
     }
 
     function startWaPolling() {
@@ -4291,7 +5062,7 @@
       if (!token) return;
       fetch('/whatsapp/qr', { headers: { 'Authorization': `Bearer ${token}` } })
         .then(r => {
-          if (r.status === 503) { waConfigured = false; updateWaButton(); return null; }
+          if (r.status === 503) { waConfigured = false; updateWaButton(); stopWaPolling(); return null; } // WhatsApp adapter absent — stop the 3s poll (it was spamming the console with ~20 503s/min)
           if (!r.ok) {
             // Surface auth/error state in QR panel instead of failing silently
             const msg = document.getElementById('waQrMsg');
@@ -4420,6 +5191,12 @@
 
     const TAB_REGISTRY = [
       {
+        id: 'insights',
+        panels: ['insightsPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadInsights === 'function') loadInsights(); },
+      },
+      {
         id: 'sessions',
         panels: ['sessionsTab', 'mainPanel'],
         display: ['', ''],
@@ -4508,6 +5285,24 @@
         onActivate: () => { if (typeof loadResources === 'function') loadResources(); },
       },
       {
+        id: 'llm-activity',
+        panels: ['llmActivityPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadLlmActivity === 'function') loadLlmActivity(); },
+      },
+      {
+        id: 'routing-map',
+        panels: ['routingMapPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadRoutingMap === 'function') loadRoutingMap(); },
+      },
+      {
+        id: 'spend',
+        panels: ['spendPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadRoutingSpend === 'function') loadRoutingSpend(); },
+      },
+      {
         id: 'threadline',
         panels: ['threadlineTab'],
         display: ['flex'],
@@ -4530,6 +5325,21 @@
         onDeactivate: () => { if (typeof stopProcessHealth === 'function') stopProcessHealth(); },
       },
       {
+        id: 'feedback-drain',
+        panels: ['feedbackDrainPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof startFeedbackDrain === 'function') startFeedbackDrain(); },
+        onDeactivate: () => { if (typeof stopFeedbackDrain === 'function') stopFeedbackDrain(); },
+      },
+      {
+        id: 'subscriptions',
+        panels: ['subscriptionsPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof startSubscriptions === 'function') startSubscriptions(); },
+        onDeactivate: () => { if (typeof stopSubscriptions === 'function') stopSubscriptions(); },
+      },
+      { id: 'throughput', panels: ['throughputPanel'], display: ['flex'], onActivate: () => loadThroughput() },
+      {
         id: 'preferences-learning',
         panels: ['preferencesLearningPanel'],
         display: ['flex'],
@@ -4544,15 +5354,24 @@
         onDeactivate: () => { if (typeof stopMachines === 'function') stopMachines(); },
       },
       {
+        id: 'mandates',
+        panels: ['mandatesPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof startMandates === 'function') startMandates(); },
+        onDeactivate: () => { if (typeof stopMandates === 'function') stopMandates(); },
+      },
+      {
+        id: 'blockers',
+        panels: ['blockersPanel'],
+        display: ['flex'],
+        onActivate: () => { if (typeof loadBlockers === 'function') loadBlockers(); },
+      },
+      {
         id: 'secrets',
         panels: ['secretsPanel'],
         display: ['flex'],
         onActivate: () => {
           if (typeof loadSecrets === 'function') loadSecrets();
-          if (typeof startSecretsTicker === 'function') startSecretsTicker();
-        },
-        onDeactivate: () => {
-          if (typeof stopSecretsTicker === 'function') stopSecretsTicker();
         },
       },
     ];
@@ -4639,7 +5458,7 @@
         if (activeTab.onActivate) activeTab.onActivate();
       }
 
-      updateFileUrl();
+      updateUrlState();
     }
 
     // ── File Viewer ────────────────────────────────────────────
@@ -4698,77 +5517,130 @@
       return resp.json();
     }
 
-    // ── Machines Tab (Multi-Machine Session Pool §L2) ─────────────────
+    // ── Machines Tab — glance floors F10/F11 (topic 29836, Phase 3) + issue #1429 ──
+    // Rebuilt on the shared glance component: a plain headline over Online /
+    // Attention needed / Dispatcher / Safety-checks tiles (Layer 1); each drills into
+    // the machines or the named safety checks in plain words (Layer 2); each row opens
+    // the full record (Layer 3) where the raw guard posture used to sit on the front
+    // page. Nicknames are user-authored → they NEVER appear at Layer 1; the editable
+    // field lives in the machine record and commits only on Enter/blur with optimistic
+    // echo (#1429). The 15s poll HOLDS an open drill (F9) so a rename in progress is
+    // never clobbered; when the drill closes the next poll reloads server authority.
     let __machinesTimer = null;
     function startMachines() { loadMachines(); if (!__machinesTimer) __machinesTimer = setInterval(loadMachines, 15000); }
     function stopMachines() { if (__machinesTimer) { clearInterval(__machinesTimer); __machinesTimer = null; } }
-    function machineSpecLine(hw) {
-      if (!hw) return 'specs not reported yet';
-      const chip = (hw.cpuModel && hw.cpuModel !== 'unknown') ? hw.cpuModel : ((hw.platform || '') + (hw.arch ? ' ' + hw.arch : '')).trim();
-      const cores = hw.cpuCores ? hw.cpuCores + ' cores' : '';
-      const ram = hw.totalMemBytes ? Math.round(hw.totalMemBytes / 1073741824) + ' GB' : '';
-      return [chip, cores, ram].filter(Boolean).join(' · ') || 'specs not reported yet';
-    }
-    function machineBusyWord(m) {
-      if (m.loadAvg == null) return '';
-      if (m.loadAvg < 1) return 'idle';
-      if (m.loadAvg < 4) return 'working';
-      return 'busy';
-    }
-    function renderMachineCard(m, routerHolder) {
-      const online = !!m.online;
-      const dot = !online ? 'off' : (m.clockSkewStatus === 'suspect-clock-removed' ? 'warn' : 'ok');
-      const statusWord = !online ? 'offline' : (m.clockSkewStatus === 'suspect-clock-removed' ? 'clock out of sync — paused for new conversations' : 'online');
-      const isRouter = !!(routerHolder && m.machineId === routerHolder);
-      const nick = m.nickname || m.machineId;
-      const busy = machineBusyWord(m);
-      const sessions = (m.activeSessionCount != null) ? (m.activeSessionCount + (m.maxSessions ? '/' + m.maxSessions : '') + ' conversation' + (m.activeSessionCount === 1 ? '' : 's')) : '';
-      const tail = [statusWord, busy, sessions].filter(Boolean).map(s => escapeHtml(s)).join(' · ');
-      return '<div class="machine-card">' +
-        '<div class="machine-head">' +
-          '<span class="machine-dot ' + dot + '" title="' + escapeHtml(statusWord) + '"></span>' +
-          '<input class="machine-nick" value="' + escapeHtml(nick) + '" data-mid="' + escapeHtml(m.machineId) + '" ' +
-            'onkeydown="if(event.key===\'Enter\'){this.blur();}" onblur="saveMachineNickname(this)" aria-label="machine nickname" />' +
-          (isRouter ? '<span class="machine-badge">dispatcher</span>' : '') +
-        '</div>' +
-        '<div class="machine-meta">' + escapeHtml(machineSpecLine(m.hardware)) + '</div>' +
-        '<div class="machine-meta">' + tail + '</div>' +
-      '</div>';
-    }
-    async function saveMachineNickname(input) {
-      const mid = input.getAttribute('data-mid');
-      const nickname = input.value.trim();
+
+    async function saveMachineNickname(machineId, nickname, input, prev) {
+      // Optimistic: the input already shows the typed value. PATCH the registry; on
+      // failure revert the optimistic echo and surface an honest inline note.
       try {
-        await apiFetch('/pool/machines/' + encodeURIComponent(mid), {
+        await apiFetch('/pool/machines/' + encodeURIComponent(machineId), {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nickname }),
         });
-        loadMachines();
+        if (input) { input.removeAttribute('data-rename-error'); input.removeAttribute('title'); }
       } catch (e) {
-        const hl = document.getElementById('machinesHeadline');
-        if (hl) hl.innerHTML = '<div class="ph-headline">Couldn\'t rename that machine: ' + escapeHtml(e.message) + '</div>';
+        if (input) {
+          if (prev != null) input.value = prev; // revert the optimistic echo
+          const msg = (e && e.message) ? e.message : 'rename failed';
+          input.setAttribute('data-rename-error', msg);
+          input.setAttribute('title', 'Rename failed — ' + msg);
+        }
       }
     }
+
     async function loadMachines() {
+      const glanceRoot = document.getElementById('machinesGlance');
       const stamp = document.getElementById('machinesStamp');
-      const list = document.getElementById('machinesList');
-      const headline = document.getElementById('machinesHeadline');
-      if (!list) return;
+      if (!glanceRoot) return;
+
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
+
+      let pool = null;
       try {
-        const data = await apiFetch('/pool');
-        if (stamp) stamp.textContent = new Date().toLocaleTimeString();
-        if (!data.enabled) {
-          if (headline) headline.innerHTML = '<div class="ph-headline">Running on a single machine right now — nothing to spread across yet.</div>';
-          list.innerHTML = '';
-          return;
-        }
-        const machines = data.machines || [];
-        const onlineCount = machines.filter(m => m.online).length;
-        if (headline) headline.innerHTML = '<div class="ph-headline">' + onlineCount + ' of ' + machines.length + ' machine' + (machines.length === 1 ? '' : 's') + ' online</div>';
-        const routerHolder = data.router && data.router.holder;
-        list.innerHTML = machines.length ? machines.map(m => renderMachineCard(m, routerHolder)).join('') : '<div class="machine-meta">No machines paired yet.</div>';
+        pool = await apiFetch('/pool');
       } catch (e) {
-        if (headline) headline.innerHTML = '<div class="ph-headline">Couldn\'t load machines: ' + escapeHtml(e.message) + '</div>';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'Could not load machines right now — refresh to retry.';
+        glanceRoot.appendChild(note);
+        return;
       }
+      if (stamp) stamp.textContent = new Date().toLocaleTimeString();
+      await loadMutualSshStatus();
+      await loadThroughputFloor();
+
+      if (!pool.enabled) {
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'Running on a single machine right now — nothing to spread across yet.';
+        glanceRoot.appendChild(note);
+        return;
+      }
+
+      // Named safety checks (GET /guards, this machine) enrich the "Safety checks"
+      // tile; a failure omits that tile — it never blocks the machines view.
+      let guards = null;
+      try { guards = await apiFetch('/guards'); }
+      catch { /* @silent-fallback-ok — guards only enrich the glance; on failure the Safety-checks tile is omitted and machines still render */ }
+
+      const spec = glance.machinesGlanceSpec(document, pool, guards, {
+        onRename: (id, nickname, input, prev) => saveMachineNickname(id, nickname, input, prev),
+      });
+      glance.renderGlance(document, glanceRoot, spec);
+    }
+
+    async function loadMutualSshStatus() {
+      const root = document.getElementById('mutualSshStatus');
+      if (!root) return;
+      root.textContent = '';
+      let status;
+      try { status = await apiFetch('/machines/ssh-health?scope=pool'); }
+      catch { root.textContent = 'Not enabled on this agent.'; return; }
+      if (status.dryRun) { root.textContent = 'Observation only — no peer SSH sessions are accepted.'; return; }
+      const pairs = Array.isArray(status.pairs) ? status.pairs : [];
+      if (pairs.length === 0) { root.textContent = status.listener ? 'Ready; no paired machines to verify.' : 'Waiting for the restricted listener.'; return; }
+      const healthy = pairs.filter(pair => pair && pair.mutual === true).length;
+      const summary = document.createElement('div');
+      summary.textContent = healthy === pairs.length
+        ? 'Mutual proof is current for all ' + String(pairs.length) + ' machine pair' + (pairs.length === 1 ? '.' : 's.')
+        : String(healthy) + ' of ' + String(pairs.length) + ' machine pairs have current proof in both directions.';
+      root.appendChild(summary);
+      for (const pair of pairs) {
+        const row = document.createElement('div');
+        row.style.marginTop = '8px';
+        row.textContent = (pair.mutual ? 'Verified: ' : 'Blocked: ') + (Array.isArray(pair.machines) ? pair.machines.join(' ↔ ') : 'machine pair');
+        root.appendChild(row);
+      }
+    }
+
+    async function loadThroughputFloor() {
+      const root = document.getElementById('throughputFloorStatus');
+      if (!root) return;
+      root.textContent = '';
+      let status;
+      try { status = await apiFetch('/autonomous/throughput-floor'); }
+      catch {
+        root.textContent = 'Observation is not enabled on this agent.';
+        return;
+      }
+      const rows = Array.isArray(status.runs) ? status.runs : [];
+      if (rows.length === 0) { root.textContent = 'No eligible autonomous runs are currently observed.'; return; }
+      const list = document.createElement('div');
+      list.style.display = 'grid';
+      list.style.gap = '8px';
+      for (const row of rows) {
+        const item = document.createElement('div');
+        item.style.padding = '8px 10px';
+        item.style.border = '1px solid var(--border)';
+        item.style.borderRadius = '8px';
+        const minutes = Math.floor(Math.min(Number(row.outputFlatForMs || 0), Number(row.managerSilentForMs || 0)) / 60000);
+        item.textContent = 'Topic ' + String(row.topicId) + ': ' + String(row.decision || 'unknown') + (row.decision === 'flatline-observed' ? ' — both signals unchanged for at least ' + minutes + 'm' : '');
+        list.appendChild(item);
+      }
+      root.appendChild(list);
     }
 
     // ── Tokens Tab ──────────────────────────────────────────────────
@@ -4876,7 +5748,7 @@
             <span style="font-size:11px;color:var(--text-dim)">confidence: ${escapeHtml(confidence)}</span>
             <button class="ev-inspect-btn" data-entity-id="${id}" style="margin-left:auto;padding:2px 8px;font-size:11px">Inspect evidence</button>
           </div>
-          ${content ? `<div style="font-size:12px;color:var(--text-dim);line-height:1.4">${content}</div>` : ''}
+          ${content ? `<div class="tab-purpose">${content}</div>` : ''}
         </div>
       `;
     }
@@ -4965,71 +5837,29 @@
     }
 
     async function loadTokens() {
-      const summaryEl = document.getElementById('tokensSummaryBody');
-      const sessionsEl = document.getElementById('tokensSessionsBody');
-      const orphansEl = document.getElementById('tokensOrphansBody');
+      const glanceRoot = document.getElementById('tokensGlance');
+      if (!glanceRoot) return;
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
       try {
         const [summaryResp, sessionsResp, orphansResp] = await Promise.all([
           apiFetch('/tokens/summary'),
           apiFetch('/tokens/sessions?limit=10'),
           apiFetch('/tokens/orphans?idleMs=' + (30 * 60 * 1000)),
         ]);
-        const s = summaryResp.summary || {};
-        summaryEl.innerHTML = `
-          <div><div style="color:var(--text-dim)">Total tokens</div><div style="font-size:18px;font-weight:600">${fmtTokens(s.totalTokens)}</div></div>
-          <div><div style="color:var(--text-dim)">Input</div><div>${fmtTokens(s.totalInput)}</div></div>
-          <div><div style="color:var(--text-dim)">Output</div><div>${fmtTokens(s.totalOutput)}</div></div>
-          <div><div style="color:var(--text-dim)">Cache read</div><div>${fmtTokens(s.totalCacheRead)}</div></div>
-          <div><div style="color:var(--text-dim)">Cache create</div><div>${fmtTokens(s.totalCacheCreate)}</div></div>
-          <div><div style="color:var(--text-dim)">Events</div><div>${fmtTokens(s.eventCount)}</div></div>
-          <div><div style="color:var(--text-dim)">Sessions</div><div>${fmtTokens(s.sessionsActive)}</div></div>
-        `;
-
-        const sessions = sessionsResp.sessions || [];
-        if (sessions.length === 0) {
-          sessionsEl.innerHTML = '<div style="color:var(--text-dim)">No sessions in window.</div>';
-        } else {
-          sessionsEl.innerHTML = `
-            <table style="width:100%;border-collapse:collapse;font-size:13px">
-              <thead><tr style="text-align:left;color:var(--text-dim)">
-                <th style="padding:6px 8px">Session</th>
-                <th style="padding:6px 8px">Project</th>
-                <th style="padding:6px 8px;text-align:right">Tokens</th>
-                <th style="padding:6px 8px;text-align:right">Events</th>
-                <th style="padding:6px 8px">Last activity</th>
-              </tr></thead>
-              <tbody>
-                ${sessions.map(r => `
-                  <tr style="border-top:1px solid var(--border)">
-                    <td style="padding:6px 8px;font-family:monospace">${escapeHtml((r.sessionId || '').slice(0, 8))}</td>
-                    <td style="padding:6px 8px">${escapeHtml(r.projectPath || '—')}</td>
-                    <td style="padding:6px 8px;text-align:right">${fmtTokens(r.totalTokens)}</td>
-                    <td style="padding:6px 8px;text-align:right">${fmtTokens(r.eventCount)}</td>
-                    <td style="padding:6px 8px">${fmtRelTime(r.lastTs)}</td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          `;
-        }
-
-        const orphans = orphansResp.orphans || [];
-        if (orphans.length === 0) {
-          orphansEl.innerHTML = '<div style="color:var(--text-dim)">No idle sessions.</div>';
-        } else {
-          orphansEl.innerHTML = orphans.map(o => `
-            <div style="padding:6px 0;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-family:monospace;font-size:12px">
-              <span>${escapeHtml((o.sessionId || '').slice(0, 12))}</span>
-              <span style="color:var(--text-dim)">${escapeHtml(o.projectPath || '—')}</span>
-              <span>${fmtRelTime(o.lastTs)}</span>
-            </div>
-          `).join('');
-        }
+        const spec = glance.tokensGlanceSpec(
+          document, summaryResp, sessionsResp.sessions || [], orphansResp.orphans || [], { fmtTs: fmtRelTime },
+        );
+        glance.renderGlance(document, glanceRoot, spec);
       } catch (err) {
-        const msg = `<div style="color:var(--red)">Error: ${escapeHtml(err.message || String(err))}</div>`;
-        summaryEl.innerHTML = msg;
-        sessionsEl.innerHTML = '';
-        orphansEl.innerHTML = '';
+        const m = err && err.message ? String(err.message) : String(err);
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = /503|unavailable|not initialized/i.test(m)
+          ? 'Token tracking isn’t available on this agent yet.'
+          : 'Could not load token usage right now — refresh to retry.';
+        glanceRoot.appendChild(note);
       }
     }
 
@@ -5055,79 +5885,158 @@
       }
       return String(src || '—');
     }
-    async function loadResources() {
-      const headlineEl = document.getElementById('resourcesHeadlineBody');
-      const sourcesEl = document.getElementById('resourcesSourcesBody');
-      const trendEl = document.getElementById('resourcesTrendBody');
+    async function loadLlmActivity() {
+      const glanceRoot = document.getElementById('llmActivityGlance');
+      if (!glanceRoot) return;
+      const winSel = document.getElementById('llmActivityWindow');
+      const hours = Number((winSel && winSel.value) || 168);
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
       try {
-        const [summaryResp, samplesResp] = await Promise.all([
-          apiFetch('/resources/summary?sinceHours=1'),
-          apiFetch('/resources/samples?sinceHours=1&source=aggregate&limit=20'),
-        ]);
-        const sources = summaryResp.sources || [];
-        const agg = sources.find(s => s.source === 'aggregate');
-        if (agg) {
-          headlineEl.innerHTML =
-            '<div><div style="color:var(--text-dim)">CPU now</div><div style="font-size:18px;font-weight:600">' + escapeHtml(fmtCpu(agg.currentCpuPercent)) + '</div></div>' +
-            '<div><div style="color:var(--text-dim)">Memory now (RSS)</div><div style="font-size:18px;font-weight:600">' + escapeHtml(fmtBytes(agg.currentRssBytes)) + '</div></div>' +
-            '<div><div style="color:var(--text-dim)">Avg CPU (1h)</div><div>' + escapeHtml(fmtCpu(agg.avgCpuPercent)) + '</div></div>' +
-            '<div><div style="color:var(--text-dim)">Peak CPU (1h)</div><div>' + escapeHtml(fmtCpu(agg.peakCpuPercent)) + '</div></div>' +
-            '<div><div style="color:var(--text-dim)">Peak memory (1h)</div><div>' + escapeHtml(fmtBytes(agg.peakRssBytes)) + '</div></div>' +
-            '<div><div style="color:var(--text-dim)">Samples</div><div>' + escapeHtml(String(summaryResp.sampleCount || 0)) + '</div></div>';
-        } else {
-          headlineEl.innerHTML = '<div style="color:var(--text-dim)">No samples collected yet — give it a minute.</div>';
-        }
-
-        // Per-source breakdown (server + each session), aggregate listed last.
-        const breakdown = sources.filter(s => s.source !== 'aggregate');
-        if (breakdown.length === 0) {
-          sourcesEl.innerHTML = '<div style="color:var(--text-dim)">No process samples in the last hour.</div>';
-        } else {
-          sourcesEl.innerHTML =
-            '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-              '<thead><tr style="text-align:left;color:var(--text-dim)">' +
-                '<th style="padding:6px 8px">Process</th>' +
-                '<th style="padding:6px 8px;text-align:right">CPU now</th>' +
-                '<th style="padding:6px 8px;text-align:right">Avg CPU</th>' +
-                '<th style="padding:6px 8px;text-align:right">Memory (RSS)</th>' +
-                '<th style="padding:6px 8px;text-align:right">Peak CPU</th>' +
-              '</tr></thead><tbody>' +
-              breakdown.map(s =>
-                '<tr style="border-top:1px solid var(--border)">' +
-                  '<td style="padding:6px 8px">' + escapeHtml(resourceSourceLabel(s.source)) + '</td>' +
-                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtCpu(s.currentCpuPercent)) + '</td>' +
-                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtCpu(s.avgCpuPercent)) + '</td>' +
-                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtBytes(s.currentRssBytes)) + '</td>' +
-                  '<td style="padding:6px 8px;text-align:right">' + escapeHtml(fmtCpu(s.peakCpuPercent)) + '</td>' +
-                '</tr>'
-              ).join('') +
-              '</tbody></table>';
-        }
-
-        // Recent trend: the last aggregate samples (newest first).
-        const samples = samplesResp.samples || [];
-        if (samples.length === 0) {
-          trendEl.innerHTML = '<div style="color:var(--text-dim)">No trend yet.</div>';
-        } else {
-          trendEl.innerHTML = samples.map(s =>
-            '<div style="padding:5px 0;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:12px">' +
-              '<span style="color:var(--text-dim)">' + escapeHtml(fmtRelTime(s.ts)) + '</span>' +
-              '<span>' + escapeHtml(fmtCpu(s.cpuPercent)) + ' CPU</span>' +
-              '<span>' + escapeHtml(fmtBytes(s.rssBytes)) + ' RSS</span>' +
-            '</div>'
-          ).join('');
-        }
+        const data = await apiFetch('/metrics/features?sinceHours=' + hours);
+        const spec = glance.llmActivityGlanceSpec(document, data);
+        glance.renderGlance(document, glanceRoot, spec);
       } catch (err) {
         const m = err && err.message ? String(err.message) : String(err);
-        // 503 / "unavailable" → the sampler isn't turned on for this agent.
-        if (/503|unavailable|disabled|not initialized/i.test(m)) {
-          headlineEl.innerHTML = '<div style="color:var(--text-dim)">Resource tracking isn\'t turned on for this agent yet.</div>';
-        } else {
-          headlineEl.innerHTML = '<div style="color:var(--red)">Error: ' + escapeHtml(m) + '</div>';
-        }
-        sourcesEl.innerHTML = '';
-        trendEl.innerHTML = '';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = /503|unavailable|not initialized/i.test(m)
+          ? 'LLM activity tracking isn’t available on this agent yet.'
+          : 'Could not load LLM activity right now — refresh to retry.';
+        glanceRoot.appendChild(note);
       }
+    }
+
+    // ── Routing Map Tab — glance floors F10/F11 (topic 29836, Phase 3) ──
+    // The nature-axis routing map rebuilt on the shared glance component. "Lane /
+    // nature / door" became plain words at the glance: a headline naming the primary
+    // model + backup, one tile per job group + a Job-types tile (Layer 1); each lane
+    // drills into its ordered fallback list of plain model names (Layer 2); each row
+    // opens the full door/model config (Layer 3). Data from /intelligence/routing/chains;
+    // 503 = no AI provider configured → an honest note, never a crash.
+    async function loadRoutingMap() {
+      const glanceRoot = document.getElementById('routingMapGlance');
+      if (!glanceRoot) return;
+
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
+
+      let map = null;
+      try {
+        map = await apiFetch('/intelligence/routing/chains');
+      } catch (err) {
+        const m = err && err.message ? String(err.message) : String(err);
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = /503|unavailable|not initialized/i.test(m)
+          ? 'The routing map isn’t available on this agent (no AI provider configured).'
+          : 'Could not load the routing map right now — refresh to retry.';
+        glanceRoot.appendChild(note);
+        return;
+      }
+
+      const spec = glance.routingMapGlanceSpec(document, map);
+      glance.renderGlance(document, glanceRoot, spec);
+    }
+
+    // ── Spend Tab — glance floors F10/F11 (topic 29836, Phase 3) ──
+    // The Routing Control Room read-only spend/caps view rebuilt on the shared glance
+    // component. "Metered / paid door / reflows" became plain words at the glance:
+    // "pay-per-use", a plain headline, and totals tiles (Layer 1); the per-model cost
+    // + usage rows and the paid-door caps drill down (Layer 2), full pricing/caps
+    // detail at Layer 3. Data from /routing-spend/summary + /routing-spend/caps;
+    // 503 = the dev-gated view is dark on the fleet → an honest note, never a crash.
+    async function loadRoutingSpend() {
+      const glanceRoot = document.getElementById('spendGlance');
+      if (!glanceRoot) return;
+      const grain = (document.getElementById('spendGrain') || {}).value || 'day';
+
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
+
+      let summary = null;
+      let caps = null;
+      try {
+        [summary, caps] = await Promise.all([
+          apiFetch('/routing-spend/summary?grain=' + encodeURIComponent(grain)),
+          apiFetch('/routing-spend/caps'),
+        ]);
+      } catch (err) {
+        const m = err && err.message ? String(err.message) : String(err);
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = /503|not enabled|unavailable/i.test(m)
+          ? 'The spend view isn’t enabled on this agent (it’s a development-agent surface, dark on the fleet).'
+          : 'Could not load spend right now — refresh to retry.';
+        glanceRoot.appendChild(note);
+        return;
+      }
+
+      const spec = glance.spendGlanceSpec(document, summary, caps);
+      glance.renderGlance(document, glanceRoot, spec);
+    }
+
+    async function loadResources() {
+      const glanceRoot = document.getElementById('resourcesGlance');
+      if (!glanceRoot) return;
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
+      try {
+        const summaryResp = await apiFetch('/resources/summary?sinceHours=1');
+        const spec = glance.resourcesGlanceSpec(document, summaryResp);
+        glance.renderGlance(document, glanceRoot, spec);
+      } catch (err) {
+        const m = err && err.message ? String(err.message) : String(err);
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = /503|unavailable|disabled|not initialized/i.test(m)
+          ? 'Resource tracking isn’t turned on for this agent yet.'
+          : 'Could not load resource usage right now — refresh to retry.';
+        glanceRoot.appendChild(note);
+      }
+    }
+
+    // ── Blockers Tab — glance floors F10/F11 (topic 29836, Phase 2) ──
+    // A blocker is a decaying hypothesis, not a settled wall. Rebuilt on the shared
+    // glance component: a plain-English headline + tiles (Layer 1); each tile drills
+    // into the filtered ledger entries as plain sentences (Layer 2); each row opens
+    // the full record with state/id/timestamps/terminal detail (Layer 3). detectedText
+    // + all free text are UNTRUSTED → the component renders every value through
+    // sanitizeForDisplay + textContent (never innerHTML), so this is XSS-safe by
+    // construction (an improvement over the old escapeHtml-into-innerHTML table).
+    async function loadBlockers() {
+      const glanceRoot = document.getElementById('blockersGlance');
+      if (!glanceRoot) return;
+
+      const glance = await loadGlanceModule();
+      if (!glance) {
+        glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.';
+        return;
+      }
+
+      let resp = null;
+      try {
+        resp = await apiFetch('/blockers');
+      } catch (err) {
+        const m = err && err.message ? String(err.message) : String(err);
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        // 503 → the Blocker Ledger feature is off (monitoring.blockerLedger.enabled false, the default).
+        note.textContent = /503|unavailable|disabled|not initialized/i.test(m)
+          ? 'Blocker tracking isn’t turned on for this agent yet.'
+          : 'Could not load blockers right now — refresh to retry.';
+        glanceRoot.appendChild(note);
+        return;
+      }
+
+      const entries = (resp && Array.isArray(resp.entries)) ? resp.entries : [];
+      const spec = glance.blockersGlanceSpec(document, entries, {});
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     // ── Threadline → Telegram bridge settings ──────────────────
@@ -5521,7 +6430,7 @@
           body.innerHTML = `<div class="file-empty"><div class="icon">&#x1F4E6;</div><p>Binary file (${formatFileSize(data.size)})<br>Preview not available</p></div>`;
           updateFileBadges(false);
           editModifiedTimestamp = '';
-          updateFileUrl();
+          updateUrlState();
           return;
         }
 
@@ -5538,7 +6447,7 @@
         }
 
         updateFileBadges(data.editable);
-        updateFileUrl();
+        updateUrlState();
       } catch (err) {
         body.innerHTML = `<div class="file-error">Failed to load file: ${escapeHtml(err.message)}</div>`;
       }
@@ -5712,7 +6621,7 @@
       document.getElementById('fileContentHeader').style.display = 'none';
       document.getElementById('fileContentBody').innerHTML =
         '<div class="file-empty"><div class="icon">&#x1F4C2;</div><p>Select a file to view its contents</p></div>';
-      updateFileUrl();
+      updateUrlState();
     }
 
     function formatFileSize(bytes) {
@@ -6000,25 +6909,34 @@
 
     // ── Deep linking via query params ──────────────────────────
 
-    function updateFileUrl() {
+    // #1442 — record the active tab (and its extras) in the URL so a page refresh
+    // restores the same tab. Before this, only Files wrote ?tab=; every other tab
+    // deleted the param, so any refresh dumped the operator back on Sessions.
+    // Named updateUrlState (was updateFileUrl) now that it is not Files-specific.
+    function updateUrlState() {
       const params = new URLSearchParams(window.location.search);
-      if (currentTab === 'files') {
-        params.set('tab', 'files');
-        if (currentFilePath) {
-          params.set('path', currentFilePath);
-        } else {
-          params.delete('path');
-        }
-        params.delete('session');
+      // The default Sessions tab omits ?tab= to keep bare URLs clean (and so a
+      // fresh visit with no query still lands on Sessions). Every other tab records
+      // its id, so a refresh returns to it.
+      if (currentTab && currentTab !== 'sessions') {
+        params.set('tab', currentTab);
       } else {
         params.delete('tab');
+      }
+      // Files keeps its deep-link path — existing ?tab=files&path=… links must keep
+      // working byte-for-byte.
+      if (currentTab === 'files' && currentFilePath) {
+        params.set('path', currentFilePath);
+      } else {
         params.delete('path');
-        // Persist active session in URL
-        if (activeSession) {
-          params.set('session', activeSession);
-        } else {
-          params.delete('session');
-        }
+      }
+      // Persist the active streamed session in the URL (unchanged behavior — set
+      // whenever a session is active except on Files; meaningful on Sessions,
+      // harmless elsewhere).
+      if (currentTab !== 'files' && activeSession) {
+        params.set('session', activeSession);
+      } else {
+        params.delete('session');
       }
       const qs = params.toString();
       const newUrl = window.location.pathname + (qs ? '?' + qs : '');
@@ -6031,6 +6949,11 @@
       const filePath = params.get('path');
       const sessionParam = params.get('session');
 
+      // #1442 — restore any registered tab on refresh, not just Files. An unknown
+      // or removed ?tab= value falls through to the default tab with no switchTab
+      // and no console error (validated against TAB_REGISTRY). The session restore
+      // below runs independently, so ?tab=X&session=Y both apply.
+      const isKnownTab = !!tab && TAB_REGISTRY.some(t => t.id === tab);
       if (tab === 'files') {
         switchTab('files');
         if (filePath) {
@@ -6051,7 +6974,11 @@
           };
           waitForTree();
         }
-      } else if (sessionParam) {
+      } else if (isKnownTab) {
+        switchTab(tab);
+      }
+
+      if (sessionParam) {
         // Restore active session from URL — wait for session list to populate
         let attempts = 0;
         const waitForSessions = () => {
@@ -6552,7 +7479,7 @@
 
       detail.innerHTML = '<div class="job-detail-header">'
         + '<div>'
-        + '<button class="back-btn" onclick="jobsGoBack()" style="display:none;margin-right:8px">&larr;</button>'
+        + '<button class="back-btn" onclick="jobsGoBack()" style="display:none;margin-right:8px" title="Back" aria-label="Back">&larr;</button>'
         + '<h3>' + esc(displayName) + '</h3>'
         + '<div class="job-desc">' + esc(job.description || '') + '</div>'
         + '</div>'
@@ -7085,96 +8012,39 @@
     //   - On 404 (prGate.phase='off' — commit 8), render a disabled
     //     placeholder rather than erroring.
     async function loadPrPipeline() {
-      const list = document.getElementById('prPipelineList');
-      const notice = document.getElementById('prPipelinePhaseNotice');
-      const empty = document.getElementById('prPipelineEmpty');
-      // Reset view via DOM mutation, not innerHTML, to keep the
-      // "never inject content as HTML" invariant trivially true.
-      while (list.firstChild) list.removeChild(list.firstChild);
-      notice.textContent = 'Loading…';
-      empty.style.display = 'none';
+      const glanceRoot = document.getElementById('prPipelineGlance');
+      if (!glanceRoot) return;
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
 
-      // Use raw fetch (not apiFetch) so we can distinguish 404 (gate
-      // disabled, expected during phase=off) from other errors without
-      // apiFetch's throw-on-non-ok behavior.
-      let res = null;
-      let httpStatus = 0;
+      // Raw fetch (not apiFetch) so we can distinguish 404 (gate disabled,
+      // expected during phase=off) from other errors without throw-on-non-ok.
+      let res = null, httpStatus = 0;
       try {
-        const raw = await fetch('/pr-gate/metrics', {
-          headers: { 'Authorization': `Bearer ${token}` },
-        });
+        const raw = await fetch('/pr-gate/metrics', { headers: { 'Authorization': `Bearer ${token}` } });
         httpStatus = raw.status;
         if (raw.ok) res = await raw.json();
-      } catch {
-        res = null;
-      }
+      } catch { res = null; }
 
       if (httpStatus === 404 || (res && res.disabled === true)) {
-        notice.textContent = 'Gate disabled (phase=off). No pipeline activity recorded yet.';
-        empty.style.display = 'block';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'The auto-merge gate isn’t turned on for this agent yet.';
+        glanceRoot.appendChild(note);
         return;
       }
       if (!res) {
-        notice.textContent = 'PR Pipeline metrics unavailable. Endpoint did not respond.';
-        empty.style.display = 'block';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'Could not load the merge gate right now — refresh to retry.';
+        glanceRoot.appendChild(note);
         return;
       }
 
-      const phase = typeof res.phase === 'string' ? res.phase : 'unknown';
-      notice.textContent = `Phase: ${phase}`;
-
-      const entries = Array.isArray(res.entries) ? res.entries : [];
-      if (entries.length === 0) {
-        empty.style.display = 'block';
-        return;
-      }
-
-      for (const entry of entries) {
-        const card = document.createElement('div');
-        card.style.background = 'var(--panel)';
-        card.style.padding = '12px';
-        card.style.borderRadius = '6px';
-        card.style.border = '1px solid var(--border)';
-
-        const header = document.createElement('div');
-        header.style.display = 'flex';
-        header.style.justifyContent = 'space-between';
-        header.style.marginBottom = '6px';
-
-        const left = document.createElement('div');
-        left.style.fontWeight = '600';
-        const pr = typeof entry.pr_number === 'number' ? `PR #${entry.pr_number}` : 'PR #—';
-        const sha = typeof entry.head_sha === 'string' ? ` @ ${entry.head_sha.slice(0, 8)}` : '';
-        left.textContent = pr + sha;
-
-        const right = document.createElement('div');
-        right.style.fontSize = '12px';
-        right.style.color = entry.eligible ? 'var(--accent)' : 'var(--text-dim)';
-        right.textContent = entry.eligible ? 'eligible' : 'not eligible';
-
-        header.appendChild(left);
-        header.appendChild(right);
-        card.appendChild(header);
-
-        if (typeof entry.reason === 'string' && entry.reason.length > 0) {
-          const reason = document.createElement('div');
-          reason.style.fontSize = '13px';
-          reason.style.color = 'var(--text-dim)';
-          reason.textContent = entry.reason;
-          card.appendChild(reason);
-        }
-
-        if (typeof entry.created_at === 'string') {
-          const time = document.createElement('div');
-          time.style.fontSize = '11px';
-          time.style.color = 'var(--text-dim)';
-          time.style.marginTop = '4px';
-          time.textContent = entry.created_at;
-          card.appendChild(time);
-        }
-
-        list.appendChild(card);
-      }
+      const spec = glance.prPipelineGlanceSpec(document, res);
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     // ── Projects Tab (PROJECT-SCOPE-SPEC Phase 1.10) ─────────────
@@ -7394,293 +8264,112 @@
     // through textContent; no innerHTML. Matches the PR Pipeline tab's
     // XSS-safe pattern.
     async function loadInitiatives() {
-      const list = document.getElementById('initiativesList');
-      const empty = document.getElementById('initiativesEmpty');
-      const digestBox = document.getElementById('initiativesDigest');
-      const filter = document.getElementById('initiativesFilter');
+      const glanceRoot = document.getElementById('initiativesGlance');
       const countBadge = document.getElementById('tabInitiativeCount');
+      if (!glanceRoot) return;
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
 
-      while (list.firstChild) list.removeChild(list.firstChild);
-      while (digestBox.firstChild) digestBox.removeChild(digestBox.firstChild);
-      digestBox.style.display = 'none';
-      empty.style.display = 'none';
+      // Keep the status filter + showAll controls — they re-query and the glance
+      // renders whatever comes back (behavior preserved).
+      const filter = document.getElementById('initiativesFilter');
+      const showAll = document.getElementById('initiativesShowAll');
+      const params = [];
+      if (filter && filter.value) params.push(`status=${encodeURIComponent(filter.value)}`);
+      if (!showAll || !showAll.checked) { params.push('excludeKind=project'); params.push('excludeParented=true'); }
+      const q = params.length ? '?' + params.join('&') : '';
 
-      let itemsRes = null;
-      let digestRes = null;
+      let itemsRes = null, digestRes = null;
       try {
-        // PROJECT-SCOPE-SPEC Phase 1.10 — by default hide project-kind
-        // records (shown in the Projects tab) and parented children
-        // (shown inside their parent's card). Server-side filter so
-        // we don't ship them over the wire.
-        const showAll = document.getElementById('initiativesShowAll');
-        const params = [];
-        if (filter && filter.value) params.push(`status=${encodeURIComponent(filter.value)}`);
-        if (!showAll || !showAll.checked) {
-          params.push('excludeKind=project');
-          params.push('excludeParented=true');
-        }
-        const q = params.length ? '?' + params.join('&') : '';
         const [a, b] = await Promise.all([
           apiFetch('/initiatives' + q).catch(() => null),
           apiFetch('/initiatives/digest').catch(() => null),
         ]);
-        itemsRes = a;
-        digestRes = b;
-      } catch { /* handled by null check below */ }
+        itemsRes = a; digestRes = b;
+      } catch { /* handled by the null check below */ }
 
-      if (!itemsRes) {
-        empty.style.display = 'block';
-        empty.textContent = 'Initiative tracker unavailable.';
-        if (countBadge) countBadge.textContent = '0';
-        return;
-      }
-
-      const items = Array.isArray(itemsRes.items) ? itemsRes.items : [];
+      const items = (itemsRes && Array.isArray(itemsRes.items)) ? itemsRes.items : [];
       if (countBadge) countBadge.textContent = String(items.length);
 
-      // Digest summary (actionable signals)
-      if (digestRes && Array.isArray(digestRes.items) && digestRes.items.length > 0) {
-        const title = document.createElement('div');
-        title.style.fontWeight = '600';
-        title.style.marginBottom = '6px';
-        title.textContent = `${digestRes.items.length} signal${digestRes.items.length === 1 ? '' : 's'}`;
-        digestBox.appendChild(title);
-        for (const d of digestRes.items) {
-          const row = document.createElement('div');
-          row.style.fontSize = '13px';
-          row.style.padding = '3px 0';
-          const colorMap = {
-            'needs-user': '#e27d3b',
-            'next-check-due': '#d65f5f',
-            'ready-to-advance': '#4a9a4a',
-            'stale': '#888',
-          };
-          const tag = document.createElement('span');
-          tag.style.color = colorMap[d.reason] || 'var(--text-dim)';
-          tag.style.marginRight = '6px';
-          tag.textContent = `[${d.reason}]`;
-          const label = document.createElement('span');
-          label.textContent = `${d.title} — ${d.detail}`;
-          row.appendChild(tag);
-          row.appendChild(label);
-          digestBox.appendChild(row);
-        }
-        digestBox.style.display = 'block';
-      }
-
-      if (items.length === 0) {
-        empty.style.display = 'block';
-        empty.textContent = 'No initiatives to display. Create one via POST /initiatives.';
+      if (!itemsRes) {
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'The initiative tracker isn’t available on this agent yet.';
+        glanceRoot.appendChild(note);
         return;
       }
 
-      for (const ini of items) {
-        const card = document.createElement('div');
-        card.style.background = 'var(--panel)';
-        card.style.padding = '12px';
-        card.style.borderRadius = '6px';
-        card.style.border = '1px solid var(--border)';
-
-        const header = document.createElement('div');
-        header.style.display = 'flex';
-        header.style.justifyContent = 'space-between';
-        header.style.alignItems = 'center';
-        header.style.marginBottom = '6px';
-
-        const titleEl = document.createElement('div');
-        titleEl.style.fontWeight = '600';
-        titleEl.textContent = ini.title || ini.id || '(untitled)';
-        header.appendChild(titleEl);
-
-        const status = document.createElement('span');
-        status.style.fontSize = '11px';
-        status.style.padding = '2px 8px';
-        status.style.borderRadius = '999px';
-        const statusColors = {
-          active: 'var(--accent)',
-          completed: '#4a9a4a',
-          archived: 'var(--text-dim)',
-          abandoned: '#d65f5f',
-        };
-        status.style.background = statusColors[ini.status] || 'var(--text-dim)';
-        status.style.color = '#fff';
-        status.textContent = ini.status || 'unknown';
-        header.appendChild(status);
-        card.appendChild(header);
-
-        if (ini.description) {
-          const desc = document.createElement('div');
-          desc.style.fontSize = '13px';
-          desc.style.color = 'var(--text-dim)';
-          desc.style.marginBottom = '8px';
-          desc.textContent = ini.description;
-          card.appendChild(desc);
-        }
-
-        // Phase pills
-        if (Array.isArray(ini.phases) && ini.phases.length > 0) {
-          const phaseRow = document.createElement('div');
-          phaseRow.style.display = 'flex';
-          phaseRow.style.gap = '6px';
-          phaseRow.style.flexWrap = 'wrap';
-          phaseRow.style.marginBottom = '8px';
-          const phaseColors = {
-            pending: 'var(--text-dim)',
-            'in-progress': 'var(--accent)',
-            done: '#4a9a4a',
-            blocked: '#d65f5f',
-          };
-          for (const p of ini.phases) {
-            const pill = document.createElement('span');
-            pill.style.fontSize = '11px';
-            pill.style.padding = '2px 8px';
-            pill.style.borderRadius = '4px';
-            pill.style.border = `1px solid ${phaseColors[p.status] || 'var(--border)'}`;
-            pill.style.color = phaseColors[p.status] || 'var(--text)';
-            pill.textContent = `${p.name} · ${p.status}`;
-            phaseRow.appendChild(pill);
-          }
-          card.appendChild(phaseRow);
-        }
-
-        // Meta row
-        const meta = document.createElement('div');
-        meta.style.fontSize = '11px';
-        meta.style.color = 'var(--text-dim)';
-        const lastTouched = ini.lastTouchedAt ? ini.lastTouchedAt.slice(0, 10) : '';
-        const needsUser = ini.needsUser ? ' · needs you' : '';
-        const blockerCount = Array.isArray(ini.blockers) && ini.blockers.length > 0
-          ? ` · ${ini.blockers.length} blocker${ini.blockers.length === 1 ? '' : 's'}`
-          : '';
-        meta.textContent = `Last touched: ${lastTouched}${needsUser}${blockerCount}`;
-        card.appendChild(meta);
-
-        if (ini.needsUser && ini.needsUserReason) {
-          const reason = document.createElement('div');
-          reason.style.fontSize = '12px';
-          reason.style.marginTop = '4px';
-          reason.style.color = '#e27d3b';
-          reason.textContent = `→ ${ini.needsUserReason}`;
-          card.appendChild(reason);
-        }
-
-        list.appendChild(card);
-      }
+      const spec = glance.initiativesGlanceSpec(document, itemsRes, digestRes, { fmtTs: fmtRelTime });
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
-    // ── Commitments Tab (PROMISE-BEACON-SPEC — Open Promises) ────
-    // Fetches /commitments?status=active and renders beacon-watched
-    // pending + atRisk commitments with a "Mark delivered" action.
-    // All content goes through textContent; no innerHTML. XSS-safe.
+    // ── Commitments Tab — glance floors F10/F11 (topic 29836) ────
+    // The reference implementation of the shared glance component. Fetches
+    // /commitments?status=active and renders a plain-English headline + ≤5 tiles
+    // (Layer 1); each tile drills into the filtered open-promises list (Layer 2);
+    // each row opens the full record with IDs/cadence/deadlines (Layer 3). All
+    // content goes through the component's sanitizer + textContent (XSS-safe).
+    let __glanceModule = null;
+    async function loadGlanceModule() {
+      if (!__glanceModule) {
+        // Same try/catch dynamic-import guard the other tabs use — a missing/failed
+        // glance.js degrades the tab gracefully instead of white-screening.
+        try { __glanceModule = await import('/dashboard/glance.js'); }
+        catch (e) { console.error('[glance] module load failed', e); return null; }
+      }
+      return __glanceModule;
+    }
+
     async function loadCommitments() {
-      const list = document.getElementById('commitmentsList');
-      const empty = document.getElementById('commitmentsEmpty');
+      const glanceRoot = document.getElementById('commitmentsGlance');
       const countBadge = document.getElementById('tabCommitmentCount');
-      while (list.firstChild) list.removeChild(list.firstChild);
-      empty.style.display = 'none';
+      if (!glanceRoot) return;
+
+      const glance = await loadGlanceModule();
+      if (!glance) {
+        // Graceful degrade: the component couldn't load. Show an honest note, no crash.
+        glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.';
+        return;
+      }
 
       let res = null;
       try {
         res = await apiFetch('/commitments?status=active');
-      } catch { /* fall through */ }
+      } catch { /* fall through to the disabled/empty glance @silent-fallback-ok — network hiccup renders the honest empty state */ }
 
       if (!res || !res.enabled) {
-        empty.style.display = 'block';
-        empty.textContent = 'CommitmentTracker not available.';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = res && res.enabled === false
+          ? 'Promise tracking is not set up on this agent yet.'
+          : 'Could not load your promises right now — refresh to retry.';
+        glanceRoot.appendChild(note);
         if (countBadge) countBadge.textContent = '0';
         return;
       }
+
       const items = Array.isArray(res.commitments) ? res.commitments : [];
-      // Show only beacon-watched pending + atRisk.
       const open = items.filter(c => c.beaconEnabled && c.status === 'pending');
       if (countBadge) countBadge.textContent = String(open.length);
-      if (open.length === 0) {
-        empty.style.display = 'block';
-        empty.textContent = 'No open promises.';
-        return;
-      }
 
-      const fmtTs = (iso) => {
-        if (!iso) return '—';
-        try { return new Date(iso).toLocaleString(); } catch { return iso; }
-      };
-
-      for (const c of open) {
-        const card = document.createElement('div');
-        card.style.cssText = 'padding:14px;border:1px solid var(--border);border-radius:6px;background:var(--bg-dim);display:flex;flex-direction:column;gap:8px';
-
-        const header = document.createElement('div');
-        header.style.cssText = 'display:flex;justify-content:space-between;gap:12px;align-items:flex-start';
-        const summary = document.createElement('div');
-        summary.style.cssText = 'flex:1;font-weight:600;line-height:1.3';
-        summary.textContent = (c.agentResponse || c.userRequest || '(no summary)').slice(0, 160);
-        header.appendChild(summary);
-
-        // State badge.
-        const badge = document.createElement('span');
-        const atRisk = !!c.atRisk;
-        const suppressed = !!c.beaconSuppressed;
-        const [badgeText, badgeBg] = suppressed
-          ? [`suppressed: ${c.beaconSuppressionReason || '?'}`, '#555']
-          : atRisk
-            ? ['atRisk', '#e27d3b']
-            : ['pending', '#4a9a4a'];
-        badge.textContent = badgeText;
-        badge.style.cssText = `font-size:11px;padding:3px 8px;border-radius:4px;background:${badgeBg};color:#fff;white-space:nowrap`;
-        header.appendChild(badge);
-        card.appendChild(header);
-
-        const meta = document.createElement('div');
-        meta.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px;font-size:12px;color:var(--text-dim)';
-        const rows = [
-          ['id', c.id],
-          ['topic', c.topicId != null ? String(c.topicId) : '—'],
-          ['cadence', c.cadenceMs ? `${Math.round(c.cadenceMs / 1000)}s` : '—'],
-          ['heartbeats', String(c.heartbeatCount ?? 0)],
-          ['lastHeartbeat', fmtTs(c.lastHeartbeatAt)],
-          ['nextUpdateDue', fmtTs(c.nextUpdateDueAt)],
-          ['softDeadline', fmtTs(c.softDeadlineAt)],
-          ['hardDeadline', fmtTs(c.hardDeadlineAt)],
-        ];
-        for (const [k, v] of rows) {
-          const cell = document.createElement('div');
-          const kEl = document.createElement('span');
-          kEl.textContent = `${k}: `;
-          kEl.style.opacity = '0.7';
-          const vEl = document.createElement('span');
-          vEl.textContent = v;
-          vEl.style.color = 'var(--text)';
-          cell.appendChild(kEl);
-          cell.appendChild(vEl);
-          meta.appendChild(cell);
-        }
-        card.appendChild(meta);
-
-        // Actions.
-        const actions = document.createElement('div');
-        actions.style.cssText = 'display:flex;gap:8px;align-items:center';
-        const deliverBtn = document.createElement('button');
-        deliverBtn.textContent = 'Mark delivered';
-        deliverBtn.style.cssText = 'padding:6px 10px;cursor:pointer';
-        deliverBtn.addEventListener('click', async () => {
-          deliverBtn.disabled = true;
+      const spec = glance.commitmentsGlanceSpec(document, items, {
+        now: Date.now(),
+        onDeliver: async (id) => {
           try {
-            await apiFetch(`/commitments/${encodeURIComponent(c.id)}/deliver`, {
+            await apiFetch(`/commitments/${encodeURIComponent(id)}/deliver`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({}),
             });
             await loadCommitments();
           } catch (err) {
-            deliverBtn.disabled = false;
             alert('Deliver failed: ' + (err && err.message ? err.message : String(err)));
           }
-        });
-        actions.appendChild(deliverBtn);
-        card.appendChild(actions);
-
-        list.appendChild(card);
-      }
+        },
+      });
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     // ── Secrets Tab ──────────────────────────────────────────────
@@ -7721,139 +8410,39 @@
       }
     }
 
+    async function cancelSecretRequest(token) {
+      try {
+        await apiFetch(`/secrets/pending/${encodeURIComponent(token)}`, { method: 'DELETE' });
+        await loadSecrets();
+      } catch (err) {
+        alert('Cancel failed: ' + (err && err.message ? err.message : String(err)));
+      }
+    }
+
     async function loadSecrets() {
-      const list = document.getElementById('secretsList');
-      const empty = document.getElementById('secretsEmpty');
+      const glanceRoot = document.getElementById('secretsGlance');
+      if (!glanceRoot) return;
       const countBadge = document.getElementById('tabSecretCount');
-      while (list.firstChild) list.removeChild(list.firstChild);
-      empty.style.display = 'none';
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
 
       let res = null;
       try {
         res = await apiFetch('/secrets/pending');
-      } catch { /* fall through */ }
+      } catch { /* fall through — an empty glance is the honest state */ }
 
       const pending = (res && Array.isArray(res.pending)) ? res.pending : [];
       secretsLastPending = pending;
 
-      // Badge shows non-expired count.
+      // Badge shows non-expired count (unchanged behavior).
       const now = Date.now();
       const liveCount = pending.filter(p => p.expiresAt > now).length;
       if (countBadge) countBadge.textContent = String(liveCount);
 
-      if (pending.length === 0) {
-        empty.style.display = 'block';
-        empty.textContent = 'No pending secret requests.';
-        return;
-      }
-
-      const fmtTs = (ms) => {
-        if (!ms) return '—';
-        try { return new Date(ms).toLocaleString(); } catch { return String(ms); }
-      };
-
-      for (const p of pending) {
-        const card = document.createElement('div');
-        card.style.cssText = 'padding:14px;border:1px solid var(--border);border-radius:6px;background:var(--bg-dim);display:flex;flex-direction:column;gap:8px';
-
-        const header = document.createElement('div');
-        header.style.cssText = 'display:flex;justify-content:space-between;gap:12px;align-items:flex-start';
-        const label = document.createElement('div');
-        label.style.cssText = 'flex:1;font-weight:600;line-height:1.3';
-        label.textContent = p.label || '(no label)';
-        header.appendChild(label);
-
-        const badge = document.createElement('span');
-        const expired = !!p.expired;
-        badge.textContent = expired ? 'expired' : 'pending';
-        badge.style.cssText = `font-size:11px;padding:3px 8px;border-radius:4px;background:${expired ? '#c66' : '#4a9a4a'};color:#fff;white-space:nowrap`;
-        header.appendChild(badge);
-        card.appendChild(header);
-
-        const meta = document.createElement('div');
-        meta.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;font-size:12px;color:var(--text-dim)';
-
-        const rows = [
-          ['token', (p.token || '').slice(0, 12) + '…'],
-          ['topic', p.topicId != null ? String(p.topicId) : '—'],
-          ['created', fmtTs(p.createdAt)],
-          ['expires', fmtTs(p.expiresAt)],
-        ];
-        for (const [k, v] of rows) {
-          const cell = document.createElement('div');
-          const kEl = document.createElement('span');
-          kEl.textContent = `${k}: `;
-          kEl.style.opacity = '0.7';
-          const vEl = document.createElement('span');
-          vEl.textContent = v;
-          vEl.style.color = 'var(--text)';
-          cell.appendChild(kEl);
-          cell.appendChild(vEl);
-          meta.appendChild(cell);
-        }
-
-        const countdownCell = document.createElement('div');
-        const cLabel = document.createElement('span');
-        cLabel.textContent = 'expires in: ';
-        cLabel.style.opacity = '0.7';
-        const cVal = document.createElement('span');
-        cVal.id = `secretCountdown-${p.token}`;
-        cVal.style.color = 'var(--text)';
-        cVal.style.fontVariantNumeric = 'tabular-nums';
-        cVal.textContent = formatCountdown(p.expiresAt - now);
-        countdownCell.appendChild(cLabel);
-        countdownCell.appendChild(cVal);
-        meta.appendChild(countdownCell);
-
-        card.appendChild(meta);
-
-        // Links and actions.
-        const actions = document.createElement('div');
-        actions.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap';
-
-        const url = p.tunnelUrl || p.localUrl;
-        if (url) {
-          const openBtn = document.createElement('a');
-          openBtn.textContent = 'Open drop link';
-          openBtn.href = url;
-          openBtn.target = '_blank';
-          openBtn.rel = 'noopener noreferrer';
-          openBtn.style.cssText = 'padding:6px 10px;border:1px solid var(--border);border-radius:4px;text-decoration:none;color:var(--text);cursor:pointer';
-          actions.appendChild(openBtn);
-
-          const copyBtn = document.createElement('button');
-          copyBtn.textContent = 'Copy link';
-          copyBtn.style.cssText = 'padding:6px 10px;cursor:pointer';
-          copyBtn.addEventListener('click', async () => {
-            try {
-              await navigator.clipboard.writeText(url);
-              copyBtn.textContent = 'Copied';
-              setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 1200);
-            } catch {
-              copyBtn.textContent = 'Copy failed';
-            }
-          });
-          actions.appendChild(copyBtn);
-        }
-
-        const cancelBtn = document.createElement('button');
-        cancelBtn.textContent = 'Cancel';
-        cancelBtn.style.cssText = 'padding:6px 10px;cursor:pointer';
-        cancelBtn.addEventListener('click', async () => {
-          cancelBtn.disabled = true;
-          try {
-            await apiFetch(`/secrets/pending/${encodeURIComponent(p.token)}`, { method: 'DELETE' });
-            await loadSecrets();
-          } catch (err) {
-            cancelBtn.disabled = false;
-            alert('Cancel failed: ' + (err && err.message ? err.message : String(err)));
-          }
-        });
-        actions.appendChild(cancelBtn);
-
-        card.appendChild(actions);
-        list.appendChild(card);
-      }
+      // The open / copy / cancel actions are preserved on each request's Layer-3
+      // record (glance.js secretRecordNode) — behavior untouched, moved one tap down.
+      const spec = glance.secretsGlanceSpec(document, { pending }, { now, onCancel: cancelSecretRequest });
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     async function createTestSecretRequest() {
@@ -8112,313 +8701,29 @@
       }
     }
 
-    // ── Systems Tab ──────────────────────────────────────────────
-    let systemsData = null;
-
+    // ── Health Tab (was Systems) — glance floors F10/F11 (topic 29836, Phase 3) ──
+    // The 390-word subsystem prose became a plain headline over Subsystems / Need
+    // attention / Recent events tiles (Layer 1); each subsystem drills into its full
+    // description, processes, and metrics (Layer 3). All /systems/status data is
+    // preserved — it moved one or two clicks down instead of dumping on the front page.
     async function loadSystems() {
+      const glanceRoot = document.getElementById('systemsGlance');
+      if (!glanceRoot) return;
+      const glance = await loadGlanceModule();
+      if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
+      let systems = null;
       try {
-        systemsData = await apiFetch('/systems/status');
-        showSystemsOverview();
-        renderSystemsOverview();
+        systems = await apiFetch('/systems/status');
       } catch (e) {
-        document.getElementById('systemsBanner').innerHTML =
-          '<div style="padding:20px;color:var(--red);text-align:center">Failed to load systems status</div>';
+        glanceRoot.textContent = '';
+        const note = document.createElement('div');
+        note.className = 'glance-empty';
+        note.textContent = 'Could not load the health view right now — refresh to retry.';
+        glanceRoot.appendChild(note);
+        return;
       }
-    }
-
-    function renderSystemsOverview() {
-      if (!systemsData) return;
-      const { uptime, health, healthSummary, activeCapabilities, issues, recentEvents } = systemsData;
-      const uptimeStr = formatUptimeClient(uptime);
-
-      // Health Banner
-      const bannerClass = health === 'healthy' ? 'healthy' : health === 'error' ? 'error' : 'degraded';
-      const bannerIcon = health === 'healthy' ? '&#10003;' : '&#9888;';
-      document.getElementById('systemsBanner').innerHTML = `
-        <div class="health-banner ${bannerClass}">
-          <span class="health-icon">${bannerIcon}</span>
-          <div class="health-text">
-            <div class="health-title">${esc(healthSummary)}</div>
-            <div class="health-meta">Uptime: ${esc(uptimeStr)}  &middot;  ${activeCapabilities.length} capabilities active${issues.length > 0 ? '  &middot;  ' + issues.length + ' issue' + (issues.length > 1 ? 's' : '') : ''}</div>
-          </div>
-        </div>`;
-
-      // Issues (only if any)
-      const issuesEl = document.getElementById('systemsIssues');
-      if (issues.length > 0) {
-        issuesEl.innerHTML = '<div class="issues-panel">' + issues.map(iss => {
-          const cls = iss.severity === 'warning' ? ' warning' : '';
-          const ic = iss.severity === 'warning' ? '&#9888;' : '&#10060;';
-          return `<div class="issue-card${cls}">
-            <span class="issue-card-icon">${ic}</span>
-            <div class="issue-card-content">
-              <div class="issue-card-label">${esc(iss.label)}</div>
-              <div class="issue-card-desc">${esc(iss.description)}</div>
-            </div>
-          </div>`;
-        }).join('') + '</div>';
-      } else {
-        issuesEl.innerHTML = '';
-      }
-
-      // Card Grid
-      const capsEl = document.getElementById('systemsCapabilities');
-      if (activeCapabilities.length > 0) {
-        const cards = activeCapabilities.map(cap => {
-          const dotClass = cap.status === 'error' ? 'error' : 'active';
-          const statusClass = cap.status === 'error' ? ' error' : '';
-          const previewStats = buildPreviewStats(cap.stats || {});
-          return `<div class="cap-card${statusClass}" onclick="showCapabilityDetail('${esc(cap.id)}')">
-            <div class="cap-card-top">
-              <span class="cap-dot ${dotClass}"></span>
-              <span class="cap-card-name">${esc(cap.label)}</span>
-              <span class="cap-card-arrow">&#9654;</span>
-            </div>
-            <div class="cap-card-desc">${esc(cap.description)}</div>
-            ${previewStats ? '<div class="cap-card-stats">' + previewStats + '</div>' : ''}
-            <div class="cap-card-metric">${esc(cap.metric)}</div>
-          </div>`;
-        }).join('');
-        capsEl.innerHTML = `<div class="cap-section-title">Active Subsystems</div><div class="cap-grid">${cards}</div>`;
-      } else {
-        capsEl.innerHTML = '';
-      }
-
-      // Events
-      const eventsEl = document.getElementById('systemsEvents');
-      if (recentEvents.length > 0) {
-        const rows = recentEvents.map(e => {
-          const time = e.timestamp ? new Date(e.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-          return `<div class="systems-event-row"><span class="systems-event-time">${esc(time)}</span><span class="systems-event-text">${esc(e.narrative || e.subsystem || '')}</span></div>`;
-        }).join('');
-        eventsEl.innerHTML = `<div class="events-disclosure" id="eventsDisclosure">
-          <button class="events-disclosure-toggle" onclick="document.getElementById('eventsDisclosure').classList.toggle('expanded')">
-            <span class="events-disclosure-arrow">&#9654;</span> Recent Events (${recentEvents.length})
-          </button>
-          <div class="events-disclosure-body">${rows}</div></div>`;
-      } else {
-        eventsEl.innerHTML = '';
-      }
-    }
-
-    function buildPreviewStats(stats) {
-      if (!stats || typeof stats !== 'object') return '';
-      const map = {
-        recoveries: 'Recovered', interventions: 'Auto-fixed', activeCases: 'Active',
-        coherencePassed: 'Checks OK', coherenceFailed: 'Issues', memoryPercent: 'Memory',
-        enabledJobs: 'Jobs', activeJobSessions: 'Running', queueLength: 'Queued',
-        weeklyUsage: 'Weekly', fiveHourRate: '5h Rate',
-        topicMappings: 'Topics', totalMessages: 'Messages',
-        proposals: 'Proposals', gaps: 'Gaps', learningsApplied: 'Applied',
-      };
-      const chips = [];
-      for (const [key, label] of Object.entries(map)) {
-        if (stats[key] != null && stats[key] !== 0 && stats[key] !== false) {
-          const suf = ['weeklyUsage','fiveHourRate','memoryPercent'].includes(key) ? '%' : '';
-          chips.push(`<span class="cap-stat"><span class="cap-stat-value">${esc(String(stats[key]))}${suf}</span>${esc(label)}</span>`);
-        }
-        if (chips.length >= 3) break;
-      }
-      return chips.join('');
-    }
-
-    function showCapabilityDetail(capId) {
-      if (!systemsData) return;
-      const cap = systemsData.activeCapabilities.find(c => c.id === capId);
-      if (!cap) return;
-      document.getElementById('systemsOverview').style.display = 'none';
-      document.getElementById('systemsDetailView').classList.add('active');
-      const content = document.getElementById('systemsDetailContent');
-
-      const statCards = buildStatCards(cap.stats || {}, capId);
-      const processRows = (cap.processes || []).map(p => {
-        const dotColor = p.status === 'running' ? 'var(--accent)' : 'var(--red)';
-        return `<div class="cap-process-row">
-          <span class="cap-process-dot" style="background:${dotColor}"></span>
-          <span class="cap-process-name">${esc(p.name)}</span>
-          <span class="cap-process-status">${esc(p.status === 'running' ? 'Running' : 'Error')}</span>
-        </div>`;
-      }).join('');
-
-      const lastAct = cap.lastActivity
-        ? '<div class="cap-last-activity">Last activity: ' + esc(timeAgo(cap.lastActivity)) + '</div>' : '';
-
-      content.innerHTML = `
-        <div class="cap-detail-header">
-          <div class="cap-detail-title">
-            <span class="cap-dot ${cap.status === 'error' ? 'error' : 'active'}"></span>
-            <h3>${esc(cap.label)}</h3>
-          </div>
-          <div class="cap-detail-description">${esc(cap.description)}</div>
-          ${lastAct}
-        </div>
-        ${statCards ? '<div class="cap-detail-section"><div class="cap-detail-section-title">Metrics</div><div class="cap-stats-grid">' + statCards + '</div><div id="capContentBrowser"></div></div>' : ''}
-        <div class="cap-detail-section">
-          <div class="cap-detail-section-title">Components (${(cap.processes || []).length})</div>
-          <div class="cap-process-list">${processRows}</div>
-        </div>
-        <div class="cap-detail-section">
-          <div class="cap-detail-section-title">Status</div>
-          <div style="font-size:13px;color:var(--accent);font-weight:500;padding:8px 0">${esc(cap.metric)}</div>
-        </div>`;
-    }
-
-    // Map stat keys to browsable content endpoints
-    const BROWSABLE_STATS = {
-      // Evolution
-      learnings: { endpoint: '/evolution/learnings', label: 'Learnings', renderer: 'renderLearnings' },
-      proposals: { endpoint: '/evolution/proposals', label: 'Proposals', renderer: 'renderProposals' },
-      gaps: { endpoint: '/evolution/gaps', label: 'Capability Gaps', renderer: 'renderGaps' },
-      actions: { endpoint: '/evolution/actions', label: 'Actions', renderer: 'renderActions' },
-      overdueActions: { endpoint: '/evolution/actions/overdue', label: 'Overdue Actions', renderer: 'renderActions' },
-      // Health
-      coherenceChecks: { endpoint: '/health/coherence', label: 'Coherence Report', renderer: 'renderCoherence' },
-      coherencePassed: { endpoint: '/health/coherence', label: 'Coherence Report', renderer: 'renderCoherence' },
-      coherenceFailed: { endpoint: '/health/coherence', label: 'Coherence Report', renderer: 'renderCoherence' },
-      // Recovery
-      totalTriages: { endpoint: '/triage/history?limit=20', label: 'Triage History', renderer: 'renderTriageHistory' },
-      interventions: { endpoint: '/watchdog/status', label: 'Watchdog Status', renderer: 'renderWatchdog' },
-      recoveries: { endpoint: '/watchdog/status', label: 'Watchdog Status', renderer: 'renderWatchdog' },
-      // Jobs
-      totalJobs: { endpoint: '/jobs', label: 'Jobs', renderer: 'renderJobs' },
-      enabledJobs: { endpoint: '/jobs', label: 'Jobs', renderer: 'renderJobs' },
-      // Telegram
-      totalMessages: { endpoint: '/telegram/log-stats', label: 'Message Stats', renderer: 'renderTelegramStats' },
-      topicMappings: { endpoint: '/telegram/log-stats', label: 'Message Stats', renderer: 'renderTelegramStats' },
-    };
-
-    function buildStatCards(stats, capId) {
-      if (!stats || typeof stats !== 'object') return '';
-      const map = {
-        interventions: 'Auto-fixes', recoveries: 'Recovered', sessionDeaths: 'Crashes',
-        llmOverrides: 'AI Decisions', activeCases: 'Active Issues', totalTriages: 'Investigated',
-        cooldowns: 'Cooldowns',
-        coherenceChecks: 'Consistency Checks', coherencePassed: 'Passed', coherenceFailed: 'Issues Found', coherenceCorrected: 'Auto-corrected',
-        memoryPercent: 'Memory %', memoryFreeGB: 'Free GB', memoryTotalGB: 'Total GB',
-        trackedProcesses: 'Processes', orphanProcesses: 'Cleanup Needed', totalMemoryMB: 'Memory MB',
-        totalJobs: 'Total Jobs', enabledJobs: 'Enabled', queueLength: 'Queued', activeJobSessions: 'Running',
-        weeklyUsage: 'Weekly %', fiveHourRate: '5h Rate %',
-        topicMappings: 'Topics', pendingStalls: 'Needs Attention', totalMessages: 'Messages',
-        proposals: 'Proposals', learnings: 'Learnings', learningsApplied: 'Applied',
-        gaps: 'Gaps', actions: 'Actions', overdueActions: 'Overdue',
-      };
-      const cards = [];
-      for (const [key, label] of Object.entries(map)) {
-        if (stats[key] != null && typeof stats[key] === 'number') {
-          const browsable = BROWSABLE_STATS[key];
-          const clickAttr = browsable ? ` onclick="browseStatContent('${key}')" style="cursor:pointer"` : '';
-          const browseHint = browsable ? '<div style="font-size:9px;color:var(--accent);margin-top:2px">click to view</div>' : '';
-          cards.push(`<div class="cap-stat-card"${clickAttr}><div class="cap-stat-card-value">${stats[key]}</div><div class="cap-stat-card-label">${esc(label)}</div>${browseHint}</div>`);
-        }
-      }
-      return cards.join('');
-    }
-
-    async function browseStatContent(statKey) {
-      const info = BROWSABLE_STATS[statKey];
-      if (!info) return;
-      const panel = document.getElementById('capContentBrowser');
-      if (!panel) return;
-      panel.innerHTML = '<div style="padding:12px;color:var(--text-dim);font-size:12px">Loading ' + esc(info.label) + '...</div>';
-      try {
-        const data = await apiFetch(info.endpoint);
-        panel.innerHTML = '<div class="cap-content-panel">' +
-          '<div class="cap-content-header"><span>' + esc(info.label) + '</span><button onclick="document.getElementById(\'capContentBrowser\').innerHTML=\'\'" style="border:none;background:none;color:var(--text-dim);cursor:pointer;font-size:14px">&times;</button></div>' +
-          '<div class="cap-content-body">' + renderBrowsableContent(info.renderer, data) + '</div></div>';
-      } catch (e) {
-        panel.innerHTML = '<div style="padding:12px;color:var(--red);font-size:12px">Failed to load: ' + esc(e.message) + '</div>';
-      }
-    }
-
-    function renderBrowsableContent(renderer, data) {
-      switch (renderer) {
-        case 'renderLearnings': {
-          const items = data.learnings || data || [];
-          if (!Array.isArray(items) || items.length === 0) return '<div class="cap-content-empty">No learnings recorded</div>';
-          return items.map(l => `<div class="cap-content-item">
-            <div class="cap-content-item-title">${esc(l.title || l.insight || l.id || 'Untitled')}</div>
-            ${l.description || l.context ? '<div class="cap-content-item-body">' + esc(l.description || l.context || '') + '</div>' : ''}
-            ${l.category ? '<span class="cap-content-tag">' + esc(l.category) + '</span>' : ''}
-            ${l.applied ? '<span class="cap-content-tag applied">Applied</span>' : ''}
-            ${l.createdAt ? '<div class="cap-content-item-time">' + esc(timeAgo(l.createdAt)) + '</div>' : ''}
-          </div>`).join('');
-        }
-        case 'renderProposals': {
-          const items = data.proposals || data || [];
-          if (!Array.isArray(items) || items.length === 0) return '<div class="cap-content-empty">No proposals</div>';
-          return items.map(p => `<div class="cap-content-item">
-            <div class="cap-content-item-title">${esc(p.title || p.id || 'Untitled')}</div>
-            ${p.description ? '<div class="cap-content-item-body">' + esc(p.description) + '</div>' : ''}
-            ${p.status ? '<span class="cap-content-tag">' + esc(p.status) + '</span>' : ''}
-            ${p.type ? '<span class="cap-content-tag">' + esc(p.type) + '</span>' : ''}
-          </div>`).join('');
-        }
-        case 'renderGaps': {
-          const items = data.gaps || data || [];
-          if (!Array.isArray(items) || items.length === 0) return '<div class="cap-content-empty">No gaps detected</div>';
-          return items.map(g => `<div class="cap-content-item">
-            <div class="cap-content-item-title">${esc(g.title || g.capability || g.id || 'Untitled')}</div>
-            ${g.description ? '<div class="cap-content-item-body">' + esc(g.description) + '</div>' : ''}
-            ${g.severity ? '<span class="cap-content-tag">' + esc(g.severity) + '</span>' : ''}
-          </div>`).join('');
-        }
-        case 'renderActions': {
-          const items = data.actions || data || [];
-          if (!Array.isArray(items) || items.length === 0) return '<div class="cap-content-empty">No actions</div>';
-          return items.map(a => `<div class="cap-content-item">
-            <div class="cap-content-item-title">${esc(a.title || a.action || a.id || 'Untitled')}</div>
-            ${a.status ? '<span class="cap-content-tag">' + esc(a.status) + '</span>' : ''}
-            ${a.dueAt ? '<div class="cap-content-item-time">Due: ' + esc(timeAgo(a.dueAt)) + '</div>' : ''}
-          </div>`).join('');
-        }
-        case 'renderCoherence': {
-          const report = data.lastReport || data;
-          if (!report || !report.checks) return '<div class="cap-content-empty">No coherence data</div>';
-          return report.checks.map(c => `<div class="cap-content-item" style="border-left:3px solid ${c.passed ? 'var(--accent)' : 'var(--red)'}">
-            <div class="cap-content-item-title">${c.passed ? '&check;' : '&cross;'} ${esc(c.name)}</div>
-            <div class="cap-content-item-body">${esc(c.message)}</div>
-          </div>`).join('');
-        }
-        case 'renderTriageHistory': {
-          const items = data.history || data || [];
-          if (!Array.isArray(items) || items.length === 0) return '<div class="cap-content-empty">No triage history</div>';
-          return items.map(t => `<div class="cap-content-item">
-            <div class="cap-content-item-title">Topic ${t.topicId} — ${esc(t.sessionName || 'unknown')}</div>
-            <div class="cap-content-item-body">${t.result ? esc(JSON.stringify(t.result.actionsTaken || t.result, null, 0).substring(0, 200)) : ''}</div>
-            ${t.timestamp ? '<div class="cap-content-item-time">' + esc(timeAgo(t.timestamp)) + '</div>' : ''}
-          </div>`).join('');
-        }
-        case 'renderWatchdog': {
-          const hist = data.interventionHistory || [];
-          if (hist.length === 0) return '<div class="cap-content-empty">No interventions recorded</div>';
-          return hist.map(h => `<div class="cap-content-item">
-            <div class="cap-content-item-title">PID ${h.stuckPid || '?'} — ${esc(h.level || h.outcome || 'intervention')}</div>
-            ${h.outcome ? '<span class="cap-content-tag">' + esc(h.outcome) + '</span>' : ''}
-            ${h.timestamp ? '<div class="cap-content-item-time">' + esc(timeAgo(h.timestamp)) + '</div>' : ''}
-          </div>`).join('');
-        }
-        case 'renderJobs': {
-          const jobs = data.jobs || data || [];
-          if (!Array.isArray(jobs) || jobs.length === 0) return '<div class="cap-content-empty">No jobs</div>';
-          return jobs.slice(0, 20).map(j => `<div class="cap-content-item">
-            <div class="cap-content-item-title">${esc(j.slug || j.name || 'unnamed')}</div>
-            <div class="cap-content-item-body">${esc(j.cron || '')} ${j.enabled === false ? '(disabled)' : ''}</div>
-          </div>`).join('');
-        }
-        case 'renderTelegramStats': {
-          return `<div class="cap-content-item">
-            <div class="cap-content-item-title">Message Log</div>
-            <div class="cap-content-item-body">Total messages: ${data.totalMessages || '?'}<br>Log size: ${data.logSizeBytes ? Math.round(data.logSizeBytes / 1024) + ' KB' : '?'}</div>
-          </div>`;
-        }
-        default:
-          return '<div class="cap-content-empty">No viewer for this content</div>';
-      }
-    }
-
-    function showSystemsOverview() {
-      document.getElementById('systemsOverview').style.display = '';
-      document.getElementById('systemsDetailView').classList.remove('active');
+      const spec = glance.healthGlanceSpec(document, systems);
+      glance.renderGlance(document, glanceRoot, spec);
     }
 
     function timeAgo(isoStr) {
@@ -8440,6 +8745,66 @@
       if (d > 0) return d + 'd ' + h + 'h';
       if (h > 0) return h + 'h ' + m + 'm';
       return m + 'm';
+    }
+
+    // ── Insights tab (Dashboard Live-LLM-Insights — docs/specs/dashboard-live-insights.md) ──
+    // Awareness-only: renders the per-page Insight Strip. On 503 (feature dark on
+    // the fleet) it shows a friendly "not turned on" message, never an error.
+    function insSourceBadge(source, cacheHit) {
+      if (source === 'llm') return cacheHit ? 'AI · cached' : 'AI';
+      if (source === 'deterministic') return 'summary';
+      if (source === 'paused') return 'paused';
+      if (source === 'empty') return 'no data';
+      return source || '';
+    }
+    function renderInsightStrip(p) {
+      const stamp = p.asOf ? new Date(p.asOf).toLocaleTimeString() : '';
+      const lines = (p.lines || []).map(function(l) {
+        const sev = l.severity === 'alert' ? 'alert' : l.severity === 'watch' ? 'watch' : '';
+        const action = l.action ? '<span class="ins-line-action"> — ' + escapeHtml(l.action) + '</span>' : '';
+        return '<div class="ins-line"><span class="ins-dot ' + sev + '"></span>' +
+          '<span class="ins-line-body">' + escapeHtml(l.text) + action + '</span></div>';
+      }).join('');
+      const metrics = (p.metrics || []).length
+        ? '<details style="margin-top:2px"><summary class="ins-drill">Show the data</summary>' +
+            '<div class="ins-metrics" style="margin-top:10px">' +
+            p.metrics.map(function(m) {
+              return '<div class="ins-metric"><div class="ins-metric-val">' + escapeHtml(String(m.value)) +
+                '</div><div class="ins-metric-label">' + escapeHtml(m.label) + '</div></div>';
+            }).join('') + '</div></details>'
+        : '';
+      const drill = p.tab
+        ? '<button class="ins-drill" onclick="switchTab(\'' + escapeHtml(p.tab) + '\')">Open ' + escapeHtml(p.title) + '</button>'
+        : '';
+      return '<div class="ins-strip">' +
+        '<div class="ins-strip-head"><span class="ins-strip-title">' + escapeHtml(p.title) + '</span>' +
+          '<span class="ins-strip-stamp"><span class="ins-badge">' + escapeHtml(insSourceBadge(p.source, p.cacheHit)) + '</span>' +
+          (stamp ? ' · as of ' + escapeHtml(stamp) : '') + '</span></div>' +
+        '<div class="ins-headline">' + escapeHtml(p.headline) + '</div>' +
+        (lines ? '<div>' + lines + '</div>' : '') +
+        metrics + drill + '</div>';
+    }
+    async function loadInsights() {
+      const body = document.getElementById('insBody');
+      const stamp = document.getElementById('insStamp');
+      try {
+        const data = await apiFetch('/insights');
+        stamp.textContent = data.asOf ? 'updated ' + new Date(data.asOf).toLocaleTimeString() : '';
+        const pages = data.pages || [];
+        if (pages.length === 0) {
+          body.innerHTML = '<div class="ins-empty">No pages have insights to show yet. As your dashboard collects data, takeaways will appear here.</div>';
+          return;
+        }
+        body.innerHTML = pages.map(renderInsightStrip).join('');
+      } catch (e) {
+        stamp.textContent = '';
+        const msg = (e && e.message) || '';
+        if (/disabled/i.test(msg)) {
+          body.innerHTML = '<div class="ins-disabled">Live insights aren’t turned on for this agent yet. They light up automatically on a development agent, and can be enabled fleet-wide when ready.</div>';
+        } else {
+          body.innerHTML = '<div class="ins-empty">Couldn’t load insights just now — ' + escapeHtml(msg) + '. Check back shortly.</div>';
+        }
+      }
     }
 
     // ── Process Health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC) ──
@@ -8474,6 +8839,88 @@
       if (__phController) __phController.stop();
     }
 
+    // ── Subscriptions tab (Subscription & Auth Standard P2.2) ──
+    // Same lazy dynamic-import pattern as Process Health: the controller lives in
+    // this (classic) scope so it can read `token`; the module ships the pure
+    // renderers + the polling controller.
+    let __subController = null;
+    let __subModule = null;
+    async function startSubscriptions() {
+      if (!__subModule) {
+        try { __subModule = await import('/dashboard/subscriptions.js'); }
+        catch (e) { console.error('[subscriptions] module load failed', e); return; }
+      }
+      if (!__subController) {
+        const els = {
+          accounts: document.getElementById('subAccounts'),
+          followMe: document.getElementById('subFollowMe'),
+          matrix: document.getElementById('subMatrix'),
+        };
+        // Pass opts through (method/body/signal) so the controller can POST the follow-me
+        // scan + the PIN-gated issue-for-machine, not just GET.
+        const fetchImpl = (url, opts = {}) => fetch(url, {
+          ...opts,
+          headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },
+        });
+        __subController = __subModule.createController({ doc: document, els, fetchImpl });
+      }
+      __subController.start();
+    }
+    function stopSubscriptions() {
+      if (__subController) __subController.stop();
+    }
+
+    async function loadThroughput() {
+      const host = document.getElementById('throughputCharts'); if (!host) return;
+      host.innerHTML = '<div style="opacity:.65">Loading throughput…</div>';
+      try {
+        const days = document.getElementById('throughputDays').value; const author = document.getElementById('throughputAuthor').value;
+        const data = await apiFetch('/throughput/series?days=' + encodeURIComponent(days));
+        const metrics = [['merges','Merges'],['medianLatencyH','Median latency (h)'],['reworkLoops','Rework loops'],['reverts','Reverts'],['medianPushIters','Median push iterations'],['medianLoc','Changed lines'],['index','Composite index']];
+        host.innerHTML = metrics.map(([key,label]) => { const vals = data.rows.map(x => Number((key === 'index' ? x.team : author === 'team' ? x.team : (x.authors[author] || {}))[key] || 0)); const max = Math.max(1,...vals); const bars = vals.map((v,i) => '<div title="'+data.rows[i].day+': '+v+'" style="height:'+Math.max(3,Math.round(v/max*100))+'%;flex:1;background:'+(key==='index'?'#7c9cff':'#4bbf9f')+';border-radius:3px 3px 0 0"></div>').join(''); return '<section style="border:1px solid var(--border,#2a2a2a);border-radius:10px;padding:14px;'+(key==='index'?'grid-column:1/-1;':'')+'"><div style="font-weight:600;margin-bottom:10px">'+label+'</div><div style="height:'+(key==='index'?'180':'130')+'px;display:flex;align-items:end;gap:3px">'+bars+'</div><div style="opacity:.55;font-size:11px;margin-top:7px">latest: '+(vals.at(-1) ?? 0)+'</div></section>'; }).join('');
+      } catch { host.innerHTML = '<div style="opacity:.7">Throughput data is temporarily unavailable.</div>'; }
+    }
+
+    // ── Mandates tab (coordination-mandate spec, decision 2A) ──
+    // Same lazy dynamic-import pattern as Process Health. The PIN typed in this
+    // tab is sent once per action and never stored anywhere.
+    let __mndController = null;
+    let __mndModule = null;
+    async function startMandates() {
+      if (!__mndModule) {
+        try { __mndModule = await import('/dashboard/mandates.js'); }
+        catch (e) { console.error('[mandates] module load failed', e); return; }
+      }
+      if (!__mndController) {
+        const els = {
+          list: document.getElementById('mndList'),
+          approvals: document.getElementById('mndApprovals'),
+          approvalsSection: document.getElementById('mndApprovalsSection'),
+          audit: document.getElementById('mndAudit'),
+          notice: document.getElementById('mndNotice'),
+          stamp: document.getElementById('mndStamp'),
+          issueScope: document.getElementById('mndIssueScope'),
+          issueAgentA: document.getElementById('mndIssueAgentA'),
+          issueAgentB: document.getElementById('mndIssueAgentB'),
+          issueAuthorities: document.getElementById('mndIssueAuthorities'),
+          issueExpires: document.getElementById('mndIssueExpires'),
+          issuePin: document.getElementById('mndIssuePin'),
+          issueBtn: document.getElementById('mndIssueBtn'),
+          issueDetails: document.getElementById('mndIssueDetails'),
+          agentAPrefillNote: document.getElementById('mndAgentAPrefillNote'),
+        };
+        const fetchImpl = (url, opts = {}) => fetch(url, {
+          ...opts,
+          headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },
+        });
+        __mndController = __mndModule.createController({ doc: document, els, fetchImpl });
+      }
+      __mndController.start();
+    }
+    function stopMandates() {
+      if (__mndController) __mndController.stop();
+    }
+
     // ── Preferences tab (Correction & Preference Learning Sentinel §10 Slice-2) ──
     // Same lazy dynamic-import pattern as Process Health: the controller lives in
     // this (classic) scope so it can read `token`; the module ships the pure
@@ -8490,6 +8937,8 @@
           headline: document.getElementById('plHeadline'),
           preferences: document.getElementById('plPreferences'),
           corrections: document.getElementById('plCorrections'),
+          classReviews: document.getElementById('plClassReviews'),
+          completionAudit: document.getElementById('plCompletionAudit'),
           stamp: document.getElementById('plStamp'),
         };
         // Raw fetch (NOT apiFetch) so the controller sees 503 itself.
@@ -8505,17 +8954,57 @@
       if (__plController) __plController.stop();
     }
 
+    // Feedback Factory operated-drain read surface. Closed status DTO only;
+    // dynamic values are assigned with textContent and never interpreted as HTML.
+    let __fdTimer = null;
+    const fdText = (id, value) => { const node = document.getElementById(id); if (node) node.textContent = String(value ?? '—'); };
+    async function loadFeedbackDrain() {
+      try {
+        const response = await fetch('/feedback-factory/drain/status', { headers: { 'Authorization': `Bearer ${token}` } });
+        const data = await response.json();
+        const posture = data.posture || { state: 'unavailable', reason: 'initialization-failure' };
+        fdText('fdPosture', `${posture.state}: ${posture.reason}`);
+        if (!response.ok) {
+          fdText('fdBacklog', 'The drain is not accepting work in this posture.');
+          fdText('fdProgress', 'No operated run is active.');
+          fdText('fdSource', 'Source integrity is unavailable until initialization succeeds.');
+        } else {
+          const drain = data.drain || {}; const readiness = drain.readiness || {}; const work = drain.work || {};
+          fdText('fdBacklog', `collecting ${readiness.collecting || 0}; ready ${readiness.ready || 0}; queued ${work.queued || 0}; retryable ${work.retryable || 0}; held ${(readiness.held || 0) + (work.held || 0)}; dead-lettered ${work['dead-lettered'] || 0}`);
+          const run = data.lastRun;
+          fdText('fdProgress', run ? `last run ${run.state}; completed ${work.completed || 0}; oldest queued ${drain.oldestQueuedAgeMs == null ? 'none' : Math.round(drain.oldestQueuedAgeMs / 1000) + 's'}` : 'No drain run has been admitted yet.');
+          fdText('fdSource', `byte lag ${drain.sourceProjectionLagBytes || 0}; generation lag ${drain.sourceGenerationLag || 0}; checksum conflicts ${drain.sourceChecksumConflicts || 0}`);
+        }
+        fdText('fdStamp', `updated ${new Date().toLocaleTimeString()}`);
+      } catch {
+        fdText('fdPosture', 'unavailable: status request failed');
+        fdText('fdStamp', '');
+      }
+    }
+    function startFeedbackDrain() {
+      stopFeedbackDrain();
+      void loadFeedbackDrain();
+      __fdTimer = setInterval(() => { void loadFeedbackDrain(); }, 15000);
+    }
+    function stopFeedbackDrain() {
+      if (__fdTimer) clearInterval(__fdTimer);
+      __fdTimer = null;
+    }
+
     // Handle tab visibility — close SSE when tab is backgrounded
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         disconnectJobsSSE();
         if (currentTab === 'process-health') stopProcessHealth();
+        if (currentTab === 'feedback-drain') stopFeedbackDrain();
         if (currentTab === 'preferences-learning') stopPreferencesLearning();
       } else if (currentTab === 'jobs') {
         connectJobsSSE();
         loadJobs(); // Resync on return
       } else if (currentTab === 'process-health') {
         startProcessHealth(); // resume on return: one immediate refresh + re-arm
+      } else if (currentTab === 'feedback-drain') {
+        startFeedbackDrain();
       } else if (currentTab === 'preferences-learning') {
         startPreferencesLearning(); // resume on return
       }
@@ -8523,19 +9012,11 @@
       if (!document.hidden) pollVitalSigns();
     });
 
-    // Listen for WebSocket paste events
-    const origWsOnMessage = ws?.onmessage;
-    if (typeof ws !== 'undefined') {
-      const origOnMessage = ws.onmessage;
-      ws.addEventListener('message', function(event) {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'paste_delivered' || msg.type === 'paste_acknowledged') {
-            loadDzHistory();
-          }
-        } catch {}
-      });
-    }
+    // (WebSocket paste events — paste_delivered / paste_acknowledged — are handled in
+    //  handleMessage() above. The previous parse-time addEventListener here ran before
+    //  connectWebSocket() assigned ws, so ws was null and "ws.onmessage" threw a
+    //  TypeError on every load; routing it through the main ws handler also survives
+    //  reconnects.)
 
   </script>
 </body>

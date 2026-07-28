@@ -1,0 +1,28 @@
+{
+  "ts": "2026-07-19T21:26:58.638Z",
+  "slug": "telegram-reply-bounded-outcome",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 27,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "HTTP status outcomes were modeled, but the final curl process itself remained unbounded and its nonzero exit was never converted into an observable ambiguous outcome."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "src/templates/scripts/telegram-reply.sh#CURL_STATUS",
+      "howCaught": "The helper makes no delivery claim without a completed HTTP result; every final request and fallback is bounded, nonzero transport exits render explicit ambiguity, and migration tests prove the guard reaches stock installed agents."
+    }
+  },
+  "verdict": "pass"
+}

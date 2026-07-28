@@ -592,6 +592,12 @@ const FRAMEWORK_RENDERERS: Record<IntelligenceFramework, FrameworkRenderer> = {
   // compiler-forced Record total without overclaiming a gemini-native artifact
   // that the minimal body does not yet produce.
   'gemini-cli': codexCliRenderer,
+  // pi (PI-HARNESS-INTEGRATION-SPEC Phase A): same rationale as gemini — pi
+  // natively discovers skills + AGENTS.md from the project tree, and the
+  // shared `.agents/skills` layout is the non-Claude convention. A pi-native
+  // rendering (pi's own skill format via `--skill`) is a Phase E refinement;
+  // this entry keeps the compiler-forced Record total without overclaiming.
+  'pi-cli': codexCliRenderer,
 };
 
 // ─── The exported ParityRule ───────────────────────────────────────────

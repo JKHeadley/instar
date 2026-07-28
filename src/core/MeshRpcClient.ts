@@ -67,11 +67,16 @@ export class MeshRpcClient {
    * Send one signed command to a peer's /mesh/rpc. Resolves with the typed result
    * (never throws on a non-200 — it maps the dispatcher's reason); throws ONLY on a
    * transport error / timeout, so the caller's retry loop can catch it.
+   *
+   * `opts.timeoutMs` overrides the per-attempt timeout for THIS call — heavy
+   * verbs (working-set-pull pages up to 1MiB, owner-routed commitment forwards
+   * over a tunnel) need more than the 5s default, which was measured aborting
+   * on every cold tunnel hop (live-matrix finding T1, 2026-06-06).
    */
-  async send(peer: MeshPeer, command: MeshCommand, epoch: number): Promise<MeshRpcClientResult> {
+  async send(peer: MeshPeer, command: MeshCommand, epoch: number, opts?: { timeoutMs?: number }): Promise<MeshRpcClientResult> {
     const env = this.buildEnvelope(peer, command, epoch);
     const fetchFn = this.d.fetchFn ?? ((url, init) => fetch(url, init as RequestInit) as unknown as Promise<{ status: number; json: () => Promise<unknown> }>);
-    const timeoutMs = this.d.timeoutMs ?? 5000;
+    const timeoutMs = opts?.timeoutMs ?? this.d.timeoutMs ?? 5000;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {

@@ -26,15 +26,33 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 const PROJECT_NAME = 'sessions-pool-scope-test';
 let AUTH = '';
 
+/** A machine's registry capacity for the WS4.2 empty-state classifier. */
+interface CapacityOpt {
+  nickname?: string;
+  online?: boolean;
+  routerReceivedAt?: string;
+  selfReportedLastSeen?: string;
+}
+
 interface CtxOpts {
   sessions?: Array<Record<string, unknown>>;
   meshSelfId?: string | null;
   nicknames?: Record<string, string>;
   peers?: Array<{ machineId: string; url: string }>;
   pool?: boolean;
+  /** WS4.2: full per-machine capacity (online/lastSeen) keyed by machineId. */
+  capacities?: Record<string, CapacityOpt>;
+  /** WS4.2: the /guards?scope=pool accounting roster (every registered machine). */
+  knownMachines?: Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>;
 }
 
 function buildCtx(tmpDir: string, opts: CtxOpts = {}): RouteContext {
+  // Merge legacy `nicknames` into a capacity map so older callers keep working
+  // while new callers express full capacity (online/lastSeen).
+  const caps: Record<string, CapacityOpt> = { ...(opts.capacities ?? {}) };
+  for (const [id, nick] of Object.entries(opts.nicknames ?? {})) {
+    caps[id] = { nickname: nick, ...(caps[id] ?? {}) };
+  }
   return {
     config: {
       projectName: PROJECT_NAME,
@@ -51,9 +69,10 @@ function buildCtx(tmpDir: string, opts: CtxOpts = {}): RouteContext {
     sessionManager: null,
     meshSelfId: opts.meshSelfId ?? null,
     machinePoolRegistry: (opts.pool ?? true)
-      ? ({ getCapacity: (id: string) => (opts.nicknames?.[id] ? { nickname: opts.nicknames[id] } : null), getCapacities: () => [] } as never)
+      ? ({ getCapacity: (id: string) => caps[id] ?? null, getCapacities: () => Object.entries(caps).map(([machineId, c]) => ({ machineId, ...c })) } as never)
       : null,
     resolvePeerUrls: opts.peers ? () => opts.peers! : null,
+    listPoolMachines: opts.knownMachines ? () => opts.knownMachines! : null,
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,
     updateChecker: null, autoUpdater: null, autoDispatcher: null, quotaTracker: null,
     publisher: null, viewer: null, tunnel: null, evolution: null, watchdog: null,
@@ -169,5 +188,104 @@ describe('GET /sessions — pool-wide aggregation', () => {
     expect(res.body.pool.enabled).toBe(false);
     expect(res.body.pool.peersQueried).toBe(0);
     expect(res.body.sessions).toHaveLength(1);
+  });
+
+  // ── WS4.2 (F7): explicit per-machine empty-state ────────────────────────
+  describe('per-machine empty-state (WS4.2, F7)', () => {
+    const recent = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
+
+    /** A REAL second peer that returns ZERO sessions (idle but healthy). */
+    async function listenIdlePeer(meshSelfId: string): Promise<string> {
+      const app = mount(tmpDir, { sessions: [], meshSelfId, nicknames: { [meshSelfId]: 'Mac Mini' } });
+      peerServer = app.listen(0);
+      await new Promise((r) => peerServer!.once('listening', r));
+      const addr = peerServer!.address() as { port: number };
+      return `http://127.0.0.1:${addr.port}`;
+    }
+
+    it("an ONLINE peer with zero sessions → 'online — no active sessions'", async () => {
+      const peerUrl = await listenIdlePeer('m_b');
+      const app = mount(tmpDir, {
+        sessions: [LOCAL_SESSION], meshSelfId: 'm_a',
+        peers: [{ machineId: 'm_b', url: peerUrl }],
+        capacities: { m_a: { nickname: 'Laptop' }, m_b: { nickname: 'Mac Mini', online: true, routerReceivedAt: recent(5_000) } },
+        knownMachines: [
+          { machineId: 'm_a', nickname: 'Laptop', lastKnownUrl: 'http://127.0.0.1:9' },
+          { machineId: 'm_b', nickname: 'Mac Mini', lastKnownUrl: peerUrl },
+        ],
+      });
+
+      const res = await request(app).get('/sessions').query({ scope: 'pool' }).set(auth());
+      expect(res.status).toBe(200);
+      const mb = res.body.pool.machines.find((m: { machineId: string }) => m.machineId === 'm_b');
+      expect(mb.sessionCount).toBe(0);
+      expect(mb.emptyState.kind).toBe('online');
+      expect(mb.emptyState.text).toBe('online — no active sessions');
+      // The busy local machine gets NO empty-state (its session names it).
+      const ma = res.body.pool.machines.find((m: { machineId: string }) => m.machineId === 'm_a');
+      expect(ma.sessionCount).toBe(1);
+      expect(ma.emptyState).toBeUndefined();
+    });
+
+    it("an OFFLINE peer (registry not-online, no URL) → 'offline since <t>'", async () => {
+      const app = mount(tmpDir, {
+        sessions: [LOCAL_SESSION], meshSelfId: 'm_a',
+        // No live peer URL → no fan-out attempt; the registry says offline.
+        capacities: {
+          m_a: { nickname: 'Laptop' },
+          m_dark: { nickname: 'Studio', online: false, routerReceivedAt: recent(2 * 60 * 60 * 1000) },
+        },
+        knownMachines: [
+          { machineId: 'm_a', nickname: 'Laptop' },
+          { machineId: 'm_dark', nickname: 'Studio', lastKnownUrl: null },
+        ],
+      });
+
+      const res = await request(app).get('/sessions').query({ scope: 'pool' }).set(auth());
+      expect(res.status).toBe(200);
+      const dark = res.body.pool.machines.find((m: { machineId: string }) => m.machineId === 'm_dark');
+      expect(dark.sessionCount).toBe(0);
+      expect(dark.emptyState.kind).toBe('offline');
+      expect(dark.emptyState.text).toMatch(/^offline since /);
+    });
+
+    it("an UNREACHABLE peer (registry online, live fetch fails) → 'unreachable (last seen <t>)'", async () => {
+      const app = mount(tmpDir, {
+        sessions: [LOCAL_SESSION], meshSelfId: 'm_a',
+        // The registry thinks m_lost is online and resolvePeerUrls yields a URL —
+        // but the URL is a dead port, so the live fetch fails: surprise silence.
+        peers: [{ machineId: 'm_lost', url: 'http://127.0.0.1:1' }],
+        capacities: {
+          m_a: { nickname: 'Laptop' },
+          m_lost: { nickname: 'Mac Mini', online: true, routerReceivedAt: recent(20_000) },
+        },
+        knownMachines: [
+          { machineId: 'm_a', nickname: 'Laptop' },
+          { machineId: 'm_lost', nickname: 'Mac Mini', lastKnownUrl: 'http://127.0.0.1:1' },
+        ],
+      });
+
+      const res = await request(app).get('/sessions').query({ scope: 'pool' }).set(auth());
+      expect(res.status).toBe(200);
+      const lost = res.body.pool.machines.find((m: { machineId: string }) => m.machineId === 'm_lost');
+      expect(lost.sessionCount).toBe(0);
+      expect(lost.emptyState.kind).toBe('unreachable');
+      expect(lost.emptyState.text).toMatch(/^unreachable \(last seen /);
+      // Still degrades to a named pool.failed entry (back-compat) — never a 500.
+      expect(res.body.pool.failed.some((f: { machineId: string }) => f.machineId === 'm_lost')).toBe(true);
+    });
+
+    it('the self (serving) machine, when idle, reads online — no active sessions', async () => {
+      const app = mount(tmpDir, {
+        sessions: [], meshSelfId: 'm_a',
+        capacities: { m_a: { nickname: 'Laptop', online: true, routerReceivedAt: recent(1_000) } },
+        knownMachines: [{ machineId: 'm_a', nickname: 'Laptop', lastKnownUrl: 'http://127.0.0.1:9' }],
+      });
+      const res = await request(app).get('/sessions').query({ scope: 'pool' }).set(auth());
+      expect(res.status).toBe(200);
+      const self = res.body.pool.machines.find((m: { machineId: string }) => m.machineId === 'm_a');
+      expect(self.isSelf).toBe(true);
+      expect(self.emptyState.kind).toBe('online');
+    });
   });
 });

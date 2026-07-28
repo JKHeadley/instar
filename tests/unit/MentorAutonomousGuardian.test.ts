@@ -127,6 +127,11 @@ describe('buildAutoloopGoal — deterministic prompt assembly', () => {
     expect(goal).toMatch(/@silent-fallback-ok/);
     expect(goal).toMatch(/never bump a ratchet baseline/i);
     expect(goal).toMatch(/DegradationReporter/);
+    // Parallel-claim discipline (earned 2026-06-05: two sessions built the same
+    // incident fix twice — #802 vs the keychain spec, #810 vs #808) + the
+    // ELI16-in-PR-body required gate (also 2026-06-05, hit live on #813).
+    expect(goal).toMatch(/dev:claim-check/);
+    expect(goal).toMatch(/## ELI16/);
   });
 
   it('degrades gracefully when topics are unset (no "topic undefined" text)', () => {

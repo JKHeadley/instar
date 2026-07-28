@@ -25,15 +25,27 @@ import type { IntelligenceFramework } from '../../src/core/types.js';
 
 // The canonical list of frameworks this audit-completeness matrix should
 // cover. Adding a new framework to instar means adding it here so the
-// matrix catches missing builders structurally.
-const ALL_SUPPORTED_FRAMEWORKS: IntelligenceFramework[] = ['claude-code', 'codex-cli'];
+// matrix catches missing builders structurally. DERIVED from the runtime
+// registry (SUPPORTED_FRAMEWORKS) rather than hand-listed — the hand-list
+// had silently drifted (gemini-cli was missing from it), which is exactly
+// the skew this matrix exists to catch. Deriving makes the coverage
+// structural: a framework added to the registry is in the matrix by
+// construction.
+import { SUPPORTED_FRAMEWORKS } from '../../src/core/TopicFrameworksStore.js';
+const ALL_SUPPORTED_FRAMEWORKS: IntelligenceFramework[] = [...SUPPORTED_FRAMEWORKS];
 
 // Canonical inputs the matrix exercises. Per-framework binary paths
 // are pretend (the builder only echoes them into argv).
-const STUB_CLAUDE_BIN = '/opt/homebrew/bin/claude';
-const STUB_CODEX_BIN = '/opt/homebrew/bin/codex';
+const STUB_BINS: Record<string, string> = {
+  'claude-code': '/opt/homebrew/bin/claude',
+  'codex-cli': '/opt/homebrew/bin/codex',
+  'gemini-cli': '/opt/homebrew/bin/gemini',
+  'pi-cli': '/opt/homebrew/bin/pi',
+};
 function binaryPathFor(framework: IntelligenceFramework): string {
-  return framework === 'codex-cli' ? STUB_CODEX_BIN : STUB_CLAUDE_BIN;
+  const bin = STUB_BINS[framework];
+  if (!bin) throw new Error(`framework-arg-rendering-matrix: no stub binary for "${framework}" — add it to STUB_BINS`);
+  return bin;
 }
 
 describe('framework arg-rendering matrix (audit completeness) — codex-instar Item 9', () => {

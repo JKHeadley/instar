@@ -17,7 +17,7 @@ const CLI_FLAG_MAP = {
 const API_MODEL_MAP = {
   fast: 'claude-haiku-4-5',
   balanced: 'claude-sonnet-4-6',
-  capable: 'claude-opus-4-6',
+  capable: 'claude-opus-4-8',
 } as const;
 
 /** Resolve a tier to a Claude CLI model flag. */

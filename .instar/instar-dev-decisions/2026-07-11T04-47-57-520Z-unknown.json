@@ -1,0 +1,37 @@
+{
+  "ts": "2026-07-11T04:47:57.520Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 14,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The original hook classifier encoded a closed destructive-prefix vocabulary but assigned every unmatched action to the privileged read fast path, so new connector verbs silently bypassed the authority."
+  },
+  "classClosure": {
+    "defectClass": "novel",
+    "closure": "gap",
+    "gapItem": "ACT-001",
+    "component": "external-operation-gate",
+    "novelClass": {
+      "nearestExistingClass": "prompt-parser-contract-drift — rendered prompt/parser mismatch does not cover unmatched runtime classifier input inheriting privileged-safe authority",
+      "includes": [
+        "unknown action defaults to read and bypasses authority",
+        "unrecognized enum falls through to permissive allow"
+      ],
+      "excludes": [
+        "authority unreachable availability posture",
+        "explicitly allowlisted read"
+      ],
+      "severity": "critical"
+    }
+  },
+  "verdict": "pass"
+}

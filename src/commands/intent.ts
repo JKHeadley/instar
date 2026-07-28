@@ -14,6 +14,7 @@ import { loadConfig } from '../core/Config.js';
 import { DecisionJournal } from '../core/DecisionJournal.js';
 import { IntentDriftDetector } from '../core/IntentDriftDetector.js';
 import { OrgIntentManager } from '../core/OrgIntentManager.js';
+import { IntentTestHarness } from '../core/IntentTestHarness.js';
 
 interface IntentReflectOptions {
   dir?: string;
@@ -244,6 +245,22 @@ export async function intentValidate(options: IntentValidateOptions): Promise<vo
   console.log(`  Goals:        ${orgIntent.goals.length}`);
   console.log();
 
+  // MTP Protocol status (EXO 3.0): is ORG-INTENT a governing protocol with all
+  // three machine-readable layers, or just a poster? "If your MTP can't cause
+  // an agent to refuse, it's cheering, not governing." (Salim Ismail)
+  const harness = new IntentTestHarness(orgIntent);
+  const layer = (ok: boolean) => (ok ? pc.green('present') : pc.dim('missing'));
+  console.log(pc.bold('  MTP Protocol (EXO 3.0):'));
+  console.log(`    Constraint layer: ${layer(orgIntent.constraints.length > 0)}  ${pc.dim(`(${orgIntent.constraints.length})`)}`);
+  console.log(`    Decision layer:   ${layer(orgIntent.tradeoffHierarchy.length > 0)}  ${pc.dim(`(${orgIntent.tradeoffHierarchy.length} in tradeoff hierarchy)`)}`);
+  console.log(`    Identity layer:   ${layer(!!orgIntent.identity)}`);
+  if (harness.canGovern()) {
+    console.log(`    ${pc.green('Governs')} — the MTP can make an agent refuse (constraint teeth present).`);
+  } else {
+    console.log(`    ${pc.yellow('Cheering, not governing')} — no constraints, so the MTP cannot cause a refusal.`);
+  }
+  console.log();
+
   // Run validation
   const result = orgManager.validateAgentIntent(agentIntentContent);
 
@@ -412,6 +429,19 @@ export async function intentDrift(options: IntentDriftOptions): Promise<void> {
 
   // Alignment score
   const alignment = detector.alignmentScore();
+
+  if (!alignment.assessable) {
+    // Nothing was measured, so print the reason instead of a fabricated grade.
+    // This branch exists because the previous code rendered the empty case as a
+    // red "0/100 (F)" and dropped `summary` — which read as "assessed, and
+    // catastrophic" rather than "no data". The journal was empty for its entire
+    // life, so that red F was the only thing this surface had ever shown.
+    console.log(`  Alignment Score: ${pc.dim('not assessed')}`);
+    console.log(`    ${pc.dim(alignment.summary)}`);
+    console.log();
+    return;
+  }
+
   const gradeColor = alignment.grade === 'A' ? pc.green
     : alignment.grade === 'B' ? pc.cyan
       : alignment.grade === 'C' ? pc.yellow

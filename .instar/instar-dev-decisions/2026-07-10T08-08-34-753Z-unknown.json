@@ -1,0 +1,26 @@
+{
+  "ts": "2026-07-10T08:08:34.753Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 186,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Per-item attention topics were the original design (right for genuine /ack-able to-dos); the flood guards only ever bounded BURSTS, so slow-drip alert sources (hours apart, distinct features) kept minting topics — latent since the attention queue was born, surfaced as ~317 junk topics and the 2026-07-09 operator directive (topic 11960)."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "caller-driven delivery-path routing inside the existing createAttentionItem funnel — not a new self-triggered controller/loop; emission is one hub message per item (replacing one TOPIC per item, a strict reduction), and hub creation is bounded create-once behind an in-flight-promise guard"
+  },
+  "verdict": "pass"
+}

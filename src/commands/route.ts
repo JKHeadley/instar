@@ -28,6 +28,7 @@ import {
   frameworkFromEnv,
   type IntelligenceFramework,
 } from '../core/intelligenceProviderFactory.js';
+import { createCodexExecJsonConfigResolver } from '../core/CodexCliIntelligenceProvider.js';
 import { PreferenceStore } from '../providers/uxConfirm/PreferenceStore.js';
 import { TaskClassifier } from '../providers/uxConfirm/TaskClassifier.js';
 import { OverrideDetector } from '../providers/uxConfirm/OverrideDetector.js';
@@ -80,6 +81,10 @@ export async function route(taskPrompt: string, options: RouteCommandOptions): P
     framework,
     binaryPath: framework === 'claude-code' ? config.sessions.claudePath : undefined,
     workingDirectory: config.stateDir,
+    // codex exec-json kill-switch — read from this project's config.json.
+    resolveExecJson: createCodexExecJsonConfigResolver(
+      path.join(options.dir ?? process.cwd(), '.instar', 'config.json'),
+    ),
   });
 
   if (!intelligence) {

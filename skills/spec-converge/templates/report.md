@@ -49,8 +49,8 @@ The user reads this section to understand what convergence changed.
 
 ## Iteration Summary
 
-| Iteration | Reviewers who flagged material issues | Material findings | Spec sections changed |
-|-----------|---------------------------------------|-------------------|-----------------------|
+| Iteration | Reviewers who flagged design issues | Design findings | Precision findings | Spec sections changed |
+|-----------|-------------------------------------|-----------------|---------------------|-----------------------|
 {{ITERATION_TABLE}}
 
 ## Full Findings Catalog

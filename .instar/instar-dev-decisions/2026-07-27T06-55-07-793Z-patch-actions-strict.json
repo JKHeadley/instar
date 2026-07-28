@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-27T06:55:07.793Z",
+  "slug": "patch-actions-strict",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 33,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

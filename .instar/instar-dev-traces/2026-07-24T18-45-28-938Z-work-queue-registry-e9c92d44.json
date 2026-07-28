@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "work-queue-registry",
+  "sessionId": "b6982ce3-180b-44cb-a89d-531869e095e5",
+  "timestamp": "2026-07-24T18:45:28.938Z",
+  "artifactPath": "upgrades/side-effects/work-queue-registry.md",
+  "artifactSha256": "33614ec268c19818a4a2405c3820fbd34311de956c8e5983426058d83c70b310",
+  "coveredFiles": [
+    "package-lock.json",
+    "src/core/WorkQueue.ts",
+    "src/core/types.ts",
+    "src/messaging/slack/SlackApiClient.ts",
+    "src/server/routes.ts",
+    "tests/unit/WorkQueue.test.ts",
+    "upgrades/side-effects/work-queue-registry.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Deterministic read-only registry and dark routes; no actuation.",
+  "eli16Path": "docs/specs/delivery-reliability-recovery-hardening.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/work-queue-registry.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {
+    "verdict": "likely-duplicate",
+    "cause": "concurrency",
+    "causes": [
+      "concurrency",
+      "degraded"
+    ],
+    "decision": "proceed",
+    "reason": "This is the already-authorized continuation branch for the subscription-account email invariant; the reported overlap is only shared self-action infrastructure and the open-PR scan is degraded, while the branch's implementation/spec artifacts are unique and already pushed.",
+    "acknowledgedEvidenceIds": [
+      "EV-1"
+    ],
+    "checkedAt": "2026-07-24T03:45:23.992Z",
+    "specSlug": "subscription-account-email-invariant"
+  }
+}

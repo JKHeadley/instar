@@ -385,4 +385,64 @@ describe('buildActiveWorkSilenceDeps — wiring integrity', () => {
     await deps.notifyFn('agent-1', 'went quiet');
     expect(calls).toEqual([{ name: 'agent-1', text: 'went quiet' }]);
   });
+
+  it('notifyFn routes to the stalled session\'s OWN topic when it resolves (not the escalate feed)', async () => {
+    const escalateCalls: Array<{ name: string; text: string }> = [];
+    const delivered: Array<{ topicId: number; text: string }> = [];
+    const surface = makeSurface();
+    const tracker = new OutputActivityTracker(surface);
+    const deps = buildActiveWorkSilenceDeps({
+      tracker, sessions: surface,
+      escalate: async (name, text) => { escalateCalls.push({ name, text }); },
+      getTopicForSession: () => 4242,
+      deliverToTopic: async (topicId, text) => { delivered.push({ topicId, text }); return true; },
+    });
+    await deps.notifyFn('agent-1', 'auto-recovering it now');
+    expect(delivered).toEqual([{ topicId: 4242, text: 'auto-recovering it now' }]);
+    expect(escalateCalls.length).toBe(0); // did NOT fall back to the consolidated feed
+  });
+
+  it('notifyFn falls back to escalate when the topic can\'t be resolved', async () => {
+    const escalateCalls: Array<{ name: string; text: string }> = [];
+    const surface = makeSurface();
+    const tracker = new OutputActivityTracker(surface);
+    const deps = buildActiveWorkSilenceDeps({
+      tracker, sessions: surface,
+      escalate: async (name, text) => { escalateCalls.push({ name, text }); },
+      getTopicForSession: () => null,
+      deliverToTopic: async () => true,
+    });
+    await deps.notifyFn('agent-1', 'went quiet');
+    expect(escalateCalls).toEqual([{ name: 'agent-1', text: 'went quiet' }]);
+  });
+
+  it('notifyFn falls back to escalate when topic delivery fails', async () => {
+    const escalateCalls: Array<{ name: string; text: string }> = [];
+    const surface = makeSurface();
+    const tracker = new OutputActivityTracker(surface);
+    const deps = buildActiveWorkSilenceDeps({
+      tracker, sessions: surface,
+      escalate: async (name, text) => { escalateCalls.push({ name, text }); },
+      getTopicForSession: () => 4242,
+      deliverToTopic: async () => false, // delivery failed
+    });
+    await deps.notifyFn('agent-1', 'went quiet');
+    expect(escalateCalls).toEqual([{ name: 'agent-1', text: 'went quiet' }]);
+  });
+
+  it('recoverFn is passed through when provided, and undefined otherwise (dark by default)', async () => {
+    const surface = makeSurface();
+    const tracker = new OutputActivityTracker(surface);
+    const without = buildActiveWorkSilenceDeps({ tracker, sessions: surface, escalate: async () => {} });
+    expect(without.recoverFn).toBeUndefined();
+
+    const recoverCalls: string[] = [];
+    const withRecover = buildActiveWorkSilenceDeps({
+      tracker, sessions: surface, escalate: async () => {},
+      recoverFn: async (name) => { recoverCalls.push(name); return true; },
+    });
+    expect(typeof withRecover.recoverFn).toBe('function');
+    expect(await withRecover.recoverFn!('agent-1')).toBe(true);
+    expect(recoverCalls).toEqual(['agent-1']);
+  });
 });

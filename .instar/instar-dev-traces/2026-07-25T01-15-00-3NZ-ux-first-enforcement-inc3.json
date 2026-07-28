@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "sessionId": "ux-first-inc3",
+  "timestamp": "2026-07-25T01:15:00.000Z",
+  "artifactPath": "upgrades/side-effects/ux-first-enforcement-inc3.md",
+  "artifactSha256": "45035687df7db0c022feaddca41e3b649d384a463069f27e4183f4f80e320d52",
+  "specPath": "docs/specs/ux-first-enforcement-inc1.eli16.md",
+  "coveredFiles": ["src/messaging/detectors/assertUserVisible.ts", "src/messaging/detectors/clock.ts", "tests/e2e/messaging-multi-agent.test.ts"],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {"verdict": "clear", "cause": null, "causes": [], "degraded": true, "substrateIntroducing": false, "evidence": [], "notes": ["assertTimely is the converged deferred increment."], "specSlug": "ux-first-enforcement-inc1-eli16", "specPath": "docs/specs/ux-first-enforcement-inc1.eli16.md", "phase": "build-start", "disposition": {"decision": "proceed", "reason": "The spec explicitly deferred assertTimely until injected-clock infrastructure existed.", "acknowledgedEvidenceIds": [], "recordedAt": "2026-07-25T01:15:00.000Z"}}
+}

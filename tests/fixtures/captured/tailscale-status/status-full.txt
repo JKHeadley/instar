@@ -1,0 +1,225 @@
+{
+  "Version": "1.94.2-t0a29cf18b-g3f044c9f6",
+  "TUN": true,
+  "BackendState": "Running",
+  "HaveNodeKey": true,
+  "AuthURL": "",
+  "TailscaleIPs": [
+    "100.00.000.000",
+    "fd7a:aaaa:aaaa::aaaa:aaaa"
+  ],
+  "Self": {
+    "ID": "nbJzQKds5x11CNTRL",
+    "PublicKey": "nodekey:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1",
+    "HostName": "xxxxxx’x xxxxxxx xxx",
+    "DNSName": "xxxxxxx-xxxxxxx-xxx.tailaaaaaa.ts.net.",
+    "OS": "macOS",
+    "UserID": 4583521737840363,
+    "TailscaleIPs": [
+      "100.00.000.000",
+      "fd7a:aaaa:aaaa::aaaa:aaaa"
+    ],
+    "AllowedIPs": [
+      "100.00.000.000/32",
+      "fd7a:aaaa:aaaa::aaaa:aaaa/128"
+    ],
+    "Addrs": [
+      "000.000.0.000:00000",
+      "000.00.000.000:00000",
+      "000.000.00.00:00000"
+    ],
+    "CurAddr": "",
+    "Relay": "sfo",
+    "PeerRelay": "",
+    "RxBytes": 0,
+    "TxBytes": 0,
+    "Created": "2026-02-14T05:46:10.561967269Z",
+    "LastWrite": "0001-01-01T00:00:00Z",
+    "LastSeen": "0001-01-01T00:00:00Z",
+    "LastHandshake": "0001-01-01T00:00:00Z",
+    "Online": true,
+    "ExitNode": false,
+    "ExitNodeOption": false,
+    "Active": false,
+    "PeerAPIURL": [
+      "http://000.00.000.000:00000",
+      "http://[fd7a:aaaa:aaaa::aaaa:aaaa]:54773"
+    ],
+    "TaildropTarget": 0,
+    "NoFileSharingReason": "",
+    "Capabilities": [
+      "HTTPS://TAILSCALE.COM/s/DEPRECATED-NODE-CAPS#see-https://xxxxxx.xxx/xxxxxxxxx/xxxxxxxxx/xxxxxx/00000",
+      "default-auto-update",
+      "https://xxxxxxxxx.xxx/xxx/xxxx-xxxxxxx",
+      "https://xxxxxxxxx.xxx/xxx/xx-xxxxx",
+      "https://xxxxxxxxx.xxx/xxx/xx-xxxxx",
+      "https://xxxxxxxxx.xxx/xxx/xxx",
+      "https://xxxxxxxxx.xxx/xxx/xxxxxxx-xxxx",
+      "probe-udp-lifetime",
+      "ssh-behavior-v1",
+      "ssh-env-vars",
+      "store-appc-routes",
+      "tailnet-display-name"
+    ],
+    "CapMap": {
+      "default-auto-update": [
+        true
+      ],
+      "https://xxxxxxxxx.xxx/xxx/xxxx-xxxxxxx": null,
+      "https://xxxxxxxxx.xxx/xxx/xx-xxxxx": null,
+      "https://xxxxxxxxx.xxx/xxx/xx-xxxxx": null,
+      "https://xxxxxxxxx.xxx/xxx/xxx": null,
+      "https://xxxxxxxxx.xxx/xxx/xxxxxxx-xxxx": null,
+      "probe-udp-lifetime": null,
+      "ssh-behavior-v1": null,
+      "ssh-env-vars": null,
+      "store-appc-routes": null,
+      "tailnet-display-name": [
+        "xxxxxxxxxx.xx"
+      ]
+    },
+    "InNetworkMap": true,
+    "InMagicSock": false,
+    "InEngine": false,
+    "KeyExpiry": "2026-12-29T00:30:05Z"
+  },
+  "Health": [],
+  "MagicDNSSuffix": "tailaaaaaa.ts.net",
+  "CurrentTailnet": {
+    "Name": "xxxxxxxxxx.xx",
+    "MagicDNSSuffix": "tailaaaaaa.ts.net",
+    "MagicDNSEnabled": true
+  },
+  "CertDomains": null,
+  "Peer": {
+    "nodekey:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2": {
+      "ID": "nrKbd858Gz11CNTRL",
+      "PublicKey": "nodekey:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3",
+      "HostName": "xxxxxxxxx",
+      "DNSName": "xxxxxx-00-xxx-xxx.tailaaaaaa.ts.net.",
+      "OS": "iOS",
+      "UserID": 4583521737840363,
+      "TailscaleIPs": [
+        "100.00.000.00",
+        "fd7a:aaaa:aaaa::aaaa:aaaa"
+      ],
+      "AllowedIPs": [
+        "100.00.000.00/32",
+        "fd7a:aaaa:aaaa::aaaa:aaaa/128"
+      ],
+      "Addrs": null,
+      "CurAddr": "",
+      "Relay": "sfo",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-02-14T05:48:14.049000543Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": false,
+      "PeerAPIURL": [
+        "http://000.00.000.00:00000",
+        "http://[fd7a:aaaa:aaaa::aaaa:aaaa]:33754"
+      ],
+      "TaildropTarget": 1,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "KeyExpiry": "2026-08-13T05:48:14Z"
+    },
+    "nodekey:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa4": {
+      "ID": "nJaFvwoX8521CNTRL",
+      "PublicKey": "nodekey:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa5",
+      "HostName": "xxxxxxxx-0",
+      "DNSName": "xxxxxxxx-0.tailaaaaaa.ts.net.",
+      "OS": "macOS",
+      "UserID": 4583521737840363,
+      "TailscaleIPs": [
+        "100.00.000.00",
+        "fd7a:aaaa:aaaa::aaaa:aaaa"
+      ],
+      "AllowedIPs": [
+        "100.00.000.00/32",
+        "fd7a:aaaa:aaaa::aaaa:aaaa/128"
+      ],
+      "Addrs": null,
+      "CurAddr": "000.000.00.00:00000",
+      "Relay": "sfo",
+      "PeerRelay": "",
+      "RxBytes": 275080,
+      "TxBytes": 292288,
+      "Created": "2026-06-15T23:25:12.78447655Z",
+      "LastWrite": "2026-07-02T01:29:30.4318675-07:00",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "2026-07-02T01:27:51.626269-07:00",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": true,
+      "PeerAPIURL": [
+        "http://000.00.000.00:00000",
+        "http://[fd7a:aaaa:aaaa::aaaa:aaaa]:56515"
+      ],
+      "TaildropTarget": 1,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": true,
+      "KeyExpiry": "2026-12-12T23:25:12Z"
+    },
+    "nodekey:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa6": {
+      "ID": "nUZuQ6DgQj11CNTRL",
+      "PublicKey": "nodekey:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa7",
+      "HostName": "xxxxxx’x xxx xxxx",
+      "DNSName": "xxxxxxx-xxx-xxxx.tailaaaaaa.ts.net.",
+      "OS": "macOS",
+      "UserID": 4583521737840363,
+      "TailscaleIPs": [
+        "100.00.000.00",
+        "fd7a:aaaa:aaaa::aaaa:aaaa"
+      ],
+      "AllowedIPs": [
+        "100.00.000.00/32",
+        "fd7a:aaaa:aaaa::aaaa:aaaa/128"
+      ],
+      "Addrs": null,
+      "CurAddr": "000.000.00.00:00000",
+      "Relay": "sfo",
+      "PeerRelay": "",
+      "RxBytes": 15504168,
+      "TxBytes": 14814056,
+      "Created": "2026-06-14T18:50:57.43451023Z",
+      "LastWrite": "2026-07-02T01:29:31.733389458-07:00",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "2026-07-02T01:28:24.151103-07:00",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": true,
+      "PeerAPIURL": [
+        "http://000.00.000.00:00000",
+        "http://[fd7a:aaaa:aaaa::aaaa:aaaa]:44471"
+      ],
+      "TaildropTarget": 1,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": true,
+      "KeyExpiry": "2026-12-11T18:50:57Z"
+    }
+  },
+  "User": {
+    "4583521737840363": {
+      "ID": 4583521737840363,
+      "LoginName": "xxxxxx@xxxxxxxxxx.xx",
+      "DisplayName": "Xxxxxx Xxxxxxx",
+      "ProfilePicURL": "https://xx0.xxxxxxxxxxxxxxxxx.xxx/x-/xxx-xxxxx00x0xxxx-xxxx-xxxxxxxx0xxx0xxxxxxx_xxxxxx0xxxxxx0xxxxxxxxxxxxxxxxxx00xxxxxxxxxxxxxx0x0xxxxxxxxxxxx0xxxxxxx0xx0x0xxx0xxxx00x0xxxxxx_xxxxxxxxxxxx-xxx0xxxxx00xx0xxxxx0x0xxxxxxxxxxxxxxxxxxxx0xx0x0xxxxx00xx0x0xxxxxxxx00xxx0x0xxxxxxxxxxxxx0x0xxxxx-xx0xxxxxxxx0xxxxx0xxxxxxxxx00xxx0xxxxxxxxxxxxx0xxxxxxxx0xx0xx0x-xxxxxxx0x00xx00_xxxx0x0xxx0xx00xxxxx0xxxxxxxxx0xxx00xxx_xxxxxxxxxx0xxx0xxxxxxxx0xxxxxxxxxx0x0xxxxxxxxxxxxxx0xxx0xxx00xxxxx0x0xxxxx0xxxxx00xxx-0x0xxxxxxxxx-xxxxxxxxxxx0000xx0xxxx0x0xx0xxxx0xxxxxxxxxxx0x0x0xxx0xxx00xxx0xxxx0xx0x0xxxxxxxxx0xxxx-xxxxxxxxxx-xxx0xx0xx0xxxxxx0xxxxxxxxxx0xxx0xx-xx0xxxxxxxxxxxxxxxxxxxxxxxxx0xxx0xxx0xxxx-x0xxxxxxx0xxx0xx0xxxxxxxxxxxxxxx0x0xxxxx-0xxxx0xxxxxxxxxxx0xxx0xxxxxxxxx0x0xxxxxxxxxxxx0xxxxxxxxxxxxxx0xxxx0xxxxxxxxxx0xxxxxxxxxx0-xx0xxxxxx0xxxx0x0xx0xxxxxxxxxxx-xxxxxxxxxx_xxxxx0xxxxxxxxxxxxx0xxxxxxxxx0xxxxx0xxxx0x0x0xxxxx0xxxxxx_xxxxx_-xxxxxxxxx0xxxxx0xx0xxxxxxxxxx0--xxxxxxxxxx--x_00xxxxxx00x0xx0xxxxxxxxxxxxxxxxxxxx0xxxxx0xxxxx0xxxxx00xxxxxxxxxxxxx_x00xxxxxxxxxxx0xxxxxx0xxx00xx0x0x0xxxx0x00x0xx0x0_xxxxxxx0xxxx00xxxxxxxxxxxxxxxx0xxx=x00-x"
+    }
+  },
+  "ClientVersion": null
+}

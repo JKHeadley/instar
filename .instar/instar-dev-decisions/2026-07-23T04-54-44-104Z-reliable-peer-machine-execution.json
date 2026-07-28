@@ -1,0 +1,30 @@
+{
+  "ts": "2026-07-23T04:54:44.104Z",
+  "slug": "reliable-peer-machine-execution",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 476,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1539
+    ],
+    "notes": "The prior mutual-SSH phase proved restricted transport but intentionally stopped before standing OS SSH access, leaving autonomous peer execution incomplete."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/mutual-ssh-hardening.test.ts",
+      "howCaught": "Per-machine authorization mutations are event-driven and idempotent; repair attempts are capped by the existing ten-machine sweep and bounded repair breaker, while startup, disable, rotation, and revocation settle by removing managed entries."
+    }
+  },
+  "verdict": "blocked"
+}

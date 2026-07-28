@@ -245,3 +245,30 @@ false` to restore pre-guard per-item-topic behavior. No data migration, no agent
 state repair — the guard holds no durable state and the redrive change only
 removes an escalation path. Worst case is a revert of the `src/` diff and a patch
 release.
+
+## 9. Addendum — single-alerts-topic default (2026-07-09)
+
+The guard above SHAPED the per-item topic stream; it did not remove it. Slow-drip
+sources (one item every few hours — rope-recovery-probe, credential-repointing,
+and the like) never trip a 4-in-10-minutes budget, so each still spawned a topic:
+~317 junk topics accumulated by 2026-07-09, and the operator directed (topic
+11960, verbatim): "Alerts should all go into a SINGLE topic with a dedicated
+name that is for alerts and NOTHING else."
+
+`createAttentionItem` now defaults to **single-topic routing**
+(`attentionRouting.mode: 'single-topic'`, a code default — existing agents flip
+on update with no config migration): EVERY attention item, all priorities
+including HIGH/URGENT, posts as one message into the durable "🔔 Attention" hub
+topic created at boot (`ensureAgentAttentionTopic`, state key
+`agent-attention-topic`). Hub items are marked `coalesced` and are never
+registered in the per-item topic maps (resolving one can never close the shared
+hub). If the hub id cannot be resolved or the send fails, the adapter
+finds-or-creates the hub once (create-once + in-flight-promise, mirroring the
+agent-health lane) — NEVER a per-item topic. The agent-health lane is unchanged
+and takes precedence for `lane: 'agent-health'` items.
+
+This spec's per-source guard + the `topicCreationBudget` ceiling remain intact
+and load-bearing for the `'per-item'` legacy opt-out
+(`messaging[].config.attentionRouting = { "mode": "per-item" }`) and for every
+non-attention topic creator. Rollback of the default flip is that same config
+key — no data migration.

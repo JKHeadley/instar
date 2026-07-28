@@ -1,0 +1,9 @@
+# A session-management test was racing its own mock and losing on busy machines
+
+One of the end-to-end session tests checks a nice recovery feature: when an agent's session is restarted, instar remembers which work folder ("worktree") the session was in and reminds the new session to go back there instead of starting over in the wrong place.
+
+The test works by launching a tiny fake Claude script inside a real terminal session. The fake script's first move is to step into a worktree folder; then it draws a prompt on screen. The test then asks the session monitor to take a snapshot — "where is this session working right now?" — kills the session, restarts it, and expects the restart message to mention the worktree.
+
+The bug was in the timing. The test only waited for the terminal session to EXIST before taking the snapshot. On a fast, quiet machine the fake script has already stepped into the worktree by then, so the snapshot is right. On a busy machine (a developer laptop running a dozen real agent sessions), the snapshot fires before the fake script has even started — so it records the starting folder instead of the worktree, the reminder never gets generated, and the test times out and fails. Same code, same test, different machine speed: a classic startup race, and it failed deterministically on the loaded machine while CI never runs it at all (CI has no terminal multiplexer installed).
+
+The fix is to wait for the right signal: the test now waits until the fake script has actually DRAWN ITS PROMPT — which it only does after stepping into the worktree — before taking the snapshot. No product code changed; the feature itself was always correct (verified live during diagnosis: with the timing fixed, the full record→restart→reminder chain works end to end). One line of test code, plus a comment explaining the race so nobody reintroduces it.

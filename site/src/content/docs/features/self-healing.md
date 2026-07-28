@@ -33,6 +33,14 @@ Coordinates automatic recovery for each case.
 
 When the agent says "working on it" or "give me a minute," a timer starts. If no follow-up arrives within the expected window, the agent is nudged and the user is notified.
 
+## Orphaned Work Detection
+
+A background build or autonomous session can die before committing its work, leaving edited files stranded in a worktree with no promise registered for them — invisible, silently lost. The `OrphanedWorkSentinel` closes that gap: it detects worktrees holding uncommitted changes whose owning session has died and settled, records each durably, and raises one calm agent-health notice. It needs nothing registered — it reads the stranded work straight off disk. Signal-only (it never deletes or mutates the work); an optional, off-by-default preservation patch can snapshot the changes non-destructively.
+
+```bash
+curl localhost:4040/orphaned-work
+```
+
 ## Loud Degradation
 
 When a fallback activates (e.g., LLM provider unavailable, file write failed), it's:

@@ -1,0 +1,18 @@
+{
+  "ts": "2026-06-27T04:23:14.785Z",
+  "slug": "dynamic-mcp-idle-sweep",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 126,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Automatic idle-offload trigger; completes the spec's offload sweep."
+  },
+  "verdict": "pass"
+}

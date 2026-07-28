@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-27T14:57:25.948Z",
+  "slug": "channels-wa-imessage",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 169,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

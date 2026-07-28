@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-23T06:29:25.942Z",
+  "slug": "act-896-deferral-pattern-sentinel",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/DeferralPatternSentinel.test.ts",
+      "howCaught": "Strict dark no-read and dry-run no-emission bounds prevent autonomous action in increment 1; the stable Attention dedupe key is tested across repeated counts, and future boot wiring must re-prove real-funnel idempotency."
+    }
+  },
+  "verdict": "blocked"
+}

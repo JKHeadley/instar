@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-11T06:25:52.101Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 126,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/MentorVisibleEcho.test.ts",
+      "howCaught": "Each successful mentor delivery starts at most one echo sequence; the pure planner caps it at three ordered sends, and the first failure terminates without retry. Tests prove the three-message steady-state bound and one-shot failure settling."
+    }
+  },
+  "verdict": "blocked"
+}

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-07-24T14:56:33.744Z",
+  "slug": "throughput-github-runtime-repair",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 521,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The touched CI and Green-PR controllers retain lease and cadence admission with no new trigger edge; missing explicit identity converges each tick to a bounded no-action refusal, while the cited ratchet detects any steady-state action path lacking a settling brake."
+    },
+    "component": "github-runtime-consumers"
+  },
+  "verdict": "blocked"
+}

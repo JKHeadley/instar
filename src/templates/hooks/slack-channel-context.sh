@@ -23,6 +23,7 @@ fi
 # Get port and auth from config
 PORT="${INSTAR_PORT:-}"
 AUTH=""
+AGENT_ID="${INSTAR_AGENT_ID:-}"
 
 if [ -f ".instar/config.json" ]; then
   if [ -z "$PORT" ]; then
@@ -37,6 +38,9 @@ if [ -f ".instar/config.json" ]; then
   if [ -z "$AUTH" ]; then
     AUTH=$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
   fi
+  if [ -z "$AGENT_ID" ]; then
+    AGENT_ID=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)
+  fi
 fi
 
 PORT="${PORT:-4042}"
@@ -49,6 +53,7 @@ fi
 # Fetch channel history from ring buffer cache
 MESSAGES=$(curl -sf \
   ${AUTH:+-H "Authorization: Bearer $AUTH"} \
+  ${AGENT_ID:+-H "X-Instar-AgentId: $AGENT_ID"} \
   "http://localhost:${PORT}/slack/channels/${CHANNEL_ID}/messages?limit=30" 2>/dev/null) || exit 0
 
 # Format thread history for session context
@@ -73,7 +78,7 @@ for msg in messages:
     ts = msg.get('ts', '')
     try:
         dt = datetime.fromtimestamp(float(ts))
-        time_str = dt.strftime('%H:%M:%S')
+        time_str = dt.astimezone().strftime('%H:%M:%S %Z')
     except:
         time_str = ts
 
@@ -94,7 +99,7 @@ lines.append('')
 lines.append('CRITICAL: You MUST relay your response back to Slack after responding.')
 lines.append('Use the relay script:')
 lines.append('')
-lines.append(\"cat <<'EOF' | .claude/scripts/slack-reply.sh ${CHANNEL_ID}\")
+lines.append(\"cat <<'EOF' | .instar/scripts/slack-reply.sh\")
 lines.append('Your response text here')
 lines.append('EOF')
 lines.append('')

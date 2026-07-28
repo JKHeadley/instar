@@ -1,0 +1,20 @@
+{
+  "ts": "2026-07-04T19:21:48.050Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 165,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The per-peer lease-observation seam (LeaseCoordinator.peerLeaseObservations / HttpLeaseTransport.observedByPeer) already existed on main, but getSyncStatus() never adopted it — it kept counting the stale git-synced registry role field. A latent telemetry-derivation defect: the correct source was present but unwired, so awakeMachineCount read 0 while leaseHolder correctly named the holder. Reproduced live on v1.3.722 and again 2026-07-04 on the Laptop+Mini pair. No demotion/routing behavior was affected — purely the observability number."
+  },
+  "verdict": "pass"
+}

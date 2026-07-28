@@ -4,7 +4,12 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import Database from 'better-sqlite3';
 import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let ledger: FeatureMetricsLedger | null = null;
 function newLedger(now?: () => number): FeatureMetricsLedger {
@@ -41,6 +46,38 @@ describe('FeatureMetricsLedger', () => {
     expect(coh.calls).toBe(1);
     expect(coh.tokensIn).toBe(800);
     expect(coh.fireRate).toBe(0); // never fired
+  });
+
+  it('records provider/model + framework and surfaces distinct sets per feature (Observable Intelligence)', () => {
+    const l = newLedger();
+    l.record({ feature: 'MessageSentinel', outcome: 'noop', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+    l.record({ feature: 'MessageSentinel', outcome: 'fired', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+    l.record({ feature: 'MessageSentinel', outcome: 'noop', model: 'claude-haiku-4-5', framework: 'claude-code' });
+    const m = l.byFeature().find(f => f.feature === 'MessageSentinel')!;
+    expect(m.frameworks.sort()).toEqual(['claude-code', 'codex-cli']);
+    expect(m.models.sort()).toEqual(['claude-haiku-4-5', 'gpt-5.4-mini']);
+    expect(m.fired).toBe(1);
+    expect(m.fireRate).toBeCloseTo(1 / 3, 5);
+  });
+
+  it('frameworks/models are empty arrays when never recorded', () => {
+    const l = newLedger();
+    l.record({ feature: 'Bare', outcome: 'noop' });
+    const b = l.byFeature().find(f => f.feature === 'Bare')!;
+    expect(b.frameworks).toEqual([]);
+    expect(b.models).toEqual([]);
+  });
+
+  it('pruneOlderThan deletes rows older than the cutoff (bounded retention)', () => {
+    let t = 1_000_000;
+    const l = newLedger(() => t);
+    t = 1000; l.record({ feature: 'X', outcome: 'noop' });   // old
+    t = 5000; l.record({ feature: 'X', outcome: 'fired' });  // recent
+    const deleted = l.pruneOlderThan(3000);
+    expect(deleted).toBe(1);
+    const x = l.byFeature().find(f => f.feature === 'X')!;
+    expect(x.calls).toBe(1);
+    expect(x.fired).toBe(1);
   });
 
   it('computes p50/p95 latency percentiles', () => {
@@ -118,5 +155,31 @@ describe('FeatureMetricsLedger', () => {
     const l = newLedger();
     l.close();
     expect(() => l.record({ feature: 'X', outcome: 'noop' })).not.toThrow();
+  });
+
+  it('idempotently adds the framework column to a pre-existing old-schema DB', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feat-metrics-'));
+    const dbPath = path.join(dir, 'old.db');
+    // Create the table on the ORIGINAL schema (no framework column), as an
+    // earlier instar would have left it on disk.
+    const seed = new Database(dbPath);
+    seed.exec(`CREATE TABLE feature_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, feature TEXT NOT NULL,
+      kind TEXT NOT NULL, outcome TEXT NOT NULL, tokens_in INTEGER, tokens_out INTEGER,
+      latency_ms INTEGER, model TEXT, waited INTEGER NOT NULL DEFAULT 0, wait_ms INTEGER, verdict_id TEXT)`);
+    seed.prepare(`INSERT INTO feature_metrics (ts, feature, kind, outcome) VALUES (1, 'Legacy', 'llm', 'noop')`).run();
+    seed.close();
+
+    // Opening the ledger must add the column without losing the legacy row.
+    const l = new FeatureMetricsLedger({ dbPath });
+    try {
+      l.record({ feature: 'New', outcome: 'fired', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+      const rows = l.byFeature();
+      expect(rows.find(f => f.feature === 'Legacy')!.calls).toBe(1);
+      expect(rows.find(f => f.feature === 'New')!.frameworks).toEqual(['codex-cli']);
+    } finally {
+      l.close();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/FeatureMetricsLedger.test.ts:cleanup' });
+    }
   });
 });

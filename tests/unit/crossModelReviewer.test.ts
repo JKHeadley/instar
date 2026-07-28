@@ -148,7 +148,7 @@ describe('detectCodexReviewer', () => {
 // ── Registry walk ────────────────────────────────────────────────────────
 
 describe('detectCrossModelReviewer (registry walk)', () => {
-  it('has codex as the first (and currently only) registry entry', () => {
+  it('has codex as the first registry entry (the order IS the preference order)', () => {
     expect(SUPPORTED_REVIEWER_FRAMEWORKS.length).toBeGreaterThanOrEqual(1);
     expect(SUPPORTED_REVIEWER_FRAMEWORKS[0].id).toBe('codex-cli');
   });
@@ -159,15 +159,20 @@ describe('detectCrossModelReviewer (registry walk)', () => {
       codexPathDetected: '/usr/bin/codex',
       authJsonPath: authPath,
       env: {},
+      geminiPathDetected: null,
     });
     expect(r.available).toBe(true);
     expect(r.framework).toBe('codex-cli');
   });
 
-  it('returns the specific codex reason when nothing is available (single-entry registry)', () => {
-    const r = detectCrossModelReviewer({ codexPathDetected: null, env: {} });
+  it('returns the specific preference-leader (codex) reason when nothing is available', () => {
+    const r = detectCrossModelReviewer({
+      codexPathDetected: null,
+      geminiPathDetected: null,
+      env: {},
+    });
     expect(r.available).toBe(false);
-    // single-entry registry surfaces codex's own reason, not a generic one.
+    // the preference-leader's own reason surfaces, not a generic one.
     expect(r.reason).toBe('codex-not-installed');
   });
 });
@@ -199,11 +204,14 @@ describe('buildCrossModelFlag (fallback states)', () => {
 // ── Spec-level aggregation across rounds (F2) ────────────────────────────
 
 describe('aggregateRoundOutcomes (F2 — one final spec-level flag)', () => {
+  // crossFamily: true — these builders represent codex (a cross-model family);
+  // aggregateRoundOutcomes counts only crossFamily:true successes (§5.2).
   const ok = (model = 'gpt-5.5'): ReviewerResult => ({
     status: 'ok',
     framework: 'codex-cli',
     model,
     flag: `cross-model-review: codex-cli:${model}`,
+    crossFamily: true,
   });
   const degraded = (reason: string): ReviewerResult => ({
     status: 'degraded',
@@ -211,11 +219,13 @@ describe('aggregateRoundOutcomes (F2 — one final spec-level flag)', () => {
     model: 'gpt-5.5',
     reason,
     flag: `cross-model-review: codex-cli:gpt-5.5 (degraded: ${reason})`,
+    crossFamily: true,
   });
   const unavailable = (reason = 'codex-not-installed'): ReviewerResult => ({
     status: 'unavailable',
     reason,
     flag: 'cross-model-review: unavailable',
+    crossFamily: true,
   });
 
   it('any successful round → the clean codex-cli flag (one real opinion is enough)', () => {
@@ -287,7 +297,7 @@ describe('runCrossModelReview — the three outcome states', () => {
   it('unavailable: no framework → status unavailable, never throws/blocks', async () => {
     const r = await runCrossModelReview({
       assembled,
-      detectInputs: { codexPathDetected: null, env: {} },
+      detectInputs: { codexPathDetected: null, geminiPathDetected: null, env: {} },
     });
     expect(r.status).toBe('unavailable');
     expect(r.flag).toBe('cross-model-review: unavailable');

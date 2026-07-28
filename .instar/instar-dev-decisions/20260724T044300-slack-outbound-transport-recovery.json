@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-24T04:43:00.000Z",
+  "slug": "slack-outbound-transport-recovery",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 74,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "Tier-1 travel-critical Slack transport recovery. Three consecutive network fetch failures rebuild the Slack-client-owned undici dispatcher; per-request dispatcher scope avoids affecting unrelated HTTP clients. Focused Socket Mode reconnect suite: 17/17 passing. Side-effects and ELI16 artifacts are staged on this PR."
+}

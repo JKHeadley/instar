@@ -14,10 +14,9 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import os from 'node:os';
 import { DegradationReporter } from './DegradationReporter.js';
+import { readSystemMemoryPressure } from './hostMemoryPressure.js';
 
 export type MemoryPressureState = 'normal' | 'warning' | 'elevated' | 'critical';
 
@@ -61,7 +60,6 @@ const DEFAULT_THRESHOLDS = {
 
 const RING_BUFFER_SIZE = 20;
 const TREND_WINDOW = 6;
-const PAGE_SIZE_BYTES = 16384; // macOS Apple Silicon
 
 // Adaptive intervals
 const INTERVALS: Record<MemoryPressureState, number> = {
@@ -284,77 +282,10 @@ export class MemoryPressureMonitor extends EventEmitter {
    * Read system memory — platform-aware.
    */
   private readSystemMemory(): { pressurePercent: number; freeGB: number; totalGB: number } {
-    if (process.platform === 'darwin') {
-      return this.parseVmStat();
-    } else if (process.platform === 'linux') {
-      return this.parseProcMeminfo();
-    } else {
-      // Fallback: use Node's process.memoryUsage (very rough)
-      const mem = process.memoryUsage();
-      const totalGB = os.totalmem() / (1024 ** 3);
-      const usedGB = mem.rss / (1024 ** 3);
-      return {
-        pressurePercent: (usedGB / totalGB) * 100,
-        freeGB: totalGB - usedGB,
-        totalGB,
-      };
-    }
-  }
-
-  /**
-   * macOS: parse vm_stat
-   */
-  private parseVmStat(): { pressurePercent: number; freeGB: number; totalGB: number } {
-    const output = spawnSync('vm_stat', [], { encoding: 'utf-8', timeout: 5000 }).stdout ?? '';
-
-    const pageSizeMatch = output.match(/page size of (\d+) bytes/);
-    const pageSize = pageSizeMatch ? parseInt(pageSizeMatch[1], 10) : PAGE_SIZE_BYTES;
-
-    const parsePages = (label: string): number => {
-      const match = output.match(new RegExp(`${label}:\\s+(\\d+)`));
-      return match ? parseInt(match[1], 10) : 0;
-    };
-
-    const freePages = parsePages('Pages free');
-    const activePages = parsePages('Pages active');
-    const inactivePages = parsePages('Pages inactive');
-    const wiredPages = parsePages('Pages wired down');
-    const compressorPages = parsePages('Pages occupied by compressor');
-    const purgeablePages = parsePages('Pages purgeable');
-
-    const totalPages = freePages + activePages + inactivePages + wiredPages + compressorPages;
-    const totalBytes = totalPages * pageSize;
-    const totalGB = totalBytes / (1024 ** 3);
-
-    const availablePages = freePages + inactivePages + purgeablePages;
-    const availableBytes = availablePages * pageSize;
-    const freeGB = availableBytes / (1024 ** 3);
-
-    const usedPages = totalPages - availablePages;
-    const pressurePercent = totalPages > 0 ? (usedPages / totalPages) * 100 : 0;
-
-    return { pressurePercent, freeGB, totalGB };
-  }
-
-  /**
-   * Linux: parse /proc/meminfo
-   */
-  private parseProcMeminfo(): { pressurePercent: number; freeGB: number; totalGB: number } {
-    const content = fs.readFileSync('/proc/meminfo', 'utf-8');
-
-    const parseKB = (key: string): number => {
-      const match = content.match(new RegExp(`${key}:\\s+(\\d+)`));
-      return match ? parseInt(match[1], 10) : 0;
-    };
-
-    const totalKB = parseKB('MemTotal');
-    const availableKB = parseKB('MemAvailable') || (parseKB('MemFree') + parseKB('Buffers') + parseKB('Cached'));
-
-    const totalGB = totalKB / (1024 * 1024);
-    const freeGB = availableKB / (1024 * 1024);
-    const pressurePercent = totalKB > 0 ? ((totalKB - availableKB) / totalKB) * 100 : 0;
-
-    return { pressurePercent, freeGB, totalGB };
+    // Delegates to the ONE shared, platform-aware reader (macOS reads
+    // free+inactive+purgeable via vm_stat, Linux MemAvailable, never raw
+    // os.freemem). Spec: macos-memory-pressure-metric.
+    return readSystemMemoryPressure();
   }
 
   /**

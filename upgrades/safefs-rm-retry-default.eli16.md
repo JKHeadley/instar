@@ -1,0 +1,7 @@
+# Deleting a busy folder no longer fails the whole test run
+
+When the system deletes a folder tree (a test's temporary directory, an old worktree), something else is occasionally still touching a file inside it at that exact moment — git finishing a write, a file scanner mid-walk. The delete then fails with "directory not empty" even though trying again fifty milliseconds later would succeed. Node's built-in delete function knows about this exact situation and can retry automatically — but only if the caller asks for retries, and ours never did.
+
+This bit us today in CI: a test suite's cleanup tried to delete its temporary git repo while something still held the .git folder, failed once, and turned a completely green change into a red build. Any test that cleans up a temporary directory inherits this lottery ticket, and on a loaded CI runner the lottery pays out regularly.
+
+The fix goes in the one funnel every delete already passes through (the safety wrapper that guards against deleting the wrong thing): recursive force-deletes now default to three quick retries, a third of a second of patience total. Explicit caller settings always win — passing zero retries keeps the old fail-fast behavior — and non-recursive deletes are untouched. Three tests pin the behavior: a delete racing a concurrent writer converges, an explicit zero is respected, and non-recursive semantics are unchanged.

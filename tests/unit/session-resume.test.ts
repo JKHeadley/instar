@@ -137,6 +137,7 @@ describe('SessionManager.spawnInteractiveSession --resume support', () => {
       maxSessions: 3,
       protectedSessions: [],
       completionPatterns: ['Session complete'],
+      framework: 'claude-code',
     };
     manager = new SessionManager(config, state);
 

@@ -102,6 +102,29 @@ Regardless of which path resolved, the final value must pass:
 A planted `.instar/AGENT.md` outside `<instarHome>/agents/` is rejected
 at validation regardless of how the walk-up found it.
 
+**Amendment (2026-06-05) — registered legacy homes.** Agents onboarded
+before this convention have live homes outside `<instarHome>/agents/`
+(live fixture: instar-codey at `~/Documents/Projects/instar-codey`).
+The anchored-prefix rule alone dead-ends those agents: `worktree create`
+refuses their real home, and every fleet-PR build improvises a checkout
+— the exact failure class the convention exists to prevent (observed as
+the respawned-session build-checkout cascade, 2026-06-04).
+
+When the candidate fails the agents-root containment, it is accepted
+iff the agent registry's own recorded home path (`entries[].path`,
+realpath-resolved) equals the candidate AND the entry name passes the
+same charset clamp as compliant homes. The agent name comes from the
+REGISTRY entry, never the directory. Worktrees then land at
+`<legacyHome>/.worktrees/` — still inside the agent's own granted
+territory, which is the property the convention actually protects.
+
+File evidence inside the candidate (`.instar/AGENT.md`,
+`.instar/config.json`) counts for nothing on this path: only the
+registry — operator-controlled state a planted file cannot forge —
+vouches for a legacy home. All prior refusals are preserved verbatim;
+the planted-AGENT.md rejection above is pinned by the same test it
+always was.
+
 #### Instar-repo resolution
 
 Resolution order:

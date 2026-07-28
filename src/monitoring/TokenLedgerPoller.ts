@@ -32,6 +32,16 @@ export interface TokenLedgerPollerOptions {
   codexProjectDir?: string;
   /** Skip Codex rollouts older than this when scanning. Mirrors the Claude window. */
   codexMaxFileAgeMs?: number;
+  /**
+   * Bounded Accumulation (Increment 2): how often to drive the ledger's retention
+   * prune (TokenLedger.pruneToRetention). Default 6h (matches the feature-metrics
+   * prune cadence). The prune itself is a no-op when retention is disabled on the
+   * ledger, so this always-runs hook is cheap when off. When a prune reports a
+   * remaining backlog (`more`), the next tick prunes again to drain it without one
+   * giant blocking DELETE. */
+  retentionPruneIntervalMs?: number;
+  /** Injectable clock for cadence testing. Default Date.now. */
+  now?: () => number;
 }
 
 export class TokenLedgerPoller {
@@ -46,6 +56,12 @@ export class TokenLedgerPoller {
   private afterTick: (() => void | Promise<void>) | null;
   private codexProjectDir: string | null;
   private codexMaxFileAgeMs: number;
+  private retentionPruneIntervalMs: number;
+  private now: () => number;
+  /** Wall-clock of the last retention prune; 0 = never. */
+  private lastRetentionPruneAtMs = 0;
+  /** True while a backlog prune is draining — forces the next tick to prune again. */
+  private retentionDraining = false;
 
   constructor(opts: TokenLedgerPollerOptions) {
     this.ledger = opts.ledger;
@@ -60,6 +76,34 @@ export class TokenLedgerPoller {
       console.warn('[token-ledger] scan error:', err);
     });
     this.afterTick = opts.afterTick ?? null;
+    this.retentionPruneIntervalMs =
+      opts.retentionPruneIntervalMs && opts.retentionPruneIntervalMs > 0
+        ? opts.retentionPruneIntervalMs
+        : 6 * 60 * 60 * 1000;
+    this.now = opts.now ?? (() => Date.now());
+  }
+
+  /**
+   * Drive the ledger's retention prune on a sub-cadence (the scan runs every
+   * intervalMs; the prune only every retentionPruneIntervalMs). A no-op when
+   * retention is disabled on the ledger. If a prune leaves a backlog (`more`), the
+   * next tick prunes again to drain it gradually rather than in one blocking DELETE.
+   * Fail-open: a prune error is reported and resets the cadence, never throws.
+   */
+  private maybePruneRetention(): void {
+    const now = this.now();
+    if (!this.retentionDraining && now - this.lastRetentionPruneAtMs < this.retentionPruneIntervalMs) {
+      return;
+    }
+    try {
+      const res = this.ledger.pruneToRetention(now);
+      this.lastRetentionPruneAtMs = now;
+      this.retentionDraining = res.more === true;
+    } catch (err) {
+      this.onError(err);
+      this.lastRetentionPruneAtMs = now;
+      this.retentionDraining = false;
+    }
   }
 
   start(): void {
@@ -112,6 +156,9 @@ export class TokenLedgerPoller {
       })
       .finally(() => {
         this.running = false;
+        // Retention prune rides the existing cadence, off the scan path (no-op when
+        // retention is disabled on the ledger). Synchronous + fail-open inside.
+        this.maybePruneRetention();
         if (this.afterTick) {
           Promise.resolve()
             .then(() => this.afterTick!())

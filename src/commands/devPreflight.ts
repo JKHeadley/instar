@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import pc from 'picocolors';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { buildPrefixToKeyMap } from '../server/CapabilityIndex.js';
@@ -37,6 +39,13 @@ export interface DevPreflightSummary {
   discoverabilityExitCode: number;
   routeWarnings: RouteWarning[];
   heuristicUnavailable?: string;
+  /**
+   * Test-runner bound self-disable ledger check (spec
+   * docs/specs/test-runner-concurrency-bound.md §2.6(b)). Optional so older
+   * callers/summaries stay valid; absent means "check unavailable" and never
+   * fails the preflight.
+   */
+  selfDisableExitCode?: number;
 }
 
 const DISCOVERABILITY_TEST_ARGS = [
@@ -107,8 +116,27 @@ export function findMissingCapabilityPrefixes(
 }
 
 export function aggregateExitCode(summary: DevPreflightSummary): number {
-  return summary.lintExitCode === 0 && summary.discoverabilityExitCode === 0 ? 0 : 1;
+  return summary.lintExitCode === 0 &&
+    summary.discoverabilityExitCode === 0 &&
+    (summary.selfDisableExitCode ?? 0) === 0
+    ? 0
+    : 1;
 }
+
+/**
+ * The shared serverless-host self-disable detector consumer (spec §2.6(b)).
+ * dev:preflight SPAWNS the same script the pre-push hook runs so the
+ * detection logic lives once (scripts/lib/test-runner-selfdisable-patterns
+ * .mjs — plain ESM the hook can load without a built dist).
+ *
+ * Exit-code choice, documented (§2.6: "dev:preflight … MAY fail on the same
+ * pattern"): in --preflight mode the script exits non-zero ONLY for the two
+ * unambiguous self-disable signatures (sustained `off`; spoofed CI on a
+ * non-CI host — both graded "like `off`" by the spec). Watch/cap/posture/arm
+ * divergence WARN without failing. The pre-push surface of the same detector
+ * is structurally WARN-only and never fails.
+ */
+export const SELF_DISABLE_CHECK_SCRIPT = 'scripts/pre-push-test-runner-selfdisable.mjs';
 
 export function defaultCapabilityPrefixes(): Set<string> {
   return new Set(buildPrefixToKeyMap().keys());
@@ -183,6 +211,21 @@ export async function runDevPreflight(options: DevPreflightOptions = {}): Promis
   output.write('\n');
   const discoverability = await runner.run('npx', DISCOVERABILITY_TEST_ARGS, 'capabilities discoverability');
 
+  // ── Test-runner bound: self-disable ledger check (spec §2.6(b)) ──────────
+  // Runs the SAME detector script the pre-push hook uses, in --preflight mode
+  // (see SELF_DISABLE_CHECK_SCRIPT for the documented exit-code choice).
+  // Skipped quietly when the script is absent (e.g. an older checkout).
+  let selfDisableExitCode: number | undefined;
+  if (fs.existsSync(path.join(cwd, SELF_DISABLE_CHECK_SCRIPT))) {
+    output.write('\n');
+    const selfDisable = await runner.run(
+      'node',
+      [SELF_DISABLE_CHECK_SCRIPT, '--preflight'],
+      'test-runner bound self-disable ledger check',
+    );
+    selfDisableExitCode = selfDisable.exitCode;
+  }
+
   let routeWarnings: RouteWarning[] = [];
   let heuristicUnavailable: string | undefined;
   try {
@@ -200,11 +243,17 @@ export async function runDevPreflight(options: DevPreflightOptions = {}): Promis
     discoverabilityExitCode: discoverability.exitCode,
     routeWarnings,
     heuristicUnavailable,
+    selfDisableExitCode,
   };
 
   output.write('\nSummary:\n');
   output.write(`- lint: ${lint.exitCode === 0 ? pc.green('PASS') : pc.red('FAIL')}\n`);
   output.write(`- capabilities-discoverability/CapabilityIndex: ${discoverability.exitCode === 0 ? pc.green('PASS') : pc.red('FAIL')}\n`);
+  if (selfDisableExitCode !== undefined) {
+    output.write(
+      `- test-runner self-disable ledger: ${selfDisableExitCode === 0 ? pc.green('PASS') : pc.red('FAIL')} (advisory WARN details above; fails only on sustained off/spoofed-CI)\n`,
+    );
+  }
   printHeuristic(output, summary);
   printChecklist(output);
 
@@ -212,7 +261,7 @@ export async function runDevPreflight(options: DevPreflightOptions = {}): Promis
   if (exitCode === 0) {
     output.write('\nPreflight complete: no blocking failures.\n');
   } else {
-    output.error('\nPreflight failed: lint or discoverability tests failed.\n');
+    output.error('\nPreflight failed: lint, discoverability tests, or the test-runner self-disable ledger check failed.\n');
   }
   return exitCode;
 }

@@ -40,9 +40,11 @@ we proved that with a test that spot-checks valid inputs are unchanged, on top o
 the existing 12 matrix tests. The only behavior that changes is for inputs the gate
 previously couldn't classify, which now get the careful treatment instead of a free
 pass. An independent reviewer checked the whole thing and agreed it's sound, and
-also pointed out a matching blind spot one layer up (in the hook that labels
-operations) that we're closing in issue-628. Nothing to configure — it just makes
-the safety gate harder to slip past.
+also pointed out a matching blind spot one layer up: the hook that labels
+operations treated every unfamiliar verb as a read. Issue #628 closes that mirror
+gap by fast-pathing only explicit reads and sending unfamiliar or compound-mutating
+verbs to the gate for its decision. Nothing to configure — the two layers now share
+the same conservative treatment of unknown classification input.
 
 ## Who found it
 
