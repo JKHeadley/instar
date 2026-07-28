@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-28T17:44:42.356Z",
+  "slug": "preflight-lint-manager-resolve",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 48,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

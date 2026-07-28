@@ -27,6 +27,8 @@ describe('dev preflight command integration', () => {
     const exitCode = await runDevPreflight({
       cwd: process.cwd(),
       runner,
+      // Pin the manager: the resolver probes the host, and CI has no pnpm.
+      lintCommandResolver: () => ({ command: 'pnpm', args: ['lint'] }),
       capabilityPrefixes: new Set(['capabilities']),
       diffProvider: () => '+router.post("/new-surface/create", handler);',
       output: {
@@ -66,6 +68,8 @@ describe('dev preflight command integration', () => {
 
     const exitCode = await runDevPreflight({
       runner,
+      // Pin the manager: the resolver probes the host, and CI has no pnpm.
+      lintCommandResolver: () => ({ command: 'pnpm', args: ['lint'] }),
       diffProvider: () => '',
       output: { write: () => {}, error: () => {} },
     });
