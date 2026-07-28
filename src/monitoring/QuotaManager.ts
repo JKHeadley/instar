@@ -341,6 +341,9 @@ export class QuotaManager extends EventEmitter {
       // §P3 notifier fires + the reap-log records the `quota-shed` reason.
       terminateSession: (sessionId, reason, opts) =>
         sm.terminateSession(sessionId, reason, opts),
+      // Reap-notify R2.1 — pre-grace evidence snapshot: the migrator captures
+      // work evidence at ITS decision moment, before Ctrl+C tears it down.
+      collectWorkEvidence: (sessionId) => sm.collectWorkEvidence(sessionId),
       // §P0 #7 P2-style soft check (one extra Ctrl+C grace round on a working
       // session). Build/autonomous-active = the same "structural long work"
       // signal used by the SessionReaper KEEP-guard — a fresh build-state.json
@@ -436,6 +439,15 @@ export class QuotaManager extends EventEmitter {
    * when quota is healthy. Migration is a quota-saving measure — if
    * quota is fine, migration concerns are irrelevant.
    */
+  /** True while a quota migration is mid-flight (reap-notify R2.4: the
+   *  resume-queue drainer never spawns during a migration — stricter than
+   *  canSpawnSession, which permits spawns mid-migration absent pressure).
+   *  Deliberately NO catch here: a probe error propagates to the drainer's
+   *  gate, which resolves a throwing dep to the SAFE side (blocked). */
+  isMigrationInFlight(): boolean {
+    return this.migrator?.isMigrating() ?? false;
+  }
+
   canSpawnSession(priority?: string): { allowed: boolean; reason: string } {
     // Check quota thresholds first
     const trackerResult = this.tracker.shouldSpawnSession(priority as any);

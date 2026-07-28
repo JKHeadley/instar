@@ -24,6 +24,8 @@ export interface LogEntry {
   platformUserId?: number | string;
   /** Platform name (telegram, whatsapp, etc.) */
   platform?: string;
+  /** Platform-authenticated forwarding provenance. Undefined means unknown. */
+  forwarded?: boolean;
 }
 
 /** Legacy Telegram-specific log entry shape for backward compatibility */
@@ -37,6 +39,7 @@ export interface TelegramLogEntry {
   senderName?: string;
   senderUsername?: string;
   telegramUserId?: number;
+  forwarded?: boolean;
 }
 
 export interface MessageLoggerConfig {
@@ -82,12 +85,13 @@ export class MessageLogger {
   /**
    * Append a log entry to the JSONL file.
    */
-  append(entry: LogEntry): void {
+  append(entry: LogEntry): boolean {
     try {
       fs.appendFileSync(this.logPath, JSON.stringify(entry) + '\n');
       this.maybeRotate();
     } catch (err) {
       console.error(`[message-logger] Failed to append to log: ${err}`);
+      return false;
     }
 
     // Notify subscribers
@@ -98,6 +102,7 @@ export class MessageLogger {
         console.error(`[message-logger] onMessageLogged callback failed: ${err}`);
       }
     }
+    return true;
   }
 
   /**

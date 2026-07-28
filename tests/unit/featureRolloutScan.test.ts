@@ -16,6 +16,7 @@ import {
   parseSpecFrontmatter,
   scanSpecArtifacts,
   makeFlagObserver,
+  parseMaturationContract,
 } from '../../src/core/featureRolloutScan.js';
 
 describe('normalizeSpecId', () => {
@@ -99,6 +100,48 @@ describe('makeFlagObserver (read-only)', () => {
   it('defaultEnabled true when the shipped default is on', () => {
     const obs = makeFlagObserver({}, { monitoring: { featX: { enabled: true } } })('monitoring.featX');
     expect(obs.defaultEnabled).toBe(true);
+  });
+});
+
+describe('rollout accounting frontmatter', () => {
+  it('accepts only the closed feature-summary projection registry', () => {
+    const valid = parseMaturationContract(JSON.stringify({ cadenceHours: 6, evidenceMaxAgeHours: 12, metrics: [
+      { id: 'runs', source: 'feature-summary', sourceRef: 'feedback-factory.completed-runs', direction: 'at-least', threshold: 1, minSamples: 1 },
+    ] }));
+    expect(valid?.ok).toBe(true);
+    const unknown = parseMaturationContract(JSON.stringify({ cadenceHours: 6, evidenceMaxAgeHours: 12, metrics: [
+      { id: 'runs', source: 'feature-summary', sourceRef: 'invented.metric', direction: 'at-least', threshold: 1, minSamples: 1 },
+    ] }));
+    expect(unknown).toEqual({ ok: false, error: 'unknown-source-ref' });
+  });
+
+  it('keeps accounting visible while surfacing an invalid metric contract', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'rollout-invalid-contract-'));
+    try {
+      fs.mkdirSync(path.join(repo, 'docs', 'specs'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'docs', 'specs', 'BAD.md'), `---
+approved: true
+rollout-disposition: composed
+rollout-source-pr: 1538
+rollout-owner-feature: owner
+rollout-metrics-json: '{"cadenceHours":6,"evidenceMaxAgeHours":12,"metrics":[{"id":"bad","source":"feature-summary","sourceRef":"invented.metric","direction":"at-least","threshold":1,"minSamples":1}]}'
+---
+# Bad`);
+      const row = scanSpecArtifacts(repo)[0];
+      expect(row).toMatchObject({ rolloutDisposition: 'composed', sourcePrNumber: 1538,
+        ownerFeatureId: 'owner', maturationContractError: 'unknown-source-ref' });
+      expect(row.maturationEvaluation).toBeUndefined();
+    } finally { SafeFsExecutor.safeRmSync(repo, { recursive: true, force: true, operation: 'invalid contract fixture' }); }
+  });
+
+  it('accounts source PRs 1531-1539 exactly as 5 active, 3 composed, 1 excluded', () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+    const rows = scanSpecArtifacts(root).filter(row => row.sourcePrNumber && row.sourcePrNumber >= 1531 && row.sourcePrNumber <= 1539);
+    expect(rows.map(row => row.sourcePrNumber).sort((a, b) => a! - b!)).toEqual([1531, 1532, 1533, 1534, 1535, 1536, 1537, 1538, 1539]);
+    expect(rows.filter(row => row.rolloutDisposition === 'active')).toHaveLength(5);
+    expect(rows.filter(row => row.rolloutDisposition === 'composed')).toHaveLength(3);
+    expect(rows.filter(row => row.rolloutDisposition === 'excluded')).toHaveLength(1);
+    expect(rows.filter(row => row.rolloutDisposition !== 'excluded').every(row => row.maturationEvaluation?.metrics.length === 1)).toBe(true);
   });
 });
 

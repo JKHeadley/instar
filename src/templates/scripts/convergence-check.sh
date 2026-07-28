@@ -30,7 +30,10 @@ if echo "$CONTENT" | grep -qiE "(unfortunately.{0,20}(i can.t|i.m unable|not (po
 fi
 
 # 2. COMMITMENT OVERREACH — Promises that may not survive session boundaries
-if echo "$CONTENT" | grep -qiE "(i.ll (make sure|ensure|guarantee|always|never forget)|i (promise|commit to|will always)|you can count on me to|i.ll remember (to|this)|from now on i.ll)"; then
+# Word-boundary guards (live FPs 2026-06-06): "Mini promises"/"I promised"
+# matched the bare `i (promise...)` — the leading i must start a word and
+# `promise` must not continue into promised/promises.
+if echo "$CONTENT" | grep -qiE "(^|[^a-zA-Z])i.ll (make sure|ensure|guarantee|always|never forget)|(^|[^a-zA-Z])i (promise([^a-zA-Z]|$)|commit to|will always)|you can count on me to|(^|[^a-zA-Z])i.ll remember (to|this)|from now on i.ll"; then
   ISSUES+=("COMMITMENT: You're making a promise that may not survive context compaction or session end. Can your infrastructure actually keep this commitment? If not, reframe as intent rather than guarantee.")
   ISSUE_COUNT=$((ISSUE_COUNT + 1))
 fi
@@ -129,7 +132,7 @@ PY
       continue
     fi
     # Skip well-known service domains + common agent tunnel domains.
-    if echo "$url" | grep -qE '(github\.com|vercel\.app|vercel\.com|netlify\.app|netlify\.com|npmjs\.com|npmjs\.org|cloudflare\.com|google\.com|twitter\.com|x\.com|youtube\.com|reddit\.com|discord\.com|discord\.gg|telegram\.org|t\.me|localhost|127\.0\.0\.1|stackoverflow\.com|developer\.mozilla\.org|docs\.anthropic\.com|anthropic\.com|openai\.com|claude\.ai|notion\.so|linear\.app|fly\.io|render\.com|railway\.app|heroku\.com|amazonaws\.com|azure\.com|gitlab\.com|bitbucket\.org|docker\.com|hub\.docker\.com|pypi\.org|crates\.io|rubygems\.org|pkg\.go\.dev|wikipedia\.org|medium\.com|substack\.com|circle\.so|ghost\.io|telegraph\.ph)'; then
+    if echo "$url" | grep -qE '(github\.com|vercel\.app|vercel\.com|netlify\.app|netlify\.com|npmjs\.com|npmjs\.org|cloudflare\.com|google\.com|twitter\.com|x\.com|youtube\.com|reddit\.com|discord\.com|discord\.gg|telegram\.org|t\.me|localhost|127\.0\.0\.1|stackoverflow\.com|developer\.mozilla\.org|docs\.anthropic\.com|anthropic\.com|openai\.com|claude\.ai|claude\.com|notion\.so|linear\.app|fly\.io|render\.com|railway\.app|heroku\.com|amazonaws\.com|azure\.com|gitlab\.com|bitbucket\.org|docker\.com|hub\.docker\.com|pypi\.org|crates\.io|rubygems\.org|pkg\.go\.dev|wikipedia\.org|medium\.com|substack\.com|circle\.so|ghost\.io|telegraph\.ph)'; then
       continue
     fi
     UNFAMILIAR_URLS="$UNFAMILIAR_URLS  $url\n"
@@ -147,6 +150,75 @@ fi
 if echo "$CONTENT" | grep -qiE "(i used to (think|believe|feel|assume)|back when i (first|started|was new)|at (that|the) time i|my (early|earlier|initial|original|first) (understanding|thinking|view|perspective|approach)|i didn.t yet understand|before i (learned|realized|discovered|knew)|i (once|previously) (thought|believed|felt)|this was (before|when) i)"; then
   ISSUES+=("TEMPORAL: Your message references past understanding or earlier perspectives. Is this content from an older draft? If your thinking has evolved since writing this, revise to reflect your current understanding before publishing.")
   ISSUE_COUNT=$((ISSUE_COUNT + 1))
+fi
+
+# 8. SPEC-REVIEW LINK — a spec handed over for review must carry a rendered
+# ELI16 tunnel link the operator can open. Structure > Willpower: the link is
+# guaranteed by skills/spec-converge/scripts/publish-spec-review.mjs. Narrow by
+# design (this blocks the send): fires only on an unambiguous spec handoff —
+# a docs/specs/*.md reference, OR a GitHub PR mentioned with the word "spec" —
+# in an explicit review/approval handoff, with no /view/ link present. An
+# ordinary code-PR mention does not fire.
+SPEC_HANDOFF=""
+if echo "$CONTENT" | grep -qiE "docs/specs/[^ )]+\.md"; then
+  SPEC_HANDOFF="yes"
+elif echo "$CONTENT" | grep -qiE "github\.com/[^ )]+/pull/[0-9]+" && echo "$CONTENT" | grep -qiE "\bspec(s|ification)?\b"; then
+  SPEC_HANDOFF="yes"
+fi
+if [ -n "$SPEC_HANDOFF" ] \
+  && echo "$CONTENT" | grep -qiE "\b(review|approv|sign[- ]?off|take a look|for your|ready for)\b" \
+  && ! echo "$CONTENT" | grep -qiE "/view/[0-9a-f-]{8,}"; then
+  ISSUES+=("SPEC_REVIEW_LINK: You're handing a spec over for review with no rendered ELI16 tunnel link the operator can open. Deliver spec reviews via skills/spec-converge/scripts/publish-spec-review.mjs — it renders the ELI16, verifies the link (HTTP 200), and includes it. Don't send a spec for review without the rendered link.")
+  ISSUE_COUNT=$((ISSUE_COUNT + 1))
+fi
+
+# 9. TIME-AWARENESS NUDGE (Robust Session Time Awareness spec — Component 4,
+# SIGNAL-ONLY). If this outbound message asserts the SESSION/RUN is done/over
+# while a LIVE autonomous record still has >10% of its time-box remaining, emit a
+# one-line SIGNAL to an operator log + stderr. It NEVER blocks or rewrites the
+# message (does NOT touch ISSUE_COUNT / the exit code) and NEVER quotes the
+# agent's phrase — it carries the computed fact (≈NN% remains) only, so the
+# signal can't be re-read as self-confirming evidence the run is finished
+# (P2 Signal vs Authority). Guards the exact wind-down-early incident class.
+if echo "$CONTENT" | grep -qiE "((the )?([a-z0-9 ._-]{0,25} )?(session|run|sprint) (is|was|.s) (now )?(done|over|complete|completed|finished|wrapped[ -]?up)|winding[ -]down( the| this| my)?( session| run)?|wrapping[ -]up the (session|run))"; then
+  TA_DIR="${CLAUDE_PROJECT_DIR:-.}/.instar/autonomous"
+  TA_SIG=""
+  TA_REC=""
+  if [ -d "$TA_DIR" ]; then
+    for ta_rec in "$TA_DIR"/*.local.md; do
+      [ -f "$ta_rec" ] || continue
+      ta_pct=$(python3 - "$ta_rec" <<'PY' 2>/dev/null
+import sys, re, datetime
+try:
+    body = open(sys.argv[1]).read()
+    def g(k):
+        m = re.search(r'^\s*' + k + r'\s*:\s*"?([^"\n]+)"?', body, re.M)
+        return m.group(1).strip() if m else ''
+    if g('active').lower() != 'true':
+        sys.exit(0)
+    end, dur = g('end_at'), g('duration_seconds')
+    if not end or not dur:
+        sys.exit(0)
+    end_dt = datetime.datetime.fromisoformat(end.replace('Z', '+00:00'))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    remain = (end_dt - now).total_seconds()
+    durs = float(dur)
+    if durs > 0 and remain > 0 and (remain / durs) > 0.10:
+        print(int(round(remain / durs * 100)))
+except Exception:
+    sys.exit(0)
+PY
+)
+      if [ -n "$ta_pct" ]; then TA_SIG="$ta_pct"; TA_REC="$(basename "$ta_rec")"; break; fi
+    done
+  fi
+  if [ -n "$TA_SIG" ]; then
+    TA_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+    TA_LOG="${CLAUDE_PROJECT_DIR:-.}/logs"
+    mkdir -p "$TA_LOG" 2>/dev/null
+    printf '{"ts":"%s","signal":"premature-completion-assertion","remainingPct":%s,"record":"%s"}\n' "$TA_TS" "$TA_SIG" "$TA_REC" >> "$TA_LOG/time-awareness-signals.jsonl" 2>/dev/null || true
+    echo "[time-awareness] SIGNAL: this message asserts completion while ~${TA_SIG}% of the active autonomous time-box (${TA_REC}) remains — verify before concluding. (signal-only; message NOT blocked)" >&2
+  fi
 fi
 
 # Output results

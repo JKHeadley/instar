@@ -42,7 +42,7 @@ function runHook(opts: { cwd: string; projectDir?: string; tmuxSession: string }
   exitCode: number;
   decision: string | null;
 } {
-  const env: NodeJS.ProcessEnv = { ...process.env, INSTAR_HOOK_TMUX_SESSION: opts.tmuxSession };
+  const env: NodeJS.ProcessEnv = { ...process.env, INSTAR_HOOK_TMUX_SESSION: opts.tmuxSession, INSTAR_HOOK_BACKOFF_DISABLE: '1' };
   if (opts.projectDir) env.CLAUDE_PROJECT_DIR = opts.projectDir;
   else delete env.CLAUDE_PROJECT_DIR;
   let stdout = '';

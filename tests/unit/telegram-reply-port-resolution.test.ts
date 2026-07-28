@@ -77,6 +77,8 @@ interface RunOpts {
   configPort?: number;
   authToken?: string;
   agentId?: string;
+  args?: string[];
+  stdin?: string;
   /** When true, do NOT write a config.json. */
   noConfig?: boolean;
 }
@@ -102,7 +104,7 @@ async function runScript(opts: RunOpts): Promise<RunResult> {
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH };
   if (opts.envPort !== undefined) env.INSTAR_PORT = opts.envPort;
   return await new Promise<RunResult>((resolve, reject) => {
-    const proc = spawn('bash', [SCRIPT_PATH, '42'], {
+    const proc = spawn('bash', [SCRIPT_PATH, ...(opts.args ?? ['42'])], {
       cwd: tmpCwd,
       env,
     });
@@ -123,7 +125,7 @@ async function runScript(opts: RunOpts): Promise<RunResult> {
       clearTimeout(kill);
       resolve({ status, stdout, stderr, cwd: tmpCwd });
     });
-    proc.stdin.write('hello\n');
+    proc.stdin.write(opts.stdin ?? 'hello\n');
     proc.stdin.end();
   }).finally(() => {
     SafeFsExecutor.safeRmSync(tmpCwd, {
@@ -208,5 +210,24 @@ describe('telegram-reply.sh — port resolution', () => {
     expect(result.status).toBe(0);
     const req = mockA.lastRequest()!;
     expect(req.agentIdHeader).toBeUndefined();
+  });
+
+  it('decodes --stdin-base64 so shell-sensitive and heredoc-delimiter text is sent literally', async () => {
+    mockA.reset();
+    const message = [
+      'literal shell syntax: $(date) `whoami` "$TOKEN"',
+      'EOF',
+      'JSON-ish braces: {"ok": true}',
+    ].join('\n');
+    const result = await runScript({
+      configPort: mockA.port,
+      authToken: 'tok',
+      agentId: 'echo',
+      args: ['--stdin-base64', '42'],
+      stdin: Buffer.from(message, 'utf-8').toString('base64'),
+    });
+    expect(result.status).toBe(0);
+    const req = mockA.lastRequest()!;
+    expect(JSON.parse(req.body).text).toBe(message);
   });
 });

@@ -1,0 +1,107 @@
+name: ux-impact-pr-gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited]
+    paths:
+      - 'src/server/routes.ts'
+      - 'src/commands/server.ts'
+      - 'src/messaging/**'
+      - 'src/dashboard/**'
+      - 'src/templates/**'
+      - '.github/workflows/ux-impact-pr-gate.yml'
+      - 'scripts/ux-impact-lint.mjs'
+
+concurrency:
+  group: ux-impact-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ux-impact:
+    name: UX impact declaration
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      internal_error: ${{ steps.lint.outputs.internal_error || 'false' }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout base ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+      - name: Fetch PR head
+        run: git fetch --no-tags origin ${{ github.event.pull_request.head.sha }}
+      - name: Load the PR's checker
+        run: |
+          if git cat-file -e "${{ github.event.pull_request.base.sha }}:scripts/ux-impact-lint.mjs" 2>/dev/null; then
+            echo "using base copy"
+          else
+            git checkout "${{ github.event.pull_request.head.sha }}" -- scripts/ux-impact-lint.mjs
+          fi
+      - name: Evaluate UX declaration
+        id: lint
+        env:
+          # Literal, protected kill switch. Do not source this from vars/secrets.
+          INSTAR_UX_LINT: "on"
+          # Literal configured author scope; pusher is accepted only when it matches this list.
+          INSTAR_UX_SCOPE: "jkheadley"
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          : > ux-lint-result.json
+          set +e
+          node scripts/ux-impact-lint.mjs --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}" --scope "$INSTAR_UX_SCOPE" --pusher "${{ github.actor }}" --report ux-lint-result.json --body "$PR_BODY"
+          rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::UX lint internal error; fail-open for merge but mark auto-merge ineligible"
+            echo "internal_error=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit "$rc"
+      - name: Publish exemption-rate artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ux-exemption-rate-${{ github.run_id }}
+          path: ux-lint-result.json
+          if-no-files-found: warn
+
+  ux-merge-safety:
+    name: UX merge safety
+    needs: ux-impact
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse auto-merge after internal lint error
+        if: needs.ux-impact.outputs.internal_error == 'true'
+        run: |
+          echo "::error::UX lint internal error marker present; auto-merge is ineligible"
+          exit 1
+      - name: Confirm no internal-error marker
+        run: echo "UX merge safety PASS"
+
+  ux-assertions:
+    name: UX assertions (messaging E2E)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.blockExoticSubdeps=false
+      - name: Run deterministic UX assertions in a real E2E scenario
+        run: pnpm exec vitest run tests/e2e/messaging-multi-agent.test.ts

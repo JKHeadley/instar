@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-24T23:10:19.581Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 115,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The SessionManager idle-monitor never had the settle discipline the SessionWatchdog uses — it emitted rateLimitedAtIdle on a single-glance detectRateLimited, so a stale/transient throttle line false-fired a recovery. Pre-existing since the idle-monitor was written; the milder cousin of the #1262 finished-session spam (CMT-1785 F3)."
+  },
+  "verdict": "blocked"
+}

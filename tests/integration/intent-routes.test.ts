@@ -158,15 +158,17 @@ describe('Intent Journal Routes (integration)', () => {
     });
 
     it('appends multiple entries without overwriting', async () => {
+      // `principle` is required — a decision recorded without naming what
+      // guided it is refused before it reaches the journal.
       await request(app)
         .post('/intent/journal')
-        .send({ sessionId: 's1', decision: 'First' });
+        .send({ sessionId: 's1', decision: 'First', principle: 'accuracy' });
       await request(app)
         .post('/intent/journal')
-        .send({ sessionId: 's2', decision: 'Second' });
+        .send({ sessionId: 's2', decision: 'Second', principle: 'accuracy' });
       await request(app)
         .post('/intent/journal')
-        .send({ sessionId: 's3', decision: 'Third' });
+        .send({ sessionId: 's3', decision: 'Third', principle: 'speed' });
 
       const journalFile = path.join(stateDir, 'decision-journal.jsonl');
       const lines = fs.readFileSync(journalFile, 'utf-8').trim().split('\n');
@@ -313,6 +315,10 @@ describe('Intent Journal Routes (integration)', () => {
         earliest: null,
         latest: null,
         topPrinciples: [],
+        // Zero on BOTH counters is what makes an empty journal distinguishable
+        // from a populated-but-unprincipled one (unprincipledCount > 0).
+        principledCount: 0,
+        unprincipledCount: 0,
         conflictCount: 0,
       });
     });

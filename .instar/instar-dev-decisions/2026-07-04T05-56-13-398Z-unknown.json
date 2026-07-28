@@ -1,0 +1,18 @@
+{
+  "ts": "2026-07-04T05:56:13.398Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 653,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The shipped hubCommands.parseHubCommand anchored regexes could misread discussion as a bind command and SWALLOW the message before the agent saw it (the class the 2026-07-03 keyword-intent audit flagged as offender #3). This converts the DECISION to an LLM-with-context classifier that fails open. Not tied to a specific prior PR; it is a latent defect-class in long-shipped code, fixed proactively under the constitutional standard."
+  },
+  "verdict": "blocked"
+}

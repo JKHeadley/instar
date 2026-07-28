@@ -1,0 +1,96 @@
+/**
+ * ExternalHogArmMarker — the armed-marker gate of the External-Hog sentinel
+ * (CMT-1901, docs/specs/external-hog-zombie-autokill-sentinel.md §7-§8).
+ *
+ * Going LIVE (actually killing, not just watch-only dryRun) is doubly-held, and this module
+ * is the second key. Beyond `enabled && !dryRun`, a kill requires a VALID armed marker that
+ * ONLY the PIN-gated arm route can write. Two load-bearing security properties (both proven
+ * airtight by the round-9 security review) are implemented here as PURE functions:
+ *
+ *  1. ARM-EPOCH lifecycle — a disarm can never be silently un-done. The marker carries a
+ *     monotonically-increasing `armEpoch`; ANY disarm (route OR emergency config-edit)
+ *     persists a `lastDisarmEpoch >= armEpoch`. The marker is VALID only while
+ *     `armEpoch > lastDisarmEpoch`. So a `disarm → config dryRun:false → restart` sequence
+ *     boots UNARMED, and `config.dryRun:false` is NEVER a positive arm signal — returning to
+ *     live-kill ALWAYS requires a fresh PIN arm (a new, higher `armEpoch`).
+ *
+ *  2. Per-class CONTENT-HASH arm-scope — the operator's PIN consented to exactly the class
+ *     CONTENT that existed at arm time, so an armed grant never silently widens. The marker
+ *     records `{ classId: sha256(the class's match rules) }`. A class kills only if its
+ *     CURRENT `{id, contentHash}` is in the armed set: a NEW class is absent → alert-only;
+ *     a BROADENED existing class → hash mismatch → alert-only until a fresh PIN re-arm; an
+ *     unrelated class addition leaves existing entries intact (availability).
+ *
+ * This module NEVER kills; it only answers "is a live kill of this class currently
+ * authorized?" — the caller ANDs its result with the §4 floor and the classifier verdict.
+ */
+
+import { createHash } from 'node:crypto';
+
+/** The server-side armed marker (0600, agent-home, DISTINCT from config). PIN-route-written. */
+export interface ArmMarker {
+  /** Monotonically-increasing epoch, raised ONLY by the PIN arm route. */
+  readonly armEpoch: number;
+  readonly armedBy: string;
+  readonly armedAt: string;
+  /** classId → the content-hash of that class's match rules AT ARM TIME. */
+  readonly allowlistSnapshot: Readonly<Record<string, string>>;
+}
+
+/**
+ * Deterministic content-hash of a class's match rules (its name-regex source + the required
+ * argv-token sources). Identical rules → identical hash; ANY change to the matcher → a
+ * different hash (which forces a re-arm before that class can kill again).
+ */
+export function classContentHash(ruleSources: readonly string[]): string {
+  // Join with a delimiter that cannot appear inside a regex-source token boundary, and hash
+  // the ORDERED list so a reordering (which changes matching semantics for anchored parts) is
+  // a distinct hash. The caller passes a stable, ordered source list per class.
+  const canonical = ruleSources.join('\u0000');
+  return createHash('sha256').update(canonical, 'utf8').digest('hex');
+}
+
+/**
+ * Is the marker VALID (not un-done by a later disarm)? A missing marker, or a non-finite/
+ * out-of-order epoch pair, is INVALID (fail closed) — no kill.
+ */
+export function isMarkerValid(marker: ArmMarker | null | undefined, lastDisarmEpoch: number): boolean {
+  if (!marker) return false;
+  if (typeof marker.armEpoch !== 'number' || !Number.isFinite(marker.armEpoch)) return false;
+  if (typeof lastDisarmEpoch !== 'number' || !Number.isFinite(lastDisarmEpoch)) return false;
+  return marker.armEpoch > lastDisarmEpoch;
+}
+
+/**
+ * Is THIS class currently armed — i.e. its current content-hash matches the snapshot the PIN
+ * consented to? A new class (absent from the snapshot) or a broadened class (hash mismatch)
+ * is NOT armed → the caller runs it alert-only until a fresh re-arm.
+ */
+export function classIsArmed(marker: ArmMarker, classId: string, currentContentHash: string): boolean {
+  const armedHash = marker.allowlistSnapshot?.[classId];
+  return typeof armedHash === 'string' && armedHash === currentContentHash;
+}
+
+/** The live kill-capability config (read live at the chokepoint every poll). */
+export interface ArmConfig {
+  readonly enabled: boolean;
+  readonly dryRun: boolean;
+}
+
+/**
+ * The full authorization answer: may a LIVE kill of `classId` proceed right now? Requires
+ * `enabled && !dryRun` (config permits — the safe-direction canary) AND a valid marker AND
+ * this class armed. `config.dryRun:false` alone is NEVER sufficient — it is a disarm-signal's
+ * ABSENCE, not a positive arm. Fails CLOSED on any missing/invalid input.
+ */
+export function canKillLive(
+  config: ArmConfig,
+  marker: ArmMarker | null | undefined,
+  lastDisarmEpoch: number,
+  classId: string,
+  currentContentHash: string,
+): boolean {
+  if (!config || config.enabled !== true || config.dryRun !== false) return false;
+  if (!isMarkerValid(marker, lastDisarmEpoch)) return false;
+  return classIsArmed(marker as ArmMarker, classId, currentContentHash);
+}

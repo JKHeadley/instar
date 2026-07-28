@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "sessionId": "cbdc2d51-a6de-446b-8215-773ec12f8e0b",
+  "timestamp": "2026-06-06T19:32:34.096Z",
+  "artifactPath": "upgrades/side-effects/mesh-cold-call-resilience.md",
+  "artifactSha256": "480118f7edcd7f47d0c8515d127271c72b44e1d8059a353300bbda5288786dd6",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/MeshRpcClient.ts",
+    "src/core/WorkingSetPull.ts",
+    "tests/unit/WorkingSetPull.test.ts",
+    "tests/unit/mesh-rpc-client-timeout.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Transport-robustness fix measured live (3 first-attempt cold-tunnel aborts in one afternoon): per-call timeout override + two call-site budgets + one bounded re-send, all within the spec's existing transport rules (busy-retry funnel, pending-pull fallback unchanged); 5 new unit tests cover override precedence and the bounded re-send including the propagate-on-second-failure path.",
+  "eli16Path": "docs/specs/WORKING-SET-HANDOFF-SPEC.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mesh-cold-call-resilience.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -28,11 +28,10 @@ describe('dashboard PR Pipeline tab', () => {
     expect(html).toMatch(/<button[^>]+data-tab="pr-pipeline"[^>]*>PR Pipeline<\/button>/);
   });
 
-  it('defines a prPipelinePanel section with the expected content hooks', () => {
+  it('defines a prPipelinePanel that renders through the shared glance component (Phase 4)', () => {
     expect(html).toMatch(/id="prPipelinePanel"/);
-    expect(html).toMatch(/id="prPipelinePhaseNotice"/);
-    expect(html).toMatch(/id="prPipelineList"/);
-    expect(html).toMatch(/id="prPipelineEmpty"/);
+    // Phase 4: the bespoke phase-notice/list/empty markup was replaced by a glance-root.
+    expect(html).toMatch(/id="prPipelineGlance"[^>]*class="glance-root"/);
   });
 
   it('adds a TAB_REGISTRY entry calling loadPrPipeline on activate', () => {
@@ -58,8 +57,11 @@ describe('dashboard PR Pipeline tab', () => {
     const body = afterStart.slice(0, nextFn > 0 ? nextFn + 20 : 8000);
 
     expect(body).toContain('/pr-gate/metrics');
-    expect(body).toContain('httpStatus === 404');
-    expect(body).toContain('Gate disabled');
+    expect(body).toContain('httpStatus === 404'); // 404 = phase=off still handled
+    // Phase 4: renders through the glance component; the honest dark note replaced
+    // the old "Gate disabled" placeholder.
+    expect(body).toContain('prPipelineGlanceSpec');
+    expect(body).toMatch(/glance-empty|isn.t turned on/);
 
     // Read-only rule: no eligibility mutations originating from the tab.
     expect(body).not.toContain('/pr-gate/authorize');
@@ -67,7 +69,7 @@ describe('dashboard PR Pipeline tab', () => {
     expect(body).not.toContain('method: \'POST\'');
     expect(body).not.toContain('method: "POST"');
 
-    // XSS defense: no innerHTML inside the loader.
+    // XSS defense: no innerHTML inside the loader (the glance component uses textContent).
     expect(body).not.toContain('.innerHTML');
   });
 });

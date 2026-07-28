@@ -1,0 +1,19 @@
+{
+  "ts": "2026-07-11T21:32:18.820Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: scripts/audit-secret-patterns.mjs matches SecretDrop / never-on-disk invariant",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 769,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

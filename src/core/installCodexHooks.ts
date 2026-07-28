@@ -97,7 +97,7 @@ export function buildInstarCodexHookGroups(
     // tool_input.cmd (Claude uses tool_input.command); the scripts accept both field
     // names AND both tool names (Bash | exec_command).
     PreToolUse: [
-      { matcher: '.*', hooks: [sh('dangerous-command-guard.sh'), node('external-operation-gate.js'), sh('grounding-before-messaging.sh'), node('deferral-detector.js')] },
+      { matcher: '.*', hooks: [sh('dangerous-command-guard.sh'), node('external-operation-gate.js'), sh('grounding-before-messaging.sh'), node('deferral-detector.js'), node('self-stop-guard.js')] },
     ],
     // Codex-only checkpoint. Routes to the same gate; the trust system
     // auto-decides (allow/deny) with NO human prompt so autonomy is preserved.
@@ -128,6 +128,15 @@ export function buildInstarCodexHookGroups(
     // via the unjustified-stop router, never strands.)
     Stop: [
       { matcher: '', hooks: [node('stop-gate-router.js'), { ...node('response-review.js'), timeout: 10000 }, node('claim-intercept-response.js'), node('scope-coherence-checkpoint.js'), autonomousLoopHook()] },
+    ],
+    // Post-action reporter (scope-accretion R18/R16 framework parity): forwards
+    // each tool event — including the Write/Edit `file_path` — to the server's
+    // /hooks/events receiver, feeding the ADVISORY scope-accretion artifact
+    // ledger on Codex exactly as the Claude registration does. Advisory-only:
+    // the load-bearing git-truth sweep needs no hook at all. matcher '.*' (a
+    // bare '*' matches NOTHING in Codex — see the PreToolUse note above).
+    PostToolUse: [
+      { matcher: '.*', hooks: [node('hook-event-reporter.js')] },
     ],
     // Identity/context injection.
     SessionStart: [

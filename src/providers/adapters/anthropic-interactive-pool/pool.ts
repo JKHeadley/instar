@@ -86,13 +86,35 @@ export class InteractivePool extends EventEmitter {
   private scheduledCanaryTimer: NodeJS.Timeout | null = null;
   /** Lock to prevent overlapping scheduled-canary runs if the previous one is slow. */
   private scheduledCanaryInFlight = false;
+  /** Interval handle for the idle-retirement sweep. Cleared on shutdown. */
+  private idleSweepTimer: NodeJS.Timeout | null = null;
   private shuttingDown = false;
 
   constructor(private readonly config: InteractivePoolConfig) {
     super();
+    // A zero/negative/NaN pool can never serve a call — every allocate
+    // would silently wait out its full timeout. Refuse loudly at
+    // construction (boot) where it's debuggable, not at call time.
+    if (!Number.isFinite(config.poolSize) || config.poolSize < 1) {
+      throw new UnexpectedError(
+        `poolSize must be a finite number >= 1, got ${config.poolSize}`,
+        ANTHROPIC_INTERACTIVE_POOL_ID,
+      );
+    }
+  }
+
+  /** The tmux session-name prefix for this pool (see config.sessionPrefix). */
+  private get sessionPrefix(): string {
+    return this.config.sessionPrefix ?? 'instar-pool';
   }
 
   async start(): Promise<void> {
+    // Orphan recovery: a crashed previous process (SIGKILL, OOM) never ran
+    // dispose(), leaving its REPL sessions alive and silently drawing
+    // subscription quota. Our prefix is agent-scoped (config.sessionPrefix),
+    // so anything matching it is OURS from a dead process — kill before
+    // spawning fresh, or orphans accumulate across every crash/update.
+    await this.killStaleSessions();
     const promises: Promise<void>[] = [];
     for (let i = 0; i < this.config.poolSize; i++) {
       promises.push(this.spawnOne());
@@ -101,6 +123,63 @@ export class InteractivePool extends EventEmitter {
     // Schedule recurring canary if enabled (default hourly).
     if (this.config.canaryIntervalMs > 0) {
       this.scheduleRecurringCanary();
+    }
+    // Idle-retirement sweep: a ready session untouched past maxIdleMinutes
+    // is retired WITHOUT immediate replacement (allocate() respawns on
+    // demand) — stale context dies and an idle agent holds zero REPLs.
+    if (this.config.maxIdleMinutes > 0) {
+      this.idleSweepTimer = setInterval(() => this.sweepIdleSessions(), 60_000);
+      this.idleSweepTimer.unref?.();
+    }
+  }
+
+  /** Kill leftover `<prefix>-*` tmux sessions from a previous process. */
+  private async killStaleSessions(): Promise<void> {
+    let names: string[] = [];
+    try {
+      const { stdout } = await execFileAsync(
+        this.config.tmuxPath,
+        ['list-sessions', '-F', '#{session_name}'],
+        { timeout: 5000 },
+      );
+      names = stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+    } catch {
+      // No tmux server running (common: fresh boot) — nothing to clean.
+      return;
+    }
+    const stale = names.filter(
+      (n) => n.startsWith(`${this.sessionPrefix}-`) && !this.hasSessionNamed(n),
+    );
+    for (const name of stale) {
+      try {
+        await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${name}:`], {
+          timeout: 5000,
+        });
+        console.log(`[interactive-pool] killed stale pool session from a previous process: ${name}`);
+      } catch {
+        // @silent-fallback-ok — kill-session raced: the stale session is
+        // already gone, which is the desired end-state; nothing degraded.
+      }
+    }
+  }
+
+  private hasSessionNamed(tmuxName: string): boolean {
+    for (const s of this.sessions.values()) {
+      if (s.tmuxName === tmuxName) return true;
+    }
+    return false;
+  }
+
+  /** Retire ready sessions idle past maxIdleMinutes (no immediate replace). */
+  private sweepIdleSessions(): void {
+    if (this.shuttingDown) return;
+    const cutoff = Date.now() - this.config.maxIdleMinutes * 60_000;
+    for (const s of this.sessions.values()) {
+      if (s.state === 'ready' && s.lastUsedAt < cutoff) {
+        this.retire(s, { replace: false }).catch((err) => {
+          console.error('[interactive-pool] idle retirement failed:', err);
+        });
+      }
     }
   }
 
@@ -170,7 +249,7 @@ export class InteractivePool extends EventEmitter {
 
   private async spawnOne(): Promise<void> {
     const id = `aip-${randomBytes(6).toString('hex')}`;
-    const tmuxName = `instar-pool-${id}`;
+    const tmuxName = `${this.sessionPrefix}-${id}`;
     const session: PoolSession = {
       id,
       tmuxName,
@@ -218,6 +297,9 @@ export class InteractivePool extends EventEmitter {
     }
     args.push(...envFlags);
     args.push(this.config.claudePath, '--dangerously-skip-permissions');
+    if (this.config.model) {
+      args.push('--model', this.config.model);
+    }
 
     try {
       execFileSync(this.config.tmuxPath, args, { encoding: 'utf-8' });
@@ -274,25 +356,32 @@ export class InteractivePool extends EventEmitter {
         console.error('[interactive-pool] canary infrastructure error:', canaryErr);
       }
       if (canaryResult?.status === 'fail') {
-        // Canary returned a structured failure — surface and refuse to
-        // bring the session ready. Report to DegradationReporter so the
-        // surface lands in the right place (echo Telegram by default).
+        // Graceful degradation (2026-06-07 incident, topic 21816): a canary
+        // failure must NOT refuse the whole pool. Throwing here rejected
+        // start()'s Promise.all → the entire subscription-path pool failed to
+        // start → ALL Anthropic work stranded on the SDK credit pot, and under
+        // transient load (a slow/garbled empty-prompt round-trip during CPU
+        // starvation) it re-failed every spawn and tripped the LLM circuit in a
+        // loop. The empty-prompt detector is protection-in-depth (exactly as the
+        // infra-error branch above already states: "missing canary is
+        // protection-in-depth, not a primary failure path") — a session that
+        // can't verify the empty-prompt SIGNATURE can still serve real prompts.
+        // So: report the degradation, keep the canary marked as run (don't retry
+        // it on every spawn), and bring the session READY anyway. A genuinely
+        // broken session is caught by the per-call retire/replace path, not by
+        // refusing service to everyone.
         const { DegradationReporter } = await import('../../../monitoring/DegradationReporter.js');
         DegradationReporter.getInstance().report({
           feature: 'anthropic-interactive-pool.empty-prompt-canary',
           primary: 'Empty-prompt detector verified by startup canary',
-          fallback: 'Pool refuses to start; consumers route to anthropic-headless via registry',
+          fallback: 'Canary unverified — pool starts anyway; empty-prompt detection is best-effort this lifetime',
           reason: canaryResult.message,
           impact:
-            'Subscription-path pool unavailable — Anthropic work routes through the Agent SDK '
-            + 'credit pot instead. May exhaust credits faster than usual.',
+            'Empty-prompt detection runs in best-effort mode until the next successful canary. '
+            + 'The pool still serves real prompts (no SDK-credit fallback, no circuit trip).',
         });
-        session.state = 'dead';
-        this.sessions.delete(id);
-        this.emit('session:died', session);
-        throw new UnexpectedError(
-          `Pool session ${id} failed empty-prompt canary: ${canaryResult.message}`,
-          ANTHROPIC_INTERACTIVE_POOL_ID,
+        console.warn(
+          `[interactive-pool] empty-prompt canary failed (non-fatal — pool starts anyway): ${canaryResult.message}`,
         );
       }
       if (canaryResult?.status === 'self-healed') {
@@ -356,7 +445,7 @@ export class InteractivePool extends EventEmitter {
       this.markBusy(ready);
       return ready;
     }
-    return new Promise<PoolSession>((resolve, reject) => {
+    const waiting = new Promise<PoolSession>((resolve, reject) => {
       const timer = setTimeout(() => {
         const idx = this.waiters.findIndex((w) => w.resolve === resolve);
         if (idx >= 0) this.waiters.splice(idx, 1);
@@ -369,6 +458,16 @@ export class InteractivePool extends EventEmitter {
       }, this.config.allocateTimeoutMs);
       this.waiters.push({ resolve, reject, timer });
     });
+    // On-demand growth: idle retirement (and crash recovery) can shrink
+    // the pool below poolSize — even to zero. If there's headroom, kick a
+    // spawn so the waiter above has something to be flushed onto
+    // (otherwise an empty pool waits out the full allocate timeout for
+    // nothing). Ordering matters: the waiter is enqueued FIRST so a fast
+    // spawn's flushWaiter can never miss it.
+    if (this.sessions.size < this.config.poolSize) {
+      this.replaceRetired();
+    }
+    return waiting;
   }
 
   private findReadyLru(): PoolSession | undefined {
@@ -412,9 +511,12 @@ export class InteractivePool extends EventEmitter {
   }
 
   /**
-   * Gracefully retire a session and spawn a replacement.
+   * Gracefully retire a session. By default spawns a replacement (the
+   * busy-path retirement contract — a caller is likely waiting); idle
+   * retirement passes `replace: false` so an idle agent holds zero REPLs
+   * and allocate() respawns on demand.
    */
-  async retire(s: PoolSession): Promise<void> {
+  async retire(s: PoolSession, opts?: { replace?: boolean }): Promise<void> {
     if (s.state === 'retiring' || s.state === 'dead') return;
     s.state = 'retiring';
     try {
@@ -429,7 +531,7 @@ export class InteractivePool extends EventEmitter {
     s.state = 'dead';
     this.emit('session:retired', s);
     this.sessions.delete(s.id);
-    if (!this.shuttingDown) {
+    if (!this.shuttingDown && (opts?.replace ?? true)) {
       // Replace, with retry-on-failure and observable degradation events.
       // Previous behavior was `.catch(console.error)` — spawn failures were
       // swallowed and the pool decayed silently. Now spawn failures emit
@@ -483,6 +585,10 @@ export class InteractivePool extends EventEmitter {
     if (this.scheduledCanaryTimer !== null) {
       clearInterval(this.scheduledCanaryTimer);
       this.scheduledCanaryTimer = null;
+    }
+    if (this.idleSweepTimer !== null) {
+      clearInterval(this.idleSweepTimer);
+      this.idleSweepTimer = null;
     }
     for (const w of this.waiters) {
       clearTimeout(w.timer);

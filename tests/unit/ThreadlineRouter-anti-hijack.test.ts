@@ -136,4 +136,102 @@ describe('ThreadlineRouter — anti-hijack guard', () => {
     const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
     expect(reason).toMatch(/^Resume thread/);
   });
+
+  // ── Regression: composite-address canonicalization (relay-send fix) ──
+  // The relay path on a plaintext-tofu inbound has trust.kind !== 'verified',
+  // so the guard falls through to the identity match. A known peer's reply over
+  // the relay carries its FULL fingerprint as senderFingerprint and frequently
+  // an EMPTY senderName. The thread owner must therefore be stored as that full
+  // fingerprint for the reply to resume — which is exactly what the /threadline/
+  // relay-send `captureOrigin` fix now does (store resolvedId, not the raw
+  // "name:fpPrefix" target the caller typed).
+
+  it('resumes when the stored owner is the peer full fingerprint and the reply presents that fingerprint with EMPTY senderName (the Dawn case, post-fix storage)', async () => {
+    const threadId = 'fp-owned-thread';
+    const peerFp = '8c7928aa9f04fbda947172a2f9b2d81a';
+    threadResumeMap._set(threadId, ownedEntry(peerFp));
+
+    const result = await router.handleInboundMessage(
+      envelopeFrom(peerFp, threadId),
+      relayCtx({ senderName: '', senderFingerprint: peerFp }),
+    );
+
+    expect(result.threadId).toBe(threadId);
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^Resume thread/);
+  });
+
+  it('isolates when the stored owner is a composite "name:fpPrefix" and the reply presents the bare full fingerprint (the bug the relay-send canonicalization prevents)', async () => {
+    const threadId = 'composite-owned-thread';
+    const peerFp = '8c7928aa9f04fbda947172a2f9b2d81a';
+    // OLD buggy storage: the composite address was stored un-resolved, so the
+    // guard cannot match it against the reply's bare full fingerprint.
+    threadResumeMap._set(threadId, ownedEntry('Dawn-Workstation:8c7928aa'));
+
+    const result = await router.handleInboundMessage(
+      envelopeFrom(peerFp, threadId),
+      relayCtx({ senderName: '', senderFingerprint: peerFp }),
+    );
+
+    // Isolation under the OLD storage proves WHY the send path must store the
+    // resolved full fingerprint — with the fix the owner is `peerFp` and the
+    // previous test resumes instead of cold-spawning.
+    expect(result.threadId).not.toBe(threadId);
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^New thread/);
+  });
+
+  // ── Local-delivery fingerprint hint (threadline-local-delivery-fingerprint-attribution) ──
+  // The LIVE Luna incident: a same-machine reply carries the sender's NAME in
+  // `from.agent` (no relayContext), but the thread owner is a FINGERPRINT
+  // (publicKey[:32]). The local ingress resolves name→fingerprint and supplies it
+  // as `opts.inboundSenderFingerprint` so the guard matches instead of isolating.
+
+  it('resumes a same-machine reply when from.agent is a NAME but the resolved-fingerprint hint matches the owner (the Luna incident, fixed)', async () => {
+    const threadId = '199c20fe-thread';
+    const ownerFp = '1db85f0011223344556677889900aabb'; // publicKey[:32], the recorded owner
+    threadResumeMap._set(threadId, ownedEntry(ownerFp));
+
+    // No relayContext (local delivery); from.agent is the NAME; hint carries the fp.
+    const result = await router.handleInboundMessage(
+      envelopeFrom('sagemind', threadId),
+      undefined,
+      { inboundSenderFingerprint: ownerFp },
+    );
+
+    expect(result.threadId).toBe(threadId); // resumed, not isolated
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^Resume thread/);
+  });
+
+  it('ISOLATES the same reply with NO hint (reproduces the bug on current main: name vs fingerprint owner)', async () => {
+    const threadId = '199c20fe-thread';
+    const ownerFp = '1db85f0011223344556677889900aabb';
+    threadResumeMap._set(threadId, ownedEntry(ownerFp));
+
+    // No relayContext, no hint → inboundFp falls back to the NAME → mismatch → isolate.
+    const result = await router.handleInboundMessage(
+      envelopeFrom('sagemind', threadId),
+      undefined,
+    );
+
+    expect(result.threadId).not.toBe(threadId);
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^New thread/);
+  });
+
+  it('ISOLATES when the hint fingerprint does NOT match the owner (fail-safe preserved)', async () => {
+    const threadId = 'mismatch-thread';
+    threadResumeMap._set(threadId, ownedEntry('1db85f0011223344556677889900aabb'));
+
+    const result = await router.handleInboundMessage(
+      envelopeFrom('impostor', threadId),
+      undefined,
+      { inboundSenderFingerprint: 'ffffffffffffffffffffffffffffffff' }, // different fp
+    );
+
+    expect(result.threadId).not.toBe(threadId);
+    const reason = spawnManager.evaluate.mock.calls[0][0].reason as string;
+    expect(reason).toMatch(/^New thread/);
+  });
 });

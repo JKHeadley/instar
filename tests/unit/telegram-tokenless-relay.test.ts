@@ -77,4 +77,34 @@ describe('TelegramAdapter — tokenless-standby relay decision (bug #7)', () => 
     expect(relay).not.toHaveBeenCalled();
     expect(mockFetch).toHaveBeenCalled(); // real token → direct Telegram API call
   });
+
+  // ── willRelay() — used by /telegram/reply to skip its local tone gate for a
+  // relayed reply (the holder gates it; the standby gating too is redundant and
+  // adds a 120s-under-rate-limit pre-relay stall). Must mirror sendToTopic's
+  // exact relay-vs-direct branch.
+  describe('willRelay()', () => {
+    it('is TRUE for a tokenless standby ({secret:true} placeholder) with a relay wired', () => {
+      adapter = makeAdapter({ secret: true });
+      adapter.outboundRelay = vi.fn().mockResolvedValue({ messageId: 1, topicId: 42 });
+      expect(adapter.willRelay()).toBe(true);
+    });
+
+    it('is TRUE for a null token with a relay wired', () => {
+      adapter = makeAdapter(null);
+      adapter.outboundRelay = vi.fn().mockResolvedValue({ messageId: 1, topicId: 42 });
+      expect(adapter.willRelay()).toBe(true);
+    });
+
+    it('is FALSE when a real string token is present (sends directly, gates locally)', () => {
+      adapter = makeAdapter('123456:realbottoken');
+      adapter.outboundRelay = vi.fn();
+      expect(adapter.willRelay()).toBe(false);
+    });
+
+    it('is FALSE for a tokenless adapter with NO relay wired (cannot relay)', () => {
+      adapter = makeAdapter({ secret: true });
+      adapter.outboundRelay = null;
+      expect(adapter.willRelay()).toBe(false);
+    });
+  });
 });

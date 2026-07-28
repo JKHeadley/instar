@@ -324,4 +324,84 @@ describe('LeaseCoordinator', () => {
       expect(lc.currentEpoch()).toBe(1);
     });
   });
+
+  // ── Cross-Machine Coherence: active-pull accessors ──────────────────────
+  describe('active-pull accessors (canPullPeers / pullFromPeers / observedPeerLease)', () => {
+    it('canPullPeers reflects whether the transport implements pullAllPeers', async () => {
+      const store = new FakeStore();
+      const noPull: LeaseTransport = {
+        broadcast: async () => true,
+        observed: () => ({ lease: null, lastNonceByHolder: {} }),
+        isReachable: () => true,
+      };
+      const lcNo = new LeaseCoordinator({ lease: makeFlA(), store, tunnel: noPull, presumedDeadHolders: () => new Set(), now: () => 1_000 });
+      expect(lcNo.canPullPeers()).toBe(false);
+
+      const withPull: LeaseTransport = { ...noPull, pullAllPeers: async () => {} };
+      const lcYes = new LeaseCoordinator({ lease: makeFlA(), store: new FakeStore(), tunnel: withPull, presumedDeadHolders: () => new Set(), now: () => 1_000 });
+      expect(lcYes.canPullPeers()).toBe(true);
+
+      // No tunnel at all → cannot pull (git-only mesh).
+      const lcGit = new LeaseCoordinator({ lease: makeFlA(), store: new FakeStore(), presumedDeadHolders: () => new Set(), now: () => 1_000 });
+      expect(lcGit.canPullPeers()).toBe(false);
+    });
+
+    it('pullFromPeers invokes the transport and a pulled HIGHER-epoch peer fences us', async () => {
+      const store = new FakeStore();
+      let observed: LeaseRecord | null = null;
+      const pullAllPeers = vi.fn(async () => {
+        // Simulate the transport folding a peer's higher-epoch lease on pull.
+        // buildAcquisition's 3rd arg is the NONCE; epoch = (currentLease.epoch ?? 0)+1,
+        // so a prior {epoch:4} yields epoch 5.
+        observed = makeFlB().buildAcquisition({ epoch: 4 } as LeaseRecord, 1_000, 9);
+      });
+      const tunnel: LeaseTransport = {
+        broadcast: async () => true,
+        observed: () => ({ lease: observed, lastNonceByHolder: observed ? { [observed.holder]: observed.nonce } : {} }),
+        isReachable: () => true,
+        pullAllPeers,
+      };
+      const lc = new LeaseCoordinator({ lease: makeFlA(), store, tunnel, presumedDeadHolders: () => new Set(), now: () => 2_000 });
+      expect(await lc.acquireIfEligible()).toBe(true); // A holds epoch 1
+      await lc.pullFromPeers();
+      expect(pullAllPeers).toHaveBeenCalledTimes(1);
+      // The pulled epoch-5 lease (B) is folded → A no longer holds; B is the holder.
+      expect(lc.currentEpoch()).toBe(5);
+      expect(lc.currentHolder()).toBe('B');
+      expect(lc.holdsLease()).toBe(false);
+      expect(lc.observedPeerLease()?.holder).toBe('B');
+    });
+
+    it('observedPeerLease exposes a SAME-epoch peer that currentHolder() masks (contested split-brain signal)', async () => {
+      const store = new FakeStore();
+      // observed is null at acquire time so A can self-issue epoch 1 unopposed; the
+      // peer's SAME-epoch lease only appears afterward (the true split-brain shape:
+      // both machines independently acquired epoch 1 in a git-less mesh).
+      let observed: LeaseRecord | null = null;
+      const tunnel: LeaseTransport = {
+        broadcast: async () => true,
+        observed: () => ({ lease: observed, lastNonceByHolder: observed ? { [observed.holder]: observed.nonce } : {} }),
+        isReachable: () => true,
+        pullAllPeers: async () => {},
+      };
+      const lc = new LeaseCoordinator({ lease: makeFlA(), store, tunnel, presumedDeadHolders: () => new Set(), now: () => 2_000 });
+      expect(await lc.acquireIfEligible()).toBe(true); // A self-issues epoch 1 (no peer yet)
+      observed = makeFlB().buildAcquisition(undefined, 1_000, 7); // B at epoch 1, nonce 7
+      // effectiveView()'s tie-break: our self-issued (>=) wins, and the tunnel lease
+      // is folded only when STRICTLY greater → currentHolder is A...
+      expect(lc.currentHolder()).toBe('A');
+      expect(lc.holdsLease()).toBe(true);
+      // ...but the RAW observed peer lease still names B at the same epoch — exactly
+      // the same-epoch contention the standby pull loop surfaces near-silently.
+      expect(lc.observedPeerLease()?.holder).toBe('B');
+      expect(lc.observedPeerLease()?.epoch).toBe(1);
+    });
+
+    it('pullFromPeers is a safe no-op when the transport cannot pull', async () => {
+      const store = new FakeStore();
+      const lc = new LeaseCoordinator({ lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => 1_000 });
+      await expect(lc.pullFromPeers()).resolves.toBeUndefined();
+      expect(lc.observedPeerLease()).toBeNull();
+    });
+  });
 });

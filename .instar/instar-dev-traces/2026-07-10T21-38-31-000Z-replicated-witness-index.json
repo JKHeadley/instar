@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "sessionId": "telegram-458-replicated-witness-index",
+  "timestamp": "2026-07-10T21:38:31.000Z",
+  "artifactPath": "upgrades/side-effects/replicated-witness-index.md",
+  "artifactSha256": "adac4ede30eb8aa3ebaf043bc06589b690d0c74012c08fc5f38daa65c522462d",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/CoherenceJournal.ts",
+    "src/core/JournalSyncApplier.ts",
+    "src/core/ReplicatedPeerStreamReader.ts",
+    "tests/e2e/replicated-witness-index-lifecycle.test.ts",
+    "tests/integration/replicated-witness-index.integration.test.ts",
+    "tests/unit/ReplicatedPeerStreamReader.test.ts",
+    "upgrades/eli16/replicated-witness-index.md",
+    "upgrades/next/replicated-witness-index.md",
+    "upgrades/side-effects/replicated-witness-index.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Performance-only shared-infra optimization for an existing replicated-store witness seam. No new authority, route, config, persisted schema, or external operation. The index is derived/rebuildable, updated only after durable append boundaries, and parity-falls-back to the legacy scan on mismatch. Blast radius is shared replicated-store infra, so validation includes unit, integration, and e2e lifecycle coverage.",
+  "eli16Path": "upgrades/eli16/replicated-witness-index.md",
+  "sideEffectsPath": "upgrades/side-effects/replicated-witness-index.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

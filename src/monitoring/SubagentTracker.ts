@@ -153,6 +153,18 @@ export class SubagentTracker extends EventEmitter {
   }
 
   /**
+   * O(1) liveness check (HONEST-PROGRESS-MESSAGING A2/FD-4): does this session
+   * have any started-but-not-stopped sub-agent? Backed by the in-memory
+   * `activeAgents` index — no JSONL read — so the silence sentinel's per-tick
+   * corroboration stays cheap. "Live" = any tracked sub-agent with no stoppedAt,
+   * regardless of sleep/pause state (conservative: a dormant-but-not-stopped
+   * sub-agent suppresses a false "stuck" escalation).
+   */
+  hasActiveSubagents(sessionId: string): boolean {
+    return (this.activeAgents.get(sessionId)?.size ?? 0) > 0;
+  }
+
+  /**
    * Get completed subagents for a session.
    */
   getCompletedSubagents(sessionId: string): SubagentRecord[] {

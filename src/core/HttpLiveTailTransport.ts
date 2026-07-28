@@ -29,6 +29,7 @@
  */
 
 import { signRequest } from '../server/machineAuth.js';
+import { PeerFailureLogGate } from './PeerFailureLogGate.js';
 import { redactForLiveTail } from './liveTailRedaction.js';
 import type { EncryptedSecretPayload } from './SecretStore.js';
 
@@ -65,6 +66,20 @@ export interface HttpLiveTailTransportDeps {
   fetchImpl?: typeof fetch;
   /** How recent a successful broadcast counts as "reachable". Default = 60s. */
   reachabilityWindowMs?: number;
+  /**
+   * Per-request abort timeout (P19 brake — a hung socket must not hold a
+   * flush open indefinitely). Default 30s: sized ABOVE the fleet's documented
+   * 5–40s receiver-stall envelope (the #874 reviewer's sizing rationale) so a
+   * slow-but-alive standby is not converted into "unreachable".
+   */
+  requestTimeoutMs?: number;
+  /**
+   * Coarse-reminder interval for the per-peer failure log gate (P19 brake).
+   * Default 360: with #867's per-topic backoff the attempt rate is bounded,
+   * but N topics against one down peer still meant N lines per backoff window
+   * — the gate collapses that to first/Nth/recovery per peer.
+   */
+  failureLogEveryN?: number;
   now?: () => number;
   logger?: (msg: string) => void;
 }
@@ -81,10 +96,24 @@ export class HttpLiveTailTransport {
   private readonly d: HttpLiveTailTransportDeps;
   private lastBroadcastOkAt = 0;
   private readonly windowMs: number;
+  private readonly requestTimeoutMs: number;
+  /** State-change failure logging (first/Nth/recovery) — never per-attempt. */
+  private readonly logGate: PeerFailureLogGate;
 
   constructor(deps: HttpLiveTailTransportDeps) {
     this.d = deps;
     this.windowMs = deps.reachabilityWindowMs ?? 60_000;
+    this.requestTimeoutMs = deps.requestTimeoutMs ?? 30_000;
+    this.logGate = new PeerFailureLogGate(deps.failureLogEveryN ?? 360);
+  }
+
+  private logFailure(key: string, detail: string): void {
+    const line = this.logGate.failed(key, detail);
+    if (line) this.log(line);
+  }
+  private logSuccess(key: string): void {
+    const line = this.logGate.succeeded(key);
+    if (line) this.log(line);
   }
 
   private now(): number {
@@ -125,11 +154,17 @@ export class HttpLiveTailTransport {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...headers },
             body: JSON.stringify(body),
+            // P19 brake: a hung socket aborts instead of holding the flush open.
+            signal: AbortSignal.timeout(this.requestTimeoutMs),
           });
-          if (res && (res as Response).ok) anyOk = true;
-          else this.log(`peer ${peer.machineId} rejected flush seq=${flush.seq} (status ${(res as Response)?.status})`);
+          if (res && (res as Response).ok) {
+            anyOk = true;
+            this.logSuccess(`live-tail to ${peer.machineId}`);
+          } else {
+            this.logFailure(`live-tail to ${peer.machineId}`, `status ${(res as Response)?.status} (seq=${flush.seq})`);
+          }
         } catch (err) {
-          this.log(`broadcast to ${peer.machineId} failed: ${err instanceof Error ? err.message : String(err)}`);
+          this.logFailure(`live-tail to ${peer.machineId}`, err instanceof Error ? err.message : String(err));
         }
       }),
     );

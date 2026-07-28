@@ -22,6 +22,7 @@ import Database from 'better-sqlite3';
 
 import {
   PendingRelayStore,
+  cleanupLegacyEmptyPendingRelayStores,
   resolvePendingRelayPath,
   assertSqliteAvailable,
 } from '../../src/messaging/pending-relay-store.js';
@@ -41,6 +42,42 @@ afterEach(() => {
 });
 
 describe('PendingRelayStore — schema and path', () => {
+  it('atomically quarantines only zero-byte legacy stores and preserves evidence', () => {
+    const state = path.join(tmpDir, '.instar');
+    fs.mkdirSync(path.join(state, 'state'), { recursive: true });
+    fs.mkdirSync(path.join(state, 'server-data'), { recursive: true });
+    const emptyLegacy = [
+      path.join(state, 'pending-relay.db'),
+      path.join(state, 'pending-relay.echo.sqlite'),
+      path.join(state, 'server-data', 'pending-relay.echo.sqlite'),
+      path.join(state, 'state', 'pending-relay.sqlite3'),
+    ];
+    for (const p of emptyLegacy) fs.writeFileSync(p, '');
+    const nonEmpty = path.join(state, 'state', 'pending-relay.db');
+    fs.writeFileSync(nonEmpty, 'evidence');
+
+    const quarantined = cleanupLegacyEmptyPendingRelayStores(state, 'echo');
+    expect(quarantined).toHaveLength(emptyLegacy.length);
+    for (const p of emptyLegacy) expect(fs.existsSync(p)).toBe(false);
+    for (const p of quarantined) {
+      expect(p).toContain('.legacy-empty-quarantine-');
+      expect(fs.readFileSync(p)).toHaveLength(0);
+    }
+    expect(fs.readFileSync(nonEmpty, 'utf8')).toBe('evidence');
+  });
+
+  it('preserves bytes written after zero-byte classification under the quarantine name', () => {
+    const state = path.join(tmpDir, '.instar');
+    fs.mkdirSync(state, { recursive: true });
+    const legacy = path.join(state, 'pending-relay.db');
+    fs.writeFileSync(legacy, '');
+    const quarantined = cleanupLegacyEmptyPendingRelayStores(state, 'echo', (candidate) => {
+      fs.writeFileSync(candidate, 'late writer evidence');
+    });
+    expect(quarantined).toHaveLength(1);
+    expect(fs.readFileSync(quarantined[0], 'utf8')).toBe('late writer evidence');
+  });
+
   it('creates the entries table on first open', () => {
     const store = PendingRelayStore.open('echo', tmpDir);
     expect(store.count()).toBe(0);
@@ -186,5 +223,298 @@ describe('assertSqliteAvailable', () => {
     expect(result.ok).toBe(true);
     // cliPresent depends on host environment; both true and false are valid.
     expect(typeof result.cliPresent).toBe('boolean');
+  });
+});
+
+describe('PendingRelayStore — listStaleClaimable (restore-purge visibility)', () => {
+  // A restore-purge deletes queued-undelivered outbound messages; this
+  // listing makes every victim traceable BEFORE the delete (per-row log +
+  // degradation report). 2026-06-05: five real messages — including a user
+  // milestone report — were silently restore-purged during restart churn.
+
+  const futureCutoff = () => new Date(Date.now() + 60_000).toISOString();
+  const pastCutoff = () => new Date(Date.now() - 60_000).toISOString();
+
+  it('lists queued rows older than the cutoff, text decoded utf-8', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    store.enqueue({
+      delivery_id: '33333333-3333-4333-8333-333333333333',
+      topic_id: 13435,
+      text_hash: 'c'.repeat(64),
+      text: 'MILESTONE — the message that must not vanish silently',
+      http_code: 0,
+      attempted_port: 4042,
+    });
+    const victims = store.listStaleClaimable(futureCutoff());
+    expect(victims).toHaveLength(1);
+    expect(victims[0].delivery_id).toBe('33333333-3333-4333-8333-333333333333');
+    expect(victims[0].topic_id).toBe(13435);
+    expect(victims[0].text).toContain('must not vanish silently');
+    store.close();
+  });
+
+  it('excludes rows newer than the cutoff (fresh queue survives a purge listing)', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    store.enqueue({
+      delivery_id: '44444444-4444-4444-8444-444444444444',
+      topic_id: 9,
+      text_hash: 'd'.repeat(64),
+      text: 'fresh',
+      http_code: 0,
+      attempted_port: 4042,
+    });
+    expect(store.listStaleClaimable(pastCutoff())).toHaveLength(0);
+    store.close();
+  });
+
+  it('excludes terminal-state rows (only queued/claimed are purge candidates)', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    store.enqueue({
+      delivery_id: '55555555-5555-4555-8555-555555555555',
+      topic_id: 9,
+      text_hash: 'e'.repeat(64),
+      text: 'already handled',
+      http_code: 0,
+      attempted_port: 4042,
+    });
+    store.transition('55555555-5555-4555-8555-555555555555', 'delivered-recovered', {});
+    expect(store.listStaleClaimable(futureCutoff())).toHaveLength(0);
+    store.close();
+  });
+
+  it('parity: the listing matches exactly what purgeStaleClaimable deletes', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    for (const n of ['6', '7']) {
+      store.enqueue({
+        delivery_id: `${n.repeat(8)}-${n.repeat(4)}-4${n.repeat(3)}-8${n.repeat(3)}-${n.repeat(12)}`,
+        topic_id: 9,
+        text_hash: n.repeat(64),
+        text: `victim ${n}`,
+        http_code: 0,
+        attempted_port: 4042,
+      });
+    }
+    const cutoff = futureCutoff();
+    const listed = store.listStaleClaimable(cutoff);
+    const deleted = store.purgeStaleClaimable(cutoff);
+    expect(deleted).toBe(listed.length);
+    expect(store.count()).toBe(0);
+    store.close();
+  });
+});
+
+// ── Reap-notify spec R1.3/R1.6 additions ──────────────────────────────
+
+import {
+  buildReapNotifyDeliveryId,
+  isReapNotifyDeliveryId,
+  parseReapNotifyDeliveryId,
+  REAP_NOTIFY_DELIVERY_PREFIX,
+  REAP_NOTIFY_DELIVERY_PREFIX_UPPER,
+} from '../../src/messaging/reap-notice-delivery-id.js';
+
+describe('reap-notice-delivery-id — the ONE typed prefix helper (R1.3)', () => {
+  it('builds and parses round-trip', () => {
+    const id = buildReapNotifyDeliveryId('notice-abc.123_x');
+    expect(id).toBe('reap-notify:notice-abc.123_x');
+    expect(isReapNotifyDeliveryId(id)).toBe(true);
+    expect(parseReapNotifyDeliveryId(id)).toBe('notice-abc.123_x');
+  });
+
+  it('refuses noticeIds outside the charset clamp (prefix contract stays airtight)', () => {
+    expect(() => buildReapNotifyDeliveryId('')).toThrow();
+    expect(() => buildReapNotifyDeliveryId('has space')).toThrow();
+    expect(() => buildReapNotifyDeliveryId('semi;colon')).toThrow();
+    expect(() => buildReapNotifyDeliveryId('a:b')).toThrow();
+  });
+
+  it('range semantics: prefix bounds match exactly the prefixed ids', () => {
+    expect(isReapNotifyDeliveryId('reap-notify:x')).toBe(true);
+    expect(isReapNotifyDeliveryId('reap-notify:')).toBe(true); // lower bound inclusive
+    expect(isReapNotifyDeliveryId('reap-notify;')).toBe(false); // upper bound exclusive
+    expect(isReapNotifyDeliveryId('reap-notifx')).toBe(false);
+    expect(isReapNotifyDeliveryId('11111111-1111-4111-8111-111111111111')).toBe(false);
+    expect(REAP_NOTIFY_DELIVERY_PREFIX < REAP_NOTIFY_DELIVERY_PREFIX_UPPER).toBe(true);
+  });
+});
+
+describe('PendingRelayStore — R1.6 held-row purge exemption', () => {
+  const mkRow = (store: PendingRelayStore, id: string, nextAttemptAt: string | null) => {
+    store.enqueue({
+      delivery_id: id,
+      topic_id: 42,
+      text_hash: 'f'.repeat(64),
+      text: `row ${id}`,
+      next_attempt_at: nextAttemptAt,
+    });
+  };
+
+  it('held-row-across-restart: a future-held row survives a restore-purge whose cutoff has passed attempted_at', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    const now = Date.now();
+    // Row enqueued "2 hours ago" with a quiet-hours hold releasing in 30 min.
+    store.enqueue({
+      delivery_id: buildReapNotifyDeliveryId('held-notice'),
+      topic_id: 42,
+      text_hash: 'a'.repeat(64),
+      text: 'a held quiet-hours reap notice',
+      attempted_at: new Date(now - 2 * 3600_000).toISOString(),
+      next_attempt_at: new Date(now + 30 * 60_000).toISOString(),
+    });
+    const cutoff = new Date(now - 3600_000).toISOString(); // 60-min purge age
+    const nowIso = new Date(now).toISOString();
+    expect(store.listStaleClaimable(cutoff, nowIso)).toHaveLength(0);
+    expect(store.purgeStaleClaimable(cutoff, nowIso)).toBe(0);
+    expect(store.count()).toBe(1); // the held notice survived the restart purge
+    store.close();
+  });
+
+  it('a row whose hold has ALSO passed the cutoff is still purged (genuinely stale)', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    const now = Date.now();
+    store.enqueue({
+      delivery_id: buildReapNotifyDeliveryId('stale-notice'),
+      topic_id: 42,
+      text_hash: 'b'.repeat(64),
+      text: 'stale held notice',
+      attempted_at: new Date(now - 5 * 3600_000).toISOString(),
+      next_attempt_at: new Date(now - 4 * 3600_000).toISOString(), // hold long past
+    });
+    const cutoff = new Date(now - 3600_000).toISOString();
+    const nowIso = new Date(now).toISOString();
+    const listed = store.listStaleClaimable(cutoff, nowIso);
+    expect(listed).toHaveLength(1);
+    expect(listed[0].farFutureClamp).toBe(false);
+    expect(store.purgeStaleClaimable(cutoff, nowIso)).toBe(1);
+    store.close();
+  });
+
+  it('far-future clamp: a next_attempt_at >7 days out is treated as corrupt and purged', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    const now = Date.now();
+    store.enqueue({
+      delivery_id: buildReapNotifyDeliveryId('corrupt-hold'),
+      topic_id: 42,
+      text_hash: 'c'.repeat(64),
+      text: 'malformed far-future hold',
+      attempted_at: new Date(now - 2 * 3600_000).toISOString(),
+      next_attempt_at: new Date(now + 30 * 24 * 3600_000).toISOString(), // 30 days out
+    });
+    const cutoff = new Date(now - 3600_000).toISOString();
+    const nowIso = new Date(now).toISOString();
+    const listed = store.listStaleClaimable(cutoff, nowIso);
+    expect(listed).toHaveLength(1);
+    expect(listed[0].farFutureClamp).toBe(true); // flagged as clamp-purged, not ordinary staleness
+    expect(store.purgeStaleClaimable(cutoff, nowIso)).toBe(1);
+    expect(store.count()).toBe(0);
+    store.close();
+  });
+
+  it('far-future clamp other side: a hold just inside 7 days survives', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    const now = Date.now();
+    mkRow(store, buildReapNotifyDeliveryId('long-hold'), new Date(now + 6 * 24 * 3600_000).toISOString());
+    // attempted_at is "now", so also age it past the cutoff:
+    store.rawDb()
+      .prepare("UPDATE entries SET attempted_at = @old")
+      .run({ old: new Date(now - 2 * 3600_000).toISOString() });
+    const cutoff = new Date(now - 3600_000).toISOString();
+    const nowIso = new Date(now).toISOString();
+    expect(store.purgeStaleClaimable(cutoff, nowIso)).toBe(0);
+    expect(store.count()).toBe(1);
+    store.close();
+  });
+});
+
+describe('PendingRelayStore — origin-scoped claims (R1.3 single-owner contract)', () => {
+  const enqueueBoth = (store: PendingRelayStore) => {
+    store.enqueue({
+      delivery_id: buildReapNotifyDeliveryId('n1'),
+      topic_id: 1,
+      text_hash: 'a'.repeat(64),
+      text: 'reap notice',
+    });
+    store.enqueue({
+      delivery_id: '99999999-9999-4999-8999-999999999999',
+      topic_id: 2,
+      text_hash: 'b'.repeat(64),
+      text: 'relay row',
+      http_code: 503,
+      attempted_port: 4042,
+    });
+  };
+
+  it('selectClaimable (DFS path) excludes reap-notify rows; selectClaimableReapNotices is the exact complement', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    enqueueBoth(store);
+    const nowIso = new Date(Date.now() + 1000).toISOString();
+    const dfsRows = store.selectClaimable(nowIso);
+    const reapRows = store.selectClaimableReapNotices(nowIso);
+    expect(dfsRows.map((r) => r.delivery_id)).toEqual(['99999999-9999-4999-8999-999999999999']);
+    expect(reapRows.map((r) => r.delivery_id)).toEqual(['reap-notify:n1']);
+    store.close();
+  });
+
+  it('drain selector claims ordinary rows with NULL next_attempt_at', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    store.enqueue({
+      delivery_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      topic_id: 29723,
+      text_hash: 'c'.repeat(64),
+      text: 'restart-recovery row',
+      next_attempt_at: null,
+    });
+    expect(store.selectClaimable(new Date().toISOString()).map((r) => r.delivery_id)).toContain('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    store.close();
+  });
+
+  it('a future hold keeps a reap-notify row unclaimable until release', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    const release = new Date(Date.now() + 3600_000).toISOString();
+    store.enqueue({
+      delivery_id: buildReapNotifyDeliveryId('held'),
+      topic_id: 1,
+      text_hash: 'a'.repeat(64),
+      text: 'held notice',
+      next_attempt_at: release,
+    });
+    expect(store.selectClaimableReapNotices(new Date().toISOString())).toHaveLength(0);
+    expect(store.selectClaimableReapNotices(new Date(Date.parse(release) + 1000).toISOString())).toHaveLength(1);
+    store.close();
+  });
+
+  it('claimCas: two racing claimants on the same row — exactly one wins (asserted at the query level)', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    enqueueBoth(store);
+    const row = store.selectClaimableReapNotices(new Date(Date.now() + 1000).toISOString())[0];
+    const winA = store.claimCas(row.delivery_id, 'boot-a:1:lease', {
+      state: row.state,
+      claimed_by: row.claimed_by,
+    });
+    const winB = store.claimCas(row.delivery_id, 'boot-b:2:lease', {
+      state: row.state,
+      claimed_by: row.claimed_by,
+    });
+    expect(winA).toBe(true);
+    expect(winB).toBe(false); // CAS lost — row no longer matches the observed snapshot
+    const after = store.findByDeliveryId(row.delivery_id)!;
+    expect(after.state).toBe('claimed');
+    expect(after.claimed_by).toBe('boot-a:1:lease');
+    store.close();
+  });
+
+  it('claimCas can reclaim a stale lease by CAS-ing against the observed claimed_by', () => {
+    const store = PendingRelayStore.open('echo', tmpDir);
+    enqueueBoth(store);
+    const id = buildReapNotifyDeliveryId('n1');
+    store.claimCas(id, 'dead-boot:9:expired-lease', { state: 'queued', claimed_by: null });
+    // New drain observes the stale claim and CAS-reclaims it.
+    const ok = store.claimCas(id, 'live-boot:1:fresh-lease', {
+      state: 'claimed',
+      claimed_by: 'dead-boot:9:expired-lease',
+    });
+    expect(ok).toBe(true);
+    expect(store.findByDeliveryId(id)!.claimed_by).toBe('live-boot:1:fresh-lease');
+    store.close();
   });
 });

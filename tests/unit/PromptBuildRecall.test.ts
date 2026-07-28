@@ -29,12 +29,17 @@ function makeStubMemory(
   options: { throws?: Error } = {},
 ): SemanticMemory {
   let calls = 0;
+  const run = () => {
+    calls++;
+    if (options.throws) throw options.throws;
+    return results;
+  };
   return {
-    search: () => {
-      calls++;
-      if (options.throws) throw options.throws;
-      return results;
-    },
+    search: run,
+    // recall() prefers the semantic path; searchHybrid degrades to search()
+    // internally in production, so the stub mirrors it.
+    searchHybrid: async () => run(),
+    lastSearchStrategy: 'vector-hybrid',
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     _callCount: () => calls,
   } as unknown as SemanticMemory;
@@ -59,28 +64,28 @@ function makeRecall(
 
 describe('PromptBuildRecall', () => {
   describe('gating', () => {
-    it('returns disabled when config.enabled is false', () => {
+    it('returns disabled when config.enabled is false', async () => {
       const { recall } = makeRecall([], { enabled: false });
-      const r = recall.recall({ userMessage: 'hello' });
+      const r = await recall.recall({ userMessage: 'hello' });
       expect(r.source).toBe('disabled');
       expect(r.contextText).toBe('');
     });
 
-    it('returns no-memory when semanticMemory is null', () => {
+    it('returns no-memory when semanticMemory is null', async () => {
       const { recall } = makeRecall([], {}, { semanticMemory: null });
-      const r = recall.recall({ userMessage: 'hello' });
+      const r = await recall.recall({ userMessage: 'hello' });
       expect(r.source).toBe('no-memory');
       expect(r.contextText).toBe('');
     });
   });
 
   describe('fresh recall', () => {
-    it('returns fresh + formatted block on a successful search', () => {
+    it('returns fresh + formatted block on a successful search', async () => {
       const { recall } = makeRecall([
         { name: 'echo-routing-pattern', description: 'use router.go() to navigate, never history.push' },
         { name: 'echo-prod-db-pool', description: 'max connections 20' },
       ]);
-      const r = recall.recall({ userMessage: 'how do I route?' });
+      const r = await recall.recall({ userMessage: 'how do I route?' });
       expect(r.source).toBe('fresh');
       expect(r.resultsCount).toBe(2);
       expect(r.contextText).toContain('<active_memory_recall>');
@@ -89,127 +94,137 @@ describe('PromptBuildRecall', () => {
       expect(r.contextText).toContain('</active_memory_recall>');
     });
 
-    it('returns empty when search returns []', () => {
+    it('returns empty when search returns []', async () => {
       const { recall } = makeRecall([]);
-      const r = recall.recall({ userMessage: 'unknown question' });
+      const r = await recall.recall({ userMessage: 'unknown question' });
       expect(r.source).toBe('empty');
       expect(r.contextText).toBe('');
       expect(r.resultsCount).toBe(0);
     });
 
-    it('uses entry name even when description is missing', () => {
+    it('uses entry name even when description is missing', async () => {
       const { recall } = makeRecall([{ name: 'name-only' }]);
-      const r = recall.recall({ userMessage: 'x' });
+      const r = await recall.recall({ userMessage: 'x' });
       expect(r.contextText).toContain('- name-only');
       expect(r.contextText).not.toContain('- name-only:');
     });
   });
 
   describe('cache', () => {
-    it('returns cached on identical second call within TTL', () => {
+    it('returns cached on identical second call within TTL', async () => {
       const { recall } = makeRecall([{ name: 'a', description: 'b' }]);
-      const r1 = recall.recall({ userMessage: 'hello world' });
-      const r2 = recall.recall({ userMessage: 'hello world' });
+      const r1 = await recall.recall({ userMessage: 'hello world' });
+      const r2 = await recall.recall({ userMessage: 'hello world' });
       expect(r1.source).toBe('fresh');
       expect(r2.source).toBe('cached');
       expect(r2.contextText).toBe(r1.contextText);
     });
 
-    it('normalizes case and whitespace in cache key', () => {
+    it('normalizes case and whitespace in cache key', async () => {
       const { recall } = makeRecall([{ name: 'a', description: 'b' }]);
-      const r1 = recall.recall({ userMessage: '   Hello World   ' });
-      const r2 = recall.recall({ userMessage: 'hello world' });
+      const r1 = await recall.recall({ userMessage: '   Hello World   ' });
+      const r2 = await recall.recall({ userMessage: 'hello world' });
       expect(r1.source).toBe('fresh');
       expect(r2.source).toBe('cached');
     });
 
-    it('re-runs after cache TTL elapses', () => {
+    it('re-runs after cache TTL elapses', async () => {
       const { recall, advance } = makeRecall([{ name: 'a', description: 'b' }], { cacheTtlMs: 1000 });
-      const r1 = recall.recall({ userMessage: 'q' });
+      const r1 = await recall.recall({ userMessage: 'q' });
       expect(r1.source).toBe('fresh');
       advance(1500);
-      const r2 = recall.recall({ userMessage: 'q' });
+      const r2 = await recall.recall({ userMessage: 'q' });
       expect(r2.source).toBe('fresh');
     });
 
-    it('caches the empty result too', () => {
+    it('caches the empty result too', async () => {
       const { recall } = makeRecall([]);
-      const r1 = recall.recall({ userMessage: 'q' });
-      const r2 = recall.recall({ userMessage: 'q' });
+      const r1 = await recall.recall({ userMessage: 'q' });
+      const r2 = await recall.recall({ userMessage: 'q' });
       expect(r1.source).toBe('empty');
       expect(r2.source).toBe('cached');
     });
   });
 
   describe('circuit breaker', () => {
-    it('opens after N consecutive failures', () => {
+    it('opens after N consecutive failures', async () => {
       const { recall } = makeRecall([], { circuitBreakerMaxFailures: 3 }, { throws: new Error('db down') });
       // Different user messages so cache doesn't hide the failures.
-      expect(recall.recall({ userMessage: 'q1' }).source).toBe('error');
-      expect(recall.recall({ userMessage: 'q2' }).source).toBe('error');
-      expect(recall.recall({ userMessage: 'q3' }).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q1' })).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q2' })).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q3' })).source).toBe('error');
       // Fourth call should short-circuit before hitting search.
-      expect(recall.recall({ userMessage: 'q4' }).source).toBe('circuit-open');
+      expect((await recall.recall({ userMessage: 'q4' })).source).toBe('circuit-open');
     });
 
-    it('reopens after cooldown elapses', () => {
+    it('reopens after cooldown elapses', async () => {
       const { recall, advance } = makeRecall(
         [],
         { circuitBreakerMaxFailures: 1, circuitBreakerCooldownMs: 10_000 },
         { throws: new Error('boom') },
       );
-      expect(recall.recall({ userMessage: 'q1' }).source).toBe('error');
-      expect(recall.recall({ userMessage: 'q2' }).source).toBe('circuit-open');
+      expect((await recall.recall({ userMessage: 'q1' })).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q2' })).source).toBe('circuit-open');
       advance(15_000);
       // After cooldown, breaker is willing to try again — search will fail again
       // since memory still throws, but the source is no longer 'circuit-open'.
-      expect(recall.recall({ userMessage: 'q3' }).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q3' })).source).toBe('error');
     });
 
-    it('resets failure count on a successful call', () => {
+    it('resets failure count on a successful call', async () => {
       // First, fail twice with a throwing memory, then swap in a working memory.
       // Easiest: stub a memory whose search behavior is configurable per call.
       let mode: 'throw' | 'ok' = 'throw';
+      const flaky = () => {
+        if (mode === 'throw') throw new Error('flaky');
+        return [{ name: 'a', description: 'b' }];
+      };
       const mem = {
-        search: () => {
-          if (mode === 'throw') throw new Error('flaky');
-          return [{ name: 'a', description: 'b' }];
-        },
+        search: flaky,
+        searchHybrid: async () => flaky(),
+        lastSearchStrategy: 'vector-hybrid',
       } as unknown as SemanticMemory;
       const config = { ...DEFAULT_PROMPT_BUILD_RECALL_CONFIG, enabled: true, circuitBreakerMaxFailures: 3 };
       const recall = new PromptBuildRecall({ semanticMemory: mem }, config);
-      expect(recall.recall({ userMessage: 'q1' }).source).toBe('error');
-      expect(recall.recall({ userMessage: 'q2' }).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q1' })).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q2' })).source).toBe('error');
       mode = 'ok';
-      const r = recall.recall({ userMessage: 'q3' });
+      const r = await recall.recall({ userMessage: 'q3' });
       expect(r.source).toBe('fresh');
       // After the success, failure count is 0; subsequent throws would need 3 more
       // before the breaker opens.
       mode = 'throw';
-      expect(recall.recall({ userMessage: 'q4' }).source).toBe('error');
-      expect(recall.recall({ userMessage: 'q5' }).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q4' })).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q5' })).source).toBe('error');
       // Two failures should NOT have opened the breaker.
-      expect(recall.recall({ userMessage: 'q6' }).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q6' })).source).toBe('error');
     });
   });
 
   describe('caps', () => {
-    it('respects maxRecallResults', () => {
+    it('respects maxRecallResults', async () => {
       const big = Array.from({ length: 20 }, (_, i) => ({ name: `e${i}`, description: `desc ${i}` }));
-      const mem = { search: (_q: string, opts?: { limit?: number }) => big.slice(0, opts?.limit ?? 20) } as unknown as SemanticMemory;
+      // Asserts the limit is passed THROUGH to the memory, so the stub honours it
+      // on the hybrid entry point recall now calls.
+      const slice = (opts?: { limit?: number }) => big.slice(0, opts?.limit ?? 20);
+      const mem = {
+        search: (_q: string, opts?: { limit?: number }) => slice(opts),
+        searchHybrid: async (_q: string, opts?: { limit?: number }) => slice(opts),
+        lastSearchStrategy: 'vector-hybrid',
+      } as unknown as SemanticMemory;
       const config = { ...DEFAULT_PROMPT_BUILD_RECALL_CONFIG, enabled: true, maxRecallResults: 3 };
       const recall = new PromptBuildRecall({ semanticMemory: mem }, config);
-      const r = recall.recall({ userMessage: 'x' });
+      const r = await recall.recall({ userMessage: 'x' });
       expect(r.resultsCount).toBe(3);
     });
 
-    it('respects maxRecallChars (drops later entries that would exceed the cap)', () => {
+    it('respects maxRecallChars (drops later entries that would exceed the cap)', async () => {
       const big = Array.from({ length: 10 }, (_, i) => ({
         name: `entry-${i}`,
         description: 'x'.repeat(150),
       }));
       const { recall } = makeRecall(big, { maxRecallChars: 400 });
-      const r = recall.recall({ userMessage: 'x' });
+      const r = await recall.recall({ userMessage: 'x' });
       expect(r.contextText.length).toBeLessThanOrEqual(400);
       // The header + footer + at least one entry should always fit.
       expect(r.contextText).toContain('<active_memory_recall>');
@@ -218,14 +233,111 @@ describe('PromptBuildRecall', () => {
   });
 
   describe('reset', () => {
-    it('clears cache and circuit', () => {
+    it('clears cache and circuit', async () => {
       const { recall } = makeRecall([{ name: 'a', description: 'b' }]);
-      recall.recall({ userMessage: 'q' });
+      await recall.recall({ userMessage: 'q' });
       expect(recall.getCacheSize()).toBe(1);
       recall.reset();
       expect(recall.getCacheSize()).toBe(0);
-      const fresh = recall.recall({ userMessage: 'q' });
+      const fresh = await recall.recall({ userMessage: 'q' });
       expect(fresh.source).toBe('fresh');
+    });
+  });
+
+
+  describe('semantic-first retrieval', () => {
+    // Recall ran on keyword-only search for its entire life while a fully
+    // populated vector index went uncalled, because recall() was synchronous and
+    // searchHybrid() is not. Nothing reported it: a keyword answer and a semantic
+    // answer are the same shape.
+    it('calls searchHybrid, not the keyword-only search', async () => {
+      const called: string[] = [];
+      const mem = {
+        search: () => { called.push('search'); return []; },
+        searchHybrid: async () => { called.push('searchHybrid'); return [{ name: 'a', description: 'b' }]; },
+        lastSearchStrategy: 'vector-hybrid',
+      } as unknown as SemanticMemory;
+      const recall = new PromptBuildRecall(
+        { semanticMemory: mem }, { ...DEFAULT_PROMPT_BUILD_RECALL_CONFIG, enabled: true },
+      );
+      await recall.recall({ userMessage: 'anything' });
+      expect(called).toContain('searchHybrid');
+      expect(called).not.toContain('search');
+    });
+
+    it('reports the strategy that actually served', async () => {
+      const mem = {
+        searchHybrid: async () => [{ name: 'a', description: 'b' }],
+        lastSearchStrategy: 'vector-hybrid',
+      } as unknown as SemanticMemory;
+      const recall = new PromptBuildRecall(
+        { semanticMemory: mem }, { ...DEFAULT_PROMPT_BUILD_RECALL_CONFIG, enabled: true },
+      );
+      expect((await recall.recall({ userMessage: 'x' })).strategy).toBe('vector-hybrid');
+    });
+
+    it('reports a lexical strategy honestly when vectors did not serve', async () => {
+      // searchHybrid degrades to search() internally when vectors are unavailable.
+      // The degradation must be visible, not silent.
+      const mem = {
+        searchHybrid: async () => [{ name: 'a', description: 'b' }],
+        lastSearchStrategy: 'fts-loose-fallback',
+      } as unknown as SemanticMemory;
+      const recall = new PromptBuildRecall(
+        { semanticMemory: mem }, { ...DEFAULT_PROMPT_BUILD_RECALL_CONFIG, enabled: true },
+      );
+      expect((await recall.recall({ userMessage: 'x' })).strategy).toBe('fts-loose-fallback');
+    });
+
+    it('claims no strategy on a path that never reached a search', async () => {
+      const recall = new PromptBuildRecall(
+        { semanticMemory: null }, { ...DEFAULT_PROMPT_BUILD_RECALL_CONFIG, enabled: true },
+      );
+      const r = await recall.recall({ userMessage: 'x' });
+      expect(r.source).toBe('no-memory');
+      expect(r.strategy).toBeUndefined();
+    });
+
+    it('bounds a slow search by the timeout instead of blocking the prompt path', async () => {
+      // Embedding cold-start is the realistic slow case. The budget must hold.
+      const mem = {
+        searchHybrid: () => new Promise((resolve) => setTimeout(() => resolve([{ name: 'a' }]), 5_000)),
+        lastSearchStrategy: 'vector-hybrid',
+      } as unknown as SemanticMemory;
+      const recall = new PromptBuildRecall(
+        { semanticMemory: mem }, { ...DEFAULT_PROMPT_BUILD_RECALL_CONFIG, enabled: true, recallTimeoutMs: 40 },
+      );
+      const r = await recall.recall({ userMessage: 'x' });
+      expect(r.source).toBe('timeout');
+    });
+
+    it('does NOT count a timeout as a circuit failure', async () => {
+      // A cold model that is still warming is not a broken provider. Counting it
+      // would open the breaker on a healthy path and keep recall dark for the
+      // whole cooldown — turning slowness into an outage.
+      const mem = {
+        searchHybrid: () => new Promise((resolve) => setTimeout(() => resolve([{ name: 'a' }]), 5_000)),
+        lastSearchStrategy: 'vector-hybrid',
+      } as unknown as SemanticMemory;
+      const config = { ...DEFAULT_PROMPT_BUILD_RECALL_CONFIG, enabled: true, recallTimeoutMs: 20, circuitBreakerMaxFailures: 2 };
+      const recall = new PromptBuildRecall({ semanticMemory: mem }, config);
+      expect((await recall.recall({ userMessage: 'q1' })).source).toBe('timeout');
+      expect((await recall.recall({ userMessage: 'q2' })).source).toBe('timeout');
+      // Third call must still attempt, not report circuit-open.
+      expect((await recall.recall({ userMessage: 'q3' })).source).toBe('timeout');
+    });
+
+    it('still opens the circuit on real errors', async () => {
+      // The timeout carve-out must not blunt the breaker for genuine failures.
+      const mem = {
+        searchHybrid: async () => { throw new Error('provider down'); },
+        lastSearchStrategy: 'none',
+      } as unknown as SemanticMemory;
+      const config = { ...DEFAULT_PROMPT_BUILD_RECALL_CONFIG, enabled: true, circuitBreakerMaxFailures: 2 };
+      const recall = new PromptBuildRecall({ semanticMemory: mem }, config);
+      expect((await recall.recall({ userMessage: 'q1' })).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q2' })).source).toBe('error');
+      expect((await recall.recall({ userMessage: 'q3' })).source).toBe('circuit-open');
     });
   });
 });

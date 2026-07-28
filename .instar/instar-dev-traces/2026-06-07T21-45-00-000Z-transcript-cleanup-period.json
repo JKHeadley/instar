@@ -1,0 +1,19 @@
+{
+    "slug": "transcript-cleanup-period",
+    "sessionId": "96c61421-860a-48f9-92b4-26328f5640f1",
+    "timestamp": "2026-06-07T21:45:00.000Z",
+    "artifactPath": "upgrades/side-effects/transcript-cleanup-period.md",
+    "artifactSha256": "809cfd12b83895f1bda6edfcb75b6213ac2a52efa4dc2ae918a791a4dbd4ea48",
+    "coveredFiles": ["src/commands/init.ts","src/core/PostUpdateMigrator.ts","tests/unit/PostUpdateMigrator-cleanupPeriodDays.test.ts"],
+    "phase": "complete",
+    "tier": 1,
+    "tierReasoning": "Sets cleanupPeriodDays:14 in .claude/settings.json for new agents (init.ts) and existing agents (PostUpdateMigrator.migrateSettings, set-if-unset with a nullish guard so an operator value incl explicit 0 is never overwritten). Caps Claude Code's transcript pile-up (observed ~322k files/18GB from fleet background claude -p one-shots under the unset 30d default). Pure Claude-client disk-hygiene setting — no API/route/state-schema, no runtime/session/hook/MCP change. Migration-Parity: both new-agent (init) and existing-agent (migrateSettings) paths covered. Both sides unit-tested (set-when-absent / no-override-7 / respect-explicit-0 / idempotent); adjacent migrateSettings suites still green. No converged spec required for Tier 1.",
+    "eli16Path": "docs/eli16/transcript-cleanup-period.eli16.md",
+    "sideEffectsPath": "upgrades/side-effects/transcript-cleanup-period.md",
+    "causalAutopsy": {
+        "origin": "latent",
+        "notes": "instar has never managed Claude Code's cleanupPeriodDays — every agent silently ran the unset 30-day default since the project began. A latent disk-hygiene gap, surfaced 2026-06-07 during the macOS resource investigation: ~/.claude/projects reached ~322k files/18GB, with ~289k files 7-30d old = fleet background claude -p one-shots (each writes a transcript) within the default window. NOT a regression from any prior PR; the default was simply never tuned for a multi-agent fleet's session volume. Item 3 of the operator's 5-item macOS-resource tracking (the minor/hygiene one — transcripts were already Spotlight-excluded and the box has no Time Machine, so this was never a CPU trigger). Recorded in docs/MACOS-RESOURCE-BATTLES.md."
+    },
+    "secondPass": "not-required",
+    "reviewerConcurred": null
+}

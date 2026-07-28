@@ -1,0 +1,15 @@
+# Dashboard refresh diagnostics, in plain English
+
+Instar has a small scheduled job whose job is simple: keep the dashboard link in the Telegram Dashboard topic fresh. That job matters because quick tunnels can change URL after a restart, and the Dashboard topic is the place a user expects to find the current link and PIN without asking the agent to rediscover it.
+
+The old job failed in a way that was technically honest but not useful. It depended on a shell HTTP client being present, posted to the local dashboard-refresh route, and collapsed most failures into a bare command failure. If the shell did not have that HTTP client, if the local server was not listening, if the tunnel had no URL, or if Telegram delivery failed, the job result did not clearly say which layer broke or what the operator should check next. That turned a boring maintenance task into a diagnosis task.
+
+This change makes the failure path speak in the same shape an operator needs to reason about it. The default job gate and the actual refresh command now use Node's built-in HTTP support instead of assuming a particular shell tool exists. When the gate cannot reach health, or the refresh command cannot read the agent config, cannot find an auth token, cannot reach the local server, receives a non-success response, or receives a structured error body, it prints the failed layer, the detail, and a concrete next step. That means a job log can point directly at "server not reachable", "tunnel has no URL", or "Telegram broadcast failed" instead of just showing an opaque exit.
+
+The refresh command also respects the way Instar protects its own auth token. Job sessions already receive the real token in their environment, so the generated command uses that first. Reading the config file is only a fallback, and that fallback only accepts a plain string token. If the config has been externalized into the secret store, the command will not accidentally turn the placeholder object into a bad bearer token.
+
+The dashboard-refresh route now returns structured diagnostics for its own preconditions too. If Telegram is not configured, the tunnel manager is not wired, or the tunnel has not produced a URL, the response names that precondition and tells the operator what to inspect. If the Telegram broadcast itself fails, the route now logs and returns a broadcast-stage failure instead of hiding the problem behind a generic server error.
+
+The Telegram adapter also changes one important behavior: dashboard broadcast failures are no longer swallowed at the final send step. Best-effort pinning is still best effort, but failing to send or edit the dashboard message is now a real error that the scheduled refresh route can report. This is what lets the job distinguish a successful refresh from a failed delivery attempt.
+
+The intended user-visible result is quiet. When everything works, users should not notice anything except that the Dashboard topic stays current. When it fails, the agent or operator looking at the job output gets an actionable explanation and can fix the correct layer without replaying the whole path by hand.

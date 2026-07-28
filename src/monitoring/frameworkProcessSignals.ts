@@ -86,9 +86,48 @@ const CODEX_CLI_SIGNAL: FrameworkProcessSignal = {
   ],
 };
 
+const GEMINI_CLI_SIGNAL: FrameworkProcessSignal = {
+  framework: 'gemini-cli',
+  displayName: 'Gemini',
+  psGrepNeedle: '[g]emini',
+  binaryPattern: /(^|\/)gemini(\s|$)/,
+  // Gemini CLI is published as @google/gemini-cli; older/experimental builds
+  // shipped under `gemini-cli/` paths. Cover both (node/npx-wrapped form).
+  nodePattern: /@google\/gemini-cli|gemini-cli\/(cli|bin)/,
+  exclusionSubstrings: [
+    // `gemini mcp` server shares the prefix and must NOT be counted as a
+    // framework session — the analog of codex's 'codex-mcp' exclusion.
+    'gemini-mcp',
+  ],
+};
+
+const PI_CLI_SIGNAL: FrameworkProcessSignal = {
+  framework: 'pi-cli',
+  displayName: 'Pi',
+  // "pi" is a dangerously short token — the bracket-needle over-matches
+  // (pip, pipx, api servers, …) but it is only a ps pre-filter; the
+  // word-boundary binaryPattern below does the real discrimination, and the
+  // exclusions catch the common short-prefix collisions explicitly.
+  psGrepNeedle: '[p]i',
+  binaryPattern: /(^|\/)pi(\s|$)/,
+  // pi is published as @earendil-works/pi-coding-agent (formerly
+  // @mariozechner/pi-coding-agent). Cover both node/npx-wrapped forms.
+  nodePattern: /@earendil-works\/pi-coding-agent|@mariozechner\/pi-coding-agent|pi-coding-agent\/(dist|bin|cli)/,
+  exclusionSubstrings: [
+    // Python tooling shares the prefix and must never be counted as a
+    // framework session.
+    'pip ',
+    'pipx ',
+    // pi's own monorepo dev processes (pi-mono checkout scripts).
+    'pi-mono',
+  ],
+};
+
 const PROCESS_SIGNALS: Record<IntelligenceFramework, FrameworkProcessSignal> = {
   'claude-code': CLAUDE_CODE_SIGNAL,
   'codex-cli': CODEX_CLI_SIGNAL,
+  'gemini-cli': GEMINI_CLI_SIGNAL,
+  'pi-cli': PI_CLI_SIGNAL,
 };
 
 /** Process helpers that appear at the START of command lines and are NEVER framework binaries. */

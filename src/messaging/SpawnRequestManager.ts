@@ -81,6 +81,32 @@ export interface SpawnRequest {
    * (e.g., `spawn-request-retry`).
    */
   triggeredBy?: 'spawn-request' | 'spawn-request-drain';
+  /**
+   * Threadline A2A continuity (claude-code only): when set, the spawned
+   * session is launched with `--session-id <uuid>` so its transcript is
+   * created at a deterministic, caller-chosen id. ThreadlineRouter.spawnNewThread
+   * passes the uuid it stores as the thread's resume-map entry. Forwarded
+   * verbatim into the `spawnSession` callback options. Mutually exclusive with
+   * `resumeSessionId` (sessionId wins).
+   */
+  sessionId?: string;
+  /**
+   * Threadline A2A continuity (claude-code only): when set, the spawned
+   * session is launched with `--resume <uuid>` so it reloads the full prior
+   * transcript captured by an earlier `sessionId` spawn. ThreadlineRouter.resumeThread
+   * passes the resume-map entry's uuid here. Forwarded verbatim into the
+   * `spawnSession` callback options.
+   */
+  resumeSessionId?: string;
+  /**
+   * Warm-session A2A (a.k.a. keepAlive): when true, the spawnSession callback
+   * routes to an INTERACTIVE persistent worker (REPL that stays alive between
+   * messages) instead of the headless one-shot `claude -p`. The grounded prompt
+   * is delivered as the worker's first turn. ThreadlineRouter.spawnWarmThread
+   * sets this; forwarded verbatim into the spawnSession callback options. Absent
+   * on every existing spawn path → headless behavior is byte-for-byte unchanged.
+   */
+  interactive?: boolean;
 }
 
 export interface SpawnResult {
@@ -168,9 +194,30 @@ export interface SpawnRequestManagerConfig {
     model?: string;
     maxDurationMinutes?: number;
     triggeredBy?: 'spawn-request' | 'spawn-request-drain';
-  }) => Promise<string>;
+    /** Threadline A2A continuity: forwarded to `--session-id` (set a
+     *  deterministic conversation id). Mutually exclusive with resumeSessionId. */
+    sessionId?: string;
+    /** Threadline A2A continuity: forwarded to `--resume` (reload the prior
+     *  transcript captured by an earlier sessionId spawn). */
+    resumeSessionId?: string;
+    /** Warm-session A2A: when true, spawn an INTERACTIVE persistent worker
+     *  (keep-alive REPL) instead of headless `claude -p`. The prompt becomes
+     *  the worker's first turn. Absent on every non-warm spawn. */
+    interactive?: boolean;
+  }) => Promise<string | { sessionId: string; tmuxSession?: string }>;
   /** Function to check memory pressure. Returns true if pressure is too high. */
   isMemoryPressureHigh?: () => boolean;
+  /**
+   * Optional subscription-quota gate (june15-headless-spawn-reroute,
+   * security finding S1). When the subscription-path reroute is active
+   * (intelligence.subscriptionPath.mode auto/force), A2A cold spawns land on
+   * the operator's subscription 5h window — without this gate, inbound peer
+   * traffic could drive that window to exhaustion and block the USER's own
+   * conversations (a peer-triggered rate-limit DoS). The server wires this
+   * to QuotaTracker.shouldSpawnSession ONLY when the reroute is active;
+   * absent (the default), admission behavior is byte-for-byte unchanged.
+   */
+  shouldSpawnSession?: (priority?: string) => { allowed: boolean; reason: string };
   /** Cooldown between spawn requests per agent (ms). Default: 30s */
   cooldownMs?: number;
   /** Max spawn retries before giving up. Default: 3 */
@@ -552,6 +599,24 @@ export class SpawnRequestManager {
       };
     }
 
+    // Subscription-quota gate (S1) — only wired when the subscription-path
+    // reroute is active, so a peer-driven spawn can't exhaust the operator's
+    // 5h window. Queue the message (like cooldown) rather than dropping it:
+    // quota pressure is transient and the content must survive it.
+    if (this.#config.shouldSpawnSession) {
+      const quota = this.#config.shouldSpawnSession(request.priority);
+      if (!quota.allowed) {
+        if (request.context) {
+          this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
+        }
+        return {
+          approved: false,
+          reason: `Subscription quota gate: ${quota.reason}`,
+          retryAfterMs: 120_000,
+        };
+      }
+    }
+
     // §4.2: failure-suppressive reservation. Stamp `lastSpawnByAgent` BEFORE
     // the async spawn, and do NOT roll back on failure. A peer that triggers
     // fast-failing spawns still pays the cooldown.
@@ -560,12 +625,26 @@ export class SpawnRequestManager {
     try {
       const queuedMessages = this.#drainQueue(agent);
       const prompt = this.#buildSpawnPrompt(request, queuedMessages);
-      const sessionId = await this.#config.spawnSession(prompt, {
+      const spawned = await this.#config.spawnSession(prompt, {
         model: request.suggestedModel,
         maxDurationMinutes: request.suggestedMaxDuration,
         // §4.5: forward provenance tag (defaults to 'spawn-request' on inline path).
         triggeredBy: request.triggeredBy ?? 'spawn-request',
+        // Threadline A2A continuity: forward the conversation-id intent so the
+        // claude-code spawn sets (--session-id) or resumes (--resume) the
+        // transcript. Both undefined on every non-Threadline spawn path.
+        sessionId: request.sessionId,
+        resumeSessionId: request.resumeSessionId,
+        // Warm-session A2A: route to the interactive keep-alive path when set.
+        // Undefined on every non-warm spawn → headless behavior unchanged.
+        interactive: request.interactive,
       });
+      // Accept both the legacy bare-id return and the {sessionId, tmuxSession}
+      // object form. The tmuxSession (when provided) is forwarded so callers
+      // (spawnNewThread) persist the REAL tmux name as the resume entry's
+      // sessionName — load-bearing for Threadline continuity.
+      const sessionId = typeof spawned === 'string' ? spawned : spawned.sessionId;
+      const tmuxSession = typeof spawned === 'string' ? undefined : spawned.tmuxSession;
 
       // Success — clear penalty state and pending retries.
       this.#clearFailureAttribution(agent);
@@ -575,6 +654,7 @@ export class SpawnRequestManager {
       return {
         approved: true,
         sessionId,
+        tmuxSession,
         reason: `Session spawned for: ${request.reason}`,
       };
     } catch (err) {

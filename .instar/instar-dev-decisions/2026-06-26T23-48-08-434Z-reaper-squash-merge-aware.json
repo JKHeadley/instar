@@ -1,0 +1,20 @@
+{
+  "ts": "2026-06-26T23:48:08.434Z",
+  "slug": "reaper-squash-merge-aware",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/AgentWorktreeReaper.ts matches session reaper",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 106,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Latent blind spot in the reaper's git-cherry merged-check: it documents that multi-commit squash-merges are not detected (their per-commit patch-ids differ from the squashed commit) and conservatively KEEPS them. Because this project squash-merges every PR, merged worktrees accumulated forever (~118GB/290 observed) — a contributor to the 2026-06-26 resource-exhaustion kernel panic. Diagnosed in the stalled 28730 session (CMT-1812), picked up here."
+  },
+  "verdict": "pass"
+}

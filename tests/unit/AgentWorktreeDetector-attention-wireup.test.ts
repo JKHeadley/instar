@@ -94,7 +94,7 @@ describe('Layer 4 detector → AttentionQueue wireup', () => {
       sourceContext: item.sourceContext,
     };
 
-    expect(adapterInput.id).toMatch(/^worktree-misplaced:[a-f0-9]{64}$/);
+    expect(adapterInput.id).toMatch(/^worktree-misplaced-summary:[a-f0-9]{16}$/);
     expect(adapterInput.category).toBe('worktree-misplaced');
     expect(['URGENT', 'HIGH', 'NORMAL', 'LOW']).toContain(adapterInput.priority);
     expect(typeof adapterInput.title).toBe('string');
@@ -145,6 +145,6 @@ describe('Layer 4 detector → AttentionQueue wireup', () => {
     expect(result.emitted).toBe(1);
     expect(fs.existsSync(fallback)).toBe(true);
     const line = JSON.parse(fs.readFileSync(fallback, 'utf-8').trim());
-    expect(line.dedupeKey).toMatch(/^worktree-misplaced:/);
+    expect(line.dedupeKey).toMatch(/^worktree-misplaced-summary:/);
   });
 });

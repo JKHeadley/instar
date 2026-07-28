@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-25T20:34:37.662Z",
+  "slug": "evo007-job-template-auth",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 42,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

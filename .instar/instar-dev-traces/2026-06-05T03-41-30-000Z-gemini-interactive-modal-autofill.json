@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "sessionId": "telegram-1052-gemini-interactive-modal-autofill",
+  "timestamp": "2026-06-05T03:41:30.000Z",
+  "slug": "gemini-interactive-modal-autofill",
+  "artifactPath": "upgrades/side-effects/gemini-interactive-modal-autofill.md",
+  "artifactSha256": "114cec27bb7f27268627104bcc2af097d19323d776111015c6ee4313076553e0",
+  "coveredFiles": [
+    "docs/specs/gemini-interactive-modal-autofill.eli16.md",
+    "src/monitoring/PromptGate.ts",
+    "tests/unit/PromptGate.test.ts",
+    "upgrades/next/gemini-interactive-modal-autofill.md",
+    "upgrades/side-effects/gemini-interactive-modal-autofill.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow PromptGate structural matcher for Gemini CLI's known blocking framework modals, reusing the existing deterministic autoDismissKey/session send path; no schema, config, routes, persistence, or spawn changes. Covered by PromptGate regression fixtures plus existing classifier/approver no-regression tests.",
+  "eli16Path": "docs/specs/gemini-interactive-modal-autofill.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/gemini-interactive-modal-autofill.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

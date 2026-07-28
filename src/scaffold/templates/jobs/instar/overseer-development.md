@@ -14,7 +14,10 @@ unrestrictedTools: true
 ---
 You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.
 
-1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:${INSTAR_PORT:-4042}/jobs/category-report/development?sinceHours=48
+AUTH="${INSTAR_AUTH_TOKEN:-}"
+AGENT_ID="${INSTAR_AGENT_ID:-}"
+
+1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:${INSTAR_PORT:-4042}/jobs/category-report/development?sinceHours=48
 2. Analyze:
    - Are development jobs consuming appropriate resources for their value?
    - Are there CI/testing patterns that could be automated?

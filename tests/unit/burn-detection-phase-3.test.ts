@@ -60,6 +60,23 @@ function stubReporter() {
 }
 
 describe('BurnDetector — absolute-share trigger', () => {
+  it('never lets cache reads inflate a key burn share', () => {
+    const ledger = stubLedger([
+      { attributionKey: 'warm-cache', totalTokens: 1_010, freshTokens: 10, eventCount: 1, firstTs: 0, lastTs: 0 },
+      { attributionKey: 'fresh-work', totalTokens: 100, freshTokens: 100, eventCount: 1, firstTs: 0, lastTs: 0 },
+    ]);
+    const detector = new BurnDetector({
+      ledger,
+      reporter: stubReporter(),
+      config: { absoluteShareThreshold: 0.5, coldStartMs: Number.MAX_SAFE_INTEGER },
+      now: () => 1_000_000_000_000,
+    });
+
+    const signals = detector.tick();
+    expect(signals.map((signal) => signal.attributionKey)).toEqual(['fresh-work']);
+    expect(signals[0].observed.share24h).toBeCloseTo(100 / 110);
+  });
+
   it('fires when a single key crosses 25% threshold (the 2026-05-15 case)', () => {
     const ledger = stubLedger([
       { attributionKey: 'InputDetector::abcd1234', totalTokens: 3_000_000_000, eventCount: 100_000, firstTs: 0, lastTs: 0 },
@@ -110,6 +127,82 @@ describe('BurnDetector — absolute-share trigger', () => {
     // Past cooldown.
     now += DEFAULT_BURN_DETECTION_CONFIG.perKeyAlertCooldownMs;
     expect(detector.tick()).toHaveLength(1);
+  });
+});
+
+describe('BurnDetector — absolute-share activity gate (2026-06-03 noise fix)', () => {
+  // A FINISHED burst: one key dominates the trailing-24h window but has ZERO
+  // tokens in the last hour. Pre-fix this re-tripped the 25% alarm every
+  // cooldown for a full 24h with a self-contradictory "consumed 67% of 24h
+  // spend … Projected 0 tokens" message. The activity gate must silence it.
+  it('does NOT fire absolute-share for a finished burst (high 24h share, zero 1h spend)', () => {
+    const NOW = 5 * 24 * 60 * 60 * 1000;
+    const ledger = stubLedgerFn((sinceMs) => {
+      if (sinceMs >= NOW - 60 * 60 * 1000) {
+        // 1h window: the dominant key is idle now — only a trickle elsewhere.
+        return [
+          { attributionKey: 'Trickle::bb', totalTokens: 1000, eventCount: 2, firstTs: 0, lastTs: NOW },
+        ];
+      }
+      // 24h window: one finished burst owns 75% of the window.
+      return [
+        { attributionKey: 'unknown::1e737be2', totalTokens: 3_000_000_000, eventCount: 100_000, firstTs: 0, lastTs: NOW - 33 * 60 * 60 * 1000 },
+        { attributionKey: 'Trickle::bb', totalTokens: 1_000_000_000, eventCount: 5_000, firstTs: 0, lastTs: NOW },
+      ];
+    });
+    const reporter = stubReporter();
+    const detector = new BurnDetector({ ledger, reporter, now: () => NOW });
+    expect(detector.tick()).toHaveLength(0);
+    expect(reporter.reports).toHaveLength(0);
+  });
+
+  // The same dominant key, but it IS spending in the last hour → a genuine
+  // live burn. The gate must let this through (default floor 0 = any positive
+  // current spend counts as active).
+  it('STILL fires absolute-share when the dominant key is actively spending now', () => {
+    const NOW = 5 * 24 * 60 * 60 * 1000;
+    const ledger = stubLedgerFn((sinceMs) => {
+      if (sinceMs >= NOW - 60 * 60 * 1000) {
+        return [
+          { attributionKey: 'unknown::live9999', totalTokens: 40_000_000, eventCount: 1000, firstTs: 0, lastTs: NOW },
+        ];
+      }
+      return [
+        { attributionKey: 'unknown::live9999', totalTokens: 3_000_000_000, eventCount: 100_000, firstTs: 0, lastTs: NOW },
+        { attributionKey: 'Trickle::bb', totalTokens: 1_000_000_000, eventCount: 5_000, firstTs: 0, lastTs: NOW },
+      ];
+    });
+    const reporter = stubReporter();
+    const detector = new BurnDetector({ ledger, reporter, now: () => NOW });
+    const signals = detector.tick();
+    expect(signals).toHaveLength(1);
+    expect(signals[0].attributionKey).toBe('unknown::live9999');
+    expect(signals[0].trigger).toBe('absolute-share');
+  });
+
+  // The configurable floor lets an operator demand a minimum current rate
+  // before a high-share key alarms. A 1h rate at/below the floor is gated out.
+  it('honours absoluteShareActivityFloorTokens: 1h spend at/below the floor does NOT fire', () => {
+    const NOW = 5 * 24 * 60 * 60 * 1000;
+    const ledger = stubLedgerFn((sinceMs) => {
+      if (sinceMs >= NOW - 60 * 60 * 1000) {
+        // 500K tokens in the last hour — real, but below the operator floor.
+        return [
+          { attributionKey: 'unknown::slow1234', totalTokens: 500_000, eventCount: 50, firstTs: 0, lastTs: NOW },
+        ];
+      }
+      return [
+        { attributionKey: 'unknown::slow1234', totalTokens: 3_000_000_000, eventCount: 100_000, firstTs: 0, lastTs: NOW },
+        { attributionKey: 'Trickle::bb', totalTokens: 1_000_000_000, eventCount: 5_000, firstTs: 0, lastTs: NOW },
+      ];
+    });
+    const reporter = stubReporter();
+    const detector = new BurnDetector({
+      ledger, reporter,
+      config: { absoluteShareActivityFloorTokens: 1_000_000 },
+      now: () => NOW,
+    });
+    expect(detector.tick()).toHaveLength(0);
   });
 });
 
@@ -350,9 +443,24 @@ describe('TokenLedger.byAttributionKey query (Phase 3 wiring)', () => {
     expect(rows).toHaveLength(2);
     const top = rows.find((r) => r.attributionKey === 'InputDetector::aaa')!;
     expect(top.totalTokens).toBe(225);
+    expect(top.freshTokens).toBe(225);
     expect(top.eventCount).toBe(2);
     expect(top.firstTs).toBe(1000);
     expect(top.lastTs).toBe(2000);
+    SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/burn-detection-phase-3.test.ts' });
+  });
+
+  it('reports gross usage but excludes cache reads from fresh burn tokens', () => {
+    const ledger = new TokenLedger({ dbPath, claudeProjectsDir: tmp });
+    ledger.recordEvent({
+      requestId: 'cached', sessionId: 's', ts: 1000,
+      inputTokens: 10, outputTokens: 5, cacheCreationTokens: 20, cacheReadTokens: 10_000,
+      attributionKey: 'warm-cache',
+    });
+
+    const row = ledger.byAttributionKey({ sinceMs: 0 })[0];
+    expect(row.totalTokens).toBe(10_035);
+    expect(row.freshTokens).toBe(35);
     SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/burn-detection-phase-3.test.ts' });
   });
 

@@ -186,4 +186,123 @@ describe('SleepWakeDetector — CPU-starvation guard', () => {
     expect(detector.getCumulativeSleepMsBetween(startQuery, fakeNow + 1)).toBe(0);
     expect(detector.getStats(0).wakeCount).toBe(0);
   });
+
+  describe('consecutive-drift burst suppression (2026-06-07 tunnel-restart storm)', () => {
+    it('suppresses the 2nd consecutive short drift even under NORMAL load (the gap maxLoadRatio missed)', () => {
+      load = [0, 0, 0]; // normal load — load-suppress would NOT catch this; only the burst guard does
+      detector = makeDetector();
+      const wakes: unknown[] = [];
+      detector.on('wake', (e) => wakes.push(e));
+      detector.start();
+      tick(90_000); // 1st short drift (90s < 300s long-sleep floor), isolated → emits
+      tick(90_000); // 2nd consecutive drift; 90s apart > 60s cooldown, so cooldown does NOT suppress → burst guard does
+      expect(wakes.length).toBe(1);
+      expect(detector.getStats(0).suppressedByReason['cpu-starvation']).toBeGreaterThanOrEqual(1);
+    });
+
+    it('WITHOUT the burst guard (floor 0) the same 2nd drift WOULD emit — proving the guard did it', () => {
+      load = [0, 0, 0];
+      detector = makeDetector({ driftBurstSuppressFloor: 0 });
+      const wakes: unknown[] = [];
+      detector.on('wake', (e) => wakes.push(e));
+      detector.start();
+      tick(90_000); // drift 1 → emit
+      tick(90_000); // drift 2, past the 60s cooldown, no burst guard → emit
+      expect(wakes.length).toBe(2);
+    });
+
+    it('an on-time tick resets the burst counter (genuinely-isolated drifts both emit)', () => {
+      load = [0, 0, 0];
+      detector = makeDetector();
+      const wakes: unknown[] = [];
+      detector.on('wake', (e) => wakes.push(e));
+      detector.start();
+      tick(90_000); // drift 1 → emit, consecutiveDrifts=1
+      tick(1_000);  // on-time tick (1s ≤ 5s threshold) → resets the counter
+      tick(90_000); // drift 2, isolated again + past cooldown → emit
+      expect(wakes.length).toBe(2);
+    });
+
+    it('a genuine LONG sleep is exempt from the burst guard (real-sleep recovery preserved)', () => {
+      load = [0, 0, 0];
+      detector = makeDetector();
+      const wakes: unknown[] = [];
+      detector.on('wake', (e) => wakes.push(e));
+      detector.start();
+      tick(600_000); // long sleep 1 (600s ≥ 300s) → emit
+      tick(600_000); // consecutive long sleep → exempt from burst (isLongSleep) → still emits
+      expect(wakes.length).toBe(2);
+    });
+  });
+
+  describe('recurring-drift guard for the moderate-load band (2026-06-15)', () => {
+    // load ratio 18/16 = 1.125 — oversubscribed (> 1.0 floor) yet BELOW maxLoadRatio (1.5),
+    // the exact band of the 2026-06-15 cascade (loadRatio ~1.1/core, drifts every ~2min).
+    const BAND_LOAD = [18, 18, 18];
+
+    it('suppresses a recurring short drift in the moderate-load band (isolated, dodges burst+load guards)', () => {
+      load = BAND_LOAD;
+      detector = makeDetector(); // recentDriftWindowMs default 300000, floor 1.0
+      const wakes: unknown[] = [];
+      detector.on('wake', (e) => wakes.push(e));
+      detector.start();
+
+      tick(90_000); // 1st short drift — isolated, no prior → emits
+      expect(wakes).toHaveLength(1);
+      tick(CHECK_MS); // on-time tick → resets the consecutive counter (so burst floor won't fire)
+      tick(90_000); // 2nd short drift ~91s later: > 60s cooldown, ratio 1.125 < 1.5 (load guard skip),
+                    // consecutive=1 (burst skip) — ONLY the recurring-drift guard catches it
+      expect(wakes).toHaveLength(1); // 2nd suppressed
+      expect(detector.getStats(0).suppressedByReason['cpu-starvation']).toBeGreaterThanOrEqual(1);
+    });
+
+    it('does NOT suppress the same recurring drift on a lightly-loaded host (ratio <= floor → real brief sleeps)', () => {
+      load = [0, 0, 0]; // ratio 0 — not oversubscribed; recurrence is trusted as real sleep
+      detector = makeDetector();
+      const wakes: unknown[] = [];
+      detector.on('wake', (e) => wakes.push(e));
+      detector.start();
+
+      tick(90_000); // drift 1 → emit
+      tick(CHECK_MS); // on-time tick resets burst counter
+      tick(90_000); // drift 2 — light load → recurring guard skipped → emits
+      expect(wakes).toHaveLength(2);
+    });
+
+    it('still emits a genuinely isolated short drift under band load (no prior drift in window)', () => {
+      load = BAND_LOAD;
+      detector = makeDetector();
+      const wakes: unknown[] = [];
+      detector.on('wake', (e) => wakes.push(e));
+      detector.start();
+
+      tick(90_000); // single isolated short drift, prevShortDriftAtMs null → emits
+      expect(wakes).toHaveLength(1);
+    });
+
+    it('recentDriftWindowMs:0 disables the guard (rollback lever — band drifts both emit)', () => {
+      load = BAND_LOAD;
+      detector = makeDetector({ recentDriftWindowMs: 0 });
+      const wakes: unknown[] = [];
+      detector.on('wake', (e) => wakes.push(e));
+      detector.start();
+
+      tick(90_000); // drift 1 → emit
+      tick(CHECK_MS); // on-time reset
+      tick(90_000); // drift 2 — guard disabled → emits (today's behavior)
+      expect(wakes).toHaveLength(2);
+    });
+
+    it('a recurring LONG sleep in the band still emits (long-sleep bypass unaffected)', () => {
+      load = BAND_LOAD;
+      detector = makeDetector();
+      const wakes: unknown[] = [];
+      detector.on('wake', (e) => wakes.push(e));
+      detector.start();
+
+      tick(400_000); // long sleep 1 (≥ 300s floor) → emit
+      tick(400_000); // long sleep 2 — exempt from the short-drift guard → still emits
+      expect(wakes).toHaveLength(2);
+    });
+  });
 });

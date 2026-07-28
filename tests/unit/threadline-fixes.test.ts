@@ -315,3 +315,72 @@ describe('AgentTrustManager — Relay Agent Default Trust', () => {
     manager2.flush();
   });
 });
+
+// ── Slice 2: real tmux session name propagated through evaluate ──────
+// spawnNewThread persists spawnResult.tmuxSession as the resume entry's
+// sessionName. If that is undefined, the entry gets a useless fallback name and
+// every A2A follow-up cold-spawns (live-inject/resume never find the session).
+describe('SpawnRequestManager — tmuxSession propagation (A2A continuity)', () => {
+  it('forwards tmuxSession when spawnSession returns the {sessionId, tmuxSession} object form', async () => {
+    const manager = createSpawnManager({
+      spawnSession: vi.fn().mockResolvedValue({ sessionId: 'inst-id-1', tmuxSession: 'echo-msg-spawn-123' }),
+    });
+    const result = await manager.evaluate(makeRequest('peer-obj'));
+    expect(result.approved).toBe(true);
+    expect(result.sessionId).toBe('inst-id-1');
+    expect(result.tmuxSession).toBe('echo-msg-spawn-123');
+  });
+
+  it('stays back-compatible when spawnSession returns a bare session-id string', async () => {
+    const manager = createSpawnManager({
+      spawnSession: vi.fn().mockResolvedValue('legacy-string-id'),
+    });
+    const result = await manager.evaluate(makeRequest('peer-str'));
+    expect(result.approved).toBe(true);
+    expect(result.sessionId).toBe('legacy-string-id');
+    expect(result.tmuxSession).toBeUndefined();
+  });
+});
+
+// ── Path-1 continuity: sessionId / resumeSessionId forwarding ────────
+
+describe('SpawnRequestManager — continuity flag forwarding (A2A Path-1)', () => {
+  it('forwards request.sessionId into the spawnSession callback options', async () => {
+    const spawnFn = vi.fn().mockResolvedValue({ sessionId: 'inst-id', tmuxSession: 'echo-msg-spawn-1' });
+    const manager = createSpawnManager({ spawnSession: spawnFn });
+
+    const req: SpawnRequest = { ...makeRequest('peer-new'), sessionId: 'claude-uuid-aaa' };
+    const result = await manager.evaluate(req);
+
+    expect(result.approved).toBe(true);
+    // Second arg of the callback carries the forwarded options.
+    const opts = spawnFn.mock.calls[0][1];
+    expect(opts.sessionId).toBe('claude-uuid-aaa');
+    expect(opts.resumeSessionId).toBeUndefined();
+  });
+
+  it('forwards request.resumeSessionId into the spawnSession callback options', async () => {
+    const spawnFn = vi.fn().mockResolvedValue({ sessionId: 'inst-id', tmuxSession: 'echo-msg-spawn-2' });
+    const manager = createSpawnManager({ spawnSession: spawnFn });
+
+    const req: SpawnRequest = { ...makeRequest('peer-resume'), resumeSessionId: 'claude-uuid-bbb' };
+    const result = await manager.evaluate(req);
+
+    expect(result.approved).toBe(true);
+    const opts = spawnFn.mock.calls[0][1];
+    expect(opts.resumeSessionId).toBe('claude-uuid-bbb');
+    expect(opts.sessionId).toBeUndefined();
+  });
+
+  it('passes both as undefined on a plain (non-continuity) request', async () => {
+    const spawnFn = vi.fn().mockResolvedValue({ sessionId: 'inst-id', tmuxSession: 'echo-msg-spawn-3' });
+    const manager = createSpawnManager({ spawnSession: spawnFn });
+
+    const result = await manager.evaluate(makeRequest('peer-plain'));
+
+    expect(result.approved).toBe(true);
+    const opts = spawnFn.mock.calls[0][1];
+    expect(opts.sessionId).toBeUndefined();
+    expect(opts.resumeSessionId).toBeUndefined();
+  });
+});

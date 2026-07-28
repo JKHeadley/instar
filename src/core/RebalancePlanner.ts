@@ -80,6 +80,12 @@ export function planRebalance(input: RebalanceInput, placement: PlacementExecuto
     );
     for (const s of candidates) {
       // One move per source per cycle (cascade guard).
+      // NOTE (placement-platform-workspace-aware, second-pass finding): this rebalance
+      // decide() does NOT thread `channel`, so a Slack session could be moved onto a
+      // machine not connected to its workspace (recreating the wrong-workspace black-hole
+      // via the rebalance door). DORMANT today — RebalancePlanner is not wired into the
+      // server (no live moves). Before rebalance is ever activated, plumb the channel scope
+      // onto RebalanceSession and pass `channel` here. <!-- tracked: CMT-1568 -->
       const decision = placement.decide({
         sessionKey: s.sessionKey,
         topicMetadata: s.topicMetadata ?? {},

@@ -73,8 +73,24 @@ export interface AlignmentScore {
   sampleSize: number;
   /** Period analyzed */
   periodDays: number;
-  /** Human-readable grade */
-  grade: 'A' | 'B' | 'C' | 'D' | 'F';
+  /**
+   * Human-readable grade, or `'N/A'` when there was nothing to grade.
+   *
+   * `'N/A'` exists because the previous vocabulary (A–F) had no way to say
+   * "no verdict", so an unassessable period had to borrow the worst real
+   * grade. An empty journal returned `score: 0, grade: 'F'` — identical, to
+   * every consumer reading those fields, to a period that WAS assessed and
+   * scored catastrophically. The honest `summary` said "cannot be assessed",
+   * but no consumer read it: `instar intent drift` printed the red F row and
+   * dropped the summary entirely.
+   */
+  grade: 'A' | 'B' | 'C' | 'D' | 'F' | 'N/A';
+  /**
+   * False when `sampleSize` is 0 — i.e. `score`, `grade` and every component
+   * are placeholders, not measurements. Machine consumers must branch on this
+   * (or on `sampleSize`) before treating the score as a verdict.
+   */
+  assessable: boolean;
   /** One-line summary */
   summary: string;
 }
@@ -151,7 +167,9 @@ export class IntentDriftDetector {
         },
         sampleSize: 0,
         periodDays,
-        grade: 'F',
+        // NOT 'F'. Nothing was assessed, so there is no grade to report.
+        grade: 'N/A',
+        assessable: false,
         summary: 'No decisions logged — alignment cannot be assessed.',
       };
     }
@@ -184,6 +202,7 @@ export class IntentDriftDetector {
       sampleSize: entries.length,
       periodDays,
       grade,
+      assessable: true,
       summary,
     };
   }

@@ -29,6 +29,32 @@ const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
 // skipped during snapshot creation regardless of config source.
 const BLOCKED_PATH_PREFIXES = new Set([
   '.instar/secrets/',
+  // Durable Inbound Message Queue (spec §5.5): the custody store + sidecars +
+  // quarantined copies are in-flight per-machine state — restoring them to a
+  // new machine would claim custody the new machine never took. Unconditional
+  // (NOT the remediation-gated F-7 list). stateDir-relative prefixes, matching
+  // how includeFiles entries resolve (sourcePath = path.join(stateDir, entry)).
+  'state/pending-inbound.',
+  'state/pending-inbound-quarantine/',
+  // Parallel-Hand PR Lease (spec parallel-hand-pr-lease §8): the lease store is
+  // ephemeral per-machine coordination state (TTL-bounded, self-healing). Restoring
+  // it to another machine would resurrect a stale lease as "live" — a regression.
+  // Safe to lose (reconstructed on demand). stateDir-relative prefix.
+  'state/pr-hand-leases.json',
+  // SelfActionGovernor durable admission-state snapshot + telemetry aggregates
+  // (unified-self-action-backpressure FD14/INT7-3): per-machine count-window
+  // state. Backups replicate to paired machines, where a RECENT foreign
+  // snapshot passes recency-validation while carrying the WRONG machine's
+  // counts, and a foreign aggregates file fabricates prior-flush evidence +
+  // pollutes the FD12 soak counters. The `state/self-action-governor` prefix
+  // covers the snapshot, the aggregates file, and their tmp siblings.
+  'state/self-action-governor',
+  // External-hog decision store (llm-decision-quality-meter spec §5.3): grading
+  // ground truth keyed on machine-specific pid + start-time tuples — a restored
+  // foreign copy would feed stale identities into the respawn predicate. Same
+  // per-machine-state posture as 'state/pr-hand-leases.json'. stateDir-relative
+  // literal.
+  'state/external-hog-decisions.json',
 ]);
 
 /**
@@ -56,6 +82,44 @@ export const REMEDIATION_EXCLUDED_PATH_PREFIXES: readonly string[] = Object.free
   '.instar/remediation/llm-raw-',
 ]);
 
+/**
+ * Path segments that are NEVER included in a backup snapshot, UNCONDITIONALLY
+ * (no feature-flag gate): judgment-call provenance rows are machine-local
+ * decision context (0700/0600, gitignored, never HTTP-served) — a backup that
+ * crosses machines must never carry them
+ * (ownership-gated-spawn-and-judgment-within-floors spec §3.5). Segment-matched
+ * (not prefix-matched) so a user-added includeFiles entry cannot smuggle the
+ * directory in under a different relative spelling.
+ */
+export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
+  'judgment-provenance',
+  'claim-verification',
+  // External-hog decision store (llm-decision-quality-meter spec §5.3): same
+  // machine-local posture as the provenance rows; the filename segment closes
+  // alternate relative spellings the stateDir-relative prefix cannot.
+  'external-hog-decisions.json',
+]);
+
+/**
+ * Re-apply ALL THREE unconditional deny layers to a stateDir-relative path:
+ * BLOCKED_FILES (basename equality), BLOCKED_PATH_PREFIXES (prefix), and
+ * NEVER_BACKUP_PATH_SEGMENTS (segment). Every deny list is otherwise consulted
+ * against the includeFiles ENTRY string only — so a directory entry like
+ * 'state/' (or the './' root glob, whose entry basename '.' passes every
+ * entry-level check) would ship excluded per-machine state via its direct file
+ * children. Called per copied file in createSnapshot's directory-copy branch
+ * and per restored file in restoreSnapshot (a pre-fix snapshot must not
+ * re-import excluded state). llm-decision-quality-meter spec §5.3 / ACT-1201.
+ */
+function isDeniedForBackup(relPath: string): boolean {
+  const normalized = path.normalize(relPath);
+  if (BLOCKED_FILES.has(path.basename(normalized)) || BLOCKED_FILES.has(relPath)) return true;
+  for (const prefix of BLOCKED_PATH_PREFIXES) {
+    if (normalized.startsWith(prefix)) return true;
+  }
+  return normalized.split(/[\\/]/).some((seg) => NEVER_BACKUP_PATH_SEGMENTS.includes(seg));
+}
+
 const DEFAULT_CONFIG: BackupConfig = {
   enabled: true,
   maxSnapshots: 20,
@@ -70,6 +134,17 @@ const DEFAULT_CONFIG: BackupConfig = {
     // time — see resolveIncludedFiles()). Glob matches the active ledger and
     // any rotated .jsonl.<epoch> archives.
     'shared-state.jsonl*',
+    // Threadline Robustness Phase 2 (FD-9): the canonical-history HEAD ANCHOR.
+    // The bulky per-thread `threadline/threads/*.log.jsonl` are EXCLUDED by design
+    // (large, reconstructable via backfill; the symmetry surface flags any gap).
+    'threadline/conversations.json',
+    // ClassReview is the retained audit/correspondence artifact. Include the
+    // SQLite main file plus active WAL/SHM companions as one glob so restore
+    // cannot strand a filled review behind a missing journal.
+    'class-reviews.db*',
+    // Feedback Factory operated state: canonical source generations, durable
+    // drain DB/WAL, authority-registry sidecar/audit, and consumer promotion.
+    'state/feedback-factory/store/',
   ],
 };
 
@@ -159,6 +234,10 @@ export class BackupManager {
     for (const entry of this.config.includeFiles) {
       // Gate: exclude the shared-state pattern when feature is disabled.
       if (sharedStateGateOff && entry.startsWith('shared-state.jsonl')) continue;
+      // UNCONDITIONAL never-backup segments (spec §3.5) — no flag gates this.
+      if (path.normalize(entry).split(/[\\/]/).some((seg) => NEVER_BACKUP_PATH_SEGMENTS.includes(seg))) {
+        continue;
+      }
       // F-7 / A35 gate: drop remediation runtime paths from any
       // user-added includeFiles entry. Same prefix-string shape as
       // BLOCKED_PATH_PREFIXES — caller is expected to normalize paths
@@ -270,19 +349,27 @@ export class BackupManager {
       if (entry.endsWith('/')) {
         // Directory — copy all files in it
         if (fs.existsSync(sourcePath) && fs.statSync(sourcePath).isDirectory()) {
-          const dirEntries = fs.readdirSync(sourcePath);
           const targetDir = path.join(snapshotDir, entry);
           fs.mkdirSync(targetDir, { recursive: true });
-
-          for (const file of dirEntries) {
-            const src = path.join(sourcePath, file);
-            if (fs.statSync(src).isFile()) {
-              const dest = path.join(targetDir, file);
-              fs.copyFileSync(src, dest);
-              const stat = fs.statSync(src);
-              totalBytes += stat.size;
-              files.push(path.join(entry, file));
+          const pending = fs.readdirSync(sourcePath).map((file) => ({ absolute: path.join(sourcePath, file), relative: path.join(entry, file) }));
+          while (pending.length > 0) {
+            const next = pending.pop()!;
+            if (isDeniedForBackup(next.relative)) {
+              console.warn(`[BackupManager] Skipping blocked file in directory copy: ${next.relative}`);
+              continue;
             }
+            const stat = fs.lstatSync(next.absolute);
+            if (stat.isSymbolicLink()) continue;
+            if (stat.isDirectory()) {
+              for (const child of fs.readdirSync(next.absolute)) pending.push({ absolute: path.join(next.absolute, child), relative: path.join(next.relative, child) });
+              continue;
+            }
+            if (!stat.isFile()) continue;
+            const dest = path.join(snapshotDir, next.relative);
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.copyFileSync(next.absolute, dest);
+            totalBytes += stat.size;
+            files.push(next.relative);
           }
         }
       } else {
@@ -409,6 +496,13 @@ export class BackupManager {
 
     // Restore files
     for (const file of manifest.files) {
+      // A PRE-fix snapshot (or one crafted on another machine) may carry
+      // excluded per-machine state — apply the same three deny layers on the
+      // way back in, not just at snapshot time (ACT-1201).
+      if (isDeniedForBackup(file)) {
+        console.warn(`[BackupManager] Skipping excluded file during restore: ${file}`);
+        continue;
+      }
       const src = path.join(snapshotDir, file);
       const dest = path.join(this.stateDir, file);
 

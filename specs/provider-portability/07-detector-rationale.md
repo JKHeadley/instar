@@ -25,6 +25,18 @@ For each detector, four lines plus a one-line conclusion:
 
 ---
 
+## Application layer
+
+### `core/claudeReadinessProbe.ts` — pane-readiness classifier (`ready` / `menu` / `not-ready`)
+
+- **Criticality:** silent-corruption-if-wrong, demonstrated twice on 2026-07-26. A false `ready` on a still-painting pane loses a user message *and* writes a success line claiming delivery. A false `ready` on a MENU is worse: Claude Code paints the same `❯` on a menu's focused option as on the input box, so Enter selects an option — an arriving message can answer a permission question on the operator's behalf.
+- **Frequency:** per-spawn and per-inject (`SessionManager.detectClaudePrompt` → `waitForClaudeReady`), plus per-stuck-check on the Slack path.
+- **Stability:** unstable. Claude Code's TUI is a private surface, and this rating is empirical rather than precautionary — the incident that produced this detector *was* an upstream copy change (a Fable-5 promotional line containing `/model`) flipping a passing check into a failing one, and the menu case is upstream glyph reuse.
+- **Fallback:** partial and asymmetric. The spawn path has an extended wait plus a blind-inject-if-alive fallback, so a wrong `not-ready` costs a delay. The Slack stuck-session path's not-ready branch is DESTRUCTIVE (kill + respawn), so a wrong answer there costs a live conversation — which is why the verdict is a named state and not a boolean, letting that caller leave a `menu` alone. The message loss on 2026-07-26 was caught only by the start hook's unanswered-message backstop, an unrelated path that must not be counted as this detector's safety net.
+- **→ Verdict: deterministic + canary required.** Shipped: the deterministic classifier plus regression fixtures carrying the literal pane text of both known failures, with a dead-check guard proving the classifier still discriminates across all three verdicts. Not shipped: a canary. So it detects the two shapes that already bit us and not the next drift, which for an unstable upstream is the case that matters. Canary tracked as CMT-1044. <!-- tracked: CMT-1044 -->
+
+---
+
 ## Provider substrate
 
 ### `adapters/anthropic-interactive-pool/promptRunner.ts` — empty-prompt completion detector
@@ -98,6 +110,14 @@ For each detector, four lines plus a one-line conclusion:
 - **Stability:** very stable.
 - **Fallback:** alternative capture via session attach if capture-pane fails.
 - **→ Verdict:** deterministic + light canary (shares process-lifecycle's cadence).
+
+### `adapters/anthropic-headless/control/authCredentialInjection.ts` — credential-validity probe
+
+- **Criticality:** minor-degradation. A wrong verdict surfaces as a loud AuthError, or the credential fails loudly downstream — never silent corruption; the probe is a pre-check convenience, not the authority.
+- **Frequency:** per-enrollment / per-verification event (rare).
+- **Stability:** very-stable — official public Messages-API HTTP status semantics (401/403 for bad credentials), not a scraped surface.
+- **Fallback:** every downstream call with the same credential fails loudly on its own; `mapApiError` classifies non-ok statuses.
+- **→ Verdict:** deterministic, exempt-from-canary (stable public API contract + loud failure path). Probe model config-overridable via `intelligence.pinnedModels.anthropicCredentialProbe` (2026-07-02).
 
 ### `adapters/anthropic-interactive-pool/pool.ts` — waitForReady static idle-marker check
 

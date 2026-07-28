@@ -1,0 +1,25 @@
+{
+  "ts": "2026-07-19T20:44:06.926Z",
+  "slug": "decision-audit-trace-binding",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 11,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The trace producer omitted stable identity and the pre-commit consumer selected evidence by mtime before proving scope coverage."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "scripts/instar-dev-precommit.js#freshestTraceEntry",
+      "howCaught": "Generated traces persist their slug and the pre-commit gate consumes only a complete trace covering every staged behavior file, preventing missing or foreign identity from labeling the decision."
+    }
+  },
+  "verdict": "pass"
+}
