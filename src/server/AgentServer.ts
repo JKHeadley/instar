@@ -128,6 +128,8 @@ import { listAgents } from '../core/AgentRegistry.js';
 import { getAgentToken } from '../messaging/AgentTokenManager.js';
 import { GeminiCapacityEscalationMonitor } from '../monitoring/GeminiCapacityEscalationMonitor.js';
 import { SafeGitExecutor, auditBootCredentialCoherence } from '../core/SafeGitExecutor.js';
+import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
+import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
 import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
@@ -2485,10 +2487,34 @@ export class AgentServer {
             classReviewStore: this.classReviewStore,
           }),
           standardTitles: () => {
-            try {
-              const registry = fs.readFileSync(path.join(options.config.projectDir, 'docs', 'STANDARDS-REGISTRY.md'), 'utf8');
-              return [...registry.matchAll(/^###\s+(.+)$/gm)].map((match) => match[1].trim()).slice(0, 100);
-            } catch { return []; }
+            // Was: read `<projectDir>/docs/STANDARDS-REGISTRY.md` with its own
+            // `^###` regex and `catch { return [] }`. On a deployed agent that file
+            // is a May-24 snapshot at best and absent at worst, so this silently
+            // returned an EMPTY list of standards and nothing anywhere said so —
+            // the same absence-reads-as-presence failure as the coverage audit.
+            // Now it reads the packed asset through the resolver and the SHARED
+            // parser; an unusable install still yields [], but that is a genuinely
+            // broken install rather than the everyday case.
+            const resolution = resolveStandardsRegistry();
+            if (!resolution.usable) {
+              // NOT silent (cross-model round 3, finding 4): an empty standards list
+              // is indistinguishable from legitimate emptiness at the callsite, which
+              // is the exact shape this whole change removes. Say so once, loudly.
+              console.warn(
+                `[standards] standardTitles() returning [] — the packed constitution is unusable ` +
+                `(${resolution.reason}: ${resolution.detail}). This is a BROKEN INSTALL, not an ` +
+                'empty constitution. Reinstall or rebuild.',
+              );
+              return [];
+            }
+            // Parse the bytes the resolution CARRIES. Re-opening `path` here meant
+            // the integrity check and the parse applied to different reads, and the
+            // trailing `catch { return [] }` then swallowed a read failure into a
+            // silent empty constitution — the same absence-reads-as-presence shape
+            // the branch above was fixed to make loud, still live one line below it.
+            // With the bytes in hand there is nothing left to throw, so the catch is
+            // deleted rather than kept as decoration.
+            return parseStandardsRegistry(resolution.markdown).map((a) => a.name).slice(0, 100);
           },
           createInitiative: options.initiativeTracker ? async (input) => {
             const created = await options.initiativeTracker!.create({
@@ -3764,7 +3790,10 @@ export class AgentServer {
       const projectDir = options.config.projectDir;
       this.app.use(createSpecReviewRoutes({
         intelligence: options.intelligence ?? null,
-        registryPath: path.join(projectDir, 'docs', 'STANDARDS-REGISTRY.md'),
+        // Resolved, never constructed — see src/core/standardsRegistryPath.ts. An
+        // unusable install yields `null` here and the route reports it honestly
+        // rather than silently grading against a stale agent-home snapshot.
+        registryResolution: resolveStandardsRegistry(),
         specsDir: path.join(projectDir, 'docs', 'specs'),
         stateDir: options.config.stateDir,
         enabled: options.config.specReview?.conformance?.enabled !== false,

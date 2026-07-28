@@ -90,3 +90,9 @@ src/data/builtin-manifest.json
 # retired session at run-time, never committed (payload-by-reference, CMT-1115).
 src/redteam/packs/*/payloads/L2.md
 src/redteam/packs/*/payloads/L3.md
+
+# Generated constitution asset (see scripts/generate-standards-registry-asset.mjs).
+# Written to BOTH src/data and dist/data so the module-relative resolver works in
+# the TS-source (vitest) and compiled (production) layouts. Build output, never committed.
+src/data/standards-registry.md
+src/data/standards-registry.meta.json

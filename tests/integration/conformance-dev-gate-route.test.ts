@@ -18,6 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
+import { resolveStandardsRegistryFromPath } from '../../src/core/standardsRegistryPath.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { CartographerTree } from '../../src/core/CartographerTree.js';
 
@@ -53,6 +54,9 @@ afterEach(() => {
 
 function ctxWith(cfgExtra: Record<string, unknown>): RouteContext {
   return {
+    // Explicit test injection: assert semantic boundaries against a CONTROLLED
+    // constitution. Production resolves the packed asset and never sets this.
+    standardsRegistryResolutionOverride: resolveStandardsRegistryFromPath(path.join(repo, 'docs', 'STANDARDS-REGISTRY.md')),
     config: {
       projectName: 't', projectDir: repo, stateDir, port: 0, authToken: AUTH,
       sessions: {} as any, scheduler: {} as any,

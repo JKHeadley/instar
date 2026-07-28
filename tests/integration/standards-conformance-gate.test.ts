@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { resolveStandardsRegistryFromPath } from '../../src/core/standardsRegistryPath.js';
 import express from 'express';
 import request from 'supertest';
 import { createSpecReviewRoutes } from '../../src/server/specReviewRoutes.js';
@@ -24,7 +25,8 @@ function app(opts: { intelligence?: IntelligenceProvider | null; enabled?: boole
   a.use(express.json({ limit: '2mb' }));
   a.use(createSpecReviewRoutes({
     intelligence: opts.intelligence ?? null,
-    registryPath: REGISTRY_PATH,
+    // Explicit test injection against a CONTROLLED constitution fixture.
+    registryResolution: resolveStandardsRegistryFromPath(REGISTRY_PATH),
     specsDir: SPECS_DIR,
     stateDir: tempDir,
     enabled: opts.enabled,

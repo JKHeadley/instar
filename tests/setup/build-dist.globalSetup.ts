@@ -31,7 +31,32 @@ function newestSrcMtime(dir: string): number {
   return newest;
 }
 
+/**
+ * TWO steps, in this order, and the ORDER IS LOAD-BEARING IN BOTH DIRECTIONS — which is
+ * the whole lesson of this function's history:
+ *
+ *   1. `ensureDistBuilt()` — conditional (skipped when dist is already fresh).
+ *   2. `ensureRegistryAsset()` — UNCONDITIONAL, and necessarily AFTER step 1.
+ *
+ * The generator imports `dist/core/StandardsRegistryParser.js` and its own header says it
+ * must run after `tsc`. So it cannot go first. But it also cannot live INSIDE step 1,
+ * because step 1 returns early on a freshness probe of an unrelated artifact (the
+ * cartographer worker) — so a fresh dist skipped the asset entirely.
+ *
+ * Both orderings have now been shipped and both were wrong, in opposite directions:
+ * originally the call sat below the early return (unreachable whenever dist was fresh);
+ * the fix for that hoisted it above `tsc` (fatal on CI, where `npm ci` → `npm run test:*`
+ * runs with NO build, so `dist/` does not exist, the generator exits 1, and `execSync`
+ * throws out of globalSetup before a single test runs). Locally both bugs are invisible
+ * because `dist/` happens to exist. Separating the two concerns is what makes the
+ * constraint expressible instead of accidental.
+ */
 export default function setup(): void {
+  ensureDistBuilt();
+  ensureRegistryAsset();
+}
+
+function ensureDistBuilt(): void {
   const distWorker = path.join(ROOT, 'dist', 'core', 'cartographerDetect.worker.js');
   const fresh = fs.existsSync(distWorker) &&
     fs.statSync(distWorker).mtimeMs >= newestSrcMtime(path.join(ROOT, 'src'));
@@ -41,4 +66,46 @@ export default function setup(): void {
   // Restore the bin exec bit the full build script applies (tsc emits 0644) — the
   // package-completeness guard asserts every package.json bin ships executable.
   try { fs.chmodSync(path.join(ROOT, 'dist', 'cli.js'), 0o755); } catch { /* dist/cli.js absent in partial builds */ }
+}
+
+/**
+ * Generate the packed constitution if it is absent.
+ *
+ * `src/data/standards-registry.{md,meta.json}` are gitignored BUILD OUTPUT, and any test
+ * that exercises the production resolver (rather than injecting a fixture path) needs
+ * them. On a fresh CI checkout — `npm ci`, no `npm run build` — they do not exist, and the
+ * `npx tsc` in `ensureDistBuilt()` does not create them either: the generator is a separate
+ * step of the full build. (`ensureDistBuilt` runs FIRST — the generator needs its output.
+ * The word here used to be "above", which stopped being true the moment the reorder moved
+ * the build into its own function; naming the function instead of a direction is what stops
+ * that recurring.)
+ *
+ * WHY THIS IS HERE AND NOT IN A `beforeAll` (measured, and I got it wrong first):
+ * exactly one test file carried a self-bootstrapping `beforeAll`. When a review round
+ * raised "CI cannot run this green", I tested THAT file, saw it pass, and recorded the
+ * finding as unreproducible. Then I added a production-path block to a sharded
+ * INTEGRATION file — which has no such bootstrap — making the finding concrete.
+ * Reproduced afterwards with both asset copies moved aside: exactly 2 failures.
+ *
+ * The lesson is about the rebuttal, not the bug: I disproved a claim by measuring a
+ * different subject than the one it was about. A per-file bootstrap is invisible to the
+ * next file that needs it, so the guarantee belongs at the setup layer where every file
+ * inherits it.
+ *
+ * It runs AFTER the dist build above, never before — see the ordering note on `setup()`.
+ */
+function ensureRegistryAsset(): void {
+  // BOTH output dirs, not just `src/data`. The generator writes the pair to each, and
+  // they are consumed by different readers: tests resolving through TS source read
+  // `src/data`, while the migrator's mirror sources `dist/data` (the copy that actually
+  // ships). A `dist` clean therefore leaves `src/data` present and the mirror's source
+  // gone — and probing only `src/data` would return early over exactly that state.
+  const needed = [
+    path.join(ROOT, 'src', 'data', 'standards-registry.md'),
+    path.join(ROOT, 'src', 'data', 'standards-registry.meta.json'),
+    path.join(ROOT, 'dist', 'data', 'standards-registry.md'),
+    path.join(ROOT, 'dist', 'data', 'standards-registry.meta.json'),
+  ];
+  if (needed.every((p) => fs.existsSync(p))) return;
+  execSync('node scripts/generate-standards-registry-asset.mjs', { cwd: ROOT, stdio: 'inherit' });
 }

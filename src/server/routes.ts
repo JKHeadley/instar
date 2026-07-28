@@ -57,8 +57,11 @@ import {
 import { navigate as cartographerNavigate } from '../core/CartographerNavigator.js';
 import {
   computeCoverage as computeStandardsCoverage,
+  unusableCoverageReport,
   type CoverageReport as StandardsCoverageReport,
+  type CoverageSummary,
 } from '../core/StandardsEnforcementAuditor.js';
+import { resolveStandardsRegistry, type RegistryResolution } from '../core/standardsRegistryPath.js';
 import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
@@ -745,6 +748,19 @@ export function createDeliveryFailedHandler(opts: {
 }
 
 export interface RouteContext {
+  /**
+   * TEST-ONLY pre-resolved constitution for the conformance routes.
+   *
+   * Production leaves this undefined and the routes resolve the packed asset
+   * shipped beside the compiled code (`src/core/standardsRegistryPath.ts`). It is
+   * NOT a config knob and no production callsite sets it — pointing a deployed
+   * agent at an arbitrary registry is the defect that module exists to close.
+   * Route-level tests set it (via `resolveStandardsRegistryFromPath`) so they can
+   * assert semantic boundaries against a CONTROLLED constitution (empty,
+   * three-article, known-gap) rather than the live 81-article document. It carries a
+   * RESOLUTION, not a path, so the route never performs path-based resolution at all.
+   */
+  standardsRegistryResolutionOverride?: RegistryResolution;
   capabilityRegistry?: CapabilityRegistryReceiver | null;
   /** Unified work-intake registry; absent while fleet rollout is dark. */
   workQueue?: WorkQueueRegistry | null;
@@ -1787,6 +1803,102 @@ function pickRedactedProvenanceFields(row: Record<string, unknown>): Record<stri
     if (k in row) out[k] = row[k];
   }
   return out;
+}
+
+/**
+ * The client-facing flags of a standards-coverage report — derived in ONE place, for
+ * `/conformance/coverage` and `/conformance/coverage/health` alike.
+ *
+ * FOUR flags, and the count is stated once here because it was previously stated twice
+ * and wrongly. Two routes carried byte-identical copies of this derivation, each headed
+ * by a comment that opened "TWO top-level flags", continued "THREE flags" in a paragraph
+ * appended a round later, and shipped four — the same contradiction in both copies,
+ * because the duplication guaranteed every correction had to be made twice and each round
+ * appended rather than corrected. Removing the second copy is the actual fix; the wording
+ * was only the symptom.
+ *
+ * What each one means, and why one boolean could not:
+ *  - `usable` — a report was produced at all. NOT `confidence !== 'untrustworthy'`, which
+ *    returned TRUE for `unverified` and so presented the stale-but-coherent registry (the
+ *    case this whole change exists for) as fine to the minimal client.
+ *  - `registryUsable` / `guardsAnalyzable` — the report's two INDEPENDENT halves. Folding
+ *    them into `usable` made a perfectly-resolved 81-article constitution read
+ *    `usable: false` on any install that is not a source checkout.
+ *  - `registryCurrent` — named this, not `verified`: three consecutive review rounds read
+ *    `verified` as trust or provenance, which is strictly more than this establishes.
+ *    `assessmentConfidence` keeps its `'verified'` enum internally (the audit's own
+ *    vocabulary); the client-facing boolean says only what it knows.
+ *  - `verifiedKind` — WHAT `registryCurrent` is established OF, so a dashboard cannot
+ *    flatten it back into generic trust. Same repair as `enforcementBasisMeans`: when a
+ *    one-word verdict cannot carry its own limits, ship the limit beside it.
+ *
+ * The illegal combinations are unreachable BY CONSTRUCTION here, which is what the
+ * published truth table asserts against this function's real output.
+ */
+// The parameter is a `Pick` of the REAL summary type, not a structural stand-in with
+// `assessmentConfidence: string`. That distinction is load-bearing and was nearly lost in
+// the extraction: widening the literal union to `string` compiles a comparison against a
+// renamed enum member silently, and `registryCurrent` would then be `false` forever — a
+// silent degradation introduced by a refactor inside a change whose whole subject is
+// silent degradation. With the union, the same rename is a TS2367 at build time.
+/**
+ * The four legal coverage states, as a single field. Same state machine the
+ * four booleans encode; see `deriveCoverageClientFlags`.
+ *
+ * AUTHORITATIVE. The four booleans are COMPATIBILITY-ONLY from round 13: they
+ * are retained for existing readers, are not extended, and no new state may be
+ * added as a fifth boolean — express it here. Retaining a transitional shape
+ * without governing it just makes it a permanent second contract.
+ */
+export type CoverageState =
+  | 'invalid-registry'
+  | 'missing-guards'
+  | 'usable-unverified'
+  /**
+   * The asset's stamp matches the RUNNING PACKAGE VERSION and a build produced it.
+   * NOT 'up to date with the authored source' — package version is not build-unique, so a
+   * same-version rebuild or republish satisfies this while the content differs (ACT-1463).
+   * Named for what it establishes: four consecutive review rounds objected that `current`
+   * reads stronger than the mechanism supports.
+   */
+  | 'package-stamped';
+
+export function deriveCoverageClientFlags(
+  summary: Pick<CoverageSummary, 'assessmentConfidence' | 'total' | 'registry' | 'guards'>,
+): {
+  usable: boolean;
+  registryUsable: boolean;
+  guardsAnalyzable: boolean;
+  registryCurrent: boolean;
+  coverageState: CoverageState;
+  verifiedKind: string | null;
+} {
+  const registryCurrent = summary.assessmentConfidence === 'verified';
+  const registryUsable = summary.registry.canaryOk && summary.total > 0;
+  const guardsAnalyzable = summary.guards.analyzable;
+  return {
+    usable: summary.assessmentConfidence !== 'untrustworthy',
+    registryUsable,
+    guardsAnalyzable,
+    registryCurrent,
+    // Single-field form of the SAME four legal states the booleans encode
+    // (spec §Response state, rows a-d). Raised in review rounds 10, 11 and 12:
+    // four booleans are a state machine clients misuse — they read `usable` or
+    // `assessmentTrustworthy` and miss `registryCurrent` / `guardsAnalyzable`.
+    //
+    // NON-BREAKING BY CONSTRUCTION: the booleans stay, and this is derived from
+    // the same three values in the same expression, so the two forms cannot
+    // disagree. Order matters and follows the truth table exactly: a failed
+    // registry makes guard state meaningless, so it is tested first.
+    coverageState: !registryUsable
+      ? 'invalid-registry'          // (a) constitution did not parse / canary objected
+      : !guardsAnalyzable
+        ? 'missing-guards'          // (b) sound constitution, no source tree to resolve against
+        : registryCurrent
+          ? 'package-stamped'      // (d) everything answered, asset stamp matches the build
+          : 'usable-unverified',    // (c) answered, provenance NOT established
+    verifiedKind: registryCurrent ? 'packed-asset-current-with-build' : null,
+  };
 }
 
 /**
@@ -7194,8 +7306,41 @@ export function createRoutes(ctx: RouteContext): Router {
   };
   let conformanceCache: StandardsCoverageReport | null = null;
   const conformanceReport = (): StandardsCoverageReport => {
-    const registryPath = path.join(ctx.config.projectDir, 'docs', 'STANDARDS-REGISTRY.md');
-    const report = computeStandardsCoverage({ registryPath, projectDir: ctx.config.projectDir }, conformanceCache);
+    // The registry path comes from the resolver — NEVER built here. Until
+    // 2026-07-26 this line was `path.join(ctx.config.projectDir, 'docs',
+    // 'STANDARDS-REGISTRY.md')`, the agent-home SNAPSHOT, which is written once at
+    // install and can never be refreshed because `docs/` ships in none of the
+    // package's files. The audit was grading a May-24 copy of 22 standards against
+    // an authored constitution of 81.
+    // The override is honoured ONLY under vitest. Cross-model review raised the
+    // seam twice: regex assertions that "no production wiring sets this" are policy,
+    // and a future caller could reach it through an indirect helper. This makes it
+    // STRUCTURALLY unreachable in production — `VITEST` is set by the test runner and
+    // by nothing else, so a deployed agent cannot be pointed at an arbitrary
+    // constitution even if the field were somehow populated.
+    const testOnlyOverride = process.env.VITEST ? ctx.standardsRegistryResolutionOverride : undefined;
+    const resolution = testOnlyOverride ?? resolveStandardsRegistry();
+    if (!resolution.usable) {
+      // A broken/mismatched install yields an HONEST untrustworthy report, never a
+      // 500 and never a substituted candidate. There is no other candidate: the
+      // reader and its data ship in the same package version.
+      return unusableCoverageReport(resolution);
+    }
+    // Pass the resolver's basis and its bytes through VERBATIM. The route used to
+    // synthesise an `expectation` here from the resolution's own sha, which the
+    // auditor then compared against a re-hash of the same file — the same number
+    // twice, so 'verified' was unearned ceremony (ACT-1426). A caller-supplied
+    // fixture path still cannot reach 'verified': its basis says so by name,
+    // rather than depending on this callsite remembering to withhold a field.
+    const report = computeStandardsCoverage(
+      {
+        registryPath: resolution.path,
+        projectDir: ctx.config.projectDir,
+        registryMarkdown: resolution.markdown,
+        integrity: resolution.integrity,
+      },
+      conformanceCache,
+    );
     conformanceCache = report;
     return report;
   };
@@ -7215,7 +7360,15 @@ export function createRoutes(ctx: RouteContext): Router {
     if (status === 'gap') standards = standards.filter((s) => s.enforcementKind === 'documented-only');
     if (status === 'dangling') standards = standards.filter((s) => s.danglingRefs.length > 0);
 
-    res.json({ generatedAt: report.generatedAt, summary: report.summary, count: standards.length, standards });
+    res.json({
+      generatedAt: report.generatedAt,
+      // Derived once, in `deriveCoverageClientFlags` — see that function for what each
+      // flag means and why a single boolean could not carry it.
+      ...deriveCoverageClientFlags(report.summary),
+      summary: report.summary,
+      count: standards.length,
+      standards,
+    });
   });
 
   router.get('/conformance/coverage/health', (req, res) => {
@@ -7235,6 +7388,10 @@ export function createRoutes(ctx: RouteContext): Router {
       generatedAt: report.generatedAt,
       converged: true,
       convergedMeans: 'the deterministic pass is stable on unchanged inputs; NOT that standards are healthy',
+      // Derived once, in `deriveCoverageClientFlags` — the same function `/conformance/coverage`
+      // uses, so the two routes cannot drift apart (they previously held byte-identical
+      // copies of this derivation, and of one contradictory comment).
+      ...deriveCoverageClientFlags(report.summary),
       // `assessmentConfidence` + `confidenceReason` arrive via the summary spread and are
       // the fields to read. `assessmentTrustworthy` is retained (deprecated) for one
       // release: it is TRUE only on a 'verified' verdict, which requires an external
