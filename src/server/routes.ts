@@ -1798,6 +1798,10 @@ function pickRedactedProvenanceFields(row: Record<string, unknown>): Record<stri
 const DECISION_QUALITY_POINT_FIELDS: readonly string[] = [
   'decisionPoint', 'component', 'status', 'volumeClass', 'contentClass',
   'decisions', 'outcomesKnown', 'outcomesKnownRatio', 'insufficientEvidence',
+  // settledGrades/unknownShare belong here too, or a pool-scope row silently
+  // loses the two fields that say whether its rates mean anything — leaving the
+  // merged view MORE misleading than the local one.
+  'settledGrades', 'unknownShare',
   'gradeDistribution', 'byStrength', 'byRule', 'byRung', 'attribution', 'counters', 'flags',
 ];
 function pickDecisionQualityPointFields(row: Record<string, unknown>): Record<string, unknown> {
@@ -16782,7 +16786,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         bump(byRung, r.rung, r.grade, r.n);
         bump(byStrength, r.evidenceStrength, r.grade, r.n);
       }
+      // `outcomesKnown` counts every decision carrying ANY grade row, including
+      // `unknown`. That is a ROW count, not an EVIDENCE count: an `unknown` grade
+      // is precisely the absence of a settled outcome. Both are published — they
+      // answer different questions — but only `settledGrades` can back a RATE.
       const outcomesKnown = right + wrong + unknown;
+      const settledGrades = right + wrong;
       points.push({
         decisionPoint: entry.decisionPoint,
         component: entry.component,
@@ -16792,8 +16801,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         decisions,
         outcomesKnown,
         outcomesKnownRatio: decisions > 0 ? outcomesKnown / decisions : 0,
-        // Below the minimum sample an aggregate rate is not actionable (§5.5 codex r5).
-        insufficientEvidence: outcomesKnown < minSample,
+        /**
+         * Settled (right|wrong) grades — the only ones that can support a rate.
+         * `selfReportShare` below already divides by this same quantity.
+         */
+        settledGrades,
+        /** Share of graded rows that are unsettled. 1.0 means nothing is known. */
+        unknownShare: outcomesKnown > 0 ? unknown / outcomesKnown : 0,
+        // Below the minimum SETTLED-grade count an aggregate rate is not
+        // actionable (§5.5 codex r5). Measured 2026-07-28: this counted
+        // `unknown` toward the sample, so messaging-tone-gate (2075 decisions,
+        // right=0 wrong=0 unknown=2004) served `insufficientEvidence: false` —
+        // "we have enough evidence" over a stream where NOTHING was settled.
+        // An audit trusting that flag would have read right=0/wrong=0 and
+        // concluded the gate is never wrong. The type contract already said
+        // "graded-decision count" (types.ts); the code counted rows.
+        // Instance 7 of ACT-1243: a metric must refuse a verdict when its
+        // denominator is unverifiable, never report the ideal value.
+        insufficientEvidence: settledGrades < minSample,
         gradeDistribution: {
           right,
           wrong,
