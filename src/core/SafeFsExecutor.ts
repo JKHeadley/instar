@@ -130,9 +130,28 @@ export class SafeFsExecutor {
    * loaded runner — a whole-class flake every tmpdir-cleanup test inherits.
    * Explicit caller-set values always win; non-recursive deletes unchanged.
    */
+  /**
+   * Retry budget for recursive+force removals.
+   *
+   * Raised from 3x100ms (~300ms) to 10x100ms (~1s) after a CI failure on main
+   * (2026-07-28): `ENOTEMPTY` on `rmdir` of a temp dir's `.git`, from a test whose
+   * setup runs real `git add` + `git commit`. The retries WERE in force — they
+   * simply ran out. A git child process (or its index.lock) can outlive a
+   * ~300ms window when the runner is loaded, so the teardown raced a process
+   * still writing into the directory.
+   *
+   * This widens the budget; it does not prove any budget is sufficient. A
+   * removal that is genuinely blocked now fails after ~1s instead of ~300ms,
+   * which costs nothing — the operation was going to fail either way. The
+   * deeper fix for the git case is ensuring the child has exited before
+   * teardown, which belongs with the tests rather than here.
+   *
+   * Only applied when the caller did not specify `maxRetries`, so an explicit
+   * choice always wins.
+   */
   private static withRmRetryDefaults<T extends fs.RmOptions>(rmOpts: T): T {
     if (rmOpts.recursive && rmOpts.force && rmOpts.maxRetries === undefined) {
-      return { ...rmOpts, maxRetries: 3, retryDelay: 100 };
+      return { ...rmOpts, maxRetries: 10, retryDelay: 100 };
     }
     return rmOpts;
   }
