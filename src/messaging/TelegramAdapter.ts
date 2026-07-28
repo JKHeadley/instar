@@ -34,6 +34,7 @@ import {
   recordFormatFallbackPlainRetry,
 } from './telegramFormatMetrics.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { pickDashboardPin } from '../core/dashboardPin.js';
 import { stopAutonomousTopic, type AutonomousJournalSeam } from '../core/AutonomousSessions.js';
 import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
 
@@ -1887,7 +1888,9 @@ export class TelegramAdapter implements MessagingAdapter {
       throw new Error('Dashboard topic is not configured; create or repair the Dashboard forum topic before refreshing the pinned link');
     }
 
-    const pin = this.config.dashboardPin || '(check your config)';
+    // Resolve a REAL PIN — never leak the internal placeholder to the user.
+    // A null result means honestly omit the PIN line — see formatDashboardMessage.
+    const pin = this.resolvedDashboardPin();
     const isNamed = tunnelType === 'named';
     const warnings: string[] = [];
 
@@ -1953,12 +1956,31 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
-  private formatDashboardMessage(url: string, pin: string, isNamed: boolean): string {
+  /**
+   * Resolve the dashboard PIN for the broadcast: the in-memory config value
+   * first (the normal path — already resolved from the vault by loadConfig),
+   * then a fresh vault read so a transient boot-time secret-resolution failure
+   * still yields the real PIN (the 2026-06-06 topic-5 placeholder-leak
+   * incident). Returns null when no real PIN is available; the broadcast then
+   * omits the PIN line rather than ever emitting the internal placeholder.
+   */
+  private resolvedDashboardPin(): string | null {
+    return pickDashboardPin(this.config.dashboardPin, this.stateDir);
+  }
+
+  private formatDashboardMessage(url: string, pin: string | null, isNamed: boolean): string {
     const dashboardUrl = url + '/dashboard';
     const quickLinks = [
       `Sessions: ${dashboardUrl}?tab=sessions`,
       `Files: ${dashboardUrl}?tab=files`,
     ];
+
+    // A null PIN means the value could not be resolved. NEVER substitute an
+    // internal placeholder (the 2026-06-06 leak) — show an honest, actionable
+    // line the user can act on instead.
+    const pinLine = pin
+      ? `PIN: \`${pin}\``
+      : `_PIN unavailable right now — ask me for your dashboard PIN and I'll send it._`;
 
     if (isNamed) {
       return [
@@ -1967,7 +1989,7 @@ export class TelegramAdapter implements MessagingAdapter {
         `Your permanent dashboard link:`,
         dashboardUrl,
         '',
-        `PIN: \`${pin}\``,
+        pinLine,
         '',
         `Quick links:`,
         ...quickLinks.map(l => `  ${l}`),
@@ -1981,7 +2003,7 @@ export class TelegramAdapter implements MessagingAdapter {
       `Your dashboard is live:`,
       dashboardUrl,
       '',
-      `PIN: \`${pin}\``,
+      pinLine,
       '',
       `Quick links:`,
       ...quickLinks.map(l => `  ${l}`),
