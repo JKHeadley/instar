@@ -89,6 +89,16 @@ export type ImportDryRunOutcome =
   | { ok: true; result: ImportRunResult; generatedAt: string }
   | { ok: false; reason: string };
 
+/**
+ * Outcome of the REAL pre-click integrity pass. Unlike the dry-run, a passing (or
+ * failing) report is recorded to the CANONICAL integrity path via recordIntegrityReport
+ * — so this outcome IS load-bearing on `ready`. `recorded` says whether a report landed
+ * (false only on a pre-import abort, where there is no report to record).
+ */
+export type ImportIntegrityPassOutcome =
+  | { ok: true; result: ImportRunResult; generatedAt: string; recorded: boolean }
+  | { ok: false; reason: string };
+
 export interface CutoverReadinessDeps {
   parityMonitor: DurableParityMonitor;
   /** Where the import tooling's IntegrityReport persists (JSON envelope). */
@@ -105,12 +115,35 @@ export interface CutoverReadinessDeps {
   /** SERVER-SIDE import rehearsal (live source fetch → in-memory AS-IS import →
    *  integrity gate over readback). Null/absent when no source is configured. */
   runImportDryRun?: (() => Promise<ImportRunResult>) | null;
+  /** SERVER-SIDE REAL pre-click integrity pass (live source fetch → AS-IS import into
+   *  a PERSISTED shadow → integrity gate over readback). Distinct from the dry-run:
+   *  its passing report greens the canonical integrity condition via
+   *  recordIntegrityReport. Run OFF the event loop (AgentServer spawns a child process)
+   *  because the full-corpus fetch+import cannot settle in-process (#948). Null/absent
+   *  when no source is configured. */
+  runIntegrityImport?: (() => Promise<ImportRunResult>) | null;
   /** Freshness bound for the parity window (default 6h). */
   maxPassStalenessMs?: number;
+  /**
+   * Wall-clock max-hold for a single live fetch (parity pass OR import dry-run),
+   * enforced at the single-flight-lock boundary (default 12m). This is a
+   * defense-in-depth backstop ON TOP OF whatever internal timeout the injected
+   * fetch carries: if that fetch ever fails to settle (e.g. an AbortSignal that
+   * doesn't fire on a stalled socket, or a compare step with no timeout of its
+   * own), the lock would otherwise be held forever and every subsequent pass +
+   * dry-run is refused with "already in flight" — exactly the ~85-minute stuck
+   * lock observed in #948. The max-hold guarantees the lock releases within a
+   * bounded time so the next sweep can retry; it sits comfortably above
+   * HttpParitySource's 600s total budget so it only fires when that inner budget
+   * has genuinely failed, never on a legitimately-slow-but-working pass. */
+  maxLiveFetchMs?: number;
   now?: () => number;
 }
 
 const DEFAULT_MAX_PASS_STALENESS_MS = 6 * 60 * 60 * 1000;
+/** 12m — above HttpParitySource's 600s total budget + a working pass's compare,
+ *  so the lock-boundary max-hold is a true backstop, not a false-abort risk. */
+const DEFAULT_MAX_LIVE_FETCH_MS = 12 * 60 * 1000;
 
 interface PersistedIntegrityEnvelope {
   generatedAt: string;
@@ -126,6 +159,7 @@ interface PersistedDryRunEnvelope {
 export class CutoverReadiness {
   private readonly d: CutoverReadinessDeps;
   private readonly maxStaleMs: number;
+  private readonly maxLiveFetchMs: number;
   /**
    * Single-flight guard over the LIVE SOURCE FETCH — shared by the parity pass
    * and the import dry-run because both page the full live source. Without it,
@@ -136,7 +170,7 @@ export class CutoverReadiness {
    * against an already-degraded Portal). One live fetch at a time; a concurrent
    * trigger is refused immediately (409 at the route) and records nothing.
    */
-  private liveFetchInFlight: { op: 'parity-pass' | 'import-dry-run'; startedAt: string } | null = null;
+  private liveFetchInFlight: { op: 'parity-pass' | 'import-dry-run' | 'integrity-pass'; startedAt: string } | null = null;
 
   constructor(deps: CutoverReadinessDeps) {
     if (deps.importDryRunReportPath && path.resolve(deps.importDryRunReportPath) === path.resolve(deps.integrityReportPath)) {
@@ -146,10 +180,36 @@ export class CutoverReadiness {
     }
     this.d = deps;
     this.maxStaleMs = deps.maxPassStalenessMs ?? DEFAULT_MAX_PASS_STALENESS_MS;
+    this.maxLiveFetchMs = deps.maxLiveFetchMs ?? DEFAULT_MAX_LIVE_FETCH_MS;
   }
 
   private nowMs(): number {
     return this.d.now ? this.d.now() : Date.now();
+  }
+
+  /**
+   * Race an injected live-fetch promise against a wall-clock max-hold so the
+   * single-flight lock can NEVER be held indefinitely by a fetch that fails to
+   * settle (#948). On timeout this rejects (the caller's `finally` then releases
+   * the lock and the next sweep retries); the orphaned work is abandoned — a
+   * re-attempt is cheap and idempotent, an unreleasable lock is not. Uses real
+   * wall-clock time (NOT `nowMs()`), since the bug is a promise that never
+   * settles in real time regardless of an injected clock. */
+  private async withMaxHold<T>(work: Promise<T>, op: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const guard = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(
+          `live ${op} fetch exceeded the max-hold budget (${this.maxLiveFetchMs}ms) — releasing the single-flight lock so a later sweep can retry; the underlying fetch did not settle within budget (see #948)`,
+        ));
+      }, this.maxLiveFetchMs);
+      if (typeof timer.unref === 'function') timer.unref();
+    });
+    try {
+      return await Promise.race([work, guard]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** Persist an import IntegrityReport (server-side import tooling only). */
@@ -213,7 +273,7 @@ export class CutoverReadiness {
     this.liveFetchInFlight = { op: 'parity-pass', startedAt: new Date(this.nowMs()).toISOString() };
     let result: ParityResult;
     try {
-      result = await this.d.runParityCheck();
+      result = await this.withMaxHold(this.d.runParityCheck(), 'parity-pass');
     } catch (err) {
       return { ok: false, reason: `parity check failed: ${err instanceof Error ? err.message : String(err)}` };
     } finally {
@@ -245,7 +305,7 @@ export class CutoverReadiness {
     this.liveFetchInFlight = { op: 'import-dry-run', startedAt: new Date(this.nowMs()).toISOString() };
     let result: ImportRunResult;
     try {
-      result = await this.d.runImportDryRun();
+      result = await this.withMaxHold(this.d.runImportDryRun(), 'import-dry-run');
     } catch (err) {
       return { ok: false, reason: `import dry-run failed: ${err instanceof Error ? err.message : String(err)}` };
     } finally {
@@ -256,6 +316,42 @@ export class CutoverReadiness {
     fs.mkdirSync(path.dirname(this.d.importDryRunReportPath), { recursive: true });
     fs.writeFileSync(this.d.importDryRunReportPath, JSON.stringify(envelope, null, 2));
     return { ok: true, result, generatedAt };
+  }
+
+  /**
+   * TRIGGER the REAL pre-click integrity pass (T7: the agent may ask; the server
+   * computes — live source fetch → AS-IS import into a PERSISTED shadow → integrity
+   * gate over the readback). UNLIKE the dry-run, the resulting report is recorded to
+   * the CANONICAL integrity path via recordIntegrityReport: a PASSING report greens
+   * `ready`, a FAILING report flips it closed (the door always reflects the LATEST
+   * real verdict — never a stale green). A pre-import abort (fingerprint collision →
+   * null report) records nothing and leaves prior state; the abort is returned for the
+   * operator to resolve. A FAILED fetch records nothing (absence of evidence, not a
+   * verdict). Shares the single-flight live-fetch guard + the max-hold backstop.
+   */
+  async runIntegrityPass(): Promise<ImportIntegrityPassOutcome> {
+    if (!this.d.runIntegrityImport) {
+      return { ok: false, reason: 'no import source configured (feedbackMigration.paritySource) — cannot run a real integrity pass' };
+    }
+    if (this.liveFetchInFlight) {
+      return { ok: false, reason: `live source fetch already in flight (${this.liveFetchInFlight.op} started ${this.liveFetchInFlight.startedAt}) — one at a time; retry after it completes` };
+    }
+    this.liveFetchInFlight = { op: 'integrity-pass', startedAt: new Date(this.nowMs()).toISOString() };
+    let result: ImportRunResult;
+    try {
+      result = await this.withMaxHold(this.d.runIntegrityImport(), 'integrity-pass');
+    } catch (err) {
+      return { ok: false, reason: `integrity pass failed: ${err instanceof Error ? err.message : String(err)}` };
+    } finally {
+      this.liveFetchInFlight = null;
+    }
+    const generatedAt = new Date(this.nowMs()).toISOString();
+    let recorded = false;
+    if (result.report) {
+      this.recordIntegrityReport(result.report, generatedAt);
+      recorded = true;
+    }
+    return { ok: true, result, generatedAt, recorded };
   }
 
   importDryRunStatus(): ImportDryRunStatus {

@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-03T18:02:13.094Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/conversationBindToken.ts matches token handling",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 1494,
+  "causalAutopsy": null,
+  "verdict": "pass"
+}

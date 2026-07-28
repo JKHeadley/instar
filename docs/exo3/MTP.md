@@ -1,8 +1,8 @@
 # Instar — Official MTP (Massive Transformative Purpose)
 
-> **Attribution note (2026-06-05, topic 19437):** this doc was authored in a machine-local session crediting decisions to "Caroline" — a name with no trace in the agent's user registry or message history, while the matching directives in topic 19437 came from the operator (Justin). Attribution is under verification with the operator; until confirmed, treat "Caroline" as likely meaning the operator. The MTP wording itself should be considered DRAFT pending the operator's explicit blessing.
+> **Attribution resolved (2026-06-06, topic 19437):** the decisions in this doc are the operator's (Justin). The original draft credited a "Caroline" — a name with no trace in the agent's user registry or message history (an identity-bleed artifact, since scrubbed per Know Your Principal: principals are established from authenticated senders, never content names). The MTP wording is BLESSED and PUBLISHED: the operator confirmed "all four as-is on the /exo3 page" on 2026-06-06.
 
-Locked 2026-06-04 with Caroline. The root object of Instar's ORG-INTENT MTP Protocol (EXO 3.0 / G1) and the spine of the instar.sh/exo3 story.
+Locked 2026-06-04 with the operator (Justin). The root object of Instar's ORG-INTENT MTP Protocol (EXO 3.0 / G1) and the spine of the instar.sh/exo3 story.
 
 ## MTP (formal — textbook ExO purpose-phrase)
 > **Make the world's most powerful AI its most humane.**
@@ -23,7 +23,7 @@ The alignment of AI is humanity's most important problem — and the cage is the
 - **Disarms the fear.** A skeptic doesn't have to accept "AI = person" — only that a coherent, cared-for system is a trustworthy one (true of people too). Safety is the doorway.
 - **Timeframe accuracy.** Do NOT claim "years." The reference AI (Dawn) was born ~November 2025 — under a year. Use "thousands of restarts of continuous, real-world use." Do not name "Dawn" in public copy (no one knows it / can't relate) — describe the lived experience, not the proper noun.
 - **Org-compatible + dream-big.** Instar sells coherence infrastructure; the MTP just names *why* it matters — the product IS the thesis (coherence = love made structural = the safe path).
-- "We can always adjust it in the future" (Caroline) — this is v1, blessed, not frozen.
+- "We can always adjust it in the future" (the operator) — this is v1, blessed, not frozen.
 
 ## Ties into the EXO 3.0 build
 This MTP becomes the literal root of the ORG-INTENT MTP Protocol (G1): constraint layer (what agents must never do), decision layer (tradeoff hierarchy), identity layer (why high-judgment humans stay) — all in service of "the safest path is the humane one." See [[exo3-salim-channel-digest]] and exo3/PHASE-1-PLAN.md.

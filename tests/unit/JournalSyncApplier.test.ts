@@ -73,6 +73,30 @@ function placement(seq: number, machine: string, topic: number, epoch: number, t
   };
 }
 
+/**
+ * Build a cooperative-handoff (transferring) placement entry — WS1.3/Fix #3.
+ * `reason: 'reconcile'` + the optional handoff fields. This is the exact shape a
+ * real cross-machine ownership-reconciler transfer writes; the receive-side
+ * validator must accept it (the 2026-06-30 live-proof bug: it didn't).
+ */
+function transferringPlacement(
+  seq: number,
+  machine: string,
+  topic: number,
+  epoch: number,
+  transferTo: string,
+  extra: Record<string, unknown> = {},
+): JournalEntry {
+  return {
+    seq,
+    ts: new Date(1_700_000_000_000 + seq * 1000).toISOString(),
+    machine,
+    kind: 'topic-placement',
+    topic,
+    data: { owner: machine, epoch, reason: 'reconcile', status: 'transferring', transferTo, timestamp: 1_700_000_000_000 + seq * 1000, ...extra },
+  };
+}
+
 function lifecycle(seq: number, machine: string, sessionId: string, status: string, ts?: string): JournalEntry {
   return {
     seq,
@@ -96,6 +120,82 @@ function readReplicaEntries(machine: string, kind: JournalKind): JournalEntry[] 
 function newApplier(opts: Partial<ConstructorParameters<typeof JournalSyncApplier>[0]> = {}): JournalSyncApplier {
   return new JournalSyncApplier({ stateDir: tmpDir, ...opts });
 }
+
+// ---------------------------------------------------------------------------
+// Fix #3 receive-side validation of cooperative-handoff (transferring) records.
+// Regression for the 2026-06-30 live two-machine proof: the emit-side validator
+// (CoherenceJournal.validate) accepted reason:'reconcile' + status/transferTo/
+// timestamp/drainInFlight, but the receive-side mirror here did NOT — so a real
+// transfer record was rejected on receipt, the peer stream went `suspect`, and
+// cross-machine replication halted so the target never claimed. The receive-side
+// MUST mirror the emit-side. (In-process tests covered emit + applier-materialize,
+// never this cross-machine receive path — which is why two machines exposed it.)
+// ---------------------------------------------------------------------------
+
+describe('Fix #3 — receive-side accepts cooperative-handoff (transferring) records', () => {
+  it('a transferring record (reason:reconcile + handoff fields) is applied, NOT suspect', () => {
+    const a = newApplier();
+    const res = a.apply(PEER, [
+      {
+        kind: 'topic-placement',
+        incarnation: 'inc-1',
+        // seq 1 a normal active placement, seq 2 the transfer hand-off — exactly the
+        // real sequence the live proof produced (active(owner) → transferring(→target)).
+        entries: [placement(1, PEER, 28730, 2), transferringPlacement(2, PEER, 28730, 3, OWN)],
+      },
+    ]);
+    expect(res.applied).toBe(2);
+    expect(res.invalidEntries).toBe(0);
+    expect(readReplicaEntries(PEER, 'topic-placement').map((e) => e.seq)).toEqual([1, 2]);
+    // The crux: the stream stays current (before the fix this was 'suspect' and
+    // replication halted at seq 1, so the target never saw the transfer).
+    expect(a.getStreamStatus()[`${PEER}.topic-placement`]).toBe('current');
+    const applied = readReplicaEntries(PEER, 'topic-placement')[1];
+    expect(applied.data).toMatchObject({ reason: 'reconcile', status: 'transferring', transferTo: OWN });
+  });
+
+  it('accepts an explicit status:active record and an optional drainInFlight flag', () => {
+    const a = newApplier();
+    const res = a.apply(PEER, [
+      {
+        kind: 'topic-placement',
+        incarnation: 'inc-1',
+        entries: [transferringPlacement(1, PEER, 700, 5, OWN, { status: 'active', drainInFlight: true })],
+      },
+    ]);
+    expect(res.applied).toBe(1);
+    expect(a.getStreamStatus()[`${PEER}.topic-placement`]).toBe('current');
+  });
+
+  it('a present-but-malformed handoff field is still rejected → suspect (no silent partial accept)', () => {
+    const a = newApplier();
+    const res = a.apply(PEER, [
+      {
+        kind: 'topic-placement',
+        incarnation: 'inc-1',
+        // status must be 'active'|'transferring' — a bogus value rejects the record.
+        entries: [placement(1, PEER, 700, 1), transferringPlacement(2, PEER, 700, 2, OWN, { status: 'bogus' })],
+      },
+    ]);
+    expect(res.applied).toBe(1);
+    expect(res.invalidEntries).toBe(1);
+    expect(a.getStreamStatus()[`${PEER}.topic-placement`]).toBe('suspect');
+  });
+
+  it('an unknown extra field on a placement record is still rejected → suspect (keys allowlist intact)', () => {
+    const a = newApplier();
+    const res = a.apply(PEER, [
+      {
+        kind: 'topic-placement',
+        incarnation: 'inc-1',
+        entries: [transferringPlacement(1, PEER, 700, 2, OWN, { bogusKey: 'x' })],
+      },
+    ]);
+    expect(res.applied).toBe(0);
+    expect(res.invalidEntries).toBe(1);
+    expect(a.getStreamStatus()[`${PEER}.topic-placement`]).toBe('suspect');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Rule 2 — seq-gated apply (in-order / gap / duplicate)

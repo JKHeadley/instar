@@ -26,7 +26,9 @@ describe('dashboard: sessions list — machine badges + pool-wide visibility', (
 
   it('keeps remote sessions separate from the WebSocket-replaced local array', () => {
     expect(HTML).toContain('let remoteSessions = []');
-    expect(HTML).toMatch(/remoteSessions = \(j\.sessions \|\| \[\]\)\.filter\(s => s\.remote === true\)/);
+    // The remote merge also status-filters to LIVE sessions (running/starting) —
+    // see dashboard-poolTileStatusFilter.test.ts for the dedicated assertions.
+    expect(HTML).toMatch(/remoteSessions = \(j\.sessions \|\| \[\]\)\.filter\(s => s\.remote === true && /);
   });
 
   it('renders a machine badge stating where the session runs (XSS-escaped)', () => {
@@ -45,11 +47,20 @@ describe('dashboard: sessions list — machine badges + pool-wide visibility', (
     expect(HTML).toMatch(/remote:\$\{s\.machineId \|\| '\?'\}:\$\{s\.tmuxSession\}/);
   });
 
-  it('remote rows are informational: no terminal subscribe, no close button', () => {
-    // No onclick → selectSession for remote rows; tooltip explains where it runs.
-    expect(HTML).toMatch(/if \(session\.remote\) \{[\s\S]{0,400}el\.title = `Running on /);
-    // The close (×) button is gated off for remote sessions.
-    expect(HTML).toMatch(/\$\{session\.remote \? '' : `<button class="session-close-btn"/);
+  it('remote rows are CLICKABLE → stream from the owning machine (Pool Dashboard Streaming §2.2); close button renders too', () => {
+    // Phase 3: remote tiles now get an onclick → selectSession (the same handler
+    // as local rows); the tooltip invites streaming instead of redirecting away.
+    expect(HTML).toContain('el.onclick = () => selectSession(session.tmuxSession, session);');
+    expect(HTML).toMatch(/session\.remote[\s\S]{0,200}click to stream it here/);
+    // REMOTE-SESSION-CLOSE-SPEC §2.2: the × is no longer gated off for remote
+    // sessions — it renders with the relay args (pinned in detail by
+    // dashboard-remoteClose.test.ts).
+    expect(HTML).not.toMatch(/\$\{session\.remote \? '' : `<button class="session-close-btn"/);
+    expect(HTML).toMatch(/<button class="session-close-btn"[^>]*data-tmux=/);
+  });
+
+  it('a remote subscribe carries the session machineId so the server relays it (§2.2)', () => {
+    expect(HTML).toContain("type: 'subscribe', session: tmuxSession, ...(activeMachineId ? { machineId: activeMachineId }");
   });
 
   it('the active-terminal highlight never matches a remote row', () => {

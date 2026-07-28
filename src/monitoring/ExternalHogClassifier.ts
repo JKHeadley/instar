@@ -1,0 +1,130 @@
+/**
+ * ExternalHogClassifier — the PURE classifier orchestration of the External-Hog sentinel
+ * (CMT-1901, docs/specs/external-hog-zombie-autokill-sentinel.md §5).
+ *
+ * The zombie-classify model is the DECIDER (kill/leave/alert) WITHIN the §4 floor. This module
+ * holds the pure, testable orchestration around the model call (the actual rate-limited
+ * LlmQueue call is a thin adapter the sentinel class wires): verdict parsing, worst-CPU-first
+ * selection under the per-scan cap, and the identity-tuple verdict cache. Load-bearing rules:
+ *  - ONE call per candidate; the verdict is a bounded enum {kill|leave|alert} bound to a
+ *    code-surfaced candidate. An unparseable/absent verdict → treated as decider-unavailable →
+ *    the candidate is ALERTED, never killed (fail-safe).
+ *  - `maxClassificationsPerScan` cap, filled WORST-CPU-FIRST, so a flood of low-severity decoys
+ *    can't starve the real hog out of a slot; the remainder degrade to alert-only (no spend).
+ *  - cache keyed on the FULL identity tuple (pid, start-time, command-hash) with TTL + LRU, so
+ *    a persistent benign hog isn't re-classified every scan while a reused pid can't inherit a
+ *    prior incarnation's `kill` verdict. The cache is ADVISORY — the §4 kill-time re-check is
+ *    the authoritative gate; a cache hit never bypasses it.
+ */
+
+export type ClassifierVerdict = 'kill' | 'leave' | 'alert';
+
+/**
+ * Parse a raw model output into a bounded verdict, or `null` (→ decider-unavailable → alert).
+ * Accepts a bare enum word or a `{ "action": "..." }` JSON object (the zombie-classify
+ * contract). Anything else → null (fail-safe). NEVER parses a pid/target from the output.
+ */
+export function parseClassifierVerdict(raw: unknown): ClassifierVerdict | null {
+  let action: unknown = raw;
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    // Try JSON first (the response contract), else treat the whole string as the enum.
+    try {
+      const j = JSON.parse(s);
+      action = j && typeof j === 'object' ? (j as { action?: unknown }).action : s;
+    } catch {
+      // @silent-fallback-ok: not a degradation — non-JSON is a VALID response shape (the
+      // bare enum string); anything unrecognized still resolves to null = fail-safe no-kill.
+      action = s;
+    }
+  } else if (raw && typeof raw === 'object') {
+    action = (raw as { action?: unknown }).action;
+  }
+  if (action === 'kill' || action === 'leave' || action === 'alert') return action;
+  return null;
+}
+
+/** The full identity tuple a verdict is cached under. */
+export interface IdentityTuple {
+  readonly pid: number;
+  readonly startTime: string;
+  readonly commandHash: string;
+}
+
+export function tupleKey(t: IdentityTuple): string {
+  return `${t.pid}\u0000${t.startTime}\u0000${t.commandHash}`;
+}
+
+export interface CandidateForClass {
+  readonly tuple: IdentityTuple;
+  readonly coreEquivalents: number;
+}
+
+export interface SelectionResult<T extends CandidateForClass> {
+  /** The candidates that get a classifier call this scan (worst-CPU-first, ≤ cap). */
+  readonly toClassify: readonly T[];
+  /** The remainder (over the cap) — degraded to alert-only (no classifier spend). */
+  readonly degradedToAlert: readonly T[];
+}
+
+/**
+ * Select which candidates get a classifier call this scan: sort by DESCENDING coreEquivalents
+ * (deterministic tie-break on tupleKey so it's not attacker-controllable), keep up to `cap`,
+ * degrade the rest to alert-only. A non-positive/non-finite cap classifies NONE (all degrade).
+ */
+export function selectForClassification<T extends CandidateForClass>(candidates: readonly T[], cap: number): SelectionResult<T> {
+  const n = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 0;
+  const ordered = [...candidates].sort((a, b) => {
+    if (b.coreEquivalents !== a.coreEquivalents) return b.coreEquivalents - a.coreEquivalents;
+    return tupleKey(a.tuple) < tupleKey(b.tuple) ? -1 : 1; // stable, non-attacker-controllable
+  });
+  return { toClassify: ordered.slice(0, n), degradedToAlert: ordered.slice(n) };
+}
+
+// ---- verdict cache (TTL + LRU), pure over a cache state ----
+
+interface CacheEntry {
+  readonly verdict: ClassifierVerdict;
+  readonly atMs: number;
+}
+export interface VerdictCache {
+  readonly entries: ReadonlyMap<string, CacheEntry>;
+}
+export const EMPTY_VERDICT_CACHE: VerdictCache = { entries: new Map() };
+
+/** Look up a cached verdict for the tuple, or null if absent/expired. */
+export function cacheGet(cache: VerdictCache, tuple: IdentityTuple, nowMs: number, ttlMs: number): ClassifierVerdict | null {
+  const e = cache.entries.get(tupleKey(tuple));
+  if (!e) return null;
+  if (!Number.isFinite(nowMs) || !Number.isFinite(ttlMs)) return null; // can't reason about age → miss
+  if (nowMs - e.atMs > ttlMs) return null; // expired
+  return e.verdict;
+}
+
+/** Store a verdict; prune expired entries and enforce a max-entries LRU-by-recency cap. */
+export function cacheSet(
+  cache: VerdictCache,
+  tuple: IdentityTuple,
+  verdict: ClassifierVerdict,
+  nowMs: number,
+  ttlMs: number,
+  maxEntries: number,
+): VerdictCache {
+  // Defensive: a non-finite clock can't be aged/pruned — refuse to store an immortal entry
+  // (round-11 reviewer nit; not attacker-reachable since Date.now is finite, but keep the cache
+  // free of un-prunable rows). Return the cache unchanged.
+  if (!Number.isFinite(nowMs)) return cache;
+  const next = new Map(cache.entries);
+  next.set(tupleKey(tuple), { verdict, atMs: nowMs });
+  // Prune expired.
+  for (const [k, e] of next) {
+    if (Number.isFinite(nowMs) && Number.isFinite(ttlMs) && nowMs - e.atMs > ttlMs) next.delete(k);
+  }
+  // Enforce the cap by evicting the oldest (smallest atMs) until within bound.
+  const cap = Number.isFinite(maxEntries) && maxEntries > 0 ? Math.floor(maxEntries) : 0;
+  if (cap > 0 && next.size > cap) {
+    const byAge = [...next.entries()].sort((a, b) => a[1].atMs - b[1].atMs);
+    for (let i = 0; i < next.size - cap; i++) next.delete(byAge[i]![0]);
+  }
+  return { entries: next };
+}

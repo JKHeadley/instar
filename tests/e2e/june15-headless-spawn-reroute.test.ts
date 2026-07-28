@@ -79,6 +79,12 @@ function stubReadyWait(manager: SessionManager): void {
   // tmux it must resolve immediately so spawns don't leak timers.
   (manager as unknown as { waitForClaudeReadyWithRetry: () => Promise<boolean> })
     .waitForClaudeReadyWithRetry = async () => true;
+  // Deterministic reroute gate regardless of the host machine's live memory
+  // state: the gate legitimately refuses force-mode spawns when the REAL host
+  // is under pressure, which made this suite fail on loaded dev machines while
+  // passing in CI. These tests assert reroute logic, not host pressure.
+  (manager as unknown as { currentMemoryPressure: () => string })
+    .currentMemoryPressure = () => 'normal';
 }
 
 describe('Headless-spawn reroute E2E (V6)', () => {

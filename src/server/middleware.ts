@@ -158,7 +158,12 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
     // /a2a/inbox is the same-machine a2a transport — callers hold the TARGET
     // agent's per-agent token (from AgentRegistry), not the API bearer token,
     // so the inbox route enforces `verifyAgentToken` in its handler.
-    if (req.path === '/messages/relay-agent' || req.path === '/messages/relay-machine' || req.path === '/a2a/inbox') {
+    if (
+      req.path === '/messages/relay-agent'
+      || req.path === '/messages/relay-machine'
+      || req.path === '/a2a/inbox'
+      || req.path === '/a2a/apprenticeship/cycles'
+    ) {
       next();
       return;
     }
@@ -216,6 +221,19 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
     // Secret drop routes — the token in the URL IS the auth.
     // GET serves the form, POST receives the submission. Both are user-facing.
     if (req.path.startsWith('/secrets/drop/')) {
+      next();
+      return;
+    }
+
+    // Dynamic-MCP operator-approval TAP pages — opened by the operator's BROWSER,
+    // which carries no Bearer token (the operator has the dashboard PIN, not the
+    // agent token). Same posture as Secret Drop: the opaque single-use requestId in
+    // the URL gates the GET page (renders the change, never the nonce), and the POST
+    // submit is PIN-gated by checkMandatePin inside the handler. The Bearer middleware
+    // would otherwise 401 the page before it ever renders. Scoped to `/mcp/approve/<id>`
+    // (trailing slash) so the agent-only `/mcp/approve` (exact) + `/mcp/approval-link`
+    // + `/mcp/load|offload|session` stay Bearer-gated.
+    if (req.path.startsWith('/mcp/approve/')) {
       next();
       return;
     }
@@ -357,6 +375,27 @@ export function rateLimiter(windowMs: number = 60_000, maxRequests: number = 10)
 export const OUTBOUND_MESSAGING_TIMEOUT_MS = 120_000;
 
 /**
+ * Hard budget (ms) the outbound tone/relevance gate is allowed to spend BEFORE
+ * the route fails it open and delivers the message un-reviewed.
+ *
+ * This MUST stay comfortably below OUTBOUND_MESSAGING_TIMEOUT_MS. The reason is
+ * a real production failure (2026-06-08): the tone gate is FAIL-OPEN by design,
+ * but `MessagingToneGate.review` will wait up to RATE_LIMIT_WAIT_MS (120s) for a
+ * rate-limit window PLUS the call itself — and that whole wait sat inside an
+ * un-raced `await` in `checkOutboundMessage`. Under rate-limit pressure the gate
+ * routinely finished at 121s–185s (observed in the tone-gate decision log, all
+ * failedOpen), blowing past the 120s route budget. The route then 408s, which is
+ * the WORST outcome: the message both bypasses the gate AND, because the send
+ * "failed", the calling session dumps the note into whatever topic it is active
+ * in (the "patch notes landing in the Invoices topic" bug). Capping the gate at
+ * this budget — and failing OPEN past it (same contract as the ArcCheck 200ms
+ * race) — guarantees the route always returns a verdict in budget. The invariant
+ * `OUTBOUND_GATE_REVIEW_BUDGET_MS < OUTBOUND_MESSAGING_TIMEOUT_MS` is asserted in
+ * the wiring test so the two budgets can never drift into conflict again.
+ */
+export const OUTBOUND_GATE_REVIEW_BUDGET_MS = 20_000;
+
+/**
  * Extended budget for the standards-conformance gate route (`/spec/conformance-check`).
  * It makes a single heavy top-tier review call over a full spec; the 30s default
  * 408s on any real spec. Set ABOVE the reviewer's inner CONFORMANCE_REVIEW_TIMEOUT_MS
@@ -374,6 +413,21 @@ export const SPEC_REVIEW_TIMEOUT_MS = 180_000;
  * 409 then crashed into ERR_HTTP_HEADERS_SENT with no trace of the outcome.
  */
 export const PARITY_PASS_TIMEOUT_MS = 360_000;
+
+/**
+ * Extended budget for the deterministic topic transfer (`/pool/transfer`,
+ * WS1.2). When the topic's current owner can drain, the handler awaits the
+ * owner-side SessionDrainRunner SYNCHRONOUSLY: it waits up to `drainBoundMs`
+ * (30s default) for the in-flight turn to reach a boundary, then closes the
+ * session and lands the claim — so a CLEAN drain routinely lands at or past
+ * 30s, and the remote `_sendDrain` mesh call is itself capped at 50s. Under
+ * the 30s default the client would get a 408 mid-drain while the handler kept
+ * running to completion (landing the claim + setting the pin) — the exact
+ * "408 while the handler keeps running" failure class the outbound-messaging
+ * and parity-pass overrides already exist to prevent (2026-06-12 second-pass
+ * review concern #1). 75s clears the 50s remote cap + slack with margin.
+ */
+export const POOL_TRANSFER_TIMEOUT_MS = 75_000;
 
 /**
  * Slack added on top of a configured parity-source TOTAL fetch budget when
@@ -413,6 +467,12 @@ export function buildRequestTimeoutOverrides(opts?: { paritySourceTotalTimeoutMs
     // The import dry-run does the same full live source fetch as a parity pass
     // (plus an in-memory import + gate, which is fast) — same budget.
     '/cutover-readiness/import-dryrun': parityBudgetMs,
+    // The REAL integrity pass spawns a child that does the same full-corpus fetch +
+    // a persisted import + gate; the route awaits the child — same extended budget.
+    '/cutover-readiness/integrity-pass': parityBudgetMs,
+    // WS1.2: the deterministic transfer awaits the owner-side drain (≤ drain
+    // bound + the 50s remote-call cap) synchronously — see POOL_TRANSFER_TIMEOUT_MS.
+    '/pool/transfer': POOL_TRANSFER_TIMEOUT_MS,
   };
 }
 
@@ -495,6 +555,42 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
   }
   next();
 }
+
+/**
+ * #1441 — dashboard static assets must never outlive a deploy. Stamp a
+ * revalidate-always `Cache-Control: no-cache` on every dashboard response.
+ *
+ * Before this, express.static served `Cache-Control: public, max-age=0`, which
+ * Cloudflare's edge silently overrode with its default multi-hour TTL for
+ * .js/.css. A warm-cache browser then paired a FRESH index.html (sent each load)
+ * with a STALE glance.js and threw `glance.blockersGlanceSpec is not a function`,
+ * blanking a whole tab for up to 4h after every phase deploy. `no-cache` (not
+ * `no-store`) keeps the ETag/Last-Modified revalidation express already generates,
+ * so every asset — index.html AND its transitively-imported ES modules
+ * (glance.js → subscriptions.js) — 304-revalidates on each load; a deploy can never
+ * leave a skewed pair. `no-cache` is also a directive Cloudflare honors by NOT
+ * edge-caching, so it kills the stale-edge-copy half of the skew too.
+ *
+ * This runs via `express.static({ setHeaders })` (below) so it wins over
+ * serve-static's own default Cache-Control, and is called directly for the
+ * index.html `res.sendFile` route.
+ */
+export function dashboardCacheControl(res: Response): void {
+  res.setHeader('Cache-Control', 'no-cache');
+}
+
+/**
+ * The `express.static` options for the dashboard directory — exported so the
+ * AgentServer wiring and its integration test exercise the SAME object (no drift).
+ * `setHeaders` applies {@link dashboardCacheControl} after serve-static would set
+ * its own header, so `no-cache` is the final Cache-Control; etag/lastModified stay
+ * on for cheap 304 revalidation.
+ */
+export const DASHBOARD_STATIC_OPTIONS = {
+  etag: true,
+  lastModified: true,
+  setHeaders: dashboardCacheControl,
+} as const;
 
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
   const message = err instanceof Error ? err.message : String(err);

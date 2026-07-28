@@ -42,7 +42,7 @@ function writeTranscript(): string {
   return p;
 }
 function runHook(): { decision: string | null; reason: string; exit: number } {
-  const env: NodeJS.ProcessEnv = { ...process.env, INSTAR_HOOK_NO_TMUX: '1', INSTAR_HOOK_TMUX_SESSION: '' };
+  const env: NodeJS.ProcessEnv = { ...process.env, INSTAR_HOOK_NO_TMUX: '1', INSTAR_HOOK_TMUX_SESSION: '', INSTAR_HOOK_BACKOFF_DISABLE: '1' };
   let stdout = ''; let exit = 0;
   try {
     stdout = execFileSync('bash', [HOOK], {

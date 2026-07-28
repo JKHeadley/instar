@@ -17,8 +17,15 @@ import type { MultiMachineConfig } from './types.js';
  * The mesh protocol version this build speaks. A machine below this version
  * is ineligible for the awake lease during a seamless handoff (spec §11
  * partial-migration safety). Bump only on a breaking coordination change.
+ *
+ * v2 (WS1.2, MULTI-MACHINE-SEAMLESSNESS-SPEC): the `drain` mesh verb — an
+ * active-topic transfer now drains the owner's live session through an
+ * authorized, epoch-bound signal. Verb-level skew is additionally handled by
+ * the 501/no-handler degrade (an old owner falls back to today's
+ * idle-closeout-only transfer), so mixed pools keep working; the version
+ * gates only lease eligibility during a handoff window.
  */
-export const SEAMLESSNESS_PROTOCOL_VERSION = 1;
+export const SEAMLESSNESS_PROTOCOL_VERSION = 2;
 
 /** Fully-resolved seamlessness knobs (every field concrete). */
 export interface ResolvedSeamlessnessConfig {

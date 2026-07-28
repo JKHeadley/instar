@@ -123,8 +123,21 @@ export interface SessionMigratorDeps {
   terminateSession?: (
     sessionId: string,
     reason: string,
-    opts?: { disposition?: 'terminal' | 'recovery-bounce'; finalStatus?: 'completed' | 'killed' },
+    opts?: {
+      disposition?: 'terminal' | 'recovery-bounce';
+      finalStatus?: 'completed' | 'killed';
+      workEvidence?: string[];
+    },
   ) => Promise<{ terminated: boolean; skipped?: string }>;
+  /**
+   * Observe-only work-evidence collection (reap-notify spec R2.1), run at the
+   * migrator's decision moment — BEFORE the Ctrl+C grace round tears the work
+   * down. By force-kill time the evidence is gone (that teardown is exactly
+   * why the chokepoint fallback records "not working" for quota-shed kills),
+   * so the migrator snapshots it up front and passes it killer-supplied.
+   * Undefined ⇒ only the isBuildOrAutonomousActive signal is stamped.
+   */
+  collectWorkEvidence?: (sessionId: string) => string[];
   /**
    * P2-style soft check (§P0 #7) — does the tmux pane belong to a build or an
    * active autonomous run? When true and the soft check is enabled (per
@@ -546,6 +559,31 @@ export class SessionMigrator extends EventEmitter {
     const sessions = this.deps.listRunningSessions();
     if (sessions.length === 0) return [];
 
+    // Phase 0 (reap-notify spec R2.1): snapshot work evidence at THIS decision
+    // moment — before Ctrl+C tears the work down. The quota-shed kills that
+    // motivated mid-work tagging flow through here; a chokepoint re-check at
+    // force-kill time would record "not working" for exactly these sessions.
+    const evidenceBySession = new Map<string, string[]>();
+    for (const session of sessions) {
+      const evidence: string[] = [];
+      try {
+        evidence.push(...(this.deps.collectWorkEvidence?.(session.id) ?? []));
+      } catch {
+        // evidence collection must never endanger the migration
+      }
+      try {
+        if (
+          this.deps.isBuildOrAutonomousActive?.(session.tmuxSession) &&
+          !evidence.includes('build-or-autonomous-active')
+        ) {
+          evidence.push('build-or-autonomous-active');
+        }
+      } catch {
+        // same — observe-only
+      }
+      evidenceBySession.set(session.id, evidence);
+    }
+
     // Phase 1: Send Ctrl+C to all sessions
     for (const session of sessions) {
       try {
@@ -606,10 +644,30 @@ export class SessionMigrator extends EventEmitter {
           // `quota-shed` reason). Falls back to the raw killSession when the
           // dep is unwired (older agents).
           if (this.deps.terminateSession) {
-            await this.deps.terminateSession(session.id, 'quota-shed', {
+            const result = await this.deps.terminateSession(session.id, 'quota-shed', {
               disposition: 'terminal',
               finalStatus: 'killed',
+              // Killer-supplied evidence from the pre-grace snapshot (R2.1).
+              workEvidence: evidenceBySession.get(session.id) ?? [],
             });
+            // Refusal recording (reap-notify foundation fix): a ReapGuard
+            // refusal means the session is REFUSED-AND-ALIVE — counting it as
+            // halted both lies in the migration record and double-respawns its
+            // job downstream (the restart loop spawns a second copy alongside
+            // the survivor). Skip it, loudly.
+            if (!result.terminated) {
+              console.warn(
+                `[SessionMigrator] terminate REFUSED for ${session.tmuxSession} ` +
+                  `(${result.skipped ?? 'no reason'}) — recording as refused, NOT halted`,
+              );
+              this.emit('halt-refused', {
+                sessionId: session.id,
+                tmuxSession: session.tmuxSession,
+                jobSlug: session.jobSlug,
+                skipped: result.skipped,
+              });
+              continue;
+            }
           } else {
             this.deps.killSession(session.id);
           }

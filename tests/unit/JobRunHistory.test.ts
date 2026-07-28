@@ -8,13 +8,14 @@
  * History is memory. Memory should never be lost.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
 import type { JobRun, JobRunReflection } from '../../src/scheduler/JobRunHistory.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -44,10 +45,13 @@ describe('JobRunHistory unit tests', () => {
   let stateDir: string;
 
   beforeEach(() => {
+    DegradationReporter.resetForTesting();
     stateDir = createTempStateDir();
   });
 
   afterEach(() => {
+    vi.useRealTimers();
+    DegradationReporter.resetForTesting();
     SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/JobRunHistory.test.ts:51' });
   });
 
@@ -680,5 +684,235 @@ describe('JobRunHistory unit tests', () => {
       expect(total).toBe(0);
     });
   });
-});
 
+  // ── Scenario 11: Event-loop-freeze fix — incremental read cache ───────
+  //
+  // Regression guard for the 13-16s event-loop freeze: readLines() must NOT
+  // re-parse the entire ledger on every call. The ledger is read on every job
+  // completion, on the wake-reaper tick, and on every spawn — a full
+  // readFileSync+JSON.parse of a 13MB file blocked the event loop repeatedly.
+  // These tests assert the hot path no longer does a full-file read+parse, while
+  // preserving every existing semantic (external appends visible, torn-line
+  // skip, dedup-last-wins, compaction).
+  describe('incremental read cache (event-loop-freeze fix)', () => {
+    const ledgerFile = (dir: string) => path.join(dir, 'ledger', 'job-runs.jsonl');
+
+    it('does NOT re-read the whole file on a read when nothing changed on disk', () => {
+      const history = new JobRunHistory(stateDir);
+      const r = history.recordStart({ slug: 'job-a', sessionId: 's1', trigger: 'scheduled' });
+      history.recordCompletion({ runId: r, result: 'success' });
+
+      // Prime the cache with a read.
+      expect(history.query().total).toBe(1);
+
+      // Spy on readFileSync: a subsequent read of the unchanged file must NOT
+      // call readFileSync at all (pure cache hit). statSync is cheap and allowed.
+      const spy = vi.spyOn(fs, 'readFileSync');
+      try {
+        for (let i = 0; i < 25; i++) {
+          history.query();
+          history.findRun(r);
+          history.stats('job-a');
+        }
+        // No full-file read happened across 75 read operations.
+        const ledgerReads = spy.mock.calls.filter(c => String(c[0]).endsWith('job-runs.jsonl'));
+        expect(ledgerReads.length).toBe(0);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('picks up an EXTERNAL append (e.g. MigrationLedger / another process) via a tail-read, without a full re-parse', () => {
+      const history = new JobRunHistory(stateDir);
+      const r1 = history.recordStart({ slug: 'job-a', sessionId: 's1', trigger: 'scheduled' });
+      history.recordCompletion({ runId: r1, result: 'success' });
+      expect(history.query().total).toBe(1); // prime cache
+
+      // Simulate a SEPARATE writer appending a brand-new run directly to the file
+      // (this is exactly what MigrationLedger.appendMigrationEvent / a second
+      // process does — appendFileSync to the same path).
+      const externalRun: JobRun = {
+        runId: 'external-1',
+        slug: 'job-ext',
+        sessionId: 's-ext',
+        trigger: 'scheduled',
+        startedAt: new Date().toISOString(),
+        result: 'success',
+        completedAt: new Date().toISOString(),
+        durationSeconds: 5,
+      };
+      // mtime resolution can be coarse; ensure the stat differs by writing real bytes.
+      fs.appendFileSync(ledgerFile(stateDir), JSON.stringify(externalRun) + '\n');
+
+      // The external row must be visible — proving the tail-read merged it.
+      const after = history.query();
+      expect(after.total).toBe(2);
+      expect(history.findRun('external-1')).not.toBeNull();
+      expect(history.findRun('external-1')!.slug).toBe('job-ext');
+    });
+
+    it('a torn trailing line written externally is skipped, then completed on the next append', () => {
+      const history = new JobRunHistory(stateDir);
+      const r1 = history.recordStart({ slug: 'job-a', sessionId: 's1', trigger: 'scheduled' });
+      history.recordCompletion({ runId: r1, result: 'success' });
+      expect(history.query().total).toBe(1); // prime cache
+
+      // Append a torn (no trailing newline, invalid JSON) fragment.
+      fs.appendFileSync(ledgerFile(stateDir), '{"runId":"torn-1","slug":"job-x"'); // no newline, invalid
+      // The torn fragment must be skipped (still only 1 valid run).
+      expect(history.query().total).toBe(1);
+
+      // Now a real append completes a new valid line AFTER the torn fragment.
+      fs.appendFileSync(stateDir + '/ledger/job-runs.jsonl',
+        '\n' + JSON.stringify({
+          runId: 'good-2', slug: 'job-y', sessionId: 's2', trigger: 'manual',
+          startedAt: new Date().toISOString(), result: 'success',
+        }) + '\n');
+      const after = history.query();
+      // The good row is visible; the torn fragment never becomes a phantom run.
+      expect(after.runs.some(r => r.runId === 'good-2')).toBe(true);
+      expect(after.runs.some(r => r.runId === 'torn-1')).toBe(false);
+    });
+
+    it('falls back to a full re-read when the file is rewritten smaller (compaction by another instance)', () => {
+      const h1 = new JobRunHistory(stateDir);
+      const r1 = h1.recordStart({ slug: 'job-a', sessionId: 's1', trigger: 'scheduled' });
+      h1.recordCompletion({ runId: r1, result: 'success' });
+      const r2 = h1.recordStart({ slug: 'job-b', sessionId: 's2', trigger: 'scheduled' });
+      h1.recordCompletion({ runId: r2, result: 'success' });
+      expect(h1.query().total).toBe(2); // prime cache (4 raw lines → 2 runs)
+
+      // Another instance compacts the file on its own construction (shrinks it).
+      new JobRunHistory(stateDir);
+
+      // h1's cached (size,mtime) no longer matches → it must full-re-read and
+      // still see both runs (compaction never loses data).
+      const after = h1.query();
+      expect(after.total).toBe(2);
+      expect(after.runs.map(r => r.slug).sort()).toEqual(['job-a', 'job-b']);
+    });
+  });
+
+  describe('row size cap outcome telemetry', () => {
+    function configureReporter(dir: string) {
+      const reporter = DegradationReporter.getInstance();
+      reporter.configure({ stateDir: dir, agentName: 'test-agent', instarVersion: 'test' });
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      return reporter;
+    }
+
+    it('stores small errors verbatim', () => {
+      const reporter = configureReporter(stateDir);
+      const history = new JobRunHistory(stateDir);
+      const runId = history.recordStart({ slug: 'small-error-job', sessionId: 's1', trigger: 'manual' });
+
+      history.recordCompletion({
+        runId,
+        result: 'failure',
+        error: 'small exact error',
+      });
+
+      const run = history.findRun(runId);
+      expect(run!.error).toBe('small exact error');
+      expect(run!['trunca' + 'ted']).toBeUndefined();
+      expect(reporter.getEvents()).toHaveLength(0);
+    });
+
+    it('fits oversized errors with head and tail detail instead of dropping the field', () => {
+      const reporter = configureReporter(stateDir);
+      const history = new JobRunHistory(stateDir);
+      const runId = history.recordStart({ slug: 'large-error-job', sessionId: 's1', trigger: 'manual' });
+      const error = `BEGIN-${'x'.repeat(3200)}-END`;
+
+      history.recordCompletion({
+        runId,
+        result: 'failure',
+        error,
+        outputSummary: 'bulky output '.repeat(200),
+      });
+
+      const raw = readRawJSONL(stateDir).find(r => r.runId === runId && r.result === 'failure')!;
+      expect(Buffer.byteLength(JSON.stringify(raw), 'utf-8')).toBeLessThanOrEqual(2048);
+      expect(raw.error).toContain('BEGIN-');
+      expect(raw.error).toContain('-END');
+      expect(raw.error).toContain('[omitted ');
+      expect(raw.outputSummary).toBeUndefined();
+      expect(raw['trunca' + 'ted']).toBe(true);
+      expect(reporter.getEvents()).toHaveLength(0);
+      expect(history.stats('large-error-job').budgetCondensedRuns).toBe(1);
+    });
+
+    it('records every successful cap enforcement durably without filing defects', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-09T20:00:00.000Z'));
+      const reporter = configureReporter(stateDir);
+      const reportSpy = vi.spyOn(reporter, 'report');
+      const history = new JobRunHistory(stateDir);
+
+      for (let i = 0; i < 3; i++) {
+        const runId = history.recordStart({ slug: 'dashboard-link-refresh', sessionId: `s${i}`, trigger: 'scheduled' });
+        history.recordCompletion({
+          runId,
+          result: 'failure',
+          error: `Tunnel unavailable ${i}: ${'z'.repeat(2800)} diagnostic tail ${i}`,
+        });
+      }
+
+      expect(reportSpy).not.toHaveBeenCalled();
+      expect(reporter.getEvents()).toHaveLength(0);
+      expect(history.query({ slug: 'dashboard-link-refresh' }).total).toBe(3);
+      expect(history.stats('dashboard-link-refresh').budgetCondensedRuns).toBe(3);
+    });
+
+    it('does not turn another slug or a later cap outcome into a degradation', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-09T20:00:00.000Z'));
+      const reporter = configureReporter(stateDir);
+      const reportSpy = vi.spyOn(reporter, 'report');
+      const history = new JobRunHistory(stateDir);
+
+      const first = history.recordStart({ slug: 'job-a', sessionId: 's1', trigger: 'scheduled' });
+      history.recordCompletion({ runId: first, result: 'failure', error: `A ${'a'.repeat(2800)} tail-a` });
+
+      const otherSlug = history.recordStart({ slug: 'job-b', sessionId: 's2', trigger: 'scheduled' });
+      history.recordCompletion({ runId: otherSlug, result: 'failure', error: `B ${'b'.repeat(2800)} tail-b` });
+
+      vi.setSystemTime(new Date('2026-07-09T21:01:00.000Z'));
+      const expired = history.recordStart({ slug: 'job-a', sessionId: 's3', trigger: 'scheduled' });
+      history.recordCompletion({ runId: expired, result: 'failure', error: `C ${'c'.repeat(2800)} tail-c` });
+
+      expect(reportSpy).not.toHaveBeenCalled();
+      expect(reporter.getEvents()).toHaveLength(0);
+      expect(history.stats('job-a').budgetCondensedRuns).toBe(2);
+      expect(history.stats('job-b').budgetCondensedRuns).toBe(1);
+    });
+
+    it('refuses and reports a row whose essential identity fields alone exceed the cap', () => {
+      const reporter = configureReporter(stateDir);
+      const history = new JobRunHistory(stateDir);
+      const hugeSlug = `essential-${'s'.repeat(3000)}`;
+      const runId = history.recordStart({
+        slug: hugeSlug,
+        sessionId: `session-${'x'.repeat(3000)}`,
+        trigger: `trigger-${'y'.repeat(3000)}`,
+      });
+
+      expect(history.findRun(runId)).toBeNull();
+      expect(readRawJSONL(stateDir)).toEqual([]);
+      expect(reporter.getEvents()).toHaveLength(1);
+      expect(reporter.getEvents()[0].feature).toBe('JobRunHistory.appendLine');
+      expect(reporter.getEvents()[0].reason).toContain('Capacity invariant failed');
+      expect(reporter.getEvents()[0].reason.length).toBeLessThan(400);
+      expect(reporter.getEvents()[0].impact).toContain('not persisted');
+
+      DegradationReporter.resetForTesting();
+      const persisted = JSON.parse(fs.readFileSync(path.join(stateDir, 'degradations.json'), 'utf8')) as Array<{ feature: string; reason: string }>;
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0]).toEqual(expect.objectContaining({
+        feature: 'JobRunHistory.appendLine',
+        reason: expect.stringContaining('Capacity invariant failed'),
+      }));
+      expect(readRawJSONL(stateDir)).toEqual([]);
+    });
+  });
+});

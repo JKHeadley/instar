@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-16T04:31:14.281Z",
+  "slug": "subscription-cell-login-integrity",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 28,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -14,6 +14,7 @@ import { mergeConfigWithSecrets } from './SecretMigrator.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import os from 'node:os';
 import type { InstarConfig, SessionManagerConfig, JobSchedulerConfig, FeedbackConfig, AgentType } from './types.js';
+import { CANONICAL_FEEDBACK_URL } from './canonicalFeedback.js';
 
 const DEFAULT_PORT = 4040;
 const DEFAULT_MAX_SESSIONS = 10;
@@ -852,6 +853,45 @@ export function loadConfig(projectDir?: string): InstarConfig {
     anthropicApiKey: fileConfig.sessions?.anthropicApiKey as string | undefined,
     anthropicBaseUrl: fileConfig.sessions?.anthropicBaseUrl as string | undefined,
     credentials: buildCredentialsMap(fileConfig.sessions as Record<string, unknown> | undefined),
+    // Per-component framework routing (docs/specs/per-component-framework-routing.md).
+    // LOAD-PATH FIX (2026-06-06): this field was documented + consumed
+    // (IntelligenceRouter's resolveConfig reads config.sessions.componentFrameworks
+    // live) but NEVER copied from the config FILE here — so the documented
+    // `.instar/config.json` surface was silently dead on every deployed agent
+    // (the feature's tests built config objects in-memory, which is why the
+    // file-load gap never surfaced). Pass it through; the router validates
+    // values per-call (unknown frameworks degrade to the default + report).
+    ...(fileConfig.sessions?.componentFrameworks &&
+    typeof fileConfig.sessions.componentFrameworks === 'object'
+      ? { componentFrameworks: fileConfig.sessions.componentFrameworks }
+      : {}),
+    // Per-framework default model pattern (frameworkDefaultModels['pi-cli'] →
+    // the pi-cli provider's required model). SAME LOAD-PATH GAP as componentFrameworks
+    // above (2026-06-25): server.ts reads config.sessions.frameworkDefaultModels to build
+    // the pi-cli provider, but the loader never copied it from the config FILE here — so
+    // the pattern was always undefined at boot, the factory degraded pi-cli to null
+    // ("binary missing / not built"), and pi-cli was silently UNAVAILABLE on every
+    // deployed agent despite a valid binary + config. Pass it through (the factory still
+    // guards each value; an absent/empty pattern degrades per design).
+    ...(fileConfig.sessions?.frameworkDefaultModels &&
+    typeof fileConfig.sessions.frameworkDefaultModels === 'object'
+      ? { frameworkDefaultModels: fileConfig.sessions.frameworkDefaultModels }
+      : {}),
+    // dynamicMcp (DYNAMIC-MCP-LIFECYCLE-SPEC). THE SAME LOAD-PATH GAP as
+    // componentFrameworks/frameworkDefaultModels above (THIRD instance — live-test
+    // 2026-06-27): #1293 added the feature, the `/mcp/*` routes (which read
+    // `options.config.sessions.dynamicMcp.enabled`), and SessionManager.buildSessionMcpFlags
+    // (which reads `config.sessions.dynamicMcp`) — but the loader never copied the field
+    // from the config FILE here. So the feature was UN-ENABLABLE on every deployed agent:
+    // setting `sessions.dynamicMcp.enabled: true` did nothing (routes 503'd, sessions never
+    // trimmed). The e2e/integration tests build config objects in-memory, bypassing
+    // loadConfig, so the file-load gap never surfaced until a real config-file enable was
+    // driven live. Pass it through (DynamicMcpService.enabled()/buildSessionMcpFlags still
+    // gate on `.enabled === true`, and the service construction is fail-safe).
+    ...(fileConfig.sessions?.dynamicMcp &&
+    typeof fileConfig.sessions.dynamicMcp === 'object'
+      ? { dynamicMcp: fileConfig.sessions.dynamicMcp }
+      : {}),
     // pi-cli subscription-guard override (PI-HARNESS-INTEGRATION-SPEC §4.3).
     // Config surface: top-level `piCli.allowAnthropicProviders` — file-config
     // only, deliberately NOT an env var (no per-boot bypass surface).
@@ -945,7 +985,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
     },
     feedback: {
       enabled: true,
-      webhookUrl: 'https://dawn.bot-me.ai/api/instar/feedback',
+      webhookUrl: CANONICAL_FEEDBACK_URL,
       feedbackFile: path.join(stateDir, 'feedback.json'),
       ...fileConfig.feedback,
     },

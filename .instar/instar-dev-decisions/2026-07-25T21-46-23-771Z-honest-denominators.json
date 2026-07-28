@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-25T21:46:23.771Z",
+  "slug": "honest-denominators",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 56,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

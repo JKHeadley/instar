@@ -11,7 +11,7 @@
  * In-memory only (spec §"ProxyCoordinator liveness" — P16). Dies with the
  * process. No persistence, no distributed lock.
  */
-export type ProxyHolder = 'presence-proxy' | 'promise-beacon';
+export type ProxyHolder = 'presence-proxy' | 'promise-beacon' | 'autonomous-heartbeat';
 
 export class ProxyCoordinator {
   private held: Map<number, { holder: ProxyHolder; acquiredAt: number }> = new Map();

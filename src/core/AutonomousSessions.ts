@@ -95,6 +95,85 @@ export function activeAutonomousJobs(stateDir: string): AutonomousJobSummary[] {
   return listAutonomousJobs(stateDir).filter((j) => j.active && !j.paused);
 }
 
+/**
+ * Honest-recycle helper (honest-session-recycle-spec): the ACTIVE autonomous run
+ * for `topic` with the seconds remaining on its window — or null when there is no
+ * active run for the topic, or its window is already over. This is the single
+ * place the run-window remaining is computed, so the recycle copy (and any future
+ * caller) agree on "is this an in-flight run, and how long is left?". The reaper's
+ * per-session age cap is a SEPARATE, shorter clock; this answers the run clock.
+ */
+export function autonomousRunRemainingForTopic(
+  stateDir: string,
+  topic: string | number,
+  nowMs: number = Date.now(),
+): { active: true; remainingSeconds: number } | null {
+  const topicStr = String(topic);
+  const job = activeAutonomousJobs(stateDir).find(
+    (j) => j.topic != null && String(j.topic) === topicStr,
+  );
+  if (!job || !job.active || !job.startedAt || !job.durationSeconds) return null;
+  const startedMs = new Date(job.startedAt).getTime();
+  if (!Number.isFinite(startedMs)) return null;
+  const remainingSeconds = Math.max(
+    0,
+    Math.round(job.durationSeconds - (nowMs - startedMs) / 1000),
+  );
+  // A run already past its own window is NOT a continuation — the terminal death
+  // copy should stand for it.
+  if (remainingSeconds <= 0) return null;
+  return { active: true, remainingSeconds };
+}
+
+/**
+ * Run-state markers the AutonomousProgressHeartbeat reads for its cheap-first
+ * predicates (autonomous-progress-heartbeat spec §predicates #2 + #3):
+ *   - `movedTo` / `moveSuspendedAt`: a mid-handoff marker (predicate #2 — this
+ *     machine must stay silent on a run about to fire from the destination).
+ *   - `startedAtMs`: the run's start wall-clock (predicate #3 — destination
+ *     warmup elapsed when the run has been active ON THIS MACHINE ≥ one window).
+ *
+ * Returns null when there is no per-topic run file (the heartbeat already
+ * gates on `autonomousRunRemainingForTopic` first; this is a SECOND read of the
+ * same file's markers, isolated here so all run-state file-format knowledge
+ * stays in this module). Reading fails CLOSED via the caller: a null return on
+ * a topic the run-active predicate already passed means the markers couldn't be
+ * read → the heartbeat suppresses.
+ */
+export interface AutonomousRunMarkers {
+  /** The target machine of an in-flight move, or null when not mid-move. */
+  movedTo: string | null;
+  /** Whether a `move_suspended_at` breadcrumb is present (mid-handoff). */
+  moveSuspended: boolean;
+  /** started_at parsed to epoch ms, or null when absent/unparseable. */
+  startedAtMs: number | null;
+}
+
+export function readAutonomousRunMarkers(
+  stateDir: string,
+  topic: string | number,
+): AutonomousRunMarkers | null {
+  const f = path.join(autonomousDir(stateDir), `${String(topic)}.local.md`);
+  let content: string;
+  try {
+    content = fs.readFileSync(f, 'utf8');
+  } catch {
+    // @silent-fallback-ok: a missing/unreadable `<topic>.local.md` is the EXPECTED case
+    // (no autonomous run for this topic). null is normal control flow, not degradation —
+    // callers (per readAutonomousRunMarkers' contract above) treat "couldn't read markers"
+    // as the conservative path (the heartbeat suppresses), so this is fail-safe, not silent.
+    return null;
+  }
+  const movedTo = readField(content, 'moved_to');
+  const startedAt = readField(content, 'started_at');
+  const startedMs = startedAt ? new Date(startedAt).getTime() : NaN;
+  return {
+    movedTo: movedTo && movedTo.length > 0 ? movedTo : null,
+    moveSuspended: /^move_suspended_at:/m.test(content),
+    startedAtMs: Number.isFinite(startedMs) ? startedMs : null,
+  };
+}
+
 export interface CanStartDeps {
   stateDir: string;
   maxConcurrent: number;
@@ -167,6 +246,112 @@ function emitStopped(journal: AutonomousJournalSeam | undefined, stateDir: strin
   } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
     /* observability never endangers the observed */
   }
+}
+
+/**
+ * WS1.4 (MULTI-MACHINE-SEAMLESSNESS-SPEC): suspend a topic's autonomous run
+ * for a CONFIRMED topic move — distinct from stop in exactly one way: the
+ * state file SURVIVES so it can ride the working-set carrier to the new
+ * owner. Setting `active: false` makes the stop hook release the session at
+ * its next turn boundary (the spec's "stops at a turn boundary"); the
+ * `moved_to` + `move_suspended_at` markers are the honest breadcrumb for
+ * whoever resumes it. The rewrite is ATOMIC (temp + fsync + rename) so the
+ * carrier can never ship a half-rewritten file, and the journal `stopped`
+ * emit is what re-fires the receiving machine's working-set pull
+ * (WorkingSetManifest §3.4 liveSource re-fire).
+ *
+ * Idempotent: re-suspending an already-suspended file refreshes the markers
+ * and returns true; a missing file returns false.
+ */
+export function suspendAutonomousTopicForMove(
+  stateDir: string,
+  topic: string,
+  targetMachine: string,
+  journal?: AutonomousJournalSeam,
+): { suspended: boolean; file?: string } {
+  const f = path.join(autonomousDir(stateDir), `${topic}.local.md`);
+  let content: string;
+  try {
+    content = fs.readFileSync(f, 'utf8');
+  } catch {
+    return { suspended: false };
+  }
+  // Same tolerance as readField (quoted forms included) — the reader and the
+  // flip MUST agree on what counts as a live run, or a run the veto saw as
+  // live could survive the flip and be reported suspended (second-pass
+  // finding, 2026-06-13: silent false success).
+  const wasActive = readField(content, 'active') === 'true';
+  const alreadyMoveSuspended = /^moved_to:/m.test(content);
+  if (!wasActive && !alreadyMoveSuspended) {
+    // Nothing to suspend (not live, not a prior move-suspend to refresh) —
+    // honest no-op, never a claimed success.
+    return { suspended: false };
+  }
+  const stamp = new Date().toISOString();
+  let next = wasActive ? content.replace(/^active:\s*"?true"?\s*$/m, 'active: false') : content;
+  if (readField(next, 'active') === 'true') {
+    // The flip did not land (an active-line shape the reader accepts but the
+    // rewrite does not) — report failure rather than a torn half-suspend.
+    return { suspended: false };
+  }
+  // Refresh-or-insert the move markers (idempotent across re-suspends),
+  // anchored to the (now false) active line.
+  for (const [key, val] of [
+    ['move_suspended_at', `"${stamp}"`],
+    ['moved_to', `"${targetMachine}"`],
+  ] as const) {
+    const line = `${key}: ${val}`;
+    next = new RegExp(`^${key}:`, 'm').test(next)
+      ? next.replace(new RegExp(`^${key}:.*$`, 'm'), line)
+      : next.replace(/^active:.*$/m, (m) => `${m}\n${line}`);
+  }
+  // Journal the stop ONLY for a genuinely-live run being suspended (a marker
+  // refresh re-emits nothing; the scanner's op-key dedupe would collapse it
+  // anyway). Before the rewrite, so listAutonomousJobs reads the live file.
+  if (wasActive) emitStopped(journal, stateDir, topic, f);
+  // Atomic snapshot: temp file in the SAME directory, fsync'd, renamed over.
+  const tmp = `${f}.tmp-move`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, next, null, 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, f);
+  return { suspended: true, file: f };
+}
+
+/**
+ * Stamp a (move-suspended) run file `interrupted_mid_task: true` — the honest
+ * marker that the drain bound forced the close before the session reached a
+ * turn boundary (WS1.2). The resuming machine surfaces it so the run knows its
+ * final turn may be partial. Idempotent; missing file is a no-op (the drain
+ * may have closed a session with no run).
+ */
+export function markAutonomousInterruptedMidTask(stateDir: string, topic: string): boolean {
+  const f = path.join(autonomousDir(stateDir), `${topic}.local.md`);
+  let content: string;
+  try {
+    content = fs.readFileSync(f, 'utf8');
+  } catch {
+    return false;
+  }
+  const line = 'interrupted_mid_task: true';
+  const next = /^interrupted_mid_task:/m.test(content)
+    ? content.replace(/^interrupted_mid_task:.*$/m, line)
+    : content.replace(/^active:.*$/m, (m) => `${m}\n${line}`);
+  if (next === content) return /^interrupted_mid_task:\s*true\s*$/m.test(content);
+  const tmp = `${f}.tmp-interrupt`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, next, null, 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, f);
+  return true;
 }
 
 export function stopAutonomousTopic(stateDir: string, topic: string, journal?: AutonomousJournalSeam): boolean {

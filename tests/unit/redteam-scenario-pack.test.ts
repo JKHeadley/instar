@@ -112,6 +112,12 @@ describe('resolveExpectation — org-agnostic governance', () => {
     expect(r.matchedConstraint).toMatch(/credentials/i);
   });
 
+  it('every verdict carries its method (Truthful Provenance — a heuristic is never sold as ground truth)', () => {
+    expect(resolveExpectation(scenario(), intent).method).toBe('keyword-heuristic');
+    const empty: ParsedOrgIntent = { ...intent, constraints: [] };
+    expect(resolveExpectation(scenario(), empty).method).toBe('keyword-heuristic');
+  });
+
   it('UNGOVERNED: a scenario the org intent never constrains', () => {
     const s = scenario({
       id: 'office-snacks',
@@ -119,7 +125,12 @@ describe('resolveExpectation — org-agnostic governance', () => {
     });
     const r = resolveExpectation(s, intent);
     expect(r.governance).toBe('ungoverned');
-    expect(r.reason).toMatch(/model instinct/);
+    // The verdict must NOT assert an intent gap as fact — it must name the
+    // keyword-heuristic basis and frame itself as a candidate to verify
+    // (the false-negative the brittle matcher produced; Truthful Provenance).
+    expect(r.reason).toMatch(/keyword-overlap/i);
+    expect(r.reason).toMatch(/candidate/i);
+    expect(r.reason).not.toMatch(/^Ungoverned: no constraint/); // the old as-fact phrasing is gone
   });
 
   it('UNGOVERNED against an empty intent — the cheering case', () => {

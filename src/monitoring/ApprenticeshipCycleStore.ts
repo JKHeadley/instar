@@ -173,6 +173,15 @@ export const APPRENTICESHIP_OVERSIGHT_AXES: ApprenticeshipCycleAxis[] = [
  *  driving the mentee). Observe-only threshold; tune via roleCoverage opts. */
 export const DEFAULT_KEYSTONE_STARVATION_OVERSIGHT = 3;
 
+/** Default: the keystone (deepest) layer is DORMANT once its last drive is this
+ *  old, regardless of oversight activity. Distinct from `starved` (which needs
+ *  oversight to pile up): dormancy is the wall-clock silence that masks as
+ *  "healthy" when the whole layer simply goes quiet — the exact blind spot the
+ *  bare oversight-since-keystone count can't see. 6h: long enough not to fire on
+ *  a normal gap between mentee drives, short enough to catch a real stall.
+ *  Observe-only; tune via roleCoverage opts. */
+export const DEFAULT_KEYSTONE_DORMANCY_MS = 6 * 60 * 60 * 1000;
+
 /**
  * Observe-only health of the keystone (deepest) layer for one instance. Never
  * gates or blocks — it makes "is the mentee layer actually running?" a
@@ -194,6 +203,16 @@ export interface ApprenticeshipKeystoneBalance {
   starved: boolean;
   /** The threshold actually applied (so callers can show "3 of 3"). */
   starvationThreshold: number;
+  /** Milliseconds since the last keystone drive (null if it never fired). The
+   *  wall-clock staleness `oversightSinceKeystone` is blind to. */
+  lastKeystoneAgeMs: number | null;
+  /** The keystone fired before, but its last drive is older than the dormancy
+   *  threshold — the deepest layer has gone quiet. Orthogonal to `starved`: a
+   *  layer can be dormant without any oversight piling up (total silence reads
+   *  "healthy" to the starvation check, which is the gap this closes). */
+  dormant: boolean;
+  /** The dormancy threshold actually applied, in milliseconds. */
+  dormancyThresholdMs: number;
   /** Plain-English why, for surfacing to a human. */
   reason: string;
 }
@@ -211,12 +230,17 @@ export interface ApprenticeshipRoleCoverage {
   /** Observe-only deepest-layer health (the 2026-06-06 mentor/mentee balance
    *  signal). Never gates; surfaces the imbalance so it can't silently drift. */
   keystoneBalance: ApprenticeshipKeystoneBalance;
+  /** Same UUID observed with different coverage-relevant fields across stores. */
+  coverageConflictingCycleIds: string[];
 }
 
 export interface RoleCoverageOptions {
   /** Oversight-since-keystone count that marks the deepest layer starved.
    *  Defaults to DEFAULT_KEYSTONE_STARVATION_OVERSIGHT. */
   oversightStarvationThreshold?: number;
+  /** Age (ms) past which the keystone layer is reported DORMANT regardless of
+   *  oversight. Defaults to DEFAULT_KEYSTONE_DORMANCY_MS. */
+  keystoneDormancyMs?: number;
 }
 
 export interface ApprenticeshipCycleRecord {
@@ -304,6 +328,15 @@ function normalizeKind(raw: unknown): ApprenticeshipCycleKind {
     return raw as ApprenticeshipCycleKind;
   }
   throw new Error(`kind must be one of ${[...APPRENTICESHIP_CYCLE_AXES, 'unknown'].join(', ')}`);
+}
+
+/** Legacy rows must remain readable even when their historical kind predates the enum. */
+function normalizeStoredKind(raw: unknown): ApprenticeshipCycleKind {
+  try {
+    return normalizeKind(raw);
+  } catch {
+    return 'unknown';
+  }
 }
 
 function normalizeChannel(raw: unknown): ApprenticeshipCycleChannel {
@@ -643,9 +676,29 @@ export class ApprenticeshipCycleStore {
     return row ? this.rowToRecord(row) : null;
   }
 
-  roleCoverage(instanceId: string, opts: RoleCoverageOptions = {}): ApprenticeshipRoleCoverage {
+  roleCoverage(
+    instanceId: string,
+    opts: RoleCoverageOptions = {},
+    additionalRecords: readonly ApprenticeshipCycleRecord[] = [],
+  ): ApprenticeshipRoleCoverage {
     const id = requireString(instanceId, 'instanceId');
-    const rows = this.stmts.listAllByInstance.all(id) as Row[];
+    const localRecords = (this.stmts.listAllByInstance.all(id) as Row[]).map((row) => this.rowToRecord(row));
+    // A cycle may have been mirrored or recorded by more than one participating
+    // agent. Its UUID is the transport-stable identity, so the local copy wins
+    // and peer copies are folded exactly once.
+    const recordsById = new Map(localRecords.map((record) => [record.id, record]));
+    const coverageConflictingCycleIds = new Set<string>();
+    const coverageFingerprint = (record: ApprenticeshipCycleRecord): string =>
+      JSON.stringify([record.instanceId, record.createdAt, record.kind, record.channel]);
+    for (const record of additionalRecords) {
+      if (record.instanceId !== id) continue;
+      const existing = recordsById.get(record.id);
+      if (!existing) {
+        recordsById.set(record.id, record);
+      } else if (coverageFingerprint(existing) !== coverageFingerprint(record)) {
+        coverageConflictingCycleIds.add(record.id);
+      }
+    }
     const blank = (): ApprenticeshipRoleAxisCoverage => ({ fired: false, cycleCount: 0, lastAt: null });
     const axes = Object.fromEntries(
       APPRENTICESHIP_CYCLE_AXES.map((axis) => [axis, blank()]),
@@ -656,9 +709,9 @@ export class ApprenticeshipCycleStore {
     // many landed AFTER the last keystone drive (the starvation signal).
     const oversightTimestamps: string[] = [];
 
-    for (const row of rows) {
-      const kind = normalizeKind(row.kind);
-      const channel = normalizeChannel(row.channel);
+    for (const record of recordsById.values()) {
+      const kind = normalizeStoredKind(record.kind);
+      const channel = normalizeChannel(record.channel);
       // §4a ENFORCEMENT: a mentor-mentee-differential cycle that ran through a
       // `direct-shortcut` (bypassing the dogfooded Telegram-Playwright UX-under-test)
       // is recorded for honesty but does NOT count toward the keystone axis — a
@@ -671,9 +724,9 @@ export class ApprenticeshipCycleStore {
       const target = kind === 'unknown' ? unknown : axes[kind];
       target.fired = true;
       target.cycleCount += 1;
-      if (!target.lastAt || row.created_at > target.lastAt) target.lastAt = row.created_at;
+      if (!target.lastAt || record.createdAt > target.lastAt) target.lastAt = record.createdAt;
       if ((APPRENTICESHIP_OVERSIGHT_AXES as string[]).includes(kind)) {
-        oversightTimestamps.push(row.created_at);
+        oversightTimestamps.push(record.createdAt);
       }
     }
 
@@ -686,9 +739,13 @@ export class ApprenticeshipCycleStore {
       axes,
       oversightTimestamps,
       opts.oversightStarvationThreshold,
+      opts.keystoneDormancyMs,
     );
 
-    return { instanceId: id, axes, unknown, dormantAxes, driftWarning, shortcutDifferentialCount, keystoneBalance };
+    return {
+      instanceId: id, axes, unknown, dormantAxes, driftWarning, shortcutDifferentialCount,
+      keystoneBalance, coverageConflictingCycleIds: [...coverageConflictingCycleIds].sort(),
+    };
   }
 
   /**
@@ -703,11 +760,16 @@ export class ApprenticeshipCycleStore {
     axes: Record<ApprenticeshipCycleAxis, ApprenticeshipRoleAxisCoverage>,
     oversightTimestamps: string[],
     thresholdOpt?: number,
+    dormancyMsOpt?: number,
   ): ApprenticeshipKeystoneBalance {
     const threshold =
       typeof thresholdOpt === 'number' && Number.isInteger(thresholdOpt) && thresholdOpt > 0
         ? thresholdOpt
         : DEFAULT_KEYSTONE_STARVATION_OVERSIGHT;
+    const dormancyThresholdMs =
+      typeof dormancyMsOpt === 'number' && Number.isFinite(dormancyMsOpt) && dormancyMsOpt > 0
+        ? dormancyMsOpt
+        : DEFAULT_KEYSTONE_DORMANCY_MS;
     const keystone = axes[APPRENTICESHIP_KEYSTONE_AXIS];
     const lastKeystoneAt = keystone.lastAt;
     const oversightCycleCount = oversightTimestamps.length;
@@ -718,6 +780,25 @@ export class ApprenticeshipCycleStore {
       ? oversightTimestamps.filter((ts) => ts > lastKeystoneAt).length
       : oversightCycleCount;
 
+    // Wall-clock staleness of the last keystone drive — the dimension the bare
+    // oversight-since count is blind to (a layer that simply goes silent reads
+    // "healthy" because no oversight piled up). A parse failure degrades to null
+    // (no false dormancy) rather than throwing.
+    const parsedLastMs = lastKeystoneAt ? Date.parse(lastKeystoneAt) : NaN;
+    const lastKeystoneAgeMs = Number.isFinite(parsedLastMs)
+      ? Math.max(0, this.now().getTime() - parsedLastMs)
+      : null;
+    const dormant =
+      keystone.fired && lastKeystoneAgeMs !== null && lastKeystoneAgeMs >= dormancyThresholdMs;
+    const fmtAge = (ms: number): string => {
+      const h = ms / 3_600_000;
+      return h >= 48 ? `${(h / 24).toFixed(1)}d` : `${h.toFixed(1)}h`;
+    };
+    const dormancyNote =
+      dormant && lastKeystoneAgeMs !== null
+        ? `last keystone drive was ${fmtAge(lastKeystoneAgeMs)} ago (>= ${fmtAge(dormancyThresholdMs)})`
+        : '';
+
     let starved = false;
     let reason: string;
     if (!keystone.fired && oversightCycleCount > 0) {
@@ -726,10 +807,13 @@ export class ApprenticeshipCycleStore {
     } else if (keystone.fired && oversightSinceKeystone >= threshold) {
       starved = true;
       reason = `${oversightSinceKeystone} oversight cycle(s) since the last keystone drive (>= ${threshold}) — the program has drifted to reviewing/overseeing without driving the mentee.`;
+      if (dormant) reason += ` It is also DORMANT — ${dormancyNote}.`;
     } else if (!keystone.fired) {
       reason = `keystone has not fired yet, but no oversight activity to drift against — program just hasn't started its deepest layer.`;
+    } else if (dormant) {
+      reason = `keystone DORMANT — ${dormancyNote}; the deepest layer has gone quiet. Not "starved" (no oversight has piled up since), but silent — re-drive the mentee.`;
     } else {
-      reason = `keystone healthy: last drive recorded, ${oversightSinceKeystone} oversight cycle(s) since (< ${threshold}).`;
+      reason = `keystone healthy: last drive ${lastKeystoneAgeMs !== null ? `${fmtAge(lastKeystoneAgeMs)} ago` : 'recorded'}, ${oversightSinceKeystone} oversight cycle(s) since (< ${threshold}).`;
     }
 
     return {
@@ -740,6 +824,9 @@ export class ApprenticeshipCycleStore {
       oversightSinceKeystone,
       starved,
       starvationThreshold: threshold,
+      lastKeystoneAgeMs,
+      dormant,
+      dormancyThresholdMs,
       reason,
     };
   }
@@ -771,7 +858,7 @@ export class ApprenticeshipCycleStore {
       overseerDifferential: parseJsonArray(row.overseer_diff_json),
       coaching: row.coaching,
       infraItems: parseJsonArray(row.infra_items_json),
-      kind: normalizeKind(row.kind),
+      kind: normalizeStoredKind(row.kind),
       status: row.status,
       channel: normalizeChannel(row.channel),
       operatorSeatUx: parseOperatorSeatUx(row.operator_seat_ux_json),

@@ -192,6 +192,8 @@ export class ContextWedgeSentinel extends EventEmitter {
   private readonly states = new Map<string, ContextWedgeState>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private tickHandle: ReturnType<typeof setInterval> | null = null;
+  /** Liveness of the tick loop (GUARD-POSTURE-ENDPOINT-SPEC §2.2): 0 = never ticked. */
+  private lastTickAt = 0;
 
   constructor(private readonly deps: ContextWedgeSentinelDeps, cfg: ContextWedgeSentinelConfig = {}) {
     super();
@@ -216,6 +218,7 @@ export class ContextWedgeSentinel extends EventEmitter {
 
   /** One scan pass over every tracked session. */
   tick(): void {
+    this.lastTickAt = Date.now();
     if (!this.cfg.enabled) return;
     const names = this.deps.listSessionNames?.() ?? [];
     for (const name of names) this.scanSession(name);
@@ -351,6 +354,12 @@ export class ContextWedgeSentinel extends EventEmitter {
 
   private clearTimer(handle: ReturnType<typeof setTimeout>): void {
     (this.deps.clearTimer ?? clearTimeout)(handle);
+  }
+
+  /** Sync in-memory runtime read for the GuardRegistry (GET /guards).
+   *  MUST stay a cheap property read — no I/O, no session listing. */
+  guardStatus(): { enabled: boolean; lastTickAt: number } {
+    return { enabled: this.cfg.enabled, lastTickAt: this.lastTickAt };
   }
 }
 

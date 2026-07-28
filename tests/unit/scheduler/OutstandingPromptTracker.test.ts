@@ -6,7 +6,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { OutstandingPromptTracker } from '../../../src/scheduler/OutstandingPromptTracker.js';
+import {
+  OutstandingPromptTracker,
+  type OutstandingPromptTrackerOptions,
+} from '../../../src/scheduler/OutstandingPromptTracker.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 const NOW = 1_779_900_000_000;
@@ -17,7 +20,7 @@ describe('OutstandingPromptTracker', () => {
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mentor-out-')); clock = NOW; });
   afterEach(() => { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'mentor-out test' }); });
 
-  function mk(over: { replyTimeoutMs?: number } = {}): OutstandingPromptTracker {
+  function mk(over: Partial<OutstandingPromptTrackerOptions> = {}): OutstandingPromptTracker {
     return new OutstandingPromptTracker({
       filePath: path.join(dir, 'out.json'),
       now: () => clock,
@@ -92,6 +95,99 @@ describe('OutstandingPromptTracker', () => {
     expect(t.recordOrphanNotified('corr-X')).toBe(true);
     expect(t.recordOrphanNotified('corr-X')).toBe(false);
     expect(t.recordOrphanNotified('corr-Y')).toBe(true);
+  });
+
+  it('DELIVERY BRAKE: allows the first attempt for new mentor content', () => {
+    const t = mk({ replyTimeoutMs: 5000 });
+    const r = t.reserveSend('corr-1', 'instar-codey', 'May I use the default permission rule?');
+    expect(r).toMatchObject({ ok: true, attempt: 1 });
+    expect(t.size()).toBe(1);
+  });
+
+  it('DELIVERY BRAKE: suppresses identical unanswered content after the bounded attempt cap', () => {
+    const t = mk({ replyTimeoutMs: 5000 });
+    const content = 'May I use the default permission rule?';
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const r = t.reserveSend(`corr-${attempt}`, 'instar-codey', content);
+      expect(r).toMatchObject({ ok: true, attempt });
+      clock += 6000;
+      t.sweepExpired();
+    }
+
+    expect(t.reserveSend('corr-4', 'instar-codey', content)).toMatchObject({
+      ok: false,
+      reason: 'identical-content-retry-exhausted',
+      attempts: 3,
+    });
+  });
+
+  it('DELIVERY BRAKE: allows a genuinely new agenda item while old content is suppressed', () => {
+    const t = mk({ replyTimeoutMs: 5000 });
+    const oldContent = 'May I use the default permission rule?';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      expect(t.reserveSend(`old-${attempt}`, 'instar-codey', oldContent).ok).toBe(true);
+      clock += 6000;
+      t.sweepExpired();
+    }
+
+    expect(t.reserveSend('old-4', 'instar-codey', oldContent).ok).toBe(false);
+    expect(t.reserveSend('new-1', 'instar-codey', 'Please review the next bounded task.')).toMatchObject({
+      ok: true,
+      attempt: 1,
+    });
+  });
+
+  it('DELIVERY BRAKE: survives a restart and escalates an exhausted content key once', () => {
+    const content = 'May I use the default permission rule?';
+    const t1 = mk({ replyTimeoutMs: 5000 });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      expect(t1.reserveSend(`corr-${attempt}`, 'instar-codey', content).ok).toBe(true);
+      clock += 6000;
+      t1.sweepExpired();
+    }
+
+    const denied = t1.reserveSend('corr-4', 'instar-codey', content);
+    expect(denied).toMatchObject({
+      ok: false,
+      reason: 'identical-content-retry-exhausted',
+      attempts: 3,
+    });
+    if (denied.ok) throw new Error('expected exhausted delivery brake');
+    expect(t1.recordRetryExhaustionEscalated(denied.contentKey)).toBe(true);
+
+    const t2 = mk({ replyTimeoutMs: 5000 });
+    expect(t2.reserveSend('corr-after-restart', 'instar-codey', content)).toMatchObject({
+      ok: false,
+      reason: 'identical-content-retry-exhausted',
+      attempts: 3,
+    });
+    expect(t2.recordRetryExhaustionEscalated(denied.contentKey)).toBe(false);
+  });
+
+  it('DELIVERY BRAKE: normalizes whitespace, persists only hashes, and bounds distinct keys', () => {
+    const t = mk({ maxTrackedContentKeys: 2 });
+    const sensitive = 'May I use the default permission rule?';
+    const first = t.reserveSend('corr-a', 'instar-codey', sensitive);
+    expect(first).toMatchObject({ ok: true, attempt: 1 });
+    t.markDeliveryFailed('corr-a');
+
+    const normalizedRepeat = t.reserveSend(
+      'corr-b',
+      'instar-codey',
+      '  May I use the default   permission rule?  ',
+    );
+    expect(normalizedRepeat).toMatchObject({ ok: true, attempt: 2 });
+    t.markDeliveryFailed('corr-b');
+
+    expect(fs.readFileSync(path.join(dir, 'out.json'), 'utf-8')).not.toContain(sensitive);
+
+    expect(t.reserveSend('corr-c', 'instar-codey', 'A second agenda item.').ok).toBe(true);
+    t.markDeliveryFailed('corr-c');
+    expect(t.reserveSend('corr-d', 'instar-codey', 'A third agenda item.')).toEqual({
+      ok: false,
+      reason: 'delivery-retry-ledger-full',
+    });
   });
 
   it('CORRUPT FILE: starts fresh rather than crash the mentor', () => {

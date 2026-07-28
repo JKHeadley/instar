@@ -35,7 +35,7 @@ Scoped against the live instar codebase (`.dev/instar`) 2026-06-04. Each feature
 
 ## Tier 4 — Live agent-drives-agent verification (MANDATORY for every EXO 3.0 feature)
 
-Standing requirement from Caroline (2026-06-04): unit/integration/e2e prove the *code* works; they do NOT prove the *agent behavior* works. Every EXO-3.0-derived feature must additionally pass a **Tier 4** verification before it's "done":
+Standing requirement from the operator, Justin (2026-06-04; originally miscredited to "Caroline" — identity-bleed artifact, scrubbed): unit/integration/e2e prove the *code* works; they do NOT prove the *agent behavior* works. Every EXO-3.0-derived feature must additionally pass a **Tier 4** verification before it's "done":
 
 - Build on the existing `test-as-self` mechanism (deploy the dist into a throwaway agent home), then go further: **one agent drives another over the real Telegram surface** — one Echo instance plays the USER, the other is the TEST agent.
 - The user-agent issues natural-language requests that should exercise the feature; the test-agent must actually *perform the behavior* through its normal conversational path (not a curl to the endpoint, not a 200 check) — e.g. for G1, the user-agent asks the test-agent to evaluate an action against its MTP and the test-agent must correctly refuse/endorse via the identity+constraint layers.

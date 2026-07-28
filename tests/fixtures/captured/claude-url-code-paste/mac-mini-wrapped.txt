@@ -1,0 +1,6 @@
+Opening browser to sign in…
+If the browser didn’t open, visit: https://claude.com/cai/oauth/authorize?code=t
+rue&client_id=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee&response_type=code&redirect_u
+ri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Aprofile
+&state=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-zzzzzzzzzzzz
+Paste code here if prompted >

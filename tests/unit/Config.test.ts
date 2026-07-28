@@ -48,6 +48,140 @@ describe('Config', () => {
       SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:48' });
     });
 
+    it('carries sessions.componentFrameworks from config.json into the loaded config (load-path wiring)', () => {
+      // REGRESSION (2026-06-06): the per-component framework routing feature
+      // read config.sessions.componentFrameworks live (IntelligenceRouter
+      // resolveConfig), and the docs told users to set it in
+      // `.instar/config.json` — but Config.load never copied the field from
+      // the file, so the documented surface was silently DEAD on every
+      // deployed agent. This is the exact-gap test: a FILE-loaded config must
+      // carry the routing table.
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+
+      const routing = {
+        categories: { sentinel: 'codex-cli' },
+        overrides: { CoherenceReviewer: 'claude-code' },
+      };
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: {
+            framework: 'claude-code',
+            claudePath: '/usr/local/bin/claude',
+            tmuxPath: '/usr/bin/tmux',
+            componentFrameworks: routing,
+          },
+        }),
+      );
+
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.componentFrameworks).toEqual(routing);
+
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:componentFrameworks' });
+    });
+
+    it('omits componentFrameworks when absent from the file (no phantom field)', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: { framework: 'claude-code', claudePath: '/usr/local/bin/claude', tmuxPath: '/usr/bin/tmux' },
+        }),
+      );
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.componentFrameworks).toBeUndefined();
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:componentFrameworks-absent' });
+    });
+
+    it('carries sessions.frameworkDefaultModels from config.json into the loaded config (load-path wiring)', () => {
+      // REGRESSION (2026-06-25): the SAME load-path gap class as componentFrameworks
+      // above. server.ts builds the pi-cli provider from
+      // config.sessions.frameworkDefaultModels['pi-cli'] (the required model pattern),
+      // and the docs told users to set it in `.instar/config.json` — but loadConfig
+      // never copied the field from the file, so the pattern was ALWAYS undefined at
+      // boot, the factory degraded pi-cli to null ("binary missing / not built"), and
+      // pi-cli was silently UNAVAILABLE on every deployed agent despite a valid binary.
+      // This is the exact-gap test: a FILE-loaded config must carry the model map.
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+
+      const models = { 'pi-cli': 'openai-codex/gpt-5.5', 'gemini-cli': 'gemini-2.5-flash' };
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: {
+            framework: 'claude-code',
+            claudePath: '/usr/local/bin/claude',
+            tmuxPath: '/usr/bin/tmux',
+            frameworkDefaultModels: models,
+          },
+        }),
+      );
+
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.frameworkDefaultModels).toEqual(models);
+      expect(config.sessions.frameworkDefaultModels?.['pi-cli']).toBe('openai-codex/gpt-5.5');
+
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:frameworkDefaultModels' });
+    });
+
+    it('omits frameworkDefaultModels when absent from the file (no phantom field)', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: { framework: 'claude-code', claudePath: '/usr/local/bin/claude', tmuxPath: '/usr/bin/tmux' },
+        }),
+      );
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.frameworkDefaultModels).toBeUndefined();
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:frameworkDefaultModels-absent' });
+    });
+
+    it('preserves sessions.dynamicMcp from the config file (the exact-gap test — feature un-enablable without it)', () => {
+      // THIRD instance of the load-path gap (componentFrameworks, frameworkDefaultModels,
+      // now dynamicMcp). #1293 added the feature + routes + SessionManager.buildSessionMcpFlags
+      // (all read config.sessions.dynamicMcp), but the loader never copied it from the FILE —
+      // so setting `sessions.dynamicMcp.enabled: true` did nothing (routes 503'd, sessions never
+      // trimmed). A FILE-loaded config MUST carry dynamicMcp or the feature can't be turned on.
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+      const dynamicMcp = { enabled: true, keepWarm: ['threadline'] };
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: { framework: 'claude-code', claudePath: '/usr/local/bin/claude', tmuxPath: '/usr/bin/tmux', dynamicMcp },
+        }),
+      );
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.dynamicMcp).toEqual(dynamicMcp);
+      expect(config.sessions.dynamicMcp?.enabled).toBe(true);
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:dynamicMcp' });
+    });
+
+    it('omits dynamicMcp when absent from the file (no phantom field)', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
+      const stateDir = path.join(tmpDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'config.json'),
+        JSON.stringify({
+          sessions: { framework: 'claude-code', claudePath: '/usr/local/bin/claude', tmuxPath: '/usr/bin/tmux' },
+        }),
+      );
+      const config = loadConfig(tmpDir);
+      expect(config.sessions.dynamicMcp).toBeUndefined();
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/Config.test.ts:dynamicMcp-absent' });
+    });
+
     it('respects sessions.tmuxPath from config.json instead of auto-detecting', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-config-test-'));
       const stateDir = path.join(tmpDir, '.instar');

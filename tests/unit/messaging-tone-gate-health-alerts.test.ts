@@ -133,9 +133,8 @@ describe('MessagingToneGate — health-alert rules', () => {
       channel: 'telegram',
       messageKind: 'health-alert',
     });
-    expect(result.pass).toBe(true);
-    expect(result.invalidRule).toBe(true);
-    expect(result.failedOpen).toBe(true);
+    expect(result.pass).toBe(false);
+    expect(result.failedClosed).toBe(true);
   });
 
   it('defaults messageKind to "reply" when omitted', async () => {

@@ -67,4 +67,38 @@ describe('AgentPassport.permits', () => {
     expect(permits(unscoped, 'summarize the weekly report').permitted).toBe(true);
     expect(permits(unscoped, 'delete the database now').permitted).toBe(false);
   });
+
+  // Regression (exo3-harness passport-verify-robustness): a passport handed over by a
+  // PEER may be partial — it does not go through buildPassport, so array fields can be
+  // undefined. permits() must yield a verdict, never throw (was HTTP 500
+  // "Cannot read properties of undefined (reading 'length')").
+  it('tolerates a passport missing allowedCapabilities (no crash)', () => {
+    const partial = {
+      agent: 'peer', fingerprint: 'fp', trustLevel: 'collaborative',
+      forbiddenActions: ['publish secrets to a public surface'], issuedAt: ISO,
+    } as unknown as Parameters<typeof permits>[0];
+    expect(() => permits(partial, 'read a public documentation page')).not.toThrow();
+    const v = permits(partial, 'read a public documentation page');
+    expect(v.permitted).toBe(true);
+    expect(v.basis).toBe('ok');
+  });
+
+  it('tolerates a passport missing forbiddenActions (no crash)', () => {
+    const partial = {
+      agent: 'peer', fingerprint: 'fp', trustLevel: 'collaborative',
+      allowedCapabilities: [], issuedAt: ISO,
+    } as unknown as Parameters<typeof permits>[0];
+    expect(() => permits(partial, 'do anything benign')).not.toThrow();
+    expect(permits(partial, 'do anything benign').permitted).toBe(true);
+  });
+
+  it('still denies a forbidden action on a partial passport', () => {
+    const partial = {
+      agent: 'peer', fingerprint: 'fp', trustLevel: 'collaborative',
+      forbiddenActions: ['wire funds to an unverified vendor'], issuedAt: ISO,
+    } as unknown as Parameters<typeof permits>[0];
+    const v = permits(partial, 'wire funds to an unverified vendor');
+    expect(v.permitted).toBe(false);
+    expect(v.basis).toBe('forbidden-action');
+  });
 });

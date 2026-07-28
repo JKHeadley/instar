@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-22T20:42:00.000Z",
+  "slug": "single-machine-failover-gap-detector",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 330,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "SingleMachineFailoverGapDetector: pure, dark-by-default signal-only guard that raises ONE deduped high-priority attention item when this agent is single-machine (no online mesh peer) WHILE it has active autonomous runs = no failover target. Closes the CLASS behind the 2026-07-22 Codey overnight loss (autonomous work single-machine, session stopped, nothing took over, invisible until a human noticed). Two honest modes: not-configured vs peer-offline. This increment ships the pure core + dev-agent config resolver (dryRun-first) + status()/guardStatusFor — INJECTED deps, NOT wired to boot = zero runtime effect (mirrors #1552's shape). Boot-wiring + GET route + integration/e2e is the next increment. Additive, dark. tsc clean, 15/15 unit green."
+}

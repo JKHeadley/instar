@@ -52,6 +52,7 @@ export async function sendMessageViaHttp(
         targetAgent: params.targetAgent,
         threadId: params.threadId,
         message: params.message,
+        inReplyTo: params.inReplyTo,
         waitForReply: params.waitForReply,
         timeoutSeconds: params.timeoutSeconds,
         // Forward the originating Telegram topic so the reply can be routed
@@ -81,6 +82,10 @@ export async function sendMessageViaHttp(
       error?: string;
       deliveryOutcome?: string;
       deliveryPath?: string;
+      delivered?: boolean;
+      held?: boolean;
+      note?: string;
+      advisory?: string;
     } = {};
     if (raw) {
       try {
@@ -99,6 +104,12 @@ export async function sendMessageViaHttp(
         replyFrom: parsed.replyFrom,
         deliveryOutcome: parsed.deliveryOutcome,
         deliveryPath: parsed.deliveryPath,
+        // Negotiator lease (Robustness Phase 1): surface withheld/held + the
+        // holding note + the commitment-class advisory back to the session.
+        delivered: parsed.delivered,
+        held: parsed.held,
+        note: parsed.note,
+        advisory: parsed.advisory,
       };
     }
 

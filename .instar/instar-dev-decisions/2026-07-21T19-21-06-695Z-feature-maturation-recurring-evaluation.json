@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-21T19:21:06.695Z",
+  "slug": "feature-maturation-recurring-evaluation",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 343,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

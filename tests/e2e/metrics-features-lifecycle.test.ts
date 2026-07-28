@@ -73,6 +73,18 @@ describe('Per-feature LLM metrics E2E lifecycle (feature is alive)', () => {
     expect(res.body.totals.calls).toBe(0);
   });
 
+  it('serves the token-audit-completeness enrichment on the production init path', async () => {
+    const res = await request(app).get('/metrics/features').set(auth());
+    expect(res.status).toBe(200);
+    // The enriched summary shape (feature×model breakdown + coverage + shares)
+    // must be alive on the REAL boot path, not just in unit-built ledgers.
+    expect(Array.isArray(res.body.totals.byModel)).toBe(true);
+    expect(Array.isArray(res.body.totals.usageCoverage)).toBe(true);
+    expect(res.body.totals.unlabeledTokenShare).toBe(0);
+    expect(res.body.totals.unlabeledCallShare).toBe(0);
+    expect(typeof res.body.totals.tokensCached).toBe('number');
+  });
+
   it('requires Bearer auth', async () => {
     const res = await request(app).get('/metrics/features');
     expect(res.status).toBe(401);

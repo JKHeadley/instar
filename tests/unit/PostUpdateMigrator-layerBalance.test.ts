@@ -88,4 +88,24 @@ describe('PostUpdateMigrator — apprenticeship layer-balance awareness', () => 
     // present exactly once (from the section template, not also the insert)
     expect(content.split('keystoneBalance').length - 1).toBeGreaterThanOrEqual(1);
   });
+
+  it('upgrades an agent that already carries the PRE-dormancy keystoneBalance shape in place', () => {
+    // Simulate an agent migrated by the prior layer-balance change: it has the
+    // keystoneBalance line but only the bare `{ ...starved, reason }` shape.
+    const oldLine = '- Layer-balance health: `GET /apprenticeship/instances/:id/role-coverage` returns a `keystoneBalance` block — `{ keystoneAxis, keystoneCycleCount, lastKeystoneAt, oversightSinceKeystone, starved, reason }` — answering the balance question. `starved:true` = the mentee layer is under-firing. Observe-only; tune via `?oversightStarvationThreshold=N`.';
+    fs.writeFileSync(claudeMdPath, `# CLAUDE.md\n\n**Apprenticeship Program**\n\n${PROACTIVE_ANCHOR}\n${oldLine}\n`);
+    const result = runClaudeMdMigration(newMigrator(projectDir));
+
+    const content = fs.readFileSync(claudeMdPath, 'utf8');
+    expect(content).toContain('oversightSinceKeystone, starved, dormant, lastKeystoneAgeMs, reason }');
+    expect(content).not.toContain('oversightSinceKeystone, starved, reason }');
+    expect(result.upgraded).toContain('CLAUDE.md: added keystoneBalance dormancy field awareness');
+    // the full-line insert must NOT also fire — keystoneBalance was already present
+    expect(result.upgraded).not.toContain('CLAUDE.md: added apprenticeship layer-balance (keystoneBalance) awareness');
+
+    // idempotent: a second run changes nothing and reports no dormancy upgrade
+    const second = runClaudeMdMigration(newMigrator(projectDir));
+    expect(fs.readFileSync(claudeMdPath, 'utf8')).toBe(content);
+    expect(second.upgraded).not.toContain('CLAUDE.md: added keystoneBalance dormancy field awareness');
+  });
 });

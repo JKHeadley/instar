@@ -25,6 +25,7 @@ import {
   SPEC_REVIEW_TIMEOUT_MS,
   PARITY_PASS_TIMEOUT_MS,
   PARITY_ROUTE_SLACK_MS,
+  POOL_TRANSFER_TIMEOUT_MS,
 } from '../../src/server/middleware.js';
 import { CONFORMANCE_REVIEW_TIMEOUT_MS } from '../../src/core/reviewers/standards-conformance.js';
 
@@ -50,6 +51,19 @@ describe('request-timeout override map (production wiring)', () => {
 
   it('resolves /spec/conformance-check to the spec-review budget (the bug this fixed)', () => {
     expect(resolveRequestTimeout('/spec/conformance-check', DEFAULT_MS, overrides)).toBe(SPEC_REVIEW_TIMEOUT_MS);
+  });
+
+  it('resolves /pool/transfer to the drain budget (WS1.2 — synchronous owner drain up to ~50s)', () => {
+    // Without this, the 30s default 408s mid-drain while the handler keeps
+    // running to completion (lands the claim + sets the pin) — 2026-06-12
+    // second-pass concern #1.
+    expect(resolveRequestTimeout('/pool/transfer', DEFAULT_MS, overrides)).toBe(POOL_TRANSFER_TIMEOUT_MS);
+    // Must clear the 50s remote drain-call cap with margin.
+    expect(POOL_TRANSFER_TIMEOUT_MS).toBeGreaterThan(50_000);
+  });
+
+  it('leaves the fast sibling /pool/placement on the default (no over-reach)', () => {
+    expect(resolveRequestTimeout('/pool/placement', DEFAULT_MS, overrides)).toBe(DEFAULT_MS);
   });
 
   it('leaves the fast sibling /spec/conformance-metrics on the default (no over-reach)', () => {

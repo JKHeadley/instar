@@ -34,8 +34,20 @@ export interface FeedbackResponse {
   json: unknown;
 }
 
+/**
+ * The narrow store surface the SUBMIT path actually uses (dedup + write). The full
+ * `FeedbackStore` satisfies it structurally; the canonical front's Blob-backed
+ * inbox store implements it asynchronously (Vercel Blob is REST). Methods may be
+ * sync or async — the handler awaits both, so decision order, status codes, and
+ * messages are unchanged for the existing synchronous stores.
+ */
+export interface ReceiverStore {
+  hasFeedback(feedbackId: string): boolean | Promise<boolean>;
+  addFeedback(item: Parameters<FeedbackStore['addFeedback']>[0]): void | Promise<void>;
+}
+
 export interface FeedbackHandlerDeps {
-  store: FeedbackStore;
+  store: ReceiverStore;
   rateLimiter: RateLimiter;
   /** Normalized webhook secret (see normalizeWebhookSecret); undefined ⇒ unsigned-but-accepted. */
   secret: string | undefined;
@@ -54,8 +66,12 @@ function defaultFeedbackId(now: number): string {
   return `fb-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-/** Port of handleSubmit. Returns the status/headers/json the canonical front sends back. */
-export function handleFeedbackSubmit(req: FeedbackRequest, deps: FeedbackHandlerDeps): FeedbackResponse {
+/**
+ * Port of handleSubmit. Returns the status/headers/json the canonical front sends
+ * back. Async because the canonical front's store is REST-backed (Vercel Blob);
+ * for synchronous stores the awaits are no-ops and behavior is byte-identical.
+ */
+export async function handleFeedbackSubmit(req: FeedbackRequest, deps: FeedbackHandlerDeps): Promise<FeedbackResponse> {
   const { store, rateLimiter, secret, now } = deps;
   const sourceIp = extractSourceIp(req.headers, req.remoteAddress);
 
@@ -122,11 +138,11 @@ export function handleFeedbackSubmit(req: FeedbackRequest, deps: FeedbackHandler
     : (deps.generateFeedbackId ?? (() => defaultFeedbackId(now)))();
 
   // Layer 5: dedup — idempotent on a known feedbackId.
-  if (store.hasFeedback(feedbackId)) {
+  if (await store.hasFeedback(feedbackId)) {
     return { status: 200, json: { id: feedbackId, received: true, duplicate: true } };
   }
 
-  store.addFeedback({
+  await store.addFeedback({
     feedbackId,
     type,
     title: (title as string).trim().slice(0, 500),

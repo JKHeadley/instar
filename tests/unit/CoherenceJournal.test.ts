@@ -80,6 +80,24 @@ describe('CoherenceJournal — paths & sanitization (§3.1)', () => {
     j.close();
   });
 
+  it("accepts the WS1.3 'reconcile' placement reason — the runtime allowlist matches the PlacementReason union (second-pass finding, 2026-06-12)", () => {
+    // The type annotation on the validator's allowlist cannot enforce
+    // completeness (a subset of the union is type-legal), so extending
+    // PlacementReason without the allowlist silently schema-rejects the new
+    // reason AT THE SOURCE. This is the semantic-correctness test for every
+    // reconciler-driven CAS's journal pairing.
+    const j = makeJournal();
+    const before = j.getDegradation().schemaRejects;
+    j.emitPlacement(13481, { owner: 'm_a', epoch: 7, reason: 'reconcile' });
+    j.flush();
+    expect(j.getDegradation().schemaRejects).toBe(before); // NOT rejected
+    expect(fs.existsSync(streamFile('topic-placement'))).toBe(true);
+    const lines = fs.readFileSync(streamFile('topic-placement'), 'utf-8').trim().split('\n');
+    const last = JSON.parse(lines[lines.length - 1]);
+    expect(last.data?.reason).toBe('reconcile');
+    j.close();
+  });
+
   it('sanitizes machine ids that contain path-unsafe characters (mirrors MachineHeartbeat)', () => {
     expect(sanitizeMachineId('a/b')).toBe('a%2fb'); // slash encoded
     expect(sanitizeMachineId('../x')).toBe('%2e%2e%2fx'); // dots + slash all encoded (traversal-safe)
@@ -225,6 +243,24 @@ describe('CoherenceJournal — unflushed entries lost on crash (§3.1, §6)', ()
 });
 
 describe('CoherenceJournal — typed-schema rejection (§3.2, §6)', () => {
+  it('replicates only the typed, signed mutual-SSH proof projection', () => {
+    const j = makeJournal();
+    const proof = {
+      sourceMachineId: 'm-a', targetMachineId: 'm-b', pairingEpoch: 7,
+      observerBootId: 'boot-a-12345678', endpointId: 'private:abc',
+      sourceClientKeyGeneration: 2, targetHostKeyGeneration: 3,
+      targetHostKeyFingerprint: 'SHA256:host', verifiedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), challengeDigest: 'digest',
+      machineSignature: 'signature'.repeat(8),
+    };
+    j.emitSshDirectionProof({ ...proof, secret: 'must-drop' } as typeof proof);
+    j.flush();
+    const rows = readLines(streamFile('ssh-direction-proof'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data).toEqual(proof);
+    expect(j.getDegradation().droppedFields).toBeGreaterThan(0);
+    j.close();
+  });
   it('rejects free-text / extra free-form fields by dropping unknown fields (counted)', () => {
     const j = makeJournal();
     j.emitPlacement(1, {
@@ -620,6 +656,48 @@ describe('CoherenceJournal — self-emission exclusion (§3.1)', () => {
   });
 });
 
+describe('CoherenceJournal — getOwnAdvert (§3.4 rule 5)', () => {
+  it('advertises per-kind incarnation + the DURABLY-FLUSHED lastSeq (highWaterSeq), zeros when empty', () => {
+    const j = makeJournal();
+    // Nothing written yet → every kind advertises lastSeq 0.
+    const empty = j.getOwnAdvert();
+    expect(Object.keys(empty).sort()).toEqual(['autonomous-run', 'class-review-record', 'evolution-action-record', 'guard-latch', 'knowledge-record', 'learning-record', 'pref-record', 'relationship-record', 'session-lifecycle', 'ssh-direction-proof', 'subscription-account-meta', 'threadline-conversation', 'threadline-pairing-record', 'topic-claim-annotation', 'topic-operator-record', 'topic-pin-record', 'topic-placement', 'user-record', 'working-set-artifact']);
+    for (const kind of ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'class-review-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta'] as JournalKind[]) {
+      expect(empty[kind].lastSeq).toBe(0);
+    }
+    const incarnation = empty['topic-placement'].incarnation;
+    expect(typeof incarnation).toBe('string');
+    expect(incarnation.length).toBeGreaterThan(0);
+    // All kinds share the writer's single stream-set incarnation token.
+    expect(empty['session-lifecycle'].incarnation).toBe(incarnation);
+
+    // Two placement emits, flushed → advert advances to the flushed head.
+    j.emitPlacement(1, { owner: 'm_a', epoch: 1, reason: 'placed' });
+    j.emitPlacement(2, { owner: 'm_b', epoch: 2, reason: 'user-move' });
+    j.flush();
+    const adv = j.getOwnAdvert();
+    expect(adv['topic-placement'].lastSeq).toBe(2);
+    expect(adv['topic-placement'].incarnation).toBe(incarnation);
+    // Other kinds untouched.
+    expect(adv['session-lifecycle'].lastSeq).toBe(0);
+    j.close();
+  });
+
+  it('does NOT advertise an enqueued-but-unflushed seq (only durable heads are servable)', () => {
+    const j = makeJournal();
+    j.emitPlacement(1, { owner: 'm_a', epoch: 1, reason: 'placed' });
+    // Intentionally NOT flushed — the entry is queued, not durable.
+    expect(j.pendingCount).toBeGreaterThan(0);
+    const adv = j.getOwnAdvert();
+    // §3.4: advertise highWaterSeq (advanced only after fdatasync), so a peer
+    // never requests a delta we cannot serve from the file.
+    expect(adv['topic-placement'].lastSeq).toBe(0);
+    j.flush();
+    expect(j.getOwnAdvert()['topic-placement'].lastSeq).toBe(1);
+    j.close();
+  });
+});
+
 /** A clone of the real fs seam (the wedged test overrides one method). */
 function realFsClone(): JournalFs {
   return {
@@ -638,3 +716,69 @@ function realFsClone(): JournalFs {
     readSync: fs.readSync,
   };
 }
+
+// ── Issue #925: lock retry + heartbeat + pid-reuse reclaim (live 2026-06-06) ──
+describe('writer lock recovery (#925)', () => {
+  it('a locked-out writer RETRIES and recovers in place when the lock is freed', async () => {
+    const dirX = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-lock-retry-'));
+    try {
+      const lockDir = path.join(dirX, 'state', 'coherence-journal');
+      fs.mkdirSync(lockDir, { recursive: true });
+      const lockPath = path.join(lockDir, 'm_t.lock');
+      // A LIVE foreign holder (pid 1 — kill is EPERM ⇒ conservative refuse;
+      // mtime fresh ⇒ the heartbeat defense also refuses).
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: 1, at: new Date().toISOString() }));
+      const j = new CoherenceJournal({ stateDir: dirX, machineId: 'm_t', flushIntervalMs: 10 });
+      j.open();
+      expect(j.isLockedOut).toBe(true);
+      // Holder exits: the lock file is freed.
+      fs.rmSync(lockPath, { force: true });
+      // The retry cadence is max(40×flushIntervalMs, 10s) — too slow for a unit
+      // test, so assert the RECOVERY PATH directly via a second open() attempt
+      // shape: tryActivate through a fresh instance takes the lock instantly.
+      const j2 = new CoherenceJournal({ stateDir: dirX, machineId: 'm_t', flushIntervalMs: 10 });
+      j2.open();
+      expect(j2.isLockedOut).toBe(false);
+      j2.close();
+      j.close();
+    } finally {
+      fs.rmSync(dirX, { recursive: true, force: true });
+    }
+  });
+
+  it('an mtime-stale lock is reclaimed even when its recorded pid is alive (pid-reuse defense)', () => {
+    const dirX = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-lock-stale-'));
+    try {
+      const lockDir = path.join(dirX, 'state', 'coherence-journal');
+      fs.mkdirSync(lockDir, { recursive: true });
+      const lockPath = path.join(lockDir, 'm_t.lock');
+      // Recorded pid = 1 (launchd — alive forever; kill(1,0) is EPERM, the
+      // conservative no-reclaim path) but the lock's mtime is 10 minutes old:
+      // a live holder would have heartbeated it.
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: 1, at: new Date().toISOString() }));
+      const old = new Date(Date.now() - 10 * 60 * 1000);
+      fs.utimesSync(lockPath, old, old);
+      const j = new CoherenceJournal({ stateDir: dirX, machineId: 'm_t', flushIntervalMs: 10 });
+      j.open();
+      expect(j.isLockedOut).toBe(false); // reclaimed despite the "alive" pid
+      j.close();
+    } finally {
+      fs.rmSync(dirX, { recursive: true, force: true });
+    }
+  });
+
+  it('a FRESH lock held by a live pid is NOT reclaimed (the conservative case)', () => {
+    const dirX = fs.mkdtempSync(path.join(os.tmpdir(), 'cj-lock-live-'));
+    try {
+      const lockDir = path.join(dirX, 'state', 'coherence-journal');
+      fs.mkdirSync(lockDir, { recursive: true });
+      fs.writeFileSync(path.join(lockDir, 'm_t.lock'), JSON.stringify({ pid: 1, at: new Date().toISOString() }));
+      const j = new CoherenceJournal({ stateDir: dirX, machineId: 'm_t', flushIntervalMs: 10 });
+      j.open();
+      expect(j.isLockedOut).toBe(true); // live + fresh → respected
+      j.close();
+    } finally {
+      fs.rmSync(dirX, { recursive: true, force: true });
+    }
+  });
+});

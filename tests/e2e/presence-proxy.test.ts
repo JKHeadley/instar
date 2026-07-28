@@ -489,6 +489,41 @@ describe('PresenceProxy E2E', () => {
       expect(tier3Msg!.text).toContain('unstick');
     });
 
+    it('does not let a tier-3 model override a fresh deterministic Codex live signal', async () => {
+      deps.llmResponses = ['Reading.', 'Progress.', 'stalled\nNo child process was visible.'];
+      deps.processes = [];
+      let captures = 0;
+      proxy = new PresenceProxy(createMockConfig(tmpDir, deps, {
+        agentFramework: 'codex-cli',
+        captureSessionOutput: () => `• Working (${++captures}m 17s • esc to interrupt)`,
+      }));
+      proxy.start();
+
+      proxy.onMessageLogged(makeUserMessage(100, 'test'));
+
+      await waitFor(() => deps.sentMessages.length >= 3, { timeoutMs: 10000 });
+
+      const tier3Msg = deps.sentMessages.find(m => m.metadata?.tier === 3);
+      expect(tier3Msg?.text).toContain('still actively working');
+      expect(tier3Msg?.text).not.toContain('unstick');
+      expect(deps.llmCallCount).toBe(2); // Tier 1 + Tier 2 only; tier 3 trusts the live signal.
+    });
+
+    it('still assesses an unchanged live-looking pane as potentially stalled', async () => {
+      deps.capturedOutput = '• Working (2m 17s • esc to interrupt)';
+      deps.llmResponses = ['Reading.', 'Progress.', 'stalled\nThe pane has not changed.'];
+      deps.processes = [];
+      proxy = new PresenceProxy(createMockConfig(tmpDir, deps, { agentFramework: 'codex-cli' }));
+      proxy.start();
+
+      proxy.onMessageLogged(makeUserMessage(100, 'test'));
+      await waitFor(() => deps.sentMessages.length >= 3, { timeoutMs: 10000 });
+
+      const tier3Msg = deps.sentMessages.find(m => m.metadata?.tier === 3);
+      expect(tier3Msg?.text).toContain('unstick');
+      expect(deps.llmCallCount).toBe(3);
+    });
+
     it('reports dead session', { timeout: 30000 }, async () => {
       deps.llmResponses = ['Reading.', 'Progress.'];
       deps.aliveSessions.clear(); // Session is dead

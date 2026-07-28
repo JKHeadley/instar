@@ -34,6 +34,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import {
+  REAP_NOTIFY_DELIVERY_PREFIX,
+  REAP_NOTIFY_DELIVERY_PREFIX_UPPER,
+} from './reap-notice-delivery-id.js';
+
+/**
+ * Anomaly clamp for the restore-purge hold exemption (reap-notify spec R1.6):
+ * a `next_attempt_at` more than this far in the future is treated as corrupt
+ * at restore-purge time (purged + logged) — no legitimate writer holds that
+ * long, and without the clamp a malformed row would live forever.
+ */
+const FAR_FUTURE_HOLD_CLAMP_MS = 7 * 24 * 60 * 60 * 1000;
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -62,6 +74,12 @@ export interface PendingRelayRow {
   claimed_by: string | null;
   status_history: string;
   truncated: 0 | 1;
+  /** Serialized kind metadata (messageKind/senderClass/jobSlug/advisoryAck/
+   *  advisoryCodes) — the redrive forwards it whole so a queued automated
+   *  send is never mis-kinded and an acked-then-queued send still lands its
+   *  'acked' audit row (spec outbound-jargon-filepath-gap §2.5). Null on
+   *  legacy rows (they ride the delivery-id breadcrumb exemption). */
+  message_metadata: string | null;
 }
 
 export interface EnqueueInput {
@@ -70,11 +88,19 @@ export interface EnqueueInput {
   text_hash: string;
   text: Buffer | string;
   format?: string | null;
-  http_code: number;
+  http_code?: number | null;
   error_body?: string | null;
-  attempted_port: number;
+  attempted_port?: number | null;
   attempted_at?: string;
   truncated?: boolean;
+  message_metadata?: string | null;
+  /**
+   * Release hold (reap-notify spec R1.3): a row enqueued with a future
+   * `next_attempt_at` is not claimable until that instant. The hold rides
+   * the EXISTING column — the claim queries already honor it, so a
+   * rolled-back binary keeps honoring holds. No schema change.
+   */
+  next_attempt_at?: string | null;
 }
 
 // ── Schema ────────────────────────────────────────────────────────────
@@ -95,7 +121,8 @@ const SCHEMA = [
      state          TEXT NOT NULL,
      claimed_by     TEXT,
      status_history TEXT NOT NULL DEFAULT '[]',
-     truncated      INTEGER NOT NULL DEFAULT 0
+     truncated      INTEGER NOT NULL DEFAULT 0,
+     message_metadata TEXT
    )`,
   `CREATE INDEX IF NOT EXISTS idx_state_next ON entries(state, next_attempt_at)`,
   `CREATE INDEX IF NOT EXISTS idx_text_hash_topic ON entries(text_hash, topic_id)`,
@@ -109,6 +136,10 @@ const COLUMN_ADDS: Array<{ name: string; ddl: string }> = [
   // the ALTER path exists so older databases (e.g. someone who hand-bootstrapped
   // an entries table from an earlier dev branch) still upgrade cleanly.
   { name: 'truncated', ddl: 'ALTER TABLE entries ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0' },
+  // message_metadata (outbound-jargon-filepath-gap §2.5) — the table already
+  // exists on every deployed agent, so the column arrives ONLY via this
+  // idempotent ALTER (and its parallel in telegram-reply.sh's two writers).
+  { name: 'message_metadata', ddl: 'ALTER TABLE entries ADD COLUMN message_metadata TEXT' },
 ];
 
 // ── Path resolution ───────────────────────────────────────────────────
@@ -124,6 +155,45 @@ export function resolvePendingRelayPath(stateDir: string, agentId: string): stri
 
 export function resolvePendingRelayLockPath(stateDir: string, agentId: string): string {
   return path.join(stateDir, 'state', `pending-relay.${sanitizeAgentId(agentId)}.sqlite.lock`);
+}
+
+/**
+ * Quarantine historical zero-byte stores created before the canonical resolver
+ * was shared by the shell, server, and queue route. Rename is atomic within the
+ * directory: even if a legacy writer opens the file between classification and
+ * rename, any later bytes remain preserved under the quarantine name. Nothing
+ * is deleted automatically.
+ */
+export function cleanupLegacyEmptyPendingRelayStores(
+  stateDir: string,
+  agentId: string,
+  beforeQuarantine?: (candidate: string) => void,
+): string[] {
+  const safe = sanitizeAgentId(agentId);
+  const candidates = [
+    path.join(stateDir, 'pending-relay.db'),
+    path.join(stateDir, `pending-relay.${safe}.sqlite`),
+    path.join(stateDir, 'server-data', 'pending-relay.db'),
+    path.join(stateDir, 'server-data', `pending-relay.${safe}.sqlite`),
+    path.join(stateDir, 'state', 'pending-relay.db'),
+    path.join(stateDir, 'state', 'pending-relay.sqlite'),
+    path.join(stateDir, 'state', 'pending-relay.sqlite3'),
+  ];
+  const canonical = resolvePendingRelayPath(stateDir, agentId);
+  const quarantined: string[] = [];
+  for (const candidate of candidates) {
+      if (candidate === canonical) continue;
+    try {
+      if (fs.statSync(candidate).size !== 0) continue;
+      beforeQuarantine?.(candidate);
+      const quarantine = `${candidate}.legacy-empty-quarantine-${process.pid}-${Date.now()}`;
+      fs.renameSync(candidate, quarantine);
+      quarantined.push(quarantine);
+    } catch {
+      // @silent-fallback-ok: missing/non-file/raced candidate; canonical open continues.
+    }
+  }
+  return quarantined;
 }
 
 /**
@@ -149,6 +219,7 @@ export class PendingRelayStore {
   }
 
   static open(agentId: string, stateDir: string): PendingRelayStore {
+    cleanupLegacyEmptyPendingRelayStores(stateDir, agentId);
     const dbPath = resolvePendingRelayPath(stateDir, agentId);
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
@@ -213,12 +284,12 @@ export class PendingRelayStore {
          delivery_id, topic_id, text_hash, text, format,
          http_code, error_body, attempted_port,
          attempted_at, attempts, next_attempt_at,
-         state, claimed_by, status_history, truncated
+         state, claimed_by, status_history, truncated, message_metadata
        ) VALUES (
          @delivery_id, @topic_id, @text_hash, @text, @format,
          @http_code, @error_body, @attempted_port,
-         @attempted_at, 1, NULL,
-         'queued', NULL, @status_history, @truncated
+         @attempted_at, 1, @next_attempt_at,
+         'queued', NULL, @status_history, @truncated, @message_metadata
        )`,
     );
     const result = stmt.run({
@@ -227,12 +298,14 @@ export class PendingRelayStore {
       text_hash: input.text_hash,
       text,
       format: input.format ?? null,
-      http_code: input.http_code,
+      http_code: input.http_code ?? null,
       error_body: input.error_body ?? null,
-      attempted_port: input.attempted_port,
+      attempted_port: input.attempted_port ?? null,
       attempted_at: attemptedAt,
+      next_attempt_at: input.next_attempt_at ?? null,
       status_history: initialHistory,
       truncated: input.truncated ? 1 : 0,
+      message_metadata: input.message_metadata ?? null,
     });
     return result.changes === 1;
   }
@@ -330,6 +403,12 @@ export class PendingRelayStore {
    * or before `nowIso`. Sorted by `attempted_at` ascending so the
    * sentinel can drain oldest-first within per-topic rate caps.
    *
+   * Origin scoping (reap-notify spec R1.3): rows whose delivery_id carries
+   * the `reap-notify:` prefix belong to ReapNoticeDrain and are EXCLUDED
+   * here — the single-owner contract lives in the queries, not in drain
+   * etiquette. The complement is `selectClaimableReapNotices`. Both filters
+   * are index-compatible range predicates on the PK.
+   *
    * The query is bounded at `limit` to prevent a runaway tick scan.
    * The sentinel handles its own batching above this layer.
    */
@@ -338,10 +417,151 @@ export class PendingRelayStore {
       `SELECT * FROM entries
          WHERE state IN ('queued', 'claimed')
            AND (next_attempt_at IS NULL OR next_attempt_at <= @now)
+           AND NOT (delivery_id >= @prefixLower AND delivery_id < @prefixUpper)
          ORDER BY attempted_at ASC
          LIMIT @limit`,
     );
-    return stmt.all({ now: nowIso, limit }) as PendingRelayRow[];
+    return stmt.all({
+      now: nowIso,
+      limit,
+      prefixLower: REAP_NOTIFY_DELIVERY_PREFIX,
+      prefixUpper: REAP_NOTIFY_DELIVERY_PREFIX_UPPER,
+    }) as PendingRelayRow[];
+  }
+
+  /**
+   * ReapNoticeDrain selector (reap-notify spec R1.3) — the complement of
+   * `selectClaimable`: due rows INSIDE the `reap-notify:` PK range only.
+   * Range predicate (`>= lower AND < upper`) so SQLite serves it from the
+   * PK index — the 30s always-on drain must not be a latent table scan.
+   * Idle cost on an empty store is one indexed probe.
+   */
+  selectClaimableReapNotices(nowIso: string, limit = 100): PendingRelayRow[] {
+    const stmt = this.db.prepare(
+      `SELECT * FROM entries
+         WHERE delivery_id >= @prefixLower AND delivery_id < @prefixUpper
+           AND state IN ('queued', 'claimed')
+           AND (next_attempt_at IS NULL OR next_attempt_at <= @now)
+         ORDER BY attempted_at ASC
+         LIMIT @limit`,
+    );
+    return stmt.all({
+      now: nowIso,
+      limit,
+      prefixLower: REAP_NOTIFY_DELIVERY_PREFIX,
+      prefixUpper: REAP_NOTIFY_DELIVERY_PREFIX_UPPER,
+    }) as PendingRelayRow[];
+  }
+
+  /**
+   * Compare-and-swap claim (reap-notify spec R1.3): atomically move a row
+   * to `claimed`/`claimed_by` ONLY if it still looks exactly like the row
+   * the caller selected (same state + same claimed_by). Two drains racing
+   * the same row can never both succeed — the loser's UPDATE matches zero
+   * rows. Returns true when this caller won the claim.
+   */
+  claimCas(
+    deliveryId: string,
+    newClaimedBy: string,
+    expected: { state: DeliveryState; claimed_by: string | null },
+  ): boolean {
+    const tx = this.db.transaction(() => {
+      const result = this.db
+        .prepare(
+          `UPDATE entries
+             SET state = 'claimed', claimed_by = @newClaimedBy
+             WHERE delivery_id = @delivery_id
+               AND state = @expectedState
+               AND claimed_by IS @expectedClaimedBy`,
+        )
+        .run({
+          delivery_id: deliveryId,
+          newClaimedBy,
+          expectedState: expected.state,
+          expectedClaimedBy: expected.claimed_by,
+        });
+      if (result.changes !== 1) return false;
+      // Append the status-history row in the same transaction (parity with
+      // `transition()` so a crash mid-claim cannot tear the history).
+      const current = this.db
+        .prepare('SELECT status_history FROM entries WHERE delivery_id = ?')
+        .get(deliveryId) as { status_history: string } | undefined;
+      if (current) {
+        let history: unknown[];
+        try {
+          const parsed = JSON.parse(current.status_history);
+          history = Array.isArray(parsed) ? parsed : [];
+        } catch {
+          history = [];
+        }
+        history.push({ state: 'claimed', at: new Date().toISOString() });
+        this.db
+          .prepare('UPDATE entries SET status_history = @h WHERE delivery_id = @id')
+          .run({ h: JSON.stringify(history), id: deliveryId });
+      }
+      return true;
+    });
+    return tx() as boolean;
+  }
+
+  /** Renew an owned claim without permitting a stale owner to steal it back. */
+  renewClaim(deliveryId: string, expectedClaimedBy: string, newClaimedBy: string): boolean {
+    const result = this.db.prepare(
+      `UPDATE entries SET claimed_by = @newClaimedBy
+       WHERE delivery_id = @deliveryId AND state = 'claimed' AND claimed_by = @expectedClaimedBy`,
+    ).run({ deliveryId, expectedClaimedBy, newClaimedBy });
+    return result.changes === 1;
+  }
+
+  /**
+   * Fenced post-claim transition. Only the worker holding the exact current
+   * ownership token may finalize or release the row.
+   */
+  transitionClaimed(
+    deliveryId: string,
+    expectedClaimedBy: string,
+    newState: DeliveryState,
+    additionalFields: Partial<{
+      claimed_by: string | null;
+      next_attempt_at: string | null;
+      attempts: number;
+      http_code: number | null;
+      error_body: string | null;
+    }> = {},
+  ): boolean {
+    const tx = this.db.transaction(() => {
+      const current = this.db.prepare(
+        `SELECT status_history FROM entries
+         WHERE delivery_id = ? AND state = 'claimed' AND claimed_by = ?`,
+      ).get(deliveryId, expectedClaimedBy) as { status_history: string } | undefined;
+      if (!current) return false;
+      let history: unknown[];
+      try {
+        const parsed = JSON.parse(current.status_history);
+        history = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        history = [];
+      }
+      history.push({ state: newState, at: new Date().toISOString() });
+      const fields = ['state = @state', 'status_history = @history'];
+      const params: Record<string, unknown> = {
+        deliveryId,
+        expectedClaimedBy,
+        state: newState,
+        history: JSON.stringify(history),
+      };
+      for (const [key, value] of Object.entries(additionalFields)) {
+        if (value === undefined) continue;
+        fields.push(`${key} = @${key}`);
+        params[key] = value;
+      }
+      const result = this.db.prepare(
+        `UPDATE entries SET ${fields.join(', ')}
+         WHERE delivery_id = @deliveryId AND state = 'claimed' AND claimed_by = @expectedClaimedBy`,
+      ).run(params);
+      return result.changes === 1;
+    });
+    return tx() as boolean;
   }
 
   /**
@@ -350,21 +570,35 @@ export class PendingRelayStore {
    * before purging. A restore-purge deletes queued-undelivered outbound
    * messages; until 2026-06-05 it was the delivery stack's only silent
    * deletion path.
+   *
+   * Predicate matches `purgeStaleClaimable` exactly (the loud-loss logging
+   * must cover exactly what the purge deletes). `farFutureClamp` marks rows
+   * purged by the 7-day corruption clamp rather than ordinary staleness.
    */
   listStaleClaimable(
     cutoffIso: string,
-  ): Array<{ delivery_id: string; topic_id: number; attempted_at: string; text: string }> {
+    nowIso: string = new Date().toISOString(),
+  ): Array<{
+    delivery_id: string;
+    topic_id: number;
+    attempted_at: string;
+    text: string;
+    farFutureClamp: boolean;
+  }> {
+    const farFuture = farFutureClampIso(nowIso);
     const stmt = this.db.prepare(
-      `SELECT delivery_id, topic_id, attempted_at, text
+      `SELECT delivery_id, topic_id, attempted_at, next_attempt_at, text
          FROM entries
          WHERE state IN ('queued', 'claimed')
            AND attempted_at < @cutoff
+           AND (next_attempt_at IS NULL OR next_attempt_at < @cutoff OR next_attempt_at > @farFuture)
          ORDER BY attempted_at ASC`,
     );
-    const rows = stmt.all({ cutoff: cutoffIso }) as Array<{
+    const rows = stmt.all({ cutoff: cutoffIso, farFuture }) as Array<{
       delivery_id: string;
       topic_id: number;
       attempted_at: string;
+      next_attempt_at: string | null;
       text: Buffer | string;
     }>;
     return rows.map((r) => ({
@@ -372,27 +606,68 @@ export class PendingRelayStore {
       topic_id: r.topic_id,
       attempted_at: r.attempted_at,
       text: Buffer.isBuffer(r.text) ? r.text.toString('utf-8') : String(r.text ?? ''),
+      farFutureClamp: r.next_attempt_at !== null && r.next_attempt_at > farFuture,
     }));
   }
 
   /**
-   * Layer 3 restore-purge — drops queued/claimed rows whose
-   * `attempted_at` is older than `cutoffIso`. Called once at sentinel
-   * startup (spec §3h). Returns the number of rows deleted so the
-   * caller can emit a one-line restore log.
+   * Layer 3 restore-purge — drops queued/claimed rows that are genuinely
+   * stale. Called once at sentinel startup (DFS spec §3h, semantics updated
+   * by reap-notify spec R1.6).
+   *
+   * Staleness cutoff is `max(attempted_at, next_attempt_at)`: a row HELD
+   * for future release (its `next_attempt_at` is still ahead of the cutoff)
+   * is NOT stale — purging it was the mechanism behind the documented
+   * 2026-06-05 silent-deletion incident (a quiet-hours-held notice crossing
+   * a routine restart was eaten at boot). In SQL: a row is purged only when
+   * `attempted_at < cutoff` AND its `next_attempt_at` is null, also past,
+   * or beyond the 7-day corruption clamp (`farFutureClampIso`) — no
+   * legitimate writer holds that long; without the clamp a malformed row
+   * would live forever.
+   *
+   * Returns the number of rows deleted so the caller can emit a one-line
+   * restore log.
    */
-  purgeStaleClaimable(cutoffIso: string): number {
+  purgeStaleClaimable(cutoffIso: string, nowIso: string = new Date().toISOString()): number {
+    const farFuture = farFutureClampIso(nowIso);
     const stmt = this.db.prepare(
       `DELETE FROM entries
          WHERE state IN ('queued', 'claimed')
-           AND attempted_at < @cutoff`,
+           AND attempted_at < @cutoff
+           AND (next_attempt_at IS NULL OR next_attempt_at < @cutoff OR next_attempt_at > @farFuture)`,
     );
-    const result = stmt.run({ cutoff: cutoffIso });
+    const result = stmt.run({ cutoff: cutoffIso, farFuture });
+    return result.changes ?? 0;
+  }
+
+  /**
+   * Bounded cleanup for the reap-notify lane (P19 — the always-on drain must
+   * not grow the store unboundedly when DFS's retention pass is off): deletes
+   * TERMINAL-state rows inside the reap-notify PK range older than `beforeIso`.
+   * Queued/claimed rows are never touched.
+   */
+  purgeTerminalReapNotices(beforeIso: string): number {
+    const stmt = this.db.prepare(
+      `DELETE FROM entries
+         WHERE delivery_id >= @prefixLower AND delivery_id < @prefixUpper
+           AND state NOT IN ('queued', 'claimed')
+           AND attempted_at < @before`,
+    );
+    const result = stmt.run({
+      before: beforeIso,
+      prefixLower: REAP_NOTIFY_DELIVERY_PREFIX,
+      prefixUpper: REAP_NOTIFY_DELIVERY_PREFIX_UPPER,
+    });
     return result.changes ?? 0;
   }
 
   pathOnDisk(): string {
     return this.path;
+  }
+
+  /** Direct DB handle for contract tests only. */
+  rawDb(): BetterSqliteDatabase {
+    return this.db;
   }
 
   close(): void {
@@ -402,6 +677,13 @@ export class PendingRelayStore {
       // best-effort
     }
   }
+}
+
+/** ISO instant `FAR_FUTURE_HOLD_CLAMP_MS` past `nowIso` (R1.6 anomaly clamp). */
+function farFutureClampIso(nowIso: string): string {
+  const now = Date.parse(nowIso);
+  const base = Number.isNaN(now) ? Date.now() : now;
+  return new Date(base + FAR_FUTURE_HOLD_CLAMP_MS).toISOString();
 }
 
 // ── Boot self-check ───────────────────────────────────────────────────

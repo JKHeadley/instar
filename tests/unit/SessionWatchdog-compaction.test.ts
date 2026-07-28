@@ -90,73 +90,73 @@ describe('SessionWatchdog compaction-idle detection', () => {
 
   // ─── Positive cases: should detect compaction-idle ───
 
-  it('emits compaction-idle when session shows compaction markers and bare > prompt', () => {
+  it('emits compaction-idle when session shows compaction markers and bare > prompt', async () => {
     sessionManager.captureOutput.mockReturnValue(COMPACTED_AT_PROMPT);
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual(['test-session']);
   });
 
-  it('emits compaction-idle with bypass permissions prompt', () => {
+  it('emits compaction-idle with bypass permissions prompt', async () => {
     sessionManager.captureOutput.mockReturnValue(COMPACTED_BYPASS_PROMPT);
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual(['test-session']);
   });
 
-  it('emits compaction-idle with ❯ prompt', () => {
+  it('emits compaction-idle with ❯ prompt', async () => {
     sessionManager.captureOutput.mockReturnValue(COMPACTED_CHEVRON_PROMPT);
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual(['test-session']);
   });
 
   // ─── Negative cases: should NOT emit ───
 
-  it('does NOT emit when no compaction markers in output', () => {
+  it('does NOT emit when no compaction markers in output', async () => {
     sessionManager.captureOutput.mockReturnValue(
       'Working on task...\nRead file.ts (100 lines)\n\n> ',
     );
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual([]);
   });
 
-  it('does NOT emit when session is not at a prompt (actively working)', () => {
+  it('does NOT emit when session is not at a prompt (actively working)', async () => {
     sessionManager.captureOutput.mockReturnValue(
       '✱ Conversation compacted (ctrl+o for history)\n' +
       '  Read .mcp.json (44 lines)\n' +
       'I\'ll analyze the code now.\n' +
       'Looking at the implementation...\n',
     );
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual([]);
   });
 
-  it('does NOT emit when captureOutput returns null', () => {
+  it('does NOT emit when captureOutput returns null', async () => {
     sessionManager.captureOutput.mockReturnValue(null);
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual([]);
   });
 
-  it('does NOT emit when Claude has active child processes (executing tools)', () => {
+  it('does NOT emit when Claude has active child processes (executing tools)', async () => {
     sessionManager.captureOutput.mockReturnValue(COMPACTED_AT_PROMPT);
     // Override: Claude has active children (running a bash command)
     (watchdog as any).getChildProcesses = vi.fn().mockReturnValue([
       { pid: 99999, command: 'node some-script.js', elapsedMs: 5000 },
     ]);
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual([]);
   });
 
-  it('does NOT emit when child processes include excluded patterns', () => {
+  it('does NOT emit when child processes include excluded patterns', async () => {
     sessionManager.captureOutput.mockReturnValue(COMPACTED_AT_PROMPT);
     // Override: Claude has children, but they are all excluded (MCP servers etc)
     (watchdog as any).getChildProcesses = vi.fn().mockReturnValue([
       { pid: 88888, command: 'node playwright-mcp server', elapsedMs: 60000 },
     ]);
     // Excluded patterns should not block — they're background processes
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual(['test-session']);
   });
 
-  it('does NOT emit when > appears mid-content (not as a prompt)', () => {
+  it('does NOT emit when > appears mid-content (not as a prompt)', async () => {
     // A > in markdown blockquote or code output should not trigger
     sessionManager.captureOutput.mockReturnValue(
       '✱ Conversation compacted\n' +
@@ -165,11 +165,11 @@ describe('SessionWatchdog compaction-idle detection', () => {
       '< new line added\n' +
       'Changes applied successfully.',
     );
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual([]);
   });
 
-  it('does NOT emit when compaction text appears in file content being displayed', () => {
+  it('does NOT emit when compaction text appears in file content being displayed', async () => {
     // Agent displaying a file that mentions compaction
     sessionManager.captureOutput.mockReturnValue(
       '  1: # Session Recovery\n' +
@@ -179,62 +179,62 @@ describe('SessionWatchdog compaction-idle detection', () => {
       '  5: ## Implementation\n' +
       'I\'ve read the file. Here\'s what it says...',
     );
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual([]);
   });
 
   // ─── Cooldown behavior ───
 
-  it('respects cooldown — does not re-emit within 5 minutes', () => {
+  it('respects cooldown — does not re-emit within 5 minutes', async () => {
     sessionManager.captureOutput.mockReturnValue(COMPACTED_AT_PROMPT);
 
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toHaveLength(1);
 
     // Try again immediately — should be suppressed by cooldown
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toHaveLength(1);
 
     // Advance past cooldown (5 minutes)
     vi.advanceTimersByTime(300_001);
 
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toHaveLength(2);
   });
 
-  it('tracks cooldowns per session independently', () => {
+  it('tracks cooldowns per session independently', async () => {
     sessionManager.captureOutput.mockReturnValue(COMPACTED_AT_PROMPT);
 
-    watchdog.checkCompactionIdle('session-a');
-    watchdog.checkCompactionIdle('session-b');
+    await watchdog.checkCompactionIdle('session-a');
+    await watchdog.checkCompactionIdle('session-b');
     expect(emittedEvents).toEqual(['session-a', 'session-b']);
 
     // Both on cooldown now — no new emissions
-    watchdog.checkCompactionIdle('session-a');
-    watchdog.checkCompactionIdle('session-b');
+    await watchdog.checkCompactionIdle('session-a');
+    await watchdog.checkCompactionIdle('session-b');
     expect(emittedEvents).toHaveLength(2);
   });
 
   // ─── Edge cases ───
 
-  it('handles empty output string', () => {
+  it('handles empty output string', async () => {
     sessionManager.captureOutput.mockReturnValue('');
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual([]);
   });
 
-  it('handles output with only whitespace', () => {
+  it('handles output with only whitespace', async () => {
     sessionManager.captureOutput.mockReturnValue('   \n  \n  ');
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual([]);
   });
 
-  it('works when getClaudePid returns null (process not found)', () => {
+  it('works when getClaudePid returns null (process not found)', async () => {
     // If we can't find the Claude process, skip the child process check
     // but still check tmux output (the process might exist but pgrep failed)
     (watchdog as any).getClaudePid = vi.fn().mockReturnValue(null);
     sessionManager.captureOutput.mockReturnValue(COMPACTED_AT_PROMPT);
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual(['test-session']);
   });
 
@@ -261,7 +261,7 @@ describe('SessionWatchdog compaction-idle detection', () => {
 
   // ─── Recency guard (10-line window) ───
 
-  it('only reads last 10 lines — stale compaction text does not trigger', () => {
+  it('only reads last 10 lines — stale compaction text does not trigger', async () => {
     // captureOutput is called with 10 lines — if compaction happened long ago,
     // it won't be in the 10-line window
     sessionManager.captureOutput.mockImplementation((_session: string, lines: number) => {
@@ -270,7 +270,7 @@ describe('SessionWatchdog compaction-idle detection', () => {
       // (it would have scrolled off if the session continued working)
       return 'Normal agent output\nMore work\nDone.\n\n> ';
     });
-    watchdog.checkCompactionIdle('test-session');
+    await watchdog.checkCompactionIdle('test-session');
     expect(emittedEvents).toEqual([]);
   });
 });

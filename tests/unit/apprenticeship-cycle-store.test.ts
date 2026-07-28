@@ -109,6 +109,26 @@ describe('ApprenticeshipCycleStore', () => {
     store.close();
   });
 
+  it('keeps a legacy bad-kind row readable while retaining strict write validation', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'apprenticeship-cycles-legacy-kind-'));
+    tmpDirs.push(tmp);
+    const dbPath = path.join(tmp, 'cycles.db');
+    let store = new ApprenticeshipCycleStore({ dbPath });
+    store.record({ id: 'legacy-bad-kind', instanceId: 'phantom', cycleNumber: 1, task: 'legacy', menteeOutput: 'kept', operatorSeatUx: ux() });
+    store.close();
+
+    const db = new DatabaseCtor(dbPath);
+    db.prepare(`UPDATE apprenticeship_cycles SET kind = 'mentorship' WHERE id = ?`).run('legacy-bad-kind');
+    db.close();
+
+    store = new ApprenticeshipCycleStore({ dbPath });
+    expect(store.list()).toMatchObject([{ id: 'legacy-bad-kind', kind: 'unknown' }]);
+    expect(store.get('legacy-bad-kind')).toMatchObject({ kind: 'unknown' });
+    expect(store.roleCoverage('phantom').unknown).toMatchObject({ fired: true, cycleCount: 1 });
+    expect(() => store.record({ id: 'new-bad-kind', instanceId: 'i', cycleNumber: 2, task: 't', menteeOutput: 'm', kind: 'mentorship', operatorSeatUx: ux() })).toThrow(/kind must be one of/);
+    store.close();
+  });
+
   it('roleCoverage warns when mentor-mentee is dormant while overseer-apprentice has multiple cycles', () => {
     const store = makeStore();
     store.record({ id: 'review-1', instanceId: 'i', cycleNumber: 1, createdAt: '2026-06-03T08:00:00.000Z', task: 't', menteeOutput: 'm', kind: 'overseer-apprentice-devreview', operatorSeatUx: ux() });
@@ -146,6 +166,38 @@ describe('ApprenticeshipCycleStore', () => {
   });
 
   describe('keystoneBalance — observe-only deepest-layer health (2026-06-06 mentor/mentee balance)', () => {
+    it('folds peer-agent cycle evidence into the instance coverage without double-counting mirrored ids', () => {
+      const store = makeStore();
+      const remote = {
+        id: 'remote-keystone', instanceId: 'i', cycleNumber: 1,
+        createdAt: '2026-06-03T07:00:00.000Z', task: 'peer drive', menteeOutput: 'output',
+        mentorFlagged: [], overseerDifferential: [], coaching: '', infraItems: [],
+        kind: 'mentor-mentee-differential' as const, status: 'open', channel: 'threadline-backup' as const,
+        operatorSeatUx: null, transcriptAudit: null,
+      };
+      const coverage = store.roleCoverage('i', {}, [remote, remote]);
+      expect(coverage.axes['mentor-mentee-differential']).toMatchObject({ fired: true, cycleCount: 1 });
+      expect(coverage.keystoneBalance.starved).toBe(false);
+      expect(coverage.coverageConflictingCycleIds).toEqual([]);
+      store.close();
+    });
+
+    it('flags a duplicate UUID whose peer copy changes coverage-relevant evidence', () => {
+      const store = makeStore();
+      const base = {
+        id: 'conflicted', instanceId: 'i', cycleNumber: 1,
+        createdAt: '2026-06-03T07:00:00.000Z', task: 'peer drive', menteeOutput: 'output',
+        mentorFlagged: [], overseerDifferential: [], coaching: '', infraItems: [], status: 'open',
+        operatorSeatUx: null, transcriptAudit: null,
+      };
+      const coverage = store.roleCoverage('i', {}, [
+        { ...base, kind: 'mentor-mentee-differential', channel: 'threadline-backup' },
+        { ...base, kind: 'overseer-apprentice-devreview', channel: 'threadline-backup' },
+      ] as never);
+      expect(coverage.coverageConflictingCycleIds).toEqual(['conflicted']);
+      store.close();
+    });
+
     const rec = (store: ApprenticeshipCycleStore, id: string, n: number, kind: string, at: string, inst = 'i') =>
       store.record({ id, instanceId: inst, cycleNumber: n, createdAt: at, task: 't', menteeOutput: 'm', kind, operatorSeatUx: ux() });
 
@@ -222,6 +274,81 @@ describe('ApprenticeshipCycleStore', () => {
       const kb = store.roleCoverage('i').keystoneBalance;
       expect(kb.keystoneCycleCount).toBe(0); // shortcut excluded from the keystone axis
       expect(kb.starved).toBe(true); // so the layer reads as never-driven
+      store.close();
+    });
+  });
+
+  describe('keystoneBalance — dormancy (wall-clock staleness; the 24h-idle-reads-healthy gap)', () => {
+    // makeStore() fixes now() at 2026-06-03T08:00:00Z; record the keystone with an
+    // explicit past createdAt to control its age relative to that fixed clock.
+    const recAt = (store: ApprenticeshipCycleStore, id: string, n: number, kind: string, at: string, inst = 'i') =>
+      store.record({ id, instanceId: inst, cycleNumber: n, createdAt: at, task: 't', menteeOutput: 'm', kind, operatorSeatUx: ux() });
+
+    it('DORMANT: keystone fired but last drive older than the threshold with NO oversight since (the exact masked-as-healthy case)', () => {
+      const store = makeStore();
+      // keystone 8h before now (08:00); default dormancy 6h; zero oversight after it
+      recAt(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T00:00:00.000Z');
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.starved).toBe(false); // nothing piled up since → NOT starved...
+      expect(kb.dormant).toBe(true); // ...but 8h of silence → dormant
+      expect(kb.lastKeystoneAgeMs).toBe(8 * 60 * 60 * 1000);
+      expect(kb.dormancyThresholdMs).toBe(6 * 60 * 60 * 1000);
+      expect(kb.reason).toMatch(/dormant/i);
+      store.close();
+    });
+
+    it('NOT dormant: a recent keystone drive reads healthy', () => {
+      const store = makeStore();
+      recAt(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T05:00:00.000Z'); // 3h ago < 6h
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.dormant).toBe(false);
+      expect(kb.starved).toBe(false);
+      expect(kb.lastKeystoneAgeMs).toBe(3 * 60 * 60 * 1000);
+      expect(kb.reason).toMatch(/healthy/i);
+      store.close();
+    });
+
+    it('dormancy boundary: exactly AT the threshold is dormant; one ms under is not', () => {
+      const store = makeStore();
+      recAt(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T06:00:00.000Z'); // 2h ago
+      const at = store.roleCoverage('i', { keystoneDormancyMs: 2 * 60 * 60 * 1000 }).keystoneBalance;
+      expect(at.dormant).toBe(true); // age === threshold → dormant
+      expect(at.dormancyThresholdMs).toBe(2 * 60 * 60 * 1000);
+      const under = store.roleCoverage('i', { keystoneDormancyMs: 2 * 60 * 60 * 1000 + 1 }).keystoneBalance;
+      expect(under.dormant).toBe(false); // threshold 1ms past the age → not dormant
+      store.close();
+    });
+
+    it('ORTHOGONAL: a layer can be BOTH starved and dormant (reason names both)', () => {
+      const store = makeStore();
+      recAt(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T00:00:00.000Z'); // 8h ago
+      recAt(store, 'r1', 2, 'overseer-apprentice-devreview', '2026-06-03T01:00:00.000Z');
+      recAt(store, 'r2', 3, 'overseer-apprentice-devreview', '2026-06-03T02:00:00.000Z');
+      recAt(store, 'r3', 4, 'overseer-mentee-direct', '2026-06-03T03:00:00.000Z');
+      const kb = store.roleCoverage('i').keystoneBalance; // 3 oversight-since ≥ default 3 → starved
+      expect(kb.starved).toBe(true);
+      expect(kb.dormant).toBe(true);
+      expect(kb.reason).toMatch(/drifted/i);
+      expect(kb.reason).toMatch(/dormant/i);
+      store.close();
+    });
+
+    it('never-fired keystone is NOT dormant (null age — nothing to be stale)', () => {
+      const store = makeStore();
+      recAt(store, 'r1', 1, 'overseer-apprentice-devreview', '2026-06-03T07:00:00.000Z');
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.lastKeystoneAt).toBeNull();
+      expect(kb.lastKeystoneAgeMs).toBeNull();
+      expect(kb.dormant).toBe(false);
+      store.close();
+    });
+
+    it('a future-stamped keystone clamps age to 0 (no false dormancy from clock skew)', () => {
+      const store = makeStore();
+      recAt(store, 'k1', 1, 'mentor-mentee-differential', '2026-06-03T10:00:00.000Z'); // 2h AFTER now
+      const kb = store.roleCoverage('i').keystoneBalance;
+      expect(kb.lastKeystoneAgeMs).toBe(0);
+      expect(kb.dormant).toBe(false);
       store.close();
     });
   });

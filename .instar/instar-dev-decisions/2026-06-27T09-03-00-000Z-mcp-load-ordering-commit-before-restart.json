@@ -1,0 +1,14 @@
+{
+  "ts": "2026-06-27T09:03:00.000Z",
+  "slug": "mcp-load-commit-before-restart",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": ["safety-critical concurrency: modifies the M1/M3 two-phase commit ordering in DynamicMcpManager; spec-backed change"],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 40,
+  "causalAutopsy": { "origin": "existing-code-bug" },
+  "verdict": "pass",
+  "notes": "Live-test (2026-06-27) found dynamic-MCP LOAD was a no-op on its own restart. Root: the M1/M3 two-phase commit wrote the new loaded-set UN-committed BEFORE the restart and committed=true AFTER; the spawn builder ignores un-committed files, so the load's OWN respawn read the prior committed state and spawned from baseline (lean). It only took effect on a SUBSEQUENT restart. This directly contradicted the spec's own claim that the respawn 'DOES pick up the new flags'. Offload was unaffected (lean==its target). FIX: commit BEFORE the restart so the respawn deterministically reads the new set; the existing rollback (restart ok <=> new session up) preserves the failure-safety the original committed-after design targeted (a failed restart re-asserts the prior committed set). Spec M1/M3 updated with the correction + rationale. Tests: dynamic-mcp-manager.test.ts asserts commit-before-restart order (['write:true','restart']) + the rollback-to-prior; all 378 mcp tests green. Tier-2 (spec-backed safety-critical change)."
+}

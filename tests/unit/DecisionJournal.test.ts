@@ -286,6 +286,12 @@ describe('DecisionJournal', () => {
         earliest: null,
         latest: null,
         topPrinciples: [],
+        // An empty journal must report zero on BOTH counters, so that a
+        // populated-but-unprincipled journal (unprincipledCount > 0) is
+        // distinguishable from this one. See
+        // tests/unit/decision-journal-principle-honesty.test.ts.
+        principledCount: 0,
+        unprincipledCount: 0,
         conflictCount: 0,
       });
     });
