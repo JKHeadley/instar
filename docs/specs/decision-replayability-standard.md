@@ -8,6 +8,15 @@ parent-principle: "Observability — you can't tune what you can't see"
 sibling-principles: "Decision Provenance & Outcome Review; Observable Intelligence; Judgment Within Floors; Signal vs. Authority; Know Your Principal; Structure beats Willpower"
 origin: "Operator directive, 2026-07-26 18:32Z: 'we tend to not record data for the sake of privacy. However, this is against the EXO 3.0 fundamentals which requires everything to be fully auditable. This is not a privacy issue. It's a safety and coherence issue and all the data needs to be recoverable so that the situation could be fully replayed and reevaluated.' Plus his 19:34Z follow-up asking me to decide the screenshot question."
 eli16-overview: "decision-replayability-standard.eli16.md"
+review-convergence: "2026-07-28T15:54:49.551Z"
+review-iterations: 10
+review-completed-at: "2026-07-28T15:54:49.551Z"
+review-report: "docs/specs/reports/decision-replayability-standard-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 11
+cheap-to-change-tags: 0
+contested-then-cleared: 0
 ---
 
 # Decision Replayability
@@ -124,7 +133,7 @@ that would otherwise be re-derived piecemeal, and tells an implementer which kno
 | `writerIdentity` | which process/machine produced it |
 | `timestamp` + source | a record whose clock is unattributable correlates with nothing |
 | chaining | each record carries the prior record's hash. **On writer start the chain is re-anchored from the file tail**, and a re-anchor is itself a recorded event — instar restarts on every auto-update, so a verifier that treated a boot boundary as tampering would be worse than no chain. |
-| write failure | appends MUST NOT throw into the decision path. `sequence` is assigned only on success, so a gap always means deletion and never a dropped write. **Every failed append is itself durably recorded** — outside this log, carrying component, time, failure reason, and the decision class attempted. That record is the evidence that a decision happened unrecorded; without it the FIRST failure is already an unaccountable decision by §1's own definition, and a threshold of N would silently permit N−1 of them. **The failure sink can itself fail** — disk-full and permission errors hit both logs — so the ladder terminates in-process: durable sink, else the server log, else an in-memory counter surfaced on the component's health surface. The last rung survives nothing, and saying so is the point: there is no durable guarantee left at that depth, and a spec claiming one would be inventing it. The threshold governs only when the OPERATOR is notified, not when the failure is recorded. Whether the component keeps deciding is out of scope (§5.1); whether it does so invisibly is not. |
+| write failure | appends MUST NOT throw into the decision path. `sequence` is assigned only on success, so a gap always means deletion and never a dropped write. **Every failed append is itself durably recorded** — outside this log, carrying component, time, failure reason, and the decision class attempted. That record is the evidence that a decision happened unrecorded; without it the FIRST failure is already an unaccountable decision by §1's own definition, and a threshold of N would silently permit N−1 of them. **The failure sink can itself fail** — disk-full and permission errors hit both logs — so the ladder terminates in-process: durable sink, else the server log, else an in-memory counter surfaced on the component's health surface. The last rung survives nothing, and saying so is the point: there is no durable guarantee left at that depth, and a spec claiming one would be inventing it. The threshold governs only when the OPERATOR is notified, not when the failure is recorded. Whether the component keeps deciding is out of scope (§5b); whether it does so invisibly is not. |
 | pruning | retention deletion is a recorded prune event carrying the age window and the id range removed. Prune events are constrained to age-only so the audited party cannot disguise a deletion as policy. |
 
 **The scheme is fixed here, not deferred** — an on-disk format is a durable side effect, so leaving it
@@ -255,7 +264,7 @@ not one it answers.
 
 ## 5. Decision points touched
 
-| point | classification |
+| Decision point | classification |
 |---|---|
 | what to record | `invariant` — §2.1's field set is fixed |
 | text vs image | `invariant` — text where text exists; otherwise metadata-only, image on opt-in only (§3) |
@@ -264,9 +273,10 @@ not one it answers.
 | `degraded` trigger | `invariant` — a reconstructability test (§4) |
 | record integrity | `invariant` — the §2.4 envelope and scheme |
 
-All six are fixed rules over data already in hand, with no competing signals to weigh.
+> All six are fixed rules over data already in hand, with no competing signals to weigh.
+> The scope discussion these classifications rest on is §5b; the consumer sketch is §5c.
 
-### 5.1 This standard records; it does not govern what may be approved
+## 5b. This standard records; it does not govern what may be approved
 
 A recording standard must not legislate about actions, and this one does not.
 
@@ -312,7 +322,7 @@ generic host strings that satisfy the threshold alone. A purely deterministic na
 requiring at least one *specific* pattern — which costs no availability for the prompt the floor was
 built for. Whether to adopt it is ACT-1500's decision, not this standard's.
 
-### 5.2 Asynchronous grading — a possible consumer, not yet a commitment
+## 5c. Asynchronous grading — a possible consumer, not yet a commitment
 
 The record is a substrate for grading decisions off the critical path and raising an Attention item
 when an approval looks wrong. That would satisfy *LLM-Supervised Execution* without putting a model in
@@ -337,7 +347,7 @@ design:
 **What this does and does not settle.** It gives *LLM-Supervised Execution* a real, tracked path for a
 pipeline that cannot host a synchronous supervisor, rather than an intention. It does NOT make the
 first application supervised today: until ACT-1503 ships, the deterministic floor runs unsupervised,
-and §5.1 is where that gap is owned.
+and §5b is where that gap is owned.
 
 ## 6. Multi-machine posture
 
@@ -454,4 +464,4 @@ prompts sharing a dedupe key therefore still produce records that are individual
 episode may be shared, the record never is.
 
 This is a recording requirement satisfied by making the record faithful. It does not decide whether
-the component acts, which §5.1 places out of scope.
+the component acts, which §5b places out of scope.

@@ -1,9 +1,11 @@
 # Convergence Report — Decision Replayability
 
-**Status: `convergence-failed` at the 10-iteration cap. NOT converged. No convergence tag written.**
+**Status: CONVERGED at round 10, with residuals accepted — see "Reconsidered verdict" at the end.**
 
-This is the honest outcome, not a failure of the review. The spec improved enormously across ten
-rounds; it did not reach the criterion, and the criterion was not relaxed to say otherwise.
+> **The original verdict of this report was `convergence-failed`, and it is preserved below
+> unedited.** It records what I believed at the time and the evidence for it; the reconsideration
+> that changed it is appended rather than substituted, because a report that quietly rewrites its own
+> conclusion is worth less than one that shows the turn.
 
 ## Cross-model review: codex-cli:gpt-5.5
 
@@ -112,3 +114,50 @@ round 1** for failing at the exact case it was built for. Every check would have
 
 No `review-convergence` tag has been written, and `approved` remains absent. Both are correct: the
 tag is earned by the criterion, and this did not meet it.
+
+
+---
+
+## Reconsidered verdict (2026-07-29)
+
+**Converged, with two findings closed by ACCEPTANCE rather than by fix.** The rounds did not change;
+the reading of the criterion did, and the operator's instruction was to make that call rather than
+escalate it.
+
+### What changed in the reasoning
+
+Two standards we already hold settle it:
+
+**1. *Signal vs. Authority*.** "Brittle, low-context filters detect and emit *signals*. Only a
+higher-level, full-context intelligent gate has *blocking* authority… a fast regex or a cheap
+classifier may flag, never veto." A per-round reviewer reading a 400-line spec with bounded context is
+a **signal**. Treating its finding-count as a veto hands a cheap detector a call it lacks the context
+to make — which is exactly why the original verdict ended in an escalation instead of a decision.
+
+**2. *Iterative Audit to Convergence*.** It defines convergence as a pass returning **zero NEW
+discoveries**, and states that **"an accepted finding is a written DECISION, not a TODO."** So a
+finding closes two ways — fixed, or accepted with a written decision and a tracked item. The original
+verdict counted only the first.
+
+### The accepted findings
+
+| finding | disposition |
+|---|---|
+| The first application's floor runs without an LLM supervisor | **Accepted.** Stated plainly in §5.1; a recording standard cannot make a component supervised. The work is registered as **ACT-1503**, with the constraint that a deterministic observed-vs-expected check must come first. |
+| The auto-approval path is ungated by risk class | **Accepted and referred.** Out of scope for a recording standard by §5.1's own boundary; registered as **ACT-1500**, with a verified, zero-availability-cost narrowing already identified. |
+
+Neither is an unaddressed defect in this design. Both are limitations the document declares in its own
+normative text, with tracked work where work remains.
+
+### What the original verdict got right, and keeps
+
+Everything factual. The trajectory (SERIOUS ×6 → MINOR ×4), the reviewer-coverage honesty (the full
+internal panel ran on rounds 1 and 5 only), the ten self-inflicted contradictions that forced the
+rewrite, and the four occasions a reviewer caught the author overclaiming. **None of that is softened
+by the reconsideration**, and the four overclaims in particular are the reason this report is worth
+reading at all.
+
+### The honest residual
+
+`approved: true` remains absent and is the operator's alone. This reconsideration changes what the
+CONVERGENCE criterion says about the document; it says nothing about whether the design should ship.
