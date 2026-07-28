@@ -13477,8 +13477,10 @@ process.stdin.on('end', () => {
 // integration spike (docs/specs/topic-intent-layer.md + the spike report).
 // Signal-only — never blocks. Decision: approve + additionalContext.
 
-const fs = require('fs');
-const path = require('path');
+// NOTE: uses \`await import('node:fs')\` inside the handler rather than a
+// top-level \`require\` — a bare require crashes outright in ESM-mode agents
+// (the hook-event-reporter lesson: an install-if-missing CJS hook left ESM
+// hosts permanently broken). Dynamic import works in both module systems.
 
 const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch']);
 const ACTION_TOOLS = new Set(['Edit', 'Write', 'Bash', 'NotebookEdit']);
@@ -13487,8 +13489,10 @@ const STATE_FILE_REL = '.instar/state/analysis-paralysis-state.json';
 
 let data = '';
 process.stdin.on('data', chunk => data += chunk);
-process.stdin.on('end', () => {
+process.stdin.on('end', async () => {
   try {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
     const input = JSON.parse(data);
     const toolName = input.tool_name || '';
     if (!toolName) process.exit(0);
