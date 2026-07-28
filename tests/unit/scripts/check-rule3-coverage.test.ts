@@ -415,3 +415,98 @@ export const _x = OpenAI;`,
     expect(result.exitCode).toBe(0);
   });
 });
+
+/**
+ * Merge semantics.
+ *
+ * A merge stages every file that differs between the branch base and the
+ * incoming ref. Judging that whole index as the committer's work makes anyone
+ * merging `main` into an older branch the author of all of `main` — so they are
+ * refused for pre-existing violations absent from their own diff, which they
+ * cannot see and did not write.
+ *
+ * The committer's real contribution to a merge is what differs from the
+ * INCOMING ref (`MERGE_HEAD`). A file taken verbatim from the incoming side was
+ * not authored here; a conflict resolution was.
+ */
+describe('check-rule3-coverage.cjs — merge semantics', () => {
+  let repo: string;
+  // `init.defaultBranch` varies by machine (main / master / anything). Capture
+  // the real name instead of hardcoding one — a hardcoded guess passes on the
+  // author's box and fails on everyone else's.
+  let baseBranch: string;
+
+  function git(cwd: string, ...args: string[]): string {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: 'pipe', env: childEnv });
+  }
+
+  beforeEach(() => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'rule3-merge-'));
+    git(repo, 'init', '-q');
+    git(repo, 'config', 'user.email', 'test@example.com');
+    git(repo, 'config', 'user.name', 'test');
+    fs.mkdirSync(path.join(repo, 'scripts'), { recursive: true });
+    fs.copyFileSync(SCRIPT_PATH, path.join(repo, 'scripts', 'check-rule3-coverage.cjs'));
+    fs.mkdirSync(path.join(repo, 'specs', 'provider-portability'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, 'specs', 'provider-portability', '06-state-detector-registry.md'),
+      '# Registry\n\n(Empty for tests.)\n',
+    );
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'base');
+    baseBranch = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim();
+    git(repo, 'branch', 'incoming');
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('does NOT judge a violating file that came verbatim from the incoming ref', () => {
+    // The incoming branch introduces the violation — as `main` did with
+    // devClaimCheck.ts. The merging author never touched it.
+    git(repo, 'checkout', '-q', 'incoming');
+    stage(repo, 'src/core/TheirViolation.ts', 'export const r = JSON.parse(stdout);');
+    git(repo, 'commit', '-q', '-m', 'incoming adds a detector');
+
+    git(repo, 'checkout', '-q', baseBranch);
+    stage(repo, 'src/core/OurUnrelated.ts', 'export const x = 1;');
+    git(repo, 'commit', '-q', '-m', 'ours');
+
+    // --no-commit leaves MERGE_HEAD set, which is the state the hook runs in.
+    try {
+      git(repo, 'merge', '--no-commit', '--no-ff', 'incoming');
+    } catch {
+      /* a no-commit merge exits non-zero by design; the index is what matters */
+    }
+    // Sanity: the file IS staged (so a pass here is not vacuous — it means the
+    // gate looked at the index and correctly attributed the file elsewhere).
+    expect(git(repo, 'diff', '--cached', '--name-only')).toContain('src/core/TheirViolation.ts');
+
+    expect(runCheck(repo).exitCode).toBe(0);
+  });
+
+  it('DOES judge a file the author resolved differently from the incoming ref', () => {
+    // Both sides touch the same file; the author resolves it with violating
+    // content. That content exists on neither parent — it was authored here.
+    git(repo, 'checkout', '-q', 'incoming');
+    stage(repo, 'src/core/Contested.ts', 'export const a = 1;\n');
+    git(repo, 'commit', '-q', '-m', 'incoming version');
+
+    git(repo, 'checkout', '-q', baseBranch);
+    stage(repo, 'src/core/Contested.ts', 'export const b = 2;\n');
+    git(repo, 'commit', '-q', '-m', 'our version');
+
+    try {
+      git(repo, 'merge', '--no-commit', '--no-ff', 'incoming');
+    } catch {
+      /* conflict expected */
+    }
+    // The author's resolution introduces the detector.
+    stage(repo, 'src/core/Contested.ts', 'export const r = JSON.parse(stdout);\n');
+
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('src/core/Contested.ts');
+  });
+});
