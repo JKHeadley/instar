@@ -149,9 +149,22 @@ function readRegistry() {
 }
 
 function isInRegistry(filepath, registryContent) {
-  // Strip src/ prefix; the registry uses paths relative to src/.
-  const stripped = filepath.replace(/^src\//, '');
-  return registryContent.includes(stripped);
+  // The registry's Location column is SECTION-relative, not uniformly relative
+  // to src/. Most sections write paths relative to src/, but the provider
+  // substrate section ("Provider substrate (`src/providers/`)") writes them
+  // relative to src/providers/ — 21 of its 23 rows, measured on main.
+  //
+  // Stripping only `src/` therefore looked for `providers/adapters/X.ts` while
+  // the row said `adapters/X.ts`, so no provider file could ever match. A file
+  // listed in three registry rows was still refused for a "missing registry
+  // entry", which told the author to add a row that already existed.
+  if (registryContent.includes(filepath.replace(/^src\//, ''))) return true;
+  // Only widen for genuine provider paths, so no other file gains a match it
+  // would not otherwise have had.
+  if (filepath.startsWith('src/providers/')) {
+    return registryContent.includes(filepath.replace(/^src\/providers\//, ''));
+  }
+  return false;
 }
 
 function hasMatchingCanary(stagedFiles, filepath) {
