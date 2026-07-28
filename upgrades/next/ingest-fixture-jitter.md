@@ -2,8 +2,8 @@
 
 ## What Changed
 
-`tests/fixtures/feedback-performance-concurrent-ingest.mjs` retried a contended lock on a **flat 5ms
-cadence**, 200 times — a ~1 second budget per append. Several such workers run concurrently by design,
+**Two** fixtures retried a contended lock on a **flat cadence**. `feedback-performance-concurrent-ingest.mjs`
+did 200 attempts at 5ms — a ~1 second budget per append. Several such workers run concurrently by design,
 so a flat cadence is a thundering herd: every contender wakes on the same tick and they keep colliding
 on the same slots. On a loaded runner that budget expired with nobody making progress, and main went
 red on 2026-07-28 with `feedback source generation is busy; retry later`.
@@ -14,6 +14,16 @@ still bounded so a genuinely stuck lock fails promptly rather than stalling a 10
 **The production lock is unchanged and needs no change.** It was working correctly: `openSync(path,
 'wx')` failing `EEXIST` means the lock is held, and it already checks whether the owning pid is alive
 before declaring it live.
+
+### The sibling, found by sweeping rather than assumed unique
+
+`tests/fixtures/feedback-source-generation-worker.mjs` has the **same defect with a smaller budget** —
+100 attempts × 5ms ≈ 500ms — and is spawned *concurrently* by `feedback-source-generation-multiprocess.test.ts`,
+so it contends by design too. Fixed identically (~2.9s mean, jittered).
+
+Found by asking whether the first instance was unique instead of assuming it was: a sweep for flat
+constant-sleep retries under `tests/` returned 70 sites, of which this was the one that genuinely shares
+the shape — same lock, same `busy` signal, concurrent contenders.
 
 ## What to Tell Your User
 
