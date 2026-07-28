@@ -50,8 +50,11 @@ describe('Autonomous state files use .instar/ not .claude/', () => {
       'utf-8',
     );
 
-    it('writes state file to .instar/', () => {
-      expect(content).toMatch(/cat > \.instar\/autonomous-state\.local\.md/);
+    it('writes state file under .instar/ (per-topic, with legacy fallback)', () => {
+      // Multi-session: per-topic path .instar/autonomous/<topic>.local.md, with the
+      // legacy single-file path as the no-topic fallback. Both are under .instar/.
+      expect(content).toMatch(/STATE_PATH=".instar\/autonomous\/\$\{REPORT_TOPIC\}\.local\.md"/);
+      expect(content).toContain('.instar/autonomous-state.local.md'); // legacy fallback path
     });
 
     it('creates .instar directory', () => {
@@ -69,8 +72,11 @@ describe('Autonomous state files use .instar/ not .claude/', () => {
       'utf-8',
     );
 
-    it('reads state from .instar/', () => {
-      expect(content).toMatch(/STATE_FILE="\.instar\/autonomous-state\.local\.md"/);
+    it('reads state from .instar/ (per-topic dir + legacy file, both under .instar/)', () => {
+      // Multi-session: the hook selects a per-topic file under .instar/autonomous/
+      // and falls back to the legacy single file — both under .instar/, never .claude/.
+      expect(content).toContain('MULTI_DIR=".instar/autonomous"');
+      expect(content).toContain('LEGACY_STATE=".instar/autonomous-state.local.md"');
     });
 
     it('checks emergency stop in .instar/', () => {

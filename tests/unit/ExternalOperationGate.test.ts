@@ -10,6 +10,7 @@ import {
 } from '../../src/core/ExternalOperationGate.js';
 import type {
   ExternalOperationGateConfig,
+  GateAction,
   OperationMutability,
   OperationReversibility,
   OperationScope,
@@ -70,6 +71,43 @@ describe('computeRiskLevel', () => {
 
   it('single reversible modifies are low risk', () => {
     expect(computeRiskLevel('modify', 'reversible', 'single')).toBe('low');
+  });
+
+  // ── Fail-safe on unknown/malformed runtime input ──────────────────────
+  // computeRiskLevel is reachable from UNTYPED HTTP/hook boundaries, so an
+  // unrecognized dimension must fail CLOSED — never fall through to 'low'
+  // (which maps to `proceed` and would bypass the gate). The casts below
+  // model what arrives at runtime despite the TypeScript types.
+  it('unknown mutability is treated as critical (fails closed, not open to low)', () => {
+    // Pre-fix every one of these fell through to `return 'low'` → proceed.
+    expect(computeRiskLevel('execute' as OperationMutability, 'reversible', 'single')).toBe('critical');
+    expect(computeRiskLevel('' as OperationMutability, 'reversible', 'single')).toBe('critical');
+    expect(computeRiskLevel('purge-everything' as OperationMutability, 'reversible', 'single')).toBe('critical');
+    expect(computeRiskLevel(undefined as unknown as OperationMutability, 'reversible', 'single')).toBe('critical');
+  });
+
+  it('unknown reversibility is pinned to irreversible (fails closed)', () => {
+    // write + (unknown→irreversible) + single = medium (was 'low' pre-fix).
+    expect(computeRiskLevel('write', 'maybe' as OperationReversibility, 'single')).toBe('medium');
+    // delete + (unknown→irreversible) + single = high (was 'medium' pre-fix).
+    expect(computeRiskLevel('delete', 'unknown' as OperationReversibility, 'single')).toBe('high');
+  });
+
+  it('unknown scope is pinned to bulk (fails closed)', () => {
+    // write + reversible + (unknown→bulk) = critical (was 'low' pre-fix).
+    expect(computeRiskLevel('write', 'reversible', 'galaxy' as OperationScope)).toBe('critical');
+    expect(computeRiskLevel('modify', 'reversible', '' as OperationScope)).toBe('critical');
+  });
+
+  it('reads stay low even with unknown reversibility/scope (read is inherently safe)', () => {
+    expect(computeRiskLevel('read', 'bogus' as OperationReversibility, 'bogus' as OperationScope)).toBe('low');
+  });
+
+  it('all valid-input classifications are unchanged by the fail-safe guards', () => {
+    expect(computeRiskLevel('write', 'reversible', 'single')).toBe('low');
+    expect(computeRiskLevel('delete', 'irreversible', 'bulk')).toBe('critical');
+    expect(computeRiskLevel('read', 'irreversible', 'bulk')).toBe('low');
+    expect(computeRiskLevel('delete', 'reversible', 'single')).toBe('medium');
   });
 });
 
@@ -141,6 +179,24 @@ describe('ExternalOperationGate', () => {
       ...overrides,
     });
   }
+
+  it('uses proceed as the canonical allow action vocabulary', async () => {
+    const gate = createGate({
+      autonomyDefaults: AUTONOMY_PROFILES.collaborative,
+      blockedServices: ['banking'],
+    });
+    const canonicalActions: GateAction[] = ['proceed', 'show-plan', 'suggest-alternative', 'block'];
+    expect(canonicalActions).not.toContain('allow' as GateAction);
+
+    const read = await gate.evaluate({
+      service: 'gmail',
+      mutability: 'read',
+      reversibility: 'reversible',
+      description: 'Fetch inbox',
+    });
+    expect(read.action).toBe('proceed');
+    expect(canonicalActions).toContain(read.action);
+  });
 
   describe('classify', () => {
     it('classifies a read operation as low risk', () => {
@@ -474,7 +530,11 @@ describe('ExternalOperationGate', () => {
       expect(result.llmEvaluated).toBe(true);
     });
 
-    it('LLM failure falls back to programmatic decision', async () => {
+    it('LLM failure FAILS CLOSED to show-plan (never silently proceeds)', async () => {
+      // Regression for "No Silent Degradation to Brittle Fallback": when the LLM
+      // (the proportionality-escalation layer) is unavailable, the gate must NOT
+      // return 'proceed' — it requires a plan/approval. Silent 'proceed' on LLM
+      // failure is the exact incident this gate exists to prevent.
       const gate = createGate({
         intelligence: {
           evaluate: async () => { throw new Error('LLM down'); },
@@ -486,8 +546,8 @@ describe('ExternalOperationGate', () => {
         reversibility: 'irreversible',
         description: 'Send email',
       });
-      // Should not block on LLM failure
-      expect(result.action).not.toBe('block');
+      expect(result.action).toBe('show-plan'); // fail-CLOSED, not 'proceed'
+      expect(result.action).not.toBe('proceed');
       expect(result.llmEvaluated).toBe(true);
     });
   });

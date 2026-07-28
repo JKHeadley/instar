@@ -199,8 +199,12 @@ print(json.dumps([m['text'] for m in pending_user]))
       const template = JSON.parse(fs.readFileSync(templatePath, 'utf-8'));
 
       expect(template.hooks.UserPromptSubmit).toBeDefined();
-      expect(template.hooks.UserPromptSubmit).toHaveLength(1);
-      expect(template.hooks.UserPromptSubmit[0].hooks[0].command).toContain('telegram-topic-context');
+      // The telegram-topic-context entry this suite cares about must be
+      // present; other features (e.g. the model-tier reconciler) register
+      // their own UserPromptSubmit entries, so assert membership, not count.
+      const commands = (template.hooks.UserPromptSubmit as Array<{ hooks: Array<{ command: string }> }>)
+        .flatMap(e => e.hooks.map(h => h.command));
+      expect(commands.some(c => c.includes('telegram-topic-context'))).toBe(true);
     });
 
     it('migration adds UserPromptSubmit to existing settings', () => {

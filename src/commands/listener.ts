@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import pc from 'picocolors';
 import { loadConfig, ensureStateDir } from '../core/Config.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { DEFAULT_RELAY_URL, DEFAULT_RELAY_HOST } from '../threadline/constants.js';
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -98,7 +99,7 @@ export async function startListener(opts: { dir?: string; foreground?: boolean }
   const config = loadConfig(getProjectDir(opts));
   const relayUrl = config?.threadline?.listener?.relayUrl
     || config?.threadline?.relayUrl
-    || 'wss://threadline-relay.fly.dev/v1/connect';
+    || DEFAULT_RELAY_URL;
   const agentName = config?.projectName || path.basename(path.dirname(stateDir));
 
   // Find the listener daemon script
@@ -319,17 +320,18 @@ export async function listenerDoctor(opts: { dir?: string }): Promise<void> {
 
   // Relay connectivity check (optional — may timeout)
   check('Relay reachable (DNS)', () => {
+    // DEFAULT_RELAY_HOST is a build-time constant (no user input) — safe to interpolate.
     try {
       // Use nslookup which is available on all platforms
-      execSync('nslookup relay.threadline.dev', { timeout: 5000, stdio: 'pipe' });
+      execSync(`nslookup ${DEFAULT_RELAY_HOST}`, { timeout: 5000, stdio: 'pipe' });
       return true;
     } catch {
       try {
         // Fallback: try host command
-        execSync('host relay.threadline.dev', { timeout: 5000, stdio: 'pipe' });
+        execSync(`host ${DEFAULT_RELAY_HOST}`, { timeout: 5000, stdio: 'pipe' });
         return true;
       } catch {
-        return 'Cannot resolve relay.threadline.dev — check network';
+        return `Cannot resolve ${DEFAULT_RELAY_HOST} — check network`;
       }
     }
   });
@@ -425,7 +427,7 @@ export async function installListener(opts: { dir?: string }): Promise<void> {
     const config = loadConfig(getProjectDir(opts));
     const relayUrl = config?.threadline?.listener?.relayUrl
       || config?.threadline?.relayUrl
-      || 'wss://threadline-relay.fly.dev/v1/connect';
+      || DEFAULT_RELAY_URL;
     const agentName = config?.projectName || 'instar-agent';
 
     const plist = `<?xml version="1.0" encoding="UTF-8"?>

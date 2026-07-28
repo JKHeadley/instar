@@ -98,15 +98,19 @@ describe('JobScheduler edge cases', () => {
       expect(mockSM._lastSpawnArgs?.prompt).toContain('/scan --deep');
     });
 
-    it('builds prompt for "script" type job', async () => {
+    it('runs a "script" type job directly WITHOUT spawning a model session', async () => {
+      // F005: script jobs are zero-token shell work — they run directly in a
+      // bounded subprocess, never via a spawned "Run this script: ..." session.
       createScheduler([
         makeJob('test', { execute: { type: 'script', value: './check.sh' } }),
       ]);
       scheduler.start();
-      await scheduler.triggerJob('test', 'manual');
+      const result = await scheduler.triggerJob('test', 'manual');
       await new Promise(r => setTimeout(r, 50));
 
-      expect(mockSM._lastSpawnArgs?.prompt).toContain('Run this script: ./check.sh');
+      expect(result).toBe('triggered');
+      expect(mockSM._spawnCount).toBe(0);
+      expect(mockSM._lastSpawnArgs).toBeNull();
     });
 
     it('passes model tier to session', async () => {
@@ -235,16 +239,39 @@ describe('JobScheduler edge cases', () => {
   });
 
   describe('missed job detection', () => {
-    it('triggers jobs that have never run on startup', async () => {
-      // Jobs with no prior run history should be triggered at startup,
-      // not silently skipped because checkMissedJobs requires lastRun.
+    it('triggers a never-run job that has genuinely outlived its interval', async () => {
+      // The concern this test was written for is real: a job added while the
+      // server was down must not be silently skipped forever because
+      // checkMissedJobs keys on lastRun.
+      //
+      // It previously asserted that ANY never-run job fires at startup, which
+      // was the over-correction — a job whose first window is months away then
+      // discharges itself on the next boot (ACT-724 defect (a)). The intent is
+      // preserved here by representing the actual scenario: a job that has
+      // EXISTED for longer than its own interval without ever running. That
+      // one really did miss a window, and still catches up.
       createScheduler([makeJob('never-ran', { schedule: '0 */4 * * *' })], { startupGraceMs: 0 });
+      project.state.saveJobState({
+        slug: 'never-ran',
+        firstSeenAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(), // a day ago
+        consecutiveFailures: 0,
+      } as any);
       scheduler.start();
       await new Promise(r => setTimeout(r, 50));
 
       // The job should have been triggered as a "missed" job
       expect(mockSM._spawnCount).toBe(1);
       expect(mockSM._lastSpawnArgs?.name).toContain('never-ran');
+    });
+
+    it('does NOT trigger a never-run job whose first window has not arrived', async () => {
+      // The other side of the boundary, which nothing asserted before: a job
+      // registered moments ago waits for its schedule instead of firing now.
+      createScheduler([makeJob('brand-new', { schedule: '0 */4 * * *' })], { startupGraceMs: 0 });
+      scheduler.start();
+      await new Promise(r => setTimeout(r, 50));
+
+      expect(mockSM._spawnCount).toBe(0);
     });
   });
 

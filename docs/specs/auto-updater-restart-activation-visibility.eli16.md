@@ -1,0 +1,11 @@
+# AutoUpdater Restart Activation Visibility — Plain-English Overview
+
+Instar agents update in two steps. First, the AutoUpdater downloads the new package into the agent's private shadow install. Second, the running server has to restart so the process actually starts using those new files. The bug Justin hit was in the second step: the shadow install had moved forward, but the running server stayed old because restart gating kept seeing "healthy active sessions" forever.
+
+The important distinction is that not every running session is equally important. A live user conversation should be treated conservatively, because interrupting it can lose work or break trust. A recurring background job is different: if it is just sitting at its normal prompt between runs, it should not hold back a server restart that activates a fleet-wide fix. But if that job is currently executing real work, it should be allowed to finish.
+
+This change uses an existing ground truth instead of inventing a new guess. SessionManager already has a process-tree check called `hasActiveProcesses`. It ignores baseline processes and returns true only when the session has real non-baseline child work. The restart gate now applies that check only to sessions that are clearly background jobs, identified by `jobSlug`. If the process tree says the job session is idle, it does not block restart. If the process tree says it is active, or if the gate cannot check safely, the job still blocks.
+
+The change also makes the restart wait visible. AutoUpdater now persists a restart-wait object in its state file with the target version, when the wait first started, why activation is waiting, the current blockers, and the next retry time. Authenticated health and update status expose the same object, so "installed but not active" is no longer hidden in logs. The misleading "binary resolution mismatch" wording is replaced for intentional restart waits: the log now says the new version is installed but restart activation is intentionally waiting.
+
+What this does not do: it does not force restart interactive sessions, does not park or checkpoint user work, does not change the npm polling cadence, and does not change how the supervisor consumes restart requests. It is a narrow fix for safe background-job de-counting plus clear observability when activation is waiting.

@@ -402,3 +402,27 @@ describe('backfillKindAndSchema()', () => {
     expect(second.backfilled).toBe(0);
   });
 });
+
+describe('InitiativeTracker — rollout field persistence', () => {
+  it('round-trips the typed rollout field through create/get and update', () => {
+    const tracker = new InitiativeTracker(fs.mkdtempSync(path.join(os.tmpdir(), 'rollout-persist-')));
+    tracker.create({
+      id: 'feat-x', title: 'Feature X', description: 'ships staged',
+      phases: [{ id: 'dry-run', name: 'Dry-run' }, { id: 'live', name: 'Live' }, { id: 'default-on', name: 'Default-on' }],
+      kind: 'task', pipelineStage: 'merged', specPath: 'docs/specs/X.md',
+      rollout: { flagPath: 'monitoring.featX', stage: 'dry-run', promotionCriteria: '2wk clean', evidenceSource: { type: 'log-filter', ref: 'logs/sentinel-events.jsonl', filter: 'featX' } },
+    });
+    const got = tracker.get('feat-x')!;
+    expect(got.rollout?.flagPath).toBe('monitoring.featX');
+    expect(got.rollout?.stage).toBe('dry-run');
+    expect(got.rollout?.evidenceSource?.type).toBe('log-filter');
+    // update advances the stage + sets dedupe timestamp
+    tracker.update('feat-x', { rollout: { flagPath: 'monitoring.featX', stage: 'live', lastDigestNotifiedAt: '2026-05-26T00:00:00Z' } });
+    const got2 = tracker.get('feat-x')!;
+    expect(got2.rollout?.stage).toBe('live');
+    expect(got2.rollout?.lastDigestNotifiedAt).toBe('2026-05-26T00:00:00Z');
+    // clearing via null
+    tracker.update('feat-x', { rollout: null });
+    expect(tracker.get('feat-x')!.rollout).toBeUndefined();
+  });
+});

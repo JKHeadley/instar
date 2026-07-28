@@ -40,8 +40,8 @@ export interface ScopeVerificationResult {
 export interface ScopeCheck {
   /** Check name */
   name: string;
-  /** Whether this check passed */
-  passed: boolean;
+  /** Whether this check passed; null means the result needs human verification */
+  passed: boolean | null;
   /** What was expected */
   expected: string;
   /** What was found */
@@ -129,16 +129,13 @@ export class ScopeVerifier {
     checks.push(this.checkAgentIdentity());
 
     // Determine overall result
-    const hasErrors = checks.some(c => !c.passed && c.severity === 'error');
-    const hasWarnings = checks.some(c => !c.passed && c.severity === 'warning');
-    const passed = !hasErrors;
+    const hasErrors = checks.some(c => c.passed !== true && c.severity === 'error');
+    const hasWarnings = checks.some(c => c.passed !== true && c.severity === 'warning');
+    const passed = checks.every(c => c.passed === true);
 
     const recommendation = hasErrors ? 'block' : hasWarnings ? 'warn' : 'proceed';
 
-    const failedChecks = checks.filter(c => !c.passed);
-    const summary = passed
-      ? `All ${checks.length} coherence checks passed.`
-      : `${failedChecks.length}/${checks.length} checks failed: ${failedChecks.map(c => c.message).join('; ')}`;
+    const summary = this.buildSummary(checks);
 
     return {
       passed,
@@ -327,7 +324,7 @@ export class ScopeVerifier {
     if (!binding) {
       return {
         name: 'topic-project-alignment',
-        passed: false,
+        passed: null,
         expected: `Topic ${topicId} bound to a specific project`,
         actual: 'No topic-project binding exists',
         severity: 'warning',
@@ -466,5 +463,41 @@ export class ScopeVerifier {
 
   private normalizePath(p: string): string {
     return path.resolve(p).replace(/\/+$/, '');
+  }
+
+  private buildSummary(checks: ScopeCheck[]): string {
+    const passedCount = checks.filter(c => c.passed === true).length;
+    const failedChecks = checks.filter(c => c.passed === false);
+    const indeterminateCount = checks.filter(c => c.passed === null).length;
+
+    if (passedCount === checks.length) {
+      return `All ${checks.length} coherence checks passed.`;
+    }
+
+    const parts = [`${passedCount} of ${checks.length} coherence checks passed`];
+    const errorCount = failedChecks.filter(c => c.severity === 'error').length;
+    const warningCount = failedChecks.filter(c => c.severity === 'warning').length;
+
+    if (errorCount > 0) {
+      parts.push(`${errorCount} ${this.pluralize(errorCount, 'error')}`);
+    }
+
+    if (warningCount > 0) {
+      parts.push(`${warningCount} ${this.pluralize(warningCount, 'warning')}`);
+    }
+
+    if (indeterminateCount > 0) {
+      parts.push(`${indeterminateCount} indeterminate`);
+    }
+
+    const messages = checks
+      .filter(c => c.passed !== true)
+      .map(c => c.message);
+
+    return `${parts.join(', ')}: ${messages.join('; ')}`;
+  }
+
+  private pluralize(count: number, singular: string): string {
+    return count === 1 ? singular : `${singular}s`;
   }
 }

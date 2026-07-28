@@ -324,9 +324,15 @@ escalate_via_peer() {
     node_bin=$(resolve_node || true)
     [ -z "$node_bin" ] && continue
     local peer_meta
-    peer_meta=$("$node_bin" -e "const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write((c.port||'')+'\t'+(c.authToken||''))" "$peer_dir/.instar/config.json" 2>/dev/null || true)
+    # The string-type guard on authToken protects against the { secret: true }
+    # placeholder that SecretMigrator writes after externalizing the auth token:
+    # `c.authToken || ''` would otherwise return the object itself (truthy)
+    # which serializes to "[object Object]" — never a valid Bearer.
+    peer_meta=$("$node_bin" -e "const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));const t=typeof c.authToken==='string'?c.authToken:'';process.stdout.write((c.port||'')+'\t'+t+'\t'+(c.projectName||''))" "$peer_dir/.instar/config.json" 2>/dev/null || true)
     peer_port="${peer_meta%%	*}"
-    peer_auth="${peer_meta##*	}"
+    peer_rest="${peer_meta#*	}"
+    peer_auth="${peer_rest%%	*}"
+    peer_agent_id="${peer_rest#*	}"
     [ -z "$peer_port" ] && continue
 
     health_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${peer_port}/health" 2>/dev/null || echo "000")
@@ -352,6 +358,7 @@ JSONEOF
         resp_code=$(curl -s -o /dev/null -w "%{http_code}" \
           -X POST "http://localhost:${peer_port}/attention" \
           -H "Authorization: Bearer $peer_auth" \
+          -H "X-Instar-AgentId: $peer_agent_id" \
           -H "Content-Type: application/json" \
           -H "X-Instar-Request: 1" \
           -d "$payload" 2>/dev/null || echo "000")
@@ -381,6 +388,7 @@ JSONEOF
           resp_code=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST "http://localhost:${peer_port}/attention" \
             -H "Authorization: Bearer $peer_auth" \
+            -H "X-Instar-AgentId: $peer_agent_id" \
             -H "Content-Type: application/json" \
             -H "X-Instar-Request: 1" \
             -d "$safe_payload" 2>/dev/null || echo "000")
@@ -430,17 +438,24 @@ probe_server_identity() {
   local config_file="$project_dir/.instar/config.json"
   [ ! -r "$config_file" ] && return 0
 
-  local node_bin port auth_token
+  local node_bin port auth_token agent_id
   node_bin=$(resolve_node || true)
   [ -z "$node_bin" ] && return 0
 
-  # Read port + authToken in one node invocation. The authToken is required
-  # because /health gates the `project` field behind authentication — without
-  # it the probe can't verify identity and would silently fail-open.
+  # Read port + authToken in one node invocation. The authToken is needed
+  # because /health gates the `project` field behind authentication; without
+  # it the probe can still hit /health for a basic alive check but loses the
+  # identity disambiguation. INSTAR_AUTH_TOKEN env is preferred when set
+  # (preserves cross-version compatibility). The string-type guard rejects the
+  # { secret: true } placeholder SecretMigrator writes after externalizing the
+  # auth token — `String(c.authToken || '')` would otherwise yield
+  # "[object Object]" and the Bearer would be invalid.
   local meta
-  meta=$("$node_bin" -e "const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(String(c.port||'')+'\t'+String(c.authToken||''))" "$config_file" 2>/dev/null || true)
+  meta=$("$node_bin" -e "const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));const t=process.env.INSTAR_AUTH_TOKEN||(typeof c.authToken==='string'?c.authToken:'');process.stdout.write(String(c.port||'')+'\t'+t+'\t'+(c.projectName||''))" "$config_file" 2>/dev/null || true)
   port="${meta%%	*}"
-  auth_token="${meta##*	}"
+  rest="${meta#*	}"
+  auth_token="${rest%%	*}"
+  agent_id="${rest#*	}"
   # Lifeline-only agents have no port; treat as healthy from probe POV.
   [ -z "$port" ] && return 0
 
@@ -451,9 +466,13 @@ probe_server_identity() {
   local resp http_code body project_field auth_args
   auth_args=()
   if [ -n "$auth_token" ]; then
-    auth_args=(-H "Authorization: Bearer $auth_token")
+    auth_args=(-H "Authorization: Bearer $auth_token" -H "X-Instar-AgentId: $agent_id")
   fi
-  resp=$(curl -sS --max-time 5 -w '\n%{http_code}' "${auth_args[@]}" "http://localhost:${port}/health" 2>/dev/null || echo $'\n000')
+  if [ -n "$auth_token" ]; then
+    resp=$(curl -sS --max-time 5 -w '\n%{http_code}' "${auth_args[@]}" "http://localhost:${port}/health" 2>/dev/null || echo $'\n000')
+  else
+    resp=$(curl -sS --max-time 5 -w '\n%{http_code}' "http://localhost:${port}/health" 2>/dev/null || echo $'\n000')
+  fi
   http_code=$(echo "$resp" | tail -n1)
   body=$(echo "$resp" | sed '$d')
 

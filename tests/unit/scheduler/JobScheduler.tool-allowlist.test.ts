@@ -116,6 +116,23 @@ describe('JobScheduler.resolveAllowlist (Phase 1b, pure)', () => {
     expect(r.clampedAllowlist).toBe(true);
   });
 
+  it('SECURITY: frontmatter unrestrictedTools cannot self-grant — clamps despite frontmatter:true (manifest is authority)', () => {
+    // AGENTMD-FRONTMATTER-SCHEDULING-VOCABULARY: `unrestrictedTools` is now accepted
+    // in frontmatter, but it is DECORATIVE — authority is JobDefinition.unrestrictedTools
+    // (from the manifest, §221 OOB-gated). A user-authored `.md` putting
+    // unrestrictedTools:true in frontmatter while the manifest does NOT grant it must
+    // still clamp to ['Read'] — proving the new acceptance opens no escalation path.
+    const job = makeAgentMdJob({
+      slug: 'j', origin: 'user',
+      frontmatter: { toolAllowlist: '*', unrestrictedTools: true }, // decorative
+      unrestrictedTools: false, // manifest authority says NO
+    });
+    const r = JobScheduler.resolveAllowlist(job);
+    expect(r.kind).toBe('clamped');
+    expect(r.allowlist).toEqual(['Read']);
+    expect(r.clampedAllowlist).toBe(true);
+  });
+
   it('returns kind:default-user when allowlist missing on a user-origin job', () => {
     const job = makeAgentMdJob({ slug: 'j', origin: 'user', frontmatter: {} });
     const r = JobScheduler.resolveAllowlist(job);

@@ -41,6 +41,16 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+      - name: Assemble release-note fragments
+        # Release notes are authored as per-PR FRAGMENTS in upgrades/next/<slug>.md
+        # so concurrent PRs never collide on a single shared NEXT.md. This pre-step
+        # folds every fragment (+ any legacy upgrades/NEXT.md) into upgrades/NEXT.md
+        # BEFORE the existing pipeline runs — everything downstream is UNCHANGED.
+        # No fragments AND no legacy NEXT.md → it does nothing and the next step's
+        # skip logic fires exactly as before. A malformed fragment exits non-zero
+        # and fails the run loudly (better than shipping a broken guide).
+        run: node scripts/assemble-next-md.mjs
+
       - name: Check if NEXT.md has content to publish
         id: guide-check
         run: |
@@ -50,10 +60,36 @@ jobs:
           elif grep -q '\[Feature name\]' upgrades/NEXT.md && grep -q '\[Capability\]' upgrades/NEXT.md; then
             echo "NEXT.md is still a template — nothing to publish"
             echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif grep -qE '<!--[[:space:]]*auto-draft-unreviewed' upgrades/NEXT.md; then
+            # Layer A auto-drafted this guide but a human hasn't reviewed it yet
+            # (release-readiness-visibility spec §4.1.1). Skipping keeps the
+            # silent-skip semantics correct for the unreviewed case; the
+            # release-readiness sentinel surfaces the blocked release as a signal.
+            #
+            # Match the comment SHAPE (`<!-- auto-draft-unreviewed...`), not the
+            # bare substring — a NEXT.md that describes the marker in prose
+            # (e.g. "this section carries an auto-draft-unreviewed marker")
+            # is a human-authored doc and must not trip the gate.
+            echo "NEXT.md still has auto-draft-unreviewed markers — awaiting human review, not publishing"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "NEXT.md has content — proceeding with publish"
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Loud-skip annotation (release-fragment-gate Layer 2)
+        # When the publish is about to SKIP (no fragment) but release-relevant
+        # work has merged since the last vX.Y.Z tag, emit a LOUD warning + step
+        # summary instead of a silent green run (the 2026-06-27 failure). SIGNAL
+        # ONLY — never fails the run (the script always exits 0); the durable,
+        # ack-able signal is the agent-side ReleaseReadinessSentinel.
+        # Spec: docs/specs/RELEASE-FRAGMENT-GATE-SPEC.md (Layer 2).
+        if: steps.guide-check.outputs.skip == 'true'
+        run: |
+          # The base checkout is shallow + tagless; fetch tags + enough history
+          # so the boundary tag (vX.Y.Z) and the unreleased window resolve.
+          git fetch --tags --deepen=200 origin main 2>/dev/null || git fetch --tags --unshallow 2>/dev/null || true
+          node scripts/release-skip-annotate.mjs
 
       - name: Release-tier gate (Layer 2)
         # Deployment Lockdown — Layer 2.
@@ -148,6 +184,13 @@ jobs:
           else
             echo "No upgrades/NEXT.md found — check-upgrade-guide will enforce"
           fi
+          # Consume the per-PR fragments now that their content has been folded
+          # into the version-specific guide. The commit step's `git add upgrades/`
+          # stages these deletions, so released fragments don't accumulate.
+          if ls upgrades/next/*.md >/dev/null 2>&1; then
+            rm -f upgrades/next/*.md
+            echo "Removed consumed release-note fragments from upgrades/next/"
+          fi
 
       - name: Check upgrade guide
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
@@ -160,6 +203,10 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Post-publish smoke test (clean install + --version)
+        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
+        run: node scripts/post-publish-smoke.mjs "${{ steps.bump.outputs.version }}"
+
       - name: Commit version bump & tag
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         env:
@@ -169,5 +216,31 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json package-lock.json upgrades/
           git commit -m "chore: release v${{ steps.bump.outputs.version }} [skip ci]"
+          # Push the release commit, rebasing onto any PR MERGE that landed on
+          # main while this publish was running. Publishes are already serialized
+          # against each other by the workflow `concurrency` group, but a
+          # concurrent merge (a different workflow) can still move main between
+          # our fetch and our push, rejecting it. Concurrent merges are NOT
+          # releases — they never bump npm — so the version this run resolved
+          # stays valid: a clean rebase + re-push, no version re-resolution.
+          # The common path (push succeeds first try) is unchanged; the retry
+          # only runs on a rejected push.
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            if git push origin main; then pushed=true; break; fi
+            echo "push rejected — main moved (likely a concurrent merge); rebasing and retrying (attempt ${attempt})"
+            git fetch origin main
+            if ! git rebase origin/main; then
+              echo "::error::release commit could not be rebased cleanly onto main (conflict) — aborting rather than force-pushing"
+              git rebase --abort || true
+              exit 1
+            fi
+          done
+          if [ "${pushed}" != "true" ]; then
+            echo "::error::could not push the release commit after 5 rebase-retries"
+            exit 1
+          fi
+          # Tag the FINAL (possibly rebased) commit and push the tag separately,
+          # so the tag always points at the commit that actually landed on main.
           git tag "v${{ steps.bump.outputs.version }}"
-          git push origin main --tags
+          git push origin "v${{ steps.bump.outputs.version }}"

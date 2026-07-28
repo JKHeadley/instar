@@ -205,6 +205,7 @@ export class LLMConflictResolver {
           model,
           maxTokens: tier === 1 ? 4000 : 8000,
           temperature: 0,
+          attribution: { component: 'LLMConflictResolver' }, // attribution for /metrics/features
         });
 
         const durationMs = Date.now() - startTime;

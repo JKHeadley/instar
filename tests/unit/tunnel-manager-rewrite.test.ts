@@ -136,7 +136,8 @@ describe('TunnelManager (rewrite) — reachability probe', () => {
     });
     const mgr = new TunnelManager(
       { ...baseConfig, stateDir },
-      { providers: [named, quick], fetch },
+      // 1ms probe-retry delays: keep the reachability grace window fast.
+      { providers: [named, quick], fetch, reachabilityRetryDelaysMs: [1] },
     );
     const url = await mgr.start();
     expect(url).toBe('https://quick.example');
@@ -152,10 +153,49 @@ describe('TunnelManager (rewrite) — reachability probe', () => {
       req.includes('broken.example') ? badResponse() : okResponse());
     const mgr = new TunnelManager(
       { ...baseConfig, stateDir },
-      { providers: [named, quick], fetch },
+      // 1ms probe-retry delays: keep the reachability grace window fast.
+      { providers: [named, quick], fetch, reachabilityRetryDelaysMs: [1] },
     );
     await mgr.start();
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('tolerates edge-propagation failures: a probe that fails then recovers within the grace window keeps the tunnel', async () => {
+    // Regression: a named tunnel's edge can serve 530 for a few seconds
+    // right after connector registration. A single-shot probe used to
+    // kill the healthy tunnel (reachability-failed → quick-tunnel
+    // rate-limit → permanently exhausted). The probe must retry within
+    // the grace window and keep the provider once the edge catches up.
+    const stop = vi.fn(async () => undefined);
+    const named = mockProvider({ name: 'cloudflare-named', url: 'https://propagating.example', stop });
+    let probes = 0;
+    const fetch = vi.fn(async () => {
+      probes += 1;
+      return probes <= 2 ? badResponse() : okResponse(); // 530-ish, 530-ish, then healthy
+    });
+    const mgr = new TunnelManager(
+      { ...baseConfig, stateDir },
+      { providers: [named], fetch, reachabilityRetryDelaysMs: [1, 1, 1] },
+    );
+    const url = await mgr.start();
+    expect(url).toBe('https://propagating.example');
+    expect(stop).not.toHaveBeenCalled(); // the healthy tunnel was never torn down
+    expect(fetch).toHaveBeenCalledTimes(3); // failed twice, recovered on the third attempt
+    expect(mgr.lifecycleState.lastState).toBe('active');
+  });
+
+  it('declares reachability-failed only after exhausting the full grace window', async () => {
+    const stop = vi.fn(async () => undefined);
+    const named = mockProvider({ name: 'cloudflare-named', url: 'https://dead.example', stop });
+    const fetch = vi.fn(async () => badResponse());
+    const mgr = new TunnelManager(
+      { ...baseConfig, stateDir },
+      { providers: [named], fetch, reachabilityRetryDelaysMs: [1, 1] },
+    );
+    mgr.disableAutoReconnect();
+    await expect(mgr.start()).rejects.toThrow(/reachability-failed/);
+    expect(fetch).toHaveBeenCalledTimes(3); // delays.length + 1 attempts
+    expect(stop).toHaveBeenCalledTimes(1); // torn down only after the window closed
   });
 });
 
@@ -269,7 +309,7 @@ describe('TunnelManager (rewrite) — notifier wiring', () => {
     expect((sink.sendGroup as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
-  it('emits a group message when an episode advances retrying after a failure', async () => {
+  it('emits a recovery group message when Cloudflare comes back after a failure', async () => {
     const sink: NotifierSink = {
       sendGroup: vi.fn(async () => undefined),
       sendOwnerDM: vi.fn(async () => undefined),
@@ -281,9 +321,12 @@ describe('TunnelManager (rewrite) — notifier wiring', () => {
       { providers: [a, b], fetch: vi.fn(async () => okResponse()), notifierSink: sink },
     );
     await mgr.start();
-    // One transition to retrying → notifier emits the "couldn't reach" message.
+    // The named provider fails (→ retrying, now SILENT) then the quick
+    // provider succeeds (→ active). The retrying→active recovery is the
+    // user-visible event: "Back online." Routine retry churn stays quiet.
     const groupCalls = (sink.sendGroup as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
-    expect(groupCalls.some((m) => m.includes("Couldn't reach"))).toBe(true);
+    expect(groupCalls.some((m) => m.includes('Back online'))).toBe(true);
+    expect(groupCalls.some((m) => m.includes("Couldn't reach"))).toBe(false);
   });
 });
 
@@ -308,7 +351,7 @@ describe('TunnelManager (rewrite) — attachTelegram wires the notifier sink', (
     expect(topicIds).toContain(77);
   });
 
-  it('routes the "couldn\'t reach" group message to the Dashboard topic id', async () => {
+  it('routes the recovery group message to the Dashboard topic id', async () => {
     const sendToTopic = vi.fn(async () => undefined);
     const adapter = {
       sendToTopic,
@@ -324,8 +367,10 @@ describe('TunnelManager (rewrite) — attachTelegram wires the notifier sink', (
     );
     mgr.attachTelegram(adapter, () => '999000');
     await mgr.start();
+    // Routine retry churn is silent; the recovery pointer ("Back online")
+    // is what reaches the group, routed to the Dashboard topic.
     const calls = sendToTopic.mock.calls.map((c) => ({ topicId: c[0] as number, text: c[1] as string }));
-    expect(calls.some((c) => c.topicId === 42 && c.text.includes("Couldn't reach"))).toBe(true);
+    expect(calls.some((c) => c.topicId === 42 && c.text.includes('Back online'))).toBe(true);
   });
 
   it('owner-DM message carries the live URL and current PIN (credential substitution)', async () => {

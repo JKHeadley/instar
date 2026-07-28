@@ -140,19 +140,23 @@ describe('machineAuthMiddleware', () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.machineId).toBe(env.remoteId);
-    expect(res.body.sequence).toBe(0);
+    // signRequest now assigns a process-global monotonic sequence (the passed
+    // arg is ignored — per-caller counters were the 2026-05-31 cross-transport
+    // replay-collision bug), so it's a large positive number, not the passed 0.
+    expect(res.body.sequence).toBeGreaterThan(0);
   });
 
-  it('accepts sequential requests with incrementing sequence', async () => {
+  it('accepts sequential requests (monotonic shared sequence)', async () => {
     const body = { data: 'first' };
     const h1 = signRequest(env.remoteId, env.remoteSigning.privateKey, body, 0);
-    await request(app).post('/test').set(h1).send(body).expect(200);
+    const r1 = await request(app).post('/test').set(h1).send(body);
+    expect(r1.status).toBe(200);
 
     const body2 = { data: 'second' };
     const h2 = signRequest(env.remoteId, env.remoteSigning.privateKey, body2, 1);
-    const res = await request(app).post('/test').set(h2).send(body2);
-    expect(res.status).toBe(200);
-    expect(res.body.sequence).toBe(1);
+    const r2 = await request(app).post('/test').set(h2).send(body2);
+    expect(r2.status).toBe(200);
+    expect(r2.body.sequence).toBeGreaterThan(r1.body.sequence); // global counter increases
   });
 
   // ── Missing headers ────────────────────────────────────────────
@@ -209,16 +213,21 @@ describe('machineAuthMiddleware', () => {
     expect(res.body.error).toContain('Anti-replay');
   });
 
-  it('rejects request with stale sequence number', async () => {
-    const body1 = { data: 'first' };
-    const h1 = signRequest(env.remoteId, env.remoteSigning.privateKey, body1, 5);
-    await request(app).post('/test').set(h1).send(body1).expect(200);
+  it('NonceStore rejects a stale (out-of-order) sequence for a peer', () => {
+    // The receiver's stale-sequence rejection is still enforced (NonceStore is
+    // unchanged). Tested directly now that signRequest no longer lets a caller
+    // craft a lower sequence (it draws from a process-global monotonic counter).
+    expect(env.nonceStore.validate(Date.now(), 'n-hi', 100, 'peerX').valid).toBe(true);
+    expect(env.nonceStore.validate(Date.now(), 'n-lo', 50, 'peerX').valid).toBe(false);
+  });
 
-    // Sequence 3 < last seen 5 → rejected
-    const body2 = { data: 'second' };
-    const h2 = signRequest(env.remoteId, env.remoteSigning.privateKey, body2, 3);
-    const res = await request(app).post('/test').set(h2).send(body2);
-    expect(res.status).toBe(403);
+  it('signRequest keeps sequences monotonic across interleaved channels (regression: 2026-05-31 cross-transport replay)', () => {
+    // Two logical channels both signing via signRequest must NOT collide on the
+    // receiver's per-machine sequence watermark — they share ONE process-global
+    // counter, so the second is strictly greater regardless of the passed arg.
+    const lease = signRequest(env.remoteId, env.remoteSigning.privateKey, { ch: 'lease' }, 999);
+    const heartbeat = signRequest(env.remoteId, env.remoteSigning.privateKey, { ch: 'heartbeat' }, 1);
+    expect(Number(heartbeat['X-Sequence'])).toBeGreaterThan(Number(lease['X-Sequence']));
   });
 
   // ── Invalid signature ──────────────────────────────────────────
@@ -272,7 +281,9 @@ describe('signRequest', () => {
     expect(headers['X-Machine-Id']).toBe('m_test123');
     expect(headers['X-Timestamp']).toBeTruthy();
     expect(headers['X-Nonce']).toHaveLength(32); // 16 bytes hex
-    expect(headers['X-Sequence']).toBe('42');
+    // The passed sequence (42) is ignored; a process-global monotonic value is
+    // assigned instead, so just assert it's a positive integer string.
+    expect(Number(headers['X-Sequence'])).toBeGreaterThan(0);
     expect(headers['X-Signature']).toBeTruthy();
   });
 

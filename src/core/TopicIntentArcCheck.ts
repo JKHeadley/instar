@@ -25,8 +25,10 @@
  * Instar's LlmQueue + IntelligenceProvider; tests stub it.
  */
 
+import type { IntelligenceProvider } from './types.js';
 import {
   TopicIntentStore,
+  isTaskContextKind,
   type EstablishedRef,
   type ProjectionResult,
 } from './TopicIntent.js';
@@ -42,7 +44,7 @@ export type ArcCheckVerdict =
   | { fire: false }
   | {
       fire: true;
-      kind: 'acting-on-tentative' | 'contradicts-settled';
+      kind: 'acting-on-tentative' | 'contradicts-settled' | 'contradicts-frame';
       refId: string;
       refText: string;
       currentTier: 'tentative' | 'authoritative';
@@ -83,8 +85,11 @@ export class ArcCheck {
    * return from an HTTP route or consumption by a hook.
    *
    * Verdict priority (when multiple conditions fire):
-   *   1. contradicts-settled (highest — wrong direction on a decided item)
-   *   2. acting-on-tentative (lower — uncertain, but not wrong)
+   *   1. contradicts-settled (highest — wrong direction on a decided fact/decision)
+   *   2. contradicts-frame (drifting from the active task frame — method/audience/
+   *      goal — fires at tentative OR authoritative, because a frame is exactly the
+   *      thing worth catching early; this is the rung-1 founding-incident catch)
+   *   3. acting-on-tentative (lowest — uncertain, but not wrong)
    *
    * If the draft engages multiple refs, the first matching one of the
    * highest-priority kind wins. Subsequent fires are deferred to a
@@ -96,10 +101,11 @@ export class ArcCheck {
 
     const classification = await this.classifyFn(input.draftText, refs);
 
-    // Priority 1: contradicts settled item
+    // Priority 1: contradicts a settled fact/decision (task-frame kinds are
+    // handled by the frame rule below, which fires at tentative-or-above).
     for (const refId of classification.contradicts) {
       const ref = refs.find(r => r.refId === refId);
-      if (ref && ref.projection.tier === 'authoritative') {
+      if (ref && !isTaskContextKind(ref.kind) && ref.projection.tier === 'authoritative') {
         return {
           fire: true,
           kind: 'contradicts-settled',
@@ -116,7 +122,31 @@ export class ArcCheck {
       }
     }
 
-    // Priority 2: acting on tentative item
+    // Priority 2: drifting from the active task frame (method/audience/goal).
+    // Unlike a settled proposition, a frame fires at tentative-or-above — frames
+    // decay fast and are often only tentative, but drifting from one is exactly
+    // the founding-incident failure we exist to catch. Signal only.
+    for (const refId of classification.contradicts) {
+      const ref = refs.find(r => r.refId === refId);
+      if (ref && isTaskContextKind(ref.kind)) {
+        const label = ref.kind; // method | audience | goal
+        return {
+          fire: true,
+          kind: 'contradicts-frame',
+          refId,
+          refText: ref.text,
+          currentTier: ref.projection.tier === 'authoritative' ? 'authoritative' : 'tentative',
+          currentConfidence: ref.projection.confidence,
+          reason: `draft appears to drift from the active ${label} of this task: "${ref.text}"`,
+          suggestedRewriteHint:
+            `Pause and surface the drift in plain English: note that we've been working with the ` +
+            `${label} "${ref.text}", flag that the current draft would move off it, and confirm the ` +
+            `change with the user before proceeding (or realign to the frame).`,
+        };
+      }
+    }
+
+    // Priority 3: acting on tentative item
     for (const refId of classification.actsOn) {
       const ref = refs.find(r => r.refId === refId);
       if (ref && ref.projection.tier === 'tentative') {
@@ -201,4 +231,44 @@ export function parseArcCheckResponse(raw: string): ArcCheckClassification {
   } catch {
     return { actsOn: [], contradicts: [] };
   }
+}
+
+export type ArcCheckDegradeReason = 'no-intelligence' | 'error';
+
+/**
+ * Production classifier built atop an injected IntelligenceProvider. Mirrors
+ * createLlmExtractFn from TopicIntentExtractor: degrade-safe, subscription
+ * transport (the provider must be the subscription/REPL-pool path — see
+ * feedback_anthropic_path_constraints), structured response parsing.
+ *
+ * `onDegrade` is an optional observability hook that fires on each degrade
+ * path WITHOUT weakening degrade-safety — the function still returns
+ * `{actsOn:[], contradicts:[]}` regardless. The `ArcCheck` class turns an
+ * empty classification into `{fire:false}`, so a degraded call cannot fire
+ * a false signal into the outbound gate.
+ */
+export function createArcCheckClassifyFn(
+  intelligence?: IntelligenceProvider,
+  onDegrade?: (reason: ArcCheckDegradeReason) => void,
+): ArcCheckClassifyFn {
+  return async (draftText, refs): Promise<ArcCheckClassification> => {
+    if (!intelligence) {
+      try { onDegrade?.('no-intelligence'); } catch { /* metering best-effort */ }
+      return { actsOn: [], contradicts: [] };
+    }
+    const { systemPrompt, userPrompt } = buildArcCheckPrompt(draftText, refs);
+    let raw: string;
+    try {
+      raw = await intelligence.evaluate(`${systemPrompt}\n\n${userPrompt}`, {
+        model: 'fast',
+        temperature: 0,
+        maxTokens: 400,
+        attribution: { component: 'TopicIntentArcCheck' },
+      });
+    } catch {
+      try { onDegrade?.('error'); } catch { /* metering best-effort */ }
+      return { actsOn: [], contradicts: [] };
+    }
+    return parseArcCheckResponse(raw);
+  };
 }

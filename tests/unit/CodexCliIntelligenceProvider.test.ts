@@ -32,8 +32,16 @@ exit 0
 let tmpDir: string;
 let fakeCodexPath: string;
 let nonGitDir: string;
+let prevExecJson: string | undefined;
 
 beforeAll(() => {
+  // This file pins the PLAIN-mode (kill-switch) invocation contract — the
+  // fake codex echoes argv to stdout, which is only the result channel in
+  // plain mode. The default exec-json path's contracts (args, stdin prompt,
+  // file-only result, usage parse) are pinned by
+  // tests/unit/codex-cli-provider-execjson.test.ts.
+  prevExecJson = process.env.INSTAR_CODEX_EXEC_JSON;
+  process.env.INSTAR_CODEX_EXEC_JSON = '0';
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-provider-test-'));
   fakeCodexPath = path.join(tmpDir, 'fake-codex');
   fs.writeFileSync(fakeCodexPath, FAKE_CODEX_SCRIPT, { mode: 0o755 });
@@ -42,6 +50,8 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  if (prevExecJson === undefined) delete process.env.INSTAR_CODEX_EXEC_JSON;
+  else process.env.INSTAR_CODEX_EXEC_JSON = prevExecJson;
   SafeFsExecutor.safeRmSync(tmpDir, {
     recursive: true,
     force: true,
@@ -84,7 +94,6 @@ describe('CodexCliIntelligenceProvider — spawn args', () => {
     expect(args).toContain('--sandbox');
     expect(args).toContain('read-only');
     expect(args).toContain('--cd');
-    expect(args).toContain(nonGitDir);
     expect(args).toContain('--skip-git-repo-check');
     // Prompt is the last positional.
     expect(args[args.length - 1]).toBe('classify: hello');
@@ -125,5 +134,192 @@ describe('CodexCliIntelligenceProvider — spawn args', () => {
     });
 
     await expect(provider.evaluate('hi')).rejects.toThrow(/Codex CLI error/);
+  });
+});
+
+describe('CodexCliIntelligenceProvider — per-call timeout (IntelligenceOptions.timeoutMs)', () => {
+  // Regression for the two-walls conformance-gate timeout bug
+  // (docs/specs/conformance-gate-timeout.md): the provider used to hardcode the
+  // execFile timeout at 30s and ignore the caller's budget. `timeout` is an
+  // execFile option, not argv, so we assert it behaviorally with a slow fake.
+  let slowCodexPath: string;
+
+  beforeAll(() => {
+    slowCodexPath = path.join(tmpDir, 'slow-codex');
+    fs.writeFileSync(slowCodexPath, '#!/bin/sh\nsleep 1\necho "DONE"\nexit 0\n', { mode: 0o755 });
+  });
+
+  it('honors a short timeoutMs — kills a slow call (pre-fix this budget was ignored)', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: slowCodexPath, workingDirectory: nonGitDir });
+    await expect(provider.evaluate('hi', { timeoutMs: 100 })).rejects.toThrow();
+  });
+
+  it('a generous timeoutMs lets the same slow call finish', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: slowCodexPath, workingDirectory: nonGitDir });
+    await expect(provider.evaluate('hi', { timeoutMs: 5000 })).resolves.toContain('DONE');
+  });
+
+  it('without timeoutMs the 30s default is unchanged — a sub-default call still resolves', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: slowCodexPath, workingDirectory: nonGitDir });
+    await expect(provider.evaluate('hi')).resolves.toContain('DONE');
+  });
+});
+
+describe('CodexCliIntelligenceProvider — retired-model fallback', () => {
+  function fallbackFixture(firstError: string, fallbackAlsoFails = false): { binary: string; calls: string } {
+    const fixture = fs.mkdtempSync(path.join(tmpDir, 'retired-model-'));
+    const calls = path.join(fixture, 'calls');
+    const binary = path.join(fixture, 'fake-codex');
+    fs.writeFileSync(binary, `#!/bin/sh
+model=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--model" ]; then model="$arg"; fi
+  prev="$arg"
+done
+echo "$model" >> "${calls}"
+if [ "$model" != "gpt-5.4-mini" ]; then
+  echo "${firstError}" >&2
+  exit 1
+fi
+${fallbackAlsoFails ? 'echo "fallback failed" >&2\nexit 1' : 'echo "RECOVERED"\nexit 0'}
+`, { mode: 0o755 });
+    return { binary, calls };
+  }
+
+  function callsFrom(file: string): string[] {
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf-8').trim().split('\n') : [];
+  }
+
+  it('retries the exact ChatGPT model-retirement failure once on the known-good floor', async () => {
+    const fixture = fallbackFixture(
+      "Error 400: The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+    );
+    const models: string[] = [];
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fixture.binary });
+
+    await expect(provider.evaluate('hi', {
+      model: 'gpt-5.5',
+      onModel: ({ model }) => models.push(model),
+    })).resolves.toBe('RECOVERED');
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
+    expect(models).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
+  });
+
+  it.each([
+    ['rate limit', 'Error 429: rate limit exceeded'],
+    ['auth', 'Error 401: unauthorized'],
+    ['different 400', 'Error 400: invalid request body'],
+  ])('does not fall back on %s failures', async (_label, message) => {
+    const fixture = fallbackFixture(message);
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fixture.binary });
+
+    await expect(provider.evaluate('hi', { model: 'gpt-5.5' })).rejects.toThrow(message);
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5']);
+  });
+
+  it('surfaces a fallback failure after exactly one retry', async () => {
+    const fixture = fallbackFixture(
+      "Error 400: The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+      true,
+    );
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fixture.binary });
+
+    await expect(provider.evaluate('hi', { model: 'gpt-5.5' })).rejects.toThrow('fallback failed');
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5', 'gpt-5.4-mini']);
+  });
+});
+
+describe('CodexCliIntelligenceProvider — clean-call (no identity, no hooks)', () => {
+  // Regression: judgment calls must NOT run in the agent's project dir, or
+  // codex loads the full ~26 KB AGENTS.md identity and fires the project's
+  // .codex/hooks.json (session_start / etc.) on every call. They must run in
+  // an empty instar-managed scratch dir — the Codex analog of the Claude
+  // provider's `--setting-sources user`.
+
+  function cdValue(args: string[]): string | undefined {
+    const i = args.indexOf('--cd');
+    return i >= 0 ? args[i + 1] : undefined;
+  }
+
+  it('runs in the instar scratch dir, NOT the passed workingDirectory', async () => {
+    const provider = new CodexCliIntelligenceProvider({
+      codexPath: fakeCodexPath,
+      workingDirectory: nonGitDir,
+    });
+
+    const args = parseArgs(await provider.evaluate('classify: hello'));
+    const cd = cdValue(args);
+
+    expect(cd).toBeDefined();
+    expect(cd).not.toBe(nonGitDir);
+    expect(cd).toContain('instar-codex-intel-scratch');
+  });
+
+  it('the scratch dir exists and is empty — no AGENTS.md, no .codex hooks dir', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+
+    const args = parseArgs(await provider.evaluate('hi'));
+    const cd = cdValue(args)!;
+
+    expect(fs.existsSync(cd)).toBe(true);
+    const entries = fs.readdirSync(cd);
+    expect(entries).not.toContain('AGENTS.md');
+    expect(entries).not.toContain('.codex');
+  });
+
+  it('hard-disables project-doc loading via -c project_doc_max_bytes=0', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+
+    const args = parseArgs(await provider.evaluate('hi'));
+    const ci = args.indexOf('-c');
+
+    expect(ci).toBeGreaterThanOrEqual(0);
+    expect(args[ci + 1]).toBe('project_doc_max_bytes=0');
+  });
+
+  it('uses the same scratch dir across calls (stable, not per-call)', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+
+    const cd1 = cdValue(parseArgs(await provider.evaluate('a')));
+    const cd2 = cdValue(parseArgs(await provider.evaluate('b')));
+
+    expect(cd1).toBe(cd2);
+  });
+
+  it('creates the scratch dir with private (0700) permissions — not group/other accessible', async () => {
+    // Security: a world-accessible scratch dir under /tmp could let another
+    // local user plant a .codex/hooks.json that codex would then fire. mkdtemp
+    // creates 0700; assert it stays that way.
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+    const cd = cdValue(parseArgs(await provider.evaluate('hi')))!;
+
+    const mode = fs.statSync(cd).mode & 0o777;
+    expect(mode).toBe(0o700);
+  });
+
+  it('uses an unguessable (random-suffixed) dir name, not a fixed path', async () => {
+    // A fixed name under world-writable /tmp could be pre-created/symlinked by
+    // an attacker. The mkdtemp suffix makes the path unpredictable.
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+    const cd = cdValue(parseArgs(await provider.evaluate('hi')))!;
+
+    expect(path.basename(cd)).toMatch(/^instar-codex-intel-scratch-.+/);
+    expect(cd).not.toBe(path.join(os.tmpdir(), 'instar-codex-intel-scratch'));
+  });
+
+  it('recreates the scratch dir if a tmp-reaper deleted it mid-process', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fakeCodexPath });
+
+    const cd1 = cdValue(parseArgs(await provider.evaluate('a')))!;
+    SafeFsExecutor.safeRmSync(cd1, {
+      recursive: true,
+      force: true,
+      operation: 'tests/unit/CodexCliIntelligenceProvider.test.ts:tmp-reaper-recovery',
+    });
+    expect(fs.existsSync(cd1)).toBe(false);
+
+    const cd2 = cdValue(parseArgs(await provider.evaluate('b')))!;
+    expect(fs.existsSync(cd2)).toBe(true);
   });
 });

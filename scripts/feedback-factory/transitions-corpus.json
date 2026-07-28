@@ -1,0 +1,40 @@
+{
+  "_comment": "Parity corpus for the lifecycle state-machine port. `transitions`: cases for can_transition {current,new,justification?,context?} → [allowed, reason]. `cycling`: cases for detect_cycling {cluster} → bool. Covers legal/illegal transitions, terminal states, the evidence gate (both sides of 20 chars), the dispatch hard gate, and the chronic circuit-breaker (recurrence 2 vs 3).",
+  "transitions": [
+    { "current": "new", "new": "investigating" },
+    { "current": "new", "new": "verified" },
+    { "current": "investigating", "new": "research_complete" },
+    { "current": "research_complete", "new": "investigating" },
+    { "current": "fix_applied", "new": "dispatched", "context": { "dispatch_id": "dsp-123" } },
+    { "current": "fix_applied", "new": "dispatched" },
+    { "current": "fix_applied", "new": "verified" },
+    { "current": "closed", "new": "investigating" },
+    { "current": "chronic_escalated", "new": "investigating" },
+    { "current": "wontfix", "new": "new" },
+    { "current": "bogus_state", "new": "investigating" },
+    { "current": "new", "new": "not_a_real_state" },
+    { "current": "investigating", "new": "wontfix" },
+    { "current": "investigating", "new": "wontfix", "justification": "too short" },
+    { "current": "investigating", "new": "wontfix", "justification": "this is a sufficiently long justification over twenty chars" },
+    { "current": "verified", "new": "closed", "justification": "short" },
+    { "current": "verified", "new": "closed", "justification": "verified stable for 30 days, closing per policy" },
+    { "current": "chronic", "new": "chronic_escalated", "justification": "escalating after repeated regressions across three releases" },
+    { "current": "verified", "new": "chronic" },
+    { "current": "verified", "new": "chronic", "context": { "recurrenceCount": 2 } },
+    { "current": "verified", "new": "chronic", "context": { "recurrenceCount": 3 } },
+    { "current": "fix_applied", "new": "chronic", "context": { "recurrenceCount": 5 } },
+    { "current": "needs_human_verify", "new": "verified" },
+    { "current": "deferred", "new": "new" }
+  ],
+  "cycling": [
+    { "status": "fix_applied", "recurrenceCount": 2 },
+    { "status": "fix_applied", "recurrenceCount": 1 },
+    { "status": "new", "recurrenceCount": 3 },
+    { "status": "investigating", "recurrenceCount": 2 },
+    { "status": "investigating", "recurrenceCount": 0 },
+    { "status": "verified", "recurrenceCount": 5 },
+    { "status": "dispatched", "recurrenceCount": 9 },
+    { "status": "fix_applied" },
+    { "recurrenceCount": 4 }
+  ]
+}

@@ -17,6 +17,8 @@
  */
 
 import { EventEmitter } from 'events';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { SessionRecovery, RecoveryResult } from './SessionRecovery.js';
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
 
@@ -48,6 +50,7 @@ export interface SessionMonitorEvents {
   'monitor:recovery-triggered': { topicId: number; sessionName: string; reason: string };
   'monitor:mechanical-recovery': { topicId: number; sessionName: string; result: RecoveryResult };
   'monitor:user-notified': { topicId: number; message: string };
+  'monitor:recovery-deferred': { topicId: number; sessionName: string };
 }
 
 export interface SessionMonitorDeps {
@@ -65,6 +68,12 @@ export interface SessionMonitorDeps {
   triggerTriage?: (topicId: number, sessionName: string, reason: string) => Promise<{ resolved: boolean }>;
   /** Optional mechanical recovery layer — runs before LLM triage */
   sessionRecovery?: SessionRecovery;
+  /** Optional path to the persisted context-exhaustion notify ledger. When set,
+   *  the once-per-death-EPISODE dedup map survives server restarts — without it
+   *  every boot (update-train churn) forgot which dead sessions were already
+   *  announced and re-posted "conversation too long" once per restart (the
+   *  bounded residual confirmed twice on 2026-06-06: topics 16566 + 19437). */
+  statePath?: string;
 }
 
 const DEFAULT_CONFIG: Required<SessionMonitorConfig> = {
@@ -87,11 +96,65 @@ export class SessionMonitor extends EventEmitter {
    *  snap.notifiedAt resets to null. Without this, the dead-session notification
    *  fires every poll (60s) creating spam. */
   private notificationCooldowns = new Map<number, number>();
+  /** topicId -> {sessionName, at} already notified for context exhaustion.
+   *  Makes the user notification once-per-failure-EPISODE (per session
+   *  instance), not once-per-cooldown-window — the prior behavior re-posted
+   *  the same death every cycle while the condition persisted (the 2026-06-06
+   *  flood). A successful recovery clears the flag so a future genuine death
+   *  notifies. Persisted via deps.statePath so a server restart does not
+   *  forget the episode and re-announce the same death once per boot. */
+  private ctxNotifiedSessions = new Map<number, { sessionName: string; at: number }>();
+  private ctxPersistWarned = false;
+  /** Entries older than this are pruned at load — a week-old dead-session
+   *  episode is over by any reasonable measure, and pruning bounds the file. */
+  private static readonly CTX_NOTIFIED_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
   constructor(deps: SessionMonitorDeps, config?: Partial<SessionMonitorConfig>) {
     super();
     this.deps = deps;
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.loadCtxNotified();
+  }
+
+  /** Load the persisted notify ledger (tolerant: missing/corrupt → empty). */
+  private loadCtxNotified(): void {
+    if (!this.deps.statePath) return;
+    try {
+      if (!fs.existsSync(this.deps.statePath)) return;
+      const raw = JSON.parse(fs.readFileSync(this.deps.statePath, 'utf-8')) as
+        Record<string, { sessionName: string; at: number }>;
+      const cutoff = Date.now() - SessionMonitor.CTX_NOTIFIED_MAX_AGE_MS;
+      for (const [topic, entry] of Object.entries(raw)) {
+        const topicId = Number(topic);
+        if (!Number.isFinite(topicId) || !entry || typeof entry.sessionName !== 'string') continue;
+        if (typeof entry.at !== 'number' || entry.at < cutoff) continue; // pruned
+        this.ctxNotifiedSessions.set(topicId, { sessionName: entry.sessionName, at: entry.at });
+      }
+    } catch (err) {
+      // A corrupt ledger must never break monitoring — start empty (worst
+      // case: one repeat notice per dead session, the pre-persistence status quo).
+      console.warn('[SessionMonitor] Could not load ctx-notified ledger — starting empty:', err);
+    }
+  }
+
+  /** Persist the notify ledger (atomic tmp+rename; failure-tolerant). */
+  private persistCtxNotified(): void {
+    if (!this.deps.statePath) return;
+    try {
+      const obj: Record<string, { sessionName: string; at: number }> = {};
+      for (const [topicId, entry] of this.ctxNotifiedSessions) obj[String(topicId)] = entry;
+      const tmp = `${this.deps.statePath}.tmp`;
+      fs.mkdirSync(path.dirname(this.deps.statePath), { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+      fs.renameSync(tmp, this.deps.statePath);
+    } catch (err) {
+      // Persistence is best-effort: losing it degrades to the pre-persistence
+      // behavior (one repeat notice per boot), never to broken monitoring.
+      if (!this.ctxPersistWarned) {
+        this.ctxPersistWarned = true;
+        console.warn('[SessionMonitor] Could not persist ctx-notified ledger (will not warn again):', err);
+      }
+    }
   }
 
   // ── Typed Events ────────────────────────────────────────
@@ -214,35 +277,67 @@ export class SessionMonitor extends EventEmitter {
     // Run BEFORE health classification because a context-exhausted session
     // appears "alive" with recent output (the error message itself), so it
     // would be classified as 'healthy' and skip all recovery logic.
-    if (alive && currentOutput && this.deps.sessionRecovery) {
+    if (alive && this.deps.sessionRecovery) {
       // Topic-level cooldown survives snapshot cleanup (which happens when sessions die between polls)
       const lastCtxAction = this.contextExhaustionCooldowns.get(topicId);
       const ctxCooldownMs = this.config.notificationCooldownMinutes * 60 * 1000;
       const inCtxCooldown = lastCtxAction && (now - lastCtxAction) < ctxCooldownMs;
+      const ctxCheck = detectContextExhaustion(currentOutput);
+
+      // Persist the existing detector's positive result even when the monitor's
+      // existing presentation cooldown is active. The latch stores no metadata
+      // and owns no recovery decision.
+      if (ctxCheck.matched) {
+        this.deps.sessionRecovery.markContextWedgedSeen?.(topicId);
+      }
 
       if (!inCtxCooldown) {
-        const ctxCheck = detectContextExhaustion(currentOutput);
-        if (ctxCheck.matched) {
-          console.log(`[SessionMonitor] Context exhaustion detected in topic ${topicId} (pattern: ${ctxCheck.pattern})`);
+        if (ctxCheck.matched || this.deps.sessionRecovery.hasContextWedgedSeen?.(topicId)) {
+          if (ctxCheck.matched) {
+            console.log(`[SessionMonitor] Context exhaustion detected in topic ${topicId} (pattern: ${ctxCheck.pattern})`);
+          } else {
+            console.log(`[SessionMonitor] Previously seen context exhaustion remains latched for topic ${topicId}`);
+          }
           this.contextExhaustionCooldowns.set(topicId, now);
+          let recoveryResult: RecoveryResult | null = null;
           try {
-            const recoveryResult = await this.deps.sessionRecovery.checkAndRecover(topicId, sessionName);
+            recoveryResult = await this.deps.sessionRecovery.checkAndRecover(topicId, sessionName);
             this.emit('monitor:mechanical-recovery', { topicId, sessionName, result: recoveryResult });
             if (recoveryResult.recovered) {
               console.log(`[SessionMonitor] Context exhaustion recovery succeeded for topic ${topicId}: ${recoveryResult.message}`);
               snap.status = 'healthy';
               snap.notifiedAt = now;
+              if (this.ctxNotifiedSessions.delete(topicId)) this.persistCtxNotified(); // episode over — a future genuine death may notify again
               return;
             }
           } catch (err) {
             console.error(`[SessionMonitor] Context exhaustion recovery error for topic ${topicId}:`, err);
           }
-          // If recovery failed/not available, notify user ONCE
+          // DEFERRED ≠ dead. The work-check found the session alive and actively
+          // producing work, so the kill was deferred — the session is FINE.
+          // Telling the user it "hit conversation too long and can't continue"
+          // here is a FALSE death report on a live session (2026-06-06 flood:
+          // 68 detections / 29+ deferrals / 0 real recoveries in one day).
+          // Housekeeping → log + event only, NEVER the user.
+          if (recoveryResult?.deferred) {
+            console.log(`[SessionMonitor] Context-exhaustion recovery deferred for topic ${topicId} (session alive + producing work) — suppressing user notification`);
+            this.emit('monitor:recovery-deferred', { topicId, sessionName });
+            return;
+          }
+          // Genuine failure: notify once per session INSTANCE (failure episode),
+          // not once per cooldown window — the same dead session must not
+          // re-announce its death every cycle.
+          if (this.ctxNotifiedSessions.get(topicId)?.sessionName === sessionName) {
+            console.log(`[SessionMonitor] Context-exhaustion already notified for topic ${topicId} session "${sessionName}" — suppressing duplicate`);
+            return;
+          }
           snap.status = 'dead';
           await this.deps.sendToTopic(topicId,
             `Session hit "conversation too long" and can't continue. Send a new message to start a fresh session with your recent history.`
           ).catch(() => {});
           this.emit('monitor:user-notified', { topicId, message: 'context_exhausted' });
+          this.ctxNotifiedSessions.set(topicId, { sessionName, at: now });
+          this.persistCtxNotified();
           snap.notifiedAt = now;
           this.notificationCooldowns.set(topicId, now);
           return;

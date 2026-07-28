@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import child_process from 'node:child_process';
 
 import { NativeModuleHealer } from '../../src/memory/NativeModuleHealer.js';
 
@@ -301,6 +302,121 @@ describe('NativeModuleHealer', () => {
 
       // Opener was tried exactly once — the prior heal attempt blocks the retry
       expect(opener).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Regression: the once-per-process heal guard must not lock OUT later sqlite
+  // subsystems after the FIRST one healed successfully. Observed live on a
+  // node-upgraded agent: SemanticMemory healed (200) and consumed the single
+  // rebuild, then TokenLedger threw "(heal previously attempted)" → 503, even
+  // though the on-disk binding was already correct. The fix: when a prior heal
+  // SUCCEEDED, a later caller clears its stale cached binding and retries the
+  // open once — no second rebuild.
+  describe('shared prior heal — multi-subsystem recovery (heal-shared-rebuild-retry)', () => {
+    function simulatePriorHeal(success: boolean) {
+      (NativeModuleHealer as any).healAttempted = true;
+      (NativeModuleHealer as any).lastResult = {
+        component: 'SemanticMemory',
+        timestamp: new Date().toISOString(),
+        success,
+        nodeVersion: process.version,
+        ...(success ? {} : { errorTail: 'rebuild failed' }),
+      };
+    }
+
+    it('openWithHealSync: later caller clears cache + retries (NO 2nd rebuild) when a prior heal SUCCEEDED', () => {
+      simulatePriorHeal(true);
+      const healSpy = vi.spyOn(NativeModuleHealer, 'healBetterSqlite3Sync');
+      let tries = 0;
+      const opener = vi.fn(() => {
+        tries += 1;
+        // This caller (TokenLedger) still holds the stale ABI-141 binding on
+        // its first open; after the cache-clear retry it loads the good one.
+        if (tries === 1) {
+          throw new Error('NODE_MODULE_VERSION 141 — requires NODE_MODULE_VERSION 127');
+        }
+        return 'token-ledger-opened';
+      });
+
+      const result = NativeModuleHealer.openWithHealSync('TokenLedger', opener);
+      expect(result).toBe('token-ledger-opened');
+      expect(opener).toHaveBeenCalledTimes(2); // initial throw + post-cache-clear retry
+      expect(healSpy).not.toHaveBeenCalled(); // crucial: no second expensive rebuild
+      healSpy.mockRestore();
+    });
+
+    it('openWithHeal (async): same prior-success retry path, no 2nd rebuild', async () => {
+      simulatePriorHeal(true);
+      const healSpy = vi.spyOn(NativeModuleHealer, 'healBetterSqlite3');
+      let tries = 0;
+      const opener = vi.fn(() => {
+        tries += 1;
+        if (tries === 1) throw new Error('NODE_MODULE_VERSION mismatch');
+        return 'opened-after-shared-heal';
+      });
+
+      const result = await NativeModuleHealer.openWithHeal('TokenLedger', opener);
+      expect(result).toBe('opened-after-shared-heal');
+      expect(opener).toHaveBeenCalledTimes(2);
+      expect(healSpy).not.toHaveBeenCalled();
+      healSpy.mockRestore();
+    });
+
+    it('still surfaces the error (NO retry) when the prior heal FAILED', () => {
+      simulatePriorHeal(false);
+      const opener = vi.fn(() => {
+        throw new Error('NODE_MODULE_VERSION mismatch');
+      });
+      expect(() => NativeModuleHealer.openWithHealSync('TokenLedger', opener)).toThrow(
+        /heal previously attempted and failed/,
+      );
+      expect(opener).toHaveBeenCalledTimes(1); // prior FAILURE means a retry can't help
+    });
+
+    it('a persistent post-retry failure surfaces honestly (binding still bad)', () => {
+      simulatePriorHeal(true);
+      const opener = vi.fn(() => {
+        // Even after the cache-clear retry, the open keeps failing — surface it.
+        throw new Error('NODE_MODULE_VERSION mismatch — persistent');
+      });
+      expect(() => NativeModuleHealer.openWithHealSync('TokenLedger', opener)).toThrow(
+        /NODE_MODULE_VERSION mismatch — persistent/,
+      );
+      expect(opener).toHaveBeenCalledTimes(2); // initial + one retry, then surfaced
+    });
+  });
+
+  // Fleet fix (2026-05-29): the rebuild must target the running Node's ABI and
+  // prefer the prebuilt — `npm rebuild` alone compiles and can't heal a box
+  // without a C++ toolchain (instar-codey sqlite offline 16h).
+  describe('healBetterSqlite3Sync — ABI-correct, prebuilt-first rebuild', () => {
+    it('prefers `npm install` (prebuilt) first and pins PATH to the running Node', () => {
+      NativeModuleHealer.resetForTesting();
+      NativeModuleHealer.configure({ stateDir: tmpDir });
+      const prefix = tmpDir;
+      fs.mkdirSync(path.join(prefix, 'node_modules', 'better-sqlite3'), { recursive: true });
+      fs.writeFileSync(
+        path.join(prefix, 'node_modules', 'better-sqlite3', 'package.json'),
+        JSON.stringify({ name: 'better-sqlite3', version: '12.10.0' }),
+      );
+      vi.spyOn(NativeModuleHealer as any, 'findBetterSqlite3InstallPrefix').mockReturnValue(prefix);
+      vi.spyOn(NativeModuleHealer as any, 'findNpmPath').mockReturnValue('/usr/bin/npm');
+      const spawnSpy = vi
+        .spyOn(child_process, 'spawnSync')
+        .mockReturnValue({ status: 0, stdout: '', stderr: '', signal: null, pid: 0, output: [] } as any);
+
+      const ok = NativeModuleHealer.healBetterSqlite3Sync('Test');
+      expect(ok).toBe(true);
+
+      const firstArgs = spawnSpy.mock.calls[0][1] as string[];
+      expect(firstArgs).toContain('install');                                   // prebuilt path
+      expect(firstArgs.some((a) => String(a).startsWith('better-sqlite3'))).toBe(true);
+      expect(firstArgs).not.toContain('--build-from-source');                   // not a compile
+      const env = (spawnSpy.mock.calls[0][2] as any).env as Record<string, string>;
+      expect(env.PATH.split(path.delimiter)[0]).toBe(path.dirname(process.execPath));
+      expect(env.npm_node_execpath).toBe(process.execPath);
+
+      spawnSpy.mockRestore();
     });
   });
 });

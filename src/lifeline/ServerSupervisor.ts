@@ -24,9 +24,17 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { detectTmuxPath } from '../core/Config.js';
+import { SlowRetrySentinelEscalation } from './SlowRetrySentinelEscalation.js';
 import { SleepWakeDetector } from '../core/SleepWakeDetector.js';
+import { cpuLoadRatio, DEFAULT_MAX_LOAD_RATIO } from '../core/cpuStarvation.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+// Cross-process reader for the in-flight-sync-op marker mirror file (amplifier #2,
+// spec §A.5). Dependency-light (fs+path only) so the lifeline process never loads
+// the server module graph — the in-memory marker singleton is dead across the
+// process boundary, so the supervisor reads the file the server's SessionManager
+// mirrors on every depth transition.
+import { defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
 
 /** Execute a shell command safely, returning stdout. */
 function shellExec(cmd: string, timeout = 5000): string {
@@ -209,8 +217,29 @@ export class ServerSupervisor extends EventEmitter {
   private restartBackoffMs = 5000;
   private isRunning = false;
   private lastHealthy = 0;
-  private startupGraceMs = 180_000; // 3 minutes grace period — allows time for heavy init (Threadline, tunnel, agent discovery)
+  // 10-minute startup grace. Earned 2026-06-07 (topic 21816): the prior 3-minute
+  // grace was SHORTER than a heavy boot on a loaded box — the server synchronously
+  // loads large memory/state (TopicMemory with tens of thousands of messages,
+  // SemanticMemory) and reconciles dozens of sessions BEFORE it binds /health, so a
+  // full boot can take 5-6 min. With a 3-min grace the supervisor began acting on
+  // health failures mid-boot and restarted the server before it ever finished → an
+  // endless restart-before-boot loop (the "server temporarily down on every message"
+  // incident). 10 min comfortably exceeds a slow boot so a legitimate boot always
+  // completes; a genuinely hung boot is still caught after the grace. Tunable via
+  // startupGraceSeconds. (Deeper fix — bind /health before the heavy load — tracked
+  // separately; this grace makes restarts safe in the meantime.)
+  private startupGraceMs = 600_000;
   private spawnedAt = 0;
+  // Fix C (supervisor-respawn-guarantee): wall-clock of the FIRST spawn in the
+  // current not-yet-healthy episode. `spawnedAt` can be repeatedly reset to now
+  // by sleep/wake handling, which re-arms the startup-grace window indefinitely;
+  // `firstSpawnedAt` is NOT reset by those handlers, so it anchors an absolute
+  // ceiling on cumulative grace (startupGraceMs * graceCeilingMultiplier). Past
+  // the ceiling, failures are acted on normally even if `spawnedAt` was just
+  // reset — a server that has never gone healthy after 3× the grace window is
+  // hung, not booting. Cleared on the first healthy tick.
+  private firstSpawnedAt = 0;
+  private readonly graceCeilingMultiplier = 3;
   private retryCooldownMs = 5 * 60_000; // 5 minutes cooldown after max retries exhausted
   private maxRetriesExhaustedAt = 0;
   private consecutiveFailures = 0; // Hysteresis: require 2 consecutive failures before marking unhealthy
@@ -223,12 +252,56 @@ export class ServerSupervisor extends EventEmitter {
   private consecutiveBindFailures = 0;
   private readonly bindFailureEscalationThreshold = 2;
   private readonly processAliveThreshold = 6; // When process is alive but unresponsive (e.g., high CPU load), require 6 failures (~60s) before restarting
+  // CPU-starvation restart guard: when the box is so oversubscribed (load >>
+  // cores) that the live server can't answer /health, restarting it does NOT
+  // cure the starvation — the fresh server is starved too, it just drops the
+  // in-flight message and loops (the 2026-05-29 restart-loop incident). So while
+  // CPU-starved we DEFER the restart up to a hard cap, then force it (in case
+  // the server is genuinely hung rather than merely starved). Same load-ratio
+  // signal SleepWakeDetector uses (see core/cpuStarvation).
+  private readonly maxLoadRatio = DEFAULT_MAX_LOAD_RATIO; // loadavg[0]/cpuCount above this = starved
+  private readonly starvationRestartThreshold = 30; // ~5min at 10s checks — force a restart even if starved if unresponsiveness persists this long
+  private readonly loadRatioProvider: () => number; // injectable for tests; default cpuLoadRatio
+  // Sustained-starvation window. The starvation guard must judge load over the
+  // unresponsive window, NOT a single instant: the 1-min loadavg oscillates
+  // around the threshold on an oversubscribed box, and a momentary dip below it
+  // must not authorize restarting a server that has been starved the whole time
+  // — that restart only deepens the starvation and loops (the 2026-06-17
+  // restart-loop incident: restarts fired at "10 checks", below the hard cap,
+  // because the instantaneous ratio dipped under the line for one sample). We
+  // sample the ratio on each unresponsive tick and treat the box as starved if
+  // it was starved at ANY point in the recent window.
+  private readonly loadSampleWindow = 6; // ~60s at 10s checks
+  private recentLoadRatios: number[] = [];
+  private lastStarvationCheckFailures = 0; // detect a failure-streak reset to drop stale samples
+  private lastSustainedLoadRatio = 0; // windowed max from the most recent defer check (for the log line)
+  // In-flight-sync-op restart-defer guard (amplifier #2, spec §A.5). A synchronous
+  // tmux/tunnel block burns ~0 CPU in the server process — so the CPU-starvation
+  // guard above CANNOT see it, and the supervisor would force-restart a server that
+  // is merely wedged inside a SIGKILL-bounded sync subprocess wait (dropping the
+  // in-flight message). The marker is the cross-process signal: the server mirrors
+  // an in-flight-op depth/timestamp to a file on every depth transition; the
+  // supervisor reads it here. Gated behind the dev-resolved flag (off ⇒ legacy);
+  // bounded by the SAME starvationRestartThreshold hard cap as the CPU defer; the
+  // marker's own 2×timeout TTL self-heal keeps a leaked marker from blinding the
+  // supervisor forever (a stale marker reads !inFlight ⇒ restart proceeds).
+  private readonly inflightMarkerProvider: () => { inFlight: boolean; ageMs: number; stale: boolean } | null;
+  private readonly inflightDeferEnabled: boolean;
+  private inflightDeferCount = 0; // observability: how many ticks the marker held off a restart
   private stateDir: string | null;
 
   // Planned restart / maintenance wait — suppress alerts during expected downtime
   private maintenanceWaitStartedAt = 0;
   private maintenanceWaitMs = 5 * 60_000; // 5 minutes default (configurable via maintenanceWaitMinutes)
   private pendingUpdateVersion: string | null = null; // Version being applied — triggers lifeline self-restart on recovery
+
+  // Agent hard-sleep (Stage B mechanism; docs/specs/agent-hard-sleep-mechanism.md).
+  // When `slept` is true the server was INTENTIONALLY stopped to save resources —
+  // the health loop must NOT treat it as down or auto-respawn it; it only watches
+  // for a wake-request. Gated upstream by the SleepController, which writes the
+  // sleep-request flag only in live mode (enabled + !dryRun). Always-off here until
+  // a sleep-request flag is honored, so existing crash-recovery behavior is intact.
+  private slept = false;
 
   // Circuit breaker — give up after too many total failures, but retry periodically
   private totalFailures = 0;
@@ -242,6 +315,12 @@ export class ServerSupervisor extends EventEmitter {
   private readonly maxCircuitBreakerRetries = 3; // Try 3 times at 30-min intervals before entering slow-retry
   private readonly slowRetryIntervalMs = 2 * 60 * 60_000; // 2 hours between slow retries (never truly give up)
   private slowRetryStartedAt = 0; // When slow retry mode started
+  /**
+   * Eternal Sentinel condition 4 ("No Unbounded Loops", P19): never-give-up
+   * must not mean never-tell-anyone. Fires the one-per-episode 'sentinelStalled'
+   * escalation after a sustained-failure threshold; the retrying continues.
+   */
+  private readonly sentinelEscalation: SlowRetrySentinelEscalation;
   private lastCrashOutput = ''; // Last captured crash output for diagnostics
   private doctorSessionSecret: string | null = null; // HMAC secret for doctor restart requests
   private sleepWakeDetector: SleepWakeDetector | null = null; // Detects short sleeps that gap-based detection misses
@@ -268,6 +347,25 @@ export class ServerSupervisor extends EventEmitter {
     maintenanceWaitMinutes?: number;
     /** How long to wait after spawning before starting health checks. Default: 180 seconds (3 minutes). */
     startupGraceSeconds?: number;
+    /** Injectable CPU-load-ratio source (loadavg[0]/cpuCount) for tests. Default: cpuLoadRatio. */
+    loadRatioProvider?: () => number;
+    /** Sustained-failure threshold before the one-per-episode slow-retry escalation. Default: 12h. */
+    slowRetryEscalateAfterMs?: number;
+    /**
+     * Cross-process in-flight-sync-op marker reader (amplifier #2, spec §A.5).
+     * Injectable for tests; defaults to `defaultInflightMarkerReader(stateDir)`,
+     * which reads the mirror file the server writes. Returns null on an
+     * absent/unparseable marker ⇒ fail-OPEN (the supervisor restarts a genuinely
+     * dead server).
+     */
+    inflightMarkerProvider?: () => { inFlight: boolean; ageMs: number; stale: boolean } | null;
+    /**
+     * When true, the supervisor defers a restart while an in-flight sync-op marker
+     * is set (and not stale). Resolved via the developmentAgent dark-gate in
+     * TelegramLifeline (the supervisor is config-less) and passed as a plain
+     * boolean. Default false ⇒ legacy behavior (no inflight defer).
+     */
+    inflightDeferEnabled?: boolean;
   }) {
     super();
     this.projectDir = options.projectDir;
@@ -276,6 +374,16 @@ export class ServerSupervisor extends EventEmitter {
     this.stateDir = options.stateDir ?? null;
     this.tmuxPath = detectTmuxPath();
     this.serverSessionName = `${this.projectName}-server`;
+    this.loadRatioProvider = options.loadRatioProvider ?? (() => cpuLoadRatio());
+    // Amplifier #2 wiring (spec §A.5). The default reader is bound to THIS
+    // supervisor's stateDir (already assigned above) so it reads the mirror file
+    // the server writes. `inflightDeferEnabled` is resolved upstream (TelegramLifeline
+    // has projectConfig; the supervisor is config-less) and passed as a plain boolean.
+    this.inflightMarkerProvider = options.inflightMarkerProvider ?? defaultInflightMarkerReader(this.stateDir);
+    this.inflightDeferEnabled = options.inflightDeferEnabled ?? false;
+    this.sentinelEscalation = new SlowRetrySentinelEscalation({
+      escalateAfterMs: options.slowRetryEscalateAfterMs,
+    });
 
     if (options.maintenanceWaitMinutes !== undefined) {
       this.maintenanceWaitMs = options.maintenanceWaitMinutes * 60_000;
@@ -294,9 +402,19 @@ export class ServerSupervisor extends EventEmitter {
       return false;
     }
 
-    // Check if already running
-    if (this.isServerSessionAlive()) {
-      console.log(`[Supervisor] Server already running in tmux session: ${this.serverSessionName}`);
+    // Check if already running.
+    //
+    // A bare `tmux has-session` check races with a dying session right after a
+    // `kickstart -k` of the lifeline: the old server is SIGKILLed but its tmux
+    // session lingers for a beat, so has-session returns true and this branch
+    // would trust it — setting isRunning=true and never respawning. Observed
+    // 2026-05-23: the server then fully exits, the supervisor believes it is
+    // running, and it stays dead ~3min until a second kickstart spawns it
+    // cleanly. Verify the server actually answers /health before trusting the
+    // session; a stale/dying session short-circuits and falls through to a
+    // fresh spawn (spawnServer kills the lingering session first).
+    if (this.isServerSessionAlive() && (await this.verifyServerResponding())) {
+      console.log(`[Supervisor] Server already running and healthy in tmux session: ${this.serverSessionName}`);
       this.isRunning = true;
       this.lastHealthy = Date.now();
       // Set spawnedAt so the startup grace period applies. Without this, a fresh
@@ -338,6 +456,22 @@ export class ServerSupervisor extends EventEmitter {
   /**
    * Stop the server and monitoring.
    */
+  /**
+   * Operator-explicit wake from agent hard-sleep. Clears the `slept` state + the
+   * slept-marker so a manual `/lifeline restart` (or `/restart`) actually brings the
+   * server back up — without this, startHealthChecks() re-reads the marker and the
+   * supervisor immediately re-enters `slept`, leaving an un-monitored server and no
+   * in-band recovery. Distinct from a fleet-watchdog auto-bounce (which intentionally
+   * stays asleep via the boot-marker); this is reached only from an explicit command.
+   */
+  wakeFromSleep(): void {
+    if (this.slept || this.sleptMarkerPresent()) {
+      this.clearSleptMarker();
+      this.slept = false;
+      console.log('[Supervisor] Explicit wake — cleared slept state for operator restart');
+    }
+  }
+
   async stop(): Promise<void> {
     this.stopHealthChecks();
 
@@ -430,6 +564,7 @@ export class ServerSupervisor extends EventEmitter {
     this.restartAttempts = 0;
     this.maxRetriesExhaustedAt = 0;
     this.slowRetryStartedAt = 0;
+    this.sentinelEscalation.reset(); // episode over — re-arm the one-shot escalation
     this.wakeTransitionUntil = 0;
     console.log('[Supervisor] Circuit breaker reset');
   }
@@ -683,6 +818,12 @@ export class ServerSupervisor extends EventEmitter {
         timeout: 5000,
         cwd: this.projectDir,
         operation: 'src/lifeline/ServerSupervisor.ts:378',
+        // Read-only check. On a dogfooding agent (projectDir IS the instar
+        // source tree) the SourceTreeGuard otherwise rejects this call and
+        // the thrown error aborts recovery — prolonging the exact outage the
+        // preflight exists to end (live: echo, 2026-06-05). Same opt-in class
+        // as the failure-learning loop's git reads (#550).
+        sourceTreeReadOk: true,
       });
       if (statusText.includes('rebase in progress') || statusText.includes('interactive rebase in progress')) {
         console.log('[Supervisor] Preflight: stuck git rebase detected — aborting');
@@ -721,73 +862,125 @@ export class ServerSupervisor extends EventEmitter {
       const checkNode = (fs.existsSync(serverNode)) ? serverNode : process.execPath;
       const shadowNodeModules = path.join(this.stateDir, 'shadow-install', 'node_modules');
       const sqliteCopies = findBetterSqlite3Copies(shadowNodeModules);
-      const force = this.consecutiveBindFailures >= 2;
-      if (force) {
-        console.log(`[Supervisor] Preflight: ${this.consecutiveBindFailures} consecutive bind failures — forcing aggressive better-sqlite3 rebuild`);
-      }
+      // FLEET FIX (native-module rebuild-loop, 2026-05-29): a BIND failure (e.g.
+      // EADDRINUSE from a held/duplicate listener.sock or HTTP port) is NOT
+      // evidence of a native-module ABI problem. Previously we force-rebuilt
+      // better-sqlite3 on any >=2 consecutive bind failures EVEN when the module
+      // loaded fine — turning a held-socket situation into hundreds of futile,
+      // CPU-heavy node-gyp rebuilds (observed fleet-wide: sagemind 202,
+      // deep-signal 144, inspec 112, ai-guy 104). We now rebuild ONLY a copy that
+      // actually fails to load with a NODE_MODULE_VERSION ABI mismatch. Genuine
+      // native-module crash-loops still self-heal (the load check below catches a
+      // server that crashed before binding because the module failed to load); a
+      // held-socket bind failure no longer burns the machine on a futile rebuild.
+      let anyAbiMismatch = false;
       for (const copy of sqliteCopies) {
         try {
-          // Try loading the native module with the SERVER's Node — if it fails, rebuild.
-          // When we're escalating after consecutive bind failures, force the rebuild
-          // even if the require-load succeeds (the load may pass for one copy while
-          // a different cached copy is what actually got resolved at runtime).
+          // Try loading the native module with the SERVER's Node — rebuild only
+          // if it ACTUALLY fails to load with an ABI mismatch.
           const result = spawnSync(checkNode, ['-e', `require('${copy.binaryPath.replace(/'/g, "\\'")}')`], {
             encoding: 'utf-8',
             timeout: 10_000,
             cwd: this.projectDir,
           });
-          const needsRebuild = force || (result.status !== 0 && result.stderr?.includes('NODE_MODULE_VERSION'));
+          const needsRebuild = result.status !== 0 && (result.stderr?.includes('NODE_MODULE_VERSION') ?? false);
           if (!needsRebuild) continue;
-          console.log(`[Supervisor] Preflight: better-sqlite3 ${force ? 'force-rebuild' : 'version mismatch'} at ${copy.packageDir} — rebuilding (server node: ${checkNode})`);
+          anyAbiMismatch = true;
+          console.log(`[Supervisor] Preflight: better-sqlite3 version mismatch at ${copy.packageDir} — rebuilding (server node: ${checkNode})`);
           const npmPath = this.findNpmPath();
           if (!npmPath) {
             console.error('[Supervisor] Preflight: no npm binary found — cannot rebuild better-sqlite3');
             continue;
           }
-          const rebuildEnv: Record<string, string | undefined> = { ...process.env, npm_config_node_gyp: undefined };
-          if (checkNode !== process.execPath) {
-            rebuildEnv.npm_node_execpath = checkNode;
-          }
-          // `--build-from-source` forces npm to compile the native module
-          // against the current Node ABI instead of falling back to a
-          // cached prebuilt binary. Without this flag, npm rebuild can
-          // exit 0 having installed the SAME wrong-ABI prebuilt that was
-          // there before — producing the "rebuild succeeded but module
-          // still fails to load" pattern observed in the 2026-05-20
-          // b2lead-insights incident.
-          // `--ignore-scripts` prevents this rebuild from running every
-          // dependency's postinstall hooks (large surface, slow, and a
-          // supply-chain risk per the SELF-HEALING-REMEDIATOR-V3 §A45).
-          const rebuildArgs = [
-            'rebuild',
-            '--build-from-source',
-            '--ignore-scripts',
-            'better-sqlite3',
-            '--prefix', copy.prefixDir,
+          // FLEET FIX (wrong-ABI rebuild + binary-deletion footgun, 2026-05-29 —
+          // instar-codey sqlite offline 16h). Three problems the old single
+          // `--build-from-source` path had:
+          //  (1) node-gyp / prebuild-install resolve `node` from PATH. If a
+          //      different Node (e.g. an asdf-managed 22.x, ABI 127) is ahead of
+          //      the server's Node (e.g. 25.x, ABI 141) on PATH, the rebuild
+          //      "succeeds" but targets the WRONG ABI — the server's Node then
+          //      can't load it ("rebuild succeeded but module still fails to
+          //      load"). Pin the toolchain to the server Node's dir so every
+          //      `env node` in the chain resolves the correct ABI.
+          //  (2) from-source compile can fail entirely on a box without a
+          //      working C++ toolchain. Prefer the PREBUILT (fast, no compiler);
+          //      with the toolchain pinned, the prebuilt fetched is the correct
+          //      ABI. Only compile from source as a fallback.
+          //  (3) `--build-from-source` deletes build/Release/*.node before
+          //      compiling — a failed compile left the agent with NO module at
+          //      all (worse than the wrong-ABI degradation it started from). Back
+          //      the binary up first and RESTORE it if the rebuild can't produce
+          //      a loadable module.
+          const serverNodeDir = path.dirname(checkNode);
+          const rebuildEnv: Record<string, string | undefined> = {
+            ...process.env,
+            npm_config_node_gyp: undefined,
+            npm_node_execpath: checkNode,
+            // Server Node dir FIRST so node-gyp / prebuild-install / any
+            // `#!/usr/bin/env node` shebang resolves the server's Node ABI.
+            PATH: `${serverNodeDir}${path.delimiter}${process.env.PATH ?? ''}`,
+          };
+          const verifyLoadable = (): boolean =>
+            spawnSync(checkNode, ['-e', `require('${copy.binaryPath.replace(/'/g, "\\'")}')`], {
+              encoding: 'utf-8', timeout: 10_000, cwd: this.projectDir,
+            }).status === 0;
+          // Back up the current (wrong-ABI) binary so a failed rebuild can't
+          // leave the agent with no module.
+          const backupPath = `${copy.binaryPath}.heal-bak`;
+          let hasBackup = false;
+          try {
+            if (fs.existsSync(copy.binaryPath)) { fs.copyFileSync(copy.binaryPath, backupPath); hasBackup = true; }
+          } catch { /* best-effort backup */ }
+          // Prebuilt-first, then compile-fallback. `npm install` runs
+          // better-sqlite3's install script (`prebuild-install`), which fetches
+          // the prebuilt for the SERVER Node's ABI — NO compiler needed and ~2s.
+          // (`npm rebuild` always node-gyp-compiles and never fetches a prebuilt,
+          // so it can't heal a box without a working toolchain — which is exactly
+          // where instar-codey was stuck.) Pin to the exact version instar ships.
+          // The from-source fallback keeps `--ignore-scripts` (no arbitrary
+          // postinstalls; supply-chain per SELF-HEALING-REMEDIATOR-V3 §A45).
+          let pkgVersion = '';
+          try {
+            pkgVersion = (JSON.parse(fs.readFileSync(path.join(copy.packageDir, 'package.json'), 'utf-8')).version as string) || '';
+          } catch { /* no version → install whatever resolves */ }
+          const installSpec = pkgVersion ? `better-sqlite3@${pkgVersion}` : 'better-sqlite3';
+          const attempts: string[][] = [
+            ['install', installSpec, '--no-save', '--prefix', copy.prefixDir],
+            ['rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', copy.prefixDir],
           ];
-          if (force) rebuildArgs.push('--force');
-          const rebuildResult = spawnSync(checkNode, [npmPath, ...rebuildArgs], {
-            encoding: 'utf-8',
-            timeout: 120_000,
-            cwd: this.projectDir,
-            env: rebuildEnv,
-          });
-          if (rebuildResult.status !== 0) {
-            console.error(`[Supervisor] Preflight: better-sqlite3 rebuild failed at ${copy.packageDir}: ${(rebuildResult.stderr || '').slice(-200)}`);
-            continue;
+          let rebuilt = false;
+          let lastErr = '';
+          for (const args of attempts) {
+            const r = spawnSync(checkNode, [npmPath, ...args], {
+              encoding: 'utf-8', timeout: 120_000, cwd: this.projectDir, env: rebuildEnv,
+            });
+            if (r.status === 0 && verifyLoadable()) { rebuilt = true; break; }
+            lastErr = (r.stderr || '').slice(-200);
           }
-          const verifyResult = spawnSync(checkNode, ['-e', `require('${copy.binaryPath.replace(/'/g, "\\'")}')`], {
-            encoding: 'utf-8', timeout: 10_000, cwd: this.projectDir,
-          });
-          if (verifyResult.status === 0) {
+          if (rebuilt) {
+            try { if (hasBackup) SafeFsExecutor.safeUnlinkSync(backupPath, { operation: 'ServerSupervisor.preflight:bsq-backup-cleanup' }); } catch { /* ignore */ }
             healed.push(`better-sqlite3 rebuilt at ${path.relative(this.stateDir, copy.packageDir)}`);
             console.log(`[Supervisor] Preflight: better-sqlite3 rebuilt and verified at ${copy.packageDir}`);
           } else {
-            console.error(`[Supervisor] Preflight: better-sqlite3 rebuild succeeded but module still fails to load at ${copy.packageDir}: ${(verifyResult.stderr || '').slice(-200)}`);
+            // Restore the prior binary — wrong-ABI degraded beats a missing
+            // module that crashes subsystem init.
+            let restored = false;
+            try {
+              if (hasBackup) { fs.copyFileSync(backupPath, copy.binaryPath); SafeFsExecutor.safeUnlinkSync(backupPath, { operation: 'ServerSupervisor.preflight:bsq-backup-restore' }); restored = true; }
+            } catch { /* ignore */ }
+            console.error(`[Supervisor] Preflight: better-sqlite3 rebuild could not produce a loadable module at ${copy.packageDir}${restored ? ' — restored prior binary (sqlite stays degraded, not bricked)' : ''}: ${lastErr}`);
           }
         } catch (err) {
           console.error(`[Supervisor] Preflight: native module check failed at ${copy.packageDir}: ${err}`);
         }
+      }
+      // Diagnostic: repeated bind failures while better-sqlite3 loads fine means
+      // the failure is NOT a native-module problem (almost always a held/stale
+      // listener.sock or HTTP port from a duplicate/stuck instance). Say so loudly
+      // instead of silently rebuilding — the real remedy is freeing the socket
+      // (WakeSocketServer now degrades gracefully instead of crash-looping).
+      if (this.consecutiveBindFailures >= this.bindFailureEscalationThreshold && !anyAbiMismatch && sqliteCopies.length > 0) {
+        console.log(`[Supervisor] Preflight: ${this.consecutiveBindFailures} consecutive bind failures but better-sqlite3 loads fine — NOT a native-module problem (likely a held socket/port from a duplicate or stuck instance). Skipping native rebuild.`);
       }
     }
 
@@ -932,6 +1125,21 @@ export class ServerSupervisor extends EventEmitter {
       // which fails the health check and produces a runaway restart loop. tmux
       // `-e` is per-session and survives an existing tmux server (process.env
       // alone does not propagate once tmux is already running).
+      //
+      // Kill any pre-existing session of this name first. `tmux new-session`
+      // fails on a duplicate name, so a lingering/stale session (e.g. a dying
+      // server still registered after `kickstart -k`) would otherwise make
+      // every respawn attempt throw "duplicate session" and leave the server
+      // down. Killing first makes respawn idempotent and race-safe — this is
+      // the second half of the P1 fix (the first being start()'s health gate).
+      if (this.isServerSessionAlive()) {
+        try {
+          execFileSync(this.tmuxPath, ['kill-session', '-t', `=${this.serverSessionName}`], {
+            stdio: 'ignore', timeout: 5000,
+          });
+          console.log(`[Supervisor] Killed lingering tmux session before respawn: ${this.serverSessionName}`);
+        } catch { /* best-effort — new-session below will surface a real failure */ }
+      }
       execFileSync(this.tmuxPath, [
         'new-session', '-d',
         '-s', this.serverSessionName,
@@ -966,6 +1174,14 @@ export class ServerSupervisor extends EventEmitter {
   private startHealthChecks(): void {
     if (this.healthCheckInterval) return;
 
+    // Agent hard-sleep: if a slept-marker survived from before this supervisor boot,
+    // the server was intentionally asleep — stay asleep (the health loop will only
+    // watch for a wake-request) rather than respawning it as if it had crashed.
+    if (this.sleptMarkerPresent()) {
+      this.slept = true;
+      console.log('[Supervisor] Booted with a slept-marker present — staying asleep until a wake-request');
+    }
+
     // Start SleepWakeDetector to catch short sleeps (10-30s) that the gap-based
     // detection below misses (its 2-minute threshold is too high for brief suspends).
     // On wake, reset failure counters so stale pre-sleep failures don't cascade.
@@ -975,19 +1191,40 @@ export class ServerSupervisor extends EventEmitter {
       // that still cause health check failures during the transition.
       this.sleepWakeDetector = new SleepWakeDetector({ driftThresholdMs: 15_000 });
       this.sleepWakeDetector.on('wake', (event: { sleepDurationSeconds: number }) => {
-        console.log(`[Supervisor] SleepWakeDetector: wake after ~${event.sleepDurationSeconds}s. Resetting failure counters.`);
+        // Fix B (supervisor-respawn-guarantee): the same load guard the gap-based
+        // check uses. SleepWakeDetector infers a wake from a monotonic-clock drift,
+        // which CPU starvation can also produce. Always reset the (possibly stale)
+        // failure counters, but only re-arm the startup-grace window (`spawnedAt =
+        // now`) when the box is NOT starved — otherwise a starvation false-wake
+        // would pin the supervisor in grace and suppress Fix A's recovery of a
+        // genuinely-dead server.
+        const loadPerCore = this.loadRatioProvider();
+        const starved = loadPerCore > this.maxLoadRatio;
+        console.log(`[Supervisor] SleepWakeDetector: wake after ~${event.sleepDurationSeconds}s (load ratio ${loadPerCore.toFixed(2)}). Resetting failure counters${starved ? ' (CPU-starved — NOT re-arming startup grace)' : ''}.`);
         this.restartAttempts = 0;
         this.maxRetriesExhaustedAt = 0;
         this.consecutiveFailures = 0;
         this.totalFailures = 0;
         this.totalFailureWindowStart = 0;
-        this.spawnedAt = Date.now();
-        this.wakeTransitionUntil = Date.now() + this.wakeTransitionMs;
+        if (!starved) {
+          this.spawnedAt = Date.now();
+          this.firstSpawnedAt = this.spawnedAt; // fresh episode — re-anchor Fix C ceiling (see gap-check)
+          this.wakeTransitionUntil = Date.now() + this.wakeTransitionMs;
+        }
       });
       this.sleepWakeDetector.start();
     }
 
-    this.healthCheckInterval = setInterval(async () => {
+    this.healthCheckInterval = setInterval(() => { void this.runHealthTick(); }, 10_000); // Check every 10 seconds
+  }
+
+  /**
+   * One health-check tick — extracted from the setInterval callback so a single
+   * tick can be driven directly in unit tests (Fix A/B/C, supervisor-respawn-
+   * guarantee) and so the wiring-integrity test can assert the loop probes
+   * isServerSessionAlive() before honoring any startup-grace early-return.
+   */
+  private async runHealthTick(): Promise<void> {
       const now = Date.now();
 
       // Sleep/wake detection: if the gap between health checks is much larger than
@@ -996,29 +1233,100 @@ export class ServerSupervisor extends EventEmitter {
       // exhaust restart attempts before the machine is fully awake.
       if (this.lastHealthCheckAt > 0 && (now - this.lastHealthCheckAt) > this.sleepWakeGapMs) {
         const gapSec = Math.round((now - this.lastHealthCheckAt) / 1000);
-        console.log(`[Supervisor] Sleep/wake detected (${gapSec}s gap). Resetting failure counters.`);
-        this.restartAttempts = 0;
-        this.maxRetriesExhaustedAt = 0;
-        this.consecutiveFailures = 0;
-        this.totalFailures = 0;
-        this.totalFailureWindowStart = 0;
-        // Give the server the full startup grace period from wake time
-        this.spawnedAt = now;
-        this.wakeTransitionUntil = now + this.wakeTransitionMs;
+        // Fix B (supervisor-respawn-guarantee): a large inter-tick gap is NOT
+        // necessarily a machine suspend. Under sustained CPU starvation the event
+        // loop stalls for minutes, so 10s ticks arrive 300-980s apart — and the
+        // unconditional `spawnedAt = now` below would pin the supervisor in
+        // startup-grace forever (the 2026-06-14 trap), suppressing recovery of a
+        // server that has actually crashed. Consult system load (the same signal
+        // SleepWakeDetector and the CPU-starvation defer already use): if the box
+        // is starved, classify the gap as a STALLED EVENT LOOP, not a suspend —
+        // reset the failure counters (safe; they may be stale) but do NOT reset
+        // `spawnedAt`, so the grace window is not re-armed and Fix A below can act
+        // on a genuinely-missing server on this very tick.
+        const loadPerCore = this.loadRatioProvider();
+        const starvedGap = loadPerCore > this.maxLoadRatio;
+        if (starvedGap) {
+          console.log(`[Supervisor] Large health-check gap (${gapSec}s) under CPU starvation (load ratio ${loadPerCore.toFixed(2)} > ${this.maxLoadRatio}) — classifying as a stalled event loop, NOT sleep/wake. Resetting failure counters but NOT re-arming startup grace.`);
+          this.restartAttempts = 0;
+          this.maxRetriesExhaustedAt = 0;
+          this.consecutiveFailures = 0;
+          this.totalFailures = 0;
+          this.totalFailureWindowStart = 0;
+          // Deliberately NOT resetting spawnedAt / firstSpawnedAt — see Fix B above.
+        } else {
+          console.log(`[Supervisor] Sleep/wake detected (${gapSec}s gap). Resetting failure counters.`);
+          this.restartAttempts = 0;
+          this.maxRetriesExhaustedAt = 0;
+          this.consecutiveFailures = 0;
+          this.totalFailures = 0;
+          this.totalFailureWindowStart = 0;
+          // Give the server the full startup grace period from wake time. A
+          // genuine suspend/wake is a fresh boot episode, so re-anchor the Fix C
+          // grace ceiling too (firstSpawnedAt = now) — otherwise a long sleep
+          // would make the wall-clock ceiling fire immediately on the post-wake
+          // boot and deny a legitimately slow wake its grace.
+          this.spawnedAt = now;
+          this.firstSpawnedAt = now;
+          this.wakeTransitionUntil = now + this.wakeTransitionMs;
+        }
       }
       this.lastHealthCheckAt = now;
+
+      // Agent hard-sleep: when intentionally slept, the server is down BY DESIGN.
+      // Skip all health/respawn logic and only watch for a wake-request. This is
+      // the single change to the loop's control flow — a pure short-circuit that is
+      // a no-op unless a sleep-request was honored (slept === false otherwise).
+      if (this.slept) {
+        this.checkWakeRequest();
+        return;
+      }
+
+      // Fix A (supervisor-respawn-guarantee) — MISSING-SESSION OVERRIDE (primary,
+      // load-bearing). A startup grace period is a promise about a process that
+      // EXISTS and is booting; it must never apply to a process that does not
+      // exist. A missing server tmux session is unambiguous death — not subject
+      // to sleep/wake or load interpretation. Probe it BEFORE the startup-grace
+      // early-return below, so a crashed server is respawned on the very next 10s
+      // tick regardless of any spawnedAt reset that pinned us in grace (the exact
+      // 2026-06-14 trap that left the server dead for ~2h). A normally-booting
+      // server DOES have a live tmux session (created synchronously at spawn; the
+      // HTTP listener binds later), so this never fights a legitimate boot — it
+      // only fires when the process is genuinely gone. handleUnhealthy() carries
+      // the full circuit-breaker / restart-attempt / cooldown accounting, so a
+      // genuine crash-loop still trips the breaker rather than hot-spinning.
+      if (!this.isServerSessionAlive()) {
+        console.log('[Supervisor] Server tmux session is GONE — overriding startup grace and respawning (a missing process is unambiguous death, not a boot).');
+        this.handleUnhealthy();
+        return;
+      }
+
+      // Fix C (supervisor-respawn-guarantee) — ABSOLUTE GRACE CEILING
+      // (belt-and-suspenders). Anchor the first spawn of this not-yet-healthy
+      // episode so repeated `spawnedAt` resets can never extend the
+      // ignore-failures window beyond startupGraceMs × graceCeilingMultiplier of
+      // real wall-clock. A server whose session is alive but has NEVER answered
+      // /health after 3× the grace window is hung, not booting — past the ceiling
+      // we fall through to act on failures normally.
+      if (this.spawnedAt > 0 && this.firstSpawnedAt === 0) {
+        this.firstSpawnedAt = this.spawnedAt;
+      }
+      const graceCeilingExceeded =
+        this.firstSpawnedAt > 0 &&
+        (now - this.firstSpawnedAt) >= this.startupGraceMs * this.graceCeilingMultiplier;
 
       // During startup grace period: probe health optimistically but don't act on failures.
       // This allows `lastHealthy` to update as soon as the server is responsive, so
       // TelegramLifeline can forward messages immediately instead of queuing them for
       // the entire grace period. Failures are ignored — the server is still booting.
-      if (this.spawnedAt > 0 && (now - this.spawnedAt) < this.startupGraceMs) {
+      if (!graceCeilingExceeded && this.spawnedAt > 0 && (now - this.spawnedAt) < this.startupGraceMs) {
         this.checkRestartRequest();
         // Optimistic health probe — update lastHealthy on success, ignore failures
         try {
           const alive = await this.checkHealth();
           if (alive) {
             this.lastHealthy = Date.now();
+            this.firstSpawnedAt = 0; // Fix C: episode resolved healthy — re-anchor next episode
             if (!this.isRunning) {
               this.isRunning = true;
               this.emit('serverUp');
@@ -1055,6 +1363,7 @@ export class ServerSupervisor extends EventEmitter {
           this.restartAttempts = 0;
           this.consecutiveFailures = 0;
           this.consecutiveBindFailures = 0;
+          this.firstSpawnedAt = 0; // Fix C: episode resolved healthy — re-anchor next episode
 
           // F-6: notify any pending Remediator restart-requested entries
           // that the planned restart has completed. Idempotent.
@@ -1068,53 +1377,13 @@ export class ServerSupervisor extends EventEmitter {
         } else {
           this.consecutiveFailures++;
           if (this.consecutiveFailures >= this.unhealthyThreshold) {
-            const processAlive = this.isServerSessionAlive();
-            if (processAlive) {
-              // Server process exists but isn't responding to health checks.
-              // Under high CPU load (or during wake transitions), this is normal —
-              // the event loop is stalled, not the process dead. Use a much higher
-              // threshold to avoid killing a server that would recover on its own.
-              const effectiveThreshold = Date.now() < this.wakeTransitionUntil
-                ? this.unhealthyThreshold  // During wake transition: already lenient via counter reset
-                : this.processAliveThreshold;
-              if (this.consecutiveFailures < effectiveThreshold) {
-                if (this.consecutiveFailures === this.unhealthyThreshold) {
-                  console.log(`[Supervisor] Health check failed but server process is alive — waiting for ${effectiveThreshold} consecutive failures before restart (${this.consecutiveFailures}/${effectiveThreshold})`);
-                }
-              } else {
-                console.log(`[Supervisor] Server process alive but unresponsive for ${this.consecutiveFailures} checks (~${this.consecutiveFailures * 10}s) — restarting`);
-                this.handleUnhealthy();
-              }
-              if (Date.now() < this.wakeTransitionUntil) {
-                this.consecutiveFailures = 0; // Reset during wake transition as before
-              }
-            } else {
-              this.handleUnhealthy();
-            }
+            this.evaluateUnhealthyServer();
           }
         }
       } catch {
         this.consecutiveFailures++;
         if (this.consecutiveFailures >= this.unhealthyThreshold) {
-          const processAlive = this.isServerSessionAlive();
-          if (processAlive) {
-            const effectiveThreshold = Date.now() < this.wakeTransitionUntil
-              ? this.unhealthyThreshold
-              : this.processAliveThreshold;
-            if (this.consecutiveFailures < effectiveThreshold) {
-              if (this.consecutiveFailures === this.unhealthyThreshold) {
-                console.log(`[Supervisor] Health check failed but server process is alive — waiting for ${effectiveThreshold} consecutive failures before restart (${this.consecutiveFailures}/${effectiveThreshold})`);
-              }
-            } else {
-              console.log(`[Supervisor] Server process alive but unresponsive for ${this.consecutiveFailures} checks (~${this.consecutiveFailures * 10}s) — restarting`);
-              this.handleUnhealthy();
-            }
-            if (Date.now() < this.wakeTransitionUntil) {
-              this.consecutiveFailures = 0;
-            }
-          } else {
-            this.handleUnhealthy();
-          }
+          this.evaluateUnhealthyServer();
         }
       }
 
@@ -1122,7 +1391,8 @@ export class ServerSupervisor extends EventEmitter {
       this.checkRestartRequest();
       // Check for debug restart requests from doctor sessions
       this.checkDebugRestartRequest();
-    }, 10_000); // Check every 10 seconds
+      // Agent hard-sleep: honor a sleep-request written by the live SleepController
+      this.checkSleepRequest();
   }
 
   private stopHealthChecks(): void {
@@ -1154,6 +1424,109 @@ export class ServerSupervisor extends EventEmitter {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Verify the server actually answers /health, retrying a few times so a
+   * momentarily-stalled-but-healthy server is not needlessly respawned.
+   *
+   * Used by start() to distinguish a genuinely-running server (lifeline
+   * self-restart while the server stays up → no-op) from a dying/stale tmux
+   * session that merely still registers with `has-session` right after a
+   * `kickstart -k` (→ must respawn). A live server answers on the first probe;
+   * a dead/dying one fails every attempt. Bias: prefer respawning a possibly
+   * stalled server over leaving a dead one running invisibly (the P1 bug).
+   */
+  private async verifyServerResponding(attempts = 3, delayMs = 1500): Promise<boolean> {
+    for (let i = 0; i < attempts; i++) {
+      if (await this.checkHealth()) return true;
+      if (i < attempts - 1) {
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+    return false;
+  }
+
+  // ── Agent hard-sleep: sleep/wake request handling ─────────────────
+  //
+  // Mirrors the restart-requested.json lifecycle. The live SleepController writes
+  // `state/sleep-requested.json` on a would-sleep verdict; this honors it by
+  // STOPPING the server (no respawn) and entering `slept`. The lifeline writes
+  // `state/wake-requested.json` on the next inbound message; checkWakeRequest()
+  // (called only while slept) respawns the server. A `state/slept-marker.json`
+  // records the intentional-sleep so a supervisor reboot — or the fleet watchdog —
+  // recognizes "asleep", not "crashed". Spec: docs/specs/agent-hard-sleep-mechanism.md.
+
+  /** Stop the server tmux session and enter `slept`. Honors sleep-requested.json. */
+  private checkSleepRequest(): void {
+    if (!this.stateDir || this.slept) return;
+    const flagPath = path.join(this.stateDir, 'state', 'sleep-requested.json');
+    try {
+      if (!fs.existsSync(flagPath)) return;
+      let data: { requestedBy?: string; reason?: string; expiresAt?: string } = {};
+      try { data = JSON.parse(fs.readFileSync(flagPath, 'utf-8')); } catch { /* tolerate */ }
+      // Consume the flag BEFORE acting so a malformed/processed request can't loop.
+      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:checkSleepRequest' }); } catch { /* ignore */ }
+      if (data.expiresAt && new Date(data.expiresAt).getTime() < Date.now()) {
+        console.log('[Supervisor] Expired sleep request — ignoring');
+        return;
+      }
+      console.log(`[Supervisor] Sleep requested (${data.reason ?? 'deep-idle'}) — stopping server to save resources`);
+      // Record the intentional sleep BEFORE stopping, so a reboot/watchdog sees it.
+      this.writeSleptMarker(data.reason ?? 'deep-idle');
+      this.slept = true;
+      this.isRunning = false;
+      // Stop the server tmux session WITHOUT respawning (the wake path respawns).
+      if (this.tmuxPath) {
+        try {
+          execFileSync(this.tmuxPath, ['kill-session', '-t', `=${this.serverSessionName}`], { stdio: 'ignore', timeout: 10_000 });
+        } catch { /* @silent-fallback-ok — session may already be gone */ }
+      }
+      this.emit('serverSlept');
+    } catch {
+      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:checkSleepRequest:catch' }); } catch { /* ignore */ }
+    }
+  }
+
+  /** Respawn the server on a wake-request. Called from the health loop ONLY while slept. */
+  private checkWakeRequest(): void {
+    if (!this.stateDir || !this.slept) return;
+    const flagPath = path.join(this.stateDir, 'state', 'wake-requested.json');
+    try {
+      if (!fs.existsSync(flagPath)) return;
+      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:checkWakeRequest' }); } catch { /* ignore */ }
+      console.log('[Supervisor] Wake requested — respawning server');
+      this.clearSleptMarker();
+      this.slept = false;
+      // Give the fresh server the full startup grace from now (mirrors restart path).
+      this.spawnedAt = Date.now();
+      this.consecutiveFailures = 0;
+      this.restartAttempts = 0;
+      this.spawnServer();
+      this.emit('serverWoke');
+    } catch {
+      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:checkWakeRequest:catch' }); } catch { /* ignore */ }
+    }
+  }
+
+  private writeSleptMarker(reason: string): void {
+    if (!this.stateDir) return;
+    try {
+      const dir = path.join(this.stateDir, 'state');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'slept-marker.json'), JSON.stringify({ sleptAt: new Date().toISOString(), reason }));
+    } catch { /* @silent-fallback-ok — marker is best-effort observability */ }
+  }
+
+  private clearSleptMarker(): void {
+    if (!this.stateDir) return;
+    try { SafeFsExecutor.safeUnlinkSync(path.join(this.stateDir, 'state', 'slept-marker.json'), { operation: 'src/lifeline/ServerSupervisor.ts:clearSleptMarker' }); } catch { /* ignore */ }
+  }
+
+  /** True when a slept-marker is on disk — read at boot so a reboot stays asleep. */
+  private sleptMarkerPresent(): boolean {
+    if (!this.stateDir) return false;
+    try { return fs.existsSync(path.join(this.stateDir, 'state', 'slept-marker.json')); } catch { return false; }
   }
 
   // ── Restart request handling ──────────────────────────────────────
@@ -1538,6 +1911,135 @@ export class ServerSupervisor extends EventEmitter {
 
   // ── Unhealthy handling ──────────────────────────────────────────
 
+  /**
+   * Decide what to do about a server that has failed `>= unhealthyThreshold`
+   * consecutive health checks. Shared by the health-check loop's two failure
+   * paths (unhealthy /health response, and a thrown check).
+   *
+   *   - Process dead → restart immediately.
+   *   - Process alive but unresponsive, below the (load-lenient) threshold →
+   *     keep waiting.
+   *   - Process alive, threshold reached, but the box is CPU-starved → DEFER the
+   *     restart (restarting a starved server only drops the in-flight message
+   *     and loops) until starvation eases or the hard cap forces it.
+   *   - Process alive, threshold reached, not starved → restart.
+   */
+  private evaluateUnhealthyServer(): void {
+    if (!this.isServerSessionAlive()) {
+      // Process is genuinely gone — restart immediately.
+      this.handleUnhealthy();
+      return;
+    }
+
+    // Server process exists but isn't responding to health checks. Under high
+    // CPU load (or during wake transitions), this is normal — the event loop is
+    // stalled, not the process dead. Use a much higher threshold to avoid
+    // killing a server that would recover on its own.
+    const inWakeTransition = Date.now() < this.wakeTransitionUntil;
+    const effectiveThreshold = inWakeTransition
+      ? this.unhealthyThreshold  // During wake transition: already lenient via counter reset
+      : this.processAliveThreshold;
+
+    if (this.consecutiveFailures < effectiveThreshold) {
+      if (this.consecutiveFailures === this.unhealthyThreshold) {
+        console.log(`[Supervisor] Health check failed but server process is alive — waiting for ${effectiveThreshold} consecutive failures before restart (${this.consecutiveFailures}/${effectiveThreshold})`);
+      }
+    } else if (this.deferRestartForCpuStarvation() || this.deferRestartForInflightSyncOp()) {
+      // Defer the restart — either the box is CPU-starved OR a synchronous tmux/tunnel
+      // op is in flight on the server's event loop (a ~0-CPU I/O-wait block the CPU
+      // guard can't see). In both cases bouncing the server won't help — it only drops
+      // the in-flight message and loops. Defer; the next healthy tick resets the counter.
+      //
+      // `||` ORDER IS LOAD-BEARING: deferRestartForCpuStarvation() has side effects
+      // (it samples + accumulates recentLoadRatios / lastSustainedLoadRatio on EVERY
+      // call), so it MUST stay the LEFT operand — short-circuiting it would freeze the
+      // windowed-load bookkeeping the starvation log + threshold rely on. The inflight
+      // defer is a pure read with no such side effect, so it is correct on the right.
+      // This CPU-starvation log only fires when the windowed load actually exceeded the
+      // threshold (the genuine CPU-starved cause); when the defer was instead due to the
+      // in-flight marker, deferRestartForInflightSyncOp() already emitted its own log line.
+      if (this.consecutiveFailures === effectiveThreshold && this.lastSustainedLoadRatio > this.maxLoadRatio) {
+        console.log(`[Supervisor] Server alive but unresponsive (${this.consecutiveFailures} checks) AND the box is CPU-starved (sustained load ratio ${this.lastSustainedLoadRatio.toFixed(2)} > ${this.maxLoadRatio} over the last ~${this.loadSampleWindow * 10}s) — DEFERRING restart; restarting a starved server only drops in-flight messages. Will force-restart at ${this.starvationRestartThreshold} checks (~${this.starvationRestartThreshold * 10}s) if it persists.`);
+      }
+    } else {
+      console.log(`[Supervisor] Server process alive but unresponsive for ${this.consecutiveFailures} checks (~${this.consecutiveFailures * 10}s) — restarting`);
+      this.handleUnhealthy();
+    }
+
+    if (inWakeTransition) {
+      this.consecutiveFailures = 0; // Reset during wake transition as before
+    }
+  }
+
+  /**
+   * True when we should hold off restarting an alive-but-unresponsive server
+   * because the machine is CPU-starved — but only up to the hard cap. Past the
+   * cap we restart regardless (the server may be genuinely hung, not starved).
+   *
+   * The starvation signal is SUSTAINED, not instantaneous: we record the load
+   * ratio on each unresponsive tick and treat the box as starved if it exceeded
+   * the threshold at any point in the recent window. This prevents a momentary
+   * dip in the oscillating 1-min loadavg from triggering a pointless restart of
+   * a server that has been starved the whole time (the 2026-06-17 loop). The
+   * window is dropped when the failure streak resets (the server recovered), so
+   * stale high samples can't over-defer a later, unrelated unresponsive episode.
+   */
+  private deferRestartForCpuStarvation(): boolean {
+    // Within one unresponsive streak the failure counter strictly increases on
+    // each tick (++ before this runs); a new episode restarts at the threshold.
+    // So a non-increase means the prior streak ended (the server recovered) —
+    // drop the stale samples so they can't over-defer this fresh episode.
+    if (this.consecutiveFailures <= this.lastStarvationCheckFailures) {
+      this.recentLoadRatios = [];
+    }
+    this.lastStarvationCheckFailures = this.consecutiveFailures;
+
+    this.recentLoadRatios.push(this.loadRatioProvider());
+    if (this.recentLoadRatios.length > this.loadSampleWindow) {
+      this.recentLoadRatios.shift();
+    }
+    this.lastSustainedLoadRatio = Math.max(...this.recentLoadRatios);
+
+    if (this.consecutiveFailures >= this.starvationRestartThreshold) return false; // hard cap — restart even if starved
+    return this.lastSustainedLoadRatio > this.maxLoadRatio;
+  }
+
+  /**
+   * True when we should hold off restarting an alive-but-unresponsive server
+   * because a SYNCHRONOUS subprocess op (a tmux/tunnel call) is in flight on the
+   * server's event loop — the ~0-CPU I/O-wait block the CPU-starvation guard
+   * cannot see (a sync-spawn wait burns ~0 CPU in the parent, so the load ratio
+   * stays low and `deferRestartForCpuStarvation()` returns false). Restarting in
+   * that window only drops the in-flight message and loops; the bounded 9s+SIGKILL
+   * per-call timeout means the block self-clears, so deferring is the right call.
+   *
+   * The signal is the cross-process marker mirror file the server writes on every
+   * in-flight-op depth transition; the supervisor reads it (the in-memory marker
+   * singleton is dead across the process boundary). Bounded the SAME way as the
+   * CPU defer — once the unresponsive streak reaches `starvationRestartThreshold`
+   * we restart regardless (the server may be genuinely hung, not merely blocked).
+   * Both-directions-safe: a marker older than 2×timeout reads `stale` (the marker's
+   * own TTL self-heal) ⇒ no defer, and a null/throwing read fails OPEN to restart —
+   * so a leaked or unreadable marker can never wedge the supervisor into never
+   * restarting a truly dead server.
+   */
+  private deferRestartForInflightSyncOp(): boolean {
+    if (!this.inflightDeferEnabled) return false; // gate off ⇒ legacy (no inflight defer)
+    if (this.consecutiveFailures >= this.starvationRestartThreshold) return false; // SAME hard cap as the CPU defer
+    let m: { inFlight: boolean; ageMs: number; stale: boolean } | null = null;
+    try {
+      m = this.inflightMarkerProvider();
+    } catch {
+      return false; // fail-OPEN to restart — an unreadable marker never blocks recovery of a dead server
+    }
+    if (!m || !m.inFlight || m.stale) return false;
+    this.inflightDeferCount += 1;
+    if (this.consecutiveFailures === this.processAliveThreshold) {
+      console.log(`[Supervisor] Server alive but unresponsive (${this.consecutiveFailures} checks) AND an in-flight sync-op marker is set (ageMs=${m.ageMs}) — DEFERRING restart; a synchronous tmux/tunnel block burns ~0 CPU so the CPU-starvation guard can't see it. Will force-restart at ${this.starvationRestartThreshold} checks if it persists.`);
+    }
+    return true;
+  }
+
   private handleUnhealthy(): void {
     // Circuit breaker — periodic retry instead of permanent death
     if (this.circuitBroken) {
@@ -1569,9 +2071,24 @@ export class ServerSupervisor extends EventEmitter {
 
       // Phase 2: Slow retry — never truly give up. Transient issues (Node version change,
       // disk full, port conflict) often resolve themselves. Try every 2 hours forever.
+      //
+      // ETERNAL SENTINEL (declared per "No Unbounded Loops" / P19): this loop is the
+      // healer of last resort for the server — the sanctioned never-give-up class.
+      // Its brakes: rate floor (one attempt per slowRetryIntervalMs, constant cost),
+      // and condition-4 observability below — after escalateAfterMs of sustained
+      // failure it tells the operator ONCE per episode, then keeps quietly trying.
       if (this.slowRetryStartedAt === 0) {
         this.slowRetryStartedAt = Date.now();
         console.log(`[Supervisor] Circuit breaker fast retries exhausted. Entering slow-retry mode (every ${this.slowRetryIntervalMs / 3600_000}h). Use /lifeline reset for immediate retry.`);
+      }
+
+      // Condition 4 — never-give-up must not mean never-tell-anyone. One
+      // escalation per episode after the sustained-failure threshold; the
+      // latch lives in SlowRetrySentinelEscalation, keyed on this episode.
+      if (this.sentinelEscalation.shouldEscalate(this.slowRetryStartedAt)) {
+        const hoursStalled = Math.round((Date.now() - this.slowRetryStartedAt) / 3600_000);
+        console.log(`[Supervisor] Slow-retry sentinel stalled ${hoursStalled}h without recovery — escalating once (retries continue)`);
+        this.emit('sentinelStalled', { hoursStalled, retryIntervalHours: this.slowRetryIntervalMs / 3600_000 });
       }
 
       const slowElapsed = Date.now() - (this.slowRetryStartedAt + this.slowRetryIntervalMs * Math.floor((Date.now() - this.slowRetryStartedAt) / this.slowRetryIntervalMs));

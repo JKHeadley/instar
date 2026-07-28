@@ -167,7 +167,11 @@ describe('CommitmentTracker — threadline-reply verification method', () => {
       relatedAgent: 'agent',
       userRequest: 'q',
       agentResponse: 'a',
-      beaconEnabled: true, // explicit (matches TopicLinkageHandler call-site)
+      // Mechanism check only: the tracker honors an explicit beaconEnabled flag.
+      // NOTE: the real TopicLinkageHandler call-site now passes `false` (Near-Silent
+      // Notifications — agent-to-agent reply-waits must not beacon the user's topic);
+      // see TopicLinkageHandler.test.ts. This case exercises the explicit-true path.
+      beaconEnabled: true,
     });
     expect(c.beaconEnabled).toBe(true);
   });

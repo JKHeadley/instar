@@ -77,7 +77,7 @@ describe('JobScheduler.reapStuckRuns', () => {
       .map(l => JSON.parse(l));
   }
 
-  it('does nothing when sleep is shorter than the minimum threshold', () => {
+  it('does nothing when sleep is shorter than the minimum threshold', async () => {
     createScheduler();
     const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60_000).toISOString();
     seedPendingRun({
@@ -87,14 +87,14 @@ describe('JobScheduler.reapStuckRuns', () => {
       startedAt: fourHoursAgo,
     });
 
-    const result = scheduler.reapStuckRuns({ sleepDurationSeconds: 30 });
+    const result = await scheduler.reapStuckRuns({ sleepDurationSeconds: 30 });
 
     expect(result.reaped).toEqual([]);
     expect(result.skipped).toBe(0);
     expect((scheduler as any).activeRunIds.size).toBe(1);
   });
 
-  it('skips a pending run whose elapsed time is under the 2× threshold', () => {
+  it('skips a pending run whose elapsed time is under the 2× threshold', async () => {
     createScheduler();
     // health-check has expectedDurationMinutes: 2 — threshold is 4 minutes.
     // Started 1 minute ago → still well within budget.
@@ -106,7 +106,7 @@ describe('JobScheduler.reapStuckRuns', () => {
       startedAt: oneMinuteAgo,
     });
 
-    const result = scheduler.reapStuckRuns({ sleepDurationSeconds: 600 });
+    const result = await scheduler.reapStuckRuns({ sleepDurationSeconds: 600 });
 
     expect(result.reaped).toEqual([]);
     expect(result.skipped).toBe(1);
@@ -117,7 +117,7 @@ describe('JobScheduler.reapStuckRuns', () => {
     expect(lines[0].result).toBe('pending');
   });
 
-  it('reaps a pending run whose elapsed time exceeds the 2× threshold', () => {
+  it('reaps a pending run whose elapsed time exceeds the 2× threshold', async () => {
     createScheduler();
     // health-check has expectedDurationMinutes: 2 — threshold is 4 minutes.
     // Started 4 hours ago — well past it.
@@ -129,7 +129,7 @@ describe('JobScheduler.reapStuckRuns', () => {
       startedAt: fourHoursAgo,
     });
 
-    const result = scheduler.reapStuckRuns({ sleepDurationSeconds: 14400 });
+    const result = await scheduler.reapStuckRuns({ sleepDurationSeconds: 14400 });
 
     expect(result.reaped).toEqual(['health-check']);
     expect(result.skipped).toBe(0);
@@ -141,10 +141,15 @@ describe('JobScheduler.reapStuckRuns', () => {
     expect(completion.result).toBe('timeout');
     expect(completion.runId).toBe('health-check-test-3');
     expect(completion.error).toContain('Reaped on wake');
-    expect(completion.error).toContain('14400s');
+    // §P0 #9 / SE-8 error contract: the message names the effective-elapsed
+    // (wall-clock minus cumulative sleep) and the threshold, not the single
+    // last sleep duration.
+    expect(completion.error).toMatch(/effective elapsed/);
+    expect(completion.error).toMatch(/cumulative sleep/);
+    expect(completion.error).toMatch(/threshold/);
   });
 
-  it('is idempotent — a second invocation finds nothing to reap', () => {
+  it('is idempotent — a second invocation finds nothing to reap', async () => {
     createScheduler();
     const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60_000).toISOString();
     seedPendingRun({
@@ -154,11 +159,11 @@ describe('JobScheduler.reapStuckRuns', () => {
       startedAt: fourHoursAgo,
     });
 
-    const first = scheduler.reapStuckRuns({ sleepDurationSeconds: 14400 });
+    const first = await scheduler.reapStuckRuns({ sleepDurationSeconds: 14400 });
     expect(first.reaped).toEqual(['health-check']);
 
     const linesAfterFirst = readLedgerLines();
-    const second = scheduler.reapStuckRuns({ sleepDurationSeconds: 14400 });
+    const second = await scheduler.reapStuckRuns({ sleepDurationSeconds: 14400 });
 
     expect(second.reaped).toEqual([]);
     expect(second.skipped).toBe(0);
@@ -166,7 +171,7 @@ describe('JobScheduler.reapStuckRuns', () => {
     expect(readLedgerLines()).toHaveLength(linesAfterFirst.length);
   });
 
-  it('handles multiple stuck runs in one pass', () => {
+  it('handles multiple stuck runs in one pass', async () => {
     createScheduler();
     const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60_000).toISOString();
     seedPendingRun({
@@ -182,14 +187,14 @@ describe('JobScheduler.reapStuckRuns', () => {
       startedAt: fourHoursAgo,
     });
 
-    const result = scheduler.reapStuckRuns({ sleepDurationSeconds: 14400 });
+    const result = await scheduler.reapStuckRuns({ sleepDurationSeconds: 14400 });
 
     expect(result.reaped.sort()).toEqual(['email-check', 'health-check']);
     expect(result.skipped).toBe(0);
     expect((scheduler as any).activeRunIds.size).toBe(0);
   });
 
-  it('honors a custom thresholdMultiplier', () => {
+  it('honors a custom thresholdMultiplier', async () => {
     createScheduler({ wakeReaper: { thresholdMultiplier: 100 } });
     // 4 hours past start, but with multiplier 100 the threshold is 200 minutes
     // → 4h elapsed (240min) > 200min, so still reapable.
@@ -203,13 +208,13 @@ describe('JobScheduler.reapStuckRuns', () => {
       startedAt: oneHourAgo,
     });
 
-    const result = scheduler.reapStuckRuns({ sleepDurationSeconds: 7200 });
+    const result = await scheduler.reapStuckRuns({ sleepDurationSeconds: 7200 });
 
     expect(result.reaped).toEqual([]);
     expect(result.skipped).toBe(1);
   });
 
-  it('honors a custom minSleepSeconds', () => {
+  it('honors a custom minSleepSeconds', async () => {
     createScheduler({ wakeReaper: { minSleepSeconds: 1 } });
     const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60_000).toISOString();
     seedPendingRun({
@@ -220,7 +225,7 @@ describe('JobScheduler.reapStuckRuns', () => {
     });
 
     // 5s sleep — under default 60s, but allowed by override.
-    const result = scheduler.reapStuckRuns({ sleepDurationSeconds: 5 });
+    const result = await scheduler.reapStuckRuns({ sleepDurationSeconds: 5 });
 
     expect(result.reaped).toEqual(['health-check']);
   });

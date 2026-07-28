@@ -105,11 +105,47 @@ describe('TunnelNotifier — channel separation (GPT critical finding)', () => {
   });
 });
 
+describe('TunnelNotifier — routine churn is SILENT (operator feedback 2026-05-23)', () => {
+  it('retrying emits NOTHING (no group, no DM) — a transient outage is not a notification', async () => {
+    const sink = mockSink();
+    const n = new TunnelNotifier({ sink, clock: fakeClock });
+    await n.onTransition(tx({ from: 'active', to: 'retrying', epoch: 1, lastFailureReason: 'rate-limited' }));
+    expect(sink.groupCalls.length).toBe(0);
+    expect(sink.dmCalls.length).toBe(0);
+  });
+
+  it('exhausted emits NOTHING — the background retry continues silently', async () => {
+    const sink = mockSink();
+    const n = new TunnelNotifier({ sink, clock: fakeClock });
+    await n.onTransition(tx({ from: 'retrying', to: 'exhausted', epoch: 1 }));
+    expect(sink.groupCalls.length).toBe(0);
+    expect(sink.dmCalls.length).toBe(0);
+  });
+
+  it('the spam scenario stays silent: retrying↔exhausted churning across many episodes', async () => {
+    const sink = mockSink();
+    const n = new TunnelNotifier({ sink, clock: fakeClock });
+    // Reproduce the screenshot: every background-retry cycle churns the
+    // episode and re-enters retrying/exhausted. None of it should reach
+    // the user (this is exactly what produced 209 messages before).
+    let epoch = 1;
+    for (let cycle = 0; cycle < 6; cycle++) {
+      const e = ep(`ep_cycle_${cycle}`);
+      now = cycle * 60_000;
+      await n.onTransition(tx({ from: 'starting', to: 'retrying', epoch: epoch++, lastFailureReason: 'process-exit', episode: e }));
+      await n.onTransition(tx({ from: 'retrying', to: 'exhausted', epoch: epoch++, episode: e }));
+      await n.onTransition(tx({ from: 'exhausted', to: 'starting', epoch: epoch++, episode: e }));
+    }
+    expect(sink.groupCalls.length).toBe(0);
+    expect(sink.dmCalls.length).toBe(0);
+  });
+});
+
 describe('TunnelNotifier — epoch dedup', () => {
   it('repeated calls with the same epoch are no-ops', async () => {
     const sink = mockSink();
     const n = new TunnelNotifier({ sink, clock: fakeClock });
-    const e = tx({ from: 'active', to: 'retrying', epoch: 1, lastFailureReason: 'rate-limited' });
+    const e = tx({ from: 'awaiting-consent', to: 'relay-active', epoch: 1 });
     await n.onTransition(e);
     await n.onTransition(e);
     await n.onTransition(e);
@@ -119,8 +155,8 @@ describe('TunnelNotifier — epoch dedup', () => {
   it('out-of-order epochs (a re-fire of an older event) are dropped', async () => {
     const sink = mockSink();
     const n = new TunnelNotifier({ sink, clock: fakeClock });
-    await n.onTransition(tx({ from: 'active', to: 'retrying', epoch: 5, lastFailureReason: 'rate-limited' }));
-    await n.onTransition(tx({ from: 'active', to: 'retrying', epoch: 3, lastFailureReason: 'rate-limited' }));
+    await n.onTransition(tx({ from: 'awaiting-consent', to: 'relay-active', epoch: 5 }));
+    await n.onTransition(tx({ from: 'awaiting-consent', to: 'relay-active', epoch: 3 }));
     expect(sink.groupCalls.length).toBe(1);
   });
 });
@@ -133,16 +169,10 @@ describe('TunnelNotifier — class-based throttling (V2 + GPT #5)', () => {
     // First consent prompt
     now = 0;
     await n.onTransition(tx({ from: 'retrying', to: 'awaiting-consent', epoch: 1 }));
-    expect(sink.dmCalls.length).toBe(1);
-
-    // Cycle through and arrive at awaiting-consent again, well within the 1-minute throttle
-    // window: action-required must still emit.
+    // Cycle through (now-silent) churn and arrive at awaiting-consent again,
+    // well within the 1-minute throttle window: action-required must still emit.
     now = 100;
     await n.onTransition(tx({ from: 'awaiting-consent', to: 'exhausted', epoch: 2 }));
-    now = 200;
-    await n.onTransition(tx({ from: 'exhausted', to: 'self-healing', epoch: 3 }));
-    now = 300;
-    await n.onTransition(tx({ from: 'self-healing', to: 'exhausted', epoch: 4 }));
     now = 400;
     await n.onTransition(tx({ from: 'exhausted', to: 'starting', epoch: 5 }));
     now = 500;
@@ -150,26 +180,23 @@ describe('TunnelNotifier — class-based throttling (V2 + GPT #5)', () => {
     now = 600;
     await n.onTransition(tx({ from: 'retrying', to: 'awaiting-consent', epoch: 7 }));
 
-    // Two consent prompts (action-required) regardless of throttle window —
-    // matched by the consent message's distinctive phrasing.
+    // Two consent prompts (action-required) regardless of throttle window.
     const consentDms = sink.dmCalls.filter((d) => d.includes('Reply "yes, use a backup"'));
     expect(consentDms.length).toBe(2);
   });
 
-  it('state-change is throttled to once per (episode, state) within the window', async () => {
+  it('state-change group pointer is throttled to once per (episode, state) within the window', async () => {
     const sink = mockSink();
     const n = new TunnelNotifier({ sink, clock: fakeClock, stateChangeMinIntervalMs: 60_000 });
 
     const e = ep('ep_throttle');
     now = 0;
-    await n.onTransition(tx({ from: 'active', to: 'retrying', epoch: 1, lastFailureReason: 'rate-limited', episode: e }));
+    await n.onTransition(tx({ from: 'awaiting-consent', to: 'relay-active', epoch: 1, episode: e }));
     now = 30_000;
-    // Cycle back to active and into retrying again — same episode, same state, within window.
-    await n.onTransition(tx({ from: 'retrying', to: 'active', epoch: 2, episode: e }));
-    await n.onTransition(tx({ from: 'active', to: 'retrying', epoch: 3, lastFailureReason: 'rate-limited', episode: e }));
-    // Should still be only the original "couldn't reach" message; no duplicate.
-    const cantReach = sink.groupCalls.filter((g) => g.includes("Couldn't reach"));
-    expect(cantReach.length).toBe(1);
+    // Re-enter relay-active in the same episode within the window — throttled.
+    await n.onTransition(tx({ from: 'awaiting-consent', to: 'relay-active', epoch: 2, episode: e }));
+    const relayUp = sink.groupCalls.filter((g) => g.includes('Backup tunnel is up'));
+    expect(relayUp.length).toBe(1);
   });
 
   it('state-change throttle resets across episodes', async () => {
@@ -177,51 +204,11 @@ describe('TunnelNotifier — class-based throttling (V2 + GPT #5)', () => {
     const n = new TunnelNotifier({ sink, clock: fakeClock, stateChangeMinIntervalMs: 60_000 });
 
     now = 0;
-    await n.onTransition(tx({ from: 'active', to: 'retrying', epoch: 1, lastFailureReason: 'rate-limited', episode: ep('ep_one') }));
-    await n.onTransition(tx({ from: 'active', to: 'retrying', epoch: 2, lastFailureReason: 'rate-limited', episode: ep('ep_two') }));
+    await n.onTransition(tx({ from: 'awaiting-consent', to: 'relay-active', epoch: 1, episode: ep('ep_one') }));
+    await n.onTransition(tx({ from: 'awaiting-consent', to: 'relay-active', epoch: 2, episode: ep('ep_two') }));
 
-    const cantReach = sink.groupCalls.filter((g) => g.includes("Couldn't reach"));
-    expect(cantReach.length).toBe(2);
-  });
-
-  it('noise (flap collapse) emits exactly once per episode regardless of cycle count', async () => {
-    const sink = mockSink();
-    const n = new TunnelNotifier({ sink, clock: fakeClock, flapThreshold: 3 });
-
-    const e = ep('ep_flap');
-    // 5 connect/drop cycles in the same episode.
-    for (let i = 1; i <= 5; i++) {
-      now = i * 1000;
-      await n.onTransition(tx({ from: 'active', to: 'retrying', epoch: i * 2, lastFailureReason: 'rate-limited', episode: e }));
-      await n.onTransition(tx({ from: 'retrying', to: 'active', epoch: i * 2 + 1, episode: e }));
-    }
-
-    const unstable = sink.groupCalls.filter((g) => g.includes('unstable'));
-    expect(unstable.length).toBe(1);
-  });
-});
-
-describe('TunnelNotifier — failure-reason in first message', () => {
-  it('includes the reason hint for rate-limited', async () => {
-    const sink = mockSink();
-    const n = new TunnelNotifier({ sink, clock: fakeClock });
-    await n.onTransition(tx({ from: 'active', to: 'retrying', epoch: 1, lastFailureReason: 'rate-limited' }));
-    expect(sink.groupCalls[0]).toContain('rate-limiting');
-  });
-
-  it('includes the reason hint for network', async () => {
-    const sink = mockSink();
-    const n = new TunnelNotifier({ sink, clock: fakeClock });
-    await n.onTransition(tx({ from: 'active', to: 'retrying', epoch: 1, lastFailureReason: 'network' }));
-    expect(sink.groupCalls[0]).toContain('unreachable');
-  });
-
-  it('emits a clean message when the reason is unknown', async () => {
-    const sink = mockSink();
-    const n = new TunnelNotifier({ sink, clock: fakeClock });
-    await n.onTransition(tx({ from: 'active', to: 'retrying', epoch: 1, lastFailureReason: null }));
-    expect(sink.groupCalls[0]).toContain("Couldn't reach the usual Cloudflare tunnel");
-    expect(sink.groupCalls[0]).not.toContain('(undefined)');
+    const relayUp = sink.groupCalls.filter((g) => g.includes('Backup tunnel is up'));
+    expect(relayUp.length).toBe(2);
   });
 });
 
@@ -232,6 +219,7 @@ describe('TunnelNotifier — error swallowing', () => {
       sendOwnerDM: vi.fn(async () => { throw new Error('dm down'); }),
     };
     const n = new TunnelNotifier({ sink, clock: fakeClock });
-    await expect(n.onTransition(tx({ from: 'active', to: 'retrying', epoch: 1, lastFailureReason: 'rate-limited' }))).resolves.not.toThrow();
+    // relay-active emits to BOTH channels — exercise both throwing sinks.
+    await expect(n.onTransition(tx({ from: 'awaiting-consent', to: 'relay-active', epoch: 1 }))).resolves.not.toThrow();
   });
 });

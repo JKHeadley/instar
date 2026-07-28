@@ -85,6 +85,27 @@ export class IMessageAdapter implements MessagingAdapter {
   // State
   private messageHandler: ((message: Message) => Promise<void>) | null = null;
   private started = false;
+  /**
+   * The instant the adapter actually connected, or null when it is not connected.
+   *
+   * Previously `getConnectionInfo()` computed this inline as
+   * `started ? new Date().toISOString() : undefined` — i.e. it returned the moment the CALLER
+   * ASKED, never the moment the connection was established. Asking three times produced three
+   * different "connection times", all of them wrong, and each looked more precise than the state
+   * field beside it. A fabricated timestamp is worse than an absent one: it invites arithmetic
+   * (uptime, staleness) on a number that means nothing.
+   *
+   * CONTRACT-EVIDENCE: EXEMPT — this change touches no API-contract surface. It adds a private
+   * field, assigns it inside the existing start()/stop() paths, and reads it in
+   * getConnectionInfo(). Every call into `this.backend` (connect, disconnect, send, poll) is
+   * byte-for-byte unchanged, and no request/response shape crosses the Messages boundary. The
+   * decisive test for the exemption is whether a live-API contract run could confirm or falsify
+   * the change: it could not — correctness here depends entirely on WHEN a local field is
+   * assigned, which a real Messages account cannot observe or contradict. The marker covers this
+   * specific edit only; the next change to this file's API surface must remove it and run
+   * `npm run test:contract` for real.
+   */
+  private connectedAtIso: string | null = null;
   private authorizedContacts: Set<string>;  // normalized E.164
   private receivedMessageIds = new Set<string>();
   private lastInboundFrom = new Map<string, number>();  // normalized contact → timestamp
@@ -185,6 +206,8 @@ export class IMessageAdapter implements MessagingAdapter {
 
     await this.backend.connect();
     this.started = true;
+    // Recorded HERE, once, at the moment it is true — not synthesised later on read.
+    this.connectedAtIso = new Date().toISOString();
 
     // Start stall detection
     this.stallDetector.start();
@@ -194,6 +217,7 @@ export class IMessageAdapter implements MessagingAdapter {
 
   async stop(): Promise<void> {
     this.started = false;
+    this.connectedAtIso = null;
     this.stallDetector.stop();
     await this.backend.disconnect();
     console.log('[imessage] Adapter stopped');
@@ -269,7 +293,7 @@ export class IMessageAdapter implements MessagingAdapter {
   getConnectionInfo(): ConnectionInfo {
     return {
       state: this.backend.state,
-      connectedAt: this.started ? new Date().toISOString() : undefined,
+      connectedAt: this.connectedAtIso ?? undefined,
       lastError: undefined,
       reconnectAttempts: 0,
     };

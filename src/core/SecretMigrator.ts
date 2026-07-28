@@ -62,7 +62,12 @@ export function migrateSecrets(configPath: string, stateDir: string): MigrationR
 
   const configRaw = fs.readFileSync(configPath, 'utf-8');
   const config = JSON.parse(configRaw);
-  const store = new SecretStore({ stateDir, forceFileKey: true });
+  // Write/read SYMMETRY (spec keychain-per-agent-master-key §2): the migrator
+  // previously wrote with forceFileKey:true while the merge path read
+  // keychain-first — the asymmetry that armed the 2026-06-05 poisoning
+  // incident. Both paths now resolve through the same store-scoped,
+  // ciphertext-verified key resolution inside SecretStore.
+  const store = new SecretStore({ stateDir });
   const existingSecrets = store.read();
 
   const extracted: string[] = [];
@@ -120,8 +125,12 @@ export function mergeConfigWithSecrets(config: Record<string, unknown>, stateDir
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-/** Check if a value is the { "secret": true } placeholder. */
-function isSecretPlaceholder(value: unknown): boolean {
+/** Check if a value is the { "secret": true } placeholder left in config.json
+ *  after a field is externalized to the encrypted secret store. Exported so
+ *  readiness/coherence checks can tell "field is externalized (present)" apart
+ *  from "field is genuinely missing" — a plain string-type guard reads the
+ *  placeholder as missing and false-alarms. */
+export function isSecretPlaceholder(value: unknown): boolean {
   return typeof value === 'object' && value !== null && 'secret' in value && (value as any).secret === true;
 }
 

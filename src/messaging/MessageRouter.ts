@@ -263,7 +263,44 @@ export class MessageRouter implements IMessageRouter {
     };
 
     await this.store.save(envelope);
+
+    // Maintain the thread aggregate so getThread()/threadline_history return
+    // this inbound leg. relay() previously only saved the envelope file, so the
+    // threads/{id}.json aggregate getThread reads was never built for relayed
+    // threads — getThread 404'd even with envelope files on disk (the C/D bug).
+    // Non-fatal: the aggregate is observability, never gates delivery.
+    if (envelope.message.threadId) {
+      try {
+        await this.updateThread(envelope.message.threadId, envelope.message);
+      } catch (err) {
+        console.warn(`[MessageRouter] updateThread (relay) failed for ${envelope.message.threadId}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
     return true;
+  }
+
+  /**
+   * Record a locally-delivered OUTBOUND leg into our own store + thread
+   * aggregate. The relay-send local fast-path POSTs straight to the peer and
+   * never persisted the sender's own outbound message, so each node's history
+   * held only the other agent's half (the D bug). This makes getThread() return
+   * BOTH legs. Idempotent (store.save dedups by message id). Non-fatal.
+   */
+  async recordLocalOutbound(envelope: MessageEnvelope): Promise<void> {
+    // Idempotent: updateThread is NOT internally idempotent (it pushes the
+    // message id + bumps messageCount unconditionally), so gate it on a
+    // first-sight check — a re-record of the same message id must not
+    // double-count the thread aggregate. (store.save already no-ops on a
+    // duplicate file.)
+    const alreadyStored = await this.store.exists(envelope.message.id);
+    await this.store.save(envelope);
+    if (!alreadyStored && envelope.message.threadId) {
+      try {
+        await this.updateThread(envelope.message.threadId, envelope.message);
+      } catch (err) {
+        console.warn(`[MessageRouter] updateThread (outbound) failed for ${envelope.message.threadId}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
   }
 
   async getMessage(messageId: string): Promise<MessageEnvelope | null> {

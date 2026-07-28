@@ -60,6 +60,21 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Foundations',
+          items: [
+            { label: 'Standards Registry (Living Constitution)', slug: 'foundations/standards-registry' },
+            { label: 'North Star — Continuous Working Awareness', slug: 'foundations/north-star' },
+          ],
+        },
+        {
+          label: 'EXO 3.0',
+          items: [
+            { label: 'EXO 3.0 Alignment', slug: 'features/exo3' },
+            { label: 'Case Study: Governed vs Ungoverned (the control)', slug: 'features/exo3-case-study-meridian' },
+            { label: 'Case Study: Unorthodox Values (Ironwood)', slug: 'features/exo3-case-study-ironwood' },
+          ],
+        },
+        {
           label: 'Features',
           items: [
             { label: 'Job Scheduler', slug: 'features/scheduler' },
@@ -80,11 +95,14 @@ export default defineConfig({
             { label: 'Self-Healing', slug: 'features/self-healing' },
             { label: 'AutoUpdater', slug: 'features/autoupdater' },
             { label: 'Observability', slug: 'features/observability' },
+            { label: 'Resource Ledger (CPU + Memory)', slug: 'features/resource-ledger' },
             { label: 'Cross-Framework Portability', slug: 'features/portability' },
             { label: 'Paste Handling', slug: 'features/paste-handling' },
             { label: 'Privacy Routing', slug: 'features/privacy-routing' },
             { label: 'Self-Healing Remediator', slug: 'features/remediator' },
             { label: 'Task Flows', slug: 'features/task-flows' },
+            { label: 'Correction & Preference Learning', slug: 'features/correction-preference-learning' },
+            { label: 'Scope-Accretion Completion Discipline', slug: 'features/scope-accretion' },
           ],
         },
         {

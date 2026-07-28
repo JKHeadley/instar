@@ -22,13 +22,16 @@ import { HandshakeManager } from './HandshakeManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { AgentDiscovery } from './AgentDiscovery.js';
-import { generateIdentityKeyPair } from './ThreadlineCrypto.js';
-import type { KeyPair } from './ThreadlineCrypto.js';
+import { DEFAULT_RELAY_URL } from './constants.js';
+import { resolveThreadlineMcpEntry } from './mcpEntry.js';
 import { ThreadlineClient } from './client/ThreadlineClient.js';
 import type { ReceivedMessage } from './client/ThreadlineClient.js';
 import { InboundMessageGate } from './InboundMessageGate.js';
+import { attachRelayObservability, type RelayConnectionEvent } from './relayConnectionObserver.js';
 import { AgentTrustManager } from './AgentTrustManager.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { IdentityManager } from './client/IdentityManager.js';
+import { detectMachineName } from '../core/MachineIdentity.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -53,6 +56,13 @@ export interface ThreadlineBootstrapConfig {
   framework?: string;
   /** Agent capabilities */
   capabilities?: string[];
+  /**
+   * Live reader for the Secure A2A Verified Pairing config (spec §3.10). Supplied by
+   * server.ts so the inbound gate reads the CURRENT flag state (enabled/dryRun/
+   * credentialShareEnforced) on every message. When omitted, verified-pairing is a
+   * complete pass-through (byte-identical legacy behavior).
+   */
+  getVerifiedPairingConfig?: () => { enabled: boolean; dryRun: boolean; credentialShareEnforced: boolean };
 }
 
 export interface ThreadlineBootstrapResult {
@@ -60,8 +70,6 @@ export interface ThreadlineBootstrapResult {
   handshakeManager: HandshakeManager;
   /** Agent discovery service */
   discovery: AgentDiscovery;
-  /** Identity key pair */
-  identityKeys: KeyPair;
   /** Cleanup function for graceful shutdown */
   shutdown: () => Promise<void>;
   /** Cloud relay client (if relay is enabled) */
@@ -70,11 +78,15 @@ export interface ThreadlineBootstrapResult {
   inboundGate?: InboundMessageGate;
   /** Trust manager */
   trustManager?: AgentTrustManager;
+  /**
+   * Most recent relay connection-LOSS event, or null if the relay has never
+   * dropped. Exists so a status surface can report WHY the relay is down rather
+   * than only that it is — the distinction the 2026-07-26 incident turned on,
+   * when the only record available said "connected" for a connection that was
+   * gone. See relayConnectionObserver.ts.
+   */
+  getLastRelayEvent?: () => RelayConnectionEvent | null;
 }
-
-// ── Constants ────────────────────────────────────────────────────────
-
-const IDENTITY_KEY_FILE = 'identity-keys.json';
 
 // ── Implementation ───────────────────────────────────────────────────
 
@@ -91,10 +103,7 @@ export async function bootstrapThreadline(
   const threadlineDir = path.join(config.stateDir, 'threadline');
   fs.mkdirSync(threadlineDir, { recursive: true });
 
-  // ── 1. Identity Keys (persist across restarts) ───────────────────
-  const identityKeys = loadOrCreateIdentityKeys(threadlineDir);
-
-  // ── 2. HandshakeManager ──────────────────────────────────────────
+  // ── 1. HandshakeManager ──────────────────────────────────────────
   const handshakeManager = new HandshakeManager(config.stateDir, config.agentName);
 
   // ── 3. Agent Discovery ───────────────────────────────────────────
@@ -105,13 +114,30 @@ export async function bootstrapThreadline(
     selfPort: config.port,
   });
 
-  // Announce presence for other agents to find us
+  // ── Routing identity (the address the relay actually answers to) ─
+  // Resolve via the SAME read-only API the relay client uses
+  // (IdentityManager.get(), NOT getOrCreate — never fabricate a dead address
+  // for a relay-less or locked-encrypted agent). Resolve up front, before the
+  // relay client is constructed, so discovery advertises the routable identity
+  // — not the orphan identity-keys.json hex key, which nothing on the relay
+  // routing path reads.
+  const routingIdentity = new IdentityManager(config.stateDir).get();
+
+  // Announce presence for other agents to find us. When a routing identity
+  // resolves, advertise its fingerprint (the routable relay address) AND set
+  // publicKey to the SAME canonical key, so the two correspond
+  // (fingerprint === computeFingerprint(publicKey)). When none resolves (no
+  // identity on disk, or canonical identity.json is passphrase-encrypted and
+  // locked at boot), OMIT both — an agent with no resolvable routing identity
+  // is simply not relay-discoverable until it has one.
   discovery.announcePresence({
     capabilities: ['threadline', 'mcp'],
     description: config.agentDescription ?? `${config.agentName} Instar agent`,
     threadlineVersion: '1.0',
-    publicKey: identityKeys.publicKey.toString('hex'),
+    publicKey: routingIdentity?.publicKey.toString('hex'),
+    fingerprint: routingIdentity?.fingerprint,
     framework: 'instar',
+    machine: detectMachineName(),
   });
 
   // Start heartbeat for liveness detection
@@ -188,6 +214,7 @@ export async function bootstrapThreadline(
   }
 
   let relayClient: ThreadlineClient | undefined;
+  let relayObservability: { getLastEvent: () => RelayConnectionEvent | null } | undefined;
   let inboundGate: InboundMessageGate | undefined;
   let trustManager: AgentTrustManager | undefined;
 
@@ -200,7 +227,7 @@ export async function bootstrapThreadline(
   if (relayEnabled) {
     const relayUrl = config.relayUrl
       ?? process.env.THREADLINE_RELAY_URL
-      ?? 'wss://threadline-relay.fly.dev/v1/connect';
+      ?? DEFAULT_RELAY_URL;
 
     // Always create relay client for outbound messages.
     // When daemon handles inbound, we still need the client for sending.
@@ -218,6 +245,11 @@ export async function bootstrapThreadline(
     // The gate will be wired to the router after server setup
     inboundGate = new InboundMessageGate(trustManager!, null, {
       maxPayloadBytes: 64 * 1024,
+      // Bind THIS agent's routing fingerprint for pair-verify receipt verification +
+      // the self-pair guard (FD12). Resolved above via the read-only IdentityManager.
+      ownFingerprint: routingIdentity?.fingerprint,
+      // Live verified-pairing config reader (spec §3.10) — supplied by server.ts.
+      getVerifiedPairingConfig: config.getVerifiedPairingConfig,
     });
 
     // Only wire inbound message handling and connect if daemon is NOT handling relay.
@@ -294,6 +326,15 @@ export async function bootstrapThreadline(
       console.log(`Threadline: auto-discovered ${info.count} agent(s) on relay`);
     });
 
+    // Record connection LOSS, not just connection. Without this the successful
+    // connect line below is the last word the record can ever contain, so a relay
+    // that drops afterwards — including the terminal `displaced` case, which
+    // disarms reconnect permanently — is invisible. See relayConnectionObserver.ts
+    // for the incident this closes.
+    relayObservability = attachRelayObservability(relayClient, {
+      logDir: path.join(config.stateDir, '..', 'logs'),
+    });
+
     try {
       await relayClient.connect();
       console.log(`Threadline: relay connected (fingerprint: ${relayClient.fingerprint})`);
@@ -315,9 +356,12 @@ export async function bootstrapThreadline(
   return {
     handshakeManager,
     discovery,
-    identityKeys,
     trustManager,
     relayClient,
+    /** Most recent relay connection-loss event, or null if it has never dropped.
+     *  Lets a status surface report WHY the relay is down instead of only that it
+     *  is — the distinction the 2026-07-26 incident turned on. */
+    getLastRelayEvent: () => relayObservability?.getLastEvent() ?? null,
     inboundGate,
     shutdown: async () => {
       stopHeartbeat();
@@ -332,39 +376,6 @@ export async function bootstrapThreadline(
       }
     },
   };
-}
-
-// ── Identity Key Persistence ─────────────────────────────────────────
-
-function loadOrCreateIdentityKeys(threadlineDir: string): KeyPair {
-  const keyFile = path.join(threadlineDir, IDENTITY_KEY_FILE);
-
-  if (fs.existsSync(keyFile)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(keyFile, 'utf-8'));
-      if (data.publicKey && data.privateKey) {
-        return {
-          publicKey: Buffer.from(data.publicKey, 'hex'),
-          privateKey: Buffer.from(data.privateKey, 'hex'),
-        };
-      }
-    } catch {
-      // Corrupted key file — regenerate
-    }
-  }
-
-  const keys = generateIdentityKeyPair();
-
-  // Persist atomically
-  const tmpFile = `${keyFile}.${process.pid}.tmp`;
-  fs.writeFileSync(tmpFile, JSON.stringify({
-    publicKey: keys.publicKey.toString('hex'),
-    privateKey: keys.privateKey.toString('hex'),
-    createdAt: new Date().toISOString(),
-  }, null, 2), { mode: 0o600 }); // Private key — restrictive permissions
-  fs.renameSync(tmpFile, keyFile);
-
-  return keys;
 }
 
 // ── MCP Registration ─────────────────────────────────────────────────
@@ -388,24 +399,10 @@ function loadOrCreateIdentityKeys(threadlineDir: string): KeyPair {
  */
 async function registerThreadlineMcp(projectDir: string, agentName: string, stateDir: string): Promise<void> {
   const absDir = path.resolve(projectDir);
-
-  // The MCP server entry point — runs as a child process of Claude Code.
-  // Resolve the actual instar package location (handles both node_modules and npm-linked).
-  let mcpEntryPath = path.join(absDir, 'node_modules', 'instar', 'dist', 'threadline', 'mcp-stdio-entry.js');
-  if (!fs.existsSync(mcpEntryPath)) {
-    // Fall back to the running instar installation's dist directory.
-    // This handles npm-linked installs where node_modules/instar doesn't exist.
-    mcpEntryPath = path.join(__dirname, 'mcp-stdio-entry.js');
-  }
-
-  const mcpEntry = {
-    command: 'node',
-    args: [
-      mcpEntryPath,
-      '--state-dir', stateDir,
-      '--agent-name', agentName,
-    ],
-  };
+  // The MCP server entry point — runs as a child process of the agent's
+  // framework CLI. Single source of truth shared with the per-spawn Codex
+  // override (see mcpEntry.ts / SessionManager).
+  const mcpEntry = resolveThreadlineMcpEntry(projectDir, stateDir, agentName);
 
   // ── 1. Register in ~/.claude.json at local scope ──
   const claudeJsonPath = path.join(os.homedir(), '.claude.json');

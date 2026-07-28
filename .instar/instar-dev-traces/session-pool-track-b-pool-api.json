@@ -1,0 +1,13 @@
+{
+  "phase": "complete",
+  "slug": "session-pool-track-b-pool-api",
+  "coveredFiles": [
+    "src/core/types.ts",
+    "src/core/MachineIdentity.ts",
+    "src/server/routes.ts"
+  ],
+  "artifactPath": "upgrades/side-effects/session-pool-track-b-pool-api.md",
+  "artifactSha256": "27681a2fc441c8f711ee8d73a0cf42394bbebade76b153b4e1b3b2c1a6763511",
+  "specPath": "docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md",
+  "createdAt": "2026-05-29T10:42:23Z"
+}

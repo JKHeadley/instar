@@ -1,0 +1,335 @@
+/**
+ * Unit tests for the Process Health tab's pure functions + renderers.
+ * Spec: docs/specs/PROCESS-HEALTH-DASHBOARD-TAB-SPEC.md (v4, converged) §4.6, §4.2.
+ *
+ * These exercise the SHIPPED module (dashboard/process-health.js) directly — the
+ * renderers take an injected `doc`, so we drive them against a real jsdom DOM and
+ * assert the load-bearing safety contract (§4.6) holds on real DOM nodes:
+ *   - every dynamic value is sanitized (NFKC fold, control/bidi/chrome-glyph strip,
+ *     grapheme-safe length cap) BEFORE the DOM
+ *   - all dynamic writes are textContent only → no injected element ever survives
+ *   - safeUrl rejects javascript:/data:/off-origin
+ */
+// @ts-nocheck — the module is browser-native ESM (.js), no types.
+import { describe, it, expect, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { JSDOM } from 'jsdom';
+import {
+  CHROME,
+  sanitizeForDisplay,
+  isMixedScript,
+  safeUrl,
+  friendlyCategory,
+  attributionLabel,
+  relativeTime,
+  renderHeadline,
+  renderDisabled,
+  renderPatterns,
+  renderCaptured,
+  renderMaturation,
+  renderDetail,
+} from '../../dashboard/process-health.js';
+
+let doc: Document;
+beforeEach(() => {
+  doc = new JSDOM('<!doctype html><body></body>').window.document;
+});
+
+describe('sanitizeForDisplay (§4.6 — the load-bearing contract)', () => {
+  it('null/undefined coerce to empty string', () => {
+    expect(sanitizeForDisplay(null)).toBe('');
+    expect(sanitizeForDisplay(undefined)).toBe('');
+  });
+
+  it('NFKC-folds confusable full-width / variant codepoints before stripping', () => {
+    // Full-width "ABC" folds to ASCII; a script tag stays inert text (no parse).
+    expect(sanitizeForDisplay('ＡＢＣ')).toBe('ABC');
+  });
+
+  it('strips C0/C1 control characters but keeps \\n and \\t', () => {
+    const out = sanitizeForDisplay('a\u0000bc\td\ne');
+    expect(out).not.toMatch(/[\u0000]/);
+    expect(out).toContain('\t');
+    expect(out).toContain('\n');
+  });
+
+  it('strips bidi-control marks (RLO/LRO/isolates) — no fake-direction trickery', () => {
+    const out = sanitizeForDisplay('safe‮evil‬tail⁦x⁩');
+    expect(out).not.toMatch(/[‪-‮⁦-⁩]/);
+  });
+
+  it('strips renderer-owned chrome glyphs from data (markers cannot be impersonated)', () => {
+    // ●, →, ✓, ✔, ←, ▾, the "you're here" arrow, the bullet/middot separators.
+    const out = sanitizeForDisplay('● done → ✓ ✔ ← ▾ • · 2027⁃');
+    for (const g of ['●', '→', '✓', '✔', '←', '▾', '•', '·']) {
+      expect(out).not.toContain(g);
+    }
+  });
+
+  it('strips variation-selector dressed glyphs after the NFKC fold (●︎ etc.)', () => {
+    expect(sanitizeForDisplay('●︎')).toBe('');
+  });
+
+  it('caps length grapheme-safely with an ellipsis (summary cap 240)', () => {
+    const out = sanitizeForDisplay('x'.repeat(1000), 'summary');
+    expect([...out].length).toBeLessThanOrEqual(240);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  it('never cuts a surrogate pair in half', () => {
+    const out = sanitizeForDisplay('😀'.repeat(500), 'label'); // label cap 64
+    // No lone surrogate should remain.
+    expect(out).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    expect(out).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  });
+});
+
+describe('safeUrl (§4.6)', () => {
+  it('allows relative and fragment URLs', () => {
+    expect(safeUrl('/dashboard')).toBe('/dashboard');
+    expect(safeUrl('#top')).toBe('#top');
+  });
+  it('rejects javascript:, data:, vbscript:, file: → empty string', () => {
+    expect(safeUrl('javascript:alert(1)')).toBe('');
+    expect(safeUrl('data:text/html,<script>')).toBe('');
+    expect(safeUrl('vbscript:msgbox')).toBe('');
+    expect(safeUrl('file:///etc/passwd')).toBe('');
+  });
+  it('rejects off-origin http(s) hosts', () => {
+    expect(safeUrl('https://evil.example.com/x')).toBe('');
+  });
+  it('empty / nullish → empty string', () => {
+    expect(safeUrl('')).toBe('');
+    expect(safeUrl(null)).toBe('');
+  });
+});
+
+describe('isMixedScript (§4.6 r7 — Latin + confusable Cyrillic/Greek signal only)', () => {
+  it('flags Latin co-occurring with confusable Cyrillic', () => {
+    expect(isMixedScript('pаypal')).toBe(true); // the "а" is Cyrillic
+  });
+  it('does not flag pure-Latin or pure-Cyrillic', () => {
+    expect(isMixedScript('paypal')).toBe(false);
+    expect(isMixedScript('привет')).toBe(false);
+  });
+});
+
+describe('friendly wording (§4.2c — never expose raw ids/categories)', () => {
+  it('maps known categories to plain English (ELI16, no jargon)', () => {
+    expect(friendlyCategory('concurrency')).toBe('A timing problem (two things ran at once)');
+    expect(friendlyCategory('config-parse')).toBe('A settings problem');
+  });
+  it('falls back to a generic phrase for unknown categories', () => {
+    expect(friendlyCategory('totally-made-up')).toBe('A problem');
+    expect(friendlyCategory(undefined)).toBe('A problem');
+  });
+  it('maps known initiative ids to a plain-English label, never the raw id', () => {
+    expect(attributionLabel('failure-learning-loop')).toBe('the failure-watching feature');
+    expect(attributionLabel('some-unmapped-id')).toBe('a feature we were working on');
+  });
+  it('relativeTime is plain English and safe on garbage input', () => {
+    const now = Date.now();
+    expect(relativeTime(new Date(now - 5000).toISOString(), now)).toBe('just now');
+    expect(relativeTime(new Date(now - 3 * 3600_000).toISOString(), now)).toBe('about 3 hours ago');
+    expect(relativeTime('not-a-date', now)).toBe('recently');
+  });
+});
+
+describe('CSS type bars (§4.1 — the measurable UX contract, not a vibe)', () => {
+  // The tab's styles live in dashboard/index.html. Assert the numeric bars
+  // directly against the source (more reliable than jsdom getComputedStyle of a
+  // <style> block, which doesn't fully cascade). Justin's durable preference:
+  // large readable type, line-height 1.5–1.6, ZERO monospace.
+  const html = readFileSync(fileURLToPath(new URL('../../dashboard/index.html', import.meta.url)), 'utf8');
+  const fontSize = (selector: string): number => {
+    const re = new RegExp(`\\.${selector}\\s*\\{[^}]*?font-size:\\s*(\\d+)px`, 'm');
+    const m = html.match(re);
+    if (!m) throw new Error(`no font-size rule for .${selector}`);
+    return Number(m[1]);
+  };
+  const lineHeight = (selector: string): number => {
+    const re = new RegExp(`\\.${selector}\\s*\\{[^}]*?line-height:\\s*([\\d.]+)`, 'm');
+    const m = html.match(re);
+    return m ? Number(m[1]) : NaN;
+  };
+
+  it('headline ≥ 24px, section headers ≥ 20px, body/items ≥ 17px', () => {
+    expect(fontSize('ph-headline')).toBeGreaterThanOrEqual(24);
+    expect(fontSize('ph-h')).toBeGreaterThanOrEqual(20);
+    expect(fontSize('ph-root')).toBeGreaterThanOrEqual(17);
+    expect(fontSize('ph-item-summary')).toBeGreaterThanOrEqual(17); // expandable rows
+    expect(fontSize('ph-card-summary')).toBeGreaterThanOrEqual(17);
+  });
+
+  it('body line-height sits in the calm 1.5–1.6 band', () => {
+    const lh = lineHeight('ph-root');
+    expect(lh).toBeGreaterThanOrEqual(1.5);
+    expect(lh).toBeLessThanOrEqual(1.6);
+  });
+
+  it('no monospace anywhere in the ph-* styles (zero debug-log aesthetic)', () => {
+    // Slice just the process-health style region and assert it never sets monospace.
+    const start = html.indexOf('.ph-root');
+    const region = html.slice(start, start + 4000);
+    expect(region).not.toMatch(/monospace/i);
+    expect(region).not.toMatch(/font-family:\s*['"]?(Courier|Menlo|Consolas|monospace)/i);
+  });
+});
+
+describe('renderers write textContent only — injected markup never becomes a node', () => {
+  it('renderPatterns: a malicious summary/recommendation produces NO live elements', () => {
+    const target = doc.createElement('div');
+    (globalThis as any).__xssCanary = undefined;
+    renderPatterns(doc, target, [
+      {
+        summary: '<img src=x onerror="globalThis.__xssCanary=1">',
+        recommendation: '<svg onload="globalThis.__xssCanary=1"></svg>',
+        distinctSessions: 3,
+      },
+    ]);
+    expect(target.querySelectorAll('img,script,svg,math,iframe,object,embed').length).toBe(0);
+    expect((globalThis as any).__xssCanary).toBeUndefined();
+    // The dangerous string survives only as inert text.
+    expect(target.textContent).toContain('onerror');
+    // The renderer-owned per-card framing line was dropped in v7 — the section
+    // title + subtitle establish the "recurring pattern" frame, and the v6 copy
+    // pass removed all action-implying language, so the framing had no job left.
+    expect(target.textContent).not.toContain('verify before acting');
+    expect(target.textContent).not.toContain('Same kind of problem has come up more than once');
+  });
+
+  it('renderCaptured: never renders the raw initiativeId; uses the friendly label', () => {
+    const target = doc.createElement('div');
+    renderCaptured(
+      doc,
+      target,
+      [{ category: 'concurrency', summary: 'a race', initiativeId: 'failure-learning-loop', detectedAt: new Date().toISOString(), status: 'open' }],
+      undefined,
+      Date.now(),
+    );
+    expect(target.textContent).toContain('A timing problem'); // friendly category (ELI16)
+    expect(target.textContent).toContain('the failure-watching feature'); // friendly attribution
+    expect(target.textContent).not.toContain('failure-learning-loop'); // raw id never shown
+  });
+
+  it('renderHeadline: informational copy, never a verdict; pluralizes correctly', () => {
+    const target = doc.createElement('div');
+    renderHeadline(doc, target, { failures: [{ status: 'open' }], stale: false });
+    expect(target.textContent).toContain('Keeping an eye out — 1 thing noticed');
+    renderHeadline(doc, target, { failures: [], stale: false });
+    expect(target.textContent).toContain('Keeping an eye out — all quiet so far');
+    expect(target.textContent).toContain('Nothing has come up yet');
+  });
+
+  it('renderHeadline: stale → friendly "can\'t refresh" copy, NOT a stale count claim (§4.1)', () => {
+    const target = doc.createElement('div');
+    renderHeadline(doc, target, { failures: [{ status: 'open' }], stale: true, staleAgeMin: 7 });
+    expect(target.textContent).toContain("Can't refresh right now");
+    expect(target.textContent).not.toContain('Keeping an eye out — 1 thing');
+  });
+
+  it('renderMaturation: marks the current stage with "you\'re here"; 4th stage is always future (○)', () => {
+    const target = doc.createElement('div');
+    renderMaturation(doc, target, { stage: 'capture-only' });
+    const here = target.querySelector('.ph-stage-here');
+    expect(here?.textContent).toContain('Quietly watching'); // ELI16 stage label
+    expect(here?.textContent).toContain(CHROME.hereMarker);
+    // 4th stage (default-on) must never be "here" and renders the future glyph.
+    const rows = [...target.querySelectorAll('.ph-stage')];
+    const last = rows[rows.length - 1];
+    expect(last.textContent).toContain('On for everyone by default');
+    expect(last.textContent).not.toContain(CHROME.hereMarker);
+    expect(last.textContent).toContain(CHROME.stageFuture);
+  });
+
+  it('renderCaptured: each item is an expandable <details>; body shows status, cause-confidence, occurrence (ELI16)', () => {
+    const target = doc.createElement('div');
+    renderCaptured(
+      doc,
+      target,
+      [{
+        category: 'concurrency', summary: 'a race', initiativeId: 'failure-learning-loop',
+        detectedAt: new Date().toISOString(), status: 'open', attribution: 'automatic',
+        occurrenceCount: 3, detail: { redacted: 'race in <module>' },
+      }],
+      undefined,
+      Date.now(),
+    );
+    const items = target.querySelectorAll('details.ph-item');
+    expect(items.length).toBe(1);
+    const item = items[0];
+    expect(item.querySelector('summary.ph-item-summary')?.textContent).toContain('A timing problem');
+    const body = item.querySelector('.ph-item-body');
+    // Body uses a fixed label vocabulary in a fixed order — same as patterns
+    // use where applicable: Status · Where · Times seen · First noticed · Cause.
+    const labelOrder = [...body!.querySelectorAll('.ph-label')].map((l) => l.textContent);
+    expect(labelOrder).toEqual(['Status:', 'Where:', 'Times seen:', 'First noticed:', 'Cause:']);
+    expect(body?.textContent).toContain('Status: Still looking into this');
+    expect(body?.textContent).toContain('Where: race in <module>');
+    expect(body?.textContent).toContain('Times seen: 3 times so far');
+    expect(body?.textContent).toContain('Cause: Auto-spotted from the fix commit');
+    // Summary carries a color-coded status dot for at-a-glance scanning.
+    expect(item.querySelector('summary .ph-status-dot.status-open')).not.toBeNull();
+  });
+
+  it('renderPatterns: each card uses the same fixed label vocabulary as captured items; informational only (no action language)', () => {
+    const target = doc.createElement('div');
+    renderPatterns(doc, target, [{
+      summary: 'recurring timing issue at startup',
+      recommendation: 'add a startup lease check',
+      distinctSessions: 4, distinctCauseCommits: 3, status: 'discovered',
+    }]);
+    const card = target.querySelector('details.ph-item');
+    expect(card).not.toBeNull();
+    const sum = card!.querySelector('summary.ph-item-summary');
+    expect(sum?.textContent).toContain('recurring timing issue at startup');
+    // The per-card framing line was dropped — section title + subtitle establish
+    // the "this is a recurring pattern" frame; restating it per card was the
+    // third echo of the same idea.
+    expect(sum?.textContent).not.toContain('Same kind of problem has come up more than once');
+    expect(sum?.textContent).not.toContain('act on it');
+    expect(sum?.textContent).not.toContain('verify before');
+    const body = card!.querySelector('.ph-item-body');
+    // Same fixed labels as captured items, in the same order (subset that applies to a class).
+    const labelOrder = [...body!.querySelectorAll('.ph-label')].map((l) => l.textContent);
+    expect(labelOrder).toEqual(['Status:', 'Times seen:']);
+    expect(body?.textContent).toContain('Status: Just noticed'); // informational, no fix-language
+    expect(body?.textContent).toContain('Times seen: Across 4 different changes');
+    // Recommendation is intentionally NOT surfaced — this tab informs, doesn't direct.
+    expect(body?.textContent).not.toContain('Suggested next step');
+    expect(body?.textContent).not.toContain('add a startup lease check');
+    // Summary carries a status dot (discovered → "open" colour).
+    expect(card!.querySelector('summary .ph-status-dot.status-open')).not.toBeNull();
+  });
+
+  it('renderMaturation: each stage is an expandable <details> with a plain-English description body', () => {
+    const target = doc.createElement('div');
+    renderMaturation(doc, target, { stage: 'capture-only' });
+    const stages = target.querySelectorAll('details.ph-stage');
+    expect(stages.length).toBe(4);
+    const hereStage = target.querySelector('details.ph-stage.ph-stage-here');
+    expect(hereStage?.querySelector('summary')?.textContent).toContain('Quietly watching');
+    expect(hereStage?.querySelector('.ph-stage-body')?.textContent).toContain('No alerts go anywhere');
+    // 4th stage (default-on) has a future-tense description.
+    expect(stages[3].querySelector('.ph-stage-body')?.textContent).toContain('fully-rolled-out end state');
+  });
+
+  it('renderDisabled: pinned friendly copy, NO config-key string, NO monospace/<code>', () => {
+    const els = {
+      headline: doc.createElement('div'),
+      patterns: doc.createElement('div'),
+      captured: doc.createElement('div'),
+      maturation: doc.createElement('div'),
+      detail: doc.createElement('div'),
+      stamp: doc.createElement('div'),
+    };
+    renderDisabled(doc, els);
+    const txt = els.headline.textContent || '';
+    expect(txt).toContain('isn’t turned on');
+    expect(txt).not.toContain('failureLearning'); // no config-key leaked (§4.5)
+    expect(txt).not.toContain('monitoring.');
+    // No code/monospace element anywhere in the disabled DOM (incl. operator hint).
+    expect(els.headline.querySelectorAll('code,pre,kbd,samp,tt').length).toBe(0);
+  });
+});

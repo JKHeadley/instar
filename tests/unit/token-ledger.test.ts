@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { TokenLedger } from '../../src/monitoring/TokenLedger.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -362,23 +363,179 @@ describe('TokenLedger.scanAll bounded behavior', () => {
         assistantLine({ requestId: `r${i}`, sessionId: `s${i}` }) + '\n',
       );
     }
+    let yieldCount = 0;
     const ledger = new TokenLedger({
       dbPath: ':memory:',
       claudeProjectsDir: projectsDir,
       yieldEveryNFiles: 2,
+      asyncYieldFn: async () => { yieldCount++; },
     });
 
-    let interleavedTicks = 0;
-    const interleaver = setInterval(() => { interleavedTicks++; }, 1);
-
     const r = await ledger.scanAllAsync();
-    clearInterval(interleaver);
 
     expect(r.filesScanned).toBe(8);
     expect(r.inserted).toBe(8);
-    // The async path must have yielded to the event loop at least once
-    // (otherwise the setInterval callback could not fire).
-    expect(interleavedTicks).toBeGreaterThan(0);
+    expect(yieldCount).toBeGreaterThan(0);
     ledger.close();
+  });
+
+  it('scanAllAsync bails cleanly if close() races a yielded scan (no use-after-close)', async () => {
+    // Regression: scanLoopAsync yields between files (await yieldFn()). If
+    // close() runs during that yield, the resumed loop must NOT call
+    // ingestFile() on the now-closed DB — better-sqlite3 would throw
+    // "The database connection is not open". The closed-guard makes the loop
+    // return early instead. (Observed as a benign stderr during E2E teardown.)
+    const projDir = path.join(projectsDir, '-close-race');
+    fs.mkdirSync(projDir, { recursive: true });
+    for (let i = 0; i < 4; i++) {
+      fs.writeFileSync(
+        path.join(projDir, `s${i}.jsonl`),
+        assistantLine({ requestId: `r${i}`, sessionId: `s${i}` }) + '\n',
+      );
+    }
+    let ledger: TokenLedger;
+    let closedMidScan = false;
+    ledger = new TokenLedger({
+      dbPath: ':memory:',
+      claudeProjectsDir: projectsDir,
+      yieldEveryNFiles: 1, // yield after every file
+      attributionBackfill: 'off',
+      asyncYieldFn: async () => {
+        // Close on the first yield, simulating a shutdown racing the scan.
+        if (!closedMidScan) {
+          closedMidScan = true;
+          ledger.close();
+        }
+      },
+    });
+
+    // Must resolve without throwing — the guard returns before the next
+    // ingestFile() touches the closed DB.
+    const r = await ledger.scanAllAsync();
+    expect(closedMidScan).toBe(true);
+    // It processed the first file, then bailed on the post-yield resume rather
+    // than scanning the remaining files against a closed connection.
+    expect(r.filesScanned).toBeLessThan(4);
+  });
+});
+
+describe('TokenLedger.sessionActivitySince (SessionReaper gate F)', () => {
+  let ledger: TokenLedger;
+  beforeEach(() => { ledger = makeLedger(); });
+  afterEach(() => { ledger.close(); });
+
+  it('returns counts/tokens/lastTs for events at or after sinceMs', () => {
+    const oldTs = '2026-04-29T20:00:00.000Z';
+    const newTs = '2026-04-29T21:00:00.000Z';
+    ledger.ingestLine(assistantLine({ requestId: 'r1', sessionId: 'sx', ts: oldTs, output: 10 }));
+    ledger.ingestLine(assistantLine({ requestId: 'r2', sessionId: 'sx', ts: newTs, output: 20 }));
+    const cutoff = Date.parse('2026-04-29T20:30:00.000Z');
+    const res = ledger.sessionActivitySince('sx', cutoff);
+    expect(res.eventCount).toBe(1); // only the newTs event
+    expect(res.tokens).toBeGreaterThan(0);
+    expect(res.lastTs).toBe(Date.parse(newTs));
+  });
+
+  it('returns zeros for an unknown session (caller must KEEP on absence)', () => {
+    const res = ledger.sessionActivitySince('never-seen', 0);
+    expect(res).toEqual({ eventCount: 0, tokens: 0, lastTs: 0 });
+  });
+
+  it('returns zeros when all events predate sinceMs', () => {
+    ledger.ingestLine(assistantLine({ requestId: 'r3', sessionId: 'sy', ts: '2026-04-29T20:00:00.000Z' }));
+    const res = ledger.sessionActivitySince('sy', Date.parse('2026-04-29T23:00:00.000Z'));
+    expect(res.eventCount).toBe(0);
+  });
+});
+
+// Regression: TokenLedger init must migrate a pre-attribution DB instead of 503ing.
+// Before the schema-order fix, `CREATE INDEX ... ON token_events(attribution_key, ts)`
+// ran BEFORE the `ALTER TABLE token_events ADD COLUMN attribution_key` migration. On a
+// DB whose token_events table predates the column, `CREATE TABLE IF NOT EXISTS` no-ops,
+// then the index threw `no such column: attribution_key` — NOT swallowed (only
+// duplicate-column is) — so the whole init failed and /tokens/* returned 503 forever.
+describe('TokenLedger pre-attribution DB migration (schema-order regression)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'token-ledger-preattr-'));
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'test cleanup' });
+  });
+
+  /** Build a token_events table with the OLD schema (no attribution_key column). */
+  function seedPreAttributionDb(dbPath: string): void {
+    const db = new Database(dbPath);
+    db.exec(`CREATE TABLE token_events (
+       request_id            TEXT PRIMARY KEY,
+       uuid                  TEXT,
+       session_id            TEXT NOT NULL,
+       project_path          TEXT,
+       ts                    INTEGER NOT NULL,
+       model                 TEXT,
+       input_tokens          INTEGER NOT NULL DEFAULT 0,
+       output_tokens         INTEGER NOT NULL DEFAULT 0,
+       cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+       cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+       service_tier          TEXT
+     )`);
+    // A pre-existing row, so we also prove the migration's DEFAULT backfills it.
+    db.prepare(
+      `INSERT INTO token_events (request_id, session_id, ts, input_tokens, output_tokens)
+       VALUES ('old-1', 'sess-old', ?, 5, 50)`,
+    ).run(1_700_000_000_000);
+    db.close();
+  }
+
+  it('migrates a pre-attribution token_events table on init (no 503) and adds the column', () => {
+    const dbPath = path.join(tmpDir, 'token-ledger.db');
+    seedPreAttributionDb(dbPath);
+
+    // Pre-fix this constructor threw `no such column: attribution_key`.
+    // attributionBackfill: 'sync' keeps the backfill on the constructor path so
+    // this test can assert the post-construction conversion synchronously. The
+    // production default is now 'async' (boot must not block on the full scan —
+    // see the boot-non-blocking test in burn-attribution-wiring.test.ts).
+    let ledger: TokenLedger;
+    expect(() => {
+      ledger = new TokenLedger({
+        dbPath,
+        claudeProjectsDir: '/tmp/nonexistent-claude-projects',
+        attributionBackfill: 'sync',
+      });
+    }).not.toThrow();
+
+    // The column now exists on the migrated table.
+    const probe = new Database(dbPath, { readonly: true });
+    const cols = (probe.prepare(`PRAGMA table_info(token_events)`).all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    probe.close();
+    expect(cols).toContain('attribution_key');
+
+    // The attribution_key-referencing queries (which back /tokens/*) work, and the
+    // pre-existing row survives the migration. Phase 2 wiring: the one-shot
+    // backfillAttributionOnce() in the constructor re-resolves the legacy
+    // unknown::pre-attribution DEFAULT into a real key. The seeded row has
+    // session_id 'sess-old' and no cwd/model, so it resolves to the stable
+    // per-session fallback 'unknown::sess-old' (sessionId.slice(0, 8)). The
+    // row is backfilled, not dropped — and the sentinel is gone.
+    const summary = ledger!.summary();
+    expect(summary.eventCount).toBe(1);
+    const byKey = ledger!.byAttributionKey();
+    expect(byKey.length).toBeGreaterThanOrEqual(1);
+    expect(byKey.some((r) => r.attributionKey === 'unknown::pre-attribution')).toBe(false);
+    expect(byKey.some((r) => r.attributionKey === 'unknown::sess-old')).toBe(true);
+  });
+
+  it('re-initialising a migrated DB is idempotent (duplicate-column ALTER swallowed)', () => {
+    const dbPath = path.join(tmpDir, 'token-ledger.db');
+    seedPreAttributionDb(dbPath);
+    // First init migrates; second init must not throw on the now-present column.
+    new TokenLedger({ dbPath, claudeProjectsDir: '/tmp/nonexistent-claude-projects' });
+    expect(() => {
+      new TokenLedger({ dbPath, claudeProjectsDir: '/tmp/nonexistent-claude-projects' });
+    }).not.toThrow();
   });
 });

@@ -1,21 +1,29 @@
 ---
 title: What is Instar?
-description: Instar turns Claude Code from a powerful CLI tool into a coherent, autonomous partner.
+description: Coherence infrastructure for your self-evolving agent. Memory that survives, identity that persists, and the same self-improving loop that built Instar itself.
 ---
 
-Instar turns Claude Code from a powerful CLI tool into a coherent, autonomous partner. Persistent identity, shared values, memory that survives every restart, and the infrastructure to evolve -- not just execute.
+**Coherence infrastructure for your self-evolving agent.**
+
+Your AI agent shouldn't have amnesia. This one doesn't. Instar remembers what you discussed last week, catches its own contradictions before you do, follows through on commitments across restarts, and carries the same self-improving loop that built Instar itself — on the Claude Code or Codex subscription you already have.
 
 Named after the developmental stages between molts in arthropods, where each instar is more developed than the last.
 
 ## The Problem
 
-Claude Code is powerful. But every session starts from zero. Your agent doesn't remember what you discussed yesterday, doesn't recognize someone it talked to last week, and can't follow through on commitments across sessions.
+Every popular agent framework ships something hobbled. Users complain in the same words across the dev community:
 
-Power without coherence is unreliable. An agent that forgets, contradicts itself, and can't sustain relationships can't be trusted with real autonomy.
+- *"My agent forgot what I told it three sessions ago."*
+- *"It contradicted its own past decisions."*
+- *"It lost the thread halfway through the project."*
+- *"It broke when the framework updated."*
+- *"Default permissions are ALLOW-ALL — I had to figure out hardening myself."*
+
+These aren't bad prompts or wrong models. They're the same architectural failure: an agent spun up with no machinery to be coherent — no memory across boundaries, no accountability for what a past instance did, no way to evolve itself. Power without coherence is unreliable, and most "memory" in popular frameworks is bolted-on (a vector DB, a buffer, a tutorial-shaped fix) rather than built into the architecture.
 
 ## The Solution
 
-Instar solves six dimensions of agent coherence:
+Instar is the scaffolding that un-hobbles agents. It solves six dimensions of agent coherence structurally:
 
 | Dimension | What it means |
 |-----------|---------------|

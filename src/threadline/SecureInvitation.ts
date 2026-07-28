@@ -26,6 +26,11 @@ export interface InvitationToken {
   expiry: string;             // ISO-8601, max 24h from creation
   maxUses: number;            // 1 = single-use (default)
   recipient?: string;         // optional: intended recipient fingerprint
+  // Sealed-handoff endpoint pinning (R1b): when present, the sender validates the
+  // secret-submit destination against these signed values before POSTing — so a
+  // relay-swapped collector URL fails the check. Both are covered by the signature.
+  submitHost?: string;             // host (+optional path) the secret is POSTed to
+  submitCertFingerprint?: string;  // TLS cert fingerprint of submitHost, hex
   signature: string;          // Ed25519 signature over all fields above, base64
 }
 
@@ -66,6 +71,8 @@ export class SecureInvitationManager {
       recipient?: string;
       expiryMs?: number;
       maxUses?: number;
+      submitHost?: string;
+      submitCertFingerprint?: string;
     },
   ): InvitationToken {
     const expiryMs = Math.min(options?.expiryMs ?? DEFAULT_EXPIRY_MS, MAX_EXPIRY_MS);
@@ -80,6 +87,8 @@ export class SecureInvitationManager {
       expiry: new Date(Date.now() + expiryMs).toISOString(),
       maxUses: options?.maxUses ?? 1,
       ...(options?.recipient && { recipient: options.recipient }),
+      ...(options?.submitHost && { submitHost: options.submitHost }),
+      ...(options?.submitCertFingerprint && { submitCertFingerprint: options.submitCertFingerprint }),
       signature: '', // placeholder, computed below
     };
 
@@ -181,8 +190,15 @@ export class SecureInvitationManager {
   }
 
   private buildSignatureMessage(token: InvitationToken): Buffer {
-    // Sign over all fields except signature itself
-    const payload = `${token.version}|${token.type}|${token.issuer}|${token.tokenId}|${token.nonce}|${token.scope}|${token.expiry}|${token.maxUses}|${token.recipient ?? ''}`;
+    // Sign over all fields except signature itself.
+    let payload = `${token.version}|${token.type}|${token.issuer}|${token.tokenId}|${token.nonce}|${token.scope}|${token.expiry}|${token.maxUses}|${token.recipient ?? ''}`;
+    // R1b — sealed-handoff endpoint pinning. Appended ONLY when present, so existing
+    // invitations (no submit fields) produce a byte-identical payload and stay valid.
+    // Because the signature binds whichever form was signed, stripping or injecting a
+    // submit field changes the verifier's payload and fails verification.
+    if (token.submitHost !== undefined || token.submitCertFingerprint !== undefined) {
+      payload += `|${token.submitHost ?? ''}|${token.submitCertFingerprint ?? ''}`;
+    }
     return crypto.createHash('sha256').update(payload).digest();
   }
 

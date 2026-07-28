@@ -1,0 +1,18 @@
+{
+  "ts": "2026-07-11T10:40:39.947Z",
+  "slug": "unknown",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 23,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven custody notice emitted only when an inbound message collides with an already-running respawn; not a self-triggered loop"
+  },
+  "verdict": "blocked"
+}

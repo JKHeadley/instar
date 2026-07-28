@@ -67,6 +67,43 @@ describe('TelegramAdapter registry and message log', () => {
       expect(adapter.getTopicName(999)).toBeNull();
     });
 
+    describe('resolveTopicForSessionFromDisk (recovery fallback)', () => {
+      it('resolves a binding written to disk AFTER the adapter loaded (in-memory miss)', () => {
+        // The core gap: getTopicForSession reads the in-memory map, which is
+        // only the boot-time snapshot. Simulate the lifeline writing a NEW
+        // binding to the registry file after this adapter's load.
+        expect(adapter.getTopicForSession('codey-collab')).toBeNull(); // in-memory miss
+
+        const registryPath = path.join(tmpDir, 'topic-session-registry.json');
+        fs.writeFileSync(registryPath, JSON.stringify({
+          topicToSession: { '13435': 'codey-collab' },
+        }));
+
+        // In-memory still misses, but the disk fallback finds it.
+        expect(adapter.getTopicForSession('codey-collab')).toBeNull();
+        expect(adapter.resolveTopicForSessionFromDisk('codey-collab')).toBe(13435);
+      });
+
+      it('returns null when the session is in no on-disk binding', () => {
+        adapter.registerTopicSession(42, 'known-session');
+        expect(adapter.resolveTopicForSessionFromDisk('ghost-session')).toBeNull();
+      });
+
+      it('returns null when the registry file does not exist', () => {
+        // Fresh tmpDir with no registry written yet.
+        const freshDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-tg-noreg-'));
+        const a = new TelegramAdapter({ token: 't', chatId: '-1' }, freshDir);
+        expect(a.resolveTopicForSessionFromDisk('anything')).toBeNull();
+        SafeFsExecutor.safeRmSync(freshDir, { recursive: true, force: true, operation: 'tests/unit/telegram-registry-log.test.ts:noreg' });
+      });
+
+      it('does not throw on a corrupt registry file', () => {
+        const registryPath = path.join(tmpDir, 'topic-session-registry.json');
+        fs.writeFileSync(registryPath, '{ this is not valid json');
+        expect(adapter.resolveTopicForSessionFromDisk('whoever')).toBeNull();
+      });
+    });
+
     it('uses atomic write (tmp + rename) for registry', () => {
       const source = fs.readFileSync(
         path.join(process.cwd(), 'src/messaging/TelegramAdapter.ts'),

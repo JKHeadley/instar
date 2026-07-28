@@ -1,0 +1,27 @@
+{
+  "ts": "2026-07-20T00:19:31.165Z",
+  "slug": "durable-stop-gate-breaker",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 553,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Under unchanged slow-provider pressure, restart-storm reconstruction before every tick must keep timeout feedback at K=2; a process-local breaker emits two more per reconstruction and fails."
+    },
+    "component": "UnjustifiedStopGate"
+  },
+  "verdict": "pass"
+}

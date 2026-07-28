@@ -25,6 +25,8 @@
 import type { SemanticMemory } from './SemanticMemory.js';
 import type { EpisodicMemory, ActivityDigest, SessionSynthesis } from './EpisodicMemory.js';
 import type { MemoryEntity, ScoredEntity } from '../core/types.js';
+import type { TopicIntentStore } from '../core/TopicIntent.js';
+import { rankWorkingSet, topicIntentToWorkingSet, playbookManifestToWorkingSet, type WorkingSetItem } from './WorkingSet.js';
 import { estimateTokens } from './Chunker.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -34,6 +36,17 @@ export interface WorkingMemoryConfig {
   semanticMemory?: SemanticMemory;
   /** EpisodicMemory instance (optional — degrades gracefully) */
   episodicMemory?: EpisodicMemory;
+  /**
+   * TopicIntentStore (rung 2) — when provided, the topic's established refs join
+   * the unified working-set section. Optional; absent → that source is empty.
+   */
+  topicIntentStore?: TopicIntentStore;
+  /**
+   * State dir (rung 2) — when provided, Playbook manifest items matching the
+   * query join the unified working-set section (read-only manifest scan, no
+   * Python). Optional; absent → that source is empty.
+   */
+  stateDir?: string;
 
   /** Token budgets per source. Defaults provided. */
   tokenBudgets?: Partial<TokenBudgets>;
@@ -46,6 +59,8 @@ export interface TokenBudgets {
   episodes: number;
   /** Max tokens for relationship/people context */
   relationships: number;
+  /** Max tokens for the unified working set (topic-intent + Playbook) — rung 2 */
+  workingSet: number;
   /** Total max tokens (hard cap on entire assembly) */
   total: number;
 }
@@ -89,6 +104,7 @@ const DEFAULT_BUDGETS: TokenBudgets = {
   knowledge: 800,
   episodes: 400,
   relationships: 300,
+  workingSet: 500,
   total: 2000,
 };
 
@@ -97,11 +113,15 @@ const DEFAULT_BUDGETS: TokenBudgets = {
 export class WorkingMemoryAssembler {
   private semanticMemory?: SemanticMemory;
   private episodicMemory?: EpisodicMemory;
+  private topicIntentStore?: TopicIntentStore;
+  private stateDir?: string;
   private budgets: TokenBudgets;
 
   constructor(config: WorkingMemoryConfig) {
     this.semanticMemory = config.semanticMemory;
     this.episodicMemory = config.episodicMemory;
+    this.topicIntentStore = config.topicIntentStore;
+    this.stateDir = config.stateDir;
     this.budgets = { ...DEFAULT_BUDGETS, ...config.tokenBudgets };
   }
 
@@ -154,6 +174,24 @@ export class WorkingMemoryAssembler {
         if (relationshipSection.content) {
           sections.push(relationshipSection);
           totalTokens += relationshipSection.tokens;
+        }
+      }
+    }
+
+    // 4. Unified working set (rung 2): topic-intent refs + Playbook items, ranked
+    //    together by blended relevance×recency. Appended AFTER the existing
+    //    sources and gated on the new deps, so when neither is configured the
+    //    assembled output is byte-for-byte unchanged (regression pin).
+    if (this.topicIntentStore || this.stateDir) {
+      const remainingBudget = Math.min(
+        this.budgets.workingSet,
+        this.budgets.total - totalTokens,
+      );
+      if (remainingBudget > 50) {
+        const workingSetSection = this.assembleWorkingSet(trigger.topicId, queryTerms, remainingBudget);
+        if (workingSetSection.content) {
+          sections.push(workingSetSection);
+          totalTokens += workingSetSection.tokens;
         }
       }
     }
@@ -258,6 +296,50 @@ export class WorkingMemoryAssembler {
     }
 
     return this.renderEntities(people, budget, 'relationships');
+  }
+
+  // ─── Working Set Assembly (rung 2 — unified read path) ────────────
+
+  /**
+   * Assemble the unified working set: topic-intent refs (relevance = confidence,
+   * recency = lastReinforcedAt) + Playbook manifest items matching the query
+   * (relevance = trigger/tag match + usefulness, recency = freshness), ranked
+   * together by blended relevance×recency-decay and rendered under budget. Both
+   * sources are read-only + degrade-safe — a missing/erroring source contributes
+   * nothing and never breaks assembly.
+   */
+  private assembleWorkingSet(
+    topicId: number | undefined,
+    queryTerms: string[],
+    budget: number,
+  ): { name: string; content: string; tokens: number; count: number } {
+    const items: WorkingSetItem[] = [
+      ...topicIntentToWorkingSet(this.topicIntentStore, topicId),
+      ...playbookManifestToWorkingSet(this.stateDir, queryTerms),
+    ];
+    if (items.length === 0) {
+      return { name: 'working-set', content: '', tokens: 0, count: 0 };
+    }
+    const ranked = rankWorkingSet(items);
+    return this.renderWorkingSet(ranked, budget);
+  }
+
+  private renderWorkingSet(
+    items: WorkingSetItem[],
+    budget: number,
+  ): { name: string; content: string; tokens: number; count: number } {
+    const lines: string[] = [];
+    let tokens = 0;
+    let count = 0;
+    for (const item of items) {
+      const entry = `- **[${item.source}/${item.kind}]** ${item.text}`;
+      const entryTokens = estimateTokens(entry);
+      if (tokens + entryTokens > budget) break;
+      lines.push(entry);
+      tokens += entryTokens;
+      count++;
+    }
+    return { name: 'working-set', content: lines.join('\n'), tokens, count };
   }
 
   // ─── Rendering ────────────────────────────────────────────────────
@@ -424,6 +506,7 @@ export class WorkingMemoryAssembler {
       case 'knowledge': return 'Relevant Knowledge';
       case 'episodes': return 'Recent Activity';
       case 'relationships': return 'People Context';
+      case 'working-set': return 'Working Set (tracked context)';
       default: return name;
     }
   }

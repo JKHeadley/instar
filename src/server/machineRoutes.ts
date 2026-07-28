@@ -22,8 +22,11 @@ import type { MachineIdentityManager } from '../core/MachineIdentity.js';
 import type { HeartbeatManager, Heartbeat } from '../core/HeartbeatManager.js';
 import type { SecurityLog } from '../core/SecurityLog.js';
 import type { MachineAuthContext, MachineAuthDeps } from './machineAuth.js';
-import { machineAuthMiddleware, ChallengeStore } from './machineAuth.js';
+import { machineAuthMiddleware, ChallengeStore, signLeaseAck } from './machineAuth.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
+import { PairingSessionStore } from '../core/PairingSessionStore.js';
+import { validatePairingCode } from '../core/PairingProtocol.js';
+import type { PairingSession } from '../core/PairingProtocol.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -48,6 +51,75 @@ export interface MachineRouteContext {
   onHandoffRequest?: () => Promise<{ ready: boolean; state?: unknown }>;
   /** Message router for cross-machine message relay */
   messageRouter?: MessageRouter | null;
+  /**
+   * Callback when a peer broadcasts its fenced lease over the wire (spec §6).
+   * Feeds the HttpLeaseTransport's recordObserved so the LeaseCoordinator can
+   * fold the low-latency copy into its effective-epoch view.
+   *
+   * multi-transport-mesh-comms — returns the receiver's RESULTING effective-view
+   * epoch SYNCHRONOUSLY (the fold is an in-memory epoch-CAS + signature verify),
+   * so the route can return a freshness-bound accept-ack proving it folded the
+   * caller's CURRENT lease (Decision 9). A void/undefined return (un-upgraded
+   * lifecycle) ⇒ no ack is signed (the caller falls back to a 2xx, back-compat).
+   */
+  onLeaseReceived?: (lease: unknown, fromMachineId: string) => number | void;
+  /**
+   * Callback to serve this machine's current effective-view lease for an active
+   * PULL (`POST /api/lease/pull`, Cross-Machine Coherence). Returns the signed
+   * effective-view `LeaseRecord` (which may name a THIRD machine as holder —
+   * re-served) or null when this machine has no lease. The puller re-verifies via
+   * `FencedLease.acceptTunnelLease`, so re-serving a third-party lease is safe.
+   */
+  onLeasePullRequest?: () => unknown | null;
+  /**
+   * Callback when the holder streams an encrypted live-tail flush over the wire
+   * (spec §8 G3b/c). The server lifecycle decrypts it with this machine's X25519
+   * private key, then applies it to the LiveTailBuffer (sequence-deduped). Throws
+   * if decryption/auth fails (the route turns that into a 400 rejection). Returns
+   * the apply outcome for observability.
+   */
+  onLiveTailReceived?: (
+    flush: { topic: string; seq: number; enc: unknown; redactionVersion?: number },
+    fromMachineId: string,
+  ) => { applied: boolean; reason: string } | void;
+  /**
+   * Callback when the INCOMING machine POSTs its verified-ack during a planned
+   * handoff (spec §8 G3d). Delivers the echo to the outgoing machine's
+   * HandoffWireTransport.recordAck so the pending awaitAck resolves.
+   */
+  onHandoffAck?: (ack: unknown, fromMachineId: string) => void;
+  /**
+   * Callback when the OUTGOING machine POSTs the explicit yield signal (spec §8
+   * G3e). Triggers the incoming machine's lease-CAS acquisition — the ONLY path
+   * by which the incoming attempts to take the lease in a planned handoff.
+   */
+  onHandoffYield?: (fromMachineId: string) => void;
+  /**
+   * Callback when the OUTGOING machine POSTs the begin signal that opens a planned
+   * handoff (spec §8 G3d). Carries the outgoing's flush manifest (tailSeq +
+   * ingressPosition + threadHistoryHash + the active topic) so the incoming machine
+   * can echo it in its caught-up ack. Delivers to the incoming's HandoffReceiver.
+   */
+  onHandoffBegin?: (manifest: unknown, fromMachineId: string) => void;
+  /**
+   * Callback when a peer propagates a `reply_committed` marker (spec §8 G3a,
+   * cross-machine exactly-once). Applies it to this machine's MessageProcessingLedger
+   * via applyRemoteReplyMarker so a post-handoff redelivery of that event is deduped.
+   */
+  onReplyMarker?: (marker: unknown, fromMachineId: string) => void;
+  /**
+   * mesh-endpoint-http-propagation — records a peer's advertised mesh endpoints (carried
+   * inside the signed lease RPC body) into THIS machine's registry. Bound to the
+   * AUTHENTICATED sender (`auth.machineId`), gated by `meshTransport`, validated +
+   * idempotent. Absent ⇒ recording is a strict no-op (the lease handling is unchanged).
+   */
+  peerEndpointRecorder?: import('../core/PeerEndpointRecorder.js').PeerEndpointRecorder;
+  /**
+   * mesh-endpoint-http-propagation — this machine's OWN validated self-endpoints, served
+   * in the `/api/lease/pull` RESPONSE so the PULLER (which dials us) learns our fast
+   * ropes. Absent / returns undefined ⇒ the field is omitted (un-upgraded behavior).
+   */
+  getSelfMeshEndpoints?: () => import('../core/types.js').MeshEndpoint[] | undefined;
 }
 
 // ── Route Factory ──────────────────────────────────────────────────
@@ -57,6 +129,129 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   const authMiddleware = machineAuthMiddleware(ctx.authDeps);
   const handoffChallenges = new ChallengeStore();
   const secretChallenges = new ChallengeStore();
+  // Code-authenticated pool join: the active pairing session (written by
+  // `instar pair`) is the shared secret that authorizes a non-interactive join.
+  const pairingStore = new PairingSessionStore(ctx.identityManager.baseDir);
+
+  // ── POST /api/lease — Receive a peer's fenced lease over the wire (spec §6) ──
+  // The low-latency authoritative copy. Auth-verified; the lease holder must
+  // match the authenticated machine (a peer cannot broadcast a lease naming a
+  // third machine). Fed to the HttpLeaseTransport via onLeaseReceived; FencedLease
+  // re-verifies the Ed25519 signature + epoch floor + nonce before trusting it.
+
+  router.post('/api/lease', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    const lease = (req.body && (req.body as any).lease) as { holder?: string } | undefined;
+    if (!lease || typeof lease.holder !== 'string') {
+      res.status(400).json({ error: 'Invalid lease payload' });
+      return;
+    }
+    if (lease.holder !== auth.machineId) {
+      ctx.securityLog.append({
+        event: 'lease_holder_mismatch',
+        machineId: auth.machineId,
+        detail: `Lease holder ${lease.holder} != authenticated ${auth.machineId}`,
+      });
+      res.status(403).json({ error: 'Lease holder does not match authenticated machine' });
+      return;
+    }
+    // mesh-endpoint-http-propagation — record the authenticated SENDER's advertised
+    // endpoints (carried inside this signed body). Bound to `auth.machineId` (the
+    // holder-match above already proved the sender owns the lease it broadcasts). The
+    // recorder is gated/validating/idempotent — a strict no-op when meshTransport is off.
+    ctx.peerEndpointRecorder?.record(auth.machineId, (req.body as { endpoints?: unknown }).endpoints);
+    const observedEpoch = ctx.onLeaseReceived?.(lease, auth.machineId);
+    // multi-transport-mesh-comms — freshness-bound accept-ack (Decision 9): when
+    // the caller supplied a challenge `reqNonce` AND the fold returned a concrete
+    // epoch, sign an ack proving WE folded THIS request's lease. Durable persist
+    // (if any) is the fold callback's own async concern — off this response path.
+    const reqNonce = (req.body && (req.body as { reqNonce?: unknown }).reqNonce);
+    if (typeof reqNonce === 'string' && reqNonce.length > 0 && typeof observedEpoch === 'number') {
+      const ack = { machineId: ctx.localMachineId, reqNonce, observedEpoch };
+      const sig = signLeaseAck(ack, ctx.localSigningKeyPem);
+      res.json({ ok: true, ack, sig });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  // ── POST /api/lease/pull — Serve this machine's effective-view lease (active PULL) ──
+  // The READ-side counterpart of POST /api/lease (Cross-Machine Coherence): a peer
+  // (typically a standby) ASKS for our current lease instead of only waiting to be
+  // pushed to, so a quiet or one-way network cannot blind it. Auth-verified via a
+  // signed empty body (machine-auth is body-hash based). Returns the responder's
+  // effective-view lease — which MAY name a third machine as holder (re-served); the
+  // puller re-verifies via FencedLease.acceptTunnelLease, so there is NO
+  // holder==responder guard here (that guard is push-only).
+  router.post('/api/lease/pull', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    // mesh-endpoint-http-propagation — record the authenticated PULLER's advertised
+    // endpoints (carried inside this signed body), bound to `auth.machineId`. There is
+    // no holder-match on the pull path, but machine-auth proves WHO the puller is, so
+    // binding to the authenticated sender is sound. Gated/validating/idempotent no-op.
+    ctx.peerEndpointRecorder?.record(auth.machineId, (req.body as { endpoints?: unknown }).endpoints);
+    // Our OWN self-endpoints to serve back in the RESPONSE so the puller learns our
+    // fast ropes (the live-bug direction). Omit the field when we have none.
+    const selfEndpoints = ctx.getSelfMeshEndpoints?.();
+    const selfEndpointsField =
+      Array.isArray(selfEndpoints) && selfEndpoints.length > 0 ? { endpoints: selfEndpoints } : undefined;
+    const lease = ctx.onLeasePullRequest ? ctx.onLeasePullRequest() : null;
+    // multi-transport-mesh-comms — identity accept-ack on the pull path (Decision 9):
+    // prove to the puller that WE are the expected peer answering THIS request, so a
+    // LAN-collision stranger or black-hole proxy returning 200 cannot be counted
+    // reachable. The pull does NOT confirm an epoch (the puller reads our lease, it
+    // does not fold its own), so the ack carries observedEpoch = our served epoch
+    // (advisory) and is verified by identity + freshness only.
+    const reqNonce = (req.body && (req.body as { reqNonce?: unknown }).reqNonce);
+    if (typeof reqNonce === 'string' && reqNonce.length > 0) {
+      const servedEpoch = lease && typeof (lease as { epoch?: unknown }).epoch === 'number' ? (lease as { epoch: number }).epoch : -1;
+      const ack = { machineId: ctx.localMachineId, reqNonce, observedEpoch: servedEpoch };
+      const sig = signLeaseAck(ack, ctx.localSigningKeyPem);
+      res.json({ lease: lease ?? null, ack, sig, ...selfEndpointsField });
+      return;
+    }
+    res.json({ lease: lease ?? null, ...selfEndpointsField });
+  });
+
+  // ── POST /api/live-tail — Receive an encrypted live-tail flush (spec §8 G3b/c) ──
+  // The holder streams the redacted+encrypted live conversation tail to the
+  // standby. Auth-verified (machineAuthMiddleware confirms the sender's identity
+  // against the registry — an unverifiable peer is rejected BEFORE any content is
+  // accepted, per §8 G3c). Decryption with this machine's X25519 private key and
+  // the sequence-deduped applyFlush happen in onLiveTailReceived (server
+  // lifecycle), which throws on a bad payload/auth → 400.
+
+  router.post('/api/live-tail', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    const flush = (req.body && (req.body as any).flush) as
+      | { topic?: string; seq?: number; enc?: unknown; redactionVersion?: number }
+      | undefined;
+    if (!flush || typeof flush.topic !== 'string' || typeof flush.seq !== 'number' || !flush.enc) {
+      res.status(400).json({ error: 'Invalid live-tail flush payload' });
+      return;
+    }
+    if (!ctx.onLiveTailReceived) {
+      res.status(503).json({ error: 'Live-tail receiver not available' });
+      return;
+    }
+    try {
+      const result = ctx.onLiveTailReceived(
+        { topic: flush.topic, seq: flush.seq, enc: flush.enc, redactionVersion: flush.redactionVersion },
+        auth.machineId,
+      );
+      res.json({ ok: true, applied: result?.applied ?? null, reason: result?.reason ?? null });
+    } catch (err) {
+      ctx.securityLog.append({
+        event: 'live_tail_rejected',
+        machineId: auth.machineId,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      res.status(400).json({ error: 'Live-tail flush rejected (decrypt/verify failed)' });
+    }
+  });
 
   // ── POST /api/heartbeat — Receive heartbeat from another machine ──
 
@@ -107,32 +302,183 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   // Instead, it relies on the pairing code exchange for authentication.
 
   router.post('/api/pair', (req, res) => {
-    const { pairingCode, machineIdentity, ephemeralPublicKey } = req.body;
+    const { pairingCode, machineIdentity, ephemeralPublicKey, advertisedUrl } = req.body ?? {};
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
 
     if (!pairingCode || !machineIdentity || !ephemeralPublicKey) {
       res.status(400).json({ error: 'Missing required pairing fields' });
       return;
     }
+    // Validate the joiner's identity shape before we'd ever persist it.
+    if (
+      typeof machineIdentity.machineId !== 'string' ||
+      typeof machineIdentity.signingPublicKey !== 'string' ||
+      typeof machineIdentity.encryptionPublicKey !== 'string'
+    ) {
+      res.status(400).json({ error: 'Malformed machineIdentity' });
+      return;
+    }
 
-    // Pairing validation is handled by the caller (CLI command).
-    // This endpoint just receives the request and signals the pairing flow.
-    // The actual pairing code comparison and SAS verification happen interactively.
+    // ── Code-authenticated, non-interactive pool join ────────────────
+    // The pairing code (a short-lived, single-use, attempt-capped shared secret
+    // written by `instar pair` and carried over the TLS tunnel) IS the auth — no
+    // human SAS step (operator's "Proceed with A" trust-model decision). A joiner
+    // can only ever register as STANDBY; it can never claim the awake role here.
+    const stored = pairingStore.load();
+    if (!stored) {
+      ctx.securityLog.append({
+        event: 'pairing_rejected',
+        machineId: machineIdentity.machineId,
+        machineName: machineIdentity.name,
+        reason: 'no-active-session',
+        ip,
+      });
+      res.status(403).json({ error: 'No active pairing session. Run `instar pair` on the awake machine.' });
+      return;
+    }
+
+    const result = validatePairingCode(stored as unknown as PairingSession, String(pairingCode));
+    // Persist the mutated session (failedAttempts increments accumulate across
+    // requests so the attempt cap actually throttles brute force).
+    pairingStore.save(stored);
+    if (!result.valid) {
+      ctx.securityLog.append({
+        event: 'pairing_rejected',
+        machineId: machineIdentity.machineId,
+        machineName: machineIdentity.name,
+        reason: result.reason ?? 'invalid-code',
+        ip,
+      });
+      res.status(403).json({ error: result.reason ?? 'Invalid pairing code' });
+      return;
+    }
+
+    // Code valid → register the joiner as standby, persist its public keys (so
+    // MeshRpc can verify its signatures), record its advertised URL if it sent
+    // one, and burn the code (single-use).
+    ctx.identityManager.registerMachine(machineIdentity, 'standby');
+    ctx.identityManager.storeRemoteIdentity(machineIdentity);
+    if (typeof advertisedUrl === 'string' && /^https?:\/\/\S+$/.test(advertisedUrl)) {
+      try {
+        ctx.identityManager.updateMachineUrl(machineIdentity.machineId, advertisedUrl.trim().replace(/\/+$/, ''));
+      } catch { /* entry was just registered; best-effort */ }
+    }
+    stored.consumed = true;
+    pairingStore.save(stored);
 
     ctx.securityLog.append({
-      event: 'pairing_request',
+      event: 'pairing_completed',
       machineId: machineIdentity.machineId,
       machineName: machineIdentity.name,
-      ip: req.ip || req.socket.remoteAddress || 'unknown',
+      ip,
     });
 
-    // Return this machine's identity and an ephemeral key for the ECDH exchange
+    // Return this machine's identity so the joiner can register us as awake.
     const localIdentity = ctx.identityManager.loadIdentity();
-
     res.json({
-      status: 'pending',
+      status: 'paired',
       machineIdentity: localIdentity,
-      message: 'Pairing request received. Verify the SAS on both machines.',
+      message: 'Paired.',
     });
+  });
+
+  // ── POST /api/handoff/begin — Outgoing machine opens a planned handoff (§8 G3d) ──
+  // Carries the outgoing's flush manifest (tailSeq + ingressPosition +
+  // threadHistoryHash + the active topic). The incoming machine stores it and
+  // builds its caught-up ack by echoing tailSeq/ingressPosition and recomputing
+  // the thread-history hash from its own synced state. No manifest → no handoff.
+
+  router.post('/api/handoff/begin', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    const manifest = (req.body && (req.body as any).manifest) as
+      | { tailSeq?: number; ingressPosition?: unknown; threadHistoryHash?: string; topic?: unknown }
+      | undefined;
+    if (
+      !manifest ||
+      typeof manifest.tailSeq !== 'number' ||
+      !manifest.ingressPosition ||
+      typeof manifest.threadHistoryHash !== 'string'
+    ) {
+      res.status(400).json({ error: 'Invalid handoff begin manifest' });
+      return;
+    }
+    if (!ctx.onHandoffBegin) {
+      res.status(503).json({ error: 'Handoff begin receiver not available' });
+      return;
+    }
+    ctx.onHandoffBegin(manifest, auth.machineId);
+    res.json({ ok: true });
+  });
+
+  // ── POST /api/message-marker — Cross-machine reply_committed marker (§8 G3a) ──
+  // The lease holder propagates "this inbound event was answered" to the standby
+  // so that AFTER a handoff/failover the newly-awake machine's ledger already
+  // knows, and a provider redelivery of the same event is deduped (the cross-
+  // machine half of exactly-once). Carries no conversation content. No receiver
+  // wired (exactly-once off) → 503.
+
+  router.post('/api/message-marker', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    const marker = (req.body && (req.body as any).marker) as
+      | { dedupeKey?: string; platform?: string; replyIdempotencyKey?: string; epoch?: number; topic?: unknown }
+      | undefined;
+    if (
+      !marker ||
+      typeof marker.dedupeKey !== 'string' ||
+      typeof marker.platform !== 'string' ||
+      typeof marker.replyIdempotencyKey !== 'string' ||
+      typeof marker.epoch !== 'number'
+    ) {
+      res.status(400).json({ error: 'Invalid reply marker payload' });
+      return;
+    }
+    if (!ctx.onReplyMarker) {
+      res.status(503).json({ error: 'Reply-marker receiver not available' });
+      return;
+    }
+    ctx.onReplyMarker(marker, auth.machineId);
+    res.json({ ok: true });
+  });
+
+  // ── POST /api/handoff/ack — Incoming machine's verified "caught up" ack (§8 G3d) ──
+  // The incoming machine echoes the live-tail sequence, the ingress position it
+  // will resume from, and a hash of the thread history it loaded. The outgoing
+  // machine verifies this echo matches what it flushed BEFORE yielding the lease.
+
+  router.post('/api/handoff/ack', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    const ack = (req.body && (req.body as any).ack) as
+      | { tailSeq?: number; ingressPosition?: unknown; threadHistoryHash?: string }
+      | undefined;
+    if (!ack || typeof ack.tailSeq !== 'number' || !ack.ingressPosition || typeof ack.threadHistoryHash !== 'string') {
+      res.status(400).json({ error: 'Invalid handoff ack payload' });
+      return;
+    }
+    if (!ctx.onHandoffAck) {
+      res.status(503).json({ error: 'Handoff ack receiver not available' });
+      return;
+    }
+    ctx.onHandoffAck(ack, auth.machineId);
+    res.json({ ok: true });
+  });
+
+  // ── POST /api/handoff/yield — Outgoing machine's explicit yield signal (§8 G3e) ──
+  // Sent ONLY after a verified ack + passing validation. This is the sole trigger
+  // for the incoming machine's lease-CAS acquisition; without it the incoming
+  // never attempts the lease, so there is no two-holders-same-epoch window.
+
+  router.post('/api/handoff/yield', authMiddleware, (req, res) => {
+    const { machineAuth } = req as any;
+    const auth = machineAuth as MachineAuthContext;
+    if (!ctx.onHandoffYield) {
+      res.status(503).json({ error: 'Handoff yield receiver not available' });
+      return;
+    }
+    ctx.onHandoffYield(auth.machineId);
+    res.json({ ok: true });
   });
 
   // ── POST /api/handoff/challenge — Generate challenge for handoff ──

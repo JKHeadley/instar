@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-23T23:19:07.858Z",
+  "slug": "auto-updater-lifeline-coordination",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 91,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

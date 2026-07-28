@@ -55,6 +55,7 @@ import {
   isEvidenceVisibleAtScope as rendererIsEvidenceVisibleAtScope,
 } from './EvidenceRenderer.js';
 import { NativeModuleHealer } from './NativeModuleHealer.js';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 
 // Dynamic import for better-sqlite3 (optional dependency)
 type Database = import('better-sqlite3').Database;
@@ -101,14 +102,96 @@ export interface SemanticMemoryCapabilityLeafKeyVault {
 /**
  * Strip FTS5 special syntax characters from a query.
  * Prevents query manipulation via AND, OR, NOT, NEAR, *, column filters.
+ *
+ * The apostrophe is in this set for a reason worth stating: FTS5 treats `'` as a
+ * STRING DELIMITER, so an ordinary English possessive or contraction — "bot's",
+ * "doesn't", "what's" — reaches the parser as an unterminated string and the whole
+ * query THROWS `fts5: syntax error near "'"`. Measured live against the running
+ * agent on 2026-07-27: `why can a telegram bot not see another bot's messages`
+ * errored on BOTH /semantic/search and /semantic/search/hybrid, while the identical
+ * query without the apostrophe returned the correct entity at rank 1.
+ *
+ * That throw is not confined to keyword search. `searchHybrid()` runs FTS5 alongside
+ * vector KNN, so the exception takes the whole hybrid call down with it — and
+ * PromptBuildRecall is fed the user's RAW message, where contractions are ordinary.
+ * So the character that breaks retrieval is one of the most common in the input.
+ *
+ * Stripping (rather than escaping) matches how every other special character here is
+ * handled, and costs nothing for retrieval: FTS5's unicode61 tokenizer already splits
+ * on the apostrophe, so `bot's` and `bots` produce the same tokens either way.
  */
 function sanitizeFts5Query(query: string): string {
   return query
     .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '')
-    .replace(/[*:"^{}().$@#!~`?\\[\]]/g, '')
+    .replace(/['*:"^{}().$@#!~`?\\[\]]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/**
+ * English function words that carry no retrieval signal but are FATAL to an
+ * FTS5 implicit-AND query.
+ *
+ * FTS5 requires EVERY bare token to match. No stored entity contains the word
+ * "why", so any question beginning "why ..." matches nothing regardless of the
+ * content words beside it. Recall is fed the user's raw message — always a
+ * natural-language sentence — so in practice it returned empty almost always.
+ * Measured on a live 2,852-entity store: "can I reach Codey" → 0 results,
+ * "is Codey responding to my messages" → 0, "why is Codey not replying" → 0,
+ * while "reach Codey" → 7, "Codey messages" → 17, "Codey" → 20.
+ */
+const FTS_STOPWORDS = new Set([
+  'a', 'about', 'am', 'an', 'and', 'any', 'are', 'as', 'at', 'be', 'been', 'but',
+  'by', 'can', 'could', 'did', 'do', 'does', 'for', 'from', 'get', 'got', 'had',
+  'has', 'have', 'how', 'i', 'if', 'in', 'is', 'it', 'its', 'me', 'my', 'no',
+  'of', 'on', 'or', 'our', 'should', 'so', 'that', 'the', 'their', 'them',
+  'then', 'there', 'these', 'they', 'this', 'to', 'was', 'we', 'were', 'what',
+  'when', 'where', 'which', 'who', 'why', 'will', 'with', 'would', 'you', 'your',
+]);
+
+/**
+ * Build the two FTS5 match expressions a recall query needs.
+ *
+ * `strict` drops stopwords and keeps FTS5's implicit AND, so a genuine
+ * multi-keyword query stays precise. `loose` ORs the same content words and is
+ * used ONLY as a fallback when strict returns nothing — five loosely-relevant
+ * memories beat the empty set that made stored lessons unreachable.
+ *
+ * Stopword removal never empties the query: if a message is ALL stopwords the
+ * original tokens are kept, so behaviour degrades to the previous semantics
+ * rather than silently matching everything.
+ *
+ * Exported for tests — the failure this fixes is invisible at the route level
+ * (a zero-result search looks identical to "nothing was ever stored").
+ */
+export function buildFtsQueryVariants(
+  query: string,
+): { strict: string; loose: string } | null {
+  const sanitized = sanitizeFts5Query(query);
+  if (!sanitized) return null;
+
+  const tokens = sanitized.split(' ').filter((t) => t.length > 0);
+  if (tokens.length === 0) return null;
+
+  const content = tokens.filter((t) => !FTS_STOPWORDS.has(t.toLowerCase()));
+  const effective = content.length > 0 ? content : tokens;
+
+  return {
+    strict: effective.join(' '),
+    loose: effective.length > 1 ? effective.join(' OR ') : effective.join(' '),
+  };
+}
+
+/**
+ * Which retrieval strategy actually served a search.
+ *
+ * `vector-hybrid` means embeddings were used; the `fts-*` values mean lexical
+ * matching served it, either because the query was lexically satisfiable or
+ * because the vector path was unavailable. Exposed so a caller can tell a
+ * semantic answer from a keyword one — silently serving the cheap strategy is
+ * the degradation this reporting exists to make visible.
+ */
+export type SearchStrategy = 'vector-hybrid' | 'fts-strict' | 'fts-loose-fallback' | 'none';
 
 export class SemanticMemory {
   /**
@@ -461,6 +544,24 @@ export class SemanticMemory {
   private embeddingProvider: EmbeddingProvider | null = null;
   private vectorSearch: VectorSearch | null = null;
   private _vectorAvailable = false;
+
+  /**
+   * Which retrieval strategy actually served the most recent `search()` call.
+   *
+   * `fts-strict` is the precise implicit-AND query; `fts-loose-fallback` means the
+   * strict query found NOTHING and the weaker OR query was used instead. Exposed
+   * because "No Silent Degradation to Brittle Fallback" requires a drop to a weaker
+   * strategy to be an observable event rather than a detail — a retrieval path that
+   * silently serves from the cheap strategy reports healthy while being fake-healthy.
+   * That is not hypothetical here: recall ran on keyword-only search for its entire
+   * life while a fully-populated vector index went uncalled, and nothing said so.
+   */
+  private _lastSearchStrategy: SearchStrategy = 'none';
+
+  /** Which strategy served the last search — see `_lastSearchStrategy`. */
+  get lastSearchStrategy(): SearchStrategy {
+    return this._lastSearchStrategy;
+  }
   private jsonlPath: string;
   /** Set after corruption auto-recovery — caller should reimport from JSONL */
   private _needsRebuild = false;
@@ -566,6 +667,10 @@ export class SemanticMemory {
     });
 
     this.db = constructor(this.config.dbPath) as Database;
+    // Close-on-exit registry (SqliteRegistry.ts) — the closeFn reads this.db live
+    // so a corruption-recovery reopen later in open() is still covered. Closed
+    // once at shutdown via closeAllSqlite().
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
 
     // Integrity check — auto-recover from corruption (JSONL is source of truth).
     // Corrupt DBs are quarantined (renamed) not deleted, and a marker file is written
@@ -586,18 +691,58 @@ export class SemanticMemory {
 
       // Secondary probe: integrity_check can miss torn interior pages that aren't
       // reachable from the B-tree schema walk. A probe read on existing tables catches these.
+      //
+      // Two correctness rules learned the hard way (codex-live-test, vec0 loop):
+      //  1. Skip VIRTUAL tables (e.g. the vec0 `entity_embeddings` table). The
+      //     sqlite-vec extension is NOT loaded yet at this point in open() —
+      //     initVectorSearch() runs later (line ~613) — so probing a vec0 table
+      //     throws "no such module: vec0". That is an extension-availability
+      //     signal, NOT disk corruption. A virtual table is not storage anyway;
+      //     its real data lives in shadow tables (entity_embeddings_chunks,
+      //     _rowids, _vector_chunks00, ...) which ARE plain tables and remain in
+      //     the probe set below, so vector-data corruption is still caught.
+      //  2. Even with (1), classify any "no such module" error as a missing
+      //     loadable extension, never corruption. Quarantining on it caused a
+      //     rebuild-on-every-boot loop (semantic.db.corrupt.* churn) and silently
+      //     defeated the FTS5-only graceful-degradation path this class promises.
       if (!this._needsRebuild) {
+        let tables: Array<{ name: string }> = [];
         try {
-          const tables = this.db!.prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'fts%' AND name NOT LIKE 'sqlite%'"
+          tables = this.db!.prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' " +
+            "AND name NOT LIKE 'fts%' AND name NOT LIKE 'sqlite%' " +
+            "AND (sql IS NULL OR sql NOT LIKE 'CREATE VIRTUAL TABLE%')"
           ).all() as Array<{ name: string }>;
-          for (const t of tables) {
-            this.db!.prepare(`SELECT * FROM "${t.name}" LIMIT 100`).all();
-          }
         } catch (err) {
-          this.quarantineCorruptDb(`probe read failed: ${(err as Error).message}`);
+          // Failing to read sqlite_master itself is genuine corruption.
+          this.quarantineCorruptDb(`schema read failed: ${(err as Error).message}`);
           this.db = constructor(this.config.dbPath) as Database;
           this._needsRebuild = true;
+        }
+
+        if (!this._needsRebuild) {
+          for (const t of tables) {
+            try {
+              this.db!.prepare(`SELECT * FROM "${t.name}" LIMIT 100`).all();
+            } catch (err) {
+              const msg = (err as Error).message || '';
+              if (/no such module/i.test(msg)) {
+                // Loadable extension unavailable (e.g. vec0) — capability gap,
+                // not corruption. Skip this object, keep probing the rest, and
+                // let initVectorSearch() degrade to FTS5-only. NO quarantine.
+                console.warn(
+                  `[SemanticMemory] Probe skipped "${t.name}": ${msg}. ` +
+                  `Loadable extension unavailable — continuing FTS5-only (no quarantine).`
+                );
+                continue;
+              }
+              // Genuine corruption (torn page, malformed image).
+              this.quarantineCorruptDb(`probe read failed on "${t.name}": ${msg}`);
+              this.db = constructor(this.config.dbPath) as Database;
+              this._needsRebuild = true;
+              break;
+            }
+          }
         }
       }
     }
@@ -1438,8 +1583,14 @@ export class SemanticMemory {
   search(query: string, options?: SemanticSearchOptions): ScoredEntity[] {
     const db = this.ensureOpen();
 
-    const sanitized = sanitizeFts5Query(query);
-    if (!sanitized) return [];
+    const variants = buildFtsQueryVariants(query);
+    if (!variants) {
+      // Reset rather than leaving the previous call's strategy readable — a stale
+      // "served by strict" on a query that never ran is exactly the kind of
+      // falsely-healthy signal this field exists to prevent.
+      this._lastSearchStrategy = 'none';
+      return [];
+    }
 
     const limit = options?.limit ?? 20;
 
@@ -1451,7 +1602,7 @@ export class SemanticMemory {
       WHERE entities_fts MATCH ?
     `;
 
-    const params: (string | number)[] = [sanitized];
+    const params: (string | number)[] = [variants.strict];
 
     if (options?.types && options.types.length > 0) {
       const placeholders = options.types.map(() => '?').join(',');
@@ -1482,7 +1633,27 @@ export class SemanticMemory {
     sql += ` ORDER BY entities_fts.rank LIMIT ?`;
     params.push(limit * 3); // Fetch extra for re-ranking
 
-    const rows = db.prepare(sql).all(...params) as (EntityRow & { fts_rank: number })[];
+    const statement = db.prepare(sql);
+    let rows = statement.all(...params) as (EntityRow & { fts_rank: number })[];
+    this._lastSearchStrategy = 'fts-strict';
+
+    // Strict (implicit-AND over content words) is the precise query and stays
+    // authoritative whenever it finds anything. Only when it finds NOTHING do we
+    // widen to OR — an empty result is what made stored lessons unreachable, and
+    // a loosely-relevant hit is strictly better than silence. Every other filter
+    // (type, domain, confidence, privacy) is unchanged and still applies.
+    //
+    // The widening is RECORDED, not silent. Per the "No Silent Degradation to
+    // Brittle Fallback" standard, falling back to a weaker strategy is an event:
+    // a retrieval path that quietly serves from the cheap strategy looks healthy
+    // while being fake-healthy, which is the exact defect this whole change exists
+    // to fix. Reading `lastSearchStrategy` tells a caller what actually served.
+    if (rows.length === 0 && variants.loose !== variants.strict) {
+      const looseParams = [...params];
+      looseParams[0] = variants.loose;
+      rows = statement.all(...looseParams) as (EntityRow & { fts_rank: number })[];
+      this._lastSearchStrategy = 'fts-loose-fallback';
+    }
 
     // ─── Vector results (if available) ────────────────────────
     // vectorScores is populated asynchronously via searchHybrid() for callers
@@ -1569,7 +1740,10 @@ export class SemanticMemory {
    */
   async searchHybrid(query: string, options?: SemanticSearchOptions): Promise<ScoredEntity[]> {
     if (!this._vectorAvailable || !this.embeddingProvider || !this.vectorSearch) {
-      // Graceful degradation: fall back to FTS5-only
+      // Graceful degradation: fall back to FTS5-only. `search()` records the
+      // strategy it used, so the caller can still tell that the vector path did
+      // not run — a degradation that reports itself rather than one that looks
+      // identical to success.
       return this.search(query, options);
     }
 
@@ -1590,6 +1764,12 @@ export class SemanticMemory {
 
     // Run the combined search (which now picks up vector scores)
     const results = this.search(query, options);
+
+    // The inner search() just recorded a lexical strategy, which is true of the
+    // candidate selection but misleading as the answer to "did the semantic path
+    // run?" — embeddings genuinely participated in ranking here. Overwrite AFTER
+    // the call so the reported strategy matches what actually served.
+    this._lastSearchStrategy = 'vector-hybrid';
 
     // Clear cached scores
     this._lastVectorScores = null;

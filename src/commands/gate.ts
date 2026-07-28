@@ -23,9 +23,16 @@ type GateMode = 'off' | 'shadow' | 'enforce';
 
 function readConfig(stateDir: string): { port: number; authToken: string } {
   const cfg = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8'));
+  // INSTAR_AUTH_TOKEN env first — survives the secret-externalization refactor
+  // that moves authToken out of config.json into the encrypted store. Falls
+  // back to the plaintext config field only when it's still a string (the
+  // { secret: true } placeholder is rejected so the bogus value never reaches
+  // a Bearer header). Note: this CLI command runs out-of-process from the
+  // server so it can't use loadConfig() — it needs explicit handling here.
+  const tokenFromConfig = typeof cfg.authToken === 'string' ? cfg.authToken : '';
   return {
     port: cfg.port ?? 4042,
-    authToken: cfg.authToken ?? '',
+    authToken: process.env.INSTAR_AUTH_TOKEN || tokenFromConfig,
   };
 }
 
@@ -75,6 +82,7 @@ export async function gateStatus(opts: { dir?: string }): Promise<void> {
     autonomousActive: boolean;
     compactionInFlight: boolean;
     routeVersion: number;
+    breaker?: { open: boolean; consecutiveFailures: number; openUntil: number; suppressedCount: number } | null;
   };
   const kill = (await killRes.json()) as { killSwitch: boolean };
 
@@ -87,6 +95,13 @@ export async function gateStatus(opts: { dir?: string }): Promise<void> {
   console.log(`  Autonomous active: ${hot.autonomousActive ? pc.cyan('yes') : pc.gray('no')}`);
   console.log(`  Compaction:        ${hot.compactionInFlight ? pc.yellow('in-flight') : pc.gray('idle')}`);
   console.log(`  Route version:     ${hot.routeVersion}`);
+  if (hot.breaker) {
+    console.log(`  Authority breaker: ${hot.breaker.open ? pc.yellow('open') : pc.green('closed')} (${hot.breaker.consecutiveFailures} failures, ${hot.breaker.suppressedCount} suppressed)`);
+    if (hot.breaker.open) {
+      console.log(`  Next automatic probe: ${new Date(hot.breaker.openUntil).toISOString()}`);
+      console.log('  Repaired the provider? Run: instar gate reset-breaker');
+    }
+  }
   console.log('');
   if (hot.mode === 'off') {
     console.log(pc.gray('  Gate is inert. Use `instar gate set unjustified-stop --mode shadow` to begin data collection.'));
@@ -98,6 +113,17 @@ export async function gateStatus(opts: { dir?: string }): Promise<void> {
   if (kill.killSwitch) {
     console.log(pc.red('  Kill-switch is SET — every evaluation short-circuits to allow. Clear with --clear.'));
   }
+}
+
+export async function gateResetBreaker(opts: { dir?: string }): Promise<void> {
+  const stateDir = resolveStateDir(opts);
+  const { port, authToken } = readConfig(stateDir);
+  const res = await authedFetch(port, authToken, '/internal/stop-gate/reset-breaker', { method: 'POST' });
+  if (!res.ok) {
+    console.error(pc.red(`breaker reset failed: ${res.status}`));
+    process.exit(1);
+  }
+  console.log(pc.green('✓ Stop-gate authority breaker reset; the next Stop event may probe immediately.'));
 }
 
 // ── `instar gate set unjustified-stop --mode <mode>` ────────────────

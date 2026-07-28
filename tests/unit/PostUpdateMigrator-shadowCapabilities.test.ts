@@ -152,4 +152,125 @@ describe('PostUpdateMigrator — migrateFrameworkShadowCapabilities (Gap 6 minim
     const agents = fs.readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf-8');
     expect(agents.startsWith(identity.trimEnd())).toBe(true);
   });
+
+  // --- Secret Drop propagation (2026-05-24, codey live-test J-secret-drop) ---
+  // Fixture reproduces the real adjacency that broke: Secret Drop sits BETWEEN
+  // Private Viewing and Cloudflare Tunnel as a `**bold**` block with no heading
+  // between them.
+  const SECRET_ADJACENCY_FIXTURE = `# CLAUDE.md — instar
+
+### Self-Discovery (Know Before You Claim)
+
+curl the capabilities endpoint.
+
+**Private Viewing** — Render markdown as auth-gated HTML.
+Private body line.
+
+**Secret Drop** — Securely collect secrets from users.
+- Request: POST /secrets/request
+- **When to use**: NEVER ask the user to edit a local file; always issue a one-time link.
+
+**Cloudflare Tunnel** — Expose the local server.
+Tunnel body line.
+
+**Dashboard** — Visual web interface.
+Dashboard body line.
+
+### Coherence Gate (Pre-Action Verification)
+
+Check coherence.
+`;
+
+  it('propagates Secret Drop to a shadow that already has its neighbors but not Secret Drop (no over-grab/dup)', () => {
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), SECRET_ADJACENCY_FIXTURE);
+    // AGENTS.md generated from an OLDER template: has Private Viewing + Tunnel
+    // + Dashboard but predates Secret Drop. This is codey's exact situation.
+    fs.writeFileSync(
+      path.join(projectDir, 'AGENTS.md'),
+      `# Echo
+
+### Self-Discovery (Know Before You Claim)
+
+curl the capabilities endpoint.
+
+**Private Viewing** — Render markdown as auth-gated HTML.
+Private body line.
+
+**Cloudflare Tunnel** — Expose the local server.
+Tunnel body line.
+
+**Dashboard** — Visual web interface.
+Dashboard body line.
+`,
+    );
+
+    const result = runShadowCaps(migrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const agents = fs.readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf-8');
+    // Secret Drop now present...
+    expect(agents).toContain('**Secret Drop**');
+    expect(agents).toContain('always issue a one-time link');
+    // ...and adjacent sections are NOT duplicated by the slice over-grab.
+    expect(agents.match(/\*\*Cloudflare Tunnel\*\*/g)?.length).toBe(1);
+    expect(agents.match(/\*\*Private Viewing\*\*/g)?.length).toBe(1);
+    expect(agents.match(/\*\*Dashboard\*\*/g)?.length).toBe(1);
+    // The Secret Drop slice must stop at the next marker — it must NOT have
+    // dragged the Cloudflare Tunnel body in with it.
+    expect(agents.match(/\*\*Secret Drop\*\*/g)?.length).toBe(1);
+  });
+
+  it('propagates Commitments & Follow-Through to a shadow that has its neighbors but not it (no over-grab)', () => {
+    const claudeMd = `# CLAUDE.md — instar
+
+### Self-Discovery (Know Before You Claim)
+
+curl the capabilities endpoint.
+
+**Private Viewing** — auth-gated HTML.
+Private body.
+
+**Secret Drop** — secure secret intake.
+Secret body.
+
+**Commitments & Follow-Through** — durable promise tracking.
+- Open: POST /commitments
+- NEVER improvise the follow-through with a raw sleep/timer.
+
+**Cloudflare Tunnel** — expose the server.
+Tunnel body.
+
+### Coherence Gate
+
+Check coherence.
+`;
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), claudeMd);
+    fs.writeFileSync(
+      path.join(projectDir, 'AGENTS.md'),
+      '# Echo\n\n### Self-Discovery (Know Before You Claim)\n\ncurl it.\n\n**Private Viewing** — auth-gated HTML.\nPrivate body.\n\n**Cloudflare Tunnel** — expose the server.\nTunnel body.\n',
+    );
+
+    const result = runShadowCaps(migrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const agents = fs.readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf-8');
+    expect(agents).toContain('**Commitments & Follow-Through**');
+    expect(agents).toContain('NEVER improvise the follow-through');
+    expect(agents.match(/\*\*Cloudflare Tunnel\*\*/g)?.length).toBe(1);
+    expect(agents.match(/\*\*Commitments & Follow-Through\*\*/g)?.length).toBe(1);
+  });
+
+  it('fresh shadow: every bold capability section is appended exactly once (slice bounded at next marker)', () => {
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), SECRET_ADJACENCY_FIXTURE);
+    fs.writeFileSync(path.join(projectDir, 'AGENTS.md'), '# Echo\n\nidentity only\n');
+
+    const result = runShadowCaps(migrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const agents = fs.readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf-8');
+    for (const marker of ['**Private Viewing**', '**Secret Drop**', '**Cloudflare Tunnel**', '**Dashboard**', '### Self-Discovery', '### Coherence Gate']) {
+      const re = new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+      expect(agents.match(re)?.length, `${marker} should appear exactly once`).toBe(1);
+    }
+  });
 });

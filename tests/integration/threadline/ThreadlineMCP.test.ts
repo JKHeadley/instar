@@ -28,32 +28,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ThreadlineMCPServer } from '../../../src/threadline/ThreadlineMCPServer.js';
 import { MCPAuth } from '../../../src/threadline/MCPAuth.js';
 import { ThreadResumeMap } from '../../../src/threadline/ThreadResumeMap.js';
+import { TestThreadResumeMap } from '../../helpers/TestThreadResumeMap.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
-
-/**
- * Test-friendly ThreadResumeMap that skips JSONL file existence checks.
- * In production, ThreadResumeMap.get() verifies the Claude JSONL file exists.
- * In tests, those files don't exist, so we override to skip that check.
- */
-class TestThreadResumeMap extends ThreadResumeMap {
-  /**
-   * Override get() to use the raw data without JSONL verification.
-   * We access the internal load() and isExpired() by reading the file directly.
-   */
-  get(threadId: string): import('../../../src/threadline/ThreadResumeMap.js').ThreadResumeEntry | null {
-    // Read the file directly to bypass JSONL check
-    const filePath = (this as any).filePath;
-    try {
-      if (!fs.existsSync(filePath)) return null;
-      const map = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      const entry = map[threadId];
-      if (!entry) return null;
-      return entry;
-    } catch {
-      return null;
-    }
-  }
-}
 import { AgentDiscovery } from '../../../src/threadline/AgentDiscovery.js';
 import { AgentTrustManager } from '../../../src/threadline/AgentTrustManager.js';
 import type {
@@ -613,7 +589,10 @@ describe('ThreadlineMCP Integration', () => {
       ctx = await createIntegrationContext();
 
       const tools = await ctx.client.listTools();
-      expect(tools.tools).toHaveLength(7);
+      // includes threadline_request_secret (sealed-handoff keystone) +
+      // threadline_pair (Secure A2A Verified Pairing §3.6).
+      expect(tools.tools).toHaveLength(9);
+      expect(tools.tools.map((t) => t.name)).toContain('threadline_pair');
 
       // Verify each tool has input schema
       for (const tool of tools.tools) {

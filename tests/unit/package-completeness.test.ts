@@ -29,6 +29,9 @@ function getPackedFiles(): string[] {
   const output = execSync('npm pack --dry-run --json 2>/dev/null', {
     cwd: ROOT,
     encoding: 'utf-8',
+    // The pack file-list JSON is ~1.05MB — over execSync's 1MB default maxBuffer
+    // (ENOBUFS). Same headroom as npm-pack-templates-smoke.test.ts.
+    maxBuffer: 16 * 1024 * 1024,
   });
   const parsed = JSON.parse(output);
   // npm pack --json returns an array with one entry
@@ -250,7 +253,11 @@ describe('Package completeness', () => {
       expect.fail('upgrades/ directory does not exist');
     }
 
-    const guides = fs.readdirSync(upgradesDir).filter(f => f.endsWith('.md') && f !== 'NEXT.md');
+    // Exclude NEXT.md (validated separately) and *.eli16.md companion files
+    // (plain-English overviews shipped alongside the technical guide; they
+    // have their own shape and are checked by the instar-dev pre-commit gate).
+    const guides = fs.readdirSync(upgradesDir).filter(f =>
+      f.endsWith('.md') && f !== 'NEXT.md' && !f.endsWith('.eli16.md'));
     expect(guides.length).toBeGreaterThan(0);
 
     const requiredSections = [
@@ -317,12 +324,14 @@ describe('Package completeness', () => {
       const packOut = execSync('npm pack --silent --pack-destination ' + JSON.stringify(tmpDir), {
         cwd: ROOT,
         encoding: 'utf-8',
+        maxBuffer: 16 * 1024 * 1024,
       }).trim();
       const tarballName = packOut.split('\n').pop() as string;
       const tarballPath = path.join(tmpDir, tarballName);
       expect(fsDyn.existsSync(tarballPath), `tarball not produced: ${tarballPath}`).toBe(true);
 
-      const listing = execSync(`tar -tvf ${JSON.stringify(tarballPath)}`, { encoding: 'utf-8' });
+      // The full-tarball listing is also near the 1MB default maxBuffer (ENOBUFS headroom).
+      const listing = execSync(`tar -tvf ${JSON.stringify(tarballPath)}`, { encoding: 'utf-8', maxBuffer: 16 * 1024 * 1024 });
       const lines = listing.split('\n');
 
       const missingExec: string[] = [];

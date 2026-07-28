@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-26T03:10:35.280Z",
+  "slug": "guard-heartbeat-unproven-summary",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 30,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

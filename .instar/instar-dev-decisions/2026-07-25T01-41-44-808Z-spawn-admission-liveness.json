@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-25T01:41:44.808Z",
+  "slug": "spawn-admission-liveness",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 21,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

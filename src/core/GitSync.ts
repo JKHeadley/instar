@@ -23,6 +23,9 @@ import { FileClassifier } from './FileClassifier.js';
 import type { ClassificationResult } from './FileClassifier.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { assertNotInstarSourceTree } from './SourceTreeGuard.js';
+import { reconcileRegistryEntries } from './registryReplayGuard.js';
+import { mergeRegistry } from './mergeRegistry.js';
+import type { MachineRegistry } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 
@@ -194,6 +197,15 @@ export class GitSyncManager {
 
     // No git repo — return clean no-op (standalone agent without git backup)
     if (!this.isGitRepo()) return result;
+
+    // Cross-Machine Seamlessness §8 G2 — snapshot the registry BEFORE the pull
+    // so we can apply the replay/freshness + unknown-key guard to whatever the
+    // pull brings in (a clean fast-forward can still deliver a stale or
+    // unknown-key registry that signed-commit verification alone won't catch).
+    let registryBefore: MachineRegistry | null = null;
+    try {
+      registryBefore = this.identityManager.loadRegistry();
+    } catch { /* @silent-fallback-ok — reconcile skipped if snapshot unreadable */ }
 
     // 0. Pre-flight: detect and fix stuck rebase / detached HEAD before attempting pull
     let rebaseJustAborted = false;
@@ -408,6 +420,15 @@ export class GitSyncManager {
     // 2. Verify pulled commits
     if (result.pulled) {
       result.rejectedCommits = this.verifyPulledCommits();
+      // §8 G2 — apply the replay/freshness + unknown-key guard to the pulled
+      // registry, scrubbing any stale or unauthorized entries before we trust it.
+      if (registryBefore) {
+        try {
+          this.reconcilePulledRegistry(registryBefore);
+        } catch (err) {
+          console.warn(`[GitSync] registry reconcile warning: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     }
 
     // 3. Push pending changes
@@ -436,10 +457,68 @@ export class GitSyncManager {
   }
 
   /**
+   * §8 G2 — reconcile a freshly-pulled registry against the pre-pull snapshot,
+   * scrubbing any entry that fails the replay/freshness or unknown-key guard.
+   * Signed-commit verification (verifyPulledCommits) already rejected unsigned
+   * or revoked COMMITS; this rejects stale/unauthorized registry ENTRIES that a
+   * valid signature alone would let through (e.g. a re-keyed machine whose
+   * per-author sequence reset, or an unknown key asserting an awake role). The
+   * lease object itself is reconciled by the FencedLease layer (epoch CAS), not
+   * here. Returns the rejected machineIds (for the caller's diagnostics/tests).
+   */
+  reconcilePulledRegistry(registryBefore: MachineRegistry): string[] {
+    const afterPull = this.identityManager.loadRegistry();
+    const committedEpoch = registryBefore.lease?.epoch ?? 0;
+    const { accepted, rejected } = reconcileRegistryEntries({
+      localEntries: registryBefore.machines ?? {},
+      incomingEntries: afterPull.machines ?? {},
+      currentCommittedEpoch: committedEpoch,
+    });
+    if (rejected.length === 0) return [];
+
+    // Rebuild a clean registry: start from the trusted pre-pull entries, then
+    // overlay the accepted incoming entries. Rejected entries fall back to the
+    // pre-pull value (or are omitted if they were never known locally).
+    const merged: typeof afterPull.machines = { ...(registryBefore.machines ?? {}) };
+    for (const [id, entry] of Object.entries(accepted)) merged[id] = entry;
+    afterPull.machines = merged;
+    this.identityManager.saveRegistry(afterPull);
+
+    for (const r of rejected) {
+      this.securityLog.append({
+        event: 'registry_entry_rejected',
+        machineId: this.machineId,
+        rejectedMachine: r.machineId,
+        reason: r.reason,
+      });
+      console.warn(`[GitSync] Rejected pulled registry entry for ${r.machineId}: ${r.reason}`);
+    }
+    return rejected.map((r) => r.machineId);
+  }
+
+  /**
+   * Targeted pull-rebase (no auto-commit). Used by the lease CAS to minimize
+   * the push-reject window before writing a lease candidate. Returns true if
+   * the pull succeeded (HEAD may or may not have moved). Best-effort: returns
+   * false on any error rather than throwing.
+   */
+  pullRebase(): boolean {
+    if (!this.isGitRepo()) return false;
+    try {
+      this.gitExec(['pull', '--rebase', '--autostash']);
+      return true;
+    } catch {
+      // @silent-fallback-ok — lease CAS re-reads and retries on failure
+      return false;
+    }
+  }
+
+  /**
    * Stage files and commit with machine signing.
    */
   commitAndPush(message: string, paths?: string[]): boolean {
-    const filesToAdd = paths || [this.stateDir];
+    const filesToAdd = this.syncEligibleDirtyPaths(paths || [this.stateDir]);
+    if (filesToAdd.length === 0) return false;
 
     try {
       for (const p of filesToAdd) {
@@ -461,6 +540,66 @@ export class GitSyncManager {
       // @silent-fallback-ok — push failure boolean return
       return false;
     }
+  }
+
+  /**
+   * Return dirty paths that are eligible for git-sync staging.
+   *
+   * The important distinction: `.instar/` contains both source-like state that
+   * should sync (jobs, identity docs, durable registries) and local runtime or
+   * secret material that must never be swept into Git. `git add .instar` erases
+   * that boundary, especially for repos that already tracked bad paths before a
+   * newer .gitignore existed. Enumerating porcelain status first lets the
+   * FileClassifier make the sync decision path-by-path.
+   */
+  private syncEligibleDirtyPaths(paths: string[]): string[] {
+    const args = ['status', '--porcelain', '-z', '--', ...paths];
+    let raw = '';
+    try {
+      raw = this.gitExecRaw(args);
+    } catch {
+      // @silent-fallback-ok — status preflight failure preserves the previous
+      // broad add/diff behavior rather than disabling GitSync entirely.
+      return paths;
+    }
+
+    const eligible: string[] = [];
+    const seen = new Set<string>();
+    const entries = raw.split('\0').filter(Boolean);
+    if (entries.length === 0) return paths;
+
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (entry.length < 4) continue;
+
+      const status = entry.slice(0, 2);
+      let relPath = entry.slice(3);
+      if ((status[0] === 'R' || status[0] === 'C') && entries[i + 1]) {
+        // In porcelain -z mode, rename/copy records emit the destination path
+        // first, followed by the source path as the next NUL-delimited field.
+        i++;
+      }
+
+      if (!relPath || seen.has(relPath)) continue;
+      seen.add(relPath);
+
+      const deleting = status.includes('D');
+      const classification = this.fileClassifier.classify(path.join(this.projectDir, relPath));
+      if (!deleting && (classification.strategy === 'never-sync' || classification.strategy === 'exclude')) {
+        DegradationReporter.getInstance().report({
+          feature: 'GitSync.gitHygiene',
+          primary: `Stage ${relPath}`,
+          fallback: 'Skip local-only or secret path',
+          reason: classification.reason,
+          impact: `${relPath} remains local and is not included in git-sync commits.`,
+        });
+        continue;
+      }
+
+      eligible.push(relPath);
+    }
+
+    return eligible;
   }
 
   /**
@@ -910,7 +1049,44 @@ export class GitSyncManager {
       return this.resolveUnionById(filePath);
     }
 
+    // Mesh registry: union machines (later lastSeen wins per id; revocation
+    // sticky) + lease higher-epoch-wins. Closes the 2026-05-27 divergence where
+    // a concurrent lease-bump + join collided on registry.json and fell to
+    // LLM/manual, leaving the mesh split (one side saw 1 machine, the other 2).
+    if (relPath.endsWith('machines/registry.json') || relPath.endsWith('machines\\registry.json')) {
+      return this.resolveRegistryConflict(filePath);
+    }
+
     return false;
+  }
+
+  /**
+   * Resolve a `machines/registry.json` conflict via deterministic semantic
+   * merge (mergeRegistry): union machines by id, lease by higher epoch. Both
+   * machines compute the identical merged registry, so the mesh converges
+   * without coordination.
+   */
+  private resolveRegistryConflict(filePath: string): boolean {
+    try {
+      const oursContent = this.gitExec(['show', ':2:' + filePath]); // ours
+      const theirsContent = this.gitExec(['show', ':3:' + filePath]); // theirs
+      const ours = JSON.parse(oursContent) as MachineRegistry;
+      const theirs = JSON.parse(theirsContent) as MachineRegistry;
+
+      const merged = mergeRegistry(ours, theirs);
+      fs.writeFileSync(filePath, JSON.stringify(merged, null, 2));
+      this.gitExec(['add', filePath]);
+      return true;
+    } catch (err) {
+      DegradationReporter.getInstance().report({
+        feature: 'GitSync.resolveRegistryConflict',
+        primary: 'Auto-merge mesh registry conflict (union machines + higher-epoch lease)',
+        fallback: 'Leave conflict for LLM/manual resolution',
+        reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'Mesh registry may diverge until the conflict is resolved another way.',
+      });
+      return false;
+    }
   }
 
   /**
@@ -1014,6 +1190,16 @@ export class GitSyncManager {
       stdio: ['pipe', 'pipe', 'pipe'],
       operation: 'src/core/GitSync.ts:gitExec',
     }).trim();
+  }
+
+  private gitExecRaw(args: string[]): string {
+    return SafeGitExecutor.run(args, {
+      cwd: this.projectDir,
+      encoding: 'utf-8',
+      timeout: 30_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      operation: 'src/core/GitSync.ts:gitExecRaw',
+    });
   }
 
   private gitConfig(key: string, value: string): void {

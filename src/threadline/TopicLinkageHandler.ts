@@ -50,8 +50,13 @@ export interface TopicLinkageDeps {
   commitmentTracker: CommitmentTracker;
   salienceGate: SalienceGate;
   messageStore?: MessageStore | null;
-  /** Inject text into a live tmux session. */
-  injectIntoSession: (sessionName: string, text: string) => boolean;
+  /**
+   * Inject text into a live tmux session, returning whether the session
+   * actually CONSUMED it (not merely dispatched). May be async — production
+   * confirms submission across the paste-recovery window. A `false`/rejected
+   * result means the inject stalled, so the caller must fall back to surfacing.
+   */
+  injectIntoSession: (sessionName: string, text: string) => boolean | Promise<boolean>;
   /** Check if a tmux session is alive. */
   isSessionAlive: (sessionName: string) => boolean;
   /** Post a notification to a Telegram topic. */
@@ -276,10 +281,15 @@ export class TopicLinkageHandler {
       agentResponse: `Sent threadline message to ${input.remoteAgentDisplayName ?? input.remoteAgent}, awaiting reply.`,
       source: 'agent',
       expiresAt: new Date(this.nowFn() + ttlMs).toISOString(),
-      // Explicit beaconEnabled so the auto-opt path is deterministic regardless
-      // of whether the agentResponse text contains a time-promise marker.
-      beaconEnabled: true,
-      beaconCreatedBySource: 'api-loopback',
+      // Near-Silent Notifications: a threadline-reply commitment must NOT beacon
+      // the user's topic. Its purpose is reply ROUTING (relatedThreadId + topicId);
+      // the inbound reply is dispatched automatically when it arrives, so a cadenced
+      // "⏳ awaiting reply" heartbeat is pure housekeeping noise about an agent-to-
+      // agent conversation — beaconing it floods the user's chat (observed 2026-05-31,
+      // dozens of heartbeats on one topic). Explicit `false` also pins the
+      // CommitmentTracker auto-opt path, which would otherwise enable a beacon
+      // whenever a topicId is attached.
+      beaconEnabled: false,
     });
 
     return {
@@ -402,7 +412,7 @@ export class TopicLinkageHandler {
     // surface the awaited reply through the topic's existing wake path.
     if (sessionName && this.deps.isSessionAlive(sessionName)) {
       try {
-        const ok = this.deps.injectIntoSession(sessionName, payload);
+        const ok = await this.deps.injectIntoSession(sessionName, payload);
         if (ok) {
           deliveryMode = 'live-inject';
         }
@@ -412,24 +422,53 @@ export class TopicLinkageHandler {
         );
       }
     } else if (sessionName) {
-      // Session not alive — the message is durably recorded in MessageStore by
-      // the inbound path; the topic's standard wake path (user message arrives
-      // → spawn-or-resume) will surface this on the next interaction. We do
-      // NOT auto-spawn a session here: that's the topic-resume infrastructure's
-      // job, and spawning two sessions on top of one topic is a race we don't
-      // need to fight.
+      // Session registered but not alive. We do NOT auto-spawn a session here
+      // (that's the topic-resume infrastructure's job; spawning a second session
+      // on top of one topic is a race we don't need to fight). The reply is
+      // recorded in the ConversationStore (the browsable Threadline hub) on the
+      // inbound path; whether it ALSO fires a topic notification is decided by
+      // the salience-gated surface below (salient → surface; low-salience →
+      // quiet, hub only). NOTE: there is no automatic topic-resume REPLAY of a
+      // quieted reply — recovery of a low-salience reply is via the hub.
       deliveryMode = 'resume-pending';
     }
 
-    // Telegram surface. User-visible verdicts post a notification. failure-
-    // visible delivery mode forces a notification regardless of verdict so the
-    // user always knows something arrived even if our auto-pickup failed.
+    // Salience-gated Telegram surface (#16 — suppress low-salience a2a chatter).
+    //   - live-inject confirmed → NEVER surface (the agent relays the reply
+    //     inline; a deterministic surface would double-post).
+    //   - failure-visible (a stalled inject, or no auto-pickup path) → ALWAYS
+    //     surface regardless of salience, so a real reply is never hidden when
+    //     our hand-off didn't actually take (the A2 safety valve).
+    //   - resume-pending (dormant session) → surface ONLY if the reply is
+    //     user-visible (salient). A low-salience reply stays QUIET in the user's
+    //     topic: it is recorded in the ConversationStore — the browsable
+    //     Threadline hub (the dashboard's Threadline tab) — via
+    //     evaluateAndRecordInbound on the inbound path, so it is not lost; it
+    //     just doesn't fire a noisy topic post for intermediate agent-to-agent
+    //     chatter. This is exactly the "suppress low-salience chatter to the
+    //     silent hub" behavior. (Note: there is no automatic topic-resume replay
+    //     of the suppressed reply — recovery is via the browsable hub.)
+    // Before #16 the verdict was effectively ignored here: deliveryMode is always
+    // one of the three above, so the old OR-clause (`verdict==='user-visible' ||
+    // deliveryMode==='failure-visible' || deliveryMode==='resume-pending'`) passed
+    // for EVERY non-live-inject delivery — so every dormant reply surfaced
+    // regardless of salience. That was the spam. Now the computed salience
+    // actually gates the dormant-session surface (the classifier's first-reply
+    // fallback still surfaces first contact, so a genuine first answer is never
+    // hidden even when the classifier is unavailable).
     const shouldSurface =
-      verdictResult.verdict === 'user-visible' ||
       deliveryMode === 'failure-visible' ||
-      deliveryMode === 'resume-pending';
+      (deliveryMode === 'resume-pending' && verdictResult.verdict === 'user-visible');
 
-    if (shouldSurface && this.passesRateLimit(threadId) && this.passesTopicRateLimit(topicId)) {
+    // Rate-limit the surface: per-thread (no double-fire within the window) AND
+    // per-topic (anti-flood/bypass guard against many threads against one topic).
+    // No first-reply carve-out: a thread's FIRST reply has no prior surface so it
+    // passes the per-thread limit naturally, and the per-topic cap must hold even
+    // for first replies (otherwise N rotating threads = N surfaces = the flood).
+    // A carve-out would also misfire once the commitment is delivered, since
+    // findByThreadId then returns null and isFirstReply flips true again.
+    const rateOk = this.passesRateLimit(threadId) && this.passesTopicRateLimit(topicId);
+    if (shouldSurface && rateOk) {
       try {
         const surfaceText = this.buildTelegramSurface({
           message,
@@ -462,18 +501,24 @@ export class TopicLinkageHandler {
       }
     }
 
-    // Mark commitment delivered on live-inject AND resume-pending — both
-    // paths represent successful awaited-reply resolution from the user's
-    // point of view. live-inject hands the payload to a running session;
-    // resume-pending durably stored the reply and the topic's standard wake
-    // path will surface it on next interaction. In both cases PromiseBeacon
-    // should stop heartbeating "still waiting" — the wait is over.
-    //
-    // Only `failure-visible` (the actually-wedged path: injection error or
-    // delivery breakdown) leaves the commitment open, so the beacon keeps
-    // surfacing the unresolved state.
+    // CMT-509 §1: a "report back" commitment must NOT resolve until the reply was
+    // actually surfaced TO THE USER. The user is surfaced when either:
+    //   - `live-inject` — CONFIRMED consumption: the payload was submitted into
+    //                     the topic's LIVE session, which relays to the user per
+    //                     the Telegram-reply rule (a stalled inject is NOT
+    //                     'live-inject' — it degraded to 'failure-visible'), OR
+    //   - `telegramSent` — a user-facing post actually landed in the topic, on
+    //                     ANY delivery mode (resume-pending OR the failure-visible
+    //                     safety-net). telegramSent is the authoritative "the user
+    //                     saw it" signal.
+    // Any un-surfaced path (telegramSent false AND not a confirmed live-inject —
+    // e.g. a stalled inject whose surface was rate-limited, or no Telegram
+    // configured) leaves the commitment OPEN so PromiseBeacon keeps heartbeating;
+    // the 7-day TTL + expireCommitments() sweep is the backstop. This is the fix
+    // for the 2026-05-25 premature-resolution incident.
+    const surfacedToUser = deliveryMode === 'live-inject' || telegramSent;
     let commitmentDelivered = false;
-    if (commitment && (deliveryMode === 'live-inject' || deliveryMode === 'resume-pending')) {
+    if (commitment && surfacedToUser) {
       try {
         commitmentTracker.deliver(commitment.id);
         commitmentDelivered = true;

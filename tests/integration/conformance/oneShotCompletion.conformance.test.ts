@@ -24,6 +24,7 @@
 import { describe, it, expect } from 'vitest';
 import { createAnthropicHeadlessAdapter } from '../../../src/providers/adapters/anthropic-headless/index.js';
 import { createAnthropicInteractivePoolAdapter } from '../../../src/providers/adapters/anthropic-interactive-pool/index.js';
+import { createOpenAiCodexAdapter } from '../../../src/providers/adapters/openai-codex/index.js';
 import { CapabilityFlag } from '../../../src/providers/capabilities.js';
 import type { OneShotCompletion } from '../../../src/providers/primitives/transport/oneShotCompletion.js';
 
@@ -48,6 +49,13 @@ const ADAPTERS: AdapterUnderTest[] = [
   {
     id: 'anthropic-interactive-pool',
     factory: () => createAnthropicInteractivePoolAdapter({ poolSize: 1, canaryIntervalMs: 0 }),
+  },
+  {
+    // Codex declares OneShotCompletion (capabilities.ts) but was absent from this harness —
+    // a parity-coverage gap from the 2026-05-31 audit. Contract-shape conformance runs the
+    // same assertions against codex; the realApi behavior case stays opt-in.
+    id: 'openai-codex',
+    factory: () => createOpenAiCodexAdapter(),
   },
 ];
 

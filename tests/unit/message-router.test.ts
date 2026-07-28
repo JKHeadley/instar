@@ -377,4 +377,40 @@ describe('MessageRouter', () => {
       expect(stats.threads).toBeDefined();
     });
   });
+
+  describe('thread-aggregate maintenance — both legs persisted (Fix 4 / D)', () => {
+    function leg(id: string, fromAgent: string, toAgent: string, threadId: string, body: string): MessageEnvelope {
+      const now = new Date().toISOString();
+      return {
+        schemaVersion: 1,
+        message: {
+          id, from: { agent: fromAgent, session: 's', machine: fromAgent === 'my-agent' ? 'local' : 'remote' },
+          to: { agent: toAgent, session: 'best', machine: 'local' },
+          type: 'info', priority: 'medium', subject: 'Relay message', body, threadId,
+          createdAt: now, ttlMinutes: 30,
+        },
+        transport: { relayChain: ['x'], originServer: 'http://x:3000', nonce: `${crypto.randomUUID()}:${now}`, timestamp: now },
+        delivery: { phase: 'sent', transitions: [], attempts: 0 },
+      } as MessageEnvelope;
+    }
+
+    it('getThread returns BOTH the inbound (relay) and outbound (recordLocalOutbound) legs', async () => {
+      const tid = 'thread-both-legs';
+      await router.relay(leg('msg-in-1', 'peer', 'my-agent', tid, 'hi from peer'), 'agent');
+      await router.recordLocalOutbound(leg('msg-out-1', 'my-agent', 'peer', tid, 'reply from me'));
+
+      const result = await router.getThread(tid);
+      expect(result).not.toBeNull();
+      const ids = result!.messages.map(m => m.message.id).sort();
+      expect(ids).toEqual(['msg-in-1', 'msg-out-1']);
+    });
+
+    it('recordLocalOutbound is idempotent — re-recording the same id does not double-count', async () => {
+      const tid = 'thread-idem';
+      await router.recordLocalOutbound(leg('msg-out-2', 'my-agent', 'peer', tid, 'once'));
+      await router.recordLocalOutbound(leg('msg-out-2', 'my-agent', 'peer', tid, 'once'));
+      const result = await router.getThread(tid);
+      expect(result!.thread.messageIds.filter(id => id === 'msg-out-2')).toHaveLength(1);
+    });
+  });
 });

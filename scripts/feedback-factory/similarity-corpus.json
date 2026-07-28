@@ -1,0 +1,25 @@
+{
+  "_comment": "Parity corpus of title PAIRS for the Jaccard similarity port. Covers identical / disjoint / partial-overlap / boundary (≈0.35, ≈0.55) / empty / punctuation-only / non-ASCII-dropped cases. Both Python json.load and Node JSON.parse decode identical bytes, so the input is shared.",
+  "pairs": [
+    { "a": "GitSync.pull fails intermittently", "b": "GitSync.pull fails intermittently" },
+    { "a": "auth token refresh broken", "b": "completely unrelated database migration" },
+    { "a": "session reaper kills active session", "b": "session reaper kills idle session" },
+    { "a": "the quick brown fox", "b": "the quick red fox" },
+    { "a": "alpha beta gamma delta", "b": "alpha beta epsilon zeta" },
+    { "a": "one two three four five", "b": "one two three six seven" },
+    { "a": "a b c d e f g", "b": "a b c d h i j" },
+    { "a": "tunnel retry exhaustion notify", "b": "tunnel retry backoff" },
+    { "a": "", "b": "non empty title" },
+    { "a": "non empty title", "b": "" },
+    { "a": "", "b": "" },
+    { "a": "!!! ??? ...", "b": "more punctuation: ;;; ///" },
+    { "a": "café résumé naïve", "b": "cafe resume naive" },
+    { "a": "İstanbul ören", "b": "istanbul oren" },
+    { "a": "Straße über", "b": "strasse uber" },
+    { "a": "arabic ٣٤٥ digits", "b": "arabic digits" },
+    { "a": "MixedCASE Tokens HERE", "b": "mixedcase tokens here" },
+    { "a": "duplicate duplicate duplicate word", "b": "duplicate word" },
+    { "a": "v1.2.3 release notes", "b": "v9.9.9 release notes" },
+    { "a": "GitSync.pull deadlock under load", "b": "GitSync push deadlock under heavy load now" }
+  ]
+}

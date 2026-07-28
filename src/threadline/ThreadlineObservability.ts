@@ -254,8 +254,8 @@ export class ThreadlineObservability {
   private knownAgentsPath(): string {
     return path.join(this.stateDir, 'threadline', 'known-agents.json');
   }
-  private threadResumePath(): string {
-    return path.join(this.stateDir, 'threadline', 'thread-resume-map.json');
+  private conversationsPath(): string {
+    return path.join(this.stateDir, 'threadline', 'conversations.json');
   }
 
   private readJsonl(filePath: string): RawInboxEntry[] {
@@ -287,16 +287,26 @@ export class ThreadlineObservability {
     return map;
   }
 
+  /**
+   * Phase 2a (CMT-497): the resume state now lives in conversations.json (the
+   * single store). Return threads that have a spawned session (a sessionUuid) so
+   * the dashboard's `hasSpawnedSession` check is preserved.
+   */
   private loadThreadResume(): ThreadResumeFile {
-    const file = this.threadResumePath();
+    const file = this.conversationsPath();
     if (!fs.existsSync(file)) return {};
     try {
       const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
-      // ThreadResumeMap structure varies; accept any keyed map at the top level.
-      if (parsed && typeof parsed === 'object' && parsed.threads && typeof parsed.threads === 'object') {
-        return parsed.threads as ThreadResumeFile;
+      const convs = parsed && typeof parsed === 'object' ? parsed.conversations : undefined;
+      if (convs && typeof convs === 'object') {
+        const out: ThreadResumeFile = {};
+        for (const [threadId, c] of Object.entries(convs as Record<string, { sessionUuid?: string }>)) {
+          if (c && typeof c === 'object' && typeof c.sessionUuid === 'string' && c.sessionUuid) {
+            out[threadId] = c;
+          }
+        }
+        return out;
       }
-      if (parsed && typeof parsed === 'object') return parsed as ThreadResumeFile;
     } catch { /* ignore */ }
     return {};
   }

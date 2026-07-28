@@ -4,7 +4,13 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { MessagingToneGate } from '../../src/core/MessagingToneGate.js';
+import {
+  MessagingToneGate,
+  detectDeterministicLeak,
+  scrubClickLinksForFloor,
+  normalizeAutomatedTemplate,
+  fingerprintAutomatedTemplate,
+} from '../../src/core/MessagingToneGate.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 
 function mockProvider(responseFn: (prompt: string) => string | Promise<string>): IntelligenceProvider {
@@ -24,6 +30,17 @@ function errorProvider(err: Error): IntelligenceProvider {
 }
 
 describe('MessagingToneGate', () => {
+  it('normalizes volatile canary ids to one template fingerprint', () => {
+    const a = 'Delivery canary mesh-12345 reached topic-987654 at 2026-07-24T20:00:00Z';
+    const b = 'Delivery canary mesh-67890 reached topic-123456 at 2026-07-24T20:05:00Z';
+    expect(normalizeAutomatedTemplate(a)).toBe(normalizeAutomatedTemplate(b));
+    expect(fingerprintAutomatedTemplate(a)).toBe(fingerprintAutomatedTemplate(b));
+  });
+
+  it('keeps genuinely different automated templates distinct', () => {
+    expect(fingerprintAutomatedTemplate('Delivery canary succeeded for mesh-12345'))
+      .not.toBe(fingerprintAutomatedTemplate('Delivery canary failed for mesh-12345'));
+  });
   describe('pass case', () => {
     it('passes clean conversational messages', async () => {
       const provider = mockProvider(() =>
@@ -157,7 +174,10 @@ describe('MessagingToneGate', () => {
   });
 
   describe('reasoning-discipline enforcement', () => {
-    it('fails open when the LLM tries to block with an invented rule id', async () => {
+    it('fails CLOSED (re-prompt then hold) when the LLM tries to block with an invented rule id', async () => {
+      // Spec §Design 6: a wanted-block mis-citing a rule re-prompts once; if the
+      // model still cites garbage it HOLDS (fail-closed), never silently passes —
+      // the fix for the old fail-open that could re-launder a real B15 block.
       const provider = mockProvider(() =>
         JSON.stringify({
           pass: false,
@@ -168,12 +188,12 @@ describe('MessagingToneGate', () => {
       );
       const gate = new MessagingToneGate(provider);
       const result = await gate.review('Some technical message', { channel: 'telegram' });
-      expect(result.pass).toBe(true);
-      expect(result.failedOpen).toBe(true);
-      expect(result.invalidRule).toBe(true);
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
+      expect((provider.evaluate as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2); // one re-prompt
     });
 
-    it('fails open when the LLM tries to block without citing any rule', async () => {
+    it('fails CLOSED when the LLM tries to block without citing any rule', async () => {
       const provider = mockProvider(() =>
         JSON.stringify({
           pass: false,
@@ -184,9 +204,8 @@ describe('MessagingToneGate', () => {
       );
       const gate = new MessagingToneGate(provider);
       const result = await gate.review('Some technical message', { channel: 'telegram' });
-      expect(result.pass).toBe(true);
-      expect(result.failedOpen).toBe(true);
-      expect(result.invalidRule).toBe(true);
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
     });
 
     it('honors a block cited with a valid signal-driven rule (B8)', async () => {
@@ -283,12 +302,100 @@ describe('MessagingToneGate', () => {
       expect(capturedPrompt).toContain('UPSTREAM SIGNALS');
       expect(capturedPrompt).toContain('no signals reported');
     });
+
+    it('includes topic-intent ArcCheck signal with kind, ref text, and rewrite hint', async () => {
+      let capturedPrompt = '';
+      const provider = mockProvider((p) => {
+        capturedPrompt = p;
+        return JSON.stringify({ pass: true, rule: '', issue: '', suggestion: '' });
+      });
+      const gate = new MessagingToneGate(provider);
+      await gate.review('We need a second machine.', {
+        channel: 'telegram',
+        signals: {
+          arcCheck: {
+            fire: true,
+            kind: 'contradicts-settled',
+            refText: 'The mac-mini is already configured and SSH-reachable.',
+            suggestedRewriteHint:
+              'Pause and surface the contradiction; the mac-mini is already configured.',
+          },
+        },
+      });
+      expect(capturedPrompt).toContain('topic-intent ArcCheck');
+      expect(capturedPrompt).toContain('signal-only, never blocks');
+      expect(capturedPrompt).toContain('fire=true');
+      expect(capturedPrompt).toContain('kind=contradicts-settled');
+      expect(capturedPrompt).toContain('mac-mini is already configured');
+      expect(capturedPrompt).toContain('rewrite hint:');
+    });
+
+    it('omits ArcCheck block when fire=false', async () => {
+      let capturedPrompt = '';
+      const provider = mockProvider((p) => {
+        capturedPrompt = p;
+        return JSON.stringify({ pass: true, rule: '', issue: '', suggestion: '' });
+      });
+      const gate = new MessagingToneGate(provider);
+      await gate.review('Plain message', {
+        channel: 'telegram',
+        signals: { arcCheck: { fire: false } },
+      });
+      expect(capturedPrompt).not.toContain('topic-intent ArcCheck');
+    });
   });
 
-  describe('fail-open behavior', () => {
-    it('fails open (pass=true) when the provider throws', async () => {
+  describe('fail-CLOSED behavior (No Silent Degradation §Design 6)', () => {
+    // F4 graceful degradation (tone-gate-graceful-degradation): the DEFAULT
+    // provider-throw disposition is no longer a blunt hold — it degrades to the
+    // in-process deterministic leak floor so a clean message still reaches the
+    // user during a backend outage (the bug that silently cut the user off when
+    // claude -p was rate-limited). A real leak still HOLDS on that path.
+    it('DEGRADES to the deterministic floor and SENDS a clean message when the provider throws (F4 default)', async () => {
       const provider = errorProvider(new Error('network timeout'));
       const gate = new MessagingToneGate(provider);
+
+      const result = await gate.review(
+        'I will run the migration and push the change for you.',
+        { channel: 'telegram' },
+      );
+
+      expect(result.pass).toBe(true);
+      expect(result.degradedToDeterministic).toBe(true);
+      expect(result.failedClosed).toBeFalsy();
+    });
+
+    it('still HOLDS a leaked artifact on the degraded floor when the provider throws (F4 leak-safety)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider);
+
+      // A B2 file-path leak — the deterministic floor must catch it even with no LLM.
+      const result = await gate.review('see /Users/justin/.instar/config.json', {
+        channel: 'telegram',
+      });
+
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
+      expect(result.degradedToDeterministic).toBe(true);
+      expect(result.rule).toBe('B2_FILE_PATH');
+    });
+
+    it('restores pure-hold on a provider throw when failClosedOnExhaustion is true (operator override)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider, { failClosedOnExhaustion: true });
+
+      const result = await gate.review('I will run the migration for you.', {
+        channel: 'telegram',
+      });
+
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
+      expect(result.degradedToDeterministic).toBeFalsy();
+    });
+
+    it('reverts the provider-throw path to fail-open when the kill-switch is off', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider, { failClosedOnExhaustion: false });
 
       const result = await gate.review('some message', { channel: 'telegram' });
 
@@ -296,31 +403,81 @@ describe('MessagingToneGate', () => {
       expect(result.failedOpen).toBe(true);
     });
 
-    it('fails open (pass=true) when the provider returns malformed JSON', async () => {
+    // ux-is-the-product-hardening §2.1 — the deterministic self-stop floor.
+    // The behavioral self-stop guard (B15/B18) needs the LLM judge, so on the
+    // degraded path it vanishes. The floor backstops exactly that gap: a
+    // clean-prose self-stop must HOLD even with the judge offline (the
+    // 2026-06-27 incident is the founding case).
+    const SLIP_2026_06_27 =
+      "Why I'm pausing here rather than barreling ahead: I'd rather not do this as the " +
+      'tail of an already-huge work session. Deploying restarts the agent you are talking ' +
+      "to, so I'd rather run it as a clean, focused pass than risk a half-finished restart.";
+
+    it('HOLDS a clean-prose self-stop on the degraded floor when the provider throws (the 2026-06-27 slip)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider);
+
+      const result = await gate.review(SLIP_2026_06_27, { channel: 'telegram' });
+
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
+      expect(result.degradedToDeterministic).toBe(true);
+      expect(result.rule).toBe('B15_CONTEXT_DEATH_STOP');
+    });
+
+    it('SENDS a legitimate operator-decision question on the degraded floor (no self-protective reason)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider);
+
+      const result = await gate.review(
+        'Quick decision before I proceed: ship approach A or B? Either is reversible — your call on the risk appetite.',
+        { channel: 'telegram' },
+      );
+
+      expect(result.pass).toBe(true);
+      expect(result.degradedToDeterministic).toBe(true);
+    });
+
+    it('the self-stop floor inherits the failClosedOnExhaustion:false kill-switch (fail-open)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider, { failClosedOnExhaustion: false });
+
+      const result = await gate.review(SLIP_2026_06_27, { channel: 'telegram' });
+
+      // Kill-switch off ⇒ pure fail-open: review() never reaches the degraded
+      // floor, so even a self-stop sends. The operator's explicit override.
+      expect(result.pass).toBe(true);
+      expect(result.failedOpen).toBe(true);
+    });
+
+    it('fails CLOSED (re-prompt then hold) when the provider returns malformed JSON', async () => {
       const provider = mockProvider(() => 'this is not JSON at all, just prose');
       const gate = new MessagingToneGate(provider);
 
       const result = await gate.review('some message', { channel: 'telegram' });
 
-      expect(result.pass).toBe(true);
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
     });
 
-    it('fails open (pass=true) when the provider returns JSON with missing pass field', async () => {
+    it('fails CLOSED when the provider returns JSON with missing pass field', async () => {
       const provider = mockProvider(() => JSON.stringify({ verdict: 'block' }));
       const gate = new MessagingToneGate(provider);
 
       const result = await gate.review('some message', { channel: 'telegram' });
 
-      expect(result.pass).toBe(true);
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
     });
 
-    it('fails open (pass=true) when JSON parse throws (invalid JSON inside braces)', async () => {
+    it('fails CLOSED when JSON parse throws (invalid JSON inside braces)', async () => {
       const provider = mockProvider(() => 'response text {not valid json inside} more text');
       const gate = new MessagingToneGate(provider);
 
       const result = await gate.review('some message', { channel: 'telegram' });
 
-      expect(result.pass).toBe(true);
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
     });
   });
 
@@ -385,8 +542,9 @@ describe('MessagingToneGate', () => {
       });
 
       expect(capturedPrompt).toContain('RECENT CONVERSATION');
-      expect(capturedPrompt).toContain('USER: explain what happened');
-      expect(capturedPrompt).toContain('AGENT: looking into it');
+      // §Design 4: context bodies are JSON-encoded (boundary-wrapped, untrusted data).
+      expect(capturedPrompt).toContain('USER: "explain what happened"');
+      expect(capturedPrompt).toContain('AGENT: "looking into it"');
     });
 
     it('marks no prior context when recentMessages is omitted', async () => {
@@ -458,19 +616,183 @@ describe('MessagingToneGate', () => {
       expect(result.suggestion).toBe('rephrase');
     });
 
-    it('fails open when LLM blocks but omits the rule field (drift)', async () => {
-      // Historically this test expected the gate to block with empty fields.
-      // Under the signal-vs-authority rework, a block without a rule citation
-      // is treated as reasoning drift and fails open — the authority must
-      // trace its decisions to enumerated rule ids.
+    it('fails CLOSED when LLM blocks but omits the rule field (drift)', async () => {
+      // A block without a rule citation is reasoning drift. Spec §Design 6:
+      // re-prompt once, then HOLD (fail-closed) — never silently pass. (This
+      // superseded the older fail-open behavior, which could re-launder a real
+      // block the model wanted but mis-cited.)
       const provider = mockProvider(() => JSON.stringify({ pass: false }));
       const gate = new MessagingToneGate(provider);
 
       const result = await gate.review('message', { channel: 'telegram' });
 
+      expect(result.pass).toBe(false);
+      expect(result.failedClosed).toBe(true);
+    });
+  });
+
+  // B5 link carve-out: the prompt must teach the model that an `api-endpoint`
+  // signal fires on EVERY URL, and that a click/open destination (private-view
+  // link, tunnel URL, published/Telegraph page, dashboard, signed-token link)
+  // PASSES while only a call-target (curl/POST an endpoint) blocks. The LLM is
+  // mocked in unit tests, so the deterministic guarantee we lock here is that
+  // the prompt carries the both-sides carve-out + worked examples — the regression
+  // that broke real agents was the prompt blocking click-targets under B5.
+  describe('B5 link carve-out (prompt teaches call-vs-open)', () => {
+    async function capturePrompt(): Promise<string> {
+      let captured = '';
+      const provider = mockProvider((p) => {
+        captured = p;
+        return JSON.stringify({ pass: true, issue: '', suggestion: '' });
+      });
+      const gate = new MessagingToneGate(provider);
+      await gate.review('Here is the link.', { channel: 'telegram' });
+      return captured;
+    }
+
+    it('B5 instructs judging by call-vs-open intent, not URL shape', async () => {
+      const prompt = await capturePrompt();
+      expect(prompt).toContain('B5_API_ENDPOINT');
+      // The discriminator must be intent, explicitly NOT the host:port/path shape.
+      expect(prompt).toMatch(/call-vs-open/i);
+      expect(prompt).toMatch(/NEVER BY SHAPE|never by the presence of host:port/i);
+    });
+
+    it('B5 explicitly exempts click/open destinations (the false-positive class)', async () => {
+      const prompt = await capturePrompt();
+      // The exact link kinds that broke real agents must be named as OPEN/PASS.
+      expect(prompt).toMatch(/private-view link/i);
+      expect(prompt).toMatch(/trycloudflare/i);
+      expect(prompt).toMatch(/telegraph/i);
+      expect(prompt).toMatch(/dashboard/i);
+      expect(prompt).toMatch(/\?token=/);
+    });
+
+    it('B5 still names a genuine call-target as a BLOCK (under-block guard)', async () => {
+      const prompt = await capturePrompt();
+      // Worked examples must cover BOTH sides of the boundary.
+      expect(prompt).toMatch(/BLOCK:.*curl http/i);
+      expect(prompt).toMatch(/PASS:.*\/view\//i);
+    });
+
+    it('the ALWAYS ALLOWED section names browser-open URLs specifically', async () => {
+      const prompt = await capturePrompt();
+      expect(prompt).toContain('ALWAYS ALLOWED');
+      expect(prompt).toMatch(/OPENS \/ CLICKS \/ VISITS/i);
+      expect(prompt).toMatch(/content destinations, not API calls/i);
+    });
+
+    it('honors the model verdict on both sides (plumbing): view link passes, call-target blocks', async () => {
+      // A click-destination — model passes it.
+      const passing = mockProvider(() =>
+        JSON.stringify({ pass: true, rule: '', issue: '', suggestion: '' }),
+      );
+      const passResult = await new MessagingToneGate(passing).review(
+        'Rendered doc: https://abc123.trycloudflare.com/view/k3p9?token=secrettoken',
+        { channel: 'telegram' },
+      );
+      expect(passResult.pass).toBe(true);
+
+      // A genuine API call handed to the user — model blocks it as B5.
+      const blocking = mockProvider(() =>
+        JSON.stringify({
+          pass: false,
+          rule: 'B5_API_ENDPOINT',
+          issue: 'curl endpoint handed to the user to call',
+          suggestion: 'Call it yourself and report the result.',
+        }),
+      );
+      const blockResult = await new MessagingToneGate(blocking).review(
+        'To check, run: curl http://localhost:4042/commitments',
+        { channel: 'telegram' },
+      );
+      expect(blockResult.pass).toBe(false);
+      expect(blockResult.rule).toBe('B5_API_ENDPOINT');
+    });
+  });
+
+  // tonegate-floor-click-links: the deterministic floor (used when the LLM judge
+  // times out / errors) must NOT hard-block a legitimate user-facing CLICK link
+  // (a private view, tunnel, dashboard, Secret-Drop, Telegraph, download URL) —
+  // the LLM path already carves these out by intent; the floor did not, so a
+  // backend outage turned every shared link into a blocked message fleet-wide.
+  describe('deterministic floor — click-link carve-out (tonegate-floor-click-links)', () => {
+    const CLICK_LINKS = [
+      ['Secret Drop', 'Here is your one-time link to drop the key: https://abc-123.trycloudflare.com/secrets/drop/9f3a-2b1c'],
+      ['private view', 'I put the report here: http://localhost:4040/view/report-2026-06-28'],
+      ['dashboard', 'Open the dashboard: https://xyz.trycloudflare.com/dashboard?tab=files&path=docs/x.md'],
+      ['Telegraph', 'Published it publicly: https://telegra.ph/My-Page-06-28'],
+      ['download', 'Grab the file: http://localhost:4040/api/files/download?path=.claude/CLAUDE.md'],
+    ] as const;
+
+    for (const [label, msg] of CLICK_LINKS) {
+      it(`PASSES a ${label} click-link on the floor (no false hold)`, () => {
+        expect(detectDeterministicLeak(msg)).toBeNull();
+      });
+    }
+
+    it('still HOLDS a real CLI call instruction even when a URL is present', () => {
+      const leak = detectDeterministicLeak(
+        'To check, run: curl http://localhost:4042/commitments',
+      );
+      expect(leak).not.toBeNull();
+    });
+
+    it('still HOLDS an uppercase HTTP-method call against a URL', () => {
+      const leak = detectDeterministicLeak('POST https://localhost:4042/attention with that body');
+      expect(leak).not.toBeNull();
+    });
+
+    it('still HOLDS an imperative "hit the endpoint" call phrase with a URL', () => {
+      const leak = detectDeterministicLeak('hit the endpoint at https://localhost:4042/tunnel');
+      expect(leak).not.toBeNull();
+    });
+
+    it('still HOLDS a no-article call phrase ("call api") with a URL', () => {
+      const leak = detectDeterministicLeak('call api https://localhost:4042/commitments');
+      expect(leak).not.toBeNull();
+    });
+
+    it('scrubClickLinksForFloor runs in linear time on a long whitespace run (no ReDoS)', () => {
+      // A trigger verb followed by a huge whitespace run was the O(n²) backtracking
+      // shape; the hardened CALL_PHRASE must return promptly.
+      const adversarial = 'call' + ' '.repeat(200_000) + 'x https://a.com/y';
+      const start = Date.now();
+      scrubClickLinksForFloor(adversarial);
+      expect(Date.now() - start).toBeLessThan(200);
+    });
+
+    it('still HOLDS a file-path leak — scrub only removes scheme URLs', () => {
+      const leak = detectDeterministicLeak('see /Users/justin/.instar/config.json');
+      expect(leak?.rule).toBe('B2_FILE_PATH');
+    });
+
+    it('still HOLDS a bare CLI command leak alongside a click-link', () => {
+      const leak = detectDeterministicLeak(
+        'Open https://x.trycloudflare.com/view/abc — but first I ran: rm -rf node_modules && pnpm i',
+      );
+      expect(leak).not.toBeNull();
+    });
+
+    it('scrubClickLinksForFloor strips a scheme URL but leaves prose intact', () => {
+      expect(scrubClickLinksForFloor('open https://a.com/x/y now')).not.toMatch(/https?:\/\//);
+    });
+
+    it('scrubClickLinksForFloor leaves a curl call-instruction line UNCHANGED', () => {
+      const t = 'run: curl https://localhost:4042/x';
+      expect(scrubClickLinksForFloor(t)).toBe(t);
+    });
+
+    it('DEGRADES and SENDS a Secret-Drop link via review() when the provider throws (end-to-end)', async () => {
+      const provider = errorProvider(new Error('network timeout'));
+      const gate = new MessagingToneGate(provider);
+      const result = await gate.review(
+        'Your one-time Secret Drop link: https://abc-123.trycloudflare.com/secrets/drop/9f3a',
+        { channel: 'telegram' },
+      );
       expect(result.pass).toBe(true);
-      expect(result.failedOpen).toBe(true);
-      expect(result.invalidRule).toBe(true);
+      expect(result.degradedToDeterministic).toBe(true);
+      expect(result.failedClosed).toBeFalsy();
     });
   });
 });

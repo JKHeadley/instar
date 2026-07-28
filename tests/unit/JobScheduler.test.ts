@@ -134,8 +134,8 @@ describe('JobScheduler', () => {
     });
   });
 
-  describe('gate auth token injection', () => {
-    it('exposes authToken as $INSTAR_AUTH_TOKEN to gate shell', async () => {
+  describe('gate auth context injection', () => {
+    it('exposes authToken and projectName to gate shell', async () => {
       const fs = await import('node:fs');
       const path = await import('node:path');
       const capturePath = path.join(project.stateDir, 'gate-capture.txt');
@@ -148,12 +148,12 @@ describe('JobScheduler', () => {
         expectedDurationMinutes: 1,
         model: 'haiku',
         enabled: true,
-        gate: `echo "token=$INSTAR_AUTH_TOKEN" > ${capturePath}`,
+        gate: `echo "token=$INSTAR_AUTH_TOKEN agent=$INSTAR_AGENT_ID" > ${capturePath}`,
         execute: { type: 'skill', value: 'noop' },
       }];
       const customJobsFile = createSampleJobsFile(project.stateDir, jobs);
       scheduler = new JobScheduler(
-        { ...makeConfig(), jobsFile: customJobsFile, authToken: 'test-token-xyz' },
+        { ...makeConfig(), jobsFile: customJobsFile, authToken: 'test-token-xyz', projectName: 'test-agent' },
         mockSM as any,
         project.state,
         project.stateDir,
@@ -163,7 +163,7 @@ describe('JobScheduler', () => {
       const result = await scheduler.triggerJob('gate-capture', 'test');
       expect(result).toBe('triggered');
       const captured = fs.readFileSync(capturePath, 'utf-8').trim();
-      expect(captured).toBe('token=test-token-xyz');
+      expect(captured).toBe('token=test-token-xyz agent=test-agent');
     });
 
     it('leaves $INSTAR_AUTH_TOKEN unset when no authToken is configured', async () => {

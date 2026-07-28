@@ -22,7 +22,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ThreadlineMCPServer } from '../../../src/threadline/ThreadlineMCPServer.js';
 import { MCPAuth } from '../../../src/threadline/MCPAuth.js';
-import { ThreadResumeMap } from '../../../src/threadline/ThreadResumeMap.js';
+import { TestThreadResumeMap } from '../../helpers/TestThreadResumeMap.js';
 import { AgentTrustManager } from '../../../src/threadline/AgentTrustManager.js';
 import { AgentDiscovery } from '../../../src/threadline/AgentDiscovery.js';
 import type {
@@ -45,19 +45,7 @@ function cleanupDir(dir: string): void {
   try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/threadline/ThreadlineMCPE2E.test.ts:45' }); } catch { /* ignore */ }
 }
 
-/**
- * Test-friendly ThreadResumeMap that skips JSONL file existence checks.
- */
-class TestThreadResumeMap extends ThreadResumeMap {
-  get(threadId: string): import('../../../src/threadline/ThreadResumeMap.js').ThreadResumeEntry | null {
-    const filePath = (this as any).filePath;
-    try {
-      if (!fs.existsSync(filePath)) return null;
-      const map = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      return map[threadId] || null;
-    } catch { return null; }
-  }
-}
+// TestThreadResumeMap is the shared helper in tests/helpers/ (imported above).
 
 // ── In-Memory Message System ─────────────────────────────────────────
 
@@ -218,7 +206,7 @@ describe('ThreadlineMCP E2E', () => {
       // Message 1: Start conversation
       const r1 = await e2e.client.callTool({
         name: 'threadline_send',
-        arguments: { agentId: 'research-bot', message: 'What is quantum computing?' },
+        arguments: { agentId: 'research-bot', message: 'What is quantum computing?', waitForReply: true },
       });
       const d1 = JSON.parse((r1.content as any)[0].text);
       const threadId = d1.threadId;
@@ -232,6 +220,7 @@ describe('ThreadlineMCP E2E', () => {
             agentId: 'research-bot',
             threadId,
             message: `Follow-up question ${i}`,
+            waitForReply: true,
           },
         });
         const d = JSON.parse((r.content as any)[0].text);
@@ -260,7 +249,7 @@ describe('ThreadlineMCP E2E', () => {
       for (const agent of agents) {
         const r = await e2e.client.callTool({
           name: 'threadline_send',
-          arguments: { agentId: agent, message: `Hello ${agent}!` },
+          arguments: { agentId: agent, message: `Hello ${agent}!`, waitForReply: true },
         });
         threads.push(JSON.parse((r.content as any)[0].text).threadId);
       }
@@ -276,6 +265,7 @@ describe('ThreadlineMCP E2E', () => {
               agentId: agents[i],
               threadId: threads[i],
               message: `Round ${round} to ${agents[i]}`,
+              waitForReply: true,
             },
           });
         }
@@ -549,14 +539,14 @@ describe('ThreadlineMCP E2E', () => {
       // Create
       const r1 = await e2e.client.callTool({
         name: 'threadline_send',
-        arguments: { agentId: 'lifecycle-agent', message: 'Birth' },
+        arguments: { agentId: 'lifecycle-agent', message: 'Birth', waitForReply: true },
       });
       const { threadId } = JSON.parse((r1.content as any)[0].text);
 
       // Interact
       await e2e.client.callTool({
         name: 'threadline_send',
-        arguments: { agentId: 'lifecycle-agent', threadId, message: 'Growth' },
+        arguments: { agentId: 'lifecycle-agent', threadId, message: 'Growth', waitForReply: true },
       });
 
       // Verify history
@@ -670,7 +660,9 @@ describe('ThreadlineMCP E2E', () => {
 
       // Step 1: User lists available tools
       const tools = await e2e.client.listTools();
-      expect(tools.tools.length).toBe(7);
+      // includes threadline_request_secret (sealed-handoff keystone) +
+      // threadline_pair (Secure A2A Verified Pairing §3.6).
+      expect(tools.tools.length).toBe(9);
 
       // Step 2: User discovers agents
       const discover = await e2e.client.callTool({

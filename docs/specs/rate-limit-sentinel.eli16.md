@@ -50,6 +50,23 @@ A little watchdog called the **RateLimitSentinel**. When it sees the busy signal
 - If anything goes wrong, there's an off switch (one config flag) that puts everything back exactly
   how it was.
 
+## Update (2026-05-30) — why it wasn't actually working, and the fix
+
+The watchdog above was built and switched on, but in real life it **never once fired**. The reason
+was the test it used to decide "is this session stuck?" It insisted the session be perfectly idle —
+no background commands running, the error sitting right near the bottom of the screen. But my real
+working sessions almost always have a little background task going, and Claude's text box pushes the
+error 20+ lines up the screen. So the "is it stuck?" test always answered "no," and the rescue never
+started. Sessions just sat dead for 5–10 minutes.
+
+The fix changes how I tell a stuck session from a working one. A working session's screen is always
+moving — the little spinner and timer tick every second. So now I just take two snapshots a bit
+apart: if the screen is **frozen** *and* the busy-signal text is on it (looking at a wider slice of
+the screen so the text box can't hide it), the session is genuinely stuck and I start the rescue. No
+more checking for background tasks. And if a rescue round gives up, I simply start another — so a
+session **can never hang forever**; it keeps trying until the busy signal lifts, however long that
+takes.
+
 ## The one-line version
 
 When Anthropic's servers say "too busy, try later," I'll wait patiently, keep retrying gently, and

@@ -16,7 +16,7 @@
  * harness that wants the briefing as a plain string.
  */
 
-import { TopicIntentStore } from './TopicIntent.js';
+import { TopicIntentStore, isTaskContextKind } from './TopicIntent.js';
 
 export interface BriefingOptions {
   /** Override "now" for time-sensitive projections (testing). */
@@ -34,6 +34,8 @@ export interface BriefingResult {
   counts: {
     authoritative: number;
     tentative: number;
+    /** Task-frame refs (method/audience/goal) surfaced. */
+    frame: number;
     /** Outstanding pending confirmation (if any). */
     pendingOutstanding: boolean;
   };
@@ -57,14 +59,19 @@ export function renderTopicIntentBriefing(
   const file = store.read(topicId);
   const refs = store.getRefsAtOrAbove(topicId, 'tentative', nowMs);
 
-  const authoritative = refs.filter(r => r.projection.tier === 'authoritative');
-  const tentative = refs.filter(r => r.projection.tier === 'tentative');
+  // Task-frame refs (method/audience/goal) render in their own block — the
+  // "how/who/what" the work is operating inside (rung 1). Propositions
+  // (fact/decision) keep the SETTLED/TENTATIVE sections.
+  const frame = refs.filter(r => isTaskContextKind(r.kind));
+  const propositions = refs.filter(r => !isTaskContextKind(r.kind));
+  const authoritative = propositions.filter(r => r.projection.tier === 'authoritative');
+  const tentative = propositions.filter(r => r.projection.tier === 'tentative');
 
-  if (authoritative.length === 0 && tentative.length === 0 && !file.pending.outstanding) {
+  if (authoritative.length === 0 && tentative.length === 0 && frame.length === 0 && !file.pending.outstanding) {
     return {
       text: '',
       hasContent: false,
-      counts: { authoritative: 0, tentative: 0, pendingOutstanding: false },
+      counts: { authoritative: 0, tentative: 0, frame: 0, pendingOutstanding: false },
     };
   }
 
@@ -72,6 +79,19 @@ export function renderTopicIntentBriefing(
   lines.push(`=== TOPIC ${topicId} INTENT BRIEFING (auto-injected) ===`);
   lines.push(`The agent has been tracking the arc of this conversation. Read this before responding —`);
   lines.push(`it's the goal-and-decisions context that won't appear in the message history alone.`);
+
+  if (frame.length > 0) {
+    lines.push('');
+    lines.push('ACTIVE TASK FRAME (how/who/what we are working in right now — stay consistent with this or flag the change):');
+    for (const r of sortByConfidenceDesc(frame).slice(0, max)) {
+      const label = r.kind === 'method' ? 'method' : r.kind === 'audience' ? 'audience' : 'goal';
+      const hedge = r.projection.tier === 'tentative' ? ` (tentative, confidence ${r.projection.confidence.toFixed(2)})` : '';
+      lines.push(`  • [${label}] ${r.text}${hedge}`);
+    }
+    if (frame.length > max) {
+      lines.push(`  • (… ${frame.length - max} more frame items not shown)`);
+    }
+  }
 
   if (authoritative.length > 0) {
     lines.push('');
@@ -116,6 +136,7 @@ export function renderTopicIntentBriefing(
     counts: {
       authoritative: authoritative.length,
       tentative: tentative.length,
+      frame: frame.length,
       pendingOutstanding: file.pending.outstanding !== null,
     },
   };

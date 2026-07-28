@@ -18,10 +18,13 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomInt } from 'node:crypto';
 import type { LiveConfig } from '../config/LiveConfig.js';
 import type { ComponentHealth } from '../core/types.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
 import { DegradationReporter } from './DegradationReporter.js';
+import { isSecretPlaceholder } from '../core/SecretMigrator.js';
+import { readJsonlTailLines } from '../utils/jsonl-tail.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -489,7 +492,11 @@ export class CoherenceMonitor extends EventEmitter {
     }
 
     try {
-      const lines = fs.readFileSync(logPath, 'utf-8').trim().split('\n');
+      // Bounded TAIL read — never the whole file. This check only inspects the
+      // last 50 agent messages, so loading the full multi-MB
+      // telegram-messages.jsonl on a 5-minute timer was a pure event-loop freeze
+      // (2026-06-22 batch). The 512KB window holds far more than the last 50.
+      const lines = readJsonlTailLines(logPath).lines;
       // Check last 50 agent messages (fromUser: false)
       const agentMessages: Array<{ text: string; timestamp: string }> = [];
       for (let i = lines.length - 1; i >= 0 && agentMessages.length < 50; i--) {
@@ -577,7 +584,7 @@ export class CoherenceMonitor extends EventEmitter {
           });
         } else {
           // Self-correct: generate a PIN
-          const newPin = String(Math.floor(100000 + Math.random() * 900000));
+          const newPin = String(randomInt(100000, 1000000));
           liveConfig.set('dashboardPin', newPin);
           results.push({
             name: 'readiness-dashboard-pin',
@@ -599,7 +606,14 @@ export class CoherenceMonitor extends EventEmitter {
       const telegramConfig = messaging.find(m => m.type === 'telegram');
 
       if (telegramConfig) {
-        const hasToken = typeof telegramConfig.config?.token === 'string' && telegramConfig.config.token.length > 0;
+        // A token can be a plaintext string OR — after secret-externalization —
+        // the { secret: true } placeholder (the real value lives in the encrypted
+        // store). Both mean "configured." A bare string-type guard reads the
+        // placeholder as missing and false-alarms every cycle (the 2026-05-29
+        // 20×/run readiness-telegram-token noise).
+        const tokenVal = telegramConfig.config?.token as unknown;
+        const hasToken =
+          (typeof tokenVal === 'string' && tokenVal.length > 0) || isSecretPlaceholder(tokenVal);
         results.push({
           name: 'readiness-telegram-token',
           passed: hasToken,

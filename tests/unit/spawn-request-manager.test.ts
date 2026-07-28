@@ -188,6 +188,75 @@ describe('SpawnRequestManager', () => {
       const result = await manager.evaluate(makeRequest({ priority: 'critical' }));
       expect(result.approved).toBe(true);
     });
+
+    // ── Live cap accessor (codex-instar audit Item 2) ─────────
+    //
+    // Regression: the manager used to read `maxSessions` from the
+    // constructor snapshot only. When operators raised
+    // `sessions.maxSessions` in the config, the manager kept denying
+    // at the old cap because the constructor value was frozen — the
+    // split-brain codey identified ("(15/10)" denial alongside a
+    // /status report of max=30).
+    //
+    // Fix: optional `getMaxSessions` accessor on the manager config,
+    // called on every admission check. Constructor snapshot remains
+    // the back-compat fallback.
+
+    it('uses live getMaxSessions accessor instead of constructor snapshot when provided', async () => {
+      let liveMax = 2;
+      config = makeConfig({
+        maxSessions: 999, // stale constructor value — must NOT be used
+        getMaxSessions: () => liveMax,
+        getActiveSessions: () => [makeSession('s1'), makeSession('s2')],
+      });
+      manager = new SpawnRequestManager(config);
+
+      // At liveMax=2 with 2 active, low-priority is denied.
+      let result = await manager.evaluate(makeRequest({ priority: 'low' }));
+      expect(result.approved).toBe(false);
+      expect(result.reason).toContain('2/2');
+      expect(result.reason).not.toContain('/999');
+
+      // Operator raises the cap to 5 (config reloaded). Next call
+      // to evaluate must see the new value WITHOUT a manager rebuild.
+      liveMax = 5;
+      // Need a different requester to bypass cooldown from prior call.
+      result = await manager.evaluate(makeRequest({
+        priority: 'low',
+        requester: { agent: 'agent-c', session: 'sess-2', machine: 'machine-1' },
+      }));
+      expect(result.approved).toBe(true);
+    });
+
+    it('falls back to constructor maxSessions when no getMaxSessions accessor is provided (back-compat)', async () => {
+      // No getMaxSessions — manager must still respect constructor maxSessions.
+      config = makeConfig({
+        maxSessions: 2,
+        getActiveSessions: () => [makeSession('s1'), makeSession('s2')],
+      });
+      manager = new SpawnRequestManager(config);
+
+      const result = await manager.evaluate(makeRequest({ priority: 'low' }));
+      expect(result.approved).toBe(false);
+      expect(result.reason).toContain('2/2');
+    });
+
+    it('reports the live cap value in the denial reason (not the stale constructor value)', async () => {
+      let liveMax = 3;
+      config = makeConfig({
+        maxSessions: 100, // intentionally far from liveMax — bug would print 100
+        getMaxSessions: () => liveMax,
+        getActiveSessions: () => [makeSession('s1'), makeSession('s2'), makeSession('s3')],
+      });
+      manager = new SpawnRequestManager(config);
+
+      const result = await manager.evaluate(makeRequest({ priority: 'low' }));
+      expect(result.approved).toBe(false);
+      // Denial message must show the LIVE cap so operators can debug
+      // the actual gate, not the long-frozen one.
+      expect(result.reason).toContain('3/3');
+      expect(result.reason).not.toContain('/100');
+    });
   });
 
   // ── Memory Pressure ─────────────────────────────────────────

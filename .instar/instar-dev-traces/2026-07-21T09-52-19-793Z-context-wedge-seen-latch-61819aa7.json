@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "context-wedge-seen-latch",
+  "sessionId": "2aaad3e8-d2bb-4548-a5e9-3a5e274845b2",
+  "timestamp": "2026-07-21T09:52:19.793Z",
+  "artifactPath": "upgrades/side-effects/context-wedge-seen-latch.md",
+  "artifactSha256": "18e9985f77c4d4db9b7e3b58c18a90c22a2f8eed9cf4d22d6fde5c346f15a0fb",
+  "specPath": "docs/specs/context-wedge-detection-completeness.md",
+  "coveredFiles": [
+    "docs/specs/context-wedge-detection-completeness.eli16.md",
+    "docs/specs/context-wedge-detection-completeness.md",
+    "docs/specs/reports/context-wedge-detection-completeness-convergence.md",
+    "src/monitoring/SessionMonitor.ts",
+    "src/monitoring/SessionRecovery.ts",
+    "tests/unit/SessionMonitor.test.ts",
+    "tests/unit/context-exhaustion-recovery.test.ts",
+    "upgrades/next/context-wedge-seen-latch.md",
+    "upgrades/side-effects/context-wedge-seen-latch.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Context exhaustion recovery-path change requires converged spec and independent review despite narrow boolean-only scope.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 2
+      },
+      {
+        "name": "independent-second-pass",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/context-wedge-detection-completeness-convergence.md",
+      "iterations": 2,
+      "verified": true
+    }
+  }
+}

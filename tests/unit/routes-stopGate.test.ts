@@ -13,9 +13,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import { Router } from 'express';
 import type { Server } from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   GATE_ROUTE_VERSION,
   GATE_ROUTE_MINIMUM_VERSION,
+  configureStopGateState,
   setMode,
   setKillSwitch,
   recordSessionStart,
@@ -23,6 +27,7 @@ import {
   getHotPathState,
   _resetForTests,
 } from '../../src/server/stopGate.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function buildApp(): { server: Server; port: number } {
   const app = express();
@@ -117,6 +122,23 @@ describe('routes-stopGate — /internal/stop-gate/hot-path', () => {
     const body = await res.json();
     expect(body.mode).toBe('off');
     expect(body.sessionStartTs).toBeNull();
+  });
+
+  it('persists mode flips across state reconfiguration', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stop-gate-mode-'));
+    try {
+      const modeFilePath = path.join(dir, 'mode.json');
+      expect(configureStopGateState({ modeFilePath, defaultMode: 'shadow' })).toBe('shadow');
+      setMode('enforce');
+      _resetForTests();
+      expect(configureStopGateState({ modeFilePath, defaultMode: 'shadow' })).toBe('enforce');
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, {
+        recursive: true,
+        force: true,
+        operation: 'tests/unit/routes-stopGate.test.ts:mode-cleanup',
+      });
+    }
   });
 });
 

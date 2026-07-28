@@ -39,8 +39,24 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { findNewestRolloutSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
+import { findNewestGeminiSessionSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 
 export type RateLimitTrigger = 'watchdog-poll' | 'idle-error' | string;
+
+/**
+ * The CLASS of transient API error this recovery is riding out. The lifecycle
+ * (backoff → re-engage → verify → escalate) is identical across classes — only the
+ * backoff SCHEDULE and the user-facing wording differ:
+ *  - 'throttle'      — Anthropic capacity throttle / 529 Overloaded / rate limit.
+ *                      Re-hitting it immediately burns quota, so the backoff is LONG.
+ *  - 'transient-api' — a generic transient API error (500/502/503, timeout, connection
+ *                      drop). These usually clear in seconds, so the first retry is
+ *                      FAST and the schedule escalates more gently. Generalizing the
+ *                      proven throttle-recovery lifecycle to this whole class is the
+ *                      2026-05-29 future-proofing ask (topic 13481).
+ */
+export type ApiErrorClass = 'throttle' | 'transient-api';
 
 export type RateLimitStatus =
   | 'detected'      // reported; first user notice sent; first backoff scheduled
@@ -52,6 +68,8 @@ export type RateLimitStatus =
 export interface RateLimitRecoveryState {
   sessionName: string;
   trigger: RateLimitTrigger;
+  /** Which transient-error class this recovery rides out (picks backoff + wording). */
+  errorClass: ApiErrorClass;
   detectedAt: number;
   attempts: number;
   lastInjectAt: number;
@@ -64,8 +82,11 @@ export interface RateLimitRecoveryState {
 
 export interface RateLimitSentinelDeps {
   /**
-   * Inject a NEUTRAL "continue" nudge into the session (topic-tagged so
-   * InputGuard accepts it). Returns whether the injection was accepted.
+   * Inject a NEUTRAL "continue" nudge into the session via the INTERNAL
+   * recovery channel — never a `[telegram:N]`-prefixed user-message path. The
+   * prefix would make the agent answer the nudge as if it came from the user
+   * and relay that reply, contradicting the throttle notices (incoherence
+   * incident 2026-06-05). Returns whether the injection was accepted.
    * Must NOT reuse the compaction-resume payload.
    */
   resumeFn: (sessionName: string) => Promise<boolean>;
@@ -79,8 +100,38 @@ export interface RateLimitSentinelDeps {
   /** Resolve a session's Claude Code session UUID for exact-file jsonl lookup. */
   getClaudeSessionId?: (sessionName: string) => string | undefined;
 
+  /**
+   * Resolve a session's framework ('codex-cli' | 'claude-code' | undefined) — the value
+   * carried on a running session. When it returns 'codex-cli', recovery-verification
+   * reads the newest codex ROLLOUT jsonl (account-wide growth = the account-wide OpenAI
+   * throttle cleared) instead of the Claude transcript. Absent/non-codex → the unchanged
+   * Claude path is used (Claude behavior byte-for-byte preserved). #33.
+   */
+  getSessionFramework?: (sessionName: string) => string | undefined;
+
+  /** Override $CODEX_HOME (tests). Defaults to ~/.codex. Only used for codex sessions. */
+  codexHome?: string;
+
+  /** Override ~/.gemini (tests). Defaults to ~/.gemini. Only used for gemini-cli sessions. */
+  geminiHome?: string;
+
   /** Defer (skip starting) recovery when this returns true — e.g. compaction recovery in flight. */
   deferIf?: (sessionName: string) => boolean;
+
+  /**
+   * Returns false when this session is NOT a legitimate recovery target — it is
+   * unknown, or its status is completed/failed/killed, or it is no longer in the
+   * running set. A FINISHED session is "idle at a prompt" with whatever throttle
+   * string last printed still in its scrollback, so the idle-error detector
+   * mistakes it for a live-but-throttled session and reports it here. Without this
+   * guard the recovery runs its full backoff→resume→verify lifecycle against a
+   * session that will never produce new output — every verify fails, so it burns
+   * all `maxAttempts` resume nudges + check-ins, spamming the user with
+   * RATE_LIMIT_RESUME_NUDGE for a session that is simply done (live incident
+   * 2026-06-24). Dep ABSENT ⇒ today's behavior (recover anything reported), so
+   * bare/test installs are unchanged.
+   */
+  isSessionRecoverable?: (sessionName: string) => boolean;
 
   /** Override JSONL lookup root (tests). Defaults to $HOME/.claude/projects/<project-hash>. */
   jsonlRoot?: string;
@@ -96,8 +147,21 @@ export interface RateLimitSentinelDeps {
 export interface RateLimitSentinelConfig {
   /** Master kill switch. When false, report() is a no-op. */
   enabled?: boolean;
-  /** Escalating wait (ms) before each re-engagement attempt. Last value repeats. */
+  /**
+   * #33 codex parity: enable the codex account-usage detection poll (server-side), which
+   * reports throttled codex sessions into the sentinel so its (codex-aware) recovery runs
+   * for codex exactly as it does for Claude. Ships DARK (default off / undefined) — the
+   * Claude detection triggers are unaffected; flip on after a live codex-throttle
+   * verification. Rollback = set false.
+   */
+  codexUsageDetection?: boolean;
+  /** Escalating wait (ms) before each re-engagement attempt for a THROTTLE/rate-limit
+   *  recovery. Last value repeats. */
   backoffScheduleMs?: number[];
+  /** Escalating wait (ms) for a generic 'transient-api' recovery (500/502/503/timeout/
+   *  connection). Shorter than the throttle schedule — these usually clear in seconds,
+   *  so the first retry is fast. Last value repeats. */
+  transientApiBackoffScheduleMs?: number[];
   /** Max re-engagement attempts before escalating. */
   maxAttempts?: number;
   /** Max wall-clock window (ms) a recovery may run before escalating. */
@@ -112,7 +176,9 @@ export interface RateLimitSentinelConfig {
 
 const DEFAULTS: Required<RateLimitSentinelConfig> = {
   enabled: true,
+  codexUsageDetection: false, // #33 codex detection ships DARK
   backoffScheduleMs: [30_000, 60_000, 120_000, 300_000, 300_000, 300_000],
+  transientApiBackoffScheduleMs: [5_000, 15_000, 30_000, 60_000, 120_000, 300_000],
   maxAttempts: 6,
   maxWindowMs: 30 * 60_000,
   verifyWindowMs: 25_000,
@@ -125,6 +191,7 @@ export interface RateLimitSentinelEvents {
   'rate-limit:resuming': [RateLimitRecoveryState & { backoffMs: number }];
   'rate-limit:recovered': [RateLimitRecoveryState & { jsonlDelta: number }];
   'rate-limit:escalated': [RateLimitRecoveryState & { reason: string }];
+  'rate-limit:aborted': [RateLimitRecoveryState & { reason: string }];
 }
 
 function humanizeMs(ms: number): string {
@@ -147,7 +214,9 @@ export class RateLimitSentinel extends EventEmitter {
     this.deferIf = deps.deferIf;
     this.cfg = {
       enabled: config.enabled ?? DEFAULTS.enabled,
+      codexUsageDetection: config.codexUsageDetection ?? DEFAULTS.codexUsageDetection,
       backoffScheduleMs: config.backoffScheduleMs ?? DEFAULTS.backoffScheduleMs,
+      transientApiBackoffScheduleMs: config.transientApiBackoffScheduleMs ?? DEFAULTS.transientApiBackoffScheduleMs,
       maxAttempts: config.maxAttempts ?? DEFAULTS.maxAttempts,
       maxWindowMs: config.maxWindowMs ?? DEFAULTS.maxWindowMs,
       verifyWindowMs: config.verifyWindowMs ?? DEFAULTS.verifyWindowMs,
@@ -179,11 +248,20 @@ export class RateLimitSentinel extends EventEmitter {
    * recovery is already active, or one was reported within the dedupe window,
    * or deferIf says another recovery owns this session, this is a no-op.
    */
-  report(sessionName: string, trigger: RateLimitTrigger): void {
+  report(sessionName: string, trigger: RateLimitTrigger, opts?: { errorClass?: ApiErrorClass }): void {
     if (!this.cfg.enabled) return;
     const now = this.now();
+    const errorClass: ApiErrorClass = opts?.errorClass ?? 'throttle';
 
     if (this.active.has(sessionName)) return;            // recovery in flight
+    // A finished/killed session is "idle at a prompt" with stale throttle scrollback;
+    // the idle-error detector mis-reports it. Never start a recovery (nor send the
+    // "throttled, backing off" notice) for a session that is not a live recovery
+    // target (live incident 2026-06-24).
+    if (this.deps.isSessionRecoverable && !this.deps.isSessionRecoverable(sessionName)) {
+      console.log(`[RateLimitSentinel] ignoring ${trigger} for "${sessionName}" — not a live recovery target (finished/killed/unknown)`);
+      return;
+    }
     if (this.deferIf?.(sessionName)) return;             // another recovery owns it (S6)
     const lastReport = this.recentReports.get(sessionName);
     if (lastReport && now - lastReport < this.cfg.dedupeWindowMs) return;
@@ -193,6 +271,7 @@ export class RateLimitSentinel extends EventEmitter {
     const state: RateLimitRecoveryState = {
       sessionName,
       trigger,
+      errorClass,
       detectedAt: now,
       attempts: 0,
       lastInjectAt: 0,
@@ -205,18 +284,22 @@ export class RateLimitSentinel extends EventEmitter {
     this.active.set(sessionName, state);
 
     console.log(
-      `[RateLimitSentinel] detected throttle on "${sessionName}" via ${trigger}; ` +
+      `[RateLimitSentinel] detected ${errorClass} error on "${sessionName}" via ${trigger}; ` +
       `baseline jsonl=${state.baselineJsonlPath ? path.basename(state.baselineJsonlPath) : 'none'} ` +
       `size=${state.baselineJsonlSize ?? 'n/a'}`,
     );
     this.emit('rate-limit:detected', state);
 
-    // Immediate user notice (fixed template, no LLM).
+    // Immediate user notice (fixed template, no LLM), worded per error class + vendor.
+    const v = this.vendor(sessionName);
     void this.notify(
       sessionName,
-      "Heads up — Claude hit a temporary server-side throttle on Anthropic's side " +
-      '(not your usage limit). I\'m backing off and will keep retrying. ' +
-      "You haven't been dropped — I'll check back in.",
+      errorClass === 'transient-api'
+        ? `Heads up — ${v.agent} hit a transient API error (likely a brief server-side blip). ` +
+          "I'm waiting a moment and will retry. You haven't been dropped — I'll pick up where I left off."
+        : `Heads up — ${v.agent} hit a temporary server-side throttle on ${v.provider}'s side ` +
+          '(not your usage limit). I\'m backing off and will keep retrying. ' +
+          "You haven't been dropped — I'll check back in.",
     );
     state.lastCheckInAt = now;
 
@@ -239,6 +322,24 @@ export class RateLimitSentinel extends EventEmitter {
     this.active.delete(sessionName);
   }
 
+  /**
+   * Silent terminal stop for a recovery whose session is no longer a live target
+   * (it finished/was killed mid-flight). Unlike `finalize('escalated', ...)` this
+   * emits NO user-facing escalation event — there is nothing to tell the user, the
+   * session simply ended. Audited to the log + the `rate-limit:aborted` event for
+   * observability; clears all state so a genuinely-new throttle can recover later.
+   */
+  private abort(state: RateLimitRecoveryState, reason: string): void {
+    console.log(`[RateLimitSentinel] aborted "${state.sessionName}": ${reason}`);
+    this.emit('rate-limit:aborted', { ...state, reason });
+    // Clear timers + active state, but KEEP the recentReports entry: it acts as a
+    // dedupe cooldown so a session flapping around the liveness oracle (running →
+    // briefly-absent → running) cannot abort-then-immediately-rearm a fresh recovery
+    // on every flap. The entry ages out of the dedupe window normally.
+    // (spec-converge finding: deleting recentReports on abort enabled flap churn.)
+    this.clear(state.sessionName);
+  }
+
   stop(): void {
     for (const handle of this.timers.values()) this.clearTimer(handle);
     this.timers.clear();
@@ -254,18 +355,18 @@ export class RateLimitSentinel extends EventEmitter {
   listActive(): Array<RateLimitRecoveryState & { nextBackoffMs: number }> {
     return [...this.active.values()].map(s => ({
       ...s,
-      nextBackoffMs: this.backoffFor(s.attempts),
+      nextBackoffMs: this.backoffFor(s.attempts, s.errorClass),
     }));
   }
 
-  private backoffFor(attempts: number): number {
-    const sched = this.cfg.backoffScheduleMs;
+  private backoffFor(attempts: number, errorClass: ApiErrorClass = 'throttle'): number {
+    const sched = errorClass === 'transient-api' ? this.cfg.transientApiBackoffScheduleMs : this.cfg.backoffScheduleMs;
     if (sched.length === 0) return 0;
     return sched[Math.min(attempts, sched.length - 1)];
   }
 
   private scheduleBackoff(state: RateLimitRecoveryState): void {
-    const backoffMs = this.backoffFor(state.attempts);
+    const backoffMs = this.backoffFor(state.attempts, state.errorClass);
     state.status = 'backing-off';
     const handle = this.setTimer(() => {
       this.attemptResume(state).catch(err => {
@@ -278,6 +379,15 @@ export class RateLimitSentinel extends EventEmitter {
 
   private async attemptResume(state: RateLimitRecoveryState): Promise<void> {
     this.timers.delete(state.sessionName);
+    // The session may have FINISHED while we were backing off. Re-check before
+    // injecting: a done session will never grow its jsonl, so continuing would
+    // burn the remaining attempts and ping the user about a session that is gone.
+    // Abort silently (no user-facing "still throttled" notice — there is nothing
+    // to tell the user; the session simply ended).
+    if (this.deps.isSessionRecoverable && !this.deps.isSessionRecoverable(state.sessionName)) {
+      this.abort(state, 'session no longer recoverable (finished/killed during backoff)');
+      return;
+    }
     state.attempts += 1;
     state.lastInjectAt = this.now();
     state.status = 'resuming';
@@ -293,7 +403,7 @@ export class RateLimitSentinel extends EventEmitter {
       `[RateLimitSentinel] resume-attempted on "${state.sessionName}" ` +
       `(attempt ${state.attempts}/${this.cfg.maxAttempts}, accepted=${accepted})`,
     );
-    this.emit('rate-limit:resuming', { ...state, backoffMs: this.backoffFor(state.attempts - 1) });
+    this.emit('rate-limit:resuming', { ...state, backoffMs: this.backoffFor(state.attempts - 1, state.errorClass) });
 
     if (!accepted) {
       // No pending work / session gone / injection blocked — nothing to recover.
@@ -312,6 +422,17 @@ export class RateLimitSentinel extends EventEmitter {
 
   private async verify(state: RateLimitRecoveryState): Promise<void> {
     this.timers.delete(state.sessionName);
+    // The session may have FINISHED during the verify window. Without this check,
+    // verify() would see no jsonl growth (a done session never grows), and on the
+    // final attempt ESCALATE — sending the user a "Still can't get through after N
+    // tries" notice for a session that simply ended. Re-check and abort silently,
+    // matching the attemptResume() guard. (spec-converge finding: the guard was at
+    // report()/attemptResume() but not verify() — the finished-mid-verify hole.)
+    if (this.deps.isSessionRecoverable && !this.deps.isSessionRecoverable(state.sessionName)) {
+      this.abort(state, 'session no longer recoverable (finished/killed during verify window)');
+      return;
+    }
+    const v = this.vendor(state.sessionName);
 
     const current = this.readJsonlBaseline(state.sessionName);
     const grew =
@@ -328,7 +449,9 @@ export class RateLimitSentinel extends EventEmitter {
       this.emit('rate-limit:recovered', { ...state, jsonlDelta: delta });
       void this.notify(
         state.sessionName,
-        "Back online — Anthropic's throttle cleared. Continuing where I left off.",
+        state.errorClass === 'transient-api'
+          ? 'Back online — the API error cleared. Continuing where I left off.'
+          : `Back online — ${v.provider}'s throttle cleared. Continuing where I left off.`,
       );
       this.finalize(state, 'recovered');
       return;
@@ -346,7 +469,7 @@ export class RateLimitSentinel extends EventEmitter {
       void this.notify(
         state.sessionName,
         `Still can't get through after ${state.attempts} tries over ${humanizeMs(elapsed)}. ` +
-        "This is on Anthropic's side — status.claude.com has live capacity notices. " +
+        `This is on ${v.provider}'s side — ${v.statusUrl} has live capacity notices. ` +
         "I'll keep an eye out; you can also just message me to retry.",
       );
       this.finalize(
@@ -363,8 +486,10 @@ export class RateLimitSentinel extends EventEmitter {
       state.lastCheckInAt = now;
       void this.notify(
         state.sessionName,
-        `Still throttled on Anthropic's side — next retry in ${humanizeMs(this.backoffFor(state.attempts))}. ` +
-        "Still here, haven't dropped you.",
+        state.errorClass === 'transient-api'
+          ? `Still hitting an API error — next retry in ${humanizeMs(this.backoffFor(state.attempts, state.errorClass))}. Still here, haven't dropped you.`
+          : `Still throttled on ${v.provider}'s side — next retry in ${humanizeMs(this.backoffFor(state.attempts, state.errorClass))}. ` +
+            "Still here, haven't dropped you.",
       );
     }
 
@@ -396,7 +521,41 @@ export class RateLimitSentinel extends EventEmitter {
     }
   }
 
+  /**
+   * Per-session vendor labels for user-facing throttle messages. A codex session's
+   * throttle is OpenAI's, not Anthropic's — so the wording + status URL follow the
+   * session's framework (#33). Non-codex returns the exact prior Claude strings, so the
+   * Claude-facing messages are byte-for-byte unchanged.
+   */
+  private vendor(sessionName: string): { provider: string; agent: string; statusUrl: string } {
+    const fw = this.deps.getSessionFramework?.(sessionName);
+    if (fw === 'codex-cli') {
+      return { provider: 'OpenAI', agent: 'Codex', statusUrl: 'status.openai.com' };
+    }
+    if (fw === 'gemini-cli') {
+      return { provider: 'Google', agent: 'Gemini', statusUrl: 'status.cloud.google.com' };
+    }
+    return { provider: 'Anthropic', agent: 'Claude', statusUrl: 'status.claude.com' };
+  }
+
   private readJsonlBaseline(sessionName: string): { path: string; size: number; mtime: number } | null {
+    // #33 codex parity: a codex session's transcript is the newest rollout JSONL under
+    // $CODEX_HOME/sessions (the OpenAI throttle is account-wide, so the newest rollout's
+    // growth is the account-wide "is codex producing output again?" signal). Only taken
+    // for codex sessions; everything else falls through to the unchanged Claude path
+    // below (Claude behavior is byte-for-byte preserved).
+    if (this.deps.getSessionFramework?.(sessionName) === 'codex-cli') {
+      return findNewestRolloutSync(this.deps.codexHome);
+    }
+    // Gemini parity (apprenticeship Step 2 §4.0.2): a gemini session's transcript
+    // is the newest session file under ~/.gemini/tmp/<hash>/chats — NOT the Claude
+    // projects tree or a codex rollout. "Is gemini producing output again?" ==
+    // "did the newest gemini session file grow?". Only taken for gemini sessions;
+    // everything else falls through to the unchanged Claude path below (Claude
+    // behavior byte-for-byte preserved). Mirrors the codex fix (#33).
+    if (this.deps.getSessionFramework?.(sessionName) === 'gemini-cli') {
+      return findNewestGeminiSessionSync(this.deps.geminiHome);
+    }
     try {
       const root = this.deps.jsonlRoot
         || path.join(process.env.HOME || '/tmp', '.claude', 'projects',
@@ -410,7 +569,17 @@ export class RateLimitSentinel extends EventEmitter {
           const st = fs.statSync(exact);
           return { path: exact, size: st.size, mtime: st.mtimeMs };
         }
-        return null;
+        // Stale claudeSessionId: the stored UUID has no transcript on disk
+        // (conversation rotated via respawn/--resume and the record lagged).
+        // Returning null here made verification PERMANENTLY unable to succeed
+        // → 6 futile nudges → false "no jsonl growth" escalation on a healthy,
+        // actively-answering session (2026-06-06 echo-api-errors incident).
+        // Degrade to the same newest-jsonl heuristic the no-uuid case already
+        // uses — identical risk profile, strictly better than guaranteed-wrong.
+        console.log(
+          `[RateLimitSentinel] stale claudeSessionId for "${sessionName}" ` +
+          `(${uuid}.jsonl missing) — falling back to newest jsonl in project root`,
+        );
       }
 
       const entries = fs.readdirSync(root).filter(f => f.endsWith('.jsonl'));

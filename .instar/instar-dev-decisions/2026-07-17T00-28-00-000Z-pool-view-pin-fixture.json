@@ -1,0 +1,19 @@
+{
+  "slug": "pool-view-pin-fixture",
+  "title": "Use a high-entropy pool-view PIN fixture",
+  "date": "2026-07-17",
+  "tier": 1,
+  "tierReasoning": "Test-only fixture hardening with no runtime behavior change.",
+  "decision": "Replace the common literal 1234 with one deterministic high-entropy constant used by both setup and the no-leak assertion.",
+  "causalAutopsy": {
+    "trigger": "The negative substring assertion used a common four-character value.",
+    "rootCause": "The fixture optimized for readability rather than collision resistance in a serialized envelope.",
+    "failureMode": "Unrelated serialized values containing 1234 could cause a false failure, while the assertion did not uniquely identify the test credential.",
+    "repair": "Use a distinctive deterministic PIN fixture and assert against that exact value."
+  },
+  "alternatives": [
+    "Keep 1234 and accept collision risk",
+    "Generate a random PIN per run, reducing failure reproducibility"
+  ],
+  "spec": "docs/specs/MULTI-MACHINE-SEAMLESSNESS-SPEC.md"
+}

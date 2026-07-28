@@ -5,6 +5,7 @@
  * - GET /commitments — list all or active
  * - GET /commitments/:id — single lookup
  * - POST /commitments — record new commitment
+ * - POST /commitments/:id/deliver — mark commitment delivered
  * - POST /commitments/:id/withdraw — withdraw commitment
  * - POST /commitments/verify — trigger verification
  * - GET /commitments/context — behavioral context for sessions
@@ -185,6 +186,28 @@ describe('Commitment API routes (enabled)', () => {
       expect(res.body.type).toBe('behavioral');
     });
 
+    it('records the agent-facing one-time follow-up commitment shape', async () => {
+      const res = await request(app)
+        .post('/commitments')
+        .send({
+          type: 'one-time-action',
+          userRequest: 'Report back when CI is green',
+          agentResponse: 'I will report back when CI is green',
+          topicId: 458,
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.id).toMatch(/^CMT-\d{3}$/);
+      expect(res.body.type).toBe('one-time-action');
+      expect(res.body.status).toBe('pending');
+      expect(res.body.userRequest).toBe('Report back when CI is green');
+      expect(res.body.agentResponse).toBe('I will report back when CI is green');
+      expect(res.body.topicId).toBe(458);
+      expect(res.body.verificationCount).toBe(0);
+      expect(res.body.violationCount).toBe(0);
+      expect(res.body.source).toBe('agent');
+    });
+
     it('rejects missing required fields', async () => {
       const res = await request(app)
         .post('/commitments')
@@ -205,6 +228,62 @@ describe('Commitment API routes (enabled)', () => {
 
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('type must be');
+    });
+
+    it('rejects the stale follow-up type alias', async () => {
+      const res = await request(app)
+        .post('/commitments')
+        .send({
+          type: 'follow-up',
+          userRequest: 'Report back',
+          agentResponse: 'I will report back',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('one-time-action');
+    });
+  });
+
+  // ── POST /commitments/:id/deliver ──────────────────────
+
+  describe('POST /commitments/:id/deliver', () => {
+    it('transitions a pending commitment to delivered and removes it from active results', async () => {
+      const created = await request(app)
+        .post('/commitments')
+        .send({
+          type: 'one-time-action',
+          userRequest: 'Send the summary',
+          agentResponse: 'I will send the summary',
+          topicId: 458,
+        });
+
+      expect(created.status).toBe(201);
+      const id = created.body.id;
+
+      const delivered = await request(app)
+        .post(`/commitments/${id}/deliver`)
+        .send({ deliveryMessageId: 'telegram-123' });
+
+      expect(delivered.status).toBe(200);
+      expect(delivered.body.delivered).toBe(true);
+      expect(delivered.body.id).toBe(id);
+      expect(delivered.body.commitment.status).toBe('delivered');
+      expect(delivered.body.commitment.deliveryMessageId).toBe('telegram-123');
+      expect(delivered.body.commitment.resolvedAt).toBeTruthy();
+      expect(delivered.body.commitment.version).toBe(1);
+
+      const byId = await request(app).get(`/commitments/${id}`);
+      expect(byId.status).toBe(200);
+      expect(byId.body.status).toBe('delivered');
+
+      const active = await request(app).get('/commitments?status=active');
+      expect(active.status).toBe(200);
+      expect(active.body.commitments.map((c: any) => c.id)).not.toContain(id);
+    });
+
+    it('rejects deliver for unknown commitments', async () => {
+      const res = await request(app).post('/commitments/CMT-999/deliver').send({});
+      expect(res.status).toBe(404);
     });
   });
 

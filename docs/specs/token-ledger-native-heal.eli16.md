@@ -31,3 +31,21 @@ Probably nothing — the worst case degrades to today's broken state. Best case:
 ## How we know it works
 
 Six new regression tests pin the sync surface's behavior (success / non-mismatch passthrough / heal failure / heal then retry / no-retry-after-prior-failure / TokenLedger routes through the healer). All 49 healer + ledger tests pass clean. The acceptance criterion is the obvious one: after this ships and Echo (plus the other agents) upgrades, `/tokens/summary` returns live data instead of the unavailable error.
+
+## Amendment (2026-05-29): the "only the first one gets healed" bug
+
+After the fix above shipped, we dogfooded it on the Codey agent and caught a follow-on bug. The symptom: on a Node-upgraded agent, the *memory* search worked fine (`/memory/search` → 200) but the *token ledger* was still dark (`/tokens/summary` → 503) — even though the native binary on disk was already correct.
+
+Here's why. The healer is allowed to run its expensive `npm rebuild` only **once per process** (so it can't loop forever if the rebuild keeps failing). That guard was too blunt. When the agent boots, several subsystems open SQLite. The *first* one to hit the version mismatch (it happened to be the memory store) heals successfully, rebuilds the binary, and "uses up" the single allowed heal. Then the *next* subsystem (the token ledger) hits the same mismatch, and the healer says "I already healed once this process — giving up" and throws. But the binary is already fixed at that point! The token ledger just needed to drop its stale copy and try opening again, which would have worked instantly.
+
+The fix teaches the guard to tell two things apart: "don't *rebuild* again" (still true — that's expensive) versus "don't even *try to open* again" (wrong, once the rebuild already succeeded). So now, when a later subsystem hits the mismatch and a previous heal **succeeded**, the healer clears that subsystem's stale cached binary and retries the open once — no second rebuild. If the earlier heal had *failed*, nothing changed: it still gives up, because retrying genuinely wouldn't help.
+
+Net effect: on a Node-upgraded agent, *every* SQLite-backed subsystem comes back, not just whichever one happened to open first. The rollback is a one-file revert of two small `if` blocks, and the worst case is exactly the pre-amendment behavior.
+
+## Amendment 2 (2026-05-29): the "missing column" version — a totally separate cause of the same 503
+
+While checking the heal fix above, I found this agent's own token ledger was *also* dark — but for a completely different reason, and the heal fix wouldn't touch it. The error was "no such column: attribution_key."
+
+Picture the token ledger's database setup as a checklist the code runs every startup: make the table, build a few indexes, then run any "add this new column to old databases" upgrade steps. At some point we added a new column (attribution_key) and an index that sorts by it. The bug: the checklist tried to *build the index that uses the new column* before it ran the *step that adds the column to older databases*. On a brand-new database that's fine (the column is created with the table). But on any agent whose ledger database was created before that column existed, the "make the table" step is skipped (it already exists), so the column is still missing when the index step runs — and it blows up. The code only knew to forgive one specific kind of error ("column already exists"), not this one, so the whole setup aborted and the ledger stayed off forever.
+
+The fix is just reordering the checklist: run the "add the column to old databases" step *before* the index that needs it. New databases are unaffected (they already have the column; the add-step is harmlessly skipped). Old databases get the column added, then everything downstream works. We also wrote down the rule so it doesn't regress: a step that adds a column must come before anything that references that column. Rollback is a one-file reorder, and the worst case is the same 503 we started with.

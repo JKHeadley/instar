@@ -34,6 +34,244 @@ describe('ConfigDefaults', () => {
       expect((defaults.monitoring as any).quotaTracking).toBe(true);
     });
 
+    it('seeds the non-gating swap timeout default on init and migration without overwriting overrides', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        expect((getInitDefaults(t).intelligence as any).nonGatingSwapTimeoutMs).toBe(15000);
+        expect((getMigrationDefaults(t).intelligence as any).nonGatingSwapTimeoutMs).toBe(15000);
+      }
+
+      const missing: any = { intelligence: {} };
+      const { patched, changes } = applyDefaults(missing, getMigrationDefaults('managed-project'));
+      expect(patched).toBe(true);
+      expect(missing.intelligence.nonGatingSwapTimeoutMs).toBe(15000);
+      expect(changes.some((c: string) => c.includes('intelligence.nonGatingSwapTimeoutMs'))).toBe(true);
+
+      const tuned: any = { intelligence: { nonGatingSwapTimeoutMs: 22000 } };
+      applyDefaults(tuned, getMigrationDefaults('managed-project'));
+      expect(tuned.intelligence.nonGatingSwapTimeoutMs).toBe(22000);
+    });
+
+    it('ships SessionReaper OFF + dry-run by default (the only kill-on-heuristic monitor)', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const sr = (getInitDefaults(t).monitoring as any).sessionReaper;
+        expect(sr).toBeDefined();
+        expect(sr.enabled).toBe(false);
+        expect(sr.dryRun).toBe(true);
+        expect(sr.normalTierReaps).toBe(false);
+        expect(sr.protectOpenCommitments).toBe(true);
+      }
+      // Migration parity: existing agents receive the (off) block on update.
+      const mig = getMigrationDefaults('managed-project');
+      expect((mig.monitoring as any).sessionReaper?.enabled).toBe(false);
+    });
+
+    it('migrates the sessionReaper block into a config that lacks it (existence-checked)', () => {
+      const config: any = { monitoring: { watchdog: { enabled: true } } };
+      const { patched, changes } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(patched).toBe(true);
+      expect(config.monitoring.sessionReaper.enabled).toBe(false);
+      expect(changes.some((c: string) => c.includes('sessionReaper'))).toBe(true);
+    });
+
+    it('does NOT overwrite an operator-enabled sessionReaper on migration', () => {
+      const config: any = { monitoring: { sessionReaper: { enabled: true, dryRun: false } } };
+      applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(config.monitoring.sessionReaper.enabled).toBe(true);
+      expect(config.monitoring.sessionReaper.dryRun).toBe(false);
+    });
+
+    it('ships apprenticeshipCycleSla OFF by default and migrates it add-missing', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const sla = (getInitDefaults(t).monitoring as any).apprenticeshipCycleSla;
+        expect(sla).toBeDefined();
+        expect(sla.enabled).toBe(false);
+        expect(sla.overdueAfterMinutes).toBe(120);
+      }
+
+      const config: any = { monitoring: {} };
+      const { patched, changes } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(patched).toBe(true);
+      expect(config.monitoring.apprenticeshipCycleSla.enabled).toBe(false);
+      expect(config.monitoring.apprenticeshipCycleSla.overdueAfterMinutes).toBe(120);
+      expect(changes.some((c: string) => c.includes('apprenticeshipCycleSla'))).toBe(true);
+
+      const enabled: any = {
+        monitoring: { apprenticeshipCycleSla: { enabled: true, overdueAfterMinutes: 30 } },
+      };
+      applyDefaults(enabled, getMigrationDefaults('managed-project'));
+      expect(enabled.monitoring.apprenticeshipCycleSla.enabled).toBe(true);
+      expect(enabled.monitoring.apprenticeshipCycleSla.overdueAfterMinutes).toBe(30);
+    });
+
+    // ── Warm-Session A2A defaults (dark-ship via developmentAgent gate) ──
+    it('ships threadline.warmSessionA2A with caps but NO `enabled` (resolves via dev-gate)', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const warm = (getInitDefaults(t).threadline as any).warmSessionA2A;
+        expect(warm).toBeDefined();
+        // `enabled` MUST be omitted so the server resolves it via
+        // `enabled ?? !!config.developmentAgent` — the dark-ship invariant.
+        expect('enabled' in warm).toBe(false);
+        expect(warm.globalCap).toBe(3);
+        expect(warm.perPeerCap).toBe(1);
+        expect(warm.ttlMs).toBe(600000);
+        expect(warm.trustFloor).toBe('verified');
+      }
+      const mig = (getMigrationDefaults('managed-project').threadline as any).warmSessionA2A;
+      expect(mig).toBeDefined();
+      expect('enabled' in mig).toBe(false);
+    });
+
+    it('migration deep-merges warmSessionA2A into an existing threadline block (parity)', () => {
+      // Existing agent already has a threadline block (relayEnabled) but no warm block.
+      const config: any = { threadline: { relayEnabled: true, visibility: 'public' } };
+      const { patched, changes } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(patched).toBe(true);
+      // The nested block backfilled WITHOUT touching the existing fields.
+      expect(config.threadline.relayEnabled).toBe(true);
+      expect(config.threadline.warmSessionA2A).toBeDefined();
+      expect(config.threadline.warmSessionA2A.globalCap).toBe(3);
+      expect(config.threadline.warmSessionA2A.trustFloor).toBe('verified');
+      expect('enabled' in config.threadline.warmSessionA2A).toBe(false);
+      expect(changes.some((c: string) => c.includes('warmSessionA2A'))).toBe(true);
+    });
+
+    it('migration does NOT overwrite an operator-set warm enabled/caps', () => {
+      const config: any = {
+        threadline: { warmSessionA2A: { enabled: true, globalCap: 9 } },
+      };
+      applyDefaults(config, getMigrationDefaults('managed-project'));
+      // Operator's explicit values survive; only missing fields are backfilled.
+      expect(config.threadline.warmSessionA2A.enabled).toBe(true);
+      expect(config.threadline.warmSessionA2A.globalCap).toBe(9);
+      expect(config.threadline.warmSessionA2A.perPeerCap).toBe(1); // backfilled
+      expect(config.threadline.warmSessionA2A.ttlMs).toBe(600000); // backfilled
+    });
+
+    it('the dev-gate resolution: enabled ?? !!developmentAgent (both sides)', () => {
+      // Models the exact server-side resolution. Config block lacks `enabled`.
+      const resolve = (warm: any, developmentAgent: boolean) =>
+        warm?.enabled ?? !!developmentAgent;
+      const warm = (getInitDefaults('managed-project').threadline as any).warmSessionA2A;
+      // developmentAgent agent (Echo) → ON.
+      expect(resolve(warm, true)).toBe(true);
+      // fleet agent (no dev flag) → dark.
+      expect(resolve(warm, false)).toBe(false);
+      // explicit enabled wins regardless of dev flag.
+      expect(resolve({ ...warm, enabled: false }, true)).toBe(false);
+      expect(resolve({ ...warm, enabled: true }, false)).toBe(true);
+    });
+
+    // ── Multi-Machine Session Pool dark defaults (Track A — migration parity) ──
+    it('ships multiMachine.sessionPool DARK by default (enabled:false, stage:dark, dryRun:true)', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const sp = ((getInitDefaults(t).multiMachine as any) ?? {}).sessionPool;
+        expect(sp).toBeDefined();
+        expect(sp.enabled).toBe(false);
+        expect(sp.stage).toBe('dark');
+        expect(sp.dryRun).toBe(true);
+        expect(sp.promotionModel).toBe('off');
+        expect(sp.promotionCeiling).toBe('dark');
+        expect(sp.promotionTickMs).toBe(60000);
+        // Clock-skew knobs present + honor the §L2 startup invariant.
+        expect(sp.clockSkewToleranceMs).toBe(300000);
+        expect(sp.maxExpectedNtpDriftMs).toBe(250);
+        expect(sp.clockSkewToleranceMs).toBeGreaterThanOrEqual(sp.maxExpectedNtpDriftMs * 2);
+      }
+      const mig = (getMigrationDefaults('managed-project').multiMachine as any).sessionPool;
+      expect(mig.enabled).toBe(false);
+      expect(mig.stage).toBe('dark');
+      expect(mig.promotionModel).toBe('off');
+      expect(mig.promotionCeiling).toBe('dark');
+    });
+
+    it('ships threadline.a2aCheckIn (A2A Coherence Layer 4) DARK by default + migrates it', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const c = ((getInitDefaults(t).threadline as any) ?? {}).a2aCheckIn;
+        expect(c).toBeDefined();
+        expect(c.enabled).toBe(false);
+        expect(c.heartbeatEnabled).toBe(false);
+        expect(c.heartbeatIntervalMs).toBe(420000);
+      }
+      // Migration backfills it on existing agents (Migration Parity).
+      const mig = (getMigrationDefaults('managed-project').threadline as any).a2aCheckIn;
+      expect(mig.enabled).toBe(false);
+      expect(mig.heartbeatIntervalMs).toBe(420000);
+    });
+
+    it('NEVER sets multiMachine.enabled — the sessionPool block must not switch multi-machine on', () => {
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const mm = getInitDefaults(t).multiMachine as any;
+        // sessionPool exists, but enabled is not asserted by the defaults block.
+        expect(mm.sessionPool).toBeDefined();
+        expect(mm.enabled).toBeUndefined();
+      }
+    });
+
+    it('migrates sessionPool into an EXISTING multiMachine block without clobbering its fields', () => {
+      const config: any = { multiMachine: { enabled: true, leaseTtlMs: 60000 } };
+      const { patched, changes } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(patched).toBe(true);
+      // Existing multiMachine fields are preserved...
+      expect(config.multiMachine.enabled).toBe(true);
+      expect(config.multiMachine.leaseTtlMs).toBe(60000);
+      // ...and the dark sessionPool sub-block is added.
+      expect(config.multiMachine.sessionPool.enabled).toBe(false);
+      expect(config.multiMachine.sessionPool.stage).toBe('dark');
+      expect(changes.some((c: string) => c.includes('sessionPool'))).toBe(true);
+    });
+
+    it('migrates mentor.autonomousFix (dark) into an EXISTING mentor block on update (parity)', () => {
+      // An agent that already had the mentor block (pre-autonomous-fix) must
+      // receive the new dark autonomousFix sub-block on update — so the "just be
+      // Echo" loop is discoverable + opt-in, never silently absent.
+      const config: any = { mentor: { enabled: false, mode: 'off', menteeFramework: 'codex-cli' } };
+      const { patched } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(patched).toBe(true);
+      expect(config.mentor.menteeFramework).toBe('codex-cli'); // existing field preserved
+      expect(config.mentor.autonomousFix.enabled).toBe(false); // ships dark
+      expect(config.mentor.autonomousFix.model).toBe('opus'); // Justin's constraint
+    });
+
+    it('does NOT overwrite an operator-enabled mentor.autonomousFix on re-migration (idempotent)', () => {
+      const config: any = { mentor: { enabled: true, autonomousFix: { enabled: true, model: 'opus' } } };
+      const { changes } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(config.mentor.autonomousFix.enabled).toBe(true); // operator choice kept
+      expect(changes.some((c: string) => c.includes('autonomousFix.enabled'))).toBe(false);
+    });
+
+    it('migrates an inert multiMachine:{sessionPool} into a config with NO multiMachine block (does not enable it)', () => {
+      const config: any = { monitoring: {} };
+      applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(config.multiMachine.sessionPool.stage).toBe('dark');
+      expect(config.multiMachine.enabled).toBeUndefined(); // not switched on
+    });
+
+    it('is idempotent + does NOT overwrite an operator-advanced sessionPool stage', () => {
+      const config: any = { multiMachine: { sessionPool: { enabled: true, stage: 'shadow', dryRun: false } } };
+      const { changes } = applyDefaults(config, getMigrationDefaults('managed-project'));
+      expect(config.multiMachine.sessionPool.enabled).toBe(true);
+      expect(config.multiMachine.sessionPool.stage).toBe('shadow');
+      expect(config.multiMachine.sessionPool.dryRun).toBe(false);
+      expect(changes.some((c: string) => c.includes('sessionPool.stage'))).toBe(false);
+    });
+
+    it('backfills the Track-E deliverMessage/placement tunables into a partial sessionPool block (add-missing)', () => {
+      const config: any = { multiMachine: { sessionPool: { enabled: true, stage: 'shadow' } } };
+      applyDefaults(config, getMigrationDefaults('managed-project'));
+      // Operator fields preserved...
+      expect(config.multiMachine.sessionPool.stage).toBe('shadow');
+      // ...and the new §L4 tunables are added with their safe defaults.
+      expect(config.multiMachine.sessionPool.deliverMessageTimeoutMs).toBe(5000);
+      expect(config.multiMachine.sessionPool.deliverMessageMaxRetries).toBe(3);
+      expect(config.multiMachine.sessionPool.placementHysteresisDelta).toBe(0.15);
+      expect(config.multiMachine.sessionPool.ownershipCasMaxRetries).toBe(5);
+      // §L5 transfer tunables also backfill.
+      expect(config.multiMachine.sessionPool.transferDrainTimeoutMs).toBe(30000);
+      expect(config.multiMachine.sessionPool.transferOutputCutoffMs).toBe(1000);
+      expect(config.multiMachine.sessionPool.placementCooldownMs).toBe(300000);
+      expect(config.multiMachine.sessionPool.topicPlacementUpdateMinIntervalMs).toBe(10000);
+    });
+
     it('includes externalOperations', () => {
       const defaults = getInitDefaults('managed-project');
       expect(defaults.externalOperations).toBeDefined();
@@ -44,6 +282,48 @@ describe('ConfigDefaults', () => {
       const defaults = getInitDefaults('managed-project');
       expect(defaults.threadline).toBeDefined();
       expect((defaults.threadline as any).relayEnabled).toBe(false);
+    });
+
+    it('default-enables the scheduler for new agents (autonomy continuity)', () => {
+      // Regression for codex-instar audit Item 5: agents shipping without
+      // an explicit scheduler.enabled lost org-intent drift audits,
+      // threadline sync, post-update self-healing — anything that runs on
+      // the scheduler. New agents must get enabled:true by default.
+      for (const t of ['managed-project', 'standalone'] as const) {
+        const defaults = getInitDefaults(t);
+        expect((defaults.scheduler as any)?.enabled).toBe(true);
+      }
+      const mig = getMigrationDefaults('managed-project');
+      expect((mig.scheduler as any)?.enabled).toBe(true);
+    });
+
+    it('backfills scheduler.enabled into existing scheduler blocks that lack it', () => {
+      const config: Record<string, unknown> = {
+        scheduler: { maxParallelJobs: 4, jobsFile: '/some/path/jobs.json' },
+      };
+      const defaults = getMigrationDefaults('managed-project');
+      const { patched, changes } = applyDefaults(config, defaults);
+
+      expect(patched).toBe(true);
+      expect((config.scheduler as any).enabled).toBe(true);
+      expect((config.scheduler as any).maxParallelJobs).toBe(4);
+      expect((config.scheduler as any).jobsFile).toBe('/some/path/jobs.json');
+      expect(changes.some(c => c === 'scheduler.enabled (added)')).toBe(true);
+    });
+
+    it('does NOT override an explicit scheduler.enabled=false (operator choice wins)', () => {
+      // An operator who explicitly disabled the scheduler must keep their
+      // setting on update. applyDefaults only adds MISSING keys; never
+      // overrides. Tests this contract for the scheduler field specifically
+      // because the audit explicitly raised it.
+      const config: Record<string, unknown> = {
+        scheduler: { enabled: false, maxParallelJobs: 2 },
+      };
+      const defaults = getMigrationDefaults('managed-project');
+      applyDefaults(config, defaults);
+
+      expect((config.scheduler as any).enabled).toBe(false);
+      expect((config.scheduler as any).maxParallelJobs).toBe(2);
     });
   });
 

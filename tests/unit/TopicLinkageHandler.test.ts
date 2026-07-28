@@ -131,8 +131,10 @@ describe('TopicLinkageHandler.captureOriginOnSend', () => {
     const entry = deps.threadResumeMap.get('t-2') as ThreadResumeEntry | null;
     // Note: ThreadResumeMap.get verifies JSONL existence — entry may be null
     // because no real Claude session JSONL exists. Read the raw file instead.
-    const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'threadline', 'thread-resume-map.json'), 'utf-8'));
-    expect(raw['t-2'].originTopicId).toBe(9210);
+    // Phase 2a: ThreadResumeMap is a view over conversations.json (originTopicId
+    // → boundTopicId via the field bridge).
+    const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'threadline', 'conversations.json'), 'utf-8')).conversations;
+    expect(raw['t-2'].boundTopicId).toBe(9210);
     expect(raw['t-2'].originSessionName).toBe('echo-topic-9210');
     // get() may return null because of the JSONL existence guard; that's expected
     // in this synthetic test — the raw-file assertion above is the source of truth.
@@ -158,7 +160,10 @@ describe('TopicLinkageHandler.captureOriginOnSend', () => {
     expect(c.relatedAgent).toBe('ai-guy');
     expect(c.topicId).toBe(9210);
     expect(c.userRequest).toBe('ask for stripe data');
-    expect(c.beaconEnabled).toBe(true);
+    // Near-Silent Notifications: a threadline-reply commitment must NOT beacon the
+    // user's topic — the reply routes back automatically, so a cadenced "awaiting
+    // reply" heartbeat is housekeeping noise that floods the user's chat.
+    expect(c.beaconEnabled).toBe(false);
     expect(c.expiresAt).toBeDefined();
   });
 
@@ -262,6 +267,10 @@ describe('TopicLinkageHandler.tryRouteReplyToTopic', () => {
     const deps = makeDeps(stateDir, {
       sendTelegramToTopic: sendTg,
       isSessionAlive: vi.fn().mockReturnValue(true),
+      // Inject does not confirm (stuck) → failure-visible → the deterministic
+      // surface fires, which is what the per-topic cap must throttle. (A
+      // confirmed live-inject would suppress the surface entirely.)
+      injectIntoSession: vi.fn().mockReturnValue(false),
       now: () => mockNow,
     });
     const handler = new TopicLinkageHandler(deps);
@@ -330,6 +339,86 @@ describe('TopicLinkageHandler.tryRouteReplyToTopic', () => {
     expect(injectedText).toContain('stripe data');
   });
 
+  // #16 — salience-gated surface for the resume-pending (dormant session) path.
+  // A dormant session can't relay inline, so the reply is durably stored and
+  // picked up on the topic's next interaction. We must NOT fire a noisy Telegram
+  // post for low-salience intermediate a2a chatter — only for salient replies (or
+  // genuine delivery failures, via the separate failure-visible safety valve).
+  const lowSalience = () => new SalienceGate({
+    classify: async () => ({ verdict: 'agent-internal' as const, reason: 'low-salience chatter' }),
+  });
+  const highSalience = () => new SalienceGate({
+    classify: async () => ({ verdict: 'user-visible' as const, reason: 'the awaited answer' }),
+  });
+
+  it('resume-pending + agent-internal (low-salience) → does NOT surface (the #16 fix: quiet, picked up next interaction)', async () => {
+    const sendTg = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps(stateDir, {
+      sendTelegramToTopic: sendTg,
+      // Registered session name exists (→ topic is active) but it isn't actually
+      // alive → resume-pending (deliver on next interaction, not live-inject).
+      getSessionForTopic: vi.fn().mockReturnValue('echo-topic-9210'),
+      isSessionAlive: vi.fn().mockReturnValue(false),
+      salienceGate: lowSalience(),
+    });
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 't-quiet', remoteAgent: 'ai-guy', originTopicId: 9210 });
+
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 't-quiet', body: 'just an ack, nothing to see' }),
+      threadEntry: { remoteAgent: 'ai-guy', originTopicId: 9210, originSessionName: 'echo-topic-9210' },
+    });
+
+    expect(out.kind).toBe('routed');
+    if (out.kind === 'routed') {
+      expect(out.deliveryMode).toBe('resume-pending');
+      expect(out.verdict).toBe('agent-internal');
+    }
+    expect(sendTg).not.toHaveBeenCalled(); // quiet — no noisy topic post
+  });
+
+  it('resume-pending + user-visible (salient) → DOES surface', async () => {
+    const sendTg = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps(stateDir, {
+      sendTelegramToTopic: sendTg,
+      getSessionForTopic: vi.fn().mockReturnValue('echo-topic-9210'),
+      isSessionAlive: vi.fn().mockReturnValue(false),
+      salienceGate: highSalience(),
+    });
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 't-salient', remoteAgent: 'ai-guy', originTopicId: 9210 });
+
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 't-salient', body: 'here is the answer you were waiting for' }),
+      threadEntry: { remoteAgent: 'ai-guy', originTopicId: 9210, originSessionName: 'echo-topic-9210' },
+    });
+
+    expect(out.kind).toBe('routed');
+    if (out.kind === 'routed') expect(out.deliveryMode).toBe('resume-pending');
+    expect(sendTg).toHaveBeenCalledTimes(1); // salient → surface
+  });
+
+  it('failure-visible + agent-internal → STILL surfaces (safety valve — a genuine delivery failure is never hidden)', async () => {
+    const sendTg = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps(stateDir, {
+      sendTelegramToTopic: sendTg,
+      isSessionAlive: vi.fn().mockReturnValue(true),
+      injectIntoSession: vi.fn().mockReturnValue(false), // stalled inject → failure-visible
+      salienceGate: lowSalience(),
+    });
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 't-fail', remoteAgent: 'ai-guy', originTopicId: 9210 });
+
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 't-fail', body: 'low-salience but delivery failed' }),
+      threadEntry: { remoteAgent: 'ai-guy', originTopicId: 9210 },
+    });
+
+    expect(out.kind).toBe('routed');
+    if (out.kind === 'routed') expect(out.deliveryMode).toBe('failure-visible');
+    expect(sendTg).toHaveBeenCalledTimes(1); // failure → always surface despite agent-internal
+  });
+
   it('still surfaces first reply as user-visible when beacon has already heartbeated (slow-reply regression)', async () => {
     // Regression for the reviewer-flagged bug: previously `isFirstReply` was
     // derived from `commitment.heartbeatCount`, which is incremented by
@@ -343,6 +432,9 @@ describe('TopicLinkageHandler.tryRouteReplyToTopic', () => {
     const deps = makeDeps(stateDir, {
       sendTelegramToTopic: sendTg,
       isSessionAlive: vi.fn().mockReturnValue(true),
+      // Stuck inject → failure-visible → deterministic surface fires (the path
+      // under test). A confirmed live-inject would relay via the session instead.
+      injectIntoSession: vi.fn().mockReturnValue(false),
     });
     const handler = new TopicLinkageHandler(deps);
     handler.captureOriginOnSend({ threadId: 't-slow', remoteAgent: 'ai-guy', originTopicId: 9210 });
@@ -430,24 +522,59 @@ describe('TopicLinkageHandler.tryRouteReplyToTopic', () => {
     expect(out.kind).toBe('routed');
     if (out.kind === 'routed') {
       expect(out.deliveryMode === 'resume-pending' || out.deliveryMode === 'failure-visible').toBe(true);
-      // resume-pending now marks delivered too (the user has been told via Telegram
-      // surface and the message is durably stored for topic-wake). Only failure-
-      // visible leaves the commitment open.
-      if (out.deliveryMode === 'resume-pending') {
-        expect(out.commitmentDelivered).toBe(true);
-      } else {
-        expect(out.commitmentDelivered).toBe(false);
-      }
+      // The Telegram surface fired (default mock) on this first reply, so the
+      // user has been told regardless of delivery mode → commitment resolves.
+      // (surfacedToUser = live-inject || telegramSent.) Only a path where NO
+      // surface posts leaves the commitment open — covered by the next test.
+      expect(out.telegramSent).toBe(true);
+      expect(out.commitmentDelivered).toBe(true);
     }
     // cleanup the claude dir we created
     try { SafeFsExecutor.safeRmSync(claudeDir, { recursive: true, force: true, operation: 'tests/unit/TopicLinkageHandler.test.ts:cleanup' }); } catch { /* noop */ }
   });
 
-  it('fires Telegram surface on user-visible first reply', async () => {
+  it('CMT-509 §1: resume-pending whose surface does NOT fire leaves the commitment OPEN', async () => {
+    // The exact 2026-05-25 incident class: a reply arrived, was durably stored
+    // (resume-pending), but NO user-facing surface posted (here: no
+    // sendTelegramToTopic) — so the user saw nothing. The commitment must NOT
+    // resolve. (Previously resume-pending resolved unconditionally.)
+    const deps = makeDeps(stateDir, {
+      isSessionAlive: vi.fn().mockReturnValue(false),
+      getSessionForTopic: vi.fn().mockReturnValue(null),
+      sendTelegramToTopic: undefined, // surface cannot fire
+    });
+    // Seed the topic-resume-map + JSONL so the topic is NOT considered expired
+    // (mirrors the sibling resume-pending test).
+    fs.writeFileSync(path.join(stateDir, 'topic-resume-map.json'), JSON.stringify({
+      '9210': { uuid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', sessionName: 'echo-topic-9210', savedAt: new Date().toISOString() },
+    }, null, 2));
+    const claudeDir = path.join(os.homedir(), '.claude', 'projects', stateDir.replace(/[\/\.]/g, '-'));
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl'), '');
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 't-noSurface', remoteAgent: 'ai-guy', originTopicId: 9210, originSessionName: 'echo-topic-9210' });
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 't-noSurface' }),
+      threadEntry: { remoteAgent: 'ai-guy', originTopicId: 9210, originSessionName: 'echo-topic-9210' },
+    });
+    expect(out.kind).toBe('routed');
+    if (out.kind === 'routed') {
+      expect(out.deliveryMode).toBe('resume-pending');
+      expect(out.telegramSent).toBe(false);
+      expect(out.commitmentDelivered).toBe(false); // NOT resolved — user saw nothing
+    }
+    // The commitment is still open (findByThreadId skips delivered ones).
+    expect(deps.commitmentTracker.findByThreadId('t-noSurface')).not.toBeNull();
+    try { SafeFsExecutor.safeRmSync(claudeDir, { recursive: true, force: true, operation: 'tests/unit/TopicLinkageHandler.test.ts:cleanup' }); } catch { /* noop */ }
+  });
+
+  it('fires Telegram surface on user-visible first reply when the live inject does not confirm', async () => {
     const sendTg = vi.fn().mockResolvedValue(undefined);
     const deps = makeDeps(stateDir, {
       sendTelegramToTopic: sendTg,
       isSessionAlive: vi.fn().mockReturnValue(true),
+      // Inject stalls (the real A2 failure) → failure-visible → surface fires.
+      injectIntoSession: vi.fn().mockReturnValue(false),
     });
     const handler = new TopicLinkageHandler(deps);
     handler.captureOriginOnSend({ threadId: 't-tg', remoteAgent: 'ai-guy', originTopicId: 9210 });
@@ -469,6 +596,8 @@ describe('TopicLinkageHandler.tryRouteReplyToTopic', () => {
     const deps = makeDeps(stateDir, {
       sendTelegramToTopic: sendTg,
       isSessionAlive: vi.fn().mockReturnValue(true),
+      // Stuck inject → failure-visible → surface path is exercised + rate-limited.
+      injectIntoSession: vi.fn().mockReturnValue(false),
       now: () => mockNow,
     });
     const handler = new TopicLinkageHandler(deps);
@@ -492,5 +621,52 @@ describe('TopicLinkageHandler.tryRouteReplyToTopic', () => {
       threadEntry: { remoteAgent: 'ai-guy', originTopicId: 9210 },
     });
     expect(sendTg).toHaveBeenCalledTimes(2);
+  });
+
+  it('A2: a CONFIRMED live-inject does NOT also fire a Telegram surface (no double-post)', async () => {
+    // The core no-double-surface guarantee: when the live session genuinely
+    // consumes the inject (injectIntoSession resolves true), the agent itself
+    // relays the reply, so the deterministic Telegram surface must NOT fire.
+    const sendTg = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps(stateDir, {
+      sendTelegramToTopic: sendTg,
+      isSessionAlive: vi.fn().mockReturnValue(true),
+      injectIntoSession: vi.fn().mockResolvedValue(true), // CONFIRMED consumption
+    });
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 't-nodouble', remoteAgent: 'ai-guy', originTopicId: 9210 });
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 't-nodouble', body: 'the answer' }),
+      threadEntry: { remoteAgent: 'ai-guy', originTopicId: 9210 },
+    });
+    expect(out.kind).toBe('routed');
+    if (out.kind === 'routed') {
+      expect(out.deliveryMode).toBe('live-inject');
+      expect(out.telegramSent).toBe(false);       // NO double-post
+      expect(out.commitmentDelivered).toBe(true);  // resolved via the live session
+    }
+    expect(sendTg).not.toHaveBeenCalled();
+  });
+
+  it('A2: a STALLED live-inject (session alive but inject unconfirmed) falls back to the surface and resolves on telegramSent', async () => {
+    const sendTg = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps(stateDir, {
+      sendTelegramToTopic: sendTg,
+      isSessionAlive: vi.fn().mockReturnValue(true),
+      injectIntoSession: vi.fn().mockResolvedValue(false), // dispatched but NOT consumed
+    });
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 't-stall', remoteAgent: 'ai-guy', originTopicId: 9210 });
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 't-stall', body: 'the answer' }),
+      threadEntry: { remoteAgent: 'ai-guy', originTopicId: 9210 },
+    });
+    expect(out.kind).toBe('routed');
+    if (out.kind === 'routed') {
+      expect(out.deliveryMode).toBe('failure-visible'); // inject never confirmed
+      expect(out.telegramSent).toBe(true);               // safety-net surface fired
+      expect(out.commitmentDelivered).toBe(true);        // resolved on telegramSent
+    }
+    expect(sendTg).toHaveBeenCalledTimes(1);
   });
 });

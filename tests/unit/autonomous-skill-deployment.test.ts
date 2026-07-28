@@ -101,15 +101,24 @@ describe('Autonomous skill deployment', () => {
       expect(hasAutonomousHook).toBe(true);
     });
 
-    it('places autonomous stop hook FIRST in the Stop chain', () => {
+    it('places autonomous stop hook immediately after stop-gate when present', () => {
       const settingsPath = path.join(projectDir, '.claude', 'settings.json');
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
 
       const stopHooks = settings.hooks.Stop as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
-      const firstHook = stopHooks[0];
+      const stopGateIndex = stopHooks.findIndex(entry =>
+        entry.hooks?.some(h => h.command?.includes('stop-gate-router.js')),
+      );
+      const autonomousIndex = stopHooks.findIndex(entry =>
+        entry.hooks?.some(h => h.command?.includes('autonomous-stop-hook')),
+      );
 
-      // Must be first so it blocks before other hooks run
-      expect(firstHook.hooks?.[0]?.command).toContain('autonomous-stop-hook');
+      expect(autonomousIndex).toBeGreaterThanOrEqual(0);
+      if (stopGateIndex >= 0) {
+        expect(autonomousIndex).toBe(stopGateIndex + 1);
+      } else {
+        expect(autonomousIndex).toBe(0);
+      }
     });
   });
 });
@@ -135,7 +144,7 @@ describe('Autonomous stop hook source analysis', () => {
     expect(content).toContain('duration_seconds');
     expect(content).toContain('ELAPSED');
     // Must remove state file on expiry
-    expect(content).toContain('rm "$STATE_FILE"');
+    expect(content).toContain('rm -f "$STATE_FILE"');
   });
 
   it('checks for completion promise', () => {

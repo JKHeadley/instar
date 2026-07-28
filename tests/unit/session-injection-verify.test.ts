@@ -50,7 +50,9 @@ describe('SessionManager — submission verification', () => {
     const fnBlock = source.slice(fnStart, fnStart + 5000);
     // Must recover via send-keys Enter (somewhere — could be inline or via fireStuckInputRecovery)
     // Pull in the recovery helper too so we cover both inline and extracted layouts.
-    const recoveryHelperStart = source.indexOf('fireStuckInputRecovery');
+    // Locate the DEFINITION (not the first call site) so unrelated helper methods
+    // inserted between verifyInjection and the definition can't push it out of view.
+    const recoveryHelperStart = source.search(/(?:private\s+|public\s+)?fireStuckInputRecovery\s*\(\s*tmuxSession\s*:/);
     const recoveryBlock = recoveryHelperStart > -1
       ? source.slice(recoveryHelperStart, recoveryHelperStart + 2000)
       : '';

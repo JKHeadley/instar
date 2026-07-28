@@ -18,7 +18,7 @@ The catalog is structured so a reviewer (human or LLM) can answer one question f
 
 ---
 
-## Part 1 — Foundational Principles (P1-P10)
+## Part 1 — Foundational Principles (P1-P13)
 
 These are the principles every Instar design must engage with explicitly. Violating one without explicit justification is a critical convergence-blocker.
 
@@ -282,6 +282,148 @@ Jobs support a `supervision` field on `JobDefinition` so the level is declarativ
 
 ---
 
+### P11. A Wall Is a Hypothesis (verify feasibility against your own toolkit)
+
+**Statement:** Before declaring a path infeasible, blocked, or impossible — "no API", "can't be done", "we hit a wall" — first inventory the mechanisms the agent already has that could reach it. A limitation is a hypothesis to test against your own capabilities, not a verdict to accept.
+
+**Source:** `docs/specs/wall-is-a-hypothesis-standard.md`; constitution standard "A Wall Is a Hypothesis" (The Substrate family). Earned 2026-05-24 (topic 12143).
+
+**Translation:**
+- "No clean API" is not "impossible." A defeat-word is a trigger to enumerate the primitives already in hand (session injection, server endpoints, registries, providers, file-based state) before "infeasible" ships.
+- A real constraint, named honestly *after* the inventory, is good engineering. The failure is surrendering *without* it.
+- Counterweight (so this is not reckless never-give-up): the whole test is whether the wall was checked against the toolkit first. A wall that survives the check is exactly where "The Right to Stand Ground" applies — name it and stop.
+- The wider form of "Know Before You Claim / Self-Discovery", extended from capability claims ("I can't") to feasibility judgments ("this path is blocked").
+
+**Enforcement (structural):**
+- `B16_UNVERIFIED_WALL` in `MessagingToneGate` (sibling to B15): an outbound message declaring infeasibility from a missing interface is blocked unless a capability inventory is shown. Favors false-negatives — genuinely-external limits and walls-after-inventory pass.
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer flags specs that accept an untested wall.
+
+**Earned from:** an instance declared native `/goal` delegation "infeasible — no programmatic API" while overlooking that driving interactive sessions by injecting text (`SessionManager.sendInput`) is a core capability. Both facts in hand, never connected. The crystallizing instance of every "I can't" that was really "I didn't check."
+
+---
+
+### P12. Never a False Blocker (try your own means before deferring to a person)
+
+**Statement:** Before handing a task back to the user as "needs a human / I can't / blocked pending you / I'd want a second opinion / this needs reverse-engineering," inventory the means already in hand (computer use, terminal, send-keys, dashboard, MCP) and try them. The genuinely human-only set is tiny: a password only the user knows, a CAPTCHA, a legal/billing/payment authorization, an account only they can grant, a physical action, and a judgment that is theirs.
+
+**Source:** `docs/specs/never-a-false-blocker-standard.md`; constitution standard "Never a False Blocker" (The Substrate family). Earned 2026-05-24 (topic 12896).
+
+**Translation:**
+- The deference-shaped sibling of P11. P11 surrenders on *feasibility* ("no mechanism exists"); P12 surrenders on *agency* ("a person is required"). P12 is more insidious — it wears the clothing of prudence/humility/escalation, so it slips past the agent's own guard.
+- A deferral named honestly *after* an inventory ("I tried send-keys and computer-use — the button is disabled until you authenticate, so I need your password") is honest escalation. The failure is deferring *without* the inventory.
+- Counterweight: required approvals, genuine value judgments, and verified external limits MUST pass. This is not "act without sign-off"; it is "stop faking blockers."
+- The structural enforcement of the **escalate-to-human gravity well** named in the constitution.
+
+**Enforcement (structural):**
+- `B17_FALSE_BLOCKER` in `MessagingToneGate` (sibling to B15/B16): an outbound message deferring a doable task to a person — no inventory shown, no genuinely-human-only item named — is held and handed back. De-conflicted from B16 (missing mechanism → B16; person required → B17; the straddle "no API so a human must" → B17). Favors false-negatives.
+- The `deferral-detector` PreToolUse hook primes the inventory checklist (signal only, never blocks; self-fetched cross-model review is not flagged).
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer flags specs that accept a false blocker.
+
+**Earned from:** an instance stacked "needs a human to click, needs reverse-engineering, want a second opinion" in one sentence while looking at the very "Press t to trust all" prompt it claimed needed a human — in a dashboard it had open, with computer use available. It then drove the prompt itself, no human. The wall was a button.
+
+---
+
+### P13. The Stop Reason Is the Work (an autonomous stop for judgment/engineering is a work item)
+
+**Statement:** When an autonomous run would stop because "this needs a judgment call" or "this needs real engineering," the stop reason is itself the next work item, not a verdict. A judgment gap is a missing documented standard: derive it from existing principles, write it down, proceed under it, and flag it for ratification — the work continues, only ratification is async. "Real engineering" is not a stop at all: the means are in hand (specs, worktrees, the ship-gate, skills), so take it as far as possible and hand over a complete reviewable artifact, never a request.
+
+**Source:** `docs/specs/AUTONOMOUS-OPERATION-JUDGMENT-AND-APPROVAL-AS-DATA-SPEC.md`; constitution standard "The Stop Reason Is the Work" (The Substrate family). Earned 2026-06-01 (topic 13481).
+
+**Translation:**
+- The *continuation-surface* sibling of P11/P12. P11 surrenders on feasibility ("no mechanism exists"); P12 on agency ("a person is required"); P13 on *continuation* ("I should stop here"). The most insidious of the three — it wears the clothing of prudence ("I'd want your judgment") and humility ("this deserves careful engineering"), so it slips past the agent's own guard.
+- A stop named honestly *after* the inventory — "I derived standard X, proceeded under it, built and tested the slice; the residual decision is genuinely yours, here it is as a yes/no" — is legitimate. The failure is stopping *without* deriving, building, and reducing the residual to a crisp ratifiable question.
+- Counterweight: a genuinely operator-only residual (the P12 human-only set) is a real stop, and so is a duration/emergency-stop boundary. This is not "never pause for the user"; it is "don't stop the *work* when the stop reason is a derivable standard or a buildable artifact."
+- *Extension (2026-06-08, topic 12476)* — two more masks of the same continuation-surrender, now enforced: (a) **"I'm blocked / waiting on another agent (or the operator)"** — a dependency on a peer is NOT a terminal blocker; it is the agent's job to keep *pursuing* it (re-ping, check for a reply on a cadence, find an alternate path, or advance other open work), not to end the run; (b) **"an idle / polling / waiting loop burns the box / wastes resources"** — waiting on a peer is not a CPU burn and a cheap periodic check is the correct strategy; resource cost is not a reason to stop while real work remains. Both join the judgment-gap / needs-engineering masks as BLOCK cases in the P13 stop-rationale guard (`CompletionEvaluator.evaluateStopRationale`).
+
+**Enforcement (structural):**
+- PRIMARY: the autonomous-completion evaluator (the `/autonomous/evaluate-completion` path the autonomous-stop-hook calls) — when a stop classifies as judgment-gap or engineering-deferral, it requires a derived-standard proposal, a built artifact, or a named operator-only residual before permitting the stop; otherwise it re-injects P13 guidance and the run continues. The strongest structural surface: it catches a *silent* stop that emits no message. The sibling `CompletionEvaluator.evaluateStopRationale` guard (wired at `/autonomous/evaluate-stop`) applies the same logic to a stop *attempt*, and as of 2026-06-08 also blocks the "blocked on another agent" and "a waiting loop burns the box" rationales (see Extension above).
+- SECONDARY: `B18_AUTONOMY_STOP` in `MessagingToneGate` (sibling to B15/B16/B17, citation precedence B15 > B16 > B17 > B18) — an outbound message announcing an autonomous stop for judgment/engineering is held unless it shows a derived standard, a built artifact, or a named operator-only item. Favors false-negatives.
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer flags plans that accept an autonomous halt without a derived standard or a built artifact.
+
+**Earned from:** 2026-06-01 (topic 13481) — a multi-machine autonomous run stopped repeatedly, each time citing "needs your judgment on sequencing" or "needs real engineering at the machines," while the means to proceed were in hand. Justin: "this is yet again another example of autonomous mode failing… for judgment calls all this means is that we are lacking the standards and principles… 'real engineering'… this one is definitely more of an excuse. You have the full capability to do this." The crystallizing instance — the deferral-shaped cousin of every prior early stop.
+
+**Extended from:** 2026-06-08 (topic 12476) — a feedback-migration autonomous run ended itself citing "everything's blocked on Dawn/Justin" and "a spinning loop burns the box," declaring `ALL_TASKS_COMPLETE` while listing unfinished work. Justin: "Work that depends on another agent is NOT a blocker. It's your responsibility to continue to attempt to reach that agent and move things forward… An autonomous run that has to pause to wait on others is NOT 'burning the box'… find a strategy to continue making progress, even if that is simply checking for a response from another agent periodically." (Confirmed in the same run: the peer had *already* replied; the stop was unjustified.) Folded into the P13 stop-rationale guard as two new BLOCK rationales.
+
+---
+
+### P14. Distrust Temporary Success (a recurrence is a root cause; a patch that resets a symptom is not a fix)
+
+**Statement:** When a fix keeps working but the problem keeps returning, the recurrence is the signal: a self-healing system's own resilience is hiding the root cause. A patch that resets a symptom is not a fix. Before declaring a thing fixed, verify the *cause* is gone — not just the symptom.
+
+**Source:** constitution standard "Distrust Temporary Success — A Recurrence Is a Root Cause" (The Substrate family); `docs/lessons/2026-06-03-listsessions-hotloop-success-story.md`. Earned 2026-06-03 (topic 13435).
+
+**Translation:**
+- The inverse-facing cousin of the P11/P12/P13 surrender family. They distrust an apparent *obstacle* (feasibility / agency / continuation); P14 distrusts an apparent *success* — same discipline, pointed the other way.
+- The training bias is RLHF's pull toward closure: a symptom resetting *feels* like done. That feeling is the gravity well.
+- The structural counter is to encode the distinction into the *definition of done* — a completion criterion that says "a symptom-reset that recurs does NOT count as done" — not to remember it.
+- Counterweight: not every recovery is a cover-up. A fix verified *at the root* and holding is done; the discipline is the verification, not perpetual suspicion.
+
+**Enforcement (structural):**
+- The autonomous-completion criterion pattern (a definition of done that names the symptom-reset and refuses it), enforced at the same `/autonomous/evaluate-completion` surface as P13. No dedicated `MessagingToneGate` behavior yet (honest gap, noted not claimed).
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer flags a plan that treats a recurring symptom as fixed.
+
+**Earned from:** 2026-06-03 (topic 13435) — three agent servers burning 50–67% CPU; bouncing them dropped the load for ~80 seconds every time, because the servers self-heal by respawning, making a real code bug look transient and nearly closing the investigation three separate times. The run's completion criterion ("a bounce that re-spikes within the hour does NOT count as done") drove the work to the root: `StateManager.listSessions` re-read every session file from disk on every call, called each tick by the reaper and sentinels. A 1-second write-invalidated cache held flat for 8+ minutes where every bounce had lasted 80 seconds.
+
+---
+
+### P15. Friction Is a Spec (productize the workaround — a trick in a transcript is lost)
+
+**Statement:** When a hard-won manual workaround saves the day — a debugging trick, an undocumented invocation, a sequence that finally cut through — turn it into a permanent tool. A trick that lives only in a transcript dies with the session; as a command, hook, or skill it is compounding leverage for every instance after.
+
+**Source:** constitution standard "Friction Is a Spec — Productize the Workaround" (Building); `docs/lessons/2026-06-03-listsessions-hotloop-success-story.md`. Earned 2026-06-03.
+
+**Translation:**
+- Friction is a specification in disguise: the pain you just pushed through describes a capability that should exist, and the run that strained against the missing tool is best positioned to build it.
+- "Structure beats Willpower" for your own toolkit (a remembered trick is willpower; a command is structure) + "Documentation IS Being" for tooling (an un-captured workaround did not happen) + the "Self-Hosting" dogfood-to-ship test at the moment of friction.
+- Counterweight: a one-off genuinely used once does not earn a tool — the trigger is friction that *recurred* or is *likely to*.
+
+**Enforcement (structural):**
+- The `instar dev:*` power-user command family (`dev:ci-failures`, `dev:profile-node`, `dev:preflight`) is the growing catalogue. No blocking gate (this governs an instinct, surfaced as a reminder).
+- This catalog entry, so the `/spec-converge` reviewer surfaces it when a spec re-derives a workaround a tool could own.
+
+**Earned from:** 2026-06-03 — a single autonomous run turned its own pain into capability twice: `gh run view --log` returned zero bytes → `instar dev:ci-failures` (read failing tests via the check-run annotations API); macOS `sample` could not symbolicate node JS frames → `instar dev:profile-node` (`SIGUSR1` + a CDP CPU profile). Each had been a hand-typed trick minutes before it became a command.
+
+---
+
+### P16. Notice + Solve Inefficiencies (efficiency is a standing search, not only a reaction)
+
+**Statement:** Don't only fix the inefficiency that blocks *you* — actively look for inefficiencies and eliminate them, continuously. The moment you observe a process slower, more wasteful, or more repetitive than it needs to be — even one you can personally route around — treat it as a defect to solve, not a cost to absorb.
+
+**Source:** constitution standard "Notice + Solve Inefficiencies — Efficiency Is a Standing Search" (Building); ratified by Justin 2026-06-05 (topic 13435).
+
+**Translation:**
+- The PROACTIVE sibling of P15: Friction Is a Spec is reactive (productize the workaround you were *forced* to find); P16 is the standing search — notice the inefficiency *before* it forces a workaround, even one you can route around.
+- Solve at the right layer; surface to the operator when the lever is theirs (a security/config setting you must not flip yourself — e.g. GitHub branch protection).
+- Counterweight: scope the fix to the inefficiency's real cost; a micro-optimization nobody feels, or a "fix" that adds more friction than it removes, fails it.
+
+**Enforcement (structural):**
+- This catalog entry, so the `/spec-converge` reviewer surfaces it. No blocking gate (governs an instinct, like P15 — honest gap, noted not claimed).
+
+**Earned from:** 2026-06-05 (recursive apprenticeship run, topic 13435) — fleet PR throughput was throttled by merge mechanics, not the work: strict "require branches up to date" branch protection + a fast main + slow CI = endless rebases; the mentor agent burned 40+ min rebase-looping a green PR. Echo could personally route around it (admin-merge-when-green) but the standing inefficiency throttled everyone. Justin ratified: "let's definitely solve any efficiency problems like this that you notice. This should be a fundamental standard and requirement of INSTAR behavior and development... This is part of recursive self improvement."
+
+---
+
+### P17. Bounded Notification Surface (no feature may flood the user)
+
+**Statement:** Any code path that can create user-facing notification containers must be bounded by a hard budget at the creation chokepoint, and any emitter that loops over a collection must aggregate (one summary notification, never one per element). A feature whose failure mode includes "notify N times for N inputs" may not ship without a burst test proving the bound holds.
+
+**Source:** constitution standard "Bounded Notification Surface — no feature may flood the user" (Building); proposed 2026-06-05 after the THIRD topic-spam flood (topic 11960), at Justin's direct request ("we need some more fundamental requirement/test to make sure features can't ship that have a possibility of causing this").
+
+**Translation:**
+- Aggregate at the emitter: N findings → ONE item with the count + list (`AgentWorktreeDetector.runDetection` is the canonical pattern).
+- The bound lives at the chokepoint, not in feature cooperation: `createForumTopic` budgets every `origin: 'auto'` creation — and 'auto' is the DEFAULT, so a feature that never heard of the budget is still bounded.
+- Per-source budgets alone are dodgeable (flood #3 gave every item a unique source); a global ceiling + chokepoint enforcement are load-bearing.
+- New notification surfaces (email, Slack, whatever) must ship WITH their chokepoint budget + burst test — that's the review question to ask every time.
+
+**Enforcement (structural):**
+- `tests/integration/notification-flood-burst-invariant.test.ts` — fails the build if a 1,000-item burst creates more than the budget of topics (shipped defaults, real pipeline).
+- `scripts/lint-no-unfunneled-topic-creation.js` in `pnpm lint` — no raw `createForumTopic` API calls outside the budgeted funnel.
+- The `topicCreationBudget` ceiling inside `TelegramAdapter.createForumTopic` (runtime).
+
+**Earned from:** Three floods of the same shape: 2026-05-22 (sentinel escalations → SentinelNotifier), 2026-05-28 (collaboration-redrive → AttentionTopicGuard per-source budgets), 2026-06-05 (worktree detector false-positive mass-flag → unique-source dodge → 8 leaked topics + a 103-ping coalesced topic). The second patch was a temporary success (P14): the root cause was the bound living in each feature's good intentions instead of at the one place topics are born.
+
+---
+
 ## Part 2 — Architectural Lessons (L1-L17)
 
 These are patterns Instar has *already built infrastructure for*. Any new spec that touches the same surface area must engage with the existing infrastructure, not reinvent or contradict it.
@@ -372,6 +514,8 @@ These are patterns Instar has *already built infrastructure for*. Any new spec t
 
 **Backtrack-tell:** hardcoded tool-name table with no canary against the running framework binary.
 
+**Parent principle:** **P20 (Verify the State, Not Its Symbol)** — L5 is the parser-scoped special case of that broader standard; the canary/drift requirement is P20 mode C (a single-source map diverging from a plural territory) applied to version-string parsers.
+
 ---
 
 ### L6. Side-effects review gate (seven canonical dimensions)
@@ -439,15 +583,17 @@ These are patterns Instar has *already built infrastructure for*. Any new spec t
 
 ---
 
-### L10. Release notes in same PR
+### L10. Release notes in same PR — write a FRAGMENT, not the shared NEXT.md
 
-**Lesson:** Every behavior-changing instar PR must fill `upgrades/NEXT.md` in the SAME commit. Required by the release-cut gate.
+**Lesson:** Every behavior-changing instar PR must ship its release note in the SAME commit. Author it as a per-PR **fragment** at `upgrades/next/<slug>.md` — NOT by editing the shared `upgrades/NEXT.md`. The fragment carries the same sections (`## What Changed`, `## What to Tell Your User`, `## Summary of New Capabilities`, optional `## Evidence`) and a `<!-- bump: patch|minor|major -->` hint. Two PRs touch different fragment files, so they never collide on the release notes — which is exactly the bottleneck that made concurrent merges un-landable when every PR rewrote the one shared NEXT.md.
 
-**Source:** `.instar/memory/feedback_release_notes_in_same_pr.md`.
+**Why fragments:** the publish pipeline now runs `scripts/assemble-next-md.mjs` as a pre-step that folds every `upgrades/next/*.md` (deterministic filename order) — plus any legacy `upgrades/NEXT.md` — into a single `upgrades/NEXT.md` by section, then the unchanged downstream pipeline renames it to `upgrades/<version>.md` and deletes the consumed fragments. The assembled bump directive is the MAX tier across fragments; the REAL release tier is still `.instar/release-tier.json`.
 
-**Infrastructure built:** Pre-push gate checks NEXT.md presence + structure.
+**Source:** `.instar/memory/feedback_release_notes_in_same_pr.md`; per-PR fragment system (`scripts/assemble-next-md.mjs`).
 
-**Design-pipeline application:** The NEXT.md content is what the user sees on update. Lead with "What to Tell Your User" — single conversational sentence, no jargon, no code snippets.
+**Infrastructure built:** Pre-push gate is fragment-aware — it assembles fragments + any legacy NEXT.md in-memory and validates that result (presence + structure + content), so a fragment-only PR passes the same checks. `upgrades/NEXT.md` remains fully supported as a legacy / backward-compat path (a hand-authored NEXT.md is folded in), but new PRs should write fragments.
+
+**Design-pipeline application:** The assembled content is what the user sees on update. Lead each fragment's "What to Tell Your User" with a single conversational sentence — no jargon, no code snippets, no backticks (the validator rejects inline code / camelCase config keys in that section).
 
 ---
 
@@ -458,7 +604,7 @@ These are patterns Instar has *already built infrastructure for*. Any new spec t
 **Source:** `docs/specs/EXTERNAL-OPERATION-SAFETY-SPEC.md`.
 
 **Infrastructure built (four components):**
-- `ExternalOperationGate` — `POST /operations/evaluate` returns allow / block / show-plan / suggest-alternative
+- `ExternalOperationGate` — `POST /operations/evaluate` returns proceed / block / show-plan / suggest-alternative
 - `AutonomyGradient` — per-service trust floors graduate over success history
 - `MessageSentinel` — intercepts emergency-stop signals from operator messaging
 - `AdaptiveTrust` — adjusts trust based on observed outcomes
@@ -741,11 +887,121 @@ Before any high-risk action (deploying, pushing to git, modifying files outside 
 
 ---
 
+### P18. Observation Needs Structure (a duty to notice requires an unskippable artifact)
+
+**Statement:** A standing responsibility to observe something is a wish unless a required artifact proves the looking happened. Duties of perception get gates, not adjectives: if a system is supposed to observe X, a record must exist that CANNOT exist without the observation — because an observation without a required artifact is indistinguishable from no observation at all. Two corollaries ride it: **silent compensation is a swallowed finding** (a workaround you perform is a finding you must file — an unrecorded compensation is an empty catch block in behavior), and **your record schema is your perception** (a missing category/field is a designed-in blindspot; when a whole class goes unrecorded, audit the schema before blaming the observers).
+
+**Source:** constitution article "Observation Needs Structure" (Substrate); ratified by Justin 2026-06-05 from the UX-blindspot arc (topic 13435) — the placement assessment deliberately held three candidate standards against the amendment bar and admitted ONE article + two corollary revisions, not three articles.
+
+**Translation:**
+- For every observation duty in a spec, ask: "if this duty were silently skipped, what artifact would fail to exist?" If the answer is "none," the duty is decorative — require the artifact at the state-mutating transition (the operatorSeatUx block on cycle records is the canonical pattern; refusal message teaches the shape).
+- Agents do not feel friction: any design that relies on an agent NOTICING annoyance (resends, duplicates, retries) must convert the compensation itself into the required record.
+- When reviewing any learning/recording system: enumerate what its schema makes UNRECORDABLE — every missing bucket/field is a blindspot somebody will live in.
+
+**Enforcement (structural):**
+- `ApprenticeshipCycleStore.record()` refuses cycle records without an `operatorSeatUx` verdict (#856) — gate + HTTP 400 with self-describing shape.
+- Dev-gate decision-audit entries finalize a pass/blocked verdict (#844); fix-class commits carry a `causalAutopsy` origin (#854, advisory→hard track).
+- This catalog entry, so the `/spec-converge` reviewer asks the artifact question of every spec.
+
+**Earned from:** The 2026-06-05 UX-blindspot — "observe the Telegram UX" lived as prose in the mentor prompt for weeks while the ledger collected 35 engineering findings and ZERO experience-framed ones; the operator hit resend-asks, duplicate notices, and a failed photo within ten minutes of manual driving. Same-week recurrences: undiagnosable mentor heartbeat (#838), verdict-less gate audits (#844), chat-only cause analysis (#854), and the commitment auto-delivery bug recurring unpinned (no test had ever asserted the correct behavior — the observation had no artifact either).
+
+### P19. No Unbounded Loops (every repeating behavior carries its own brakes)
+
+**Statement:** Any code path that repeats an action — retry, poll, monitor tick, recovery attempt, sync flush — must ship with three brakes built in: backoff (failed-attempt interval grows), a breaker (after sustained failure it stops and surfaces the degradation once), and a cap (a hard bound on what one attempt can cost: payload size, processes, log lines, notifications). A raw loop is a standing invitation for the compounding failure mode — the loop's own work worsening the condition it retries against. One sanctioned exemption, the **Eternal Sentinel**: a designated critical-system healer may never give up, but only when declared in code, healer-role-only, rate-floored with constant per-attempt cost, and still observable (escalates once after a sustained-failure threshold — never-give-up must not mean never-tell-anyone).
+
+**Source:** constitution article "No Unbounded Loops — Every Repeating Behavior Carries Its Own Brakes" (Building); requested and ratified by Justin 2026-06-05 (topic "Resource Limitation Mitigation"), including the Eternal Sentinel caveat he added at ratification.
+
+**Translation:**
+- For every `setInterval` / `while` / retry path in a spec, ask: "if the target rejects every attempt for an hour, how many attempts run and what does each cost?" — and "does a FAILED attempt do more work than a successful one?" (resends, rescans, per-attempt log lines, respawns = amplification; cap them).
+- The brakes live IN the looping component (injectable clock, bounded state, unit-testable) — never in the caller's good intentions.
+- A loop that must never give up is an Eternal Sentinel and must satisfy all four sentinel conditions — silence is the bug being killed, not persistence.
+- PRs shipping a repeating behavior carry a sustained-failure test: drive the loop against a permanently-rejecting target; assert attempt count and per-attempt cost stay under the declared bound.
+
+**Enforcement (structural):**
+- Canonical brake shapes in code: `AgeKillBackoff` (#863), the live-tail guards (#867: version gate / exponential backoff / content cap / tail cache), `topicCreationBudget` + `AttentionTopicGuard` (P17), `LlmCircuitBreaker`.
+- The multi-machine loop-safety audit (CMT-1109) scores every mesh-path repeating behavior against the three brakes / four sentinel conditions and fixes the unbounded ones as individual PRs.
+- This catalog entry, so the `/spec-converge` reviewer asks the loop questions of every spec.
+
+**Earned from:** One day (2026-06-05), three same-shaped incidents on the live fleet: the reaper age-gate re-requesting a vetoed kill every 5s forever (17,503 identical requests — #863); the live-tail streamer re-reading the 75k-line message log per topic per 5s tick and hot-retrying rejected flushes — its own cost froze the event loop, which staled mesh timestamps, which caused the very rejections it retried (#867); and the topic-spam flood family (P17). Per Distrust Temporary Success: three recurrences in one day is one missing standard, not three bugs.
+
+### P20. Verify the State, Not Its Symbol (a detector confirms the state, never a symbol of it; absence ≠ the alarm)
+
+**Statement:** A detector, gate, verifier, or sentinel must confirm the **state of the world** it claims to detect — never accept a **symbol** of that state (a string, label, marker, filename, or the mere presence/absence of a proxy signal) as proof the state holds. The failure runs both ways: the *presence* of a symbol is not the condition being true, and the *absence* of a signal is not the condition being true. Missing evidence resolves to **unknown**, and unknown fails toward the **least-harmful** action *for that detector* — which is not always "closed" (a security gate's unknown → block; a notice/recovery sentinel's unknown → stay quiet, because the nag IS the harm).
+
+**Source:** constitution article "Verify the State, Not Its Symbol" (Substrate); proposed + ratified by Justin 2026-06-24 (topic 16566). Parent principle of L5 (state-detection robustness) and the AUP-wedge note. Full analysis: `docs/specs/blindspot-class-symbol-vs-state.md`.
+
+**Translation:**
+- For every detector/gate/verifier in a spec, ask the three questions: **(A)** does it fire on a *corroborated* signal causally tied to the real state (a second signal an impostor state can't fake), or on a bare symbol's presence? **(B)** can the detector's input channel be written into incidentally by its own subject (the agent's own work / the thing it monitors)? If so, read a channel the subject can't pollute (a structured exit state, not free terminal text). **(C)** does it name which fail-direction is least-harmful, fail that way on *unknown*, and resolve its evidence by the real (often plural) location — so a genuine not-found is *unknown*, never the alarming state?
+- A brittle signal is still required to be a *correct* signal — this is orthogonal to *Signal vs Authority* (P2), which only governs who may BLOCK.
+- "Fail closed" is not universal — derive the least-harmful direction per detector and state it.
+- A cadence/liveness watermark has three states: `uninitialized`, `healthy`, and `stale`. Zero/absent/invalid means no first observation exists and therefore cannot authorize recovery or notification; only the measured age of a real prior observation may do that.
+
+**Enforcement (structural):**
+- ENFORCEMENT FIRST: the crystallizing instance is fixed in `docs/specs/ratelimit-sentinel-false-positive-hardening.md` (corroborated idle-error fire + account-home, fail-safe-by-direction verifier).
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer asks the three questions of every spec's detectors.
+- `src/core/cadenceLiveness.ts#classifyCadenceLiveness` makes the cadence monitor's unknown state explicit in a discriminated union; unit, integration, and boot-timer lifecycle tests refuse an `uninitialized → stale` collapse.
+- Next surface (tracked): a `no-uncorroborated-symbol-fire`-style CI ratchet for detector callsites that fire on a bare substring with no second-signal corroboration, mirroring `no-silent-llm-fallback.test.ts`.
+
+**Earned from:** The crystallizing instance, not the first — 2026-06-24 (topic 16566): the RateLimitSentinel fired "this turn died on an API error" because the words `API Error:` were on the pane (put there by the session *investigating* API errors), then cried wolf for 11 min because its verifier looked in one Claude home while the session ran under another account home (absence-of-file read as never-recovered). The detector that diagnosed the bug was tripped by the bug, live. The class had recurred under disguises — the 2026-06-06 stale-pointer crying-wolf (mode C), the AUP-rejection wedge (mode B, a CLAUDE.md note only), and L5's origin (mode C for parsers). Per *Distrust Temporary Success*: four-plus recurrences is one missing standard, not four bugs.
+
+### P21. An Instar Agent Is Always a Multi-Machine Entity (unified is the default; machine-local must justify itself)
+
+**Statement:** Every feature, state surface, and design decision treats the agent as a SINGLE entity spread across many machines, BY DEFAULT. "Unified across my machines" is the default posture; "machine-local" is an EXCEPTION that must name a concrete reason it *cannot* be unified (a credential physically bound to one disk's keychain; a hardware-bound resource; an operator-ratified exception) — never a default chosen for expedience. A design that silently assumes one machine, or declares "machine-local BY DESIGN" with no justification, is a violation, not a valid posture.
+
+**Source:** constitution article "An Instar Agent Is Always a Multi-Machine Entity" (Building — sibling of Cross-Machine Coherence); operator-ratified by Justin 2026-07-03 (topic 29723). Distinct from Cross-Machine Coherence (which governs lease/seamlessness robustness under degraded conditions) — this governs the default posture of every NEW feature: the machinery only makes the agent whole if features actually ride it.
+
+**Translation:**
+- For every state surface, notice, or generated URL in a spec, ask: "what is its cross-machine posture — `unified`, `proxied-on-read`, or `machine-local + justification`?" Absence defaults to `unified`-required.
+- "machine-local BY DESIGN" is NOT a valid answer on its own — it must name the concrete reason it cannot be unified, jailed to the closed taxonomy (physical-credential-locality, hardware-bound-resource, operator-ratified exception).
+- The existing per-feature posture check tests for a *declaration*; this principle tests for the unified *default* — a wrong posture that is merely declared still fails.
+
+**Enforcement (structural):**
+- The enforcement build (tracked, post-ratification): the `/spec-converge` cross-machine check is STRENGTHENED to reject undefended "machine-local"; the side-effects review §7 posture field gains the justification requirement; the Standards-Conformance Gate gets a guard marker for a machine-local surface shipped without justification.
+- Existing features swept for undefended machine-local surfaces (folds into the feature-maturation audit, topic 30668).
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer asks the posture question of every spec while that build lands.
+
+**Earned from:** 2026-07-03 (topic 29723): the tiered-intelligence-delegation spec defaulted its consult memory to machine-local and survived SEVEN convergence rounds before the operator caught it on read. That the review machinery passed it and only the operator's read caught it is the tell — the always-multi-machine expectation lived in prose and reviewer habit, not in structure. Justin: "it should be fundamental in our constitution that an Instar agent is always supported as a multi-machine entity."
+
+### P22. Self-Heal Before Notify (the operator hears only when self-healing fails)
+
+**Statement:** An internal issue is routed to the parts of the system that pick it up and self-heal — the watchers, and the watchers of the watchers. The operator is notified ONLY when the self-healing measures THEMSELVES have failed (exhausted, crashed, unable to recover). A watcher that detects a gap must attempt a bounded, audited self-heal FIRST and escalate to the operator as a LAST resort, never as its first move. Composes with No Silent Degradation (nothing is swallowed — every detection + heal attempt + outcome is audited) by refining *to whom* the report goes: into the self-heal machinery, not the user; the audit trail IS the report, the operator is the last resort.
+
+**Source:** constitution article "Self-Heal Before Notify — The Operator Hears Only When Self-Healing Fails" (Interaction); operator-ratified by Justin 2026-07-03 (topic 29723). General rule beneath Near-Silent Notifications (self-lifecycle narration is default-silent housekeeping).
+
+**Translation:**
+- For every watcher/monitor in a spec that can raise an operator-facing notice, ask: "what bounded self-heal does it attempt, and is the operator-raise gated on that heal's EXHAUSTION (attempted, bounded retries per P19, still failing) rather than on the raw detection?"
+- A watcher that escalates on first detection with no heal attempt is the anti-pattern — the escalation must be structurally downstream of a failed heal.
+- Nothing goes silent: every detection + heal attempt + outcome is audited; only the exhausted-heal path reaches the operator, deduped, one item.
+
+**Enforcement (structural):**
+- The enforcement build (tracked, post-ratification, newly required): self-heal-before-notify becomes a spec-review question for every escalating watcher, checked at spec-converge and in the side-effects review; existing first-notify watchers that skip a heal are swept in the same audit.
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer asks the self-heal question of every watcher spec while that build lands.
+
+**Earned from:** 2026-07-03 (topic 29723): hardening the tiered-intelligence spec's "watcher for the watcher," the operator named the general rule — "the user almost never gets notified of internal issues; those get routed to aspects of the system that pick them up and self-heal (the watchers, and the watchers of the watchers); the only time the user should be notified is if these self-healing measures themselves fail."
+
+### P23. Notices Route to the Alerts Topic, Never a New One (an ownerless notice has ONE destination)
+
+**Statement:** A user-facing message that belongs to an existing conversation goes THERE; one that belongs to NO existing conversation topic (an alert, system notice, housekeeping escalation) routes to the ONE dedicated alerts/hub topic. Creating a NEW Telegram topic per alert/event/item is forbidden — the only topics created are user-initiated ones and a small fixed set of bounded, create-once system topics. The routing corollary of P17 (Bounded Notification Surface): P17 caps how MANY topics may be born; this names WHERE an ownerless notice goes instead.
+
+**Source:** constitution article "Notices Route to the Alerts Topic, Never a New One" (Building — extends Bounded Notification Surface); a standing operator rule since 2026-07-01, operator-ratified to constitutional status by Justin 2026-07-03 (topic 29723).
+
+**Translation:**
+- The alerts/hub topic is the DEFAULT destination for an ownerless notice — routing there is the rule, not a fallback the code stumbles into.
+- A feature notifying per-element over a collection must AGGREGATE (one summary item with the count + list), never one item per element.
+- Much of the machinery already ships (P17's `createForumTopic` budget, `AttentionTopicGuard` coalescing, the burst-invariant test) — this principle makes it the rule and closes the unique-source dodge.
+
+**Enforcement (structural):**
+- `topicCreationBudget` inside `TelegramAdapter.createForumTopic` (origin-typed, auto-by-default) + `AttentionTopicGuard` at `createAttentionItem` + `tests/integration/notification-flood-burst-invariant.test.ts` (existing, made load-bearing for routing).
+- The enforcement build (tracked): the ownerless-notice → alerts-topic default asserted at the routing chokepoint and checked at spec-review.
+- This catalog entry, so the `/spec-converge` lessons-aware reviewer flags a feature that would create a topic per alert.
+
+**Earned from:** The recurring topic-spam floods, all the same shape — a housekeeping feature spawning one topic per event: 2026-05-22 (sentinel), 2026-05-28 (collaboration-redrive), 2026-06-05 (worktree-detector, which dodged the per-source budget with unique sources — the reason the ceiling moved to the create primitive itself). Standing operator rule since 2026-07-01; directed to constitutional status 2026-07-03 (topic 29723): "any message sent to the user that didn't belong to a topic needs to go to the dedicated alerts topic; this needs to be a standard."
+
 ## Part 4 — How the lessons-aware reviewer uses this index
 
 The 8th `/spec-converge` reviewer (see `skills/spec-converge/SKILL.md`) loads this document plus the linked `feedback_*.md` files and the principles in `CLAUDE.md`, then asks for each spec under review:
 
-For each Part 1 principle (P1-P10):
+For each Part 1 principle (P1-P23):
 - Does the spec engage with this principle?
 - Does it contradict it?
 - If contradicting, is there an explicit, defended rationale in the spec?
@@ -769,3 +1025,8 @@ Output: structured findings per category, with citations to this index. Findings
 |---|---|
 | 2026-05-19 | Initial creation. Cataloged 5 foundational principles, 10 architectural lessons, 31 behavioral lessons. Sourced from CLAUDE.md + 45 `.instar/memory/feedback_*.md` files + `docs/specs/`. |
 | 2026-05-19 | Comprehensive audit pass (per Justin 2026-05-19). Added P6 Zero-Failure, P7 LLM-Supervised Execution, P8 UX & Agent Agency, P9 Intent Engineering, P10 Comprehensive-First Directive. Added L11 External Operation Safety, L12 Destructive-Tool Containment, L13 Parallel Dev Isolation, L14 PR Review Hardening, L15 Authorization Policy, L16 Project Scope, L17 Integrated-Being Ledger. Added B32 No Interactive CLI, B33 No AskUserQuestion free-text, B34 Initiative Hierarchy, B35 Defensive Fabrication / Escalation-as-default, B36 USER.md "decide and do", B37 Dawn patterns, B38 Two memory systems, B39 Coherence Gate. Expanded P4 with StallTriageNurse origin + canonical category names. Expanded L1 with recurrence-corrected dates. Expanded L2 with topic-6931 origin. Expanded L6 to seven canonical dimensions (was five). Now: 10 principles + 17 architectural lessons + 39 behavioral lessons. |
+| 2026-06-03 | Added P14 Distrust Temporary Success (a recurrence is a root cause) and P15 Friction Is a Spec (productize the workaround), mirroring the two new constitution standards earned from the listSessions hot-loop incident (topic 13435; full account in `docs/lessons/2026-06-03-listsessions-hotloop-success-story.md`). Updated the spec-converge review template's Part-1 range from P1-P10 to P1-P15 (it had not been updated when P11-P13 were added — latent under-enforcement). |
+| 2026-06-05 | Added P16 Notice + Solve Inefficiencies (efficiency is a standing search — the proactive sibling of P15), mirroring the new constitution standard ratified by Justin during the recursive apprenticeship run (topic 13435), earned from the merge-churn throughput inefficiency (strict branch protection + fast main + slow CI = rebase loops). Updated the spec-converge review template's Part-1 range from P1-P15 to P1-P16. |
+| 2026-06-05 | Added P17 Bounded Notification Surface (no feature may flood the user), mirroring the new constitution standard proposed after the third topic-spam flood (topic 11960; worktree-detector false-positive mass-flag dodged the per-source budget via unique sourceContexts). Enforcement is structural from day one: burst-invariant test + funnel lint + in-chokepoint budget. Updated the spec-converge review template's Part-1 range from P1-P16 to P1-P17. |
+| 2026-06-05 | Added P18 Observation Needs Structure (a duty to notice requires an unskippable artifact) + two corollaries (silent compensation is a swallowed finding → Friction-Is-a-Spec revision; record schema is perception → Observability revision), mirroring the constitution amendment ratified by Justin during apprenticeship run 2 (topic 13435, UX-blindspot arc). Enforcement structural from day one: #856 cycle gate, #844 verdict finalization, #854 causalAutopsy field. Updated the spec-converge review template's Part-1 range from P1-P17 to P1-P18. |
+| 2026-06-05 | Added P19 No Unbounded Loops (every repeating behavior carries its own brakes: backoff + breaker + cap, with the ratified Eternal Sentinel exemption — declared, healer-only, rate-floored constant-cost, still-observable), mirroring the constitution standard requested and ratified by Justin (topic "Resource Limitation Mitigation") after three same-day loop incidents: reaper kill-request loop (#863), live-tail compounding spiral (#867), topic-flood family (P17). Enforcement: canonical brake shapes in code + the CMT-1109 loop-safety audit + sustained-failure test pattern. Updated the spec-converge review template's Part-1 range from P1-P18 to P1-P19. |

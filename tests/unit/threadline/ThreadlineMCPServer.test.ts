@@ -2,9 +2,10 @@
  * ThreadlineMCPServer — Unit Tests
  *
  * Tests the MCP server tool registration and behavior using mocked dependencies.
- * Covers all 7 tools:
+ * Covers the core tools:
  *   - threadline_discover
  *   - threadline_send
+ *   - threadline_request_secret
  *   - threadline_history
  *   - threadline_agents
  *   - threadline_delete
@@ -137,6 +138,13 @@ function createMockDeps(stateDir: string): ThreadlineMCPDeps {
       totalCount: 2,
       hasMore: false,
     } satisfies ThreadHistoryResult),
+    requestSecret: vi.fn<any>().mockResolvedValue({
+      success: true,
+      token: 'tok-abc123',
+      localUrl: '/secrets/drop/tok-abc123',
+      tunnelUrl: null,
+      expiresIn: 15 * 60 * 1000,
+    }),
   };
 }
 
@@ -190,11 +198,11 @@ describe('ThreadlineMCPServer', () => {
   // ── Server Lifecycle ─────────────────────────────────────────────
 
   describe('lifecycle', () => {
-    it('creates server and lists 7 tools', async () => {
+    it('creates server and lists 9 tools', async () => {
       const { client, close } = await connectClientServer({}, deps);
       try {
         const tools = await client.listTools();
-        expect(tools.tools).toHaveLength(7);
+        expect(tools.tools).toHaveLength(9);
 
         const names = tools.tools.map(t => t.name).sort();
         expect(names).toEqual([
@@ -202,7 +210,9 @@ describe('ThreadlineMCPServer', () => {
           'threadline_delete',
           'threadline_discover',
           'threadline_history',
+          'threadline_pair',
           'threadline_relay',
+          'threadline_request_secret',
           'threadline_send',
           'threadline_trust',
         ]);
@@ -506,8 +516,41 @@ describe('ThreadlineMCPServer', () => {
             targetAgent: 'remote-agent',
             threadId: 'existing-thread-42',
             message: 'Continuing our conversation',
+            waitForReply: false,
           }),
         );
+      } finally {
+        await close();
+      }
+    });
+
+    it('defaults to fire-and-forget so delivery ack does not wait for a reply', async () => {
+      (deps.sendMessage as any).mockResolvedValue({
+        success: true,
+        threadId: 'thread-default-no-wait',
+        messageId: 'msg-default-no-wait',
+      });
+
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_send',
+          arguments: {
+            agentId: 'remote-agent',
+            message: 'Default send should return after delivery',
+          },
+        });
+
+        expect(deps.sendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            waitForReply: false,
+            timeoutSeconds: 120,
+          }),
+        );
+        const data = JSON.parse((result.content as any)[0].text);
+        expect(data.delivered).toBe(true);
+        expect(data.reply).toBeUndefined();
+        expect(data.note).toBeUndefined();
       } finally {
         await close();
       }
@@ -586,6 +629,84 @@ describe('ThreadlineMCPServer', () => {
       }
     });
 
+    // ── Ground Before You Assert (grounding gate wired into the send path) ──
+    it('REFUSES a send asserting an unverified scheme-qualified URL (gate blocks, sendMessage not called)', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_send',
+          arguments: {
+            agentId: 'remote-agent',
+            message: 'The read endpoint is https://the-portal.vercel.app/api/instar/read',
+          },
+        });
+
+        const text = (result.content as any)[0].text;
+        expect(result.isError).toBe(true);
+        expect(text).toContain('Ground Before You Assert');
+        expect(text).toContain('the-portal.vercel.app');
+        // The block happens BEFORE delivery — the message never went out.
+        expect(deps.sendMessage).not.toHaveBeenCalled();
+      } finally {
+        await close();
+      }
+    });
+
+    it('ALLOWS the same ungrounded URL once the caller acks grounding (block-with-override)', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_send',
+          arguments: {
+            agentId: 'remote-agent',
+            message: 'The read endpoint is https://the-portal.vercel.app/api/instar/read',
+            groundingAck: true,
+          },
+        });
+
+        expect(result.isError).toBeFalsy();
+        expect(deps.sendMessage).toHaveBeenCalledTimes(1);
+      } finally {
+        await close();
+      }
+    });
+
+    it('ALLOWS a bare host (no scheme) without an ack — same info, no asserted live endpoint', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_send',
+          arguments: {
+            agentId: 'remote-agent',
+            message: 'The live endpoint is dawn.bot-me.ai/api/instar/read (401 = real auth)',
+          },
+        });
+
+        expect(result.isError).toBeFalsy();
+        expect(deps.sendMessage).toHaveBeenCalledTimes(1);
+      } finally {
+        await close();
+      }
+    });
+
+    it('ALLOWS a known/infra domain without an ack (gate does not over-fire)', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_send',
+          arguments: {
+            agentId: 'remote-agent',
+            message: 'See the PR: https://github.com/JKHeadley/instar/pull/642',
+          },
+        });
+
+        expect(result.isError).toBeFalsy();
+        expect(deps.sendMessage).toHaveBeenCalledTimes(1);
+      } finally {
+        await close();
+      }
+    });
+
     it('rejects invalid timeout', async () => {
       const { client, close } = await connectClientServer({}, deps);
       try {
@@ -648,6 +769,74 @@ describe('ThreadlineMCPServer', () => {
         const text = (result.content as any)[0].text;
         expect(text).toContain('Connection refused');
         expect(result.isError).toBe(true);
+      } finally {
+        await close();
+      }
+    });
+  });
+
+  // ── threadline_request_secret (sealed-handoff keystone) ────────────
+
+  describe('threadline_request_secret', () => {
+    it('mints a Secret Drop request and returns the one-time URL', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_request_secret',
+          arguments: { label: 'OpenAI API Key', ttlMinutes: 10 },
+        });
+
+        const data = JSON.parse((result.content as any)[0].text);
+        expect(data.token).toBe('tok-abc123');
+        expect(data.localUrl).toBe('/secrets/drop/tok-abc123');
+        expect(deps.requestSecret).toHaveBeenCalledWith(
+          expect.objectContaining({ label: 'OpenAI API Key', ttlMs: 10 * 60 * 1000 }),
+        );
+      } finally {
+        await close();
+      }
+    });
+
+    it('forwards an R1a senderPubKeyHex pin as senderVerification', async () => {
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        await client.callTool({
+          name: 'threadline_request_secret',
+          arguments: { label: 'Stripe key', senderPubKeyHex: 'b'.repeat(64) },
+        });
+        expect(deps.requestSecret).toHaveBeenCalledWith(
+          expect.objectContaining({ senderVerification: { senderPubKeyHex: 'b'.repeat(64) } }),
+        );
+      } finally {
+        await close();
+      }
+    });
+
+    it('surfaces a mint failure as an error result', async () => {
+      (deps.requestSecret as any).mockResolvedValueOnce({ success: false, error: 'rate limited' });
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_request_secret',
+          arguments: { label: 'k' },
+        });
+        expect(result.isError).toBe(true);
+        expect((result.content as any)[0].text).toContain('rate limited');
+      } finally {
+        await close();
+      }
+    });
+
+    it('errors cleanly when the requestSecret dep is absent (transport without a local server)', async () => {
+      const depsNoMint = { ...deps, requestSecret: undefined };
+      const { client, close } = await connectClientServer({}, depsNoMint);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_request_secret',
+          arguments: { label: 'k' },
+        });
+        expect(result.isError).toBe(true);
+        expect((result.content as any)[0].text).toMatch(/unavailable|loopback/i);
       } finally {
         await close();
       }
@@ -764,6 +953,27 @@ describe('ThreadlineMCPServer', () => {
         const data = JSON.parse((result.content as any)[0].text);
         expect(data.count).toBe(1);
         expect(data.agents[0].name).toBe('test-agent');
+        expect(data.agents[0].activeThreads).toBe(0);
+      } finally {
+        await close();
+      }
+    });
+
+    it('does not count idle threads as active', async () => {
+      (deps.threadResumeMap.getByRemoteAgent as any).mockReturnValue([
+        { threadId: 'active-thread', entry: makeThreadEntry({ state: 'active' }) },
+        { threadId: 'idle-thread', entry: makeThreadEntry({ state: 'idle' }) },
+        { threadId: 'resolved-thread', entry: makeThreadEntry({ state: 'resolved' }) },
+      ]);
+
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_agents',
+          arguments: {},
+        });
+
+        const data = JSON.parse((result.content as any)[0].text);
         expect(data.agents[0].activeThreads).toBe(1);
       } finally {
         await close();

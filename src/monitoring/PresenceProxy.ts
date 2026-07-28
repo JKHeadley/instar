@@ -19,16 +19,34 @@ import { execSync } from 'child_process';
 import type { IntelligenceProvider, IntelligenceOptions } from '../core/types.js';
 import type { MessageLoggedEvent } from '../messaging/shared/MessagingEventBus.js';
 import { isSystemOrProxyMessage } from '../messaging/shared/isSystemOrProxyMessage.js';
-import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
+import { classifyStuckSignature } from './StuckSignatureClassifier.js';
 import { LlmAbortedError } from './LlmQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
+import { looksActivelyWorking } from './sentinelWiring.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
+
+/**
+ * Sentinel returned by maybeStuckMessage (Finding b) meaning "the session is
+ * stuck, but a recovery sentinel owns the user voice — send NOTHING this fire"
+ * (the one-voice silent-suppress, distinct from null = "not stuck, normal path").
+ */
+const PRESENCE_SUPPRESS = Symbol('presence-proxy-suppress');
 
 export interface PresenceProxyConfig {
   stateDir: string;
   intelligence: IntelligenceProvider;
   agentName: string;
+  /**
+   * The agent's resolved framework (codex-cli / claude-code). Used to pick
+   * the correct pane activity-signal when the assessment LLM is unavailable
+   * or returns an unparseable classification — so a stuck Codex session is
+   * NOT blindly assumed "still working" forever (the 2026-05-23 incident,
+   * where the LLM couldn't read the Codex pane and defaulted to active).
+   * Absent → defaults to claude-code behavior (back-compat).
+   */
+  agentFramework?: IntelligenceFramework;
 
   // Callbacks
   captureSessionOutput: (sessionName: string, lines?: number) => string | null;
@@ -54,6 +72,17 @@ export interface PresenceProxyConfig {
    */
   acquireProxyMutex?: (topicId: number, holder: 'presence-proxy' | 'promise-beacon') => boolean;
   releaseProxyMutex?: (topicId: number, holder: 'presence-proxy' | 'promise-beacon') => void;
+
+  /**
+   * WS3 one-voice gate (MULTI-MACHINE-SEAMLESSNESS-SPEC, closes F18): when
+   * wired, the election decides whether THIS machine speaks the 🔭 standby
+   * voice for a topic — only the topic's owner machine answers; unknown
+   * ownership fails toward speech via lease-holder/tiebreak so the pool is
+   * never silent. PromiseBeacon already had this gate; PresenceProxy lacked
+   * one entirely (both machines could answer for the same topic). Absent →
+   * exactly today's behavior.
+   */
+  speakerElection?: import('./SpeakerElection.js').SpeakerElection;
 
   /**
    * BUILD-STALL-VISIBILITY-SPEC Fix 2 "Routing" — when a /build heartbeat has
@@ -90,6 +119,33 @@ export interface PresenceProxyConfig {
 
   // Optional: context exhaustion auto-recovery
   recoverContextExhaustion?: (topicId: number, sessionName: string) => Promise<{ recovered: boolean }>;
+  /** Durable context-wall latch, used when the original pane banner has
+   * scrolled away. Signal-only for Tier 1/2; Tier 3 may invoke the existing
+   * recovery callback exactly as it does for a live-tail context match. */
+  hasContextExhaustionLatch?: (topicId: number) => boolean;
+
+  /**
+   * Honest turn-receipts: when a recovery sentinel (ContextWedgeSentinel,
+   * etc.) is ALREADY handling this session's stuck state, it owns the user
+   * voice — PresenceProxy must not also message about the wedge. Wired to the
+   * composed sentinel recovery checker. Absent/undefined = no suppression
+   * (the honest classifier is then the only voice, which is still correct).
+   */
+  isStuckRecoveryActive?: (sessionName: string) => boolean;
+
+  /**
+   * honest-session-state-surfaces Finding (b): when true, the honest stuck
+   * classification (rate-limited / policy-wedge / context-wedge /
+   * context-too-long) is lifted into Tier 1 and Tier 2 — so a live-but-failing
+   * session is reported with its REAL reason at the 20s / 2-minute marks instead
+   * of "actively working" (the classifier already runs at Tier 3 only). Signal
+   * only: it only substitutes which message string is sent (or sends none, when
+   * a recovery sentinel owns the voice); it NEVER alters the tier schedule,
+   * gates, or initiates recovery. Resolved at construction from the dev-gated
+   * `monitoring.standbyHonestyTiers.enabled` flag. Absent/false → Tier 1/2
+   * byte-identical to today.
+   */
+  standbyHonestyTiers?: boolean;
 
   // Timer config
   tier1DelayMs?: number;       // Default: 20000
@@ -209,6 +265,39 @@ const INJECTION_PATTERNS = [
   /^\s*<\/?(?:system|instruction|prompt)/i,
 ];
 
+// Input-box GHOST TEXT (the 2026-06-06 presence-confabulation incident):
+// codex renders rotating placeholder suggestions inside its empty input box
+// ("› Write tests for @filename", "› Implement {feature}"). ANSI-stripping
+// erases the dim styling, so by the time the snapshot reaches the assessment
+// LLM the ghost text is indistinguishable from a typed command — and the LLM
+// reported "preparing to write tests for the referenced file" for a session
+// that was IDLE at a fresh prompt (topic 2271, 00:35:28Z). Status confabulated
+// from UI chrome.
+//
+// Match conservatively: only `›`-prefixed input-box lines whose content is
+// recognizably TEMPLATE text — it contains a `{placeholder}` or `@filename`
+// token, or exact-matches the known codex suggestion set. A real typed-but-
+// unsubmitted command stays visible (it is genuine pane state); only text the
+// USER NEVER WROTE is stripped.
+const KNOWN_INPUT_BOX_GHOSTS = new Set(
+  [
+    'implement {feature}',
+    'write tests for @filename',
+    'find and fix a bug in @filename',
+    'explain this codebase',
+    'summarize recent commits',
+  ],
+);
+const INPUT_BOX_LINE = /^\s*[›❯>]\s+(.*\S)\s*$/;
+const TEMPLATE_TOKEN = /\{[a-z_-]+\}|@filename\b/i;
+
+function isInputBoxGhostLine(line: string): boolean {
+  const m = INPUT_BOX_LINE.exec(line);
+  if (!m) return false;
+  const content = m[1].trim();
+  return TEMPLATE_TOKEN.test(content) || KNOWN_INPUT_BOX_GHOSTS.has(content.toLowerCase());
+}
+
 export function sanitizeTmuxOutput(raw: string, extraPatterns?: string[]): string {
   let output = raw;
 
@@ -229,10 +318,11 @@ export function sanitizeTmuxOutput(raw: string, extraPatterns?: string[]): strin
     output = output.replace(pattern, '[REDACTED]');
   }
 
-  // Remove lines matching injection patterns
+  // Remove lines matching injection patterns, and input-box ghost-text lines
+  // (placeholder suggestions the user never typed — see isInputBoxGhostLine).
   output = output
     .split('\n')
-    .filter(line => !INJECTION_PATTERNS.some(p => p.test(line)))
+    .filter(line => !INJECTION_PATTERNS.some(p => p.test(line)) && !isInputBoxGhostLine(line))
     .join('\n');
 
   return output.trim();
@@ -267,6 +357,14 @@ const QUOTA_EXHAUSTION_PATTERNS = [
   /usage limit.*reached/i,
   /quota.*exceeded/i,
   /rate limit.*exceeded/i,
+  // 2026-06-05 incident (topic 2169): the session-limit banner reads
+  // "Session limit reached ∙ resets 10:30pm" — no parenthesized timezone, and
+  // none of the patterns above matched, so the standby kept saying "actively
+  // working" while the session was paused on its limit. "approaching session
+  // limit" deliberately does NOT match (approaching ≠ paused).
+  /session limit reached/i,
+  /session limit\b[^a-z]*resets/i,                       // "session limit, resets 10:30pm" / "Session limit ∙ resets…"
+  /\blimit\b.*\bresets?\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i, // any limit banner with a bare "resets 10:30pm" (no tz paren)
 ];
 
 /**
@@ -343,6 +441,48 @@ export function detectSessionIdle(snapshot: string): boolean {
   // Check the last 5 lines for an idle prompt indicator
   const tail = lines.slice(-5);
   return tail.some(line => IDLE_PROMPT_PATTERNS.some(p => p.test(line.trim())));
+}
+
+/**
+ * Framework-aware "session has finished and is parked at idle" detector.
+ *
+ * claude-code keeps the prompt-pattern detector (back-compat). For codex-cli
+ * the idle composer (›) also renders WHILE the model is working, so prompt
+ * presence is NOT a valid idle discriminator — the session is idle iff it does
+ * NOT show the framework's active-work signal. Absent framework → claude-code
+ * behavior. (2026-05-23: stuck Codex sessions were invisible to the
+ * finished-check because the Claude prompt patterns never matched their pane,
+ * so the "agent finished → stop heartbeats" early-exit never triggered — the
+ * standby-flood half of the silently-stopped bug.)
+ */
+export function detectSessionFinished(
+  snapshot: string,
+  framework?: IntelligenceFramework,
+): boolean {
+  if (!snapshot) return false;
+  if (framework === 'codex-cli') {
+    return !looksActivelyWorking(snapshot, framework);
+  }
+  return detectSessionIdle(snapshot);
+}
+
+/**
+ * Deterministic stall assessment used when the tier-3 LLM is unavailable or
+ * returns an unparseable classification. Instead of blindly assuming the
+ * session is still "working" (which left stuck sessions escalating never — the
+ * 2026-05-23 Codex incident, where the LLM couldn't read the Codex pane and the
+ * fallback defaulted to active forever), fall back to the framework-aware
+ * active-work signal: a pane with no active-work indicator is treated as
+ * stalled so it surfaces to the user.
+ */
+export function deterministicStallAssessment(
+  snapshot: string | null,
+  framework?: IntelligenceFramework,
+): 'working' | 'stalled' {
+  if (snapshot && looksActivelyWorking(snapshot, framework)) {
+    return 'working';
+  }
+  return 'stalled';
 }
 
 // ─── Brief-Ack Detection ────────────────────────────────────────────────────
@@ -952,6 +1092,67 @@ export class PresenceProxy {
     }
   }
 
+  // ─── Honest stuck-state pre-check (Finding b) ──────────────────────────
+  //
+  // honest-session-state-surfaces Finding (b): lift the Tier-3 honest
+  // classification into Tier 1 / Tier 2. Reuses the SAME tail-gated
+  // classifyStuckSignature on the SAME sanitized snapshot — no new detector,
+  // no new parse surface. Returns one of three outcomes:
+  //   - a string   → the session is stuck (no recovery owner): send THIS line
+  //                   in place of the would-be LLM/"working" copy.
+  //   - SUPPRESS    → the session is stuck BUT a recovery sentinel owns the
+  //                   voice: send NO message this fire (one-voice silent-suppress,
+  //                   mirroring Tier 3's silent `return` at the same condition).
+  //                   It does NOT fall through to the "actively working" copy.
+  //   - null        → not stuck (or flag off / no snapshot): normal LLM path,
+  //                   unchanged.
+  // Scheduling is NEVER altered by this pre-check (see "Scheduling is never
+  // gated" in the spec) — the caller continues exactly as today in all cases.
+  // No-leak: emits ONLY `StuckClassification.message` verbatim with the tier
+  // prefix — never concatenates pane-derived text.
+  private maybeStuckMessage(
+    topicId: number,
+    snapshot: string | null,
+    sessionName: string,
+    tierLabel: 1 | 2,
+  ): string | typeof PRESENCE_SUPPRESS | null {
+    if (!this.config.standbyHonestyTiers) return null;
+    if (this.config.hasContextExhaustionLatch?.(topicId)) {
+      if (this.config.isStuckRecoveryActive?.(sessionName)) {
+        return PRESENCE_SUPPRESS;
+      }
+      const prefix = tierLabel === 1
+        ? `${this.prefix} `
+        : `${this.prefix} 2-minute update — `;
+      return `${prefix}This conversation is latched at its context limit and cannot produce another reply until recovery starts.`;
+    }
+    if (!snapshot) return null;
+    let stuck;
+    try {
+      stuck = classifyStuckSignature(snapshot);
+    } catch {
+      // Fail toward today's behavior — never fabricate an honest claim.
+      return null;
+    }
+    if (!stuck) return null;
+    // The framework approval-prompt class is NEVER surfaced to the user — the
+    // PermissionPromptAutoResolver auto-clears it, and only if it genuinely
+    // cannot does it raise a Terminal Attention defect (the sole surface).
+    // Suppress here UNCONDITIONALLY (a consumer policy, not a classifier
+    // contract inversion), with no lifecycle gap.
+    if (stuck.kind === 'approval-prompt-waiting') return PRESENCE_SUPPRESS;
+    // A recovery sentinel already messaging about this stuck state owns the
+    // voice — mirror Tier 3's silent return (suppress, do NOT fall through to
+    // the "actively working" fallback, which would re-introduce the lie).
+    if (this.config.isStuckRecoveryActive?.(sessionName)) {
+      return PRESENCE_SUPPRESS;
+    }
+    const prefix = tierLabel === 1
+      ? `${this.prefix} `
+      : `${this.prefix} 2-minute update — `;
+    return `${prefix}${stuck.message}`;
+  }
+
   // ─── Tier 1: Status Update ─────────────────────────────────────────────
 
   private async fireTier1(topicId: number, state: PresenceState): Promise<void> {
@@ -984,20 +1185,57 @@ export class PresenceProxy {
       }
     }
 
-    if (!snapshot || snapshot.trim().length < 10) {
-      message = `${this.prefix} ${this.config.agentName} is active but hasn't produced visible output yet. Your message has been delivered.`;
-    } else if (
-      !isConversation
-      && state.lastAckText
+    // ── Post-ack suppression (Codey-dogfooding finding, 2026-05-28) ──
+    // If the agent has ALREADY acknowledged the user since their message
+    // arrived, the user already has a signal of life — a Tier-1 standby on top
+    // of that ack is redundant noise. Observed live: Codey replied "Got it,
+    // pulling the live values now." and the proxy then ALSO posted "instar-codey
+    // is currently just starting to respond to <restated question>" a beat
+    // before the real answer. Suppress the Tier-1 MESSAGE, but keep the tier
+    // chain alive (mark fired + schedule Tier 2) so a genuine ack-then-stall is
+    // still caught at the 2-minute mark and by Tier 3.
+    //
+    // This is BROADER than the prior ack-only-delta placeholder branch (now
+    // removed): it does NOT require isPostMessageDeltaAckOnly, which returns
+    // false for codex sessions whose tmux pane carries stream noise beyond the
+    // ack text — exactly why Codey fell through to the verbose LLM summary.
+    // The ack itself (length/opening-gated by isAck) is the signal we trust.
+    if (
+      state.lastAckText
       && state.lastAckAt !== null
       && state.lastAckAt >= state.userMessageAt
-      && isPostMessageDeltaAckOnly(snapshot, state.userMessageBaselineSnapshot, state.lastAckText)
     ) {
-      // Agent has only acked since the user's message arrived. Asking the LLM
-      // to summarize would just paraphrase the ack ("Echo acknowledged..."),
-      // which reads as generic and adds no information. Emit a fixed
-      // placeholder; Tier 2 will pick up substantive activity at 2 minutes.
-      message = `${this.prefix} ${this.config.agentName} is on this — I'll check back at the 2-minute mark with a progress update.`;
+      if (state.cancelled) return;
+      state.tier1FiredAt = Date.now();
+      this.persistState(topicId, state);
+      const remainingToTier2 = this.tier2DelayMs - (Date.now() - state.userMessageAt);
+      if (remainingToTier2 > 0) this.scheduleTier(topicId, 2, remainingToTier2);
+      console.log(
+        `[PresenceProxy] Tier 1 suppressed for topic ${topicId} — agent acked since user message (post-ack); Tier 2 still scheduled for stall detection.`,
+      );
+      return;
+    }
+
+    // ── Honest stuck-state pre-check (Finding b) ──
+    // If the live tail shows a known "alive but failing every turn" signature,
+    // surface the REAL reason instead of "actively working" — at Tier 1 too,
+    // not only Tier 3. Substitutes the message string only; scheduling is
+    // unchanged below. SUPPRESS = a recovery sentinel owns the voice → send
+    // nothing this fire, but still schedule Tier 2.
+    const honest1 = this.maybeStuckMessage(topicId, snapshot, state.sessionName, 1);
+    if (honest1 === PRESENCE_SUPPRESS) {
+      if (state.cancelled) return;
+      state.tier1FiredAt = Date.now();
+      this.persistState(topicId, state);
+      const remainingToTier2 = this.tier2DelayMs - (Date.now() - state.userMessageAt);
+      if (remainingToTier2 > 0) this.scheduleTier(topicId, 2, remainingToTier2);
+      return;
+    }
+
+    if (typeof honest1 === 'string') {
+      message = honest1;
+    } else if (!snapshot || snapshot.trim().length < 10) {
+      message = `${this.prefix} ${this.config.agentName} is active but hasn't produced visible output yet. Your message has been delivered.`;
     } else {
       try {
         const prompt = isConversation
@@ -1089,7 +1327,7 @@ export class PresenceProxy {
     // ── Session idle: agent completed work but didn't relay response ──
     // If the terminal is at an idle prompt with no child processes, the agent
     // has finished. Tier 1 already summarized the work — further updates are noise.
-    if (snapshot && detectSessionIdle(snapshot)) {
+    if (snapshot && detectSessionFinished(snapshot, this.config.agentFramework)) {
       const processes = this.config.getProcessTree(state.sessionName);
       if (processes.length === 0) {
         state.cancelled = true;
@@ -1098,27 +1336,46 @@ export class PresenceProxy {
       }
     }
 
+    // ── Honest stuck-state pre-check (Finding b) ──
+    // Same lift as Tier 1: surface the REAL reason instead of "is still
+    // working" at the 2-minute mark. Substitutes the message string only;
+    // Tier 3 is still scheduled below in every branch (never gated).
+    const honest2 = this.maybeStuckMessage(topicId, snapshot, state.sessionName, 2);
+    if (honest2 === PRESENCE_SUPPRESS) {
+      if (state.cancelled) return;
+      state.tier2FiredAt = Date.now();
+      this.persistState(topicId, state);
+      const remainingToTier3 = this.tier3DelayMs - (Date.now() - state.userMessageAt);
+      if (remainingToTier3 > 0) this.scheduleTier(topicId, 3, remainingToTier3);
+      return;
+    }
+
     // Check if output changed since Tier 1
     const outputChanged = state.tier1SnapshotHash !== hash;
 
     let message: string;
 
-    try {
-      const summary = await this.callLlm(
-        this.buildTier2Prompt(state, snapshot, outputChanged),
-        { model: this.config.tier2Model ?? 'fast', maxTokens: 500 },
-        'low',
-        this.config.llmTimeoutMs?.t2 ?? 15_000,
-      );
-      state.llmCallCount++;
-      state.lastLlmCallAt = Date.now();
+    if (typeof honest2 === 'string') {
+      // Honest stuck reason — skip the LLM path entirely.
+      message = honest2;
+    } else {
+      try {
+        const summary = await this.callLlm(
+          this.buildTier2Prompt(state, snapshot, outputChanged),
+          { model: this.config.tier2Model ?? 'fast', maxTokens: 500 },
+          'low',
+          this.config.llmTimeoutMs?.t2 ?? 15_000,
+        );
+        state.llmCallCount++;
+        state.lastLlmCallAt = Date.now();
 
-      const guard = guardProxyOutput(summary);
-      message = guard.safe
-        ? `${this.prefix} 2-minute update — ${summary}`
-        : `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Output has changed since the last check.' : 'Output appears unchanged — may be waiting on a long operation.'}`;
-    } catch {
-      message = `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Making progress — output has changed.' : 'Output unchanged — possibly waiting on a long operation.'}`;
+        const guard = guardProxyOutput(summary);
+        message = guard.safe
+          ? `${this.prefix} 2-minute update — ${summary}`
+          : `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Output has changed since the last check.' : 'Output appears unchanged — may be waiting on a long operation.'}`;
+      } catch {
+        message = `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Making progress — output has changed.' : 'Output unchanged — possibly waiting on a long operation.'}`;
+      }
     }
 
     if (state.cancelled) return;
@@ -1145,7 +1402,7 @@ export class PresenceProxy {
     {
       const idleRaw = this.config.captureSessionOutput(state.sessionName, 10);
       const idleSnapshot = idleRaw ? sanitizeTmuxOutput(idleRaw, this.config.credentialPatterns) : null;
-      if (idleSnapshot && detectSessionIdle(idleSnapshot)) {
+      if (idleSnapshot && detectSessionFinished(idleSnapshot, this.config.agentFramework)) {
         const processes = this.config.getProcessTree(state.sessionName);
         if (processes.length === 0) {
           state.cancelled = true;
@@ -1233,15 +1490,85 @@ export class PresenceProxy {
       }
     }
 
-    // ── Context exhaustion: auto-recover before LLM call ──
+    // A durable context-wall latch outranks the pane tail. The original banner
+    // can scroll away while the session remains unable to answer; reporting
+    // "actively working" in that state is the exact standby-honesty failure.
+    if (this.config.hasContextExhaustionLatch?.(topicId)) {
+      if (this.config.isStuckRecoveryActive?.(state.sessionName)) {
+        this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+        this.persistState(topicId, state);
+        return;
+      }
+      if (this.config.recoverContextExhaustion) {
+        const result = await this.config.recoverContextExhaustion(topicId, state.sessionName);
+        if (result.recovered) {
+          state.tier3FiredAt = Date.now();
+          state.tier3Assessment = 'waiting';
+          state.tier3Summary = 'Latched context exhaustion — auto-recovered';
+          await this.sendProxyMessage(
+            topicId,
+            '🔄 The session was latched at its context limit — recovery has started with recent history.',
+            3,
+          );
+          this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+          this.persistState(topicId, state);
+          this.cleanupState(topicId);
+          return;
+        }
+      }
+      state.tier3FiredAt = Date.now();
+      state.tier3Assessment = 'dead';
+      state.tier3Summary = 'Latched context exhaustion';
+      await this.sendProxyMessage(
+        topicId,
+        `${this.prefix} 5-minute check — This conversation is latched at its context limit and cannot produce another reply until recovery succeeds.`,
+        3,
+      );
+      this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+      this.persistState(topicId, state);
+      this.cleanupState(topicId);
+      return;
+    }
+
+    // ── Honest turn-receipts: classify a live-but-failing session ──
+    // A session can be ALIVE (child process running) yet failing every turn:
+    // rate-limited, policy-wedged, context-wedged, or out of context window.
+    // The process-tree check below would mislabel all of these "working" —
+    // the exact lie behind "🔭 actively working" while the session is dead.
+    // classifyStuckSignature is TAIL-GATED: the signature must be the live
+    // tail, not a stale mention in scrollback (which is why "conversation too
+    // long" previously fired as noise on healthy sessions). When it matches,
+    // we surface the REAL reason instead of "working". Recovery still belongs
+    // to the sentinels — if one already owns this session's recovery, it owns
+    // the voice and we stay silent.
     if (snapshot) {
-      const ctxCheck = detectContextExhaustion(snapshot);
-      if (ctxCheck.matched && ctxCheck.confidence === 'high') {
+      const stuck = classifyStuckSignature(snapshot);
+      if (stuck) {
+        // Framework approval-prompt: NEVER surfaced to the user, NEVER 'dead'
+        // (so it is not respawned). The PermissionPromptAutoResolver owns
+        // clearing it; the only user-facing surface is its Terminal defect.
+        // Unconditional suppression (consumer policy), with no lifecycle gap.
+        if (stuck.kind === 'approval-prompt-waiting') {
+          state.tier3Assessment = 'waiting';
+          state.tier3Summary = 'approval-prompt (auto-clearing)';
+          this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+          this.persistState(topicId, state);
+          return;
+        }
         if (state.cancelled) {
           this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
           return;
         }
-        if (this.config.recoverContextExhaustion) {
+        // A sentinel already messaging about this stuck state owns the voice.
+        if (this.config.isStuckRecoveryActive?.(state.sessionName)) {
+          this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+          this.persistState(topicId, state);
+          return;
+        }
+
+        // context-too-long: try the existing auto-recovery first; only if it
+        // is unavailable/fails do we surface the honest "start fresh" message.
+        if (stuck.kind === 'context-too-long' && this.config.recoverContextExhaustion) {
           const result = await this.config.recoverContextExhaustion(topicId, state.sessionName);
           if (result.recovered) {
             state.tier3FiredAt = Date.now();
@@ -1255,12 +1582,13 @@ export class PresenceProxy {
             return;
           }
         }
-        // No recovery callback or recovery failed — notify user
+
+        // rate-limited self-clears (assessment 'waiting'); the wedges and an
+        // unrecovered context-too-long need a fresh session (assessment 'dead').
         state.tier3FiredAt = Date.now();
-        state.tier3Assessment = 'dead';
-        state.tier3Summary = 'Conversation too long — session cannot continue';
-        await this.sendProxyMessage(topicId,
-          `${this.prefix} 5-minute check — Session hit "conversation too long" and can't continue. Send a new message to start a fresh session with your recent history.`, 3);
+        state.tier3Assessment = stuck.kind === 'rate-limited' ? 'waiting' : 'dead';
+        state.tier3Summary = stuck.detail ? `${stuck.kind} (${stuck.detail})` : stuck.kind;
+        await this.sendProxyMessage(topicId, `${this.prefix} ${stuck.message}`, 3);
         this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
         this.persistState(topicId, state);
         this.cleanupState(topicId);
@@ -1318,8 +1646,20 @@ export class PresenceProxy {
       // Active child processes = working
       assessment = 'working';
       summary = 'Active child processes detected.';
+    } else if (
+      snapshot
+      && looksActivelyWorking(snapshot, this.config.agentFramework)
+      && state.tier2SnapshotHash !== crypto.createHash('sha256').update(snapshot).digest('hex')
+    ) {
+      // An affirmative live framework signal is stronger than an interpretive
+      // model verdict. In-process Codex work has no child process to discover,
+      // so allowing tier 3 to override fresh terminal evidence created false
+      // "stuck" alarms. A frozen live-looking marker is not freshness proof;
+      // unchanged output still proceeds to the stall assessment below.
+      assessment = 'working';
+      summary = 'The session still shows an active-work signal.';
     } else {
-      // No active processes — use LLM to assess
+      // No active processes or deterministic live signal — use LLM to assess.
       try {
         const llmResult = await this.callLlm(
           this.buildTier3Prompt(state, snapshot, processes),
@@ -1330,17 +1670,24 @@ export class PresenceProxy {
         state.llmCallCount++;
         state.lastLlmCallAt = Date.now();
 
-        // Parse classification
+        // Parse classification. If the model returns no recognizable class,
+        // fall back to the deterministic framework-aware signal rather than
+        // blindly assuming "working" (which hid stuck Codex sessions forever).
         const classMatch = llmResult.match(/\b(working|waiting|stalled|dead)\b/i);
-        assessment = (classMatch?.[1]?.toLowerCase() as any) ?? 'working'; // Default to working
+        assessment = (classMatch?.[1]?.toLowerCase() as any) ?? deterministicStallAssessment(snapshot, this.config.agentFramework);
 
         // Extract summary (first line after classification or full text)
         const lines = llmResult.split('\n').filter(l => l.trim());
         summary = lines.find(l => !l.match(/^(working|waiting|stalled|dead)$/i)) || llmResult.slice(0, 200);
       } catch {
-        // LLM failed — default to working (safe)
-        assessment = 'working';
-        summary = 'Unable to assess — defaulting to active.';
+        // LLM failed — fall back to the deterministic framework-aware signal
+        // instead of blindly assuming "working". The old "default to active"
+        // is exactly what kept stuck sessions silent forever (the silently-
+        // stopped failure mode), and it was fully blind on Codex.
+        assessment = deterministicStallAssessment(snapshot, this.config.agentFramework);
+        summary = assessment === 'working'
+          ? 'Model assessment unavailable — session still shows an active-work signal, treating as working.'
+          : 'Model assessment unavailable and no active-work signal in the session — flagging as possibly stuck.';
       }
     }
 
@@ -1627,6 +1974,13 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
     priority: 'low' | 'high',
     timeoutMs: number,
   ): Promise<string> {
+    // Default attribution so every PresenceProxy LLM call is labeled in
+    // /metrics/features (this is a high-frequency monitor); a caller that already
+    // set attribution wins.
+    const opts: IntelligenceOptions = {
+      ...options,
+      attribution: options.attribution ?? { component: 'PresenceProxy' },
+    };
     // Prefer the shared cross-monitor queue when wired (spec follow-up). Both
     // 'low' and 'high' priorities for PresenceProxy map to the `interactive`
     // lane — PresenceProxy is the user-facing monitor and always outranks
@@ -1638,7 +1992,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
           'interactive',
           async (signal) => {
             const result = await Promise.race([
-              this.config.intelligence.evaluate(prompt, options),
+              this.config.intelligence.evaluate(prompt, opts),
               new Promise<never>((_, reject) => {
                 const t = setTimeout(() => reject(new Error('LLM timeout')), timeoutMs);
                 signal.addEventListener('abort', () => {
@@ -1660,7 +2014,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
     }
     return this.llmQueue.enqueue(async () => {
       const result = await Promise.race([
-        this.config.intelligence.evaluate(prompt, options),
+        this.config.intelligence.evaluate(prompt, opts),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('LLM timeout')), timeoutMs)
         ),
@@ -1670,6 +2024,17 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
   }
 
   private async sendProxyMessage(topicId: number, text: string, tier: number): Promise<void> {
+    // WS3 one-voice election: only this topic's owner machine speaks the 🔭
+    // voice. Single chokepoint for every tier emission. Silent/defer verdicts
+    // simply skip this send — the proxy's own cadence re-evaluates later, and
+    // the owning machine's PresenceProxy carries the voice.
+    if (this.config.speakerElection) {
+      const verdict = this.config.speakerElection.decide(topicId);
+      if (!verdict.speak) {
+        console.log(`[PresenceProxy] one-voice gate: not this machine's topic (${verdict.reason}) — skipping tier ${tier} send for topic ${topicId}`);
+        return;
+      }
+    }
     // Spec A10: acquire shared per-topic proxy mutex if one is wired.
     // PromiseBeacon consumes the same coordinator; the acquire here guarantees
     // only one proxy-class emitter fires per topic at a time.

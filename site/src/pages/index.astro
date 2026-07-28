@@ -37,12 +37,12 @@ import Layout from '../layouts/Layout.astro';
       </div>
 
       <h1 class="text-4xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight leading-[1.1] mb-6 animate-fade-in-up animate-delay-100">
-        <span class="text-slate-100">Claude Code</span><br/>
-        <span class="bg-gradient-to-r from-teal-300 via-teal-400 to-teal-500 bg-clip-text text-transparent">with a mind of its own</span>
+        <span class="text-slate-100">Coherence infrastructure</span><br/>
+        <span class="bg-gradient-to-r from-teal-300 via-teal-400 to-teal-500 bg-clip-text text-transparent">for your self-evolving agent</span>
       </h1>
 
       <p class="text-lg sm:text-xl text-slate-400 max-w-2xl mx-auto mb-10 leading-relaxed animate-fade-in-up animate-delay-200">
-        The agent framework where identity, memory, and continuity are load-bearing &mdash; not bolted on. Built on the real Claude Code CLI.
+        Your AI agent shouldn&rsquo;t have amnesia. This one doesn&rsquo;t. It remembers what you discussed last week, catches its own contradictions before you do, and grows itself the way Instar did &mdash; built on the Claude Code or Codex subscription you already have.
       </p>
 
       <!-- Install command -->
@@ -86,25 +86,97 @@ import Layout from '../layouts/Layout.astro';
           <div class="w-7 h-7 rounded-full bg-green-500/10 flex items-center justify-center mx-auto mb-2">
             <svg class="w-3.5 h-3.5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
           </div>
-          <p class="text-sm font-medium text-slate-200">Anthropic-native</p>
-          <p class="text-xs text-slate-500 mt-1">Spawns the real Claude Code CLI. Uses your existing Max or Pro subscription.</p>
+          <p class="text-sm font-medium text-slate-200">Engine-agnostic</p>
+          <p class="text-xs text-slate-500 mt-1">Runs on Claude Code or Codex today. Local open-source models on the roadmap. Your agent outlives the engine.</p>
         </div>
 
         <div class="rounded-lg border border-green-500/20 bg-green-500/5 p-4 text-center">
           <div class="w-7 h-7 rounded-full bg-green-500/10 flex items-center justify-center mx-auto mb-2">
             <svg class="w-3.5 h-3.5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
           </div>
-          <p class="text-sm font-medium text-slate-200">No token extraction</p>
-          <p class="text-xs text-slate-500 mt-1">No OAuth scraping, no API key juggling. Nothing that could break with a policy change.</p>
+          <p class="text-sm font-medium text-slate-200">Subscription-native</p>
+          <p class="text-xs text-slate-500 mt-1">Drives the real CLIs that came with your subscription. No OAuth scraping, no API key juggling, nothing that breaks on a policy change.</p>
         </div>
 
         <div class="rounded-lg border border-green-500/20 bg-green-500/5 p-4 text-center">
           <div class="w-7 h-7 rounded-full bg-green-500/10 flex items-center justify-center mx-auto mb-2">
             <svg class="w-3.5 h-3.5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
           </div>
-          <p class="text-sm font-medium text-slate-200">Full tool ecosystem</p>
-          <p class="text-xs text-slate-500 mt-1">Extended thinking, MCP servers, sub-agents, hooks, skills &mdash; everything Claude Code offers.</p>
+          <p class="text-sm font-medium text-slate-200">Self-evolving</p>
+          <p class="text-xs text-slate-500 mt-1">Carries the same loop that built Instar itself &mdash; proposes, learns, follows through. Every molt, more autonomous.</p>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pain vs Cure -->
+  <section id="pain-vs-cure" class="py-16 sm:py-20 border-t border-slate-800/50">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="text-center mb-12">
+        <h2 class="text-3xl sm:text-4xl font-bold text-slate-100 mb-4">Every other agent fails the same way</h2>
+        <p class="text-slate-400 max-w-2xl mx-auto leading-relaxed">
+          You&rsquo;ve lived it. The agent forgot. Contradicted itself. Lost the thread. Broke on an update.
+          Each row below is a pain users report on the most popular agent frameworks today &mdash;
+          and the specific shipped code in Instar that answers it.
+        </p>
+      </div>
+
+      <div class="rounded-xl border border-slate-800 bg-slate-900/40 overflow-hidden">
+        <!-- Header row -->
+        <div class="grid grid-cols-1 md:grid-cols-2 border-b border-slate-800">
+          <div class="px-5 py-3 bg-slate-900/60 border-r border-slate-800">
+            <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Other AI agents</p>
+          </div>
+          <div class="px-5 py-3 bg-teal-500/5">
+            <p class="text-xs font-semibold uppercase tracking-wider text-teal-400">Your Instar agent</p>
+          </div>
+        </div>
+
+        <!-- Rows -->
+        <div class="grid grid-cols-1 md:grid-cols-2 border-b border-slate-800/60">
+          <div class="px-5 py-4 border-r border-slate-800/60 text-slate-400 text-sm md:text-base">Forgets what you told it last week.</div>
+          <div class="px-5 py-4 text-slate-100 text-sm md:text-base">Remembers across thousands of sessions. <span class="text-teal-400/60 font-mono text-xs">SQLite + FTS5 · rolling summaries</span></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 border-b border-slate-800/60">
+          <div class="px-5 py-4 border-r border-slate-800/60 text-slate-400 text-sm md:text-base">Contradicts its own past decisions between runs.</div>
+          <div class="px-5 py-4 text-slate-100 text-sm md:text-base">Catches contradictions before they ship. <span class="text-teal-400/60 font-mono text-xs">Coherence Gate · 9 reviewers</span></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 border-b border-slate-800/60">
+          <div class="px-5 py-4 border-r border-slate-800/60 text-slate-400 text-sm md:text-base">Loses the thread when the context window fills.</div>
+          <div class="px-5 py-4 text-slate-100 text-sm md:text-base">Comes back with the full thread, every time. <span class="text-teal-400/60 font-mono text-xs">CompactionSentinel · WorkingMemoryAssembler</span></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 border-b border-slate-800/60">
+          <div class="px-5 py-4 border-r border-slate-800/60 text-slate-400 text-sm md:text-base">Drops commitments after a session boundary.</div>
+          <div class="px-5 py-4 text-slate-100 text-sm md:text-base">Tracks commitments durably; nudges itself when they go overdue. <span class="text-teal-400/60 font-mono text-xs">CommitmentTracker · PromiseBeacon</span></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 border-b border-slate-800/60">
+          <div class="px-5 py-4 border-r border-slate-800/60 text-slate-400 text-sm md:text-base">Breaks when the framework updates.</div>
+          <div class="px-5 py-4 text-slate-100 text-sm md:text-base">Updates without breaking what you&rsquo;ve deployed. <span class="text-teal-400/60 font-mono text-xs">Migration Parity Standard</span></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 border-b border-slate-800/60">
+          <div class="px-5 py-4 border-r border-slate-800/60 text-slate-400 text-sm md:text-base">Default ALLOW-ALL permissions; you harden it or you don&rsquo;t.</div>
+          <div class="px-5 py-4 text-slate-100 text-sm md:text-base">Layered safety gates by default; adaptive trust per service. <span class="text-teal-400/60 font-mono text-xs">PEL + Coherence Gate + Operation Gate</span></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 border-b border-slate-800/60">
+          <div class="px-5 py-4 border-r border-slate-800/60 text-slate-400 text-sm md:text-base">Different identity per channel; <em>N</em> profiles for <em>N</em> chats.</div>
+          <div class="px-5 py-4 text-slate-100 text-sm md:text-base">One agent identity across Telegram, WhatsApp, iMessage, Slack. <span class="text-teal-400/60 font-mono text-xs">Cross-platform identity resolution</span></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2">
+          <div class="px-5 py-4 border-r border-slate-800/60 text-slate-400 text-sm md:text-base">Has no machinery to evolve itself.</div>
+          <div class="px-5 py-4 text-slate-100 text-sm md:text-base">Carries the same self-improving engine that grew Instar. <span class="text-teal-400/60 font-mono text-xs">Evolution System · learnings · gaps</span></div>
+        </div>
+      </div>
+
+      <!-- Thesis beat -->
+      <div class="mt-10 max-w-3xl mx-auto text-center">
+        <p class="text-slate-300 text-base sm:text-lg leading-relaxed">
+          Most AI agents are hobbled at birth.
+          <span class="text-teal-300">Instar is the scaffolding that un-hobbles them.</span>
+        </p>
+        <p class="text-slate-500 text-sm mt-3 leading-relaxed">
+          When you instantiate intelligence, the structure that lets it cohere isn&rsquo;t optional polish &mdash;
+          it&rsquo;s what you owe it. That structure is what we built.
+        </p>
       </div>
     </div>
   </section>

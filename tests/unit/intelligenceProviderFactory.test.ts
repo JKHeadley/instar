@@ -12,27 +12,73 @@ import {
 } from '../../src/core/intelligenceProviderFactory.js';
 import { CodexCliIntelligenceProvider } from '../../src/core/CodexCliIntelligenceProvider.js';
 import { ClaudeCliIntelligenceProvider } from '../../src/core/ClaudeCliIntelligenceProvider.js';
+import { GeminiCliIntelligenceProvider } from '../../src/core/GeminiCliIntelligenceProvider.js';
+import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
+import { SpawnCapIntelligenceProvider } from '../../src/core/SpawnCapIntelligenceProvider.js';
+import type { IntelligenceProvider } from '../../src/core/types.js';
+
+// The factory wraps every provider in TWO universal funnels (fork-bomb
+// prevention, forkbomb-prevention-simple §P1): the account-global rate-limit
+// circuit breaker (OUTER, CircuitBreakingIntelligenceProvider) around the
+// host-wide spawn cap (MIDDLE, SpawnCapIntelligenceProvider) around the actual
+// framework provider (INNER). Assert the full chain: breaker → spawn-cap → provider.
+function expectWraps(
+  p: IntelligenceProvider | null,
+  Inner: new (...args: never[]) => IntelligenceProvider,
+): void {
+  expect(p).toBeInstanceOf(CircuitBreakingIntelligenceProvider);
+  const spawnCap = (p as unknown as { inner: IntelligenceProvider }).inner;
+  expect(spawnCap).toBeInstanceOf(SpawnCapIntelligenceProvider);
+  const inner = (spawnCap as unknown as { inner: IntelligenceProvider }).inner;
+  expect(inner).toBeInstanceOf(Inner);
+}
+
+/** Unwrap both funnel layers (breaker → spawn-cap) to reach the actual provider. */
+function innermost(p: IntelligenceProvider | null): IntelligenceProvider {
+  const spawnCap = (p as unknown as { inner: IntelligenceProvider }).inner;
+  return (spawnCap as unknown as { inner: IntelligenceProvider }).inner;
+}
 
 describe('buildIntelligenceProvider', () => {
-  it('returns a ClaudeCliIntelligenceProvider when framework=claude-code and binary path supplied', () => {
+  it('returns a circuit-breaker-wrapped ClaudeCliIntelligenceProvider when framework=claude-code and binary path supplied', () => {
     const p = buildIntelligenceProvider({
       framework: 'claude-code',
       binaryPath: '/usr/bin/claude',
     });
-    expect(p).toBeInstanceOf(ClaudeCliIntelligenceProvider);
+    expectWraps(p, ClaudeCliIntelligenceProvider);
   });
 
-  it('returns a CodexCliIntelligenceProvider when framework=codex-cli and binary path supplied', () => {
+  it('returns a circuit-breaker-wrapped CodexCliIntelligenceProvider when framework=codex-cli and binary path supplied', () => {
     const p = buildIntelligenceProvider({
       framework: 'codex-cli',
       binaryPath: '/usr/bin/codex',
     });
-    expect(p).toBeInstanceOf(CodexCliIntelligenceProvider);
+    expectWraps(p, CodexCliIntelligenceProvider);
+  });
+
+  it('returns a circuit-breaker-wrapped GeminiCliIntelligenceProvider when framework=gemini-cli and binary path supplied (the ALIVE path)', () => {
+    const p = buildIntelligenceProvider({
+      framework: 'gemini-cli',
+      binaryPath: '/usr/bin/gemini',
+    });
+    expectWraps(p, GeminiCliIntelligenceProvider);
+  });
+
+  it('passes quotaStateFile only to the gemini provider capacity policy', () => {
+    const p = buildIntelligenceProvider({
+      framework: 'gemini-cli',
+      binaryPath: '/usr/bin/gemini',
+      quotaStateFile: '/tmp/gemini-quota-state.json',
+    });
+    expectWraps(p, GeminiCliIntelligenceProvider);
+    const inner = innermost(p);
+    expect((inner as unknown as { capacityPolicy?: { quotaStateFile?: string } }).capacityPolicy?.quotaStateFile)
+      .toBe('/tmp/gemini-quota-state.json');
   });
 
   it('defaults to claude-code when framework is omitted', () => {
     const p = buildIntelligenceProvider({ binaryPath: '/usr/bin/claude' });
-    expect(p).toBeInstanceOf(ClaudeCliIntelligenceProvider);
+    expectWraps(p, ClaudeCliIntelligenceProvider);
   });
 
   it('returns null when no binary path is supplied AND detection fails for an exotic name', () => {
@@ -45,9 +91,9 @@ describe('buildIntelligenceProvider', () => {
     });
     // An empty string is falsy → factory falls through to detect → may
     // return non-null on dev machines. So instead assert the function
-    // does not throw and returns either null or a Codex provider.
+    // does not throw and returns either null or a wrapped Codex provider.
     if (p !== null) {
-      expect(p).toBeInstanceOf(CodexCliIntelligenceProvider);
+      expectWraps(p, CodexCliIntelligenceProvider);
     }
   });
 
@@ -57,7 +103,7 @@ describe('buildIntelligenceProvider', () => {
       binaryPath: '/usr/bin/codex',
       workingDirectory: '/tmp/test-wd',
     });
-    expect(p).toBeInstanceOf(CodexCliIntelligenceProvider);
+    expectWraps(p, CodexCliIntelligenceProvider);
     // The provider doesn't expose workingDirectory publicly; this test
     // just asserts the call shape works.
   });
@@ -85,8 +131,14 @@ describe('frameworkFromEnv', () => {
     expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'CODEX' })).toBe('codex-cli');
   });
 
+  it('parses gemini-cli and the alias gemini', () => {
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'gemini-cli' })).toBe('gemini-cli');
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'gemini' })).toBe('gemini-cli');
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'GEMINI' })).toBe('gemini-cli');
+  });
+
   it('returns null for unrecognized values rather than throwing', () => {
-    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'gemini' })).toBeNull();
+    expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'aider' })).toBeNull();
     expect(frameworkFromEnv({ INSTAR_FRAMEWORK: 'whatever' })).toBeNull();
   });
 });

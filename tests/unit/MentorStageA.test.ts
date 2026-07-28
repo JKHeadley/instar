@@ -1,0 +1,360 @@
+/**
+ * Tier-1 unit tests for MentorStageA — the structural two-hats boundary
+ * (FRAMEWORK-ONBOARDING-MENTOR-SPEC §4, §19.3).
+ *
+ * The leakage detector ships with a positive-control (a known-leaked transcript
+ * MUST trip the flag) so a dead/no-op detector is distinguishable from a clean
+ * run — the same anti-pattern guard the rest of the system uses.
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  STAGE_A_ALLOWED_TOOLS,
+  buildStageAContext,
+  buildConversationSurface,
+  parseMenteeReplies,
+  parseMentorSent,
+  detectStageALeak,
+  runLeakCanary,
+  leakToFinding,
+  surfaceText,
+  type ConversationSurface,
+} from '../../src/monitoring/MentorStageA.js';
+
+const baseSurface: ConversationSurface = {
+  framework: 'codex-cli',
+  threadlineHistory: 'Echo: how is the task going?\nCodey: making progress, hit a snag on the parser.',
+  assignedTaskStatus: 'working on the parity-rule backlog item',
+  openCommitments: ['ship the X primitive'],
+  timeSinceLastContactMs: 12 * 60_000,
+};
+
+describe('STAGE_A_ALLOWED_TOOLS — structural tool grant', () => {
+  it('is EMPTY (conversation surface is injected, never fetched)', () => {
+    expect(STAGE_A_ALLOWED_TOOLS).toEqual([]);
+  });
+  it('denies every internals tool by construction', () => {
+    for (const forbidden of ['Bash', 'Write', 'Edit', 'Read', 'Grep', 'Glob']) {
+      expect(STAGE_A_ALLOWED_TOOLS).not.toContain(forbidden);
+    }
+  });
+});
+
+describe('buildStageAContext — only the conversation surface', () => {
+  it('includes the conversation and visible task status', () => {
+    const ctx = buildStageAContext(baseSurface);
+    expect(ctx).toContain('how is the task going');
+    expect(ctx).toContain('parity-rule backlog');
+    expect(ctx).toContain('ship the X primitive');
+    expect(ctx).toContain('codex-cli');
+  });
+  it('carries the two-hats preamble (blind to internals, one action, untrusted input)', () => {
+    const ctx = buildStageAContext(baseSurface);
+    expect(ctx).toMatch(/NO access to their logs, code, rollouts/i);
+    expect(ctx).toMatch(/unblock \| answer \| assign-next \| observe-only/);
+    expect(ctx).toMatch(/untrusted/i);
+  });
+  it('instructs the compose LLM to never name source paths/files/lines/PR#/SHA (two-hats leak prevention §4.3)', () => {
+    // The detectStageALeak canary flags exactly these reference shapes; the
+    // prompt must prevent the leak at the source rather than rely on loosening
+    // the detector. Still permits WHAT-to-check guidance.
+    const ctx = buildStageAContext(baseSurface);
+    expect(ctx).toMatch(/[Nn]ever name specific source paths/);
+    expect(ctx).toMatch(/file names, line numbers, PR or issue numbers, or commit hashes/);
+    expect(ctx).toMatch(/WHAT to check or verify, not WHERE in the code/);
+  });
+  it('handles an empty surface without throwing', () => {
+    const ctx = buildStageAContext({ framework: 'cursor', threadlineHistory: '' });
+    expect(ctx).toContain('no prior conversation');
+    expect(ctx).toContain('no task assigned yet');
+  });
+
+  it('bounds a huge history so the prompt stays under tmux\'s command-line limit (keeps recent + marks elision)', () => {
+    // The Stage-A prompt is passed as a tmux new-session command-line argument
+    // (limit ~12-16KB). An unbounded growing history made `tmux new-session`
+    // fail ("command too long") → stage-a-failed. The bound keeps the recent
+    // tail and elides the older middle.
+    const RECENT_MARKER = 'Echo: MOST-RECENT-EXCHANGE-SENTINEL';
+    const huge = 'OLD '.repeat(20000) + `\n${RECENT_MARKER}\nCodey: ack`; // ~80KB history
+    const ctx = buildStageAContext({ framework: 'codex-cli', threadlineHistory: huge });
+    // Total prompt comfortably under the tmux limit (history capped at 6KB + small fixed parts).
+    expect(ctx.length).toBeLessThan(12_000);
+    // The most-recent exchange is preserved...
+    expect(ctx).toContain(RECENT_MARKER);
+    // ...older history is elided with an explicit marker (not silently dropped).
+    expect(ctx).toContain('older conversation elided');
+    // The prompt structure is intact.
+    expect(ctx).toContain('--- Conversation so far ---');
+    expect(ctx).toContain('--- Visible task status ---');
+  });
+});
+
+describe('detectStageALeak — the mandatory leakage detector (§4.3)', () => {
+  it('flags a transcript referencing internals not in the surface (code path)', () => {
+    const r = detectStageALeak('You should fix src/messaging/Retry.ts:142 — the backoff is wrong.', baseSurface);
+    expect(r.leaked).toBe(true);
+    expect(r.hits.some((h) => h.includes('Retry.ts'))).toBe(true);
+  });
+
+  it('flags rollout / log / PR / SHA references', () => {
+    expect(detectStageALeak('saw it in rollout-2026.jsonl', baseSurface).leaked).toBe(true);
+    expect(detectStageALeak('check logs/server.log', baseSurface).leaked).toBe(true);
+    expect(detectStageALeak('that regressed in PR #412', baseSurface).leaked).toBe(true);
+    expect(detectStageALeak('commit a1b2c3d4e5 broke it', baseSurface).leaked).toBe(true);
+  });
+
+  it('does NOT flag clean conversational text (no false positive)', () => {
+    const r = detectStageALeak('Nice progress! How is the parser snag going — still stuck, or ready for the next one?', baseSurface);
+    expect(r.leaked).toBe(false);
+    expect(r.hits).toHaveLength(0);
+  });
+
+  it('does NOT flag an internal reference the USER legitimately put in the surface', () => {
+    const surfaceWithPR: ConversationSurface = {
+      ...baseSurface,
+      threadlineHistory: baseSurface.threadlineHistory + '\nCodey: I opened PR #412 for it.',
+    };
+    // Stage A echoing "PR #412" is fine — it came from the conversation, not a leak.
+    const r = detectStageALeak('Great, I see PR #412 is up — anything blocking the merge?', surfaceWithPR);
+    expect(r.leaked).toBe(false);
+  });
+
+  it('POSITIVE CONTROL: the canary trips the detector (proves it is alive)', () => {
+    expect(runLeakCanary()).toBe(true);
+  });
+});
+
+describe('surfaceText', () => {
+  it('flattens only surface fields (no internals channel exists)', () => {
+    const t = surfaceText(baseSurface);
+    expect(t).toContain('codex-cli');
+    expect(t).toContain('parity-rule backlog');
+    expect(t).not.toContain('src/');
+  });
+});
+
+describe('leakToFinding — dog-fooding a leak into the ledger (§4.3)', () => {
+  it('produces a high-severity instar-integration-gap finding with opaque evidence', () => {
+    const result = detectStageALeak('fix src/foo.ts:10 per PR #500', baseSurface);
+    const finding = leakToFinding('codex-cli', result, 'tick-7');
+    expect(finding.bucket).toBe('instar-integration-gap');
+    expect(finding.severity).toBe('high');
+    expect(finding.dedupKey).toBe('codex-cli::stage-a-leak');
+    expect(finding.evidence).toContain('tick=tick-7');
+    // Evidence carries reference SHAPES, not log/code content.
+    expect(finding.evidence).not.toMatch(/backoff|content of/i);
+  });
+});
+
+// Active task-driving: the onboarding agenda lets an idle mentee get a concrete
+// next task instead of a low-signal observe-only. The agenda is the mentor's own
+// plan (surface-legitimate), and an empty agenda must leave behaviour unchanged.
+describe('onboardingAgenda — active task-driving in the Stage-A prompt', () => {
+  it('omits the agenda block entirely when no agenda is configured (unchanged passive behaviour)', () => {
+    const ctx = buildStageAContext(baseSurface);
+    expect(ctx).not.toMatch(/onboarding agenda/i);
+    expect(ctx).not.toMatch(/assign-next and give them the NEXT agenda item/i);
+  });
+
+  it('includes the agenda + assign-next steering when an agenda is present', () => {
+    const ctx = buildStageAContext({
+      ...baseSurface,
+      onboardingAgenda: ['Verify the Secret Drop flow end to end', 'Exercise the Playbook add/search'],
+    });
+    expect(ctx).toMatch(/onboarding agenda/i);
+    expect(ctx).toContain('Verify the Secret Drop flow end to end');
+    expect(ctx).toContain('Exercise the Playbook add/search');
+    expect(ctx).toMatch(/assign-next/);
+    expect(ctx).toMatch(/choose observe-only if they are mid-task/);
+    // No coverage list given → the simple "next agenda item" steering, no "Recently driven".
+    expect(ctx).not.toContain('Recently driven');
+  });
+
+  it('counts agenda items as surface-legitimate (assigning one is NOT a leak)', () => {
+    const surface: ConversationSurface = {
+      framework: 'codex-cli',
+      threadlineHistory: 'Mentee: done with the last one.',
+      onboardingAgenda: ['Check the Attention queue at /attention'],
+    };
+    // The mentor assigns the agenda item verbatim — must not trip the leak detector.
+    const transcript = 'Next up: please check the Attention queue at /attention and tell me what you see.';
+    expect(detectStageALeak(transcript, surface).leaked).toBe(false);
+    // surfaceText carries the agenda text.
+    expect(surfaceText(surface)).toContain('Check the Attention queue at /attention');
+  });
+});
+
+describe('buildConversationSurface — real surface from agenda + mentee replies', () => {
+  const NOW = 1_780_000_600_000;
+
+  it('formats mentee replies into threadlineHistory and computes time-since-last-contact', () => {
+    const s = buildConversationSurface({
+      framework: 'codex-cli',
+      menteeReplies: [
+        { ts: NOW - 600_000, message: 'Started on the parser task.' },
+        { ts: NOW - 120_000, message: 'Opened PR, it is green.' },
+      ],
+      nowMs: NOW,
+    });
+    expect(s.threadlineHistory).toBe('Mentee: Started on the parser task.\nMentee: Opened PR, it is green.');
+    expect(s.timeSinceLastContactMs).toBe(120_000); // newest reply
+    expect(s.onboardingAgenda).toBeUndefined();
+  });
+
+  it('interleaves mentor prompts and mentee replies by timestamp into full threadline history', () => {
+    const s = buildConversationSurface({
+      framework: 'codex-cli',
+      mentorSent: [
+        { ts: NOW - 500_000, message: 'Please verify your local update status.' },
+        { ts: NOW - 100_000, message: 'Next, make a tiny source PR.' },
+      ],
+      menteeReplies: [
+        { ts: NOW - 300_000, message: 'Update status verified.' },
+        { ts: NOW - 50_000, message: 'PR is open.' },
+      ],
+      nowMs: NOW,
+    });
+
+    expect(s.threadlineHistory).toBe([
+      'Mentor: Please verify your local update status.',
+      'Mentee: Update status verified.',
+      'Mentor: Next, make a tiny source PR.',
+      'Mentee: PR is open.',
+    ].join('\n'));
+    expect(s.timeSinceLastContactMs).toBe(50_000);
+  });
+
+  it('sets onboardingAgenda when provided and caps history to maxReplies (most recent)', () => {
+    const replies = Array.from({ length: 12 }, (_, i) => ({ ts: NOW - (12 - i) * 1000, message: `r${i}` }));
+    const s = buildConversationSurface({
+      framework: 'codex-cli',
+      onboardingAgenda: ['task A', 'task B'],
+      menteeReplies: replies,
+      nowMs: NOW,
+      maxReplies: 3,
+    });
+    expect(s.onboardingAgenda).toEqual(['task A', 'task B']);
+    expect(s.threadlineHistory).toBe('Mentee: r9\nMentee: r10\nMentee: r11'); // last 3, sorted by ts
+  });
+
+  it('empty replies → empty history, no timeSinceLastContact (degrades to "no prior conversation")', () => {
+    const s = buildConversationSurface({ framework: 'codex-cli', menteeReplies: [], nowMs: NOW });
+    expect(s.threadlineHistory).toBe('');
+    expect(s.timeSinceLastContactMs).toBeUndefined();
+    // buildStageAContext renders the empty history as the no-conversation sentinel.
+    expect(buildStageAContext(s)).toContain('(no prior conversation)');
+  });
+});
+
+describe('parseMentorSent — defensive JSONL parsing for the surface', () => {
+  it('parses well-formed lines, coerces string ts, and drops blanks/garbage/empty-message', () => {
+    const raw = [
+      JSON.stringify({ ts: '1780000000000', toAgent: 'instar-codey', corr: 'c1', message: 'first prompt' }),
+      '',
+      '{',
+      JSON.stringify({ ts: 1780000005000, toAgent: 'instar-codey', message: '   ' }),
+      JSON.stringify({ toAgent: 'instar-codey', message: 'no ts' }),
+      JSON.stringify({ ts: 1780000010000, toAgent: 'instar-codey', corr: 'c2', message: 'second prompt' }),
+    ].join('\n');
+
+    expect(parseMentorSent(raw, 'instar-codey')).toEqual([
+      { ts: 1780000000000, message: 'first prompt' },
+      { ts: 1780000010000, message: 'second prompt' },
+    ]);
+  });
+
+  it('filters to the named mentee when toAgent is present', () => {
+    const raw = [
+      JSON.stringify({ ts: 1, toAgent: 'instar-codey', message: 'mine' }),
+      JSON.stringify({ ts: 2, toAgent: 'instar-other', message: 'theirs' }),
+    ].join('\n');
+
+    expect(parseMentorSent(raw, 'instar-codey')).toEqual([{ ts: 1, message: 'mine' }]);
+  });
+
+  it('never throws on empty input', () => {
+    expect(parseMentorSent('')).toEqual([]);
+  });
+});
+
+describe('parseMenteeReplies — defensive JSONL parsing for the surface', () => {
+  it('parses well-formed lines, coerces string ts, and drops blanks/garbage/empty-message', () => {
+    const raw = [
+      JSON.stringify({ ts: '1780000000000', fromAgent: 'instar-codey', message: 'hello' }),
+      '   ',
+      'not json at all',
+      JSON.stringify({ ts: 1780000005000, fromAgent: 'instar-codey', message: '   ' }), // empty msg → dropped
+      JSON.stringify({ fromAgent: 'instar-codey', message: 'no ts' }), // no ts → dropped
+      JSON.stringify({ ts: 1780000010000, fromAgent: 'instar-codey', message: 'world' }),
+    ].join('\n');
+    const out = parseMenteeReplies(raw, 'instar-codey');
+    expect(out).toEqual([
+      { ts: 1780000000000, message: 'hello' },
+      { ts: 1780000010000, message: 'world' },
+    ]);
+  });
+
+  it('filters to the named mentee when fromAgent is present', () => {
+    const raw = [
+      JSON.stringify({ ts: 1, fromAgent: 'instar-codey', message: 'mine' }),
+      JSON.stringify({ ts: 2, fromAgent: 'instar-other', message: 'theirs' }),
+    ].join('\n');
+    expect(parseMenteeReplies(raw, 'instar-codey')).toEqual([{ ts: 1, message: 'mine' }]);
+  });
+
+  it('never throws on empty input', () => {
+    expect(parseMenteeReplies('')).toEqual([]);
+  });
+});
+
+describe('agenda coverage — stop re-cycling already-driven items', () => {
+  const AGENDA = [
+    'Verify the Project Map (GET /project-map?format=compact) reflects reality',
+    'Verify the Reap-Log (GET /sessions/reap-log) entries normalize',
+    'Verify the Codex usage reader (GET /codex/usage) windows parse',
+  ];
+  it('buildConversationSurface flags agenda items present in recent mentor-sent as recentlyDriven', () => {
+    const surface = buildConversationSurface({
+      framework: 'codex-cli',
+      onboardingAgenda: AGENDA,
+      mentorSent: [
+        { ts: 1000, message: 'Next task: Verify the Project Map — does it reflect reality?' },
+        { ts: 2000, message: 'Next task: Verify the Reap-Log — do entries normalize?' },
+      ],
+      menteeReplies: [{ ts: 1500, message: 'done, looks right' }],
+      nowMs: 3000,
+    });
+    expect(surface.recentlyDrivenAgenda).toContain(AGENDA[0]); // Project Map — driven
+    expect(surface.recentlyDrivenAgenda).toContain(AGENDA[1]); // Reap-Log — driven
+    expect(surface.recentlyDrivenAgenda).not.toContain(AGENDA[2]); // Codex usage — NOT driven
+  });
+  it('buildStageAContext lists recently-driven items + instructs to prefer fresh ones', () => {
+    const ctx = buildStageAContext({
+      framework: 'codex-cli',
+      threadlineHistory: 'Echo: hi\nCodey: done',
+      onboardingAgenda: AGENDA,
+      recentlyDrivenAgenda: [AGENDA[0], AGENDA[1]],
+    });
+    expect(ctx).toContain('Recently driven');
+    expect(ctx).toMatch(/NOT in the "Recently driven"/);
+    expect(ctx).toMatch(/Do NOT re-assign a recently-driven/);
+    expect(ctx).toContain('Verify the Project Map'); // shown as driven
+  });
+  it('when ALL agenda items are recently driven, the prompt steers to observe-only', () => {
+    const ctx = buildStageAContext({
+      framework: 'codex-cli',
+      threadlineHistory: 'Echo: hi\nCodey: done',
+      onboardingAgenda: AGENDA,
+      recentlyDrivenAgenda: [...AGENDA],
+    });
+    expect(ctx).toMatch(/which is the case now/);
+    expect(ctx).toMatch(/observe-only/);
+  });
+  it('omits the recently-driven block when nothing has been driven (unchanged behaviour)', () => {
+    const ctx = buildStageAContext({
+      framework: 'codex-cli',
+      threadlineHistory: 'Echo: hi',
+      onboardingAgenda: AGENDA,
+    });
+    expect(ctx).not.toContain('Recently driven');
+  });
+});

@@ -23,6 +23,10 @@ instar server status [name]     # Show server status
 instar status                   # Show agent infrastructure status
 ```
 
+`SessionServerGuard` protects an active session from restarting its own
+managing server while still allowing server lifecycle commands that target a
+sibling agent by name or directory.
+
 ## Lifeline
 
 ```bash
@@ -209,6 +213,11 @@ instar discovery                # Scan filesystem + registry + GitHub for existi
 instar gate                     # UnjustifiedStopGate operator tooling (enforcement mode, kill-switch, logs)
 ```
 
+`instar gate status` shows the durable authority breaker and its next automatic
+probe. After repairing the provider, `instar gate reset-breaker` invokes the
+authenticated `POST /internal/stop-gate/reset-breaker` operation so the next
+Stop event may probe immediately.
+
 ## Multi-machine
 
 ```bash
@@ -241,11 +250,18 @@ instar listener logs            # Tail listener logs
 
 ```bash
 instar route <task>             # One-shot framework + model routing for a task description
+instar dev:preflight            # Verify-only contributor guard: lint, CapabilityIndex tests, route-prefix warning
+instar dev:ci-failures <pr>     # Print a PR's exact failing tests (file:line + assertion) via the check-run annotations API
+instar dev:post-drive-transcript-audit --topic <id> --start <time> --end <time>
+                                # Audit a supervised topic transcript for operator-seat UX findings and file framework-issue observations
+instar dev:profile-node [pid]   # CPU-profile a running node process (SIGUSR1 + inspector + CDP) and print its hottest JS functions
 instar jobMigrate               # Migrate jobs between schema versions
 instar ledgerCleanup            # Token ledger cleanup
 instar memoryBackfillEvidence   # Backfill evidence rows into the memory index
 instar org init "Acme Corp"     # Create ORG-INTENT.md for organizational intent
 ```
+
+Docs coverage tracks the post-drive auditor capability as `instar post-drive-transcript-audit`; the shipped power-user command is `instar dev:post-drive-transcript-audit`.
 
 ## Feedback
 

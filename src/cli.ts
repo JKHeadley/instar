@@ -34,7 +34,9 @@ import { listRelationships, importRelationships, exportRelationships } from './c
 import { listMachines, removeMachine, whoami, startPairing, joinMesh, leaveMesh, wakeup, doctor } from './commands/machine.js';
 import pc from 'picocolors';
 import { getInstarVersion } from './core/Config.js';
+import { resolveAgentDir } from './core/Config.js';
 import { listAgents } from './core/AgentRegistry.js';
+import { shouldRejectServerLifecycleFromSession } from './core/SessionServerGuard.js';
 
 /**
  * Add or update Telegram configuration in the project config.
@@ -268,6 +270,52 @@ async function addQuota(opts: { stateFile?: string }): Promise<void> {
 
 const program = new Command();
 
+async function callLocalContinuation(pathname: string, method = 'GET', body?: unknown): Promise<unknown> {
+  const cfgPath = path.join(process.cwd(), '.instar', 'config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { port?: number; authToken?: string | { env?: string } };
+  const configuredToken = typeof cfg.authToken === 'string'
+    ? cfg.authToken
+    : (cfg.authToken?.env ? process.env[cfg.authToken.env] : undefined);
+  const authToken = process.env.INSTAR_AUTH_TOKEN ?? configuredToken ?? '';
+  const response = await fetch(`http://127.0.0.1:${cfg.port ?? 4040}${pathname}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${authToken}`,
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const parsed = await response.json() as Record<string, unknown>;
+  if (!response.ok) throw new Error(String(parsed.error ?? `HTTP ${response.status}`));
+  return parsed;
+}
+
+function rejectUnknownTopLevelCommand(program: Command, argv: string[]): void {
+  const firstArg = argv[2];
+  if (!firstArg || firstArg.startsWith('-')) {
+    return;
+  }
+
+  if (firstArg === 'help') {
+    program.outputHelp();
+    process.exit(0);
+  }
+
+  const commandNames = new Set<string>();
+  for (const command of program.commands) {
+    commandNames.add(command.name());
+    for (const alias of command.aliases()) {
+      commandNames.add(alias);
+    }
+  }
+
+  if (!commandNames.has(firstArg)) {
+    console.error(`error: unknown command '${firstArg}'`);
+    console.error(`Run 'instar --help' for available commands.`);
+    process.exit(1);
+  }
+}
+
 program
   .name('instar')
   .description('Persistent autonomy infrastructure for AI agents')
@@ -308,9 +356,9 @@ program
   .option('--scenario <number>', 'Scenario number 1-8 (non-interactive)')
   .option(
     '--framework <name>',
-    'AI runtime to host the setup wizard: claude-code (default) or codex-cli',
+    'AI runtime to host the setup wizard: claude-code (default), codex-cli, or gemini-cli',
     (v: string) => {
-      const allowed = ['claude-code', 'codex-cli'];
+      const allowed = ['claude-code', 'codex-cli', 'gemini-cli'];
       if (!allowed.includes(v)) {
         console.error(`\n  --framework must be one of: ${allowed.join(', ')}\n`);
         process.exit(1);
@@ -343,9 +391,9 @@ program
   .option('--standalone', 'Create a standalone agent at ~/.instar/agents/<name>/')
   .option(
     '--framework <name>',
-    'AI runtime to target: claude-code (default), codex-cli, or both',
+    'AI runtime to target: claude-code (default), codex-cli, gemini-cli, or both',
     (v: string) => {
-      const allowed = ['claude-code', 'codex-cli', 'both'];
+      const allowed = ['claude-code', 'codex-cli', 'gemini-cli', 'both'];
       if (!allowed.includes(v)) {
         console.error(`\n  --framework must be one of: ${allowed.join(', ')}\n`);
         process.exit(1);
@@ -356,6 +404,56 @@ program
   .action((projectName, opts) => {
     return initProject({ ...opts, name: projectName });
   });
+
+// ── Codex ordinary-work continuation ─────────────────────────────
+
+const continuationCmd = program
+  .command('continuation')
+  .description('Manage the bounded Codex task-continuation ledger');
+
+continuationCmd
+  .command('start')
+  .requiredOption('--topic <id>', 'Topic id')
+  .requiredOption('--task <text...>', 'One or more explicit tasks')
+  .option('--duration <seconds>', 'Duration ceiling', (v: string) => Number(v))
+  .option('--max-continuations <count>', 'Turn ceiling', (v: string) => Number(v))
+  .action(async (opts) => {
+    const result = await callLocalContinuation('/continuation/start', 'POST', {
+      topicId: opts.topic,
+      tasks: opts.task,
+      durationSeconds: opts.duration,
+      maxContinuations: opts.maxContinuations,
+    });
+    console.log(JSON.stringify(result));
+  });
+
+continuationCmd.command('status <topic>').action(async (topic) => {
+  console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/status`)));
+});
+
+continuationCmd
+  .command('renew <topic>')
+  .description('Mint a fresh bounded generation while preserving the existing task checklist')
+  .option('--duration <seconds>', 'Duration ceiling', (v: string) => Number(v))
+  .option('--max-continuations <count>', 'Turn ceiling', (v: string) => Number(v))
+  .action(async (topic, opts) => {
+    console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/renew`, 'POST', {
+      durationSeconds: opts.duration,
+      maxContinuations: opts.maxContinuations,
+    })));
+  });
+
+continuationCmd.command('complete <topic> <ordinal>').action(async (topic, ordinal) => {
+  console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/complete`, 'POST', { ordinal: Number(ordinal) })));
+});
+
+continuationCmd.command('stop <topic>').action(async (topic) => {
+  console.log(JSON.stringify(await callLocalContinuation(`/continuation/${encodeURIComponent(topic)}/stop`, 'POST')));
+});
+
+continuationCmd.command('stop-all').action(async () => {
+  console.log(JSON.stringify(await callLocalContinuation('/continuation/stop-all', 'POST')));
+});
 
 // ── Add ───────────────────────────────────────────────────────────
 
@@ -484,6 +582,23 @@ worktreeCmd
       console.error(pc.red(`worktree create failed: ${(err as Error).message}`));
       process.exit(1);
     }
+  });
+
+// ── Spec review (standards-conformance gate) ─────────────────────
+
+const specCmd = program
+  .command('spec')
+  .description('Spec-authoring tools (the standards-conformance gate).');
+
+specCmd
+  .command('conformance <path>')
+  .description('Check a draft spec against the living constitution and print a rule-by-rule report (signal only — never blocks).')
+  .option('-d, --dir <path>', 'Project directory')
+  .option('--port <port>', 'Server port (defaults to config.port, else 4040)', (v: string) => parseInt(v, 10))
+  .option('--json', 'Emit the raw JSON report instead of formatted output')
+  .action(async (specPath: string, opts: { dir?: string; port?: number; json?: boolean }) => {
+    const { runSpecConformance } = await import('./commands/spec.js');
+    await runSpecConformance({ specPath, dir: opts.dir, port: opts.port, json: opts.json });
   });
 
 // ── Backup ───────────────────────────────────────────────────────
@@ -1256,14 +1371,17 @@ telemetryCmd
 
 // ── Server ────────────────────────────────────────────────────────
 
-/** Guard: prevent sessions from inadvertently starting/stopping/restarting the server. */
-function rejectIfInsideSession(action: string): boolean {
-  if (process.env.INSTAR_SESSION_ID) {
-    console.error(pc.red(`Cannot '${action}' from inside a session (session ${process.env.INSTAR_SESSION_ID}).`));
-    console.error(pc.dim('The server is managed by the supervisor. Sessions should not start, stop, or restart it.'));
-    return true;
+/** Guard: prevent sessions from restarting their own managing server. */
+function rejectIfInsideSession(action: string, targetDir?: string): boolean {
+  const decision = shouldRejectServerLifecycleFromSession({ action, targetDir });
+  if (!decision.reject) return false;
+
+  console.error(pc.red(decision.message ?? `Cannot '${action}' from inside a session.`));
+  if (decision.detail) console.error(pc.dim(decision.detail));
+  if (decision.supervisorHint) {
+    console.error(pc.dim(`If you need to bounce this agent, use the supervisor: ${decision.supervisorHint}`));
   }
-  return false;
+  return true;
 }
 
 // ── Listener Daemon ──────────────────────────────────────────────────
@@ -1370,10 +1488,7 @@ serverCmd
   .option('--no-telegram', 'Skip Telegram polling (use when lifeline manages Telegram)')
   .option('-d, --dir <path>', 'Project directory')
   .action(async (name, opts) => {
-    if (rejectIfInsideSession('server start')) return;
     if (name && !opts.dir) {
-      // Resolve standalone agent name to directory
-      const { resolveAgentDir } = await import('./core/Config.js');
       try {
         opts.dir = resolveAgentDir(name);
       } catch (err) {
@@ -1381,6 +1496,7 @@ serverCmd
         process.exit(1);
       }
     }
+    if (rejectIfInsideSession('server start', opts.dir)) return;
     return startServer(opts);
   });
 
@@ -1389,9 +1505,7 @@ serverCmd
   .description('Stop the agent server (optional: standalone agent name)')
   .option('-d, --dir <path>', 'Project directory')
   .action(async (name, opts) => {
-    if (rejectIfInsideSession('server stop')) return;
     if (name && !opts.dir) {
-      const { resolveAgentDir } = await import('./core/Config.js');
       try {
         opts.dir = resolveAgentDir(name);
       } catch (err) {
@@ -1399,6 +1513,7 @@ serverCmd
         process.exit(1);
       }
     }
+    if (rejectIfInsideSession('server stop', opts.dir)) return;
     return stopServer(opts);
   });
 
@@ -1407,9 +1522,7 @@ serverCmd
   .description('Restart the agent server (handles launchd/systemd lifecycle)')
   .option('-d, --dir <path>', 'Project directory')
   .action(async (name, opts) => {
-    if (rejectIfInsideSession('server restart')) return;
     if (name && !opts.dir) {
-      const { resolveAgentDir } = await import('./core/Config.js');
       try {
         opts.dir = resolveAgentDir(name);
       } catch (err) {
@@ -1417,6 +1530,7 @@ serverCmd
         process.exit(1);
       }
     }
+    if (rejectIfInsideSession('server restart', opts.dir)) return;
     return restartServer(opts);
   });
 
@@ -2013,6 +2127,37 @@ program
   .action(joinMesh);
 
 program
+  .command('test-as-self')
+  .description('Deploy the current dist into a throwaway agent home, verify it, and tear down (Part 2.1 harness)')
+  .option('--target <dir>', 'Throwaway agent home (default: ~/.instar/test-deploys/<isoTs>)')
+  .option('--bot-token <dropId>', 'Secret Drop ID for a test bot token (enables the Telegram round-trip; NEVER a raw token)')
+  .option('--keep', 'Skip teardown (leave the throwaway running for inspection)')
+  .option('--no-roundtrip', 'Skip the Telegram round-trip (lease/log verification only)')
+  .option('--slack', 'Run the credential-free Slack permission demonstration (each (principal,request) → expected decision + audit entry) instead of the deploy harness')
+  .option('--report-json <path>', 'Write the per-step JSON report to this path')
+  .option('--timeout-s <secs>', 'Overall timeout in seconds (default 600)', (v) => parseInt(v, 10))
+  .action(async (opts) => {
+    // --slack: the test-as-self-for-Slack demonstration (Pillar 4) — verifies the
+    // permission gate ENFORCES the right decision per (principal, request), with the
+    // matching audit entry. Credential-free, no throwaway deploy.
+    if (opts.slack) {
+      const { runTestAsSelfSlack } = await import('./commands/test-as-self.js');
+      const { exitCode } = await runTestAsSelfSlack({ reportJson: opts.reportJson });
+      process.exit(exitCode);
+    }
+    const { runTestAsSelf } = await import('./commands/test-as-self.js');
+    const { exitCode } = await runTestAsSelf({
+      target: opts.target,
+      botToken: opts.botToken,
+      keep: opts.keep,
+      noRoundtrip: opts.roundtrip === false,
+      reportJson: opts.reportJson,
+      timeoutS: opts.timeoutS,
+    });
+    process.exit(exitCode);
+  });
+
+program
   .command('wakeup')
   .description('Move the agent to this machine (transfer awake role)')
   .option('-d, --dir <path>', 'Project directory')
@@ -2030,6 +2175,33 @@ program
   .description('Diagnose multi-machine health and connectivity')
   .option('-d, --dir <path>', 'Project directory')
   .action(doctor);
+
+// ── Playwright physical-seat lease ──────────────────────────────
+
+const playwrightSeatCmd = program
+  .command('playwright-seat')
+  .description('Voluntarily coordinate standalone Playwright scripts with the host-wide operator-seat lease');
+
+playwrightSeatCmd
+  .command('acquire')
+  .requiredOption('--holder <id>', 'Unique drive-invocation id reused only for its release')
+  .option('--label <label>', 'Human-readable drive label', 'standalone Playwright script')
+  .action(async (opts) => {
+    const { PlaywrightSeatLease } = await import('./core/PlaywrightSeatLease.js');
+    const result = new PlaywrightSeatLease().acquire(opts.holder, opts.label);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    if (!result.acquired) process.exitCode = 2;
+  });
+
+playwrightSeatCmd
+  .command('release')
+  .requiredOption('--holder <id>', 'Same unique drive-invocation id used to acquire')
+  .action(async (opts) => {
+    const { PlaywrightSeatLease } = await import('./core/PlaywrightSeatLease.js');
+    const result = new PlaywrightSeatLease().release(opts.holder);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    if (!result.released && result.reason === 'ownership-mismatch') process.exitCode = 2;
+  });
 
 // ── Channels ─────────────────────────────────────────────────────
 
@@ -2362,6 +2534,112 @@ gateCmd
     return gateLog(opts);
   });
 
+gateCmd
+  .command('reset-breaker')
+  .description('Clear the durable authority breaker after repairing a provider')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { gateResetBreaker } = await import('./commands/gate.js');
+    return gateResetBreaker(opts);
+  });
+
+// ── `instar dev:preflight` — contributor ship-gate verifier ────────
+
+program
+  .command('dev:preflight')
+  .description('Run the verify-only new-surface friction guard for contributor PRs')
+  .option('--base <ref>', 'Diff base ref for the route heuristic (default: main remote candidates)')
+  .action(async (opts: { base?: string }) => {
+    const { runDevPreflight } = await import('./commands/devPreflight.js');
+    const exitCode = await runDevPreflight({ baseRef: opts.base });
+    process.exit(exitCode);
+  });
+
+// ── `instar dev:ci-failures <pr>` — print a PR's exact failing tests ─────
+
+program
+  .command('dev:ci-failures <pr>')
+  .description("Print a PR's exact failing tests (file:line + assertion) via the GitHub check-run annotations API")
+  .option('--repo <owner/repo>', 'Repository (default: JKHeadley/instar)')
+  .action(async (pr: string, opts: { repo?: string }) => {
+    const { runDevCiFailures } = await import('./commands/devCiFailures.js');
+    const exitCode = await runDevCiFailures({ pr, repo: opts.repo });
+    process.exit(exitCode);
+  });
+
+// ── `instar dev:claim-check [paths...]` — pre-build parallel-claim advisory ──
+
+program
+  .command('dev:claim-check [paths...]')
+  .description('PRE-BUILD advisory: list open/recently-merged PRs touching the paths you intend to build on, and specs matching --keywords — so parallel sessions divide layers instead of colliding')
+  .option('--keywords <words...>', 'Keywords matched against docs/specs/*.md titles/headers')
+  .option('--merged-days <n>', 'Look-back window for merged PRs in days (default 2)', (v) => parseInt(v, 10))
+  .option('--repo <owner/repo>', 'Repository (default: JKHeadley/instar)')
+  .option('--strict', 'Exit 1 when any overlap is found (for scripted gates)')
+  .action(async (paths: string[] | undefined, opts: { keywords?: string[]; mergedDays?: number; repo?: string; strict?: boolean }) => {
+    const { runDevClaimCheck } = await import('./commands/devClaimCheck.js');
+    const exitCode = await runDevClaimCheck({
+      paths: paths ?? [],
+      keywords: opts.keywords,
+      mergedDays: opts.mergedDays,
+      repo: opts.repo,
+      strict: opts.strict,
+    });
+    process.exit(exitCode);
+  });
+
+// ── `instar dev:post-drive-transcript-audit` — operator-seat UX transcript auditor ──
+
+program
+  .command('dev:post-drive-transcript-audit')
+  .description('Audit topic transcripts for operator-seat UX antipatterns and file framework-issue observations with stable dedupe keys')
+  .option('--topic <id>', 'Topic id to audit (repeatable)', (v: string, prev: string[]) => [...prev, v], [])
+  .option('--topics <ids...>', 'Topic ids to audit')
+  .requiredOption('--start <timestamp>', 'Window start timestamp (any Date.parse-compatible value)')
+  .requiredOption('--end <timestamp>', 'Window end timestamp (any Date.parse-compatible value)')
+  .option('--limit <n>', 'Messages to read per topic (max 100)', (v) => parseInt(v, 10))
+  .option('--base-url <url>', 'Instar server base URL (defaults to this project config port)')
+  .option('--history-base-url <url>', "Server holding the drive TRANSCRIPT when it is not this one (e.g. the mentee's server) — findings still file to --base-url's ledger")
+  .option('--history-auth-token <token>', 'Bearer token for --history-base-url reads (prefer the INSTAR_HISTORY_AUTH_TOKEN env var — flags are visible in ps)')
+  .option('--dir <path>', 'Project directory to load config from')
+  .option('--dry-run', 'Print report without filing framework-issue observations')
+  .option('--json', 'Print structured JSON report')
+  .action(async (opts: {
+    topic?: string[];
+    topics?: string[];
+    start: string;
+    end: string;
+    limit?: number;
+    baseUrl?: string;
+    historyBaseUrl?: string;
+    historyAuthToken?: string;
+    dir?: string;
+    dryRun?: boolean;
+    json?: boolean;
+  }) => {
+    const { runPostDriveTranscriptAuditCli } = await import('./commands/postDriveTranscriptAudit.js');
+    try {
+      const exitCode = await runPostDriveTranscriptAuditCli(opts);
+      process.exit(exitCode);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
+
+// ── `instar dev:profile-node [pid]` — CPU-profile a hot node process's JS ──
+
+program
+  .command('dev:profile-node [pid]')
+  .description("CPU-profile a running node process (via SIGUSR1 + the inspector) and print its hottest JS functions — sees the JS frames macOS `sample` can't")
+  .option('--duration <sec>', 'Sampling duration in seconds (default 5)', (v) => parseInt(v, 10))
+  .option('--top <n>', 'Number of hot frames to print (default 15)', (v) => parseInt(v, 10))
+  .action(async (pid: string | undefined, opts: { duration?: number; top?: number }) => {
+    const { runDevProfileNode } = await import('./commands/devProfileNode.js');
+    const exitCode = await runDevProfileNode({ pid, durationSec: opts.duration, top: opts.top });
+    process.exit(exitCode);
+  });
+
 // ── `instar route` — Phase 5b suggest-and-confirm composition root (CLI) ─
 
 program
@@ -2378,4 +2656,5 @@ program
     return route(taskPrompt, opts);
   });
 
+rejectUnknownTopLevelCommand(program, process.argv);
 program.parse();

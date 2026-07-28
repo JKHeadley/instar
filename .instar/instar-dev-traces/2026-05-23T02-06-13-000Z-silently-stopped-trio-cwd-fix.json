@@ -1,0 +1,14 @@
+{
+  "phase": "complete",
+  "slug": "silently-stopped-trio-cwd-fix",
+  "coveredFiles": [
+    "src/core/WorktreeManager.ts",
+    "upgrades/side-effects/silently-stopped-trio.md"
+  ],
+  "artifactPath": "upgrades/side-effects/silently-stopped-trio.md",
+  "artifactSha256": "b5fa7cf701d0c3c55b61b662efb8523b1e5184e1151c0f5fc78c622fe3f6bf95",
+  "specPath": "docs/specs/silently-stopped-trio.md",
+  "secondPass": false,
+  "reviewerConcurred": null,
+  "createdAt": "2026-05-23T02:06:13.000Z"
+}

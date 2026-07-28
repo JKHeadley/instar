@@ -153,6 +153,28 @@ describe('Coherence Gate + Project Map API routes', () => {
       expect(res.body.error).toContain('action');
     });
 
+    it('reports unbound-topic checks as indeterminate instead of passed', async () => {
+      const res = await request(app)
+        .post('/coherence/check')
+        .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+        .send({
+          action: 'deploy',
+          context: { topicId: 424242 },
+        })
+        .expect(200);
+
+      const topicCheck = res.body.checks.find((check: { name: string }) =>
+        check.name === 'topic-project-alignment',
+      );
+
+      expect(topicCheck).toBeDefined();
+      expect(topicCheck.passed).toBeNull();
+      expect(res.body.passed).toBe(false);
+      expect(res.body.recommendation).toBe('warn');
+      expect(res.body.summary).toContain('indeterminate');
+      expect(res.body.summary).not.toContain('All 4 coherence checks passed');
+    });
+
     it('blocks when topic is bound to different project', async () => {
       // First, bind a topic to a DIFFERENT project
       await request(app)

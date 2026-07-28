@@ -1,0 +1,1 @@
+{ "phase": "complete", "slug": "session-pool-track-d-registry", "coveredFiles": ["src/core/SessionOwnershipRegistry.ts"], "artifactPath": "upgrades/side-effects/session-pool-track-d-registry.md", "artifactSha256": "3163f18cc1f8b06b9f293b9dad84b6658c9c1390298340180c61e3ecd4076938", "specPath": "docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md", "createdAt": "2026-05-29T11:26:25Z" }

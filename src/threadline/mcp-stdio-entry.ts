@@ -10,7 +10,7 @@
  *   node dist/threadline/mcp-stdio-entry.js --state-dir /path/.instar --agent-name my-agent
  *
  * Environment:
- *   THREADLINE_RELAY     — Relay WebSocket URL (default: wss://relay.threadline.dev/v1/connect)
+ *   THREADLINE_RELAY     — Relay WebSocket URL (default: wss://threadline-relay.fly.dev/v1/connect)
  *   THREADLINE_REGISTRY  — Enable registry tools (default: true if relay configured)
  *
  * This script:
@@ -29,9 +29,9 @@ import { ThreadResumeMap } from './ThreadResumeMap.js';
 import { AgentTrustManager } from './AgentTrustManager.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { RegistryRestClient } from './client/RegistryRestClient.js';
-import type { SendMessageParams, SendMessageResult, ThreadHistoryResult, ThreadHistoryMessage, RegistryClient, RelayDiscoverer } from './ThreadlineMCPServer.js';
-
-const DEFAULT_RELAY_URL = 'wss://relay.threadline.dev/v1/connect';
+import type { RegistryClient, RelayDiscoverer } from './ThreadlineMCPServer.js';
+import { sendMessageViaHttp, getThreadHistoryViaHttp, requestSecretViaHttp } from './mcp-http-client.js';
+import { DEFAULT_RELAY_URL } from './constants.js';
 
 // ── Parse CLI args ───────────────────────────────────────────────────
 
@@ -54,178 +54,6 @@ function parseArgs(): { stateDir: string; agentName: string } {
   }
 
   return { stateDir, agentName };
-}
-
-// ── Message sending via HTTP (talks to the running agent server) ─────
-
-/**
- * Send a message via the agent server's relay endpoint.
- * Routes through the Threadline relay WebSocket for cloud delivery.
- * Falls back to the local messaging system if relay isn't available.
- */
-async function sendMessageViaHttp(
-  params: SendMessageParams,
-  serverPort: number,
-  agentToken: string,
-): Promise<SendMessageResult> {
-  // Try relay-send first (for remote agents on the Threadline network)
-  try {
-    const relayResponse = await fetch(`http://localhost:${serverPort}/threadline/relay-send`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${agentToken}`,
-      },
-      body: JSON.stringify({
-        targetAgent: params.targetAgent,
-        threadId: params.threadId,
-        message: params.message,
-        waitForReply: params.waitForReply,
-        timeoutSeconds: params.timeoutSeconds,
-        // THREAD-TOPIC-LINKAGE-SPEC.md — optional pass-through.
-        originTopicId: params.originTopicId,
-        purpose: params.purpose,
-      }),
-    });
-
-    if (relayResponse.ok) {
-      const result = await relayResponse.json() as {
-        success: boolean; messageId: string; threadId: string; reply?: string; error?: string;
-        deliveryOutcome?: string; deliveryPath?: string;
-      };
-      if (result.success) {
-        return {
-          success: true,
-          threadId: result.threadId,
-          messageId: result.messageId,
-          reply: result.reply ?? undefined,
-          deliveryOutcome: result.deliveryOutcome,
-          deliveryPath: result.deliveryPath,
-        };
-      }
-    }
-
-    // If relay returned 503 (not connected), fall through to local messaging
-    if (relayResponse.status !== 503) {
-      const errText = await relayResponse.text();
-      return {
-        success: false,
-        threadId: params.threadId ?? '',
-        messageId: '',
-        error: `Relay send failed (${relayResponse.status}): ${errText}`,
-      };
-    }
-  } catch {
-    // Relay endpoint not available — fall through to local
-  }
-
-  // Fallback: local messaging system (for agents on the same machine)
-  try {
-    const response = await fetch(`http://localhost:${serverPort}/messages/send`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${agentToken}`,
-      },
-      body: JSON.stringify({
-        targetAgent: params.targetAgent,
-        threadId: params.threadId,
-        message: params.message,
-        waitForReply: params.waitForReply,
-        timeoutSeconds: params.timeoutSeconds,
-        originTopicId: params.originTopicId,
-        purpose: params.purpose,
-      }),
-    });
-
-    if (!response.ok) {
-      return {
-        success: false,
-        threadId: params.threadId ?? '',
-        messageId: '',
-        error: `Server returned ${response.status}: ${await response.text()}`,
-      };
-    }
-
-    return await response.json() as SendMessageResult;
-  } catch (err) {
-    return {
-      success: false,
-      threadId: params.threadId ?? '',
-      messageId: '',
-      error: `Failed to reach agent server: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-}
-
-// ── Thread history via HTTP (queries the running agent server) ──────
-
-/**
- * Fetch thread history via the agent server's /messages/thread/:threadId endpoint.
- *
- * Returns an empty history on any failure so the MCP tool degrades gracefully
- * (a stopped agent server or missing thread shouldn't surface as an MCP error).
- */
-async function getThreadHistoryViaHttp(
-  threadId: string,
-  limit: number,
-  serverPort: number,
-  agentToken: string,
-  before?: string,
-): Promise<ThreadHistoryResult> {
-  const empty: ThreadHistoryResult = { threadId, messages: [], totalCount: 0, hasMore: false };
-  try {
-    const response = await fetch(
-      `http://localhost:${serverPort}/messages/thread/${encodeURIComponent(threadId)}`,
-      {
-        headers: { 'Authorization': `Bearer ${agentToken}` },
-      },
-    );
-    if (!response.ok) {
-      return empty;
-    }
-    const data = (await response.json()) as {
-      thread?: unknown;
-      messages?: Array<{
-        message?: {
-          id?: string;
-          from?: { agent?: string };
-          body?: string;
-          createdAt?: string;
-          threadId?: string;
-        };
-      }>;
-    };
-    const envelopes = Array.isArray(data.messages) ? data.messages : [];
-
-    // Ascending-by-createdAt so slice(-limit) returns the most recent window.
-    const sorted = [...envelopes].sort((a, b) => {
-      const at = a.message?.createdAt ?? '';
-      const bt = b.message?.createdAt ?? '';
-      return at < bt ? -1 : at > bt ? 1 : 0;
-    });
-
-    const filtered = before
-      ? sorted.filter((e) => (e.message?.createdAt ?? '') < before)
-      : sorted;
-
-    const totalCount = filtered.length;
-    const effectiveLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : totalCount;
-    const sliced = filtered.slice(-effectiveLimit);
-    const hasMore = filtered.length > sliced.length;
-
-    const messages: ThreadHistoryMessage[] = sliced.map((e) => ({
-      id: e.message?.id ?? '',
-      from: e.message?.from?.agent ?? '',
-      body: e.message?.body ?? '',
-      timestamp: e.message?.createdAt ?? '',
-      threadId: e.message?.threadId ?? threadId,
-    }));
-
-    return { threadId, messages, totalCount, hasMore };
-  } catch {
-    return empty;
-  }
 }
 
 // ── Registry Client Setup ────────────────────────────────────────────
@@ -340,15 +168,19 @@ async function main(): Promise<void> {
     fs.mkdirSync(threadlineDir, { recursive: true });
   }
 
-  // Read server port and auth token from config
+  // Read server port and auth token. Token: INSTAR_AUTH_TOKEN env first
+  // (survives the secret-externalization refactor that moved authToken out of
+  // config.json into the encrypted store), legacy plaintext-config fallback with
+  // a string-type guard so the { "secret": true } placeholder produced by
+  // SecretMigrator cannot leak through as a bogus Bearer.
   const configPath = path.join(stateDir, 'config.json');
   let serverPort = 4040;
-  let agentToken = '';
+  let agentToken = process.env.INSTAR_AUTH_TOKEN || '';
   if (fs.existsSync(configPath)) {
     try {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
       serverPort = config.port ?? 4040;
-      agentToken = config.authToken ?? '';
+      if (!agentToken && typeof config.authToken === 'string') agentToken = config.authToken;
     } catch {
       // Use defaults
     }
@@ -383,6 +215,9 @@ async function main(): Promise<void> {
       sendMessage: (params) => sendMessageViaHttp(params, serverPort, agentToken),
       getThreadHistory: (threadId, limit, before) =>
         getThreadHistoryViaHttp(threadId, limit, serverPort, agentToken, before),
+      // Sealed-handoff keystone: self-mint over the loopback route (no bearer —
+      // the on-disk authToken is vault-externalized).
+      requestSecret: (params) => requestSecretViaHttp(params, serverPort),
       registry: registryClient,
       relayClient: createHttpRelayDiscoverer(serverPort, agentToken),
     },

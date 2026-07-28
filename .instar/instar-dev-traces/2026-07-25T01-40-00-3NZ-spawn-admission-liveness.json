@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "sessionId": "spawn-admission-liveness",
+  "timestamp": "2026-07-25T01:40:00.000Z",
+  "artifactPath": "upgrades/side-effects/spawn-admission-liveness.md",
+  "artifactSha256": "76036eb68b16cbe1d6a6a8f4cfa811c31087ef8146697588eebbafa781ccd727",
+  "specPath": "docs/specs/ux-first-enforcement-inc1.eli16.md",
+  "coveredFiles": ["src/core/SpawnAdmission.ts", "src/commands/server.ts", "tests/unit/SpawnAdmission.test.ts"],
+  "phase": "complete",
+  "secondPass": "required",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {"verdict": "clear", "cause": null, "causes": [], "degraded": true, "substrateIntroducing": false, "evidence": [], "notes": ["Liveness reclassification is a bounded dry-run guard change."], "specSlug": "spawn-admission-liveness", "phase": "build-start", "disposition": {"decision": "proceed", "reason": "Queue-fed dispatch requires liveness-aware dry-run reclassification with both regression sides.", "acknowledgedEvidenceIds": [], "recordedAt": "2026-07-25T01:40:00.000Z"}}
+}

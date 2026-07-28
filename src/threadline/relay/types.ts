@@ -274,7 +274,7 @@ export interface RelayServerConfig {
 }
 
 export interface RelayClientConfig {
-  relayUrl: string; // wss://relay.threadline.dev/v1/connect
+  relayUrl: string; // wss://threadline-relay.fly.dev/v1/connect
   name: string;
   framework?: string;
   capabilities?: string[];

@@ -33,6 +33,8 @@ import { TOPIC_STYLE } from '../messaging/TelegramAdapter.js';
 import type { JobDefinition, JobSchedulerConfig, JobState, JobPriority } from '../core/types.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { JobClaimManager } from './JobClaimManager.js';
+import type { JobLeaseClaimStore } from './JobLeaseClaimStore.js';
+import { decideClaimPath, type CutoverGateInput, type CutoverDecision } from './JobLeaseCutoverGate.js';
 import type { TopicMemory } from '../memory/TopicMemory.js';
 
 /**
@@ -116,6 +118,35 @@ export class JobScheduler {
   /** Optional job claim manager for multi-machine deduplication (Phase 4C) */
   private claimManager: JobClaimManager | null = null;
 
+  /**
+   * MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 journal-lease cutover. The durable,
+   * epoch-fenced lease store — the journal-backed UPGRADE of the best-effort
+   * AgentBus broadcast in `claimManager`. It is consulted for a job ONLY when
+   * `journalLeaseGate` selects the 'journal' path (flag on + pool coherent). The
+   * gate guarantees the two mechanisms are never both live for a job set (the
+   * named migration hazard). When unset, the scheduler stays on the legacy bus
+   * path (byte-for-byte today's behavior).
+   */
+  private leaseClaimStore: JobLeaseClaimStore | null = null;
+  /**
+   * Live provider for the cutover-gate input (flag + dry-run + the pool peers'
+   * advertised ws43JournalLease capability + this machine's lease epoch). Read
+   * LIVE at each claim boundary so a flag flip / a peer going dark cuts the pool
+   * back to the bus immediately. When unset, the gate is never consulted and the
+   * legacy bus path runs (strict no-op).
+   */
+  private journalLeaseGate: (() => CutoverGateInput & { epoch: number }) | null = null;
+  /** Optional sink for the most-recent cutover decision (status/audit surface). */
+  private onCutoverDecision: ((slug: string, decision: CutoverDecision) => void) | null = null;
+  /**
+   * UNIFIED-SESSION-LIFECYCLE §P0 #9 (SE-8): function returning cumulative
+   * wall-time-asleep in milliseconds during a half-open window [startMs, endMs).
+   * Wired by server.ts to SleepWakeDetector.getCumulativeSleepMsBetween. When
+   * unset, the wake-reaper falls back to no sleep subtraction (the pre-Phase-2
+   * behavior — never more aggressive).
+   */
+  private cumulativeSleepProvider: ((startMs: number, endMs: number) => number) | null = null;
+
   /** Optional LLM provider for per-job reflection (Living Skills Phase 4) */
   private intelligence: IntelligenceProvider | null = null;
 
@@ -124,6 +155,30 @@ export class JobScheduler {
 
   /** Optional TopicMemory for topic-aware job sessions */
   private topicMemory: TopicMemory | null = null;
+
+  /**
+   * MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 role-guard-at-spawn (CMT-1416).
+   * When set, a STATE-WRITING job (JobDefinition.writesState) is refused at the
+   * spawn boundary if this machine does NOT hold the lease — the TOCTOU re-check
+   * that closes the window where a machine awake at boot demotes to read-only
+   * standby mid-run while its cron tasks keep firing (the scheduler is built only
+   * when awake but is never torn down on demotion). The provider returns the live
+   * gate state read at the spawn boundary (NOT cached at wiring time): `enabled`
+   * reflects `multiMachine.seamlessness.ws43RoleGuard` and `holdsLease` reflects
+   * the coordinator's structural lease verdict. When unset (or `enabled:false`),
+   * the guard is a strict no-op — byte-for-byte today's behavior. A
+   * single-machine agent always holds the lease, so the guard never fires.
+   */
+  private roleGuardProvider: (() => { enabled: boolean; holdsLease: boolean }) | null = null;
+
+  /**
+   * MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 — best-effort callback to raise ONE
+   * deduped attention item when a state-writing job is refused at the spawn
+   * boundary. Wired by server.ts to the attention surface. Signal-only: a missing
+   * callback (or a throwing one) never blocks the refusal — the refusal is the
+   * load-bearing safety, the attention item is the operator heads-up.
+   */
+  private roleGuardAttention: ((slug: string, machineId: string | null) => void) | null = null;
 
   constructor(
     config: JobSchedulerConfig,
@@ -144,6 +199,15 @@ export class JobScheduler {
    */
   setMessenger(adapter: MessagingAdapter): void {
     this.messenger = adapter;
+  }
+
+  /**
+   * Inject the cumulative-sleep provider used by the wake-reaper
+   * (UNIFIED-SESSION-LIFECYCLE §P0 #9 / SE-8). Pass undefined or omit to leave
+   * the reaper in its no-subtraction fallback behavior.
+   */
+  setCumulativeSleepProvider(fn: (startMs: number, endMs: number) => number): void {
+    this.cumulativeSleepProvider = fn;
   }
 
   /**
@@ -182,6 +246,68 @@ export class JobScheduler {
   }
 
   /**
+   * MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 — inject the journal-lease cutover.
+   *
+   * `store` is the durable epoch-fenced lease store; `gateInput` returns the
+   * LIVE cutover-gate input (flag, dry-run, pool peers' advertised capability,
+   * and this machine's current lease epoch) — read fresh at each claim boundary,
+   * never cached. `onDecision` (optional) receives the resolved decision per job
+   * for the status/audit surface.
+   *
+   * When omitted, the scheduler never consults the journal path — the legacy
+   * AgentBus `claimManager` runs unchanged (single-machine / flag-off no-op).
+   */
+  setJournalLeaseCutover(
+    store: JobLeaseClaimStore,
+    gateInput: () => CutoverGateInput & { epoch: number },
+    onDecision?: (slug: string, decision: CutoverDecision) => void,
+  ): void {
+    this.leaseClaimStore = store;
+    this.journalLeaseGate = gateInput;
+    this.onCutoverDecision = onDecision ?? null;
+  }
+
+  /**
+   * Resolve which claim mechanism a job uses RIGHT NOW. Pure read of the live
+   * gate input. Returns null when the cutover is not wired (legacy bus only).
+   * Exposed for the scheduler's claim seams (check + claim + complete) so a
+   * single evaluation drives all three — never two mechanisms for one job.
+   */
+  private resolveClaimPath(slug: string): { path: 'journal' | 'bus'; epoch: number; journalDryRun: boolean } | null {
+    if (!this.journalLeaseGate || !this.leaseClaimStore) return null;
+    let input: CutoverGateInput & { epoch: number };
+    try {
+      input = this.journalLeaseGate();
+    } catch {
+      // @silent-fallback-ok — fail toward the legacy bus path (the conservative
+      // side) if the live gate read throws; never strand a job on a broken gate.
+      return null;
+    }
+    const decision = decideClaimPath(input);
+    this.onCutoverDecision?.(slug, decision);
+    return { path: decision.path, epoch: input.epoch, journalDryRun: decision.journalDryRun };
+  }
+
+  /**
+   * Release a claim for a completed job across BOTH mechanisms. The path that
+   * actually took the claim may differ from the path the gate would pick at
+   * completion time (a mid-run flag flip), so we release both — each store's
+   * completeClaim is a strict no-op when this machine does not own the slug's
+   * live record, so releasing the unused store is harmless. The journal release
+   * is synchronous (durable); the bus release is best-effort async.
+   */
+  private releaseClaim(slug: string, result: 'success' | 'failure'): void {
+    try {
+      this.leaseClaimStore?.completeClaim(slug, result);
+    } catch {
+      /* @silent-fallback-ok — best-effort; lease expires on its own otherwise */
+    }
+    this.claimManager?.completeClaim(slug, result).catch(err => {
+      console.error(`[scheduler] Failed to broadcast claim completion for "${slug}": ${err}`);
+    });
+  }
+
+  /**
    * Set local machine identity for machine-scoped job filtering.
    * Jobs with a `machines` field will only run on machines whose ID or name matches.
    */
@@ -216,6 +342,21 @@ export class JobScheduler {
   }
 
   /**
+   * MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 — inject the role-guard-at-spawn
+   * provider. `provider` is read LIVE at each spawn boundary (never cached) so a
+   * mid-run demotion takes effect immediately. `onRefused` (optional) raises the
+   * deduped attention item when a state-writing job is refused. When the provider
+   * is omitted the guard is a strict no-op. See `roleGuardProvider`.
+   */
+  setRoleGuard(
+    provider: () => { enabled: boolean; holdsLease: boolean },
+    onRefused?: (slug: string, machineId: string | null) => void,
+  ): void {
+    this.roleGuardProvider = provider;
+    this.roleGuardAttention = onRefused ?? null;
+  }
+
+  /**
    * Start the scheduler — load jobs, set up cron tasks, check for missed jobs.
    */
   start(): void {
@@ -246,9 +387,40 @@ export class JobScheduler {
         const task = new Cron(job.schedule, async () => {
           // New cron window — reset retry state so we get fresh attempts
           this.clearRetryState(job.slug);
-          await this.triggerJob(job.slug, 'scheduled');
+          try {
+            await this.triggerJob(job.slug, 'scheduled');
+          } catch (err) {
+            // Cron callbacks are a process-lifetime boundary. A lease demotion
+            // can race the pre-trigger read-only check and make a later shared
+            // bookkeeping write throw; contain that refusal (and every other
+            // trigger failure) here rather than creating an unhandled rejection
+            // that terminates the server.
+            console.error(`[scheduler] Scheduled trigger failed for "${job.slug}": ${err}`);
+          }
         });
         this.cronTasks.set(job.slug, task);
+
+        // Stamp when this job STARTED EXISTING, once. The startup missed-job
+        // sweep needs it to tell "brand-new, its window simply hasn't come yet"
+        // apart from "has been sitting here unrun through window after window".
+        // Without it the sweep could only see "no lastRun" and fired both alike
+        // (ACT-724 defect (a)). Never overwritten, so the age is real.
+        const existing = this.state.getJobState(job.slug);
+        if (!existing?.firstSeenAt) {
+          try {
+            this.state.saveJobState({
+              slug: job.slug,
+              consecutiveFailures: 0,
+              ...(existing ?? {}),
+              firstSeenAt: new Date().toISOString(),
+            });
+          } catch (err) {
+            // A bookkeeping write must never stop the scheduler from starting.
+            // Missing firstSeenAt degrades SAFE: the sweep declines to treat the
+            // job as missed (see checkMissedJobs) rather than firing it blind.
+            console.error(`[scheduler] Could not stamp firstSeenAt for "${job.slug}": ${err}`);
+          }
+        }
       } catch (err) {
         console.error(`[scheduler] Invalid cron expression for job "${job.slug}": ${job.schedule} — ${err instanceof Error ? err.message : err}`);
       }
@@ -261,9 +433,15 @@ export class JobScheduler {
     const graceMs = this.config.startupGraceMs ?? 5000;
     if (graceMs > 0) {
       console.log(`[scheduler] Startup grace period: ${graceMs}ms before missed-job evaluation`);
-      setTimeout(() => this.checkMissedJobs(scopedJobs), graceMs);
+      setTimeout(() => {
+        this.checkMissedJobs(scopedJobs).catch((err) => {
+          console.error(`[scheduler] Missed-job startup evaluation failed: ${err}`);
+        });
+      }, graceMs);
     } else {
-      this.checkMissedJobs(scopedJobs);
+      this.checkMissedJobs(scopedJobs).catch((err) => {
+        console.error(`[scheduler] Missed-job startup evaluation failed: ${err}`);
+      });
     }
 
     // Ensure every job has a Telegram topic (job-topic coupling)
@@ -319,6 +497,23 @@ export class JobScheduler {
       return 'skipped';
     }
 
+    // In the legacy one-awake-machine posture the scheduler is constructed on
+    // the machine that is awake at boot, but it is not torn down if that machine
+    // subsequently loses the fenced lease.  Once StateManager has demoted this
+    // process to a read-only standby, every legacy job path eventually performs
+    // a shared-state write (run state, an event, or both).  Letting a missed-job
+    // pass reach those writes turns the expected refusal into an unhandled
+    // startup rejection and crash-loops the standby.
+    //
+    // Pool-owned sessions have a separate session-scoped write exception, but
+    // scheduler bookkeeping (job state + events) remains shared state.  The
+    // scheduler therefore stays fenced whenever the StateManager is read-only.
+    if (this.state.readOnly) {
+      this.skipLedger.recordSkip(slug, 'role-guard');
+      console.log(`[scheduler] Job "${slug}" skipped — this machine is a read-only standby.`);
+      return 'skipped';
+    }
+
     // Machine scope check — skip jobs not targeted at this machine
     if (!this.isJobScopedToThisMachine(job)) {
       this.skipLedger.recordSkip(slug, 'machine-scope');
@@ -331,15 +526,98 @@ export class JobScheduler {
       return 'skipped';
     }
 
-    // Multi-machine claim check (Phase 4C — Gap 5)
-    // If another machine already claimed this job, skip it.
-    if (this.claimManager?.hasRemoteClaim(slug)) {
+    // WS4.3 role-guard-at-spawn (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
+    // CMT-1416). A STATE-WRITING job must not spawn on a read-only standby. The
+    // scheduler is constructed only on an awake machine, but it is NEVER torn
+    // down on demotion — so a machine awake at boot that loses the lease mid-run
+    // keeps firing cron tasks. This is the spawn-boundary TOCTOU re-check (the
+    // same family as WS1.1's _ownershipReadForDrain): the provider is read LIVE
+    // here, so a mid-run demotion takes effect immediately. The writable owner's
+    // own scheduler runs the job (the cron fires on every machine; only the
+    // owner's pass clears the guard), so the refusal re-routes by construction —
+    // and ONE deduped attention item gives the operator a heads-up. DARK by
+    // default (provider unset or enabled:false → strict no-op); single-machine
+    // agents always hold the lease, so the guard never fires.
+    if (job.writesState && this.roleGuardProvider) {
+      let guard: { enabled: boolean; holdsLease: boolean };
+      try {
+        guard = this.roleGuardProvider();
+      } catch {
+        // @silent-fallback-ok — a throwing provider must never gate a job: the
+        // guard is an additive safety, and a broken provider degrades to today's
+        // behavior (spawn proceeds) rather than wedging the scheduler.
+        guard = { enabled: false, holdsLease: true };
+      }
+      if (guard.enabled && !guard.holdsLease) {
+        this.skipLedger.recordSkip(slug, 'role-guard');
+        console.log(`[scheduler] Job "${slug}" refused at spawn boundary — state-writing job on a read-only standby (not the lease-holder).`);
+        this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" refused — state-writing job not allowed on a read-only standby`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, gateReason: 'role-guard', writesState: true },
+        });
+        try {
+          this.roleGuardAttention?.(slug, this.machineId);
+        } catch {
+          // @silent-fallback-ok — the attention heads-up is best-effort; the
+          // refusal above is the load-bearing safety and already happened.
+        }
+        return 'skipped';
+      }
+    }
+
+    // Multi-machine claim check (Phase 4C — Gap 5; WS4.3 journal-lease cutover).
+    // The cutover gate resolves WHICH mechanism owns dedup for this job RIGHT
+    // NOW — the durable epoch-fenced journal lease (flag on + pool coherent) or
+    // the legacy AgentBus broadcast. Exactly one is consulted per job, so the
+    // two never run simultaneously for the same job set (the named migration
+    // hazard). The decision is recomputed live at each seam; in the steady
+    // coherent state it is stable across the same tick.
+    // DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC §2.8 / D11 — a `perMachineIndependent`
+    // job (like the doorway scan, whose result is a physical fact of THIS
+    // machine's own disk) skips the global jobSlug claim/lease entirely, the same
+    // way `script`-type jobs bypass quota gating. It NEVER consults the claim path
+    // and so never yields to a peer's claim — every machine runs its own scan.
+    const claimPath = job.perMachineIndependent ? null : this.resolveClaimPath(slug);
+    const remoteHeld = job.perMachineIndependent
+      ? false
+      : (claimPath?.path === 'journal'
+          ? this.leaseClaimStore!.hasRemoteClaim(slug)
+          : (this.claimManager?.hasRemoteClaim(slug) ?? false));
+    if (remoteHeld) {
+      const claimedBy = claimPath?.path === 'journal'
+        ? this.leaseClaimStore!.getClaim(slug)?.machineId
+        : this.claimManager?.getClaim(slug)?.machineId;
       this.skipLedger.recordSkip(slug, 'claimed');
       this.state.appendEvent({
         type: 'job_skipped',
         summary: `Job "${slug}" skipped — claimed by another machine`,
         timestamp: new Date().toISOString(),
-        metadata: { slug, reason, claimedBy: this.claimManager.getClaim(slug)?.machineId },
+        metadata: { slug, reason, claimedBy, claimPath: claimPath?.path ?? 'bus' },
+      });
+      return 'skipped';
+    }
+
+    // Per-slug double-run guard (june15-headless-spawn-reroute, PR2 finding O3).
+    // A rerouted job REPL survives a server restart (boot purge keeps alive
+    // sessions) but JobScheduler.activeRunIds (in-memory) is lost — so without
+    // this guard the same slug could re-trigger on its next cron tick while the
+    // orphan session still runs: double execution + double billing. If a LIVE
+    // session already holds this jobSlug, skip the trigger (log + record, no
+    // throw). Applies to ALL jobs (not only rerouted ones) — a slow headless job
+    // that outran its cron interval was always at risk; this closes it generally.
+    // The boot-reconcile in SessionManager.purgeDeadSessions kills surviving
+    // rerouted job sessions, so the steady state is one-run-per-slug.
+    const liveWithSlug = this.sessionManager.listRunningSessions().some(s => s.jobSlug === slug);
+    if (liveWithSlug) {
+      this.skipLedger.recordSkip(slug, 'already-running');
+      console.log(`[scheduler] Job "${slug}" skipped — a live session already holds this slug (avoiding double-run).`);
+      this.state.appendEvent({
+        type: 'job_skipped',
+        summary: `Job "${slug}" skipped — already running`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug, reason, gateReason: 'already-running' },
       });
       return 'skipped';
     }
@@ -370,6 +648,17 @@ export class JobScheduler {
       }
     }
 
+    // Script jobs are zero-token shell work — they do NOT spawn a model session,
+    // so they bypass session-capacity gating and the spawn path entirely and run
+    // directly in a bounded subprocess. Without this they were spawned with a
+    // "Run this script: ..." prompt and could hang for hours holding a live
+    // session slot, leaving run-history stuck at `pending` (Codey gap-run F005).
+    if (job.execute.type === 'script') {
+      this.clearRetryState(slug);
+      this.runScriptJob(job, reason);
+      return 'triggered';
+    }
+
     // Check session capacity
     const runningSessions = this.sessionManager.listRunningSessions();
     const jobSessions = runningSessions.filter(s => s.jobSlug);
@@ -378,12 +667,42 @@ export class JobScheduler {
       return 'queued';
     }
 
-    // Broadcast claim before spawning (async, best-effort)
-    if (this.claimManager) {
-      const timeoutMs = (job.expectedDurationMinutes ?? 30) * 2 * 60_000;
-      this.claimManager.tryClaim(slug, timeoutMs).catch(err => {
-        console.error(`[scheduler] Failed to broadcast claim for "${slug}": ${err}`);
-      });
+    // Take the claim before spawning. The cutover gate (resolved at the check
+    // seam above) decides the mechanism: a durable epoch-fenced journal lease
+    // when the pool is coherent, else the legacy best-effort AgentBus broadcast.
+    // DRY-RUN: when the gate is coherent-but-dry-run, the intended journal claim
+    // is LOGGED (the WS-wide "log intended claims" posture) but the bus path
+    // still runs — so a dry-run pool never half-migrates.
+    const timeoutMs = (job.expectedDurationMinutes ?? 30) * 2 * 60_000;
+    // Spec §2.8/D11 — a perMachineIndependent job takes NO claim (neither the
+    // journal lease nor the legacy bus broadcast); each machine runs it locally.
+    if (job.perMachineIndependent) {
+      // no-op: claim/lease deliberately skipped
+    } else if (claimPath?.path === 'journal') {
+      // Synchronous, durable: the lease is persisted before the spawn, so a
+      // crash between claim and spawn leaves the lease (fenced, expiring) rather
+      // than a silent double-run window.
+      const attempt = this.leaseClaimStore!.tryClaim(slug, claimPath.epoch, timeoutMs);
+      if (!attempt.ok && attempt.reason === 'held-by-peer') {
+        // A peer leased it between the check and here — yield (rare race).
+        this.skipLedger.recordSkip(slug, 'claimed');
+        this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" skipped — leased by another machine`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, claimedBy: attempt.heldBy, claimPath: 'journal' },
+        });
+        return 'skipped';
+      }
+    } else {
+      if (claimPath?.journalDryRun) {
+        console.log(`[scheduler] WS4.3 journal-lease DRY-RUN — would lease "${slug}" via journal (epoch ${claimPath.epoch}); running legacy bus path.`);
+      }
+      if (this.claimManager) {
+        this.claimManager.tryClaim(slug, timeoutMs).catch(err => {
+          console.error(`[scheduler] Failed to broadcast claim for "${slug}": ${err}`);
+        });
+      }
     }
 
     // Clear retry state on successful trigger
@@ -540,7 +859,7 @@ export class JobScheduler {
    * Reaping is idempotent: a second invocation finds the run is no
    * longer `pending` and skips it.
    */
-  reapStuckRuns(sleepEvent: { sleepDurationSeconds: number }): { reaped: string[]; skipped: number } {
+  async reapStuckRuns(sleepEvent: { sleepDurationSeconds: number }): Promise<{ reaped: string[]; skipped: number }> {
     const result = { reaped: [] as string[], skipped: 0 };
 
     const minSleepSec = this.config.wakeReaper?.minSleepSeconds ?? 60;
@@ -562,14 +881,45 @@ export class JobScheduler {
       const job = jobMap.get(run.slug);
       const expMin = job?.expectedDurationMinutes ?? DEFAULT_EXPECTED_MINUTES;
       const thresholdMs = expMin * multiplier * 60_000;
-      const elapsedMs = now - new Date(run.startedAt).getTime();
-      if (elapsedMs <= thresholdMs) {
+      const runStartMs = new Date(run.startedAt).getTime();
+      const elapsedMs = now - runStartMs;
+      // §P0 #9 / SE-8: cumulative wall-time-asleep DURING this run, not the single
+      // last sleepDurationSeconds. A run that started before multiple sleeps was
+      // previously credited only the last sleep and reaped early.
+      const cumulativeSleepMs = this.cumulativeSleepProvider?.(runStartMs, now) ?? 0;
+      const effectiveElapsed = elapsedMs - cumulativeSleepMs;
+      if (effectiveElapsed <= thresholdMs) {
         result.skipped++;
         continue;
       }
 
+      // §P0 #9 P1/P2 gate — a progressing process is KEEP regardless of clock.
+      // The wall-clock gap can exceed the threshold for an actively-running job
+      // (the user kept the machine awake; the job stalled on a remote API; etc.)
+      // — never reap a session that's still producing real work.
+      if (this.sessionManager.hasActiveProcesses?.(sessionName)) {
+        console.log(
+          `[scheduler][reaper] "${sessionName}" effective-elapsed ${Math.round(effectiveElapsed / 60_000)}m `
+            + `exceeded ${expMin}m × ${multiplier} threshold, but P1/P2 work-check found active children — keeping`,
+        );
+        result.skipped++;
+        continue;
+      }
+
+      // §P0 #9 route through the ReapAuthority — the authority's protected-set
+      // + lease gate + reap-log + sessionReaped emission apply (one chokepoint).
       try {
-        this.sessionManager.killSession?.(sessionName);
+        const tracked = this.sessionManager.listRunningSessions?.().find((s) => s.tmuxSession === sessionName);
+        if (tracked) {
+          await this.sessionManager.terminateSession?.(tracked.id, 'wake-reaper', {
+            disposition: 'terminal',
+            finalStatus: 'killed',
+          });
+        } else {
+          // Not currently tracked — fall back to killSession (which itself is a
+          // pane-only teardown when the state record is already terminal).
+          this.sessionManager.killSession?.(sessionName);
+        }
       } catch {
         // Best-effort — session may already be dead.
       }
@@ -578,7 +928,7 @@ export class JobScheduler {
         this.runHistory.recordCompletion({
           runId,
           result: 'timeout',
-          error: `Reaped on wake — sleep gap of ${sleepEvent.sleepDurationSeconds}s exceeded ${expMin}min × ${multiplier} threshold`,
+          error: `Reaped on wake — effective elapsed ${Math.round(effectiveElapsed / 60_000)}m (cumulative sleep ${Math.round(cumulativeSleepMs / 60_000)}m subtracted) exceeded ${expMin}min × ${multiplier} threshold`,
         });
       } catch (err) {
         // Leave activeRunIds entry intact: run is still 'pending' in the ledger,
@@ -591,8 +941,9 @@ export class JobScheduler {
       try {
         // Note: claim is finalized as 'failure' (slug is unblocked for the next tick)
         // while run history records 'timeout' (preserves the cause for diagnostics).
-        // The asymmetry is intentional — don't "fix" it.
-        this.claimManager?.completeClaim(run.slug, 'failure');
+        // The asymmetry is intentional — don't "fix" it. Releases both the journal
+        // lease and the legacy bus claim (whichever took it).
+        this.releaseClaim(run.slug, 'failure');
       } catch {
         // Best-effort — claim may have already cleared.
       }
@@ -625,6 +976,104 @@ export class JobScheduler {
       const jobA = this.jobs.find(j => j.slug === a.slug);
       const jobB = this.jobs.find(j => j.slug === b.slug);
       return (PRIORITY_ORDER[jobA?.priority ?? 'low']) - (PRIORITY_ORDER[jobB?.priority ?? 'low']);
+    });
+  }
+
+  /**
+   * Execute a `script`-type job directly in a bounded subprocess instead of
+   * spawning a model session. Script jobs are zero-token infrastructure work
+   * (e.g. dashboard-link refresh); spawning a model for them wasted a session
+   * slot and could hang for hours (Codey gap-run F005). Mirrors spawnJobSession's
+   * run-history / job-state / claim bookkeeping so observability is identical.
+   */
+  private runScriptJob(job: JobDefinition, reason: string): void {
+    const script = `${job.execute.value}${job.execute.args ? ' ' + job.execute.args : ''}`;
+    const sessionName = `script-${job.slug}-${Date.now().toString(36)}`;
+    const observability = JobScheduler.computeRunObservability(job, JobScheduler.resolveAllowlist(job));
+    const runId = this.runHistory.recordStart({
+      slug: job.slug,
+      sessionId: sessionName,
+      trigger: reason,
+      model: job.model,
+      origin: observability.origin,
+      resolvedPath: observability.resolvedPath,
+      bodyHash: observability.bodyHash,
+      frontmatterHash: observability.frontmatterHash,
+      manifestVersion: observability.manifestVersion,
+      toolAllowlist: observability.toolAllowlist,
+      unrestrictedTools: observability.unrestrictedTools,
+      clampedAllowlist: observability.clampedAllowlist,
+    });
+
+    this.state.saveJobState({
+      slug: job.slug,
+      lastRun: new Date().toISOString(),
+      lastResult: 'pending',
+      lastError: undefined,
+      consecutiveFailures: 0,
+      nextScheduled: this.getNextRun(job.slug),
+    });
+
+    this.state.appendEvent({
+      type: 'job_triggered',
+      summary: `Job "${job.slug}" triggered (${reason})`,
+      sessionId: sessionName,
+      timestamp: new Date().toISOString(),
+      metadata: { slug: job.slug, reason, mode: 'script' },
+    });
+
+    const timeout = Math.max(1, job.expectedDurationMinutes ?? DEFAULT_EXPECTED_MINUTES) * 2 * 60_000;
+    const env = {
+      ...process.env,
+      ...(this.config.authToken ? { INSTAR_AUTH_TOKEN: this.config.authToken } : {}),
+      ...(this.config.projectName ? { INSTAR_AGENT_ID: this.config.projectName } : {}),
+      // Structural message-kind stamping (outbound-jargon-filepath-gap §2.1):
+      // script-mode jobs are 'automated' senders, but SENDER_CLASS=script —
+      // a script cannot read or react to an advisory, so the preflight must
+      // never withhold its sends (telegram-reply.sh skips the preflight for
+      // script-class and the kind still rides the metadata for the gate).
+      INSTAR_MESSAGE_KIND: 'automated',
+      INSTAR_JOB_SLUG: job.slug,
+      INSTAR_SENDER_CLASS: 'script',
+    };
+
+    execFileAsync('/bin/sh', ['-c', script], {
+      cwd: path.dirname(this.stateDir),
+      encoding: 'utf-8',
+      timeout,
+      env,
+      maxBuffer: 1024 * 1024,
+    }).then(({ stdout, stderr }) => {
+      const output = [stdout, stderr].filter(Boolean).join('\n').slice(-1000);
+      this.runHistory.recordCompletion({ runId, result: 'success', outputSummary: output || undefined });
+      this.state.saveJobState({
+        slug: job.slug,
+        lastRun: new Date().toISOString(),
+        lastResult: 'success',
+        lastError: undefined,
+        consecutiveFailures: 0,
+        nextScheduled: this.getNextRun(job.slug),
+      });
+      this.releaseClaim(job.slug, 'success');
+    }).catch((err: unknown) => {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const output = [
+        (err as { stdout?: string })?.stdout,
+        (err as { stderr?: string })?.stderr,
+      ].filter(Boolean).join('\n').slice(-1000);
+      const result = errorMsg.includes('timed out') || errorMsg.includes('ETIMEDOUT') ? 'timeout' : 'failure';
+      this.runHistory.recordCompletion({ runId, result, error: errorMsg, outputSummary: output || undefined });
+      const previous = this.state.getJobState(job.slug);
+      this.state.saveJobState({
+        slug: job.slug,
+        lastRun: new Date().toISOString(),
+        lastResult: result,
+        lastError: errorMsg,
+        consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+        nextScheduled: this.getNextRun(job.slug),
+      });
+      this.releaseClaim(job.slug, 'failure');
+      this.scheduleRetry(job.slug, 'error');
     });
   }
 
@@ -694,6 +1143,11 @@ export class JobScheduler {
       triggeredBy: `scheduler:${reason}`,
       maxDurationMinutes: job.expectedDurationMinutes,
       allowedTools: spawnAllowedTools,
+      // mcpAccess: 'none' → spawn with zero project MCP servers (claude-code
+      // only; the flag builder no-ops for codex). Bash/curl-only jobs skip the
+      // MCP boot cost + the auth-required-remote-MCP headless hang hazard
+      // (docs/specs/LOOP-SESSION-NO-MCP-SPEC.md). Absent/'project' → unchanged.
+      disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
     }).then(() => {
       // Record in run history with full Phase 1b observability payload
       const runId = this.runHistory.recordStart({
@@ -968,12 +1422,9 @@ export class JobScheduler {
       this.activeRunIds.delete(session.name);
     }
 
-    // Signal claim completion (Phase 4C — Gap 5)
-    if (this.claimManager) {
-      this.claimManager.completeClaim(job.slug, failed ? 'failure' : 'success').catch(err => {
-        console.error(`[scheduler] Failed to broadcast claim completion for "${job.slug}": ${err}`);
-      });
-    }
+    // Signal claim completion (Phase 4C — Gap 5; WS4.3 journal-lease cutover).
+    // Releases whichever mechanism took the claim (journal lease or legacy bus).
+    this.releaseClaim(job.slug, failed ? 'failure' : 'success');
 
     // Clear active-job.json now that the job is done
     const activeJob = this.state.get<{ slug: string }>('active-job');
@@ -1127,6 +1578,7 @@ export class JobScheduler {
         const topic = await this.telegram.findOrCreateForumTopic(
           `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
           TOPIC_STYLE.JOB.color,
+          { label: 'job-topics' },
         );
         job.topicId = topic.topicId;
         this.saveJobTopicMapping(job.slug, topic.topicId);
@@ -1146,6 +1598,7 @@ export class JobScheduler {
           const newTopic = await this.telegram.findOrCreateForumTopic(
             `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
             TOPIC_STYLE.JOB.color,
+            { label: 'job-topics' },
           );
           job.topicId = newTopic.topicId;
           this.saveJobTopicMapping(job.slug, newTopic.topicId);
@@ -1225,6 +1678,7 @@ export class JobScheduler {
         const topic = await this.telegram.findOrCreateForumTopic(
           `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
           TOPIC_STYLE.JOB.color,
+          { label: 'job-topics' },
         );
         job.topicId = topic.topicId;
         mappings[job.slug] = topic.topicId;
@@ -1267,9 +1721,11 @@ export class JobScheduler {
     // endpoints (e.g. /evolution/actions/overdue). Without this, gates that curl
     // the local API silently return 401 and the downstream pipe crashes, making
     // the job skip every run cycle with no obvious signal.
-    const gateEnv = this.config.authToken
-      ? { ...process.env, INSTAR_AUTH_TOKEN: this.config.authToken }
-      : process.env;
+    const gateEnv = {
+      ...process.env,
+      ...(this.config.authToken ? { INSTAR_AUTH_TOKEN: this.config.authToken } : {}),
+      ...(this.config.projectName ? { INSTAR_AGENT_ID: this.config.projectName } : {}),
+    };
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -1472,23 +1928,38 @@ export class JobScheduler {
       const task = this.cronTasks.get(job.slug);
       if (!task) continue;
 
-      // Jobs that have never run: trigger on startup if their first expected
-      // run time has already passed (i.e., the job was added while the server
-      // was down and missed its first scheduled window).
-      if (!jobState?.lastRun) {
-        // Use a large overdueRatio so never-run jobs sort below truly-overdue jobs
-        missedJobs.push({ job, overdueRatio: 1.5 });
-        continue;
-      }
-
-      const lastRun = new Date(jobState.lastRun).getTime();
-
       // Get expected interval from next two runs
       const nextRun = task.nextRun();
       const nextNextRun = task.nextRuns(2)[1];
       if (!nextRun || !nextNextRun) continue;
 
       const intervalMs = nextNextRun.getTime() - nextRun.getTime();
+
+      // Jobs that have never run: trigger on startup ONLY if their first
+      // expected run time has already passed — i.e. the job has existed for
+      // longer than one full interval without ever running, so a window really
+      // did go by. That was always the intended rule (it is stated in the
+      // comment this replaces), but nothing recorded when a job started
+      // existing, so the branch could not check it and fired EVERY never-run
+      // job instead. A reminder scheduled for December discharged itself on the
+      // next boot (ACT-724 defect (a)).
+      //
+      // Fails SAFE in both unknown cases: a job with no firstSeenAt (legacy
+      // state written before this field existed) is treated as not-missed. The
+      // cost is one skipped catch-up; the cost of guessing the other way is a
+      // future-dated job firing early, which is indistinguishable from the
+      // reminder having been delivered.
+      if (!jobState?.lastRun) {
+        const firstSeen = jobState?.firstSeenAt ? new Date(jobState.firstSeenAt).getTime() : null;
+        if (firstSeen === null || Number.isNaN(firstSeen)) continue;
+        const ageMs = now - firstSeen;
+        if (ageMs <= intervalMs) continue; // its window genuinely hasn't come yet
+        // Use a large overdueRatio so never-run jobs sort below truly-overdue jobs
+        missedJobs.push({ job, overdueRatio: 1.5 });
+        continue;
+      }
+
+      const lastRun = new Date(jobState.lastRun).getTime();
       const timeSinceLastRun = now - lastRun;
 
       // If overdue by more than 1.5x the interval, mark as missed
@@ -1505,7 +1976,15 @@ export class JobScheduler {
     });
 
     for (const { job } of missedJobs) {
-      await this.triggerJob(job.slug, 'missed');
+      try {
+        await this.triggerJob(job.slug, 'missed');
+      } catch (err) {
+        // A demotion can occur after triggerJob's entry check but before a gate
+        // or spawn path records shared bookkeeping. The StateManager refusal is
+        // authoritative; contain it per job so one raced trigger cannot abort
+        // evaluation of the rest or escape the startup callback.
+        console.error(`[scheduler] Missed trigger failed for "${job.slug}": ${err}`);
+      }
     }
   }
 
@@ -1830,6 +2309,19 @@ export class JobScheduler {
         // @silent-fallback-ok — degradation reporting is best-effort
       }
     }
+  }
+
+  /** Sync in-memory runtime read for the GuardRegistry (GET /guards).
+   *  Registration is not life: a load-shed pause reads enabled:false
+   *  (off-runtime-divergent against an on-config), never healthy. Cheap
+   *  property reads ONLY — getStatus() lists sessions and must not be
+   *  called from the guards route. */
+  guardStatus(): { enabled: boolean; jobCount: number; pausedJobCount: number } {
+    return {
+      enabled: this.running && !this.paused,
+      jobCount: this.jobs.length,
+      pausedJobCount: this.jobs.filter((j) => !j.enabled).length,
+    };
   }
 }
 

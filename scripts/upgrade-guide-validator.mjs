@@ -2,6 +2,8 @@
 // The CLI entry point (check-upgrade-guide.js) wraps this with I/O.
 // Extracted for unit testability.
 
+import crypto from 'node:crypto';
+
 export const REQUIRED_SECTIONS = [
   '## What Changed',
   '## What to Tell Your User',
@@ -207,6 +209,9 @@ export function validateGuideContent(content) {
     issues.push(...evidenceIssues(content));
   }
 
+  // Auto-draft review gate — unreviewed markers + receipt validity.
+  issues.push(...autoDraftReviewIssues(content));
+
   return issues;
 }
 
@@ -217,4 +222,119 @@ export function validateGuideContent(content) {
 export function parseBumpType(content) {
   const match = /<!--\s*bump:\s*(patch|minor|major)\s*-->/.exec(content);
   return match ? match[1] : null;
+}
+
+// ── Auto-draft review gate (release-readiness-visibility spec §4.1.1) ──
+//
+// Layer A auto-drafts NEXT.md from the classified commit range. Every drafted
+// section carries an `auto-draft-unreviewed` marker. The publish gate refuses
+// to ship a guide while any such marker remains, so auto-fill removes the
+// "blank guide" root cause WITHOUT shipping un-reviewed notes. A human signals
+// review by REPLACING a section's marker with a hash-locked `reviewed-by`
+// receipt; editing the section afterward invalidates the hash and re-blocks.
+
+export const REVIEW_RECEIPT_MAX_AGE_DAYS = 30;
+
+const UNREVIEWED_MARKER_RE = /<!--\s*auto-draft-unreviewed(?:-block)?(?::[^>]*?)?\s*-->/g;
+const REVIEW_RECEIPT_RE = /<!--\s*reviewed-by:\s*(.+?)\s*@\s*([0-9T:.+\-Z]+)\s*:hash=([a-f0-9]{64})\s*-->/gi;
+// A `reviewed-by` comment that does NOT match the strict form above — used to
+// catch receipts missing the required :hash= (the iter-3 V2 fix).
+const REVIEW_RECEIPT_LOOSE_RE = /<!--\s*reviewed-by:[^>]*-->/gi;
+
+/**
+ * Canonicalize a section body for hashing: LF line endings, drop the receipt
+ * line itself, strip trailing whitespace per line, trim. Mirrors the rule in
+ * RELEASE-READINESS-VISIBILITY-SPEC §4.1.1.
+ */
+export function canonicalizeSectionForHash(body) {
+  return String(body)
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .filter((l) => !/<!--\s*reviewed-by:/i.test(l))
+    .map((l) => l.replace(/\s+$/, ''))
+    .join('\n')
+    .trim();
+}
+
+export function sectionReviewHash(body) {
+  return crypto.createHash('sha256').update(canonicalizeSectionForHash(body)).digest('hex');
+}
+
+/** Split content into H2 sections: [{ title, body }]. */
+function h2Sections(content) {
+  const out = [];
+  const re = /^## (.+)$/gm;
+  let m;
+  const heads = [];
+  while ((m = re.exec(content)) !== null) heads.push({ title: m[1].trim(), idx: m.index, after: re.lastIndex });
+  for (let i = 0; i < heads.length; i++) {
+    const end = i + 1 < heads.length ? heads[i + 1].idx : content.length;
+    out.push({ title: heads[i].title, body: content.slice(heads[i].after, end) });
+  }
+  return out;
+}
+
+/**
+ * Gate issues for the auto-draft review state. Returns issue strings (empty = ok):
+ *   1. Any remaining `auto-draft-unreviewed` marker blocks publish.
+ *   2. A `reviewed-by` receipt missing the required `:hash=` blocks.
+ *   3. A receipt whose hash doesn't match its (canonicalized) section blocks
+ *      — i.e. the section was edited after review.
+ *   4. A receipt older than REVIEW_RECEIPT_MAX_AGE_DAYS blocks.
+ * (Full "marker stripped without a receipt" detection needs a git-diff and is
+ * the tracked Phase-2 CI check per §4.1.1 — out of scope for this snapshot gate.)
+ */
+export function autoDraftReviewIssues(content, now = Date.now()) {
+  const issues = [];
+
+  const unreviewed = content.match(UNREVIEWED_MARKER_RE) || [];
+  if (unreviewed.length > 0) {
+    issues.push(
+      `guide has ${unreviewed.length} unreviewed auto-draft marker(s) — a human must review each section and ` +
+      `replace its 'auto-draft-unreviewed' marker with a 'reviewed-by: <name> @ <ISO-date> :hash=<sha256>' receipt ` +
+      `before this guide can publish (RELEASE-READINESS-VISIBILITY-SPEC §4.1.1)`,
+    );
+  }
+
+  // Loose receipts that don't match the strict (with :hash=) form.
+  const looseAll = content.match(REVIEW_RECEIPT_LOOSE_RE) || [];
+  for (const loose of looseAll) {
+    REVIEW_RECEIPT_RE.lastIndex = 0;
+    if (!REVIEW_RECEIPT_RE.test(loose)) {
+      issues.push(
+        `malformed reviewed-by receipt (missing required ':hash=<sha256>' or bad date): ${loose.trim()}. ` +
+        `Required form: <!-- reviewed-by: <name> @ <ISO-date> :hash=<sha256> -->`,
+      );
+    }
+  }
+
+  // Strict receipts: validate hash-match against their section + age window.
+  for (const section of h2Sections(content)) {
+    REVIEW_RECEIPT_RE.lastIndex = 0;
+    let r;
+    while ((r = REVIEW_RECEIPT_RE.exec(section.body)) !== null) {
+      const [, , dateStr, hash] = r;
+      const ts = Date.parse(dateStr);
+      if (Number.isNaN(ts)) {
+        issues.push(`reviewed-by receipt in "## ${section.title}" has an unparseable date: "${dateStr}"`);
+        continue;
+      }
+      const ageDays = (now - ts) / (24 * 60 * 60 * 1000);
+      if (ageDays > REVIEW_RECEIPT_MAX_AGE_DAYS) {
+        issues.push(
+          `reviewed-by receipt in "## ${section.title}" is ${Math.floor(ageDays)} days old ` +
+          `(max ${REVIEW_RECEIPT_MAX_AGE_DAYS}) — re-review the section and refresh the receipt`,
+        );
+      }
+      const actual = sectionReviewHash(section.body);
+      if (actual !== hash) {
+        issues.push(
+          `reviewed-by receipt in "## ${section.title}" hash mismatch — the section was edited after review. ` +
+          `Re-review and update :hash= to ${actual}`,
+        );
+      }
+    }
+  }
+
+  return issues;
 }

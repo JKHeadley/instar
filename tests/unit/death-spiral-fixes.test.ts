@@ -12,6 +12,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { SessionManager } from '../../src/core/SessionManager.js';
+import { SessionLivenessOracle, type SessionLivenessOracleDeps } from '../../src/core/SessionLivenessOracle.js';
 import { CoherenceMonitor } from '../../src/monitoring/CoherenceMonitor.js';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import type { StateManager } from '../../src/core/StateManager.js';
@@ -129,48 +130,81 @@ describe('Non-blocking health endpoint (cached sessions)', () => {
 
 // ── Test Suite 2: Startup Session Purge ────────────────────────────
 
-describe('Startup session purge (purgeDeadSessions)', () => {
+describe('Startup session purge (purgeDeadSessions) — oracle-backed, UNIFIED-SESSION-LIFECYCLE §P1', () => {
+  /** Inject a liveness oracle whose `tmux list-sessions` returns `liveNames`, or
+   *  fails (timeout/unreachable → indeterminate) when `fail` is set. */
+  function injectOracle(sm: SessionManager, opts: { liveNames?: string[]; fail?: 'timeout' | 'error' }) {
+    const exec = vi.fn(async () => {
+      if (opts.fail === 'timeout') {
+        const e = new Error('timed out') as Error & { killed: boolean; signal: string };
+        e.killed = true; e.signal = 'SIGTERM';
+        throw e;
+      }
+      if (opts.fail === 'error') throw new Error('EPIPE');
+      return { stdout: (opts.liveNames ?? []).join('\n') + '\n', stderr: '' };
+    });
+    const deps: SessionLivenessOracleDeps = {
+      tmuxPath: '/usr/bin/tmux',
+      exec: exec as unknown as SessionLivenessOracleDeps['exec'],
+    };
+    sm.setLivenessOracle(new SessionLivenessOracle(deps, { probeBackoffMs: 0, probeRetries: 1 }));
+    return exec;
+  }
+
   it('returns 0 when no running sessions exist', async () => {
     const state = createMockState();
     const sm = new SessionManager(createSessionManagerConfig(), state);
-
-    const purged = await sm.purgeDeadSessions();
-    expect(purged).toBe(0);
+    expect(await sm.purgeDeadSessions()).toBe(0);
   });
 
-  it('purges sessions whose tmux session does not exist', async () => {
-    const sessions = [
-      makeSession('s1', 'dead-session-1'),
-      makeSession('s2', 'dead-session-2'),
-    ];
+  it('purges sessions that are DEFINITIVELY dead (server reachable, exact id absent)', async () => {
+    const sessions = [makeSession('s1', 'dead-1'), makeSession('s2', 'dead-2')];
     const state = createMockState(sessions);
-
-    // Use a tmux path that won't find any sessions
-    const config = createSessionManagerConfig({ tmuxPath: '/bin/false' });
-    const sm = new SessionManager(config, state);
+    const sm = new SessionManager(createSessionManagerConfig(), state);
+    injectOracle(sm, { liveNames: ['some-other-live-session'] }); // neither dead-1/2 present
 
     const purged = await sm.purgeDeadSessions();
     expect(purged).toBe(2);
-
-    // Verify sessions were marked as completed
-    expect(state.saveSession).toHaveBeenCalledTimes(2);
     const savedCalls = (state.saveSession as any).mock.calls;
     expect(savedCalls[0][0].status).toBe('completed');
-    expect(savedCalls[0][0].endedAt).toBeDefined();
-    expect(savedCalls[1][0].status).toBe('completed');
+    expect(savedCalls[0][0].endedReason).toBe('boot-purge-dead');
   });
 
-  it('does not purge sessions whose tmux session exists', async () => {
-    // Use a command that succeeds (exit 0) to simulate "tmux has-session" passing
-    // We test this by pointing tmuxPath to /usr/bin/true which always exits 0
+  it('does NOT purge sessions that are alive (present in list-sessions)', async () => {
     const sessions = [makeSession('s1', 'alive-session')];
     const state = createMockState(sessions);
+    const sm = new SessionManager(createSessionManagerConfig(), state);
+    injectOracle(sm, { liveNames: ['alive-session', 'another'] });
 
-    const config = createSessionManagerConfig({ tmuxPath: '/usr/bin/true' });
-    const sm = new SessionManager(config, state);
+    expect(await sm.purgeDeadSessions()).toBe(0);
+    expect(state.saveSession).not.toHaveBeenCalled();
+  });
+
+  it('[2026-05-27 INCIDENT FIX] does NOT purge sessions on a slow/timing-out tmux — keeps them', async () => {
+    // The original bug: a 1s has-session timeout was treated as "dead", so a busy
+    // tmux at boot mass-purged LIVE sessions ("9 of 9"). Now a timeout is
+    // `indeterminate` → KEPT, never purged.
+    const sessions = [
+      makeSession('s1', 'codey-collaboration'),
+      makeSession('s2', 'instar-exo'),
+      makeSession('s3', 'instar-evolution'),
+    ];
+    const state = createMockState(sessions);
+    const sm = new SessionManager(createSessionManagerConfig(), state);
+    injectOracle(sm, { fail: 'timeout' });
 
     const purged = await sm.purgeDeadSessions();
-    expect(purged).toBe(0);
+    expect(purged).toBe(0); // ← the fix: zero false purges under a slow boot
+    expect(state.saveSession).not.toHaveBeenCalled();
+  });
+
+  it('does NOT purge on an unreachable/erroring tmux (indeterminate, not dead)', async () => {
+    const sessions = [makeSession('s1', 'some-session')];
+    const state = createMockState(sessions);
+    const sm = new SessionManager(createSessionManagerConfig(), state);
+    injectOracle(sm, { fail: 'error' });
+
+    expect(await sm.purgeDeadSessions()).toBe(0);
     expect(state.saveSession).not.toHaveBeenCalled();
   });
 
@@ -181,10 +215,7 @@ describe('Startup session purge (purgeDeadSessions)', () => {
     ];
     const state = createMockState(sessions);
     const sm = new SessionManager(createSessionManagerConfig(), state);
-
-    const purged = await sm.purgeDeadSessions();
-    // listSessions is called with { status: 'running' }, which returns nothing
-    expect(purged).toBe(0);
+    expect(await sm.purgeDeadSessions()).toBe(0);
   });
 });
 

@@ -7,13 +7,32 @@
  * silently break existing Claude-installed agents.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
   resolveInteractiveFramework,
+  resolveInteractiveLaunchModel,
   resolveModelForFramework,
 } from '../../src/core/frameworkSessionLaunch.js';
+import { __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+/** Fake `codex` binary whose --help text we control, so the capability probe is deterministic. */
+const _fakeCodexDirs: string[] = [];
+function fakeCodexBinary(supportsHookTrustBypass: boolean): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fsl-codex-'));
+  _fakeCodexDirs.push(dir);
+  const bin = path.join(dir, 'codex');
+  const flagLine = supportsHookTrustBypass ? '  --dangerously-bypass-hook-trust  bypass\n' : '';
+  fs.writeFileSync(bin, `#!/bin/bash\ncat <<'HELP'\nUsage: codex\n${flagLine}  -m, --model <M>\nHELP\n`, { mode: 0o755 });
+  __resetCodexCapabilityCache();
+  return bin;
+}
+afterAll(() => { for (const d of _fakeCodexDirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/frameworkSessionLaunch.test.ts:cleanup' }); });
 
 describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
   describe('claude-code', () => {
@@ -22,6 +41,28 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
         binaryPath: '/usr/local/bin/claude',
       });
       expect(spec.argv).toEqual(['/usr/local/bin/claude', '--dangerously-skip-permissions']);
+    });
+
+    it('injects CLAUDE_CONFIG_DIR when a configHome is set (P1.3 account swap)', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        configHome: '/Users/x/.claude-personal',
+      });
+      expect(spec.envOverrides.CLAUDE_CONFIG_DIR).toBe('/Users/x/.claude-personal');
+      // Conversation continuity is account-agnostic: --resume still applies.
+      const resumed = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        configHome: '/Users/x/.claude-work',
+        resumeSessionId: 'uuid-1',
+      });
+      expect(resumed.envOverrides.CLAUDE_CONFIG_DIR).toBe('/Users/x/.claude-work');
+      expect(resumed.argv).toContain('--resume');
+      expect(resumed.argv).toContain('uuid-1');
+    });
+
+    it('does NOT set CLAUDE_CONFIG_DIR when no configHome (inherits parent — unchanged default)', () => {
+      const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/usr/local/bin/claude' });
+      expect(spec.envOverrides.CLAUDE_CONFIG_DIR).toBeUndefined();
     });
 
     it('appends --resume <id> when a resumeSessionId is provided', () => {
@@ -37,31 +78,120 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       ]);
     });
 
+    it('appends --session-id <id> when sessionId is set (warm-session A2A)', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        sessionId: 'warm-uuid-1',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '--session-id',
+        'warm-uuid-1',
+      ]);
+    });
+
+    it('--resume wins over --session-id when both are set (mutually exclusive)', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        resumeSessionId: 'resume-uuid',
+        sessionId: 'warm-uuid-1',
+      });
+      // Reloading an existing transcript precludes setting a fresh id.
+      expect(spec.argv).toContain('--resume');
+      expect(spec.argv).not.toContain('--session-id');
+    });
+
     it('emits CLAUDECODE= override so nested Claude detection stays off', () => {
       const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/x/claude' });
       expect(spec.envOverrides).toEqual({ CLAUDECODE: '' });
     });
+
+    it('does NOT push --model when no defaultModel is set (account default preserved)', () => {
+      const spec = buildInteractiveLaunch('claude-code', { binaryPath: '/x/claude' });
+      expect(spec.argv).not.toContain('--model');
+    });
+
+    it('pins --model from a generic tier (balanced → sonnet) when defaultModel is set', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        defaultModel: 'balanced',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '--model',
+        'sonnet',
+      ]);
+    });
+
+    it('passes a raw model id through verbatim to --model', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        defaultModel: 'claude-opus-4-8',
+      });
+      expect(spec.argv).toContain('--model');
+      expect(spec.argv[spec.argv.indexOf('--model') + 1]).toBe('claude-opus-4-8');
+    });
+
+    it('combines --resume and --model when both are provided', () => {
+      const spec = buildInteractiveLaunch('claude-code', {
+        binaryPath: '/usr/local/bin/claude',
+        resumeSessionId: 'abc-123',
+        defaultModel: 'capable',
+      });
+      expect(spec.argv).toEqual([
+        '/usr/local/bin/claude',
+        '--dangerously-skip-permissions',
+        '--resume',
+        'abc-123',
+        '--model',
+        'opus',
+      ]);
+    });
   });
 
   describe('codex-cli', () => {
-    it('passes --model gpt-5.3-codex + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
+    it('reports the same concrete default model the interactive builder launches', () => {
+      expect(resolveInteractiveLaunchModel('codex-cli', undefined)).toBe('gpt-5.5');
+      expect(resolveInteractiveLaunchModel('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
+      expect(resolveInteractiveLaunchModel('codex-cli', undefined, 'ollama')).toBe('llama3.2:latest');
+    });
+
+    it('passes --model gpt-5.5 + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
       const spec = buildInteractiveLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',
       });
-      // The `--model gpt-5.3-codex` flag is required to avoid Codex
-      // CLI's default `gpt-5.2-codex`, which OpenAI retired from
-      // ChatGPT-subscription auth on 2026-04-14. See models.ts comment
-      // block for the empirically-verified working-model list.
+      // The explicit `--model` flag avoids Codex CLI's own historical
+      // default `gpt-5.2-codex` (retired from ChatGPT-subscription auth
+      // 2026-04-14). The session default is gpt-5.5 as of 2026-05-23
+      // (Justin's call) — newest generalist + Codex CLI's own default,
+      // confirmed working on the subscription. See models.ts comment block.
       // The bypass flag is the single-flag parity for Claude's
-      // `--dangerously-skip-permissions` — both removes approval
-      // prompts AND drops the sandbox (which would otherwise block the
-      // agent from reaching localhost where instar's server lives).
+      // `--dangerously-skip-permissions` — removes approval prompts AND
+      // drops the sandbox (which would otherwise block the agent from
+      // reaching localhost where instar's server lives).
       expect(spec.argv).toEqual([
         '/usr/local/bin/codex',
         '--model',
-        'gpt-5.3-codex',
+        'gpt-5.5',
         '--dangerously-bypass-approvals-and-sandbox',
       ]);
+    });
+
+    it('appends --dangerously-bypass-hook-trust when the codex binary supports it (>=0.133)', () => {
+      const bin = fakeCodexBinary(true);
+      const spec = buildInteractiveLaunch('codex-cli', { binaryPath: bin });
+      expect(spec.argv).toContain('--dangerously-bypass-hook-trust');
+      // It comes after the sandbox bypass, before any threadline -c overrides.
+      expect(spec.argv.indexOf('--dangerously-bypass-hook-trust'))
+        .toBeGreaterThan(spec.argv.indexOf('--dangerously-bypass-approvals-and-sandbox'));
+    });
+
+    it('omits --dangerously-bypass-hook-trust when the codex binary lacks it (<0.133) — would otherwise fail the launch', () => {
+      const bin = fakeCodexBinary(false);
+      const spec = buildInteractiveLaunch('codex-cli', { binaryPath: bin });
+      expect(spec.argv).not.toContain('--dangerously-bypass-hook-trust');
     });
 
     it('honors a custom codexSandboxMode by switching to the flag-pair form (safer profile, no bypass)', () => {
@@ -207,7 +337,7 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
   });
 
   describe('codex-cli', () => {
-    it('builds codex exec --json with default sandbox + model', () => {
+    it('defaults headless codex JOBS to the workspace-write sandbox (no bypass)', () => {
       const spec = buildHeadlessLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',
         prompt: 'analyze this',
@@ -216,20 +346,55 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       expect(spec.argv).toContain('exec');
       expect(spec.argv).toContain('--json');
       expect(spec.argv).toContain('--skip-git-repo-check');
+      // Jobs keep the sandbox (they ingest external content + don't use MCP).
       expect(spec.argv).toContain('-s');
       expect(spec.argv).toContain('workspace-write');
+      expect(spec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).toContain('-m');
-      expect(spec.argv).toContain('gpt-5.3-codex');
+      expect(spec.argv).toContain('gpt-5.5');
       expect(spec.argv[spec.argv.length - 1]).toBe('analyze this');
     });
 
-    it('honors codexSandboxMode override', () => {
+    it('appends --dangerously-bypass-hook-trust before the prompt when the codex binary supports it', () => {
+      const bin = fakeCodexBinary(true);
+      const spec = buildHeadlessLaunch('codex-cli', { binaryPath: bin, prompt: 'do the thing' });
+      expect(spec.argv).toContain('--dangerously-bypass-hook-trust');
+      // Prompt must remain the final positional arg (flag precedes it).
+      expect(spec.argv[spec.argv.length - 1]).toBe('do the thing');
+      expect(spec.argv.indexOf('--dangerously-bypass-hook-trust'))
+        .toBeLessThan(spec.argv.length - 1);
+    });
+
+    it('omits --dangerously-bypass-hook-trust when the codex binary lacks it', () => {
+      const bin = fakeCodexBinary(false);
+      const spec = buildHeadlessLaunch('codex-cli', { binaryPath: bin, prompt: 'do the thing' });
+      expect(spec.argv).not.toContain('--dangerously-bypass-hook-trust');
+    });
+
+    it('codexAllowMcpTools (reply workers) → full bypass so MCP calls are permitted', () => {
+      const spec = buildHeadlessLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+        prompt: 'reply to peer',
+        codexAllowMcpTools: true,
+      });
+      // Reply workers MUST call threadline_send; codex cancels MCP under any
+      // sandbox, so the reply path uses full bypass. Jobs (above) do not.
+      expect(spec.argv).toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(spec.argv).not.toContain('workspace-write');
+    });
+
+    it('explicit codexSandboxMode wins over codexAllowMcpTools', () => {
       const spec = buildHeadlessLaunch('codex-cli', {
         binaryPath: '/usr/local/bin/codex',
         prompt: 'p',
         codexSandboxMode: 'read-only',
+        codexAllowMcpTools: true,
       });
+      expect(spec.argv).toContain('-s');
       expect(spec.argv).toContain('read-only');
+      expect(spec.argv).toContain('--ask-for-approval');
+      expect(spec.argv).toContain('never');
+      expect(spec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).not.toContain('workspace-write');
     });
 
@@ -292,17 +457,50 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
 
   describe('codex-cli', () => {
     it('maps generic tiers to subscription-safe Codex model ids', () => {
-      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.2');
-      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-5.3-codex');
-      expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-5.4');
+      // light/medium/heavy mapping. NOTE: gpt-5.2 was retired from ChatGPT-account
+      // Codex on 2026-06-03 (now 400s), so `fast`/`haiku` moved to gpt-5.4-mini —
+      // the cheapest still-accepted model (== balanced). See models.ts.
+      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.4-mini');
+      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
+      expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-5.5');
     });
     it('maps legacy Claude tier names to Codex equivalents (cross-port back-compat)', () => {
-      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.2');
-      expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-5.3-codex');
-      expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-5.4');
+      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.4-mini');
+      expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-5.4-mini');
+      expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-5.5');
     });
     it('passes raw Codex model ids through verbatim', () => {
       expect(resolveModelForFramework('codex-cli', 'gpt-5.4-codex')).toBe('gpt-5.4-codex');
+    });
+  });
+
+  describe('gemini-cli', () => {
+    it('keeps raw Gemini model ids inside the verified known-model set', () => {
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.5-flash')).toBe('gemini-2.5-flash');
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.5-pro')).toBe('gemini-2.5-pro');
+    });
+    it('passes explicit raw Gemini model ids through so bad overrides fail loudly upstream', () => {
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.0-flash')).toBe('gemini-2.0-flash');
+      expect(resolveModelForFramework('gemini-cli', 'gemini-2.5-pro-exp')).toBe('gemini-2.5-pro-exp');
+    });
+    it('uses the raw Gemini model id in interactive and headless launch argv', () => {
+      const interactive = buildInteractiveLaunch('gemini-cli', {
+        binaryPath: '/x/gemini',
+        defaultModel: 'gemini-2.5-pro-exp',
+      });
+      expect(interactive.argv).toEqual(['/x/gemini', '-m', 'gemini-2.5-pro-exp', '--yolo']);
+
+      const headless = buildHeadlessLaunch('gemini-cli', {
+        binaryPath: '/x/gemini',
+        prompt: 'p',
+        model: 'gemini-2.5-pro-exp',
+      });
+      expect(headless.argv).toEqual([
+        '/x/gemini',
+        '-m', 'gemini-2.5-pro-exp',
+        '--approval-mode', 'default',
+        '-p', 'p',
+      ]);
     });
   });
 
@@ -314,7 +512,7 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
 
   it('codex headless builder rewrites generic tier to gpt-5.x', () => {
     const balanced = buildHeadlessLaunch('codex-cli', { binaryPath: '/x/codex', prompt: 'p', model: 'balanced' });
-    expect(balanced.argv).toContain('gpt-5.3-codex');
+    expect(balanced.argv).toContain('gpt-5.4-mini'); // medium tier
     expect(balanced.argv).not.toContain('balanced');
   });
 });
@@ -376,5 +574,74 @@ describe('frameworkSessionLaunch — Phase 6 local-provider (codex --oss)', () =
     });
     expect(spec.argv).not.toContain('--oss');
     expect(spec.argv).not.toContain('--local-provider');
+  });
+});
+
+describe('frameworkSessionLaunch — per-agent codex threadline MCP override', () => {
+  const mcp = {
+    command: 'node',
+    args: [
+      '/agents/echo/.instar/shadow-install/node_modules/instar/dist/threadline/mcp-stdio-entry.js',
+      '--state-dir',
+      '/agents/echo/.instar',
+      '--agent-name',
+      'echo',
+    ],
+  };
+
+  it('headless codex emits -c mcp_servers.threadline overrides when set', () => {
+    const spec = buildHeadlessLaunch('codex-cli', {
+      binaryPath: '/usr/local/bin/codex',
+      prompt: 'reply to peer',
+      codexThreadlineMcp: mcp,
+    });
+    const joined = spec.argv.join(' ');
+    expect(spec.argv).toContain('-c');
+    expect(joined).toContain('mcp_servers.threadline.command="node"');
+    expect(joined).toContain('mcp_servers.threadline.args=');
+    expect(joined).toContain('--agent-name');
+    expect(joined).toContain('mcp_servers.threadline.kind="stdio"');
+    // The -c overrides must precede the positional prompt.
+    const lastCIdx = spec.argv.lastIndexOf('-c');
+    expect(spec.argv[spec.argv.length - 1]).toBe('reply to peer');
+    expect(lastCIdx).toBeLessThan(spec.argv.length - 1);
+  });
+
+  it('headless codex omits the override when not set', () => {
+    const spec = buildHeadlessLaunch('codex-cli', {
+      binaryPath: '/usr/local/bin/codex',
+      prompt: 'p',
+    });
+    expect(spec.argv.join(' ')).not.toContain('mcp_servers.threadline');
+  });
+
+  it('interactive codex emits the override when set', () => {
+    const spec = buildInteractiveLaunch('codex-cli', {
+      binaryPath: '/usr/local/bin/codex',
+      codexThreadlineMcp: mcp,
+    });
+    expect(spec.argv.join(' ')).toContain('mcp_servers.threadline.command="node"');
+  });
+
+  it('claude-code ignores the codex threadline override', () => {
+    const spec = buildHeadlessLaunch('claude-code', {
+      binaryPath: '/usr/local/bin/claude',
+      prompt: 'p',
+      codexThreadlineMcp: mcp,
+    });
+    expect(spec.argv.join(' ')).not.toContain('mcp_servers.threadline');
+  });
+
+  it('override args are valid JSON (TOML-array compatible)', () => {
+    const spec = buildHeadlessLaunch('codex-cli', {
+      binaryPath: '/usr/local/bin/codex',
+      prompt: 'p',
+      codexThreadlineMcp: mcp,
+    });
+    const argsFlag = spec.argv.find((a) => a.startsWith('mcp_servers.threadline.args='));
+    expect(argsFlag).toBeDefined();
+    const jsonPart = argsFlag!.slice('mcp_servers.threadline.args='.length);
+    expect(() => JSON.parse(jsonPart)).not.toThrow();
+    expect(JSON.parse(jsonPart)).toEqual(mcp.args);
   });
 });

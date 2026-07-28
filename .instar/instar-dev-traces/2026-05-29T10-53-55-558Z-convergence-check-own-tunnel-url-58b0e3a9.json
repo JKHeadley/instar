@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "sessionId": "c001de80-4f1a-4717-aafe-a4362d76b0ef",
+  "timestamp": "2026-05-29T10:53:55.558Z",
+  "artifactPath": "upgrades/side-effects/convergence-check-own-tunnel-url.md",
+  "artifactSha256": "ef79a7c49671e181839da11f590b35ad547c63e7fe1c6ba0cedf2228a09fbac7",
+  "specPath": "docs/specs/convergence-check-own-tunnel-url.md",
+  "coveredFiles": [
+    "docs/specs/convergence-check-own-tunnel-url.eli16.md",
+    "docs/specs/convergence-check-own-tunnel-url.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtin-manifest.json",
+    "src/templates/scripts/convergence-check.sh",
+    "tests/unit/convergence-check.test.ts",
+    "upgrades/NEXT.md",
+    "upgrades/side-effects/convergence-check-own-tunnel-url.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

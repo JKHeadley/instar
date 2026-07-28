@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
+import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { HeartbeatManager } from '../core/HeartbeatManager.js';
 import { SecretStore } from '../core/SecretStore.js';
@@ -200,6 +201,7 @@ export async function startPairing(options: PairOptions): Promise<void> {
 
   const { generatePairingCode, createPairingSession } = await import('../core/PairingProtocol.js');
   const { migrateSecrets } = await import('../core/SecretMigrator.js');
+  const { PairingSessionStore } = await import('../core/PairingSessionStore.js');
 
   // Migrate secrets from config.json before pairing (ensures they're in the encrypted store)
   const configPath = path.join(config.stateDir, 'config.json');
@@ -209,7 +211,13 @@ export async function startPairing(options: PairOptions): Promise<void> {
   }
 
   const pairingCode = generatePairingCode();
-  const _pairingSession = createPairingSession({ code: pairingCode });
+  // Give the operator a usable window to run `instar join` on the other machine.
+  const pairingSession = createPairingSession({ code: pairingCode, expiryMs: 10 * 60 * 1000 });
+  // Persist the session so the RUNNING server's /api/pair can validate the code
+  // non-interactively (code-authenticated pool join — no human SAS step). Without
+  // this the session was created into an unused variable and discarded, leaving
+  // /api/pair unable to validate anything (the interactive-SAS-only gap).
+  new PairingSessionStore(config.stateDir).save(pairingSession);
 
   console.log(pc.bold(`\n  Pairing Code for ${pc.cyan(config.projectName)}\n`));
   console.log(`  ${pc.bold(pc.yellow(pairingCode))}`);
@@ -285,7 +293,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         execFileSync('git', ['clone', repoUrl, projectDir], { stdio: 'inherit', timeout: 60_000 });
         console.log(pc.green('  Cloned.'));
       } catch (err) {
-        console.log(pc.red(`  Failed to clone: ${err instanceof Error ? err.message : String(err)}`));
+        console.log(pc.red(`  Failed to clone: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`));
         process.exit(1);
       }
     }
@@ -339,9 +347,15 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   // Step 4: Contact the awake machine's pairing endpoint (if URL is a tunnel)
   const isTunnelUrl = repoUrl.startsWith('http://') || repoUrl.startsWith('https://');
   if (isTunnelUrl) {
-    console.log(`  Contacting ${repoUrl}...`);
+    console.log(`  Contacting ${redactUrl(repoUrl)}...`);
     try {
       const identity = mgr.loadIdentity();
+      // Advertise our own reachable URL (if we already have one — a named tunnel
+      // is known at config time; a quick tunnel is only known after our server
+      // starts, so this may be null and the awake machine learns it later via the
+      // heartbeat URL field instead).
+      const { resolveAdvertisedMeshUrl } = await import('../core/MeshUrlAdvertiser.js');
+      const advertisedUrl = resolveAdvertisedMeshUrl(config.tunnel);
       const resp = await fetch(`${repoUrl}/api/pair`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -349,6 +363,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
           pairingCode: options.code,
           machineIdentity: identity,
           ephemeralPublicKey: identity.encryptionPublicKey,
+          ...(advertisedUrl ? { advertisedUrl } : {}),
         }),
         signal: AbortSignal.timeout(10_000),
       });
@@ -364,10 +379,17 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         // Store the remote machine's identity
         mgr.storeRemoteIdentity(result.machineIdentity);
         mgr.registerMachine(result.machineIdentity, 'awake');
+        // Record the URL we connected THROUGH as the awake machine's reachable
+        // URL, so this (standby) machine can route mesh RPCs back to it without
+        // waiting for a registry sync. Cross-machine routing reads lastKnownUrl;
+        // the joiner is the one place that authoritatively knows this URL.
+        try {
+          mgr.updateMachineUrl(result.machineIdentity.machineId, repoUrl.replace(/\/+$/, ''));
+        } catch { /* best-effort — entry was just registered above */ }
         console.log(pc.green(`  Paired with: ${result.machineIdentity.name}`));
       }
     } catch (err) {
-      console.log(pc.red(`  Failed to contact server: ${err instanceof Error ? err.message : String(err)}`));
+      console.log(pc.red(`  Failed to contact server: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`));
       console.log(pc.dim('  If the server is not running, clone the repo with git and register manually.'));
     }
   }
@@ -375,6 +397,33 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   // Step 5: Ensure gitignore protects secrets
   const { ensureGitignore } = await import('../core/MachineIdentity.js');
   ensureGitignore(config.projectDir);
+
+  // Step 6: Install auto-start for THIS (the joined) home.
+  // Without this, a joined agent has no LaunchAgent/systemd unit — the operator
+  // must hand-start it, and worse: a stale `ai.instar.<projectName>` plist left
+  // by a prior `instar init` of the same name (at a DIFFERENT home) keeps
+  // respawning a server against the wrong directory and fights the joined one
+  // for the port + identity (observed live 2026-05-27). The auto-start Label is
+  // keyed on projectName, so installing here for the joined projectDir cleanly
+  // REPLACES any stale same-name plist — one unit, pointing at the joined home.
+  // (Spec MULTI-MACHINE-BOOTSTRAP-ROBUSTNESS Track C — simpler than the drafted
+  // pointer-file approach, which was solving a non-problem given Label-keying.)
+  try {
+    const { installAutoStart } = await import('./setup.js');
+    // Mirror server.ts's hasTelegram derivation. A standby still installs its
+    // server unit so it's ready to take over; the shipped poll-ownership lease
+    // prevents any dual-poll if telegram is configured on both ends.
+    const hasTelegram = (config as { messaging?: Array<{ type?: string }> }).messaging?.some(
+      (m) => m.type === 'telegram',
+    ) ?? false;
+    const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
+    if (installed) {
+      console.log(pc.dim(`  Auto-start installed for the joined home (${process.platform === 'darwin' ? 'LaunchAgent' : 'systemd service'}).`));
+    }
+  } catch (err) {
+    // @silent-fallback-ok — auto-start is non-critical; join still succeeds.
+    console.log(pc.dim(`  (Auto-start install skipped: ${err instanceof Error ? err.message : String(err)})`));
+  }
 
   console.log();
   console.log(pc.green(pc.bold(`  Joined ${config.projectName} mesh as standby.`)));
@@ -618,18 +667,21 @@ export async function doctor(options: DoctorOptions): Promise<void> {
     checks.push({ name: 'Machine identity', status: 'fail', detail: 'No identity found. Run `instar init`.' });
   }
 
-  // 2. Registry health
+  // 2. Registry health (registry-role VIEW — may lag; the live lease view below is
+  //    authoritative when the server is running — machine-coherence-guard §5b M12).
+  let registryAwakeCount: number | null = null;
   try {
     const registry = mgr.loadRegistry();
     const active = Object.entries(registry.machines).filter(([, e]) => e.status === 'active');
     const awake = active.filter(([, e]) => e.role === 'awake');
+    registryAwakeCount = awake.length;
 
     if (awake.length === 1) {
-      checks.push({ name: 'Registry', status: 'ok', detail: `${active.length} active machine(s), 1 awake` });
+      checks.push({ name: 'Registry', status: 'ok', detail: `${active.length} active machine(s), 1 awake (registry view — may lag; start the server for the live view)` });
     } else if (awake.length === 0) {
-      checks.push({ name: 'Registry', status: 'warn', detail: `${active.length} active machine(s), none awake. Run \`instar wakeup\`.` });
+      checks.push({ name: 'Registry', status: 'warn', detail: `${active.length} active machine(s), none awake in the registry view (may lag). Run \`instar wakeup\` if no live view below.` });
     } else {
-      checks.push({ name: 'Registry', status: 'fail', detail: `${awake.length} machines claim awake (split-brain?)` });
+      checks.push({ name: 'Registry', status: 'fail', detail: `${awake.length} machines claim awake in the registry view (split-brain?) — confirm against the live lease view below` });
     }
   } catch (e) {
     checks.push({ name: 'Registry', status: 'fail', detail: e instanceof Error ? e.message : String(e) });
@@ -654,14 +706,37 @@ export async function doctor(options: DoctorOptions): Promise<void> {
     }
   }
 
-  // 4. Server reachability
+  // 4. Server reachability + the LIVE lease view of "who is awake" (machine-coherence-guard §5b M12).
   try {
     const resp = await fetch(`http://localhost:${config.port}/health`, {
+      // Bearer so the authed /health branch (which carries multiMachine.syncStatus)
+      // is served — the basic check omits the mesh detail.
+      headers: config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {},
       signal: AbortSignal.timeout(3000),
     });
     if (resp.ok) {
-      const health = await resp.json() as { uptimeHuman?: string };
+      const health = await resp.json() as {
+        uptimeHuman?: string;
+        multiMachine?: { syncStatus?: { awakeMachineCount?: number | null; awakeMachineCountSource?: string } | null };
+      };
       checks.push({ name: 'Server', status: 'ok', detail: `Running (port ${config.port}, up ${health.uptimeHuman || '?'})` });
+
+      // Live lease view: the authoritative "who is awake" answer when the server is up.
+      const sync = health.multiMachine?.syncStatus;
+      if (sync && sync.awakeMachineCount !== undefined) {
+        const liveCount = sync.awakeMachineCount;
+        const source = sync.awakeMachineCountSource ?? 'unknown';
+        if (liveCount === null) {
+          checks.push({ name: 'Live lease view', status: 'warn', detail: `awake count unavailable (source: ${source}) — mesh state could not be read` });
+        } else {
+          const diverges = registryAwakeCount !== null && registryAwakeCount !== liveCount;
+          const detail = diverges
+            ? `${liveCount} awake ('${source}'); registry says ${registryAwakeCount} — registry roles may lag`
+            : `${liveCount} awake ('${source}')`;
+          const status = liveCount > 1 ? 'fail' : liveCount === 1 ? 'ok' : 'warn';
+          checks.push({ name: 'Live lease view', status, detail });
+        }
+      }
     } else {
       checks.push({ name: 'Server', status: 'warn', detail: `Responded with ${resp.status}` });
     }
@@ -685,7 +760,10 @@ export async function doctor(options: DoctorOptions): Promise<void> {
 
   // 6. Secret Store
   try {
-    const secretStore = new SecretStore({ stateDir: config.stateDir });
+    const secretStore = new SecretStore({
+      stateDir: config.stateDir,
+      forceFileKey: config.secrets?.forceFileKey,
+    });
     if (secretStore.exists) {
       const keychainLabel = secretStore.isKeychainBacked ? 'keychain-backed' : 'file-backed key';
       checks.push({ name: 'Secret store', status: 'ok', detail: `Encrypted (${keychainLabel})` });

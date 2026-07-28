@@ -32,6 +32,7 @@ import { RelayClient } from './client/RelayClient.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { MessageEncryptor } from './client/MessageEncryptor.js';
 import type { RelayClientConfig, MessageEnvelope } from './relay/types.js';
+import { DEFAULT_RELAY_URL } from './constants.js';
 import type { IdentityInfo } from './client/IdentityManager.js';
 import type { InboxEntry } from './ListenerSessionManager.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
@@ -188,16 +189,26 @@ export class ListenerDaemon extends EventEmitter {
       }
     }
 
-    // Fallback: derive from authToken in config.json
-    const configPath = path.join(this.config.stateDir, 'config.json');
-    if (!fs.existsSync(configPath)) {
-      this.log.error('No HMAC key file and no config.json found');
-      process.exit(1);
-    }
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    const authToken = config.authToken;
+    // Fallback: derive from authToken. INSTAR_AUTH_TOKEN env first (preserves
+    // derivation when authToken has been moved out of config.json into the
+    // encrypted store by SecretMigrator), legacy plaintext-config fallback with
+    // a string-type guard so the { secret: true } placeholder cannot be used as
+    // HKDF input material (it would produce a key tied to the placeholder, not
+    // the real secret — and silently mismatch every peer).
+    let authToken = process.env.INSTAR_AUTH_TOKEN || '';
     if (!authToken) {
-      this.log.error('No authToken in config.json and no HMAC key file');
+      const configPath = path.join(this.config.stateDir, 'config.json');
+      if (!fs.existsSync(configPath)) {
+        this.log.error('No HMAC key file and no config.json found');
+        process.exit(1);
+      }
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      if (typeof config.authToken === 'string') {
+        authToken = config.authToken;
+      }
+    }
+    if (!authToken) {
+      this.log.error('No authToken (env or config.json) and no HMAC key file');
       process.exit(1);
     }
 
@@ -594,7 +605,7 @@ export class ListenerDaemon extends EventEmitter {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let stateDir = '.instar';
-  let relayUrl = 'wss://threadline-relay.fly.dev/v1/connect';
+  let relayUrl = DEFAULT_RELAY_URL;
   let agentName = 'unknown';
 
   for (let i = 0; i < args.length; i++) {
@@ -612,7 +623,7 @@ async function main(): Promise<void> {
   if (fs.existsSync(configPath)) {
     try {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      if (!relayUrl || relayUrl === 'wss://threadline-relay.fly.dev/v1/connect') {
+      if (!relayUrl || relayUrl === DEFAULT_RELAY_URL) {
         relayUrl = config?.threadline?.relayUrl || config?.relay?.url || relayUrl;
       }
       if (agentName === 'unknown') {

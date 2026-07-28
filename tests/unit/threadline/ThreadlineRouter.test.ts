@@ -261,7 +261,15 @@ describe('ThreadlineRouter', () => {
       expect(result.injected).toBe(true);
       expect(result.resumed).toBeUndefined();
       expect(result.spawned).toBeUndefined();
-      expect(mockDelivery.deliverToSession).toHaveBeenCalledWith('live-sess', envelope);
+      // Grounding-on-inject (spec §3.5): the injected follow-up is now delivered
+      // into 'live-sess' with the body wrapped in the relay grounding boundary
+      // (untrusted-data framing), so the call carries a GROUNDED envelope rather
+      // than the raw one. Assert the target session + the grounded body.
+      expect(mockDelivery.deliverToSession).toHaveBeenCalledTimes(1);
+      const [calledSession, calledEnvelope] = mockDelivery.deliverToSession.mock.calls[0];
+      expect(calledSession).toBe('live-sess');
+      expect(calledEnvelope.message.body).toContain('[EXTERNAL MESSAGE — Trust:');
+      expect(calledEnvelope.message.body).toContain(envelope.message.body); // original body still present, now framed
       expect(mockSpawnManager.evaluate).not.toHaveBeenCalled();
     });
 
@@ -386,13 +394,42 @@ describe('ThreadlineRouter', () => {
 
       // The entry should be saved (though get() checks JSONL existence)
       // We check the file directly
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
       expect(data[threadId]).toBeDefined();
       expect(data[threadId].subject).toBe('Saved Thread');
       expect(data[threadId].state).toBe('active');
       expect(data[threadId].remoteAgent).toBe('remote-agent');
       expect(data[threadId].messageCount).toBe(1);
+    });
+
+    it('mints a claude session-id, forwards it to evaluate, and saves it as the entry uuid', async () => {
+      // Path-1 continuity: spawnNewThread mints a uuid up front and passes it as
+      // `sessionId` so the headless claude spawn launches with `--session-id <uuid>`.
+      // That EXACT uuid is then stored as the resume-map entry uuid (NOT the instar
+      // session id / a throwaway placeholder), so the next inbound can `--resume`
+      // the real transcript. Previously the entry uuid was a placeholder that never
+      // matched a transcript → every follow-up cold-spawned memoryless.
+      const threadId = crypto.randomUUID();
+      const envelope = makeEnvelope({ threadId, subject: 'Continuity Thread' });
+
+      await router.handleInboundMessage(envelope);
+
+      // The sessionId forwarded to evaluate is a real uuid (claude --session-id).
+      const call = mockSpawnManager.evaluate.mock.calls[0][0];
+      expect(call.sessionId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+      // The new-thread path does NOT set resumeSessionId.
+      expect(call.resumeSessionId).toBeUndefined();
+
+      // The saved entry uuid is exactly that minted uuid — NOT spawnResult.sessionId
+      // ('spawned-session-uuid' from the mock) and NOT a throwaway placeholder.
+      // On disk the ThreadResumeEntry.uuid is serialized as `sessionUuid`.
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
+      expect(data[threadId].sessionUuid).toBe(call.sessionId);
+      expect(data[threadId].sessionUuid).not.toBe('spawned-session-uuid');
     });
 
     it('includes the spawn prompt with subject and body', async () => {
@@ -409,6 +446,41 @@ describe('ThreadlineRouter', () => {
       expect(call.context).toContain('Important Question');
       expect(call.context).toContain('What is the meaning of life?');
       expect(call.context).toContain('remote-agent');
+    });
+
+    it('bounds the spawn prompt under tmux command limits even with a long, heavy history', async () => {
+      // Regression: the spawn prompt is passed as a `tmux new-session` command
+      // ARGUMENT (~16 KB ceiling). An unbounded thread history + huge latest body
+      // made long-thread reply-spawns fail with "command too long". The router
+      // must cap both so multi-agent comms survive long threads.
+      const threadId = crypto.randomUUID();
+      // Simulate a long-running thread: 40 messages × ~2.5 KB ≈ 100 KB raw.
+      const heavyMessages = Array.from({ length: 40 }, (_, i) => ({
+        message: {
+          from: { agent: i % 2 === 0 ? 'remote-agent' : 'local-agent' },
+          createdAt: `2026-05-30T10:00:${String(i).padStart(2, '0')}.000Z`,
+          body: `history-msg-${i} ${'h'.repeat(2500)}`,
+        },
+      }));
+      mockRouter.getThread.mockResolvedValue({ messages: heavyMessages } as any);
+
+      const envelope = makeEnvelope({
+        threadId,
+        subject: 'Latest',
+        body: `latest-body ${'L'.repeat(20000)}`, // pathologically large latest message
+      });
+
+      await router.handleInboundMessage(envelope);
+
+      const call = mockSpawnManager.evaluate.mock.calls[0][0];
+      // Whole assembled prompt stays well under tmux's ~16 KB cliff.
+      expect(call.context.length).toBeLessThan(14000);
+      // Newest history message survives; the oldest is dropped to fit.
+      expect(call.context).toContain('history-msg-39');
+      expect(call.context).not.toContain('history-msg-0 ');
+      // The oversized latest body is present but truncated, not verbatim.
+      expect(call.context).toContain('[truncated');
+      expect(call.context).not.toContain('L'.repeat(20000));
     });
 
     it('sets correct spawn priority for critical messages', async () => {
@@ -460,17 +532,23 @@ describe('ThreadlineRouter', () => {
       const envelope = makeEnvelope({ threadId });
       await router.handleInboundMessage(envelope);
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
       expect(data[threadId].state).toBe('active');
       expect(data[threadId].messageCount).toBe(6); // 5 + 1
     });
 
-    it('includes thread history in resume prompt when available', async () => {
+    it('does NOT re-inject thread history into the resume prompt (the --resume transcript already has it)', async () => {
+      // Path-1 continuity: resumeThread now spawns with `--resume entry.uuid`,
+      // which reloads the FULL prior conversation from the claude-code
+      // transcript on disk. Re-injecting buildHistoryContext would DOUBLE the
+      // history, so the resume prompt must carry only the NEW message (+ relay
+      // grounding when present) — never the old history. This test proves that
+      // even when getThread returns prior messages, they are NOT spliced into
+      // the resume prompt.
       const threadId = crypto.randomUUID();
       threadResumeMap.save(threadId, makeEntry({ uuid: existingUuid }));
 
-      // Set up mock to return thread history
       const historyEnvelope = makeEnvelope({
         threadId,
         body: 'Previous message in this thread',
@@ -489,12 +567,30 @@ describe('ThreadlineRouter', () => {
         messages: [historyEnvelope],
       });
 
-      const envelope = makeEnvelope({ threadId, body: 'New message' });
+      const envelope = makeEnvelope({ threadId, body: 'New resume message' });
       await router.handleInboundMessage(envelope);
 
       const call = mockSpawnManager.evaluate.mock.calls[0][0];
-      expect(call.context).toContain('Previous message in this thread');
-      expect(call.context).toContain('Recent thread history');
+      // The new message IS in the prompt.
+      expect(call.context).toContain('New resume message');
+      // The old history is NOT re-injected (it's already in the resumed transcript).
+      expect(call.context).not.toContain('Previous message in this thread');
+      expect(call.context).not.toContain('Recent thread history');
+      expect(call.context).toContain('No previous history available.');
+    });
+
+    it('forwards resumeSessionId = entry.uuid so the spawn reloads the transcript via --resume', async () => {
+      const threadId = crypto.randomUUID();
+      threadResumeMap.save(threadId, makeEntry({ uuid: existingUuid }));
+
+      const envelope = makeEnvelope({ threadId });
+      await router.handleInboundMessage(envelope);
+
+      const call = mockSpawnManager.evaluate.mock.calls[0][0];
+      // The resume path passes the existing transcript uuid as resumeSessionId.
+      expect(call.resumeSessionId).toBe(existingUuid);
+      // The new-thread continuity field is NOT set on the resume path.
+      expect(call.sessionId).toBeUndefined();
     });
   });
 
@@ -632,15 +728,165 @@ describe('ThreadlineRouter', () => {
 
       router.onSessionEnd(threadId, newUuid, 'updated-tmux-session');
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      expect(data[threadId].uuid).toBe(newUuid);
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
+      expect(data[threadId].sessionUuid).toBe(newUuid);
       expect(data[threadId].state).toBe('idle');
-      expect(data[threadId].sessionName).toBe('updated-tmux-session');
+      expect(data[threadId].boundSessionName).toBe('updated-tmux-session');
     });
 
     it('does nothing for unknown thread', () => {
       expect(() => router.onSessionEnd('unknown-thread', 'some-uuid', 'some-session')).not.toThrow();
+    });
+
+    it('demotes all active threads bound to a completed session', () => {
+      const threadId1 = crypto.randomUUID();
+      const threadId2 = crypto.randomUUID();
+      const oldUuid = existingUuid;
+      const newUuid = 'newuuid1-2222-3333-4444-555555555555';
+      createFakeJsonl(oldUuid);
+
+      threadResumeMap.save(threadId1, makeEntry({
+        uuid: oldUuid,
+        state: 'active',
+        sessionName: 'completed-session',
+      }));
+      threadResumeMap.save(threadId2, makeEntry({
+        uuid: oldUuid,
+        state: 'active',
+        sessionName: 'completed-session',
+      }));
+
+      expect(router.onSessionComplete('completed-session', newUuid)).toEqual({
+        demoted: 2,
+        skippedAwaitingReply: 0,
+      });
+
+      const data = JSON.parse(fs.readFileSync(path.join(temp.stateDir, 'threadline', 'conversations.json'), 'utf-8')).conversations;
+      expect(data[threadId1].state).toBe('idle');
+      expect(data[threadId1].sessionUuid).toBe(newUuid);
+      expect(data[threadId2].state).toBe('idle');
+      expect(data[threadId2].sessionUuid).toBe(newUuid);
+    });
+
+    it('demotes an active thread when completion matches the SessionManager UUID but not the bound session name', () => {
+      const threadId = crypto.randomUUID();
+      const sessionManagerUuid = 'sessionmgr-2222-3333-4444-555555555555';
+
+      threadResumeMap.save(threadId, makeEntry({
+        uuid: sessionManagerUuid,
+        state: 'active',
+        sessionName: 'thread-short-name',
+      }));
+
+      expect(router.onSessionComplete('instar-codey-msg-spawn-1234567890', sessionManagerUuid)).toEqual({
+        demoted: 1,
+        skippedAwaitingReply: 0,
+      });
+
+      const data = JSON.parse(fs.readFileSync(path.join(temp.stateDir, 'threadline', 'conversations.json'), 'utf-8')).conversations;
+      expect(data[threadId].state).toBe('idle');
+      expect(data[threadId].sessionUuid).toBe(sessionManagerUuid);
+      expect(data[threadId].boundSessionName).toBe('instar-codey-msg-spawn-1234567890');
+    });
+
+    it('Layer 1 (continuity linchpin): a non-JSONL placeholder uuid is NOT resumable, but after onSessionComplete with the authoritative Claude UUID the thread IS resumable', () => {
+      const threadId = crypto.randomUUID();
+      // The B1 state: spawnNewThread stamped a non-transcript placeholder (the tmux/session id
+      // or a random uuid). get() nulls it because jsonlExists() can never resolve it → the
+      // router cold-spawns a memoryless session on every inbound (spec §3).
+      threadResumeMap.save(threadId, makeEntry({
+        uuid: 'tmux-placeholder-not-a-transcript-uuid',
+        state: 'active',
+        sessionName: 'a2a-worker-session',
+      }));
+      expect(threadResumeMap.get(threadId)).toBeNull();
+
+      // The session completes; Layer 1 wires the AUTHORITATIVE claudeSessionId through
+      // (server.ts passes session.claudeSessionId, not session.id). onSessionComplete persists it.
+      const authoritativeUuid = 'realclde-2222-3333-4444-555555555555';
+      createFakeJsonl(authoritativeUuid);
+      router.onSessionComplete('a2a-worker-session', authoritativeUuid);
+
+      // Now get() returns a resumable entry carrying the real UUID — the next inbound RESUMES
+      // instead of cold-spawning. This is the whole point of Layer 1.
+      const resumable = threadResumeMap.get(threadId);
+      expect(resumable).not.toBeNull();
+      expect(resumable?.uuid).toBe(authoritativeUuid);
+      expect(resumable?.state).toBe('idle');
+    });
+
+    it('does not demote awaiting-reply threads when their session completes', () => {
+      const threadId = crypto.randomUUID();
+      const oldUuid = existingUuid;
+      createFakeJsonl(oldUuid);
+      threadResumeMap.save(threadId, makeEntry({
+        uuid: oldUuid,
+        state: 'active',
+        sessionName: 'completed-session',
+      }));
+
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      raw.conversations[threadId].state = 'awaiting-reply';
+      fs.writeFileSync(filePath, JSON.stringify(raw, null, 2));
+      const freshThreadResumeMap = new ThreadResumeMap(temp.stateDir, '/test/project');
+      const freshRouter = new ThreadlineRouter(
+        mockRouter as any,
+        mockSpawnManager as any,
+        freshThreadResumeMap,
+        mockStore as any,
+        { localAgent: 'local-agent', localMachine: 'local-machine' },
+      );
+
+      expect(freshRouter.onSessionComplete('completed-session', 'newuuid1-2222-3333-4444-555555555555')).toEqual({
+        demoted: 0,
+        skippedAwaitingReply: 1,
+      });
+
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
+      expect(data[threadId].state).toBe('awaiting-reply');
+      expect(data[threadId].sessionUuid).toBe(oldUuid);
+    });
+
+    it('does not archive unrelated stale awaiting-reply threads during session completion lookup', () => {
+      const completedThreadId = crypto.randomUUID();
+      const unrelatedThreadId = crypto.randomUUID();
+      const oldUuid = existingUuid;
+      createFakeJsonl(oldUuid);
+      threadResumeMap.save(completedThreadId, makeEntry({
+        uuid: oldUuid,
+        state: 'active',
+        sessionName: 'completed-session',
+      }));
+      threadResumeMap.save(unrelatedThreadId, makeEntry({
+        uuid: oldUuid,
+        state: 'active',
+        sessionName: 'other-session',
+      }));
+
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      raw.conversations[unrelatedThreadId].state = 'awaiting-reply';
+      raw.conversations[unrelatedThreadId].lastActivityAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      fs.writeFileSync(filePath, JSON.stringify(raw, null, 2));
+      const freshThreadResumeMap = new ThreadResumeMap(temp.stateDir, '/test/project');
+      const freshRouter = new ThreadlineRouter(
+        mockRouter as any,
+        mockSpawnManager as any,
+        freshThreadResumeMap,
+        mockStore as any,
+        { localAgent: 'local-agent', localMachine: 'local-machine' },
+      );
+
+      expect(freshRouter.onSessionComplete('completed-session', 'newuuid1-2222-3333-4444-555555555555')).toEqual({
+        demoted: 1,
+        skippedAwaitingReply: 0,
+      });
+
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
+      expect(data[completedThreadId].state).toBe('idle');
+      expect(data[unrelatedThreadId].state).toBe('awaiting-reply');
     });
   });
 
@@ -651,8 +897,8 @@ describe('ThreadlineRouter', () => {
 
       router.onThreadResolved(threadId);
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
       expect(data[threadId].state).toBe('resolved');
       expect(data[threadId].resolvedAt).toBeDefined();
     });
@@ -665,8 +911,8 @@ describe('ThreadlineRouter', () => {
 
       router.onThreadFailed(threadId);
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')).conversations;
       expect(data[threadId].state).toBe('failed');
     });
 

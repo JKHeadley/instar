@@ -99,12 +99,16 @@ describe('ThreadlineObservability', () => {
       expect(threads[0]!.bridge!.topicName).toBe('echo↔Dawn — hello');
     });
 
-    it('marks hasSpawnedSession when thread-resume-map references the thread', () => {
+    it('marks hasSpawnedSession when conversations.json shows a spawned session', () => {
       writeJsonl(path.join(env.stateDir, 'threadline', 'inbox.jsonl.active'), [
         { id: 'm1', timestamp: '2026-05-01T10:00:00Z', from: 'fp', senderName: 'X', trustLevel: 'trusted', threadId: 'tA', text: 'x' },
       ]);
-      fs.writeFileSync(path.join(env.stateDir, 'threadline', 'thread-resume-map.json'), JSON.stringify({
-        threads: { tA: { sessionName: 'sess-1' } },
+      // Phase 2a (CMT-497): resume state lives in conversations.json; a thread
+      // counts as spawned when it has a sessionUuid.
+      fs.writeFileSync(path.join(env.stateDir, 'threadline', 'conversations.json'), JSON.stringify({
+        version: 1,
+        conversations: { tA: { threadId: 'tA', version: 1, participants: { peers: [] }, state: 'idle', pinned: false, messageCount: 1, turnCount: 0, sessionUuid: 'uuid-A', boundSessionName: 'sess-1', createdAt: '2026-05-01T10:00:00Z', savedAt: '2026-05-01T10:00:00Z', lastActivityAt: '2026-05-01T10:00:00Z' } },
+        lastModified: '2026-05-01T10:00:00Z',
       }));
 
       const threads = env.obs.listThreads();

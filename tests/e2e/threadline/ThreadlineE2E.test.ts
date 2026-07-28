@@ -221,11 +221,11 @@ describe('Scenario 1: Happy Path — First Contact to Conversation', () => {
     dawn.threadMap.save(threadId, entry);
     // ThreadResumeMap.get checks for JSONL file existence; use direct file check
     const rawMap = JSON.parse(fs.readFileSync(
-      path.join(dawn.stateDir, 'threadline', 'thread-resume-map.json'), 'utf-8'
+      path.join(dawn.stateDir, 'threadline', 'conversations.json'), 'utf-8'
     ));
-    expect(rawMap[threadId]).toBeDefined();
-    expect(rawMap[threadId].remoteAgent).toBe('echo');
-    expect(rawMap[threadId].subject).toBe('First contact');
+    expect(rawMap.conversations[threadId]).toBeDefined();
+    expect(rawMap.conversations[threadId].remoteAgent).toBe('echo');
+    expect(rawMap.conversations[threadId].subject).toBe('First contact');
   });
 });
 
@@ -255,11 +255,11 @@ describe('Scenario 2: Session Resume After Restart', () => {
     // "Restart" — create new ThreadResumeMap from same stateDir
     const newMap = new ThreadResumeMap(dawn.stateDir, dawn.stateDir, '/bin/echo');
     const rawData = JSON.parse(fs.readFileSync(
-      path.join(dawn.stateDir, 'threadline', 'thread-resume-map.json'), 'utf-8'
+      path.join(dawn.stateDir, 'threadline', 'conversations.json'), 'utf-8'
     ));
-    expect(rawData[threadId]).toBeDefined();
-    expect(rawData[threadId].uuid).toBe(sessionUUID);
-    expect(rawData[threadId].state).toBe('active');
+    expect(rawData.conversations[threadId]).toBeDefined();
+    expect(rawData.conversations[threadId].sessionUuid).toBe(sessionUUID);
+    expect(rawData.conversations[threadId].state).toBe('active');
   });
 
   it('HandshakeManager recovers identity keys from stateDir after restart', () => {
@@ -847,9 +847,9 @@ describe('Scenario 8: Persistence Across Restarts', () => {
     expect(newCB.getState('echo')?.totalSuccesses).toBe(1);
 
     const rawMap = JSON.parse(fs.readFileSync(
-      path.join(dawn.stateDir, 'threadline', 'thread-resume-map.json'), 'utf-8'
+      path.join(dawn.stateDir, 'threadline', 'conversations.json'), 'utf-8'
     ));
-    expect(rawMap[threadId].remoteAgent).toBe('echo');
+    expect(rawMap.conversations[threadId].remoteAgent).toBe('echo');
   });
 });
 

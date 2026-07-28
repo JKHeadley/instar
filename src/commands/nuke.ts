@@ -190,12 +190,17 @@ export async function nukeAgent(name: string, options: NukeOptions = {}): Promis
 
     const telegramEntry = config.messaging?.find((m: { type: string }) => m.type === 'telegram');
     if (telegramEntry?.config) {
+      // String-type guards reject the { secret: true } placeholder produced by
+      // SecretMigrator after multi-machine pairing — the real values are already
+      // in the encrypted store in that case, so backing up the placeholder
+      // would silently corrupt the backup.
+      const asStr = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
       secretMgr.backupFromConfig({
-        telegramToken: telegramEntry.config.token,
-        telegramChatId: telegramEntry.config.chatId,
-        authToken: config.authToken,
-        dashboardPin: config.dashboardPin,
-        tunnelToken: config.tunnel?.token,
+        telegramToken: asStr(telegramEntry.config.token),
+        telegramChatId: asStr(telegramEntry.config.chatId),
+        authToken: asStr(config.authToken),
+        dashboardPin: asStr(config.dashboardPin),
+        tunnelToken: asStr(config.tunnel?.token),
       });
       console.log(`  ${pc.green('✓')} Secrets backed up (will auto-restore on reinstall)`);
     }
@@ -369,12 +374,16 @@ export async function nukeHere(options: NukeHereOptions = {}): Promise<void> {
       (m: { type: string }) => m.type === 'telegram',
     );
     if (telegramEntry?.config) {
+      // Same string-guard treatment as the in-place backup above — reject the
+      // { secret: true } placeholder so the backup never re-saves the marker
+      // instead of the real value.
+      const asStr = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
       secretMgr.backupFromConfig({
-        telegramToken: telegramEntry.config.token,
-        telegramChatId: telegramEntry.config.chatId,
-        authToken: config.authToken,
-        dashboardPin: config.dashboardPin,
-        tunnelToken: config.tunnel?.token,
+        telegramToken: asStr(telegramEntry.config.token),
+        telegramChatId: asStr(telegramEntry.config.chatId),
+        authToken: asStr(config.authToken),
+        dashboardPin: asStr(config.dashboardPin),
+        tunnelToken: asStr(config.tunnel?.token),
       });
       console.log(`  ${pc.green('✓')} Secrets backed up`);
     }

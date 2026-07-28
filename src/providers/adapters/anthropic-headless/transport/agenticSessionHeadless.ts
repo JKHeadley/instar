@@ -42,6 +42,7 @@ class AnthropicHeadlessAgenticSession implements AgenticSessionHeadless {
     const sessionEnv: Array<[string, string]> = [
       ['CLAUDECODE', ''], // strip nested-session marker
       ['INSTAR_SESSION_ID', sessionId],
+      ['INSTAR_SESSION_NAME', tmuxName], // Threadline binding: attributes a relay-send to its origin session
     ];
 
     if (this.config.credential) {

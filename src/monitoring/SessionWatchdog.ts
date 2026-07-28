@@ -13,20 +13,58 @@
  *   Level 4: Kill tmux session
  */
 
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
-import { detectRateLimited } from './rateLimitDetection.js';
+import {
+  evaluateThrottleSettle,
+  RATE_LIMIT_SETTLED_CAPTURE_LINES,
+  RATE_LIMIT_DEFAULT_SETTLE_MS,
+  type ThrottleSettleState,
+} from './rateLimitDetection.js';
 
-/** Drop-in replacement for execSync that avoids its security concerns. */
-function shellExec(cmd: string, timeout = 5000): string {
-  return spawnSync('/bin/sh', ['-c', cmd], { encoding: 'utf-8', timeout }).stdout ?? '';
+const execFileAsync = promisify(execFile);
+
+/**
+ * ASYNC shell exec — the watchdog poll runs every 30s over EVERY running
+ * session, several `ps`/`pgrep` probes each. With the old `spawnSync` those
+ * probes blocked the single Node event loop for the full duration of each
+ * subprocess; under load (dozens of sessions, a busy box) the cumulative stall
+ * made the server miss its own /health window → false "server temporarily down"
+ * + a restart loop (2026-06-07 incident). execFile is non-blocking: the event
+ * loop (and /health) stays responsive while `ps` runs. Returns captured stdout
+ * (or '' on a non-zero exit / timeout), matching the old spawnSync semantics
+ * where a pgrep/egrep no-match simply yielded ''.
+ */
+async function shellExecAsync(cmd: string, timeout = 5000): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('/bin/sh', ['-c', cmd], {
+      encoding: 'utf-8',
+      timeout,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return stdout ?? '';
+  } catch (err: unknown) {
+    // @silent-fallback-ok — a failed process probe is not a degradation: a
+    // pgrep/egrep no-match, a dead PID, or a timeout legitimately means "no
+    // match", identical to the prior synchronous behavior where spawnSync simply
+    // yielded an empty stdout string. Return any captured stdout, else ''.
+    const e = err as { stdout?: string } | null;
+    return e && typeof e.stdout === 'string' ? e.stdout : '';
+  }
 }
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { InstarConfig, IntelligenceProvider } from '../core/types.js';
+import { createRequire } from 'node:module';
+
+// ESM module: a bare CJS `require` is undefined and throws at runtime. Bind a
+// real require via createRequire so the lazy load below is genuinely ESM-legal
+// (mirrors NativeModuleHealer.ts).
+const require = createRequire(import.meta.url);
 
 export enum EscalationLevel {
   Monitoring = 0,
@@ -162,10 +200,16 @@ export class SessionWatchdog extends EventEmitter {
   private escalationState = new Map<string, EscalationState>();
   private interventionHistory: InterventionEvent[] = [];
   private enabled = true;
+  /** Liveness of the poll loop (GUARD-POSTURE-ENDPOINT-SPEC §2.2): 0 = never polled. */
+  private lastPollAt = 0;
   private running = false;
 
   private stuckThresholdMs: number;
   private pollIntervalMs: number;
+  /** Deterministic ceiling (ms) past which a command is killed even when the LLM
+   *  stuck-judge is unavailable/errors. Below it, the watchdog fails CLOSED (no
+   *  interrupt) rather than fail-open. 0 disables the ceiling (pure fail-closed). */
+  private hardCeilingMs: number;
   private logPath: string;
 
   /** Intelligence provider — gates escalation entry with LLM command analysis */
@@ -188,6 +232,16 @@ export class SessionWatchdog extends EventEmitter {
   private rateLimitedCooldowns = new Map<string, number>(); // sessionName → timestamp
   private static readonly RATE_LIMITED_COOLDOWN_MS = 60_000; // 1 minute (sentinel dedupes too)
 
+  /**
+   * Settle tracking for the throttle backstop — per session, the fingerprint of
+   * the last poll's pane and when it first appeared unchanged. A throttled pane
+   * that stays byte-identical across polls means the turn ended (no spinner
+   * animating), i.e. the session is genuinely stuck and safe to recover.
+   */
+  private throttleSettle = new Map<string, ThrottleSettleState>();
+  /** How long a throttled pane must be byte-identical before recovery (configurable for tests/tuning). */
+  private readonly rateLimitSettleMs: number;
+
   constructor(config: InstarConfig, sessionManager: SessionManager, state: StateManager) {
     super();
     this.config = config;
@@ -197,6 +251,9 @@ export class SessionWatchdog extends EventEmitter {
     const wdConfig = config.monitoring.watchdog;
     this.stuckThresholdMs = (wdConfig?.stuckCommandSec ?? 180) * 1000;
     this.pollIntervalMs = wdConfig?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    // Default 30 min. `?? `, not `||`, so an explicit 0 (disable ceiling) is honored.
+    this.hardCeilingMs = (wdConfig?.hardCeilingSec ?? 1800) * 1000;
+    this.rateLimitSettleMs = wdConfig?.rateLimitSettleMs ?? RATE_LIMIT_DEFAULT_SETTLE_MS;
 
     // Persistent log path
     this.logPath = path.join(config.stateDir, 'watchdog-interventions.jsonl');
@@ -253,6 +310,7 @@ export class SessionWatchdog extends EventEmitter {
   // --- Core polling ---
 
   private async poll(): Promise<void> {
+    this.lastPollAt = Date.now();
     if (!this.enabled || this.running) return;
     this.running = true;
 
@@ -264,6 +322,9 @@ export class SessionWatchdog extends EventEmitter {
         } catch (err) {
           console.error(`[Watchdog] Error checking "${session.tmuxSession}":`, err);
         }
+        // Yield to the event loop between sessions so a poll over many sessions
+        // can never monopolize the loop and starve /health (which shares it).
+        await new Promise<void>((resolve) => setImmediate(resolve));
       }
     } finally {
       this.running = false;
@@ -274,7 +335,7 @@ export class SessionWatchdog extends EventEmitter {
     const existing = this.escalationState.get(tmuxSession);
 
     if (existing && existing.level > EscalationLevel.Monitoring) {
-      this.handleEscalation(tmuxSession, existing);
+      await this.handleEscalation(tmuxSession, existing);
       return;
     }
 
@@ -282,13 +343,13 @@ export class SessionWatchdog extends EventEmitter {
     // the stuck-command path but still run compaction-idle detection —
     // that path is output-based and doesn't strictly need a PID (its own
     // process guard is null-safe).
-    const claudePid = this.getClaudePid(tmuxSession);
+    const claudePid = await this.getClaudePid(tmuxSession);
     if (!claudePid) {
-      this.checkCompactionIdle(tmuxSession);
+      await this.checkCompactionIdle(tmuxSession);
       return;
     }
 
-    const children = this.getChildProcesses(claudePid);
+    const children = await this.getChildProcesses(claudePid);
     const stuckChild = children.find(c => {
       if (this.isExcluded(c.command)) return false;
       if (this.temporaryExclusions.has(c.pid)) return false;
@@ -308,7 +369,7 @@ export class SessionWatchdog extends EventEmitter {
       // contain active sibling producers, the "stuck" process is just
       // waiting for upstream output from a legitimate long-running
       // pipeline. Skip escalation.
-      if (this.hasActivePipelineSibling(stuckChild.pid, stuckChild.command)) {
+      if (await this.hasActivePipelineSibling(stuckChild.pid, stuckChild.command)) {
         console.log(
           `[Watchdog] "${tmuxSession}": ${stuckChild.command.slice(0, 60)} ` +
           `is consuming an active pipeline — skipping escalation`,
@@ -374,7 +435,7 @@ export class SessionWatchdog extends EventEmitter {
     // sitting at a bare prompt with no one at the terminal to nudge them.
     // This is the polling-based fallback for the PreCompact event path which
     // is unreliable (Claude Code doesn't always fire the event).
-    this.checkCompactionIdle(tmuxSession);
+    await this.checkCompactionIdle(tmuxSession);
 
     // Server-side throttle detection — catch sessions stopped at a prompt after
     // Anthropic's "temporarily limiting requests" throttle exhausted Claude's
@@ -384,43 +445,63 @@ export class SessionWatchdog extends EventEmitter {
   }
 
   /**
-   * Detects sessions idle at a prompt because of a server-side capacity
-   * throttle (NOT the user's usage quota, NOT mid-retry). Emits 'rate-limited'
-   * (with a cooldown) so the RateLimitSentinel owns recovery. Detection logic
-   * (throttle-vs-usage-vs-spinner discrimination) lives in detectRateLimited.
+   * Detects sessions stuck on a server-side capacity throttle (NOT the user's
+   * usage quota, NOT mid-retry) and hands recovery to the RateLimitSentinel via
+   * the 'rate-limited' event.
+   *
+   * Detection uses the SETTLED-OUTPUT signal: the throttle string is present in
+   * the (widened) recent pane AND that pane has not changed since the previous
+   * poll. An actively-working Claude session animates its spinner + elapsed
+   * timer every tick, so byte-identical output across polls proves no work is
+   * being produced — the turn ended on the throttle.
+   *
+   * This deliberately REPLACES the old gates that made this sentinel never fire
+   * in the wild (2026-05-30 incident):
+   *   - the active-child-process check (a lingering background shell masked the
+   *     throttle on busy dev sessions), and
+   *   - the at-prompt / 20-line-window check (Claude's input box + footer push
+   *     the "API Error" line out of view).
+   * The settle guard + the wider window (RATE_LIMIT_SETTLED_CAPTURE_LINES)
+   * cover both failure modes while staying false-positive-safe.
    */
   checkRateLimited(tmuxSession: string): void {
-    const lastEmitted = this.rateLimitedCooldowns.get(tmuxSession);
-    if (lastEmitted && (Date.now() - lastEmitted) < SessionWatchdog.RATE_LIMITED_COOLDOWN_MS) {
+    const output = this.sessionManager.captureOutput(tmuxSession, RATE_LIMIT_SETTLED_CAPTURE_LINES);
+    const now = Date.now();
+    const { decision, next } = evaluateThrottleSettle(
+      output,
+      this.throttleSettle.get(tmuxSession),
+      now,
+      { settleMs: this.rateLimitSettleMs },
+    );
+
+    if (decision === 'no-throttle') {
+      // Throttle absent / mid-retry / usage-limit, or session moved on → reset.
+      this.throttleSettle.delete(tmuxSession);
       return;
     }
 
-    // If Claude has active child processes it's executing tools, not stalled.
-    const claudePid = this.getClaudePid(tmuxSession);
-    if (claudePid) {
-      const children = this.getChildProcesses(claudePid);
-      const activeChildren = children.filter(c => !this.isExcluded(c.command));
-      if (activeChildren.length > 0) return;
+    // Throttle present — record/refresh the settle clock either way.
+    if (next) this.throttleSettle.set(tmuxSession, next);
+
+    if (decision === 'waiting') {
+      // Pane still changing, or not settled long enough — recheck next poll.
+      return;
     }
 
-    const output = this.sessionManager.captureOutput(tmuxSession, 20);
-    if (!output) return;
+    // decision === 'settled' — genuinely stuck on the throttle. Respect the
+    // emit cooldown so we don't restart recovery every poll (the sentinel also
+    // dedupes). After the sentinel escalates and clears (~30s), a still-stuck
+    // pane re-emits past this cooldown — that unbounded retry is exactly the
+    // "a session can never hang forever on a 429" guarantee.
+    const lastEmitted = this.rateLimitedCooldowns.get(tmuxSession);
+    if (lastEmitted && (now - lastEmitted) < SessionWatchdog.RATE_LIMITED_COOLDOWN_MS) return;
 
-    // Throttle present, not a usage limit, not mid-retry.
-    if (!detectRateLimited(output)) return;
-
-    // Must be idle at a prompt (tail check, same shape as compaction-idle).
-    const lines = output.split('\n').filter(l => l.trim());
-    const tail = lines.slice(-3).join('\n');
-    const atPrompt =
-      tail.includes('❯') ||
-      tail.includes('bypass permissions') ||
-      /^>\s*$/m.test(tail) ||
-      tail.trim() === '>';
-    if (!atPrompt) return;
-
-    console.log(`[Watchdog] "${tmuxSession}": rate-limited detected — server throttle, idle at prompt`);
-    this.rateLimitedCooldowns.set(tmuxSession, Date.now());
+    const settledMs = now - (next?.since ?? now);
+    console.log(
+      `[Watchdog] "${tmuxSession}": rate-limited detected — server throttle, ` +
+      `pane settled ${Math.round(settledMs / 1000)}s (handing to RateLimitSentinel)`,
+    );
+    this.rateLimitedCooldowns.set(tmuxSession, now);
     this.emit('rate-limited', tmuxSession);
   }
 
@@ -437,7 +518,7 @@ export class SessionWatchdog extends EventEmitter {
    *   5. server.ts checks message history before activating triage (data-level guard)
    *   6. TriageOrchestrator Pattern 2b re-validates before reinjecting (redundant check)
    */
-  checkCompactionIdle(tmuxSession: string): void {
+  async checkCompactionIdle(tmuxSession: string): Promise<void> {
     // Cooldown — don't re-emit for the same session within 5 minutes
     const lastEmitted = this.compactionIdleCooldowns.get(tmuxSession);
     if (lastEmitted && (Date.now() - lastEmitted) < SessionWatchdog.COMPACTION_IDLE_COOLDOWN_MS) {
@@ -446,9 +527,9 @@ export class SessionWatchdog extends EventEmitter {
 
     // Guard 1: Structural process check — if Claude has active child processes,
     // it's executing tools/commands, not stalled. Skip entirely.
-    const claudePid = this.getClaudePid(tmuxSession);
+    const claudePid = await this.getClaudePid(tmuxSession);
     if (claudePid) {
-      const children = this.getChildProcesses(claudePid);
+      const children = await this.getChildProcesses(claudePid);
       const activeChildren = children.filter(c => !this.isExcluded(c.command));
       if (activeChildren.length > 0) return;
     }
@@ -481,7 +562,7 @@ export class SessionWatchdog extends EventEmitter {
     this.emit('compaction-idle', tmuxSession);
   }
 
-  private handleEscalation(tmuxSession: string, state: EscalationState): void {
+  private async handleEscalation(tmuxSession: string, state: EscalationState): Promise<void> {
     const now = Date.now();
 
     if (!this.isProcessAlive(state.stuckChildPid)) {
@@ -531,12 +612,41 @@ export class SessionWatchdog extends EventEmitter {
         this.recordIntervention(tmuxSession, EscalationLevel.SigKill, `SIGKILL ${state.stuckChildPid}`, child);
         break;
 
-      case EscalationLevel.KillSession:
-        console.log(`[Watchdog] "${tmuxSession}": killing tmux session`);
-        this.killTmuxSession(tmuxSession);
-        this.recordIntervention(tmuxSession, EscalationLevel.KillSession, 'Killed tmux session', child);
+      case EscalationLevel.KillSession: {
+        // UNIFIED-SESSION-LIFECYCLE §P0 #5: route the final-level kill through the
+        // single ReapAuthority instead of the raw `tmux kill-session`. The
+        // authority consults the P2 KEEP-guard (relay-lease / active subagent /
+        // recent-user-message / etc.) and the awake-machine lease gate before any
+        // autonomous kill — so a session the guards would have kept survives a
+        // buggy watchdog, gains exactly-once sessionComplete/sessionReaped
+        // emission, and lands in the reap-log with its reason.
+        console.log(`[Watchdog] "${tmuxSession}": requesting session kill via ReapAuthority`);
+        const sess = this.sessionManager
+          .listRunningSessions()
+          .find((s) => s.tmuxSession === tmuxSession);
+        if (!sess) {
+          // Session already gone — nothing to kill.
+          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, 'session already gone', child);
+          this.escalationState.delete(tmuxSession);
+          break;
+        }
+        const result = await this.sessionManager.terminateSession(sess.id, 'watchdog-stuck', {
+          disposition: 'terminal',
+          finalStatus: 'killed',
+        });
+        if (result.terminated) {
+          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, 'terminated via ReapAuthority', child);
+        } else {
+          // The authority refused (protected / lease / a KEEP). Stand down — the
+          // guards own this decision; the §P5 backstop will surface a
+          // persistently-stale session for an operator decision rather than the
+          // watchdog re-escalating against a guarded session every tick.
+          console.log(`[Watchdog] "${tmuxSession}": kill refused — ${result.skipped} (standing down)`);
+          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, `kept (${result.skipped})`, child);
+        }
         this.escalationState.delete(tmuxSession);
         break;
+      }
     }
   }
 
@@ -547,10 +657,21 @@ export class SessionWatchdog extends EventEmitter {
    *
    * Returns true if the command appears stuck and should be escalated.
    * Returns false if the LLM thinks it's a legitimate long-running task.
-   * If no LLM is available, returns true (fail-open — stuck commands need recovery).
+   *
+   * When the LLM judge is UNAVAILABLE (no provider) or ERRORS (rate-limited /
+   * circuit-open / timeout — common under load), this FAILS CLOSED: it does NOT
+   * interrupt below the deterministic hard ceiling, and only returns "stuck"
+   * once the command has run past `hardCeilingMs`. This is the "No Silent
+   * Degradation to Brittle Fallback" rule applied to a DESTRUCTIVE action
+   * (Ctrl+C kills the running command): a false interrupt of a legitimate long
+   * build/test is frequent and costly, so the safe direction when the judge
+   * can't run is to leave the command alone — while the hard ceiling still
+   * deterministically recovers a genuinely hung command (e.g. `crontab -`
+   * waiting on stdin) without any LLM. (Previously this fail-opened, which under
+   * load Ctrl+C'd every command running past the 3-min threshold.)
    */
   private async isCommandStuck(command: string, elapsedMs: number, recentOutput = ''): Promise<boolean> {
-    if (!this.intelligence) return true; // No LLM → fail-open
+    if (!this.intelligence) return this.hardCeilingExceeded(elapsedMs); // No LLM → fail CLOSED (ceiling only)
 
     const elapsedMin = Math.round(elapsedMs / 60000);
     // Keep the output sample small — enough for context, not enough to blow the token budget.
@@ -597,6 +718,7 @@ export class SessionWatchdog extends EventEmitter {
       const response = await this.intelligence.evaluate(prompt, {
         maxTokens: 5,
         temperature: 0,
+        attribution: { component: 'SessionWatchdog' }, // attribution for /metrics/features
       });
       const answer = response.trim().toLowerCase();
       if (answer === 'legitimate') {
@@ -606,10 +728,27 @@ export class SessionWatchdog extends EventEmitter {
       }
       return true;
     } catch (err) {
-      // @silent-fallback-ok — LLM intelligence is optional; fail-open to recover stuck processes
-      console.warn(`[Watchdog] LLM command check failed, assuming stuck:`, err);
-      return true; // Fail-open
+      // LLM judge errored (rate-limit / circuit-open / timeout — common under
+      // load). A destructive Ctrl+C must NOT fail-open to a brittle default
+      // (that interrupted legitimate builds/tests under load). Fail CLOSED: only
+      // escalate once the deterministic hard ceiling is exceeded.
+      const stuck = this.hardCeilingExceeded(elapsedMs);
+      console.warn(
+        `[Watchdog] LLM command check failed; failing CLOSED ` +
+        `(${stuck ? 'past hard ceiling → escalate' : 'no interrupt'}):`,
+        err,
+      );
+      return stuck;
     }
+  }
+
+  /**
+   * Deterministic backstop for the fail-closed paths: true once a command has
+   * run past `hardCeilingMs`. A ceiling of 0 disables it (pure fail-closed —
+   * never interrupt without a positive LLM "stuck" verdict).
+   */
+  private hardCeilingExceeded(elapsedMs: number): boolean {
+    return this.hardCeilingMs > 0 && elapsedMs > this.hardCeilingMs;
   }
 
   // --- Process utilities (self-contained, no shared module) ---
@@ -623,16 +762,16 @@ export class SessionWatchdog extends EventEmitter {
    * @deprecated method name retained for v0.x compat — internal callers
    * use the framework-generic shape.
    */
-  private getClaudePid(tmuxSession: string): number | null {
+  private async getClaudePid(tmuxSession: string): Promise<number | null> {
     return this.getFrameworkPid(tmuxSession);
   }
 
-  private getFrameworkPid(tmuxSession: string): number | null {
+  private async getFrameworkPid(tmuxSession: string): Promise<number | null> {
     try {
       // Get pane PID
-      const panePidStr = shellExec(
+      const panePidStr = (await shellExecAsync(
         `${this.config.sessions.tmuxPath} list-panes -t "=${tmuxSession}" -F "#{pane_pid}" 2>/dev/null`
-      ).trim().split('\n')[0];
+      )).trim().split('\n')[0];
       if (!panePidStr) return null;
       const panePid = parseInt(panePidStr, 10);
       if (isNaN(panePid)) return null;
@@ -642,7 +781,7 @@ export class SessionWatchdog extends EventEmitter {
       // own command first — if it matches a known framework binary,
       // return it. Without this, pgrep -P finds no match and the
       // watchdog silently no-ops.
-      const paneCmd = shellExec(`ps -p ${panePid} -o comm= 2>/dev/null`).trim();
+      const paneCmd = (await shellExecAsync(`ps -p ${panePid} -o comm= 2>/dev/null`)).trim();
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { listProcessSignals } = require('./frameworkProcessSignals.js');
       const signals = listProcessSignals();
@@ -663,9 +802,9 @@ export class SessionWatchdog extends EventEmitter {
       // Fallback: pane runs a shell wrapper that has a framework CLI as
       // a child. egrep alternation over every framework's bracket needle.
       const needle = signals.map((s: { psGrepNeedle: string }) => s.psGrepNeedle).join('|');
-      const childPidStr = shellExec(
+      const childPidStr = (await shellExecAsync(
         `pgrep -P ${panePid} 2>/dev/null | xargs -I@ ps -p @ -o pid=,command= 2>/dev/null | egrep -i '${needle}' | head -1 | awk '{print $1}'`
-      ).trim();
+      )).trim();
       if (!childPidStr) return null;
       const pid = parseInt(childPidStr, 10);
       return isNaN(pid) ? null : pid;
@@ -675,15 +814,15 @@ export class SessionWatchdog extends EventEmitter {
     }
   }
 
-  private getChildProcesses(pid: number): ChildProcessInfo[] {
+  private async getChildProcesses(pid: number): Promise<ChildProcessInfo[]> {
     try {
-      const childPidsStr = shellExec(`pgrep -P ${pid} 2>/dev/null`).trim();
+      const childPidsStr = (await shellExecAsync(`pgrep -P ${pid} 2>/dev/null`)).trim();
       if (!childPidsStr) return [];
 
       const childPids = childPidsStr.split('\n').filter(Boolean).join(',');
       if (!childPids) return [];
 
-      const output = shellExec(`ps -o pid=,etime=,command= -p ${childPids} 2>/dev/null`).trim();
+      const output = (await shellExecAsync(`ps -o pid=,etime=,command= -p ${childPids} 2>/dev/null`)).trim();
       if (!output) return [];
 
       const results: ChildProcessInfo[] = [];
@@ -716,7 +855,7 @@ export class SessionWatchdog extends EventEmitter {
    * Returns true if this PID looks like a waiting consumer in an active
    * pipeline — in which case escalation should be skipped.
    */
-  private hasActivePipelineSibling(pid: number, command: string): boolean {
+  private async hasActivePipelineSibling(pid: number, command: string): Promise<boolean> {
     // Step 1: is the command a stdin-consuming candidate at all?
     const consumer = STDIN_CONSUMER_PATTERNS.find(p => p.cmd.test(command));
     if (!consumer) return false;
@@ -727,14 +866,14 @@ export class SessionWatchdog extends EventEmitter {
 
     // Step 3: find the process group and peers.
     try {
-      const pgidStr = shellExec(`ps -o pgid= -p ${pid} 2>/dev/null`).trim();
+      const pgidStr = (await shellExecAsync(`ps -o pgid= -p ${pid} 2>/dev/null`)).trim();
       const pgid = parseInt(pgidStr, 10);
 
       // Check process group peers (pipelines share pgid on macOS/Linux).
       if (!isNaN(pgid) && pgid > 0) {
-        const peersOutput = shellExec(
+        const peersOutput = (await shellExecAsync(
           `ps -o pid=,command= -g ${pgid} 2>/dev/null`,
-        ).trim();
+        )).trim();
         for (const line of peersOutput.split('\n')) {
           const match = line.trim().match(/^(\d+)\s+(.+)$/);
           if (!match) continue;
@@ -750,11 +889,11 @@ export class SessionWatchdog extends EventEmitter {
       // Fallback: also check direct descendants of the consumer PID. In
       // some shell exec patterns the producer becomes a CHILD of the
       // exec'd consumer rather than a pgid sibling.
-      const childPidsStr = shellExec(`pgrep -P ${pid} 2>/dev/null`).trim();
+      const childPidsStr = (await shellExecAsync(`pgrep -P ${pid} 2>/dev/null`)).trim();
       if (childPidsStr) {
         const childPids = childPidsStr.split('\n').filter(Boolean).join(',');
         if (childPids) {
-          const childOutput = shellExec(`ps -o pid=,command= -p ${childPids} 2>/dev/null`).trim();
+          const childOutput = (await shellExecAsync(`ps -o pid=,command= -p ${childPids} 2>/dev/null`)).trim();
           for (const line of childOutput.split('\n')) {
             const match = line.trim().match(/^(\d+)\s+(.+)$/);
             if (!match) continue;
@@ -860,11 +999,6 @@ export class SessionWatchdog extends EventEmitter {
     }
   }
 
-  private killTmuxSession(tmuxSession: string): void {
-    try {
-      shellExec(`${this.config.sessions.tmuxPath} kill-session -t "=${tmuxSession}" 2>/dev/null`);
-    } catch {}
-  }
 
   private recordIntervention(
     sessionName: string,
@@ -1014,5 +1148,11 @@ export class SessionWatchdog extends EventEmitter {
     } catch {
       // @silent-fallback-ok — rotation failure is non-critical
     }
+  }
+
+  /** Sync in-memory runtime read for the GuardRegistry (GET /guards).
+   *  Cheap property read ONLY — getStatus() lists sessions. */
+  guardStatus(): { enabled: boolean; lastTickAt: number } {
+    return { enabled: this.enabled, lastTickAt: this.lastPollAt };
   }
 }

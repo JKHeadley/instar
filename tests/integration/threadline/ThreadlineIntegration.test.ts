@@ -1251,11 +1251,11 @@ describe('Threadline Integration Tests', () => {
       // Note: get() checks for JSONL existence which won't work in test env
       // So we check via the raw file instead
       const rawMap = JSON.parse(fs.readFileSync(
-        path.join(tmpDir, 'threadline', 'thread-resume-map.json'), 'utf-8',
+        path.join(tmpDir, 'threadline', 'conversations.json'), 'utf-8',
       ));
-      expect(rawMap[threadId]).toBeDefined();
-      expect(rawMap[threadId].state).toBe('active');
-      expect(rawMap[threadId].remoteAgent).toBe('remote-agent');
+      expect(rawMap.conversations[threadId]).toBeDefined();
+      expect(rawMap.conversations[threadId].state).toBe('active');
+      expect(rawMap.conversations[threadId].remoteAgent).toBe('remote-agent');
     });
 
     it('thread resolved -> new message creates new session', async () => {
@@ -1283,9 +1283,9 @@ describe('Threadline Integration Tests', () => {
       // Resolve the thread
       threadResumeMap.resolve(threadId);
       const rawMap = JSON.parse(fs.readFileSync(
-        path.join(tmpDir, 'threadline', 'thread-resume-map.json'), 'utf-8',
+        path.join(tmpDir, 'threadline', 'conversations.json'), 'utf-8',
       ));
-      expect(rawMap[threadId].state).toBe('resolved');
+      expect(rawMap.conversations[threadId].state).toBe('resolved');
     });
 
     it('multiple threads with same agent each have own session', () => {
@@ -1338,10 +1338,10 @@ describe('Threadline Integration Tests', () => {
       threadResumeMap.prune();
 
       const rawMap = JSON.parse(fs.readFileSync(
-        path.join(tmpDir, 'threadline', 'thread-resume-map.json'), 'utf-8',
+        path.join(tmpDir, 'threadline', 'conversations.json'), 'utf-8',
       ));
-      expect(rawMap[pinnedThreadId]).toBeDefined();
-      expect(rawMap[pinnedThreadId].pinned).toBe(true);
+      expect(rawMap.conversations[pinnedThreadId]).toBeDefined();
+      expect(rawMap.conversations[pinnedThreadId].pinned).toBe(true);
     });
 
     it('unpinned expired thread is pruned', () => {
@@ -1361,9 +1361,9 @@ describe('Threadline Integration Tests', () => {
       threadResumeMap.prune();
 
       const rawMap = JSON.parse(fs.readFileSync(
-        path.join(tmpDir, 'threadline', 'thread-resume-map.json'), 'utf-8',
+        path.join(tmpDir, 'threadline', 'conversations.json'), 'utf-8',
       ));
-      expect(rawMap[threadId]).toBeUndefined();
+      expect(rawMap.conversations[threadId]).toBeUndefined();
     });
 
     it('listActive returns only active and idle threads', () => {
@@ -1436,10 +1436,10 @@ describe('Threadline Integration Tests', () => {
       router.onSessionEnd(threadId, newUuid, 'session-1');
 
       const rawMap = JSON.parse(fs.readFileSync(
-        path.join(tmpDir, 'threadline', 'thread-resume-map.json'), 'utf-8',
+        path.join(tmpDir, 'threadline', 'conversations.json'), 'utf-8',
       ));
-      expect(rawMap[threadId].uuid).toBe(newUuid);
-      expect(rawMap[threadId].state).toBe('idle');
+      expect(rawMap.conversations[threadId].sessionUuid).toBe(newUuid);
+      expect(rawMap.conversations[threadId].state).toBe('idle');
 
       // Clean up the fake JSONL file
       SafeFsExecutor.safeRmSync(jsonlPath, { force: true, operation: 'tests/integration/threadline/ThreadlineIntegration.test.ts:1446' });
@@ -1471,10 +1471,10 @@ describe('Threadline Integration Tests', () => {
       router.onThreadResolved(threadId);
 
       const rawMap = JSON.parse(fs.readFileSync(
-        path.join(tmpDir, 'threadline', 'thread-resume-map.json'), 'utf-8',
+        path.join(tmpDir, 'threadline', 'conversations.json'), 'utf-8',
       ));
-      expect(rawMap[threadId].state).toBe('resolved');
-      expect(rawMap[threadId].resolvedAt).toBeDefined();
+      expect(rawMap.conversations[threadId].state).toBe('resolved');
+      expect(rawMap.conversations[threadId].resolvedAt).toBeDefined();
     });
   });
 
@@ -1892,9 +1892,9 @@ describe('Threadline Integration Tests', () => {
       router.onThreadFailed(threadId);
 
       const rawMap = JSON.parse(fs.readFileSync(
-        path.join(tmpDir, 'threadline', 'thread-resume-map.json'), 'utf-8',
+        path.join(tmpDir, 'threadline', 'conversations.json'), 'utf-8',
       ));
-      expect(rawMap[threadId].state).toBe('failed');
+      expect(rawMap.conversations[threadId].state).toBe('failed');
 
       // Clean up
       SafeFsExecutor.safeRmSync(jsonlPath, { force: true, operation: 'tests/integration/threadline/ThreadlineIntegration.test.ts:1903' });

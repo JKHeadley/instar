@@ -1,0 +1,21 @@
+{
+  "ts": "2026-07-23T22:14:02.085Z",
+  "slug": "login-flow-restart-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 94,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "PendingLoginStore deliberately persisted public flow metadata, but no boot consumer restored the framework process that metadata referred to. The submit route therefore conflated a durable record with a live pane and surfaced transport-style errors after restart."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Boot recovery is a one-shot pass over the finite durable pending-login set. It runs once per process start, performs at most one re-drive per incomplete record, and has no self-rescheduling path. Dead-flow submit refresh is user-triggered and single-flow bounded."
+  },
+  "verdict": "pass"
+}

@@ -122,6 +122,7 @@ export class ContextualEvaluator {
         model: modelTier,
         maxTokens: 500,
         temperature: 0,
+        attribution: { component: 'ContextualEvaluator' }, // attribution for /metrics/features
       });
 
       const evaluation = this.parseResponse(response);
@@ -354,6 +355,7 @@ Valid decisions: accept, adapt, defer, reject.`;
         model: modelTier,
         maxTokens: 300,
         temperature: 0,
+        attribution: { component: 'ContextualEvaluator' }, // attribution for /metrics/features
       });
 
       const evaluation = this.parseResponse(response);
@@ -413,6 +415,7 @@ Evaluate each dispatch. Respond with a JSON array of ${dispatches.length} object
       model: this.config.defaultModelTier,
       maxTokens: 300 * dispatches.length,
       temperature: 0,
+      attribution: { component: 'ContextualEvaluator' }, // attribution for /metrics/features
     });
 
     // Parse batch response

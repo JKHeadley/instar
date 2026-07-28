@@ -14,8 +14,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { MachineIdentity, MachineRegistry, MachineRegistryEntry, MachineRole, MachineCapability } from './types.js';
+import type { MachineIdentity, MachineRegistry, MachineRegistryEntry, MachineRole, MachineCapability, MachineHardware } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { assignNickname, isValidNickname } from './NicknameAssigner.js';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -23,7 +24,13 @@ const MACHINE_DIR = 'machine';
 const MACHINES_DIR = 'machines';
 const IDENTITY_FILE = 'identity.json';
 const SIGNING_KEY_FILE = 'signing-key.pem';
+// Pre-canonical-rename name some machine identities were keyed under; loadSigningKey
+// falls back to it so a legacy-keyed agent's lease coordinator still attaches.
+const LEGACY_SIGNING_KEY_FILE = 'signing-private.pem';
 const ENCRYPTION_KEY_FILE = 'encryption-key.pem';
+// Pre-canonical-rename name; loadEncryptionKey falls back to it for the same reason
+// loadSigningKey does (the mesh transport loads BOTH keys at lease/transport setup).
+const LEGACY_ENCRYPTION_KEY_FILE = 'encryption-private.pem';
 const REGISTRY_FILE = 'registry.json';
 const KEY_FILE_MODE = 0o600;
 const REGISTRY_VERSION = 1;
@@ -137,6 +144,11 @@ export class MachineIdentityManager {
     this.instarDir = instarDir;
   }
 
+  /** The state dir this manager is rooted at (for co-located stores, e.g. pairing sessions). */
+  get baseDir(): string {
+    return this.instarDir;
+  }
+
   // ── Paths ────────────────────────────────────────────────────────
 
   private get machineDir(): string {
@@ -237,14 +249,42 @@ export class MachineIdentityManager {
    * Load this machine's Ed25519 signing private key (PEM format).
    */
   loadSigningKey(): string {
-    return fs.readFileSync(this.signingKeyPath, 'utf-8');
+    try {
+      return fs.readFileSync(this.signingKeyPath, 'utf-8');
+    } catch (err) {
+      // Legacy fallback: machine identities created before the canonical rename
+      // wrote the signing key as 'signing-private.pem' (not 'signing-key.pem').
+      // Without this, such an agent throws ENOENT here — which aborts the whole
+      // lease-coordinator setup (found live 2026-05-31: the mini, keyed under the
+      // legacy name, never attached its LeaseCoordinator → never resolved the
+      // holder → MeshRpc rejected cross-machine transfer as not-router).
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        const legacy = path.join(this.machineDir, LEGACY_SIGNING_KEY_FILE);
+        if (fs.existsSync(legacy)) return fs.readFileSync(legacy, 'utf-8');
+      }
+      throw err;
+    }
   }
 
   /**
    * Load this machine's X25519 encryption private key (PEM format).
    */
   loadEncryptionKey(): string {
-    return fs.readFileSync(this.encryptionKeyPath, 'utf-8');
+    try {
+      return fs.readFileSync(this.encryptionKeyPath, 'utf-8');
+    } catch (err) {
+      // Same legacy fallback as loadSigningKey: identities created before the
+      // canonical rename wrote the encryption key as 'encryption-private.pem'.
+      // The mesh lease/transport setup loads this key too — found live
+      // 2026-05-31: with the signing key resolved, the mini's transport setup
+      // still threw ENOENT on the canonical 'encryption-key.pem', so the
+      // legacy-keyed machine's transport couldn't fully initialize.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        const legacy = path.join(this.machineDir, LEGACY_ENCRYPTION_KEY_FILE);
+        if (fs.existsSync(legacy)) return fs.readFileSync(legacy, 'utf-8');
+      }
+      throw err;
+    }
   }
 
   // ── Registry Management ──────────────────────────────────────────
@@ -303,15 +343,112 @@ export class MachineIdentityManager {
     const registry = this.loadRegistry();
     const now = new Date().toISOString();
 
+    // Nickname (Session Pool §L2): keep an already-assigned nickname (idempotent
+    // re-register), else auto-assign a friendly, collision-free one derived from
+    // the machine's own properties. Collision set = every OTHER machine's nickname.
+    const existing = registry.machines[identity.machineId];
+
+    // Sticky revocation (2026-06-07 Mac Mini resurrection, topic 21816): a revoked
+    // machine must NOT be silently brought back to 'active' by a re-register
+    // (re-join / re-pair / post-update self-registration). The merge path already
+    // keeps revocation sticky (mergeRegistry.mergeEntry); this is the OTHER door —
+    // a direct re-register would clobber `status` to 'active' via the spread below.
+    // Staying revoked across updates is the requirement; the only path back to
+    // active is an explicit un-revoke. Refuse loudly and leave the entry untouched.
+    if (existing && (existing.status === 'revoked' || existing.revokedAt)) {
+      console.warn(
+        `[MachineIdentity] Refusing to re-register revoked machine ${identity.machineId} `
+        + `(${identity.name}) as active — it stays revoked across updates. Un-revoke explicitly to restore.`,
+      );
+      return;
+    }
+    const existingNicknames = Object.entries(registry.machines)
+      .filter(([id]) => id !== identity.machineId)
+      .map(([, e]) => e.nickname)
+      .filter((n): n is string => typeof n === 'string' && n.length > 0);
+    const nickname =
+      existing?.nickname ??
+      assignNickname({ identityName: identity.name, platform: identity.platform, existingNicknames });
+
     registry.machines[identity.machineId] = {
+      ...(existing ?? {}),
       name: identity.name,
+      nickname,
       status: 'active',
       role,
-      pairedAt: now,
+      pairedAt: existing?.pairedAt ?? now,
       lastSeen: now,
     };
 
     this.saveRegistry(registry);
+  }
+
+  /**
+   * Set a machine's user-facing nickname (Session Pool §L2). Validates the
+   * format and pool-uniqueness (case-insensitive, excluding the machine itself);
+   * a collision is REJECTED (not silently suffixed) so the caller sees the
+   * conflict. Nickname is metadata only — renaming never moves a session or
+   * changes lease/ownership state.
+   *
+   * @throws if the machine is unknown, the nickname is malformed, or it collides.
+   */
+  updateNickname(machineId: string, nickname: string): void {
+    const trimmed = typeof nickname === 'string' ? nickname.trim() : '';
+    if (!isValidNickname(trimmed)) {
+      throw new Error(`Invalid nickname '${nickname}' — must be 1–40 chars of letters, digits, spaces, hyphens.`);
+    }
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) throw new Error(ERRORS.MACHINE_NOT_FOUND(machineId));
+
+    const lower = trimmed.toLowerCase();
+    for (const [id, e] of Object.entries(registry.machines)) {
+      if (id !== machineId && (e.nickname || '').trim().toLowerCase() === lower) {
+        throw new Error(`Nickname '${trimmed}' is already used by machine ${id}.`);
+      }
+    }
+
+    entry.nickname = trimmed;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+  }
+
+  /**
+   * Resolve a user-typed nickname to a machineId (Session Pool §L4 placement /
+   * transfer command resolution). Case-insensitive, trimmed, exact match over
+   * ACTIVE machines. Returns null if unknown — the caller surfaces the valid
+   * nicknames and refuses to mis-route (never a silent fallthrough).
+   * Nicknames are pool-unique (updateNickname enforces it), so a match is unique.
+   */
+  resolveNickname(nickname: string): string | null {
+    const target = (typeof nickname === 'string' ? nickname : '').trim().toLowerCase();
+    if (!target) return null;
+    const registry = this.loadRegistry();
+    for (const [machineId, entry] of Object.entries(registry.machines)) {
+      if (entry.status === 'active' && (entry.nickname || '').trim().toLowerCase() === target) {
+        return machineId;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Record this machine's self-attested hardware properties into its OWN registry
+   * entry (Session Pool §L2). The CALLER captures the hardware (e.g. via
+   * MachinePoolRegistry.captureHardware()) and passes it, so this manager stays
+   * free of `os`/registry-assembly concerns. Idempotent: only writes when the
+   * hardware actually changed (avoids a registry churn/sync on every boot). The
+   * entry must exist (the machine self-registers first). No-op for an unknown id.
+   */
+  recordSelfHardware(machineId: string, hardware: MachineHardware): boolean {
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) return false;
+    if (JSON.stringify(entry.hardware ?? null) === JSON.stringify(hardware)) return false; // unchanged
+    entry.hardware = hardware;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+    return true;
   }
 
   /**
@@ -360,6 +497,59 @@ export class MachineIdentityManager {
     const registry = this.loadRegistry();
     const entry = registry.machines[machineId];
     return entry?.lastKnownUrl ?? null;
+  }
+
+  /**
+   * multi-transport-mesh-comms — write this machine's advertised endpoint set into
+   * its registry entry. Rides the SAME authenticated registry-sync path as
+   * lastKnownUrl (syncSequence + authoredUnderEpoch + per-author replay guards),
+   * so a peer can only advertise endpoints under its own verified identity. The
+   * accept-ack's responder-identity verification is the load-bearing defense: a
+   * spoofed/bogus endpoint becomes a FAILED rope, never a trusted one.
+   */
+  updateMachineEndpoints(machineId: string, endpoints: import('./types.js').MeshEndpoint[]): void {
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) throw new Error(ERRORS.MACHINE_NOT_FOUND(machineId));
+    entry.endpoints = endpoints;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+  }
+
+  /** multi-transport-mesh-comms — read a machine's advertised endpoint set (or undefined). */
+  getMachineEndpoints(machineId: string): import('./types.js').MeshEndpoint[] | undefined {
+    const registry = this.loadRegistry();
+    return registry.machines[machineId]?.endpoints;
+  }
+
+  /**
+   * routing-control-room-spend Increment C (FD-6 rung 2, pool half) — publish
+   * this machine's created/adopted "💰 Routing & Spend Alerts" topic id as a
+   * content-free field on its registry entry (rides the SAME replicated
+   * registry-sync path as lastKnownUrl/endpoints).
+   */
+  updateRoutingSpendAlertTopic(machineId: string, topicId: number): void {
+    const registry = this.loadRegistry();
+    const entry = registry.machines[machineId];
+    if (!entry) throw new Error(ERRORS.MACHINE_NOT_FOUND(machineId));
+    entry.routingSpendAlertTopicId = topicId;
+    entry.lastSeen = new Date().toISOString();
+    this.saveRegistry(registry);
+  }
+
+  /**
+   * Read the pool-published alerts-topic id from ANY (non-revoked) machine
+   * entry — first hit wins; a new serving-lease holder INHERITS the id instead
+   * of re-creating. Returns undefined when no machine has published one.
+   */
+  readAnyRoutingSpendAlertTopic(): number | undefined {
+    const registry = this.loadRegistry();
+    for (const entry of Object.values(registry.machines)) {
+      if (entry.revokedAt) continue;
+      const id = entry.routingSpendAlertTopicId;
+      if (typeof id === 'number' && Number.isFinite(id)) return id;
+    }
+    return undefined;
   }
 
   /**
@@ -526,6 +716,8 @@ const GITIGNORE_ENTRIES = [
   '.instar/pairing/',
   '# Sandbox-safe worktrees (per-machine; multi-GB foreign-repo contents)',
   '.worktrees/',
+  '# Judgment-call provenance rows (machine-local decision context — never commit)',
+  'state/judgment-provenance/',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

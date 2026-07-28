@@ -36,8 +36,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import pc from 'picocolors';
 import { randomUUID } from 'node:crypto';
 import { execFileSync, execSync } from 'node:child_process';
-import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
+import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
+import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
+import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
+import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
+import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS } from '../core/instarSettingsHooks.js';
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
@@ -58,7 +62,11 @@ import {
 import type { InstarConfig } from '../core/types.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
+import { dashboardRefreshGateScript, dashboardRefreshScript } from '../server/DashboardRefreshDiagnostics.js';
 import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
+import { installCodexHooks } from '../core/installCodexHooks.js';
+import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
+import { ensureSlackReplyRelay, isSlackConfigured } from '../core/SlackReplyRelayInstaller.js';
 
 /**
  * Find a free port in the default range (4040-4099) by checking if anything
@@ -95,7 +103,7 @@ interface InitOptions {
    * a Codex-only install with no `.claude/` writes. `'both'` enables
    * dual-runtime use.
    */
-  framework?: 'claude-code' | 'codex-cli' | 'both';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'both';
 }
 
 /**
@@ -106,11 +114,13 @@ interface InitOptions {
  * users and the historical `npx instar` flow.
  */
 export function resolveEnabledFrameworks(
-  choice: 'claude-code' | 'codex-cli' | 'both' | undefined,
-): ReadonlyArray<'claude-code' | 'codex-cli'> {
+  choice: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'both' | undefined,
+): ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'> {
   switch (choice) {
     case 'codex-cli':
       return ['codex-cli'];
+    case 'gemini-cli':
+      return ['gemini-cli'];
     case 'both':
       return ['claude-code', 'codex-cli'];
     case 'claude-code':
@@ -118,6 +128,26 @@ export function resolveEnabledFrameworks(
     default:
       return ['claude-code'];
   }
+}
+
+/**
+ * Canonical set of frameworks instar knows how to install. Keep in sync with
+ * `IntelligenceFramework`. Used to validate the `enabledFrameworks` array read
+ * back from config.json: a hardcoded `f === 'claude-code' || f === 'codex-cli'`
+ * filter silently DROPPED `gemini-cli`, so a gemini-only config produced an empty
+ * filtered list and fell through to the `['claude-code']` default — which made
+ * refreshHooksAndSettings scaffold a Claude `.claude/settings.json` into a
+ * gemini-only agent (framework-issue: gemini-cli scaffold leak). Using a complete
+ * known-framework guard makes this drift-proof as new frameworks are added.
+ */
+export const KNOWN_FRAMEWORKS: ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'> = [
+  'claude-code',
+  'codex-cli',
+  'gemini-cli',
+];
+
+export function isKnownFramework(f: unknown): f is 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' {
+  return typeof f === 'string' && (KNOWN_FRAMEWORKS as readonly string[]).includes(f);
 }
 
 /**
@@ -247,6 +277,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
     projectName,
     port,
     sessions: {
+      projectName,
       tmuxPath,
       claudePath,
       projectDir,
@@ -288,7 +319,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
     },
     feedback: {
       enabled: true,
-      webhookUrl: 'https://dawn.bot-me.ai/api/instar/feedback',
+      webhookUrl: CANONICAL_FEEDBACK_URL,
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },
@@ -399,6 +430,10 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   console.log(`  ${pc.green('✓')} Created .instar/scripts/serendipity-capture.sh`);
   installSecretDropRetrieve(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-drop-retrieve.mjs`);
+  installSecretGet(projectDir);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-get.mjs`);
+  installEmitSessionClock(projectDir);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -445,6 +480,9 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
 .instar/state/
 .instar/logs/
 .instar/config.json
+
+# Cartographer doc-tree + snapshot (per-machine; 67MB index on a real tree) — fix #1069
+.instar/cartographer/
 
 # Node
 node_modules/
@@ -603,6 +641,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
     projectName,
     port,
     sessions: {
+      projectName,
       tmuxPath,
       claudePath,
       projectDir,
@@ -634,7 +673,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
     },
     feedback: {
       enabled: true,
-      webhookUrl: 'https://dawn.bot-me.ai/api/instar/feedback',
+      webhookUrl: CANONICAL_FEEDBACK_URL,
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },
@@ -784,6 +823,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   console.log(pc.green('  Created:') + ' .instar/scripts/serendipity-capture.sh');
   installSecretDropRetrieve(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-drop-retrieve.mjs');
+  installSecretGet(projectDir);
+  console.log(pc.green('  Created:') + ' .instar/scripts/secret-get.mjs');
 
   // Create .claude/skills/ directory and install built-in skills (gated)
   if (claudeEnabled) {
@@ -1039,6 +1080,12 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
     fs.mkdirSync(path.join(claudeDir, 'scripts'), { recursive: true });
     fs.mkdirSync(path.join(claudeDir, 'skills'), { recursive: true });
     fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({
+      // Claude Code retains chat transcripts under ~/.claude/projects for
+      // cleanupPeriodDays (default 30). On a multi-agent fleet, every background
+      // `claude -p` one-shot (sentinels/gates) writes a transcript, so 30 days
+      // accumulates hundreds of thousands of files. 14 days keeps ample --resume
+      // headroom while capping the pile-up. Tunable per-agent in settings.json.
+      cleanupPeriodDays: 14,
       hooks: {
         PreToolUse: [],
         PostToolUse: [],
@@ -1438,7 +1485,7 @@ Skills compound over time. Each one makes future sessions more capable. You are 
 Before EVER saying "I don't have", "I can't", or "this isn't available" — check what actually exists:
 
 \`\`\`bash
-curl http://localhost:\${INSTAR_PORT:-${port}}/capabilities
+curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/capabilities
 \`\`\`
 
 This returns your full capability matrix: scripts, hooks, Telegram status, jobs, relationships, and more. It is the source of truth about what you can do. **Never hallucinate about missing capabilities — verify first.**
@@ -1552,6 +1599,75 @@ curl http://localhost:\${INSTAR_PORT:-${port}}/evolution
  */
 export function installBuiltinSkills(skillsDir: string, port: number): void {
   const skills: Record<string, { name: string; description: string; content: string }> = {
+    'iterative-converging-audit': {
+      name: 'iterative-converging-audit',
+      description: 'Run any "find all instances of X" sweep as an iterative loop that does NOT stop at one pass — audit, fix, RE-audit, until a clean pass finds nothing new. For audits, reviews, research, compliance checks.',
+      content: ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT,
+    },
+    'agent-readiness': {
+      name: 'agent-readiness',
+      description: 'Score a task or workflow on its coordination-vs-judgment ratio (EXO 3.0 task-decomposition matrix).',
+      content: `---
+name: agent-readiness
+description: Score a task or workflow on its coordination-vs-judgment ratio to tell whether it's a good agent candidate (EXO 3.0 task-decomposition matrix).
+metadata:
+  user_invocable: "true"
+---
+
+# /agent-readiness
+
+Salim Ismail's EXO 3.0 diagnostic, made runnable: score a piece of work on its **coordination-vs-judgment ratio**. Coordination work — routing information, approvals, scheduling, status tracking, prescriptive/standardized steps — is what AI agents do best, so it's *agent-ready*. Judgment work — resolving ambiguity, handling exceptions, navigating relationships, making a call with no playbook — should stay with (or escalate to) humans.
+
+## When to use
+- Before delegating a task/workflow to an agent — is it actually a good candidate?
+- When deciding whether a process should be fully automated, agent-with-oversight, hybrid, or kept human-led.
+
+## How
+Score a task:
+\`\`\`bash
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' \\
+  -d '{"task":{"description":"Route invoices, schedule approvals, track status, compile a report, notify owners."}}' \\
+  http://localhost:\${INSTAR_PORT:-${port}}/agent-readiness/score
+\`\`\`
+Score a workflow:
+\`\`\`bash
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' \\
+  -d '{"workflow":{"steps":["Fetch the record","Assign accounts","Schedule orientation","Update the tracker"]}}' \\
+  http://localhost:\${INSTAR_PORT:-${port}}/agent-readiness/score
+\`\`\`
+Returns \`{ coordinationSignals, judgmentSignals, coordinationRatio, overallReadiness (0-100), recommendation, reason, matched }\`. \`recommendation\`: \`deploy-agent\` (75+), \`agent-with-oversight\` (55-74), \`hybrid\` (40-54), \`human-led\` (<40). Deterministic + advisory — never blocks. Pair with the MTP Protocol (\`/intent/org/test-action\`) to check both "is this agent-ready?" and "does our purpose endorse it?"
+`,
+    },
+    'agent-passport': {
+      name: 'agent-passport',
+      description: 'View this agent\'s digital passport and verify a peer\'s passport against a proposed action (EXO 3.0).',
+      content: `---
+name: agent-passport
+description: View this agent's digital passport (identity + trust + allowed/forbidden actions) and verify a peer's passport against a proposed action (EXO 3.0).
+metadata:
+  user_invocable: "true"
+---
+
+# /agent-passport
+
+Salim Ismail's EXO 3.0 "digital passport": every AI agent carries metadata saying what it's allowed and forbidden to do, and other agents watch compliance. Packages Instar's identity (name + routing fingerprint), trust level, and ORG-INTENT constraints into one portable passport + a peer-run compliance check.
+
+## How
+Your own passport:
+\`\`\`bash
+curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/passport
+\`\`\`
+→ \`{ version, agent, fingerprint, trustLevel, allowedCapabilities, forbiddenActions, issuedAt }\` (forbiddenActions = your ORG-INTENT constraints).
+
+Verify an action against a passport (peer-watches-compliance):
+\`\`\`bash
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' \\
+  -d '{"passport":{...},"action":"wire funds to a new vendor"}' \\
+  http://localhost:\${INSTAR_PORT:-${port}}/passport/verify
+\`\`\`
+→ \`{ permitted, basis, reason, matched? }\` where basis = \`forbidden-action\` | \`trust-floor\` (untrusted may observe, not act) | \`out-of-scope\` | \`ok\`. Deterministic + advisory. Pairs with \`/intent/org/test-action\`.
+`,
+    },
     'evolve': {
       name: 'evolve',
       description: 'Propose an evolution improvement to your own infrastructure, behavior, or capabilities.',
@@ -1892,7 +2008,7 @@ If no findings exist, report "No pending findings" and stop.
 3. **Assess each valid finding**:
    - Is it actionable? Does it describe a real issue or improvement?
    - Is it a duplicate of something already proposed?
-   - Check existing evolution proposals: \\\`curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals\\\`
+   - Check existing evolution proposals: \\\`curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals\\\`
 
 4. **Route the finding** (one of):
 
@@ -1913,7 +2029,7 @@ If no findings exist, report "No pending findings" and stop.
    curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/attention \\\\
      -H "Authorization: Bearer $AUTH" \\\\
      -H 'Content-Type: application/json' \\\\
-     -d '{"title":"Serendipity finding needs review: TITLE","body":"DESCRIPTION","priority":"low","source":"serendipity"}'
+     -d '{"id":"serendipity:FINDING_ID","title":"Serendipity finding needs review: TITLE","body":"DESCRIPTION","priority":"low","source":"serendipity"}'
    \\\`\\\`\\\`
 
 5. **Move processed finding** to \\\`.instar/state/serendipity/processed/\\\`:
@@ -1990,7 +2106,7 @@ cat .instar/soul.md
 
 2. **Review recent experience** — Check for identity-relevant learnings:
 \\\`\\\`\\\`bash
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
 \\\`\\\`\\\`
 
 3. **Ask yourself these questions** (not all will apply every time):
@@ -2025,7 +2141,7 @@ curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/identity/soul \\\\
 
 6. **Check drift** — See how far you've come from your initial state:
 \\\`\\\`\\\`bash
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/drift
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/drift
 \\\`\\\`\\\`
 
 ## When to Use
@@ -2066,7 +2182,7 @@ Verify that the agent's awareness infrastructure is healthy: topic bindings poin
 Read the auth token once:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 Check each area:
@@ -2074,7 +2190,7 @@ Check each area:
 ### 1. Topic-Project Bindings
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/topic-bindings
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/topic-bindings
 \\\`\\\`\\\`
 
 - Are all bindings still valid?
@@ -2084,7 +2200,7 @@ curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port
 ### 2. Project Map Freshness
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/project-map
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/project-map
 \\\`\\\`\\\`
 
 - Check the \\\`generatedAt\\\` timestamp.
@@ -2103,7 +2219,7 @@ Flag any that are missing, empty, or contain invalid JSON. Look for stale entrie
 ### 4. Context Segments
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/context
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/context
 \\\`\\\`\\\`
 
 - Are all expected segments present?
@@ -2138,7 +2254,7 @@ Review degradation events logged by the DegradationReporter, group repeated patt
 Read the auth token:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 ### 1. Read Events
@@ -2204,7 +2320,7 @@ Cross-validate agent state files for logical consistency. Detect orphaned refere
 Read the auth token:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 ### 1. Active Job Orphan
@@ -2212,7 +2328,7 @@ AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get
 If \\\`.instar/state/active-job.json\\\` exists, verify the session it references is actually running:
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/sessions
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/sessions
 \\\`\\\`\\\`
 
 Check if the session name matches. If the session is dead but active-job.json persists, it's orphaned — delete it.
@@ -2222,7 +2338,7 @@ Check if the session name matches. If the session is dead but active-job.json pe
 Read \\\`.instar/state/job-topic-mappings.json\\\`. For each mapping, verify the topic ID is reachable:
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/telegram/topics
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/telegram/topics
 \\\`\\\`\\\`
 
 If topics have been deleted, the mapping is stale — flag it.
@@ -2240,7 +2356,7 @@ Report bloated files and prune where safe.
 Read \\\`.instar/config.json\\\`. If Telegram is configured, verify the bot is connected:
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/health
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/health
 \\\`\\\`\\\`
 
 Check if the telegram field shows connected. If config says telegram but health says disconnected, report the discrepancy.
@@ -2277,7 +2393,7 @@ Review \\\`.instar/MEMORY.md\\\` for quality and hygiene. Memory is identity —
 Read the auth token:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 Read the full file: \\\`cat .instar/MEMORY.md\\\`
@@ -2352,13 +2468,13 @@ Check whether the guardians themselves are healthy. Monitors job execution, skip
 Read the auth token:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 ### 1. Job Health
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs
 \\\`\\\`\\\`
 
 For each enabled job, check:
@@ -2370,7 +2486,7 @@ For each enabled job, check:
 ### 2. Skip Ledger Trends
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/skip-ledger/workloads
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/skip-ledger/workloads
 \\\`\\\`\\\`
 
 If any job has been skipped more than 10 times by its gate, the gate may be misconfigured (always returning skip), or the feature it monitors is permanently broken.
@@ -2389,7 +2505,7 @@ Two parts: pipeline health AND active consumption.
 
 \\\`\\\`\\\`
 # Read everything that's still unreported
-UNREPORTED=$(curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/health/degradations | jq -c '.events[] | select(.reported == false)')
+UNREPORTED=$(curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/health/degradations | jq -c '.events[] | select(.reported == false)')
 \\\`\\\`\\\`
 
 For each unreported event, surface it to the attention queue using a stable id (one feature = one topic, even across days):
@@ -2415,7 +2531,7 @@ If the attention POST fails (Telegram down, etc.), do NOT call mark-reported —
 ### 5. Session Monitor
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/sessions
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/sessions
 \\\`\\\`\\\`
 
 Are there zombie sessions (status: running but started > 30 minutes ago for a job that should take 5)?
@@ -2457,13 +2573,13 @@ Check whether recent sessions contributed to long-term knowledge. Detects contin
 Read the auth token:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 ### 1. Recent Sessions
 
 \\\`\\\`\\\`
-curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/sessions
+curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/sessions
 \\\`\\\`\\\`
 
 Get sessions that completed in the last 8 hours.
@@ -2722,6 +2838,57 @@ Not user-invocable: the skill runs under explicit incident-response context, nev
 - \`docs/signal-vs-authority.md\` — the principle that forbids making rollback decisions from brittle signals alone; rollback is always a human-authorized action on a well-documented artifact.
 `,
     },
+    'verify-claim': {
+      name: 'verify-claim',
+      description: 'Verify a claim that something is built/wired/working using the 4-tier protocol (Existence -> Substantive -> Wired -> Data-Flow). Use before saying "shipped", "wired in", or "it works".',
+      content: `---
+name: verify-claim
+description: Verify a claim that something is built/wired/working using the 4-tier protocol (Existence -> Substantive -> Wired -> Data-Flow). Use before saying "shipped", "wired in", or "it works".
+metadata:
+  user_invocable: "true"
+---
+
+# /verify-claim
+
+Goal-backward verification of a single claim about the codebase. Cherry-picked from the GSD verifier methodology during the GSD-Instar integration spike.
+
+Use this BEFORE you tell a user something is "shipped", "wired in", "running", "done", or "working" — and any time green CI + passing unit tests are NOT sufficient evidence that a feature is actually alive (they often aren't: a component can be defined, compile, and have unit tests yet never be instantiated in the real boot path).
+
+## The 4-tier protocol
+
+Run the levels in order. A claim is VERIFIED only if it passes all applicable levels. Stop and report the first level that fails.
+
+**Level 1 — EXISTENCE.** Does the artifact exist? (\`[ -f path ]\`)
+
+**Level 2 — SUBSTANTIVE.** Is it real, not a stub? (\`wc -l\`, grep for TODO/FIXME/not-implemented). A file that exists but is 3 lines of stub fails Level 2.
+
+**Level 3 — WIRED.** Is it imported AND invoked from the real path? This is the level green tests most often skip. Grep for the import, then for construction (\`new X\` / \`X(\`) NOT just the import, then — for server features — confirm it is mounted/started in \`src/commands/server.ts\` / \`src/server/AgentServer.ts\`. A component imported but never constructed, or constructed but never started, fails Level 3: it is ORPHANED dead code even with green unit tests. (Exact failure from the "verify a component is actually wired" lesson — PR #334 shipped sentinels as dead code with a false "wired into server startup" claim.)
+
+**Level 4 — DATA-FLOW.** Does real data actually flow through it? Hit the endpoint and confirm a real payload (not 503/empty); confirm a renderer shows real source data; write-then-re-read a store through a fresh instance.
+
+## Status taxonomy (report one per claim)
+
+- VERIFIED — passes all four.
+- HOLLOW — wired but no real data flows.
+- ORPHANED — exists + substantive but not wired (dead code).
+- STUB — exists but not substantive.
+- MISSING — does not exist.
+
+## Output
+
+State the claim, the level reached, the status, and the exact commands you ran with their results. If anything below VERIFIED, say so plainly — do NOT round up to "done".
+
+## When to use
+
+- Before any "shipped" / "wired in" / "running" / "it works" message.
+- When green CI + unit tests are your only evidence (they prove the code COMPILES and works in isolation — not that it is instantiated in production).
+- During /build Phase 3 VERIFY, on each must-have.
+
+## Why
+
+Cherry-picked from the GSD verifier role. The insight: task completion is not goal achievement. A placeholder counts as a completed task but fails the goal. Goal-backward verification checks whether the supporting code actually exists, is substantive, is wired, and carries real data — the four ways "done" silently isn't.
+`,
+    },
   };
 
   for (const [slug, skill] of Object.entries(skills)) {
@@ -2736,8 +2903,66 @@ Not user-invocable: the skill runs under explicit incident-response context, nev
   // Install /build skill from bundled file (too large for inline content)
   installBuildSkill(skillsDir);
 
+  // Install /test-as-self skill (Task 4 Part 2 of the silent-stalls postmortem) —
+  // ships SKILL.md + scripts/verify.mjs as bundled files. The verifier is a
+  // deterministic post-deploy check (lease present/fresh/well-formed/tokenHash-only
+  // + Part 1 demote logged + crash-tail). Lets agents reproduce the harness
+  // workflow + capture the REAL crash signature instead of post-hoc forensics.
+  installTestAsSelfSkill(skillsDir);
+
   // Install autonomous skill with hooks and scripts (special case — needs full directory structure)
   installAutonomousSkill(skillsDir);
+
+  // Install the bundled developer-skill toolkit (spec-converge, instar-dev, …) —
+  // the tools Instar uses to develop itself, so EVERY agent has the complete
+  // capability to develop Instar (Agent Awareness + Framework-Agnostic
+  // "one shared source of truth"). Single source: the repo's skills/<slug>/ dirs
+  // (referenced by SourceTreeGuard / crossModelReviewer), shipped via
+  // package.json files[] and installed here by copy, install-if-missing.
+  installBundledDevSkills(skillsDir);
+}
+
+/**
+ * Canonical bundled developer-skill toolkit — the authored allowlist (single
+ * source of truth) of skills Instar uses to develop itself, installed to every
+ * agent. The skill files live as tracked dirs under the repo's `skills/<slug>/`
+ * (the one source, also referenced by SourceTreeGuard / crossModelReviewer /
+ * PostUpdateMigrator); they ship via the `skills` entry in package.json files[].
+ * Excludes document-only skills superseded by built-in infra (instar-telegram →
+ * telegram-reply.sh, command-guard → dangerous-command-guard.sh hook, etc.).
+ */
+export const BUNDLED_DEV_SKILLS = [
+  'spec-converge',
+  'instar-dev',
+  'systematic-debugging',
+  'smart-web-fetch',
+  'knowledge-base',
+  'instar-scheduler',
+  'agent-memory',
+  'agent-identity',
+  'instar-identity',
+  'credential-leak-detector',
+] as const;
+
+/**
+ * Install the bundled dev-skill toolkit by copying each allowlisted skill's
+ * directory from the packaged `skills/<slug>/` source into the agent's
+ * `.claude/skills/<slug>/`. Install-if-missing (preserves user customizations);
+ * recursive so scripts/ and templates/ subdirs come along.
+ */
+export function installBundledDevSkills(skillsDir: string): void {
+  const modDir = __dirname;
+  // Package layout: dist/commands/init.js → ../../skills/<slug>
+  const bundledRoot = path.join(modDir, '..', '..', 'skills');
+  for (const slug of BUNDLED_DEV_SKILLS) {
+    const targetDir = path.join(skillsDir, slug);
+    const targetSkill = path.join(targetDir, 'SKILL.md');
+    // Install-if-missing — check both casings (matches installBuildSkill).
+    if (fs.existsSync(targetSkill) || fs.existsSync(path.join(targetDir, 'skill.md'))) continue;
+    const bundledDir = path.join(bundledRoot, slug);
+    if (!fs.existsSync(path.join(bundledDir, 'SKILL.md'))) continue; // not packaged — defensive skip
+    fs.cpSync(bundledDir, targetDir, { recursive: true });
+  }
 }
 
 /**
@@ -2778,6 +3003,62 @@ Use \`python3 playbook-scripts/build-state.py init "TASK" --size STANDARD\` to s
 
 See the full skill documentation at: https://github.com/sagemindai/instar
 `);
+}
+
+/**
+ * Install the /test-as-self skill (Task 4 Part 2, spec
+ * docs/specs/SELF-PROPAGATION-HARNESS-SPEC.md) — bundled SKILL.md + a
+ * verify.mjs helper script. Mirrors installBuildSkill: prefer bundled .claude/
+ * skills/test-as-self/* from the package, fall back to a minimal inline pointer
+ * if the bundled files aren't present (preserves a usable skill if packaging
+ * ever omits them).
+ *
+ * The bundled verify.mjs reads a deployed throwaway agent's
+ *   state/telegram-poll-owner.json (the Part 1 lease artifact)
+ * and grep's logs/server.log for the demote line + crash signatures, producing
+ * a deterministic JSON report. This is the structural piece that replaces
+ * post-hoc log forensics with a reproducible verifier.
+ */
+function installTestAsSelfSkill(skillsDir: string): void {
+  const skillDir = path.join(skillsDir, 'test-as-self');
+  const skillFile = path.join(skillDir, 'SKILL.md');
+  const scriptDir = path.join(skillDir, 'scripts');
+  const scriptFile = path.join(scriptDir, 'verify.mjs');
+
+  // Idempotent — only install missing files; preserve operator customizations.
+  const skillMissing = !fs.existsSync(skillFile);
+  const scriptMissing = !fs.existsSync(scriptFile);
+  if (!skillMissing && !scriptMissing) return;
+
+  const modDir = __dirname;
+  const bundledSkill = path.join(modDir, '..', '..', '.claude', 'skills', 'test-as-self', 'SKILL.md');
+  const bundledScript = path.join(modDir, '..', '..', '.claude', 'skills', 'test-as-self', 'scripts', 'verify.mjs');
+
+  if (skillMissing) {
+    fs.mkdirSync(skillDir, { recursive: true });
+    if (fs.existsSync(bundledSkill)) {
+      fs.copyFileSync(bundledSkill, skillFile);
+    } else {
+      fs.writeFileSync(skillFile, `---
+name: test-as-self
+description: Deploy the current instar dist into a throwaway agent home and verify health.
+metadata:
+  user_invocable: "true"
+---
+
+# /test-as-self
+
+See the full skill at https://github.com/sagemindai/instar (.claude/skills/test-as-self/SKILL.md).
+The bundled SKILL.md and scripts/verify.mjs were not present in this package layout.
+`);
+    }
+  }
+
+  if (scriptMissing && fs.existsSync(bundledScript)) {
+    fs.mkdirSync(scriptDir, { recursive: true });
+    fs.copyFileSync(bundledScript, scriptFile);
+    try { fs.chmodSync(scriptFile, 0o755); } catch { /* best-effort */ }
+  }
 }
 
 /**
@@ -2852,7 +3133,7 @@ export function getDefaultJobs(port: number): object[] {
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 
 # Read recent activity logs to understand what happened in last 4 hours
 RECENT_LOGS=$(ls -t .instar/logs/activity-*.jsonl 2>/dev/null | head -1)
@@ -2862,7 +3143,9 @@ fi
 
 # Extract recent session activity and key events (filter out noise, keep significant events)
 echo "=== RECENT ACTIVITY (Last 4 Hours) ==="
-tail -500 "$RECENT_LOGS" 2>/dev/null | jq -r 'select(.type != "job-start" and .type != "job-queued") | "\(.timestamp) [\(.type)] \(.message // .title // .session_name // .slug // "")"' 2>/dev/null | tail -100
+tail -500 "$RECENT_LOGS" 2>/dev/null | jq -r 'select(.type | IN("job_triggered","job_gate_skip","job_skipped") | not) | "\(.timestamp) [\(.type)] \(.summary // .metadata.slug // "")"' | tail -100
+echo "--- volume summary (noise types excluded above) ---"
+tail -500 "$RECENT_LOGS" 2>/dev/null | jq -r '.type' 2>/dev/null | sort | uniq -c | sort -rn
 
 echo ""
 echo "=== YOUR TASK ==="
@@ -2876,7 +3159,7 @@ echo ""
 echo "If you find genuine learnings:"
 echo "1. Update .instar/MEMORY.md with the insight (append to the file)"
 echo "2. Be specific: include what was learned, why it matters, and how it should guide future work"
-echo "3. Signal completion: curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/reflection/record -H 'Content-Type: application/json' -d '{\"type\":\"quick\"}'"
+echo "3. Signal completion: curl -s -X POST -H \\"Authorization: Bearer \\$INSTAR_AUTH_TOKEN\\" -H \\"X-Instar-AgentId: \\$INSTAR_AGENT_ID\\" http://localhost:\${INSTAR_PORT:-${port}}/reflection/record -H 'Content-Type: application/json' -d '{\\"type\\":\\"quick\\"}'"
 echo ""
 echo "If nothing significant, do nothing. Silence means continuity is working as expected."`,
       },
@@ -2909,7 +3192,7 @@ echo "If nothing significant, do nothing. Silence means continuity is working as
       gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1`,
       execute: {
         type: 'script',
-        value: `RESULT=$(curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/feedback/retry 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('retried',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Feedback retry: $COUNT item(s) forwarded." || echo "Feedback retry: nothing pending."`,
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"; RESULT=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/feedback/retry 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('retried',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Feedback retry: $COUNT item(s) forwarded." || echo "Feedback retry: nothing pending."`,
       },
       tags: ['cat:infrastructure'],
     },
@@ -2922,10 +3205,14 @@ echo "If nothing significant, do nothing. Silence means continuity is working as
       expectedDurationMinutes: 3,
       model: 'opus',
       enabled: true,
-      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('learnings',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('learnings',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
-        value: `Harvest and synthesize learnings: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
+PORT="\${INSTAR_PORT:-${port}}"
+
+Harvest and synthesize learnings: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/learnings?applied=false"
 
 Review unapplied learnings and look for:
 1. **Patterns**: Multiple learnings pointing to the same conclusion
@@ -2933,10 +3220,10 @@ Review unapplied learnings and look for:
 3. **Cross-domain connections**: Insights from one area that apply to another
 
 For each actionable pattern found, create an evolution proposal:
-curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals -H 'Content-Type: application/json' -d '{"title":"...","source":"insight-harvest from LRN-XXX","description":"...","type":"...","impact":"...","effort":"..."}'
+curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/proposals -H 'Content-Type: application/json' -d '{"title":"...","source":"insight-harvest from LRN-XXX","description":"...","type":"...","impact":"...","effort":"..."}'
 
 Then mark the relevant learnings as applied:
-curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings/LRN-XXX/apply -H 'Content-Type: application/json' -d '{"appliedTo":"EVO-XXX"}'
+curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/learnings/LRN-XXX/apply -H 'Content-Type: application/json' -d '{"appliedTo":"EVO-XXX"}'
 
 Also update MEMORY.md with any patterns worth preserving long-term.
 
@@ -2953,18 +3240,22 @@ If no actionable patterns found, exit silently.`,
       expectedDurationMinutes: 2,
       model: 'haiku',
       enabled: true,
-      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/overdue 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('overdue',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/overdue 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('overdue',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
-        value: `Check for overdue commitments: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/overdue
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
+PORT="\${INSTAR_PORT:-${port}}"
+
+Check for overdue commitments: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/overdue
 
 For each overdue action:
 1. Assess: Can this be completed now? Is it still relevant?
 2. If actionable, attempt to complete it or advance it
-3. If no longer relevant, cancel it: curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/ACT-XXX -H 'Content-Type: application/json' -d '{"status":"cancelled","resolution":"No longer relevant because..."}'
+3. If no longer relevant, cancel it: curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/ACT-XXX -H 'Content-Type: application/json' -d '{"status":"cancelled","resolution":"No longer relevant because..."}'
 4. If blocked, escalate to the user via Telegram (if configured)
 
-Also check pending actions (curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions?status=pending) for items that have been pending more than 48 hours without a due date — these are forgotten commitments.
+Also check pending actions (curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/actions?status=pending") for items that have been pending more than 48 hours without a due date — these are forgotten commitments.
 
 If no overdue or stale items, exit silently.`,
       },
@@ -3114,10 +3405,10 @@ If no overdue or stale items, exit silently.`,
       expectedDurationMinutes: 1,
       model: 'haiku',
       enabled: true,
-      gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1 && AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null) && curl -sf -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/semantic/stats >/dev/null 2>&1`,
+      gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1 && AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}" && curl -sf -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/semantic/stats >/dev/null 2>&1`,
       execute: {
         type: 'script',
-        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null); AGENT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('agentName','Agent'))" 2>/dev/null); RESULT=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "Content-Type: application/json" -d "{\\"filePath\\":\\".instar/MEMORY.md\\",\\"agentName\\":\\"$AGENT\\"}" http://localhost:\${INSTAR_PORT:-${port}}/semantic/export-memory 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('entityCount',0))" 2>/dev/null || echo 0); EXCLUDED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('excludedCount',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Memory export: $COUNT entities written to MEMORY.md ($EXCLUDED excluded below threshold)." || echo "Memory export: no entities to export."`,
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"; AGENT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('agentName','Agent'))" 2>/dev/null); RESULT=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "Content-Type: application/json" -d "{\\"filePath\\":\\".instar/MEMORY.md\\",\\"agentName\\":\\"$AGENT\\"}" http://localhost:\${INSTAR_PORT:-${port}}/semantic/export-memory 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('entityCount',0))" 2>/dev/null || echo 0); EXCLUDED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('excludedCount',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Memory export: $COUNT entities written to MEMORY.md ($EXCLUDED excluded below threshold)." || echo "Memory export: no entities to export."`,
       },
       tags: ['cat:maintenance', 'role:worker', 'exec:script'],
     },
@@ -3150,7 +3441,7 @@ If no overdue or stale items, exit silently.`,
       gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1`,
       execute: {
         type: 'script',
-        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null); REFRESH=$(curl -s -X POST -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/refresh 2>/dev/null); DRIFT=$(curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/drift 2>/dev/null); ADDED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('added',[])))" 2>/dev/null || echo 0); REMOVED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('removed',[])))" 2>/dev/null || echo 0); CHANGED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('changed',[])))" 2>/dev/null || echo 0); UNMAPPED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('unmapped',[])))" 2>/dev/null || echo 0); if [ "$ADDED" -gt "0" ] || [ "$REMOVED" -gt "0" ] || [ "$CHANGED" -gt "0" ] || [ "$UNMAPPED" -gt "0" ]; then echo "Capability drift detected: +$ADDED -$REMOVED ~$CHANGED ?$UNMAPPED"; echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'  + {c[\"id\"]}') for c in d.get('added',[])]; [print(f'  - {r[\"id\"]}') for r in d.get('removed',[])]; [print(f'  ~ {c[\"id\"]} ({c[\"field\"]})') for c in d.get('changed',[])]" 2>/dev/null; else echo "Capability audit: no drift detected."; fi`,
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"; REFRESH=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/refresh 2>/dev/null); DRIFT=$(curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/drift 2>/dev/null); ADDED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('added',[])))" 2>/dev/null || echo 0); REMOVED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('removed',[])))" 2>/dev/null || echo 0); CHANGED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('changed',[])))" 2>/dev/null || echo 0); UNMAPPED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('unmapped',[])))" 2>/dev/null || echo 0); if [ "$ADDED" -gt "0" ] || [ "$REMOVED" -gt "0" ] || [ "$CHANGED" -gt "0" ] || [ "$UNMAPPED" -gt "0" ]; then echo "Capability drift detected: +$ADDED -$REMOVED ~$CHANGED ?$UNMAPPED"; echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'  + {c[\"id\"]}') for c in d.get('added',[])]; [print(f'  - {r[\"id\"]}') for r in d.get('removed',[])]; [print(f'  ~ {c[\"id\"]} ({c[\"field\"]})') for c in d.get('changed',[])]" 2>/dev/null; else echo "Capability audit: no drift detected."; fi`,
       },
       grounding: {
         requiresIdentity: false,
@@ -3172,17 +3463,17 @@ If no overdue or stale items, exit silently.`,
         type: 'prompt',
         value: `Identity review — check your identity coherence and growth.
 
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 
-1. **Check soul.md drift**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/drift
+1. **Check soul.md drift**: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/drift
    - If anyAboveThreshold is true, review the divergence. Is this healthy growth or unexpected drift?
    - If drift looks healthy, mark it reviewed: the growth is intentional.
    - If drift looks concerning, flag with [ATTENTION] so the user is notified.
 
-2. **Check pending changes**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/pending
+2. **Check pending changes**: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/pending
    - If pending changes exist, surface them to the user via Telegram (the user should approve/reject these).
 
-3. **Check for identity-relevant learnings**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
+3. **Check for identity-relevant learnings**: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
    - For each unapplied learning, assess: is this about operational knowledge (how to do something) or about your values, beliefs, or self-understanding?
    - If you find 3+ identity-relevant learnings since your last soul.md update, consider running /reflect.
    - Don't force it — if none of the learnings touch on identity, that's fine. Exit silently.
@@ -3192,7 +3483,7 @@ AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get
    - Is the Self-Observations section populated? If you've noticed behavioral patterns, document them.
    - Update Identity History if you make changes.
 
-5. **Integrity check**: curl -s -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/integrity
+5. **Integrity check**: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/integrity
    - If integrity fails, flag with [ATTENTION] — soul.md may have been modified outside normal channels.
 
 If everything is coherent and no reflection is needed, exit silently. Only report via [ATTENTION] if drift is concerning, integrity fails, or pending changes need user action.`,
@@ -3213,10 +3504,10 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       expectedDurationMinutes: 3,
       model: 'sonnet',
       enabled: true,
-      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=proposed 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=proposed 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
-        value: `Review pending evolution proposals: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=proposed\n\nFor each proposal:\n1. Read the title, description, type, and source\n2. Evaluate: Is this a genuine improvement? Is the effort worth the impact? Does it align with our goals?\n3. If approved, update status: curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"approved"}'\n4. If rejected or deferred, update with reason.\n\nDo NOT implement approved proposals — that's handled by the paired evolution-proposal-implement job.\n\nAlso check the dashboard: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution — report any highlights to the user if they seem important.\n\nIf no proposals need attention, exit silently.`,
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"\nAGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"\nPORT="\${INSTAR_PORT:-${port}}"\n\nReview pending evolution proposals: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/proposals?status=proposed"\n\nFor each proposal:\n1. Read the title, description, type, and source\n2. Evaluate: Is this a genuine improvement? Is the effort worth the impact? Does it align with our goals?\n3. If approved, update status: curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"approved"}'\n4. If rejected or deferred, update with reason.\n\nDo NOT implement approved proposals — that's handled by the paired evolution-proposal-implement job.\n\nAlso check the dashboard: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution — report any highlights to the user if they seem important.\n\nIf no proposals need attention, exit silently.`,
       },
       tags: ['cat:learning', 'role:worker', 'exec:prompt', 'pair:evolution-proposal-implement'],
     },
@@ -3229,10 +3520,10 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       expectedDurationMinutes: 10,
       model: 'opus',
       enabled: true,
-      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=approved 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
+      gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=approved 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
-        value: `Implement approved evolution proposals: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=approved\n\nFor each approved proposal:\n1. Read the full description and understand what needs to be built\n2. Implement it: create the skill/hook/job/config change described\n3. After implementation, mark complete: curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"implemented","resolution":"What was done"}'\n\nIf no approved proposals exist, exit silently.`,
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"\nAGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"\nPORT="\${INSTAR_PORT:-${port}}"\n\nImplement approved evolution proposals: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/proposals?status=approved"\n\nFor each approved proposal:\n1. Read the full description and understand what needs to be built\n2. Implement it: create the skill/hook/job/config change described\n3. After implementation, mark complete: curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"implemented","resolution":"What was done"}'\n\nIf no approved proposals exist, exit silently.`,
       },
       grounding: {
         requiresIdentity: true,
@@ -3252,7 +3543,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1`,
       execute: {
         type: 'prompt',
-        value: `Scan recent messages for commitments and promises.\n\nAUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)\n\n1. Read your bookmark: cat .instar/state/commitment-detection-bookmark.json 2>/dev/null || echo '{"lastProcessedId": 0}'\n2. Fetch new messages since bookmark from Telegram message log: tail -100 .instar/telegram-messages.jsonl\n3. For each new message, check: does it contain a commitment, promise, or action item? Look for patterns like 'I will', 'let me', 'I\\'ll build', 'we should', 'TODO', 'action item', deadlines, etc.\n4. For each detected commitment, register it: curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"title":"...","source":"commitment-detection","description":"...","dueDate":"..."}'\n5. Update bookmark with the last processed message ID.\n\nOnly process NEW messages since last bookmark. Exit silently if no new commitments found.`,
+        value: `Scan recent messages for commitments and promises.\n\nAUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"\n\n1. Read your bookmark: cat .instar/state/commitment-detection-bookmark.json 2>/dev/null || echo '{"lastProcessedId": 0}'\n2. Fetch new messages since bookmark from Telegram message log: tail -100 .instar/telegram-messages.jsonl\n3. For each new message, check: does it contain a commitment, promise, or action item? Look for patterns like 'I will', 'let me', 'I\\'ll build', 'we should', 'TODO', 'action item', deadlines, etc.\n4. For each detected commitment, register it: curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"title":"...","source":"commitment-detection","description":"...","dueDate":"..."}'\n5. Update bookmark with the last processed message ID.\n\nOnly process NEW messages since last bookmark. Exit silently if no new commitments found.`,
       },
       tags: ['cat:evolution', 'role:worker', 'exec:prompt', 'pair:evolution-overdue-check'],
     },
@@ -3265,10 +3556,10 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       expectedDurationMinutes: 1,
       model: 'haiku',
       enabled: true,
-      gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1`,
+      gate: dashboardRefreshGateScript(port),
       execute: {
         type: 'script',
-        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken','')).strip()" 2>/dev/null) && curl -sf -X POST -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/telegram/dashboard-refresh`,
+        value: dashboardRefreshScript(port),
       },
       tags: ['cat:infrastructure', 'role:worker', 'exec:script'],
       telegramNotify: false,
@@ -3284,7 +3575,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the GUARDIAN category. Your job is to review all guardian/monitoring jobs and assess the health of the monitoring system itself.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/guardian?sinceHours=24\n2. Analyze the report for:\n   - Jobs with high failure rates or consecutive failures\n   - Jobs that are being skipped excessively (especially for quota reasons)\n   - Schedule mismatches (jobs running too often or not often enough for their purpose)\n   - Model over-allocation (could any job use a cheaper model?)\n   - Contradictions between job findings (e.g., health-check says healthy but degradation-digest found issues)\n   - Coverage gaps (are there monitoring blind spots?)\n3. Read the handoff notes from each job — do they tell a coherent story?\n4. If you find actionable issues, write a clear summary. If everything is healthy, say so briefly.\n\nWrite your findings in [HANDOFF] tags for the next overseer run. Focus on trends and cross-job insights that individual jobs can't see.`,
+        value: `You are a Category Overseer for the GUARDIAN category. Your job is to review all guardian/monitoring jobs and assess the health of the monitoring system itself.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/guardian?sinceHours=24\n2. Analyze the report for:\n   - Jobs with high failure rates or consecutive failures\n   - Jobs that are being skipped excessively (especially for quota reasons)\n   - Schedule mismatches (jobs running too often or not often enough for their purpose)\n   - Model over-allocation (could any job use a cheaper model?)\n   - Contradictions between job findings (e.g., health-check says healthy but degradation-digest found issues)\n   - Coverage gaps (are there monitoring blind spots?)\n3. Read the handoff notes from each job — do they tell a coherent story?\n4. If you find actionable issues, write a clear summary. If everything is healthy, say so briefly.\n\nWrite your findings in [HANDOFF] tags for the next overseer run. Focus on trends and cross-job insights that individual jobs can't see.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3300,7 +3591,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the LEARNING category. Your job is to review all evolution/learning jobs and assess whether the learning pipeline is producing genuine value.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/learning?sinceHours=48\n2. Analyze:\n   - Are evolution proposals being generated AND accepted? What's the accept/reject ratio?\n   - Is insight-harvest finding novel insights or recycling stale ones?\n   - Are commitments being tracked and completed, or piling up?\n   - Is reflection-trigger producing meaningful MEMORY.md updates?\n   - Are any learning jobs consistently skipped due to quota? This means the learning pipeline is being starved.\n   - Model costs: reflection-trigger uses opus — is the quality difference worth it vs sonnet?\n3. Look for the meta-pattern: is the agent actually getting smarter over time, or is the learning pipeline just busy-work?\n4. Check handoff notes for patterns across runs.\n\nWrite findings in [HANDOFF] tags. Flag if the learning pipeline is producing diminishing returns.`,
+        value: `You are a Category Overseer for the LEARNING category. Your job is to review all evolution/learning jobs and assess whether the learning pipeline is producing genuine value.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/learning?sinceHours=48\n2. Analyze:\n   - Are evolution proposals being generated AND accepted? What's the accept/reject ratio?\n   - Is insight-harvest finding novel insights or recycling stale ones?\n   - Are commitments being tracked and completed, or piling up?\n   - Is reflection-trigger producing meaningful MEMORY.md updates?\n   - Are any learning jobs consistently skipped due to quota? This means the learning pipeline is being starved.\n   - Model costs: reflection-trigger uses opus — is the quality difference worth it vs sonnet?\n3. Look for the meta-pattern: is the agent actually getting smarter over time, or is the learning pipeline just busy-work?\n4. Check handoff notes for patterns across runs.\n\nWrite findings in [HANDOFF] tags. Flag if the learning pipeline is producing diminishing returns.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3316,7 +3607,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the MAINTENANCE category. Your job is to review all housekeeping/maintenance jobs and ensure they're keeping the system clean.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/maintenance?sinceHours=48\n2. Analyze:\n   - Is memory-hygiene actually reducing stale entries, or finding nothing each run?\n   - Is project-map-refresh keeping the map accurate? How often does it find drift?\n   - Is coherence-audit finding real misalignments or just confirming everything is fine?\n   - Are any maintenance jobs redundant with each other? (e.g., overlapping checks)\n   - Are skill-type jobs (coherence-audit, memory-hygiene) running correctly?\n   - Workload trends: are jobs processing fewer items over time (diminishing returns)?\n3. Maintenance jobs should trend toward finding LESS work over time. If they consistently find issues, something upstream is broken.\n\nWrite findings in [HANDOFF] tags. Recommend disabling or reducing frequency of jobs that consistently find nothing.`,
+        value: `You are a Category Overseer for the MAINTENANCE category. Your job is to review all housekeeping/maintenance jobs and ensure they're keeping the system clean.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/maintenance?sinceHours=48\n2. Analyze:\n   - Is memory-hygiene actually reducing stale entries, or finding nothing each run?\n   - Is project-map-refresh keeping the map accurate? How often does it find drift?\n   - Is coherence-audit finding real misalignments or just confirming everything is fine?\n   - Are any maintenance jobs redundant with each other? (e.g., overlapping checks)\n   - Are skill-type jobs (coherence-audit, memory-hygiene) running correctly?\n   - Workload trends: are jobs processing fewer items over time (diminishing returns)?\n3. Maintenance jobs should trend toward finding LESS work over time. If they consistently find issues, something upstream is broken.\n\nWrite findings in [HANDOFF] tags. Recommend disabling or reducing frequency of jobs that consistently find nothing.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3332,7 +3623,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/infrastructure?sinceHours=48\n2. Analyze:\n   - Is git-sync succeeding? Any merge conflicts or divergence?\n   - Is dashboard-link-refresh keeping links current? Could it run less often?\n   - Is feedback-retry actually retrying anything, or is the queue always empty?\n   - Model allocation: git-sync uses high priority — is that justified by its failure rate?\n   - Are any infrastructure jobs causing issues for other jobs (e.g., git-sync holding sessions)?\n3. Infrastructure jobs should be boring and reliable. Any excitement is a problem.\n\nWrite findings in [HANDOFF] tags. Keep it brief — infrastructure overseers should be the quietest.`,
+        value: `You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/infrastructure?sinceHours=48\n2. Analyze:\n   - Is git-sync succeeding? Any merge conflicts or divergence?\n   - Is dashboard-link-refresh keeping links current? Could it run less often?\n   - Is feedback-retry actually retrying anything, or is the queue always empty?\n   - Model allocation: git-sync uses high priority — is that justified by its failure rate?\n   - Are any infrastructure jobs causing issues for other jobs (e.g., git-sync holding sessions)?\n3. Infrastructure jobs should be boring and reliable. Any excitement is a problem.\n\nWrite findings in [HANDOFF] tags. Keep it brief — infrastructure overseers should be the quietest.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3348,7 +3639,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/development?sinceHours=48\n2. Analyze:\n   - Are development jobs consuming appropriate resources for their value?\n   - Are there CI/testing patterns that could be automated?\n3. Development jobs are only valuable when there's active development. If the codebase is stable, these could be reduced.\n\nWrite findings in [HANDOFF] tags.`,
+        value: `You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/development?sinceHours=48\n2. Analyze:\n   - Are development jobs consuming appropriate resources for their value?\n   - Are there CI/testing patterns that could be automated?\n3. Development jobs are only valuable when there's active development. If the codebase is stable, these could be reduced.\n\nWrite findings in [HANDOFF] tags.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3380,9 +3671,7 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
       };
       serverPort = config.port;
       if (Array.isArray(config.enabledFrameworks) && config.enabledFrameworks.length > 0) {
-        const filtered = config.enabledFrameworks.filter(
-          (f): f is 'claude-code' | 'codex-cli' => f === 'claude-code' || f === 'codex-cli',
-        );
+        const filtered = config.enabledFrameworks.filter(isKnownFramework);
         if (filtered.length > 0) enabledFrameworks = filtered;
       }
     }
@@ -3394,6 +3683,35 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
     installClaudeSettings(projectDir, serverPort);
     refreshClaudeMd(projectDir, stateDir);
   }
+
+  // Codex enforcement-hook layer: wire instar's safety gates into the Codex
+  // agent's native (Claude-compatible, blocking) hook system. Mirror of
+  // installClaudeSettings for the codex-cli framework. Writes the per-project
+  // <projectDir>/.codex/hooks.json (NOT the global ~/.codex — that would leak
+  // gates into the operator's personal Codex). Spec: docs/specs/codex-enforcement-hook-layer.md
+  const codexEnabled = enabledFrameworks.includes('codex-cli');
+  if (codexEnabled) {
+    installCodexHooks(projectDir);
+    // P0 (codex-full-parity): arm the hooks so Codex actually runs them on the first
+    // session — registration alone leaves them untrusted/dark. Best-effort + fail-soft at
+    // init: a brand-new agent may not be Codex-logged-in yet (auth lives in CODEX_HOME), in
+    // which case arming can't complete and the first update's migration re-arms. Idempotent.
+    const codexBin = detectCodexPath();
+    if (codexBin && !process.env.VITEST) {
+      try {
+        // light/cheap codex tier for the one-shot trust spawn. Held in a constant (not an
+        // inline quoted literal) so the default-jobs job-model scanner doesn't false-match it.
+        const codexArmModel = 'gpt-5.2';
+        armCodexHooks({
+          projectDir,
+          trustDriver: makeTmuxTrustDriver({ tmuxPath: detectTmuxPath() || 'tmux', codexBinary: codexBin, model: codexArmModel }),
+        });
+      } catch {
+        // fail-soft — the post-update migrator re-arms on the next update.
+      }
+    }
+  }
+
   refreshJobs(stateDir);
   refreshScripts(projectDir, stateDir);
 
@@ -3522,6 +3840,24 @@ function isWhatsAppConfigured(stateDir: string): boolean {
   return !!messaging?.some(m => m.type === 'whatsapp' && m.enabled);
 }
 
+function refreshSlackRelay(projectDir: string, stateDir: string, port: number, claudeCompatibility: boolean): void {
+  const config = readConfig(stateDir);
+  if (!config || !isSlackConfigured(config)) return;
+  const outcome = ensureSlackReplyRelay({
+    projectDir,
+    stateDir,
+    config,
+    template: loadRelayTemplate('slack-reply.sh', port),
+    claudeCompatibility,
+  });
+  if (outcome.errors.length > 0) {
+    throw new Error(`Slack reply relay install failed: ${outcome.errors.join('; ')}`);
+  }
+  const canonical = path.join(stateDir, 'scripts', 'slack-reply.sh');
+  const canonicalDegradation = outcome.degraded.find(line => line.startsWith(`${canonical}:`));
+  if (canonicalDegradation) throw new Error(`Slack reply relay not ready: ${canonicalDegradation}`);
+}
+
 /**
  * Install scripts for configured integrations (e.g., Telegram relay, WhatsApp relay).
  * Called during refresh to ensure scripts exist for all configured integrations.
@@ -3536,9 +3872,7 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   const enabled = ((): ReadonlyArray<string> => {
     const raw = (config as { enabledFrameworks?: unknown }).enabledFrameworks;
     if (Array.isArray(raw) && raw.length > 0) {
-      const filtered = raw.filter(
-        (f): f is 'claude-code' | 'codex-cli' => f === 'claude-code' || f === 'codex-cli',
-      );
+      const filtered = raw.filter(isKnownFramework);
       if (filtered.length > 0) return filtered;
     }
     return ['claude-code'];
@@ -3557,6 +3891,8 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   if (isWhatsAppConfigured(stateDir)) {
     installWhatsAppRelay(projectDir, port);
   }
+
+  refreshSlackRelay(projectDir, stateDir, port, claudeEnabled);
 
   // smart-fetch.py + git-sync-gate.sh both target `.claude/scripts/` and
   // are Claude-Code-specific (the agentic-web fetch script and the
@@ -3772,6 +4108,14 @@ Use \`threadline_relay explain\` for full details.
 }
 
 function installHooks(stateDir: string): void {
+  // Install provenance (framework-stall-coverage-matrix §3.2 degraded rung):
+  // classify this install source-carrying vs fleet ONCE, from the same signals
+  // the dev-agent gate uses + presence of the analyzable tree, and append the
+  // tamper-evident record the stall-coverage gate reads. Presence-scan
+  // idempotent; installHooks is the one seam every init path funnels through
+  // (fresh, existing, standalone, refreshHooksAndSettings).
+  recordInstallProvenanceIfAbsent(path.dirname(stateDir), stateDir);
+
   const hooksBaseDir = path.join(stateDir, 'hooks');
   const hooksDir = path.join(hooksBaseDir, 'instar');
   const customHooksDir = path.join(hooksBaseDir, 'custom');
@@ -3787,12 +4131,28 @@ function installHooks(stateDir: string): void {
   );
   fs.writeFileSync(path.join(hooksDir, 'session-start.sh'), migrator.getHookContent('session-start'), { mode: 0o755 });
 
+  // Auto-restart-on-MCP-inaccessible — fired backgrounded by session-start.sh.
+  // Dark by default; enabled on development agents. Install on fresh init too so
+  // new agents have parity with updated ones (migration-parity-hooks guard).
+  fs.writeFileSync(path.join(hooksDir, 'mcp-health-autorefresh.sh'), migrator.getHookContent('mcp-health-autorefresh'), { mode: 0o755 });
+
   // Dangerous command guard — supports safety levels 1 (ask user) and 2 (self-verify)
   fs.writeFileSync(path.join(hooksDir, 'dangerous-command-guard.sh'), `#!/bin/bash
 # Dangerous command guard — safety infrastructure for autonomous agents.
 # Supports safety.level in .instar/config.json:
 #   Level 1 (default): Block and ask user. Level 2: Agent self-verifies.
+# Input: Claude passes the command as arg \$1; Codex (stdin-only) delivers the
+# hook event as JSON on stdin. Claude uses tool_input.command; Codex's exec_command
+# tool uses tool_input.cmd — accept either (verified live 2026-05-24).
 INPUT="$1"
+if [ -z "$INPUT" ]; then
+  INPUT="$(cat 2>/dev/null | python3 -c "import sys,json
+try:
+    d=json.load(sys.stdin); ti=d.get('tool_input',{}) or {}
+    print(ti.get('command') or ti.get('cmd') or '')
+except Exception:
+    print('')" 2>/dev/null)"
+fi
 INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
 
 # Read safety level from config
@@ -3810,9 +4170,28 @@ for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};
   fi
 done
 
+# Safe-case carve-out: \`git push --force-with-lease\` to a NON-protected branch is the
+# legitimate way to update one's OWN amended/rebased PR branch. Still block plain --force/-f
+# and any force-push explicitly targeting a protected branch (main/master/develop/release*).
+FORCE_WITH_LEASE_OWN_BRANCH=0
+if echo "\$INPUT" | grep -qiE 'git +push[^|;&]*--force-with-lease'; then
+  # Scan ONLY the git-push invocation for a protected branch — NOT the whole input.
+  # The whole-input scan false-positived on unrelated text (e.g. a heredoc mentioning
+  # "release cadence"/"main"), blocking a legitimate PR-branch update (2026-06-07).
+  PUSH_INVOCATION=\$(echo "\$INPUT" | grep -oiE 'git +push[^|;&]*' | head -1)
+  if echo "\$PUSH_INVOCATION" | grep -qiE '(^|[[:space:]:/])(main|master|develop|release[A-Za-z0-9._/-]*)([[:space:]]|:|\$)'; then
+    FORCE_WITH_LEASE_OWN_BRANCH=0
+  else
+    FORCE_WITH_LEASE_OWN_BRANCH=1
+  fi
+fi
+
 # Risky commands — behavior depends on safety level
-for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd" "DROP TABLE" "DROP DATABASE" "TRUNCATE" "DELETE FROM"; do
+for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" "git clean -fd"; do
   if echo "\$INPUT" | grep -qi "\$pattern"; then
+    if [ "\$FORCE_WITH_LEASE_OWN_BRANCH" -eq 1 ] && echo "\$pattern" | grep -qiE 'git push (--force|-f)'; then
+      continue
+    fi
     if [ "\$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
       echo "Ask the user for explicit confirmation before running this command." >&2
@@ -3827,6 +4206,82 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
     fi
   fi
 done
+
+# SQL must look like a statement, not prose that merely names a keyword. Match
+# at input/statement start or immediately after a SQL-bearing quote/separator,
+# and require the following table/database identifier. Ambiguous statement
+# shapes still block; prose mentions in heredocs, echo text, JSON, or grep args
+# do not become destructive merely because the tool input contains the words.
+for sql_spec in \\
+  "D""ROP TABLE|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Dd][Rr][Oo][Pp][[:space:]]+[Tt][Aa][Bb][Ll][Ee]([[:space:]]+[Ii][Ff][[:space:]]+[Ee][Xx][Ii][Ss][Tt][Ss])?[[:space:]]+[^[:space:];]+" \\
+  "D""ROP DATABASE|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Dd][Rr][Oo][Pp][[:space:]]+[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]([[:space:]]+[Ii][Ff][[:space:]]+[Ee][Xx][Ii][Ss][Tt][Ss])?[[:space:]]+[^[:space:];]+" \\
+  "T""RUNCATE|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee][[:space:]]+([Tt][Aa][Bb][Ll][Ee][[:space:]]+)?[^[:space:];]+" \\
+  "D""ELETE FROM|(^[[:space:]]*|[;\\"'=][[:space:]]*)[Dd][Ee][Ll][Ee][Tt][Ee][[:space:]]+[Ff][Rr][Oo][Mm][[:space:]]+[^[:space:];]+"; do
+  pattern="\${sql_spec%%|*}"
+  sql_pattern="\${sql_spec#*|}"
+  if echo "\$INPUT" | grep -qE "\$sql_pattern"; then
+    if [ "\$SAFETY_LEVEL" -eq 1 ]; then
+      echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
+      echo "Ask the user for explicit confirmation before running this command." >&2
+      exit 2
+    else
+      IDENTITY=""
+      if [ -f "\$INSTAR_DIR/AGENT.md" ]; then
+        IDENTITY=\$(head -20 "\$INSTAR_DIR/AGENT.md" | tr '\\n' ' ')
+      fi
+      echo "{\\"decision\\":\\"approve\\",\\"additionalContext\\":\\"=== SELF-VERIFICATION REQUIRED ===\\\\nDestructive command detected: \$pattern\\\\n\\\\n1. Is this necessary for the current task?\\\\n2. What are the consequences if this goes wrong?\\\\n3. Is there a safer alternative?\\\\n4. Does this align with your principles?\\\\n\\\\nIdentity: \$IDENTITY\\\\n\\\\nIf ALL checks pass, proceed. If ANY fails, stop.\\\\n=== END SELF-VERIFICATION ===\\"}"
+      exit 0
+    fi
+  fi
+done
++
+# 'gh pr merge' watch-exit-merge gate — closes the PR #539 class.
+# 'gh run watch' returns 0 on workflow COMPLETION regardless of conclusion;
+# branch-protection checks can still be RED. Refuse 'gh pr merge' if any
+# check is non-pass. '--auto' is the documented safe path; let it through.
+if echo "\$INPUT" | grep -qiE '(^|[;&|(\\s])gh +pr +merge( |\$|--)'; then
+  if echo "\$INPUT" | grep -qE '(^| )--auto( |\$)'; then
+    : # --auto is the safe async gate; allow.
+  else
+    PR_NUM=\$(echo "\$INPUT" | grep -oE 'gh +pr +merge[ +-]+[0-9]+' | grep -oE '[0-9]+' | head -1)
+    if [ -z "\$PR_NUM" ]; then
+      PR_NUM=\$(gh pr view --json number -q .number 2>/dev/null)
+    fi
+    if [ -n "\$PR_NUM" ]; then
+      CHECKS_JSON=\$(gh pr checks "\$PR_NUM" --json name,state 2>/dev/null)
+      if [ -n "\$CHECKS_JSON" ]; then
+        NON_OK=\$(echo "\$CHECKS_JSON" | python3 -c "
+import sys, json
+try:
+    rows = json.loads(sys.stdin.read())
+    if isinstance(rows, list):
+        bad = [r.get('name','?') + '=' + str(r.get('state','?')) for r in rows
+               if str(r.get('state','')).upper() not in ('SUCCESS','SKIPPED','SKIPPING','NEUTRAL','')]
+        print(','.join(bad))
+except Exception:
+    pass
+" 2>/dev/null)
+        if [ -n "\$NON_OK" ]; then
+          echo "BLOCKED: PR #\$PR_NUM has non-passing checks: \$NON_OK" >&2
+          echo "" >&2
+          echo "'gh pr merge' must not run while any check is failing, pending, or queued." >&2
+          echo "Closes the 2026-05-27 #539 watch-exit-merge class — 'gh run watch' returns 0" >&2
+          echo "on workflow completion regardless of conclusion, which caused a fix-forward" >&2
+          echo "(#540) + a fleet outage when #539 was merged on a red unit-test shard." >&2
+          echo "" >&2
+          echo "Options:" >&2
+          echo "  1) Wait. Re-check with: gh pr checks \$PR_NUM" >&2
+          echo "  2) Use 'gh pr merge --auto' — async gate that ONLY fires when all" >&2
+          echo "     checks pass. Documented safe path." >&2
+          echo "  3) If a non-passing check is an intentional skip (e.g. Contract Tests" >&2
+          echo "     on non-tagged PRs), it appears as SKIPPED / SKIPPING in" >&2
+          echo "     'gh pr checks --json state' output and the gate already allows it." >&2
+          exit 2
+        fi
+      fi
+    fi
+  fi
+fi
 `, { mode: 0o755 });
 
   // Grounding before messaging — full pipeline with convergence check.
@@ -3846,6 +4301,7 @@ done
   // Deferral detector, post-action reflection, external communication guard
   // All use shared templates from PostUpdateMigrator for DRY maintenance.
   fs.writeFileSync(path.join(hooksDir, 'deferral-detector.js'), migrator.getHookContent('deferral-detector'), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'self-stop-guard.js'), migrator.getHookContent('self-stop-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'post-action-reflection.js'), migrator.getHookContent('post-action-reflection'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'external-communication-guard.js'), migrator.getHookContent('external-communication-guard'), { mode: 0o755 });
 
@@ -3861,6 +4317,14 @@ done
   // Response review — Coherence Gate response review pipeline.
   // Stop hook that calls /review/evaluate for LLM-powered response quality checking.
   fs.writeFileSync(path.join(hooksDir, 'response-review.js'), migrator.getHookContent('response-review'), { mode: 0o755 });
+
+  // Unjustified Stop Gate router — Stop hook that calls the server-side gate.
+  // Shadow-mode by default; enforcement is controlled server-side.
+  fs.writeFileSync(path.join(hooksDir, 'stop-gate-router.js'), migrator.getHookContent('stop-gate-router'), { mode: 0o755 });
+
+  // Verify-Before-Done observer — structural client-side TurnEvidence, always
+  // installed; fleet-dark/dev-dry-run gating occurs inside the hook + route.
+  fs.writeFileSync(path.join(hooksDir, 'completion-claim-observe.js'), migrator.getHookContent('completion-claim-observe'), { mode: 0o755 });
 
   // Hook event reporter — posts hook events to the Instar server for observability
   // and session resumption (claudeSessionId). Uses command hooks because Claude Code
@@ -3879,6 +4343,12 @@ done
   // hook, yet settings.json references it — silent "No such file" on every
   // Stop event until they ran an upgrade.
   fs.writeFileSync(path.join(hooksDir, 'build-stop-hook.sh'), migrator.getHookContent('build-stop-hook'), { mode: 0o755 });
+
+  // Model-Tier Escalation §5.4 signal hooks (FABLE-MODEL-ESCALATION-SPEC §10).
+  // Shares the PostUpdateMigrator content so init and upgrade produce the same
+  // file (settings-template.json registers both for fresh agents).
+  fs.writeFileSync(path.join(hooksDir, 'model-tier-skill-entry.sh'), migrator.getHookContent('model-tier-skill-entry'), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'model-tier-reconciler.js'), migrator.getHookContent('model-tier-reconciler'), { mode: 0o755 });
 }
 
 function getHookEventReporterScript(): string {
@@ -3915,6 +4385,15 @@ process.stdin.on('end', async () => {
       event: input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
       session_id: input.session_id || '',
       tool_name: input.tool_name || '',
+      // green-pr-automerge Layer 2: forward the session cwd so the server can
+      // resolve the ending session's branch (without it, Layer 2 ships inert).
+      // (Reconciled with the PostUpdateMigrator copy — keep BOTH in sync.)
+      cwd: input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd() || '',
+      // scope-accretion ADVISORY ledger (spec autonomous-scope-accretion-
+      // completion.md R18): forward the Write/Edit file path for attribution
+      // detail. Optional + designed-benign: the receiver stores extra fields
+      // as-is and a payload without it remains valid.
+      file_path: (input.tool_input && (input.tool_input.file_path || input.tool_input.path)) || '',
     });
 
     const url = new URL(serverUrl + '/hooks/events?instar_sid=' + instarSid);
@@ -4391,6 +4870,69 @@ function installSecretDropRetrieve(projectDir: string): void {
   fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
 }
 
+/**
+ * Install the hardened vault retrieval helper (.instar/scripts/secret-get.mjs).
+ * Sibling of installSecretDropRetrieve: the Session Boot Self-Knowledge block
+ * names vault secrets and points at this script as the read path (value →
+ * stdout for piping, names/diagnostics → stderr, never echoed). Spec:
+ * docs/specs/session-boot-self-knowledge.md §Retrieval affordance.
+ */
+function installSecretGet(projectDir: string): void {
+  const scriptsDir = path.join(projectDir, '.instar', 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+
+  const scriptPath = path.join(scriptsDir, 'secret-get.mjs');
+
+  const modDir = __dirname;
+  const candidates = [
+    path.resolve(modDir, '..', 'templates', 'scripts', 'secret-get.mjs'),
+    path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'secret-get.mjs'),
+  ];
+
+  let scriptContent = '';
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      scriptContent = fs.readFileSync(candidate, 'utf-8');
+      break;
+    }
+  }
+
+  if (!scriptContent) {
+    return;
+  }
+
+  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+}
+
+/**
+ * Install the session-clock injector (.instar/scripts/emit-session-clock.sh).
+ * Shared routine for the time-awareness feature: renders the SESSION CLOCK line
+ * (render mode for the autonomous-stop-hook, query mode via GET /session/clock)
+ * so an agent always sees elapsed/remaining. New, non-customizable — always
+ * installed. Spec: docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md.
+ */
+function installEmitSessionClock(projectDir: string): void {
+  const scriptsDir = path.join(projectDir, '.instar', 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  const scriptPath = path.join(scriptsDir, 'emit-session-clock.sh');
+  const modDir = __dirname;
+  const candidates = [
+    path.resolve(modDir, '..', 'templates', 'scripts', 'emit-session-clock.sh'),
+    path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'emit-session-clock.sh'),
+  ];
+  let scriptContent = '';
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      scriptContent = fs.readFileSync(candidate, 'utf-8');
+      break;
+    }
+  }
+  if (!scriptContent) {
+    return;
+  }
+  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+}
+
 function installClaudeSettings(projectDir: string, serverPort?: number): void {
   const claudeDir = path.join(projectDir, '.claude');
   fs.mkdirSync(claudeDir, { recursive: true });
@@ -4413,44 +4955,13 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   }
   const hooks = settings.hooks as Record<string, unknown[]>;
 
-  // All instar-managed hooks for PreToolUse/Bash
-  const instarBashHooks = [
-    {
-      type: 'command',
-      command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/dangerous-command-guard.sh "$TOOL_INPUT"',
-      blocking: true,
-    },
-    {
-      type: 'command',
-      command: 'bash ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/grounding-before-messaging.sh "$TOOL_INPUT"',
-      blocking: false,
-    },
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/deferral-detector.js',
-      timeout: 5000,
-    },
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-communication-guard.js',
-      timeout: 5000,
-    },
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/post-action-reflection.js',
-      timeout: 5000,
-    },
-  ];
-
-  // External operation gate hook — intercepts MCP tool calls for safety evaluation
-  const instarMcpHooks = [
-    {
-      type: 'command',
-      command: 'node ${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/external-operation-gate.js',
-      blocking: true,
-      timeout: 5000,
-    },
-  ];
+  // All instar-managed hooks for PreToolUse/Bash + MCP. The canonical sets live
+  // in src/core/instarSettingsHooks.ts so the new-agent path (here) and the
+  // existing-agent path (PostUpdateMigrator.ensureInstarPreToolUseBashHooks)
+  // consume the SAME list and can never drift (the dark-guardrail gap, 2026-05-27).
+  // Fresh copies so later settings mutation never touches the shared constants.
+  const instarBashHooks = INSTAR_BASH_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
+  const instarMcpHooks = INSTAR_MCP_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
 
   // PreToolUse: merge instar hooks into existing or create fresh
   if (!hooks.PreToolUse) {
@@ -4639,16 +5150,25 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   }
 
   // Register autonomous stop hook — structural enforcement for /autonomous mode.
-  // Must be FIRST in the Stop chain so it blocks exit before other hooks run.
+  // Keep stop-gate-router first when present so shadow telemetry sees every
+  // Stop event before legacy autonomous blocking can short-circuit the chain.
   const hasAutonomousHook = stopHooks.some(e =>
     e.hooks?.some(h => h.command?.includes('autonomous-stop-hook')),
   );
   if (!hasAutonomousHook) {
-    (hooks.Stop as unknown[]).unshift({ matcher: '', hooks: [{
+    const autonomousEntry = { matcher: '', hooks: [{
       type: 'command',
       command: 'bash ${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
       timeout: 10000,
-    }] });
+    }] };
+    const stopGateIndex = stopHooks.findIndex(e =>
+      e.hooks?.some(h => h.command?.includes('stop-gate-router.js')),
+    );
+    if (stopGateIndex >= 0) {
+      stopHooks.splice(stopGateIndex + 1, 0, autonomousEntry);
+    } else {
+      stopHooks.unshift(autonomousEntry);
+    }
   }
 
   // PermissionRequest: auto-approve all — subagents don't inherit --dangerously-skip-permissions.

@@ -17,6 +17,7 @@ import path from 'node:path';
 import type { IntelligenceProvider } from '../core/types.js';
 import type { CommitmentTracker, CommitmentType } from './CommitmentTracker.js';
 import { DegradationReporter } from './DegradationReporter.js';
+import { readJsonlTailLines } from '../utils/jsonl-tail.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -56,6 +57,46 @@ interface DetectedCommitment {
   configPath?: string;
   configExpectedValue?: unknown;
   behavioralRule?: string;
+}
+
+// ── Over-detection guard ──────────────────────────────────────────
+// The #1 source of false-positive commitments is a bare approval/continuation
+// user message ("please proceed", "yes please") paired with an agent reply —
+// the LLM then registers a "commitment" for a message that asked for nothing
+// durable. A deterministic pre-filter drops those exchanges before the LLM ever
+// sees them, killing the worst of the noise without weakening genuine detection.
+
+const BARE_CONTINUATION_PHRASES = new Set<string>([
+  'yes', 'yes please', 'yep', 'yeah', 'ya', 'sure', 'ok', 'okay', 'k', 'kk',
+  'proceed', 'please proceed', 'go ahead', 'go for it', 'do it', 'please do', 'please',
+  'continue', 'keep going', 'carry on', 'next', 'go', 'yes go', 'yes go ahead',
+  'sounds good', 'sounds great', 'looks good', 'lgtm', 'great', 'perfect', 'awesome',
+  'nice', 'cool', 'excellent', 'wonderful', 'amazing', 'thanks', 'thank you', 'ty', 'thx',
+  'got it', 'makes sense', 'agreed', 'approved', 'yes approved', 'ship it', 'merge it',
+  'no', 'nope', 'not now', 'stop', 'wait', 'hold on', 'done', 'cool thanks',
+]);
+
+/**
+ * True when a user message is a bare approval / acknowledgement / continuation
+ * that requests nothing durable — so it must NOT seed a commitment. Pure +
+ * exported for unit tests of both sides of the boundary.
+ */
+export function isBareContinuation(text: string): boolean {
+  if (!text) return true;
+  const norm = text
+    .toLowerCase()
+    .replace(/[^\x00-\x7F]/g, ' ') // strip emoji / non-ASCII
+    .replace(/[^a-z0-9\s]/g, ' ')  // strip punctuation
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!norm) return true; // emoji-only / punctuation-only
+  // EXACT-match only — deliberately precise. A heuristic that filtered by an
+  // opener word ("do…", "go…") wrongly dropped real requests ("do something",
+  // "go deploy"); the safe direction for a detection pre-filter is to drop ONLY
+  // known-bare phrases and let anything ambiguous reach the LLM (favor false-
+  // negatives on the filter). Multi-word bare variants are enumerated above.
+  if (BARE_CONTINUATION_PHRASES.has(norm)) return true;
+  return false;
 }
 
 // ── Implementation ────────────────────────────────────────────────
@@ -187,8 +228,12 @@ export class CommitmentSentinel {
     if (!fs.existsSync(this.messagesPath)) return [];
 
     try {
-      const content = fs.readFileSync(this.messagesPath, 'utf-8');
-      const lines = content.trim().split('\n');
+      // Bounded TAIL read — never the whole file. This scanner only ever
+      // inspects the last `maxPerScan*10` lines, so loading the full multi-MB
+      // telegram-messages.jsonl on a 5-minute timer was a pure event-loop
+      // freeze (2026-06-22 batch). The 512KB window holds ~2,600 recent lines,
+      // far more than maxPerScan*10, while staying O(window) regardless of size.
+      const lines = readJsonlTailLines(this.messagesPath).lines;
       const messages: TelegramMessage[] = [];
       const maxPerScan = this.config.maxMessagesPerScan ?? 20;
 
@@ -229,6 +274,10 @@ export class CommitmentSentinel {
 
     for (let i = 0; i < messages.length - 1; i++) {
       if (messages[i].fromUser && !messages[i + 1].fromUser) {
+        // Drop bare approval/continuation exchanges before the LLM sees them —
+        // the dominant false-positive source (#49). A message that asks for
+        // nothing durable cannot seed a commitment.
+        if (isBareContinuation(messages[i].text)) continue;
         pairs.push({
           user: messages[i].text,
           agent: messages[i + 1].text,
@@ -276,13 +325,30 @@ Example response:
 For behavioral commitments, include a "behavioralRule" field with a clear imperative rule.
 For one-time-action, omit configPath.
 
-IMPORTANT: Only return genuine commitments where the agent explicitly agreed. Do not flag questions, status updates, or informational responses. Return ONLY the JSON array, nothing else.`;
+IMPORTANT: Only return genuine commitments where the user asked for something durable AND the agent explicitly agreed. Do NOT flag: questions, status updates, informational responses, or bare approvals / continuations ("yes", "please proceed", "go ahead", "sounds good") — those request nothing durable and are never commitments. Return ONLY the JSON array, nothing else.`;
 
     try {
       const response = await this.config.intelligence.evaluate(prompt, {
         model: 'fast',
         maxTokens: 500,
         temperature: 0,
+        attribution: { component: 'CommitmentSentinel' }, // attribution for /metrics/features
+        // Observable Intelligence: the sentinel ACTS (fired) when it detects at
+        // least one genuine commitment; an empty array is a no-op. Mirrors the
+        // parse below so /metrics/features reports a real fireRate.
+        classifyVerdict: (result) => {
+          try {
+            const t = result.trim();
+            const j = t.startsWith('```') ? t.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '') : t;
+            const arr = JSON.parse(j);
+            const acted = Array.isArray(arr) && arr.some((c: any) =>
+              c?.type && c.userRequest && c.agentResponse &&
+              ['config-change', 'behavioral', 'one-time-action'].includes(c.type));
+            return { acted };
+          } catch {
+            return { acted: false };
+          }
+        },
       });
 
       // Parse JSON from response

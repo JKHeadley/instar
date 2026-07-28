@@ -1,0 +1,8 @@
+{
+  "source": "example.com answering a probe-shaped POST (the wrong-server arm)",
+  "command": "curl -s -X POST -H 'Content-Type: application/json' -d '{\"probe\":\"rope-recovery\"}' https://example.com/mesh/rpc",
+  "capturedAt": "2026-07-02T08:10:26Z",
+  "machine": "echo laptop (build worktree)",
+  "redactions": [],
+  "note": "HTML 405 from a real non-mesh server; structural bytes untouched"
+}

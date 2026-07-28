@@ -374,6 +374,7 @@ Return ONLY valid JSON mapping node IDs to scores.`;
       model: 'fast',
       maxTokens: 500,
       temperature: 0,
+      attribution: { component: 'TreeTriage' }, // attribution for /metrics/features
     });
 
     return this.parseNodeTriageResponse(response, nodes.map(n => n.id), query, relevantLayers);
@@ -435,6 +436,7 @@ Return ONLY valid JSON, no explanation: {"${layers.map(l => l.id).join('": 0.0, 
       model: 'fast',
       maxTokens: 200,
       temperature: 0,
+      attribution: { component: 'TreeTriage' }, // attribution for /metrics/features
     });
 
     const scores = this.parseTriageResponse(response, layers.map(l => l.id));

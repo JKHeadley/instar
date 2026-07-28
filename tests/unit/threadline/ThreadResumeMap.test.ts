@@ -323,9 +323,8 @@ describe('ThreadResumeMap', () => {
         pinned: true,
       });
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      const data: Record<string, ThreadResumeEntry> = { [threadId]: entry };
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      // Phase 2a: the store is conversations.json; seed via the API.
+      map.save(threadId, entry);
 
       const result = map.getByRemoteAgent('agent-pinned');
       expect(result).toHaveLength(1);
@@ -352,6 +351,26 @@ describe('ThreadResumeMap', () => {
     it('returns empty array when no active threads', () => {
       map.save('thread-resolved', makeEntry({ state: 'resolved' }));
       expect(map.listActive()).toHaveLength(0);
+    });
+
+    it('archives stale active and idle threads before listing', () => {
+      // Anchor timestamps to REAL wall-clock time, not a hardcoded fixture date.
+      // listActive() archives internally via retireInactive(new Date()) (real now),
+      // so a fixed historical `now` makes this a time bomb: once real time advances
+      // past 24h beyond the fixture, the "fresh" entry ages out of the window and
+      // listActive() returns []. Relative-to-now keeps it deterministic forever.
+      const now = new Date();
+      const stale = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString();
+      const fresh = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
+
+      map.save('stale-active', makeEntry({ state: 'active', lastAccessedAt: stale, savedAt: stale }));
+      map.save('stale-idle', makeEntry({ state: 'idle', lastAccessedAt: stale, savedAt: stale }));
+      map.save('fresh-active', makeEntry({ state: 'active', lastAccessedAt: fresh, savedAt: fresh }));
+
+      expect(map.retireInactive(24 * 60 * 60 * 1000)).toBe(2);
+      expect(map.listActive().map(t => t.threadId)).toEqual(['fresh-active']);
+      expect(map.get('stale-active')?.state).toBe('archived');
+      expect(map.get('stale-idle')?.state).toBe('archived');
     });
   });
 
@@ -419,83 +438,57 @@ describe('ThreadResumeMap', () => {
   // ── Prune behavior ──────────────────────────────────────────
 
   describe('prune', () => {
+    // Phase 2a: the store is conversations.json — seed via the API, assert there.
+    const convKeys = (): string[] => {
+      const p = path.join(temp.stateDir, 'threadline', 'conversations.json');
+      if (!fs.existsSync(p)) return [];
+      return Object.keys(JSON.parse(fs.readFileSync(p, 'utf-8')).conversations ?? {});
+    };
+
     it('removes expired entries', () => {
       const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
-      const data: Record<string, ThreadResumeEntry> = {
-        'thread-old': makeEntry({
-          lastAccessedAt: eightDaysAgo,
-          savedAt: eightDaysAgo,
-        }),
-        'thread-new': makeEntry(),
-      };
-
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      map.save('thread-old', makeEntry({ lastAccessedAt: eightDaysAgo, savedAt: eightDaysAgo }));
+      map.save('thread-new', makeEntry());
 
       map.prune();
 
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      expect(raw['thread-old']).toBeUndefined();
-      expect(raw['thread-new']).toBeDefined();
+      expect(convKeys()).not.toContain('thread-old');
+      expect(convKeys()).toContain('thread-new');
     });
 
     it('removes resolved entries past grace period', () => {
       const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
-      const data: Record<string, ThreadResumeEntry> = {
-        'thread-resolved-old': makeEntry({
-          state: 'resolved',
-          resolvedAt: eightDaysAgo,
-          savedAt: new Date().toISOString(),
-        }),
-        'thread-resolved-recent': makeEntry({
-          state: 'resolved',
-          resolvedAt: new Date().toISOString(),
-          savedAt: new Date().toISOString(),
-          lastAccessedAt: new Date().toISOString(),
-        }),
-      };
-
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      map.save('thread-resolved-old', makeEntry({ state: 'resolved', resolvedAt: eightDaysAgo, lastAccessedAt: eightDaysAgo }));
+      map.save('thread-resolved-recent', makeEntry({ state: 'resolved', resolvedAt: new Date().toISOString(), lastAccessedAt: new Date().toISOString() }));
 
       map.prune();
 
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      expect(raw['thread-resolved-old']).toBeUndefined();
-      expect(raw['thread-resolved-recent']).toBeDefined();
+      expect(convKeys()).not.toContain('thread-resolved-old');
+      expect(convKeys()).toContain('thread-resolved-recent');
     });
 
     it('does not prune pinned entries even if expired', () => {
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-      const data: Record<string, ThreadResumeEntry> = {
-        'thread-pinned-old': makeEntry({
-          lastAccessedAt: thirtyDaysAgo,
-          savedAt: thirtyDaysAgo,
-          pinned: true,
-        }),
-      };
-
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      map.save('thread-pinned-old', makeEntry({ lastAccessedAt: thirtyDaysAgo, savedAt: thirtyDaysAgo, pinned: true }));
 
       map.prune();
 
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      expect(raw['thread-pinned-old']).toBeDefined();
+      expect(convKeys()).toContain('thread-pinned-old');
     });
   });
 
   // ── Persistence ──────────────────────────────────────────────
 
   describe('persistence', () => {
-    it('persists data to JSON file', () => {
+    it('persists data to the conversations store', () => {
       map.save('thread-persist', makeEntry());
 
-      const filePath = path.join(temp.stateDir, 'threadline', 'thread-resume-map.json');
+      // Phase 2a: ThreadResumeMap is a view over conversations.json.
+      const filePath = path.join(temp.stateDir, 'threadline', 'conversations.json');
       expect(fs.existsSync(filePath)).toBe(true);
 
       const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      expect(raw['thread-persist']).toBeDefined();
+      expect(raw.conversations['thread-persist']).toBeDefined();
     });
 
     it('survives reconstruction from file', () => {
@@ -576,6 +569,83 @@ describe('ThreadResumeMap', () => {
       const result = map.get(threadId);
       expect(result).not.toBeNull();
       expect(result!.uuid).toBe(testUuid);
+    });
+  });
+
+  describe('topic-linkage JSONL-guard exemption (Fix 1 / A1+C)', () => {
+    let temp2: ReturnType<typeof createTempDir>;
+    let map2: ThreadResumeMap;
+    beforeEach(() => { temp2 = createTempDir(); map2 = new ThreadResumeMap(temp2.stateDir, temp2.dir); });
+    afterEach(() => { temp2.cleanup(); cleanupFakeJsonl(); });
+
+    it('RETURNS a topic-bound entry (originTopicId set) even when no session JSONL exists', () => {
+      // No fake JSONL is created → jsonlExists(uuid) is false. Before the fix
+      // this entry was nulled (the A1/C root cause: inbound replies fell through
+      // to spawnNewThread and threadline_history 404'd).
+      map2.save('t-topicbound', makeEntry({ uuid: 'no-jsonl-uuid-00000000000000', originTopicId: 12304 }));
+      const entry = map2.get('t-topicbound');
+      expect(entry).not.toBeNull();
+      expect(entry!.originTopicId).toBe(12304);
+    });
+
+    it('still NULLS a non-topic entry whose session JSONL is gone (guard intact for the original case)', () => {
+      map2.save('t-plain', makeEntry({ uuid: 'gone-uuid-11111111111111111111', originTopicId: undefined }));
+      expect(map2.get('t-plain')).toBeNull();
+    });
+
+    it('still RETURNS a pinned non-topic entry without JSONL (pinned exemption unchanged)', () => {
+      map2.save('t-pinned', makeEntry({ uuid: 'gone-uuid-22222222222222222222', originTopicId: undefined, pinned: true }));
+      expect(map2.get('t-pinned')).not.toBeNull();
+    });
+  });
+
+  describe('live-session inject exemption (Layer 2 warm-inject)', () => {
+    // Stubs tmux liveness deterministically — no real tmux in CI. This is the
+    // production A2A continuity fix: a peer-to-peer follow-up must keep its entry
+    // (so ThreadlineRouter.tryInjectIntoLiveSession can deliver into the running
+    // session) even though the placeholder uuid has no transcript yet.
+    class StubLivenessMap extends ThreadResumeMap {
+      private readonly aliveNames: Set<string>;
+      constructor(stateDir: string, projectDir: string, aliveNames: Set<string>) {
+        super(stateDir, projectDir);
+        this.aliveNames = aliveNames;
+      }
+      protected sessionAlive(sessionName: string): boolean {
+        return this.aliveNames.has(sessionName);
+      }
+    }
+    let temp3: ReturnType<typeof createTempDir>;
+    afterEach(() => { temp3?.cleanup(); cleanupFakeJsonl(); });
+
+    it('RETURNS a non-topic entry without JSONL when its tmux session is ALIVE (live-inject path)', () => {
+      temp3 = createTempDir();
+      const map3 = new StubLivenessMap(temp3.stateDir, temp3.dir, new Set(['warm-sess']));
+      // placeholder uuid (no transcript), no originTopicId — the exact prod cold-spawn case
+      map3.save('t-warm', makeEntry({ uuid: 'placeholder-uuid-aaaaaaaaaaaaaa', originTopicId: undefined, sessionName: 'warm-sess' }));
+      const entry = map3.get('t-warm');
+      expect(entry).not.toBeNull();
+      expect(entry!.sessionName).toBe('warm-sess');
+    });
+
+    it('still NULLS a non-topic entry without JSONL when its session is DEAD (guard intact)', () => {
+      temp3 = createTempDir();
+      const map3 = new StubLivenessMap(temp3.stateDir, temp3.dir, new Set()); // nothing alive
+      map3.save('t-cold', makeEntry({ uuid: 'placeholder-uuid-bbbbbbbbbbbbbb', originTopicId: undefined, sessionName: 'dead-sess' }));
+      expect(map3.get('t-cold')).toBeNull();
+    });
+
+    it('does NOT consult liveness when a real JSONL exists (fast path unchanged)', () => {
+      temp3 = createTempDir();
+      const realUuid = 'real-uuid-cccccccccccccccccccc';
+      createFakeJsonl(realUuid);
+      let livenessCalls = 0;
+      class CountingMap extends ThreadResumeMap {
+        protected sessionAlive(_sessionName: string): boolean { livenessCalls++; return false; }
+      }
+      const map3 = new CountingMap(temp3.stateDir, temp3.dir);
+      map3.save('t-real', makeEntry({ uuid: realUuid, originTopicId: undefined, sessionName: 'whatever' }));
+      expect(map3.get('t-real')).not.toBeNull();
+      expect(livenessCalls).toBe(0);
     });
   });
 });

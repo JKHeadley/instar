@@ -23,6 +23,8 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { NativeModuleHealer } from './NativeModuleHealer.js';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
+import { formatLocalTimestamp } from '../utils/localTime.js';
 
 // Dynamic import for better-sqlite3
 type Database = import('better-sqlite3').Database;
@@ -44,6 +46,8 @@ export interface TopicMessage {
   userId?: string;
   /** Privacy scope for this message (default: private to the sender) */
   privacyScope?: import('../core/types.js').PrivacyScopeType;
+  /** Explicit platform forwarding provenance; undefined means legacy/unknown. */
+  forwarded?: boolean;
 }
 
 export interface TopicSummary {
@@ -87,7 +91,7 @@ export interface TopicContext {
   topicName: string | null;
 }
 
-const SCHEMA_VERSION = '4';
+const SCHEMA_VERSION = '5';
 
 /**
  * Map a raw SQLite row to a TopicMessage with proper type coercion.
@@ -101,6 +105,7 @@ function mapRow(row: any): TopicMessage {
     telegramUserId: row.telegramUserId ?? undefined,
     userId: row.userId ?? undefined,
     privacyScope: row.privacyScope ?? undefined,
+    forwarded: row.forwarded == null ? undefined : !!row.forwarded,
   };
 }
 
@@ -190,6 +195,9 @@ export class TopicMemory {
     this.db!.pragma('busy_timeout = 5000');
 
     this.createSchema();
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown; the
+    // closeFn reads this.db live so a corruption-rebuild reopen is still covered.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
 
     // Auto-rebuild from JSONL after corruption recovery
     if (this._needsRebuild) {
@@ -251,6 +259,7 @@ export class TopicMemory {
         telegram_user_id INTEGER,
         user_id TEXT,
         privacy_scope TEXT DEFAULT 'private',
+        forwarded INTEGER,
         UNIQUE(message_id, topic_id)
       );
 
@@ -374,6 +383,16 @@ export class TopicMemory {
         this.db.exec('ALTER TABLE topic_summaries ADD COLUMN purpose TEXT');
       }
     }
+
+    if (currentVersion < '5') {
+      // Migration v4 → v5: retain explicit forwarded provenance. Existing rows
+      // remain NULL/unknown and therefore cannot establish operator authority.
+      const columns = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+      const columnNames = new Set(columns.map(c => c.name));
+      if (!columnNames.has('forwarded')) {
+        this.db.exec('ALTER TABLE messages ADD COLUMN forwarded INTEGER');
+      }
+    }
   }
 
   // ── Message Operations ──────────────────────────────────────
@@ -386,14 +405,15 @@ export class TopicMemory {
     if (!this.db) return;
 
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       msg.messageId, msg.topicId, msg.text, msg.fromUser ? 1 : 0,
       msg.timestamp, msg.sessionName,
       msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
       msg.userId ?? null, msg.privacyScope ?? 'private',
+      msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
     );
 
     // Update topic metadata
@@ -413,8 +433,8 @@ export class TopicMemory {
     if (!this.db) return 0;
 
     const insert = this.db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let count = 0;
@@ -425,6 +445,7 @@ export class TopicMemory {
           msg.timestamp, msg.sessionName,
           msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
           msg.userId ?? null, msg.privacyScope ?? 'private',
+          msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
         );
         if (result.changes > 0) count++;
       }
@@ -447,12 +468,39 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope
+             user_id AS userId, privacy_scope AS privacyScope, forwarded
       FROM messages
       WHERE topic_id = ?
       ORDER BY timestamp DESC, id DESC
       LIMIT ?
     `).all(topicId, limit).reverse().map(mapRow) as TopicMessage[];
+  }
+
+  /**
+   * Chronological, bounded source read used by goal-realignment reconciliation.
+   * `complete:false` means the caller hit the hard bound and must not claim full
+   * coverage. Forwarded provenance is returned exactly: false is eligible,
+   * true/undefined remain ineligible at the authority layer.
+   */
+  getMessagesSince(
+    topicId: number,
+    sinceIso: string,
+    limit: number = 500,
+  ): { messages: TopicMessage[]; complete: boolean } {
+    if (!this.db) return { messages: [], complete: false };
+    const bounded = Math.max(1, Math.min(Math.floor(limit), 2_000));
+    const rows = this.db.prepare(`
+      SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
+             timestamp, session_name AS sessionName,
+             sender_name AS senderName, sender_username AS senderUsername,
+             telegram_user_id AS telegramUserId, user_id AS userId,
+             privacy_scope AS privacyScope, forwarded
+      FROM messages
+      WHERE topic_id = ? AND timestamp >= ?
+      ORDER BY timestamp ASC, id ASC
+      LIMIT ?
+    `).all(topicId, sinceIso, bounded + 1).map(mapRow) as TopicMessage[];
+    return { messages: rows.slice(0, bounded), complete: rows.length <= bounded };
   }
 
   /**
@@ -473,7 +521,7 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope
+             user_id AS userId, privacy_scope AS privacyScope, forwarded
       FROM messages
       WHERE topic_id = ?
         AND (
@@ -528,7 +576,7 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope
+             user_id AS userId, privacy_scope AS privacyScope, forwarded
       FROM messages
       WHERE user_id = ?
       ORDER BY timestamp ASC
@@ -649,7 +697,7 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope
+             user_id AS userId, privacy_scope AS privacyScope, forwarded
       FROM messages
       WHERE topic_id = ? AND message_id > ?
       ORDER BY timestamp ASC
@@ -742,8 +790,8 @@ export class TopicMemory {
 
     const db = this.db;
     const insert = db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let count = 0;
@@ -761,6 +809,7 @@ export class TopicMemory {
             msg.timestamp, msg.sessionName,
             msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
             msg.userId ?? null, msg.privacyScope ?? 'private',
+            msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
           );
           if (result.changes > 0) count++;
         }
@@ -791,6 +840,7 @@ export class TopicMemory {
             telegramUserId: entry.telegramUserId ?? undefined,
             userId: entry.userId ?? undefined,
             privacyScope: entry.privacyScope ?? undefined,
+            forwarded: entry.forwarded == null ? undefined : entry.forwarded === true,
           });
           if (batch.length >= BATCH_SIZE) {
             flushBatch();
@@ -937,7 +987,7 @@ export class TopicMemory {
         const sender = m.fromUser
           ? (m.senderName || 'User')
           : 'Agent';
-        const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
+        const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
         const text = (m.text || '').slice(0, 2000);
         lines.push(`[${ts}] ${sender}: ${text}`);
       }
@@ -991,7 +1041,7 @@ export class TopicMemory {
         const sender = m.fromUser
           ? (m.senderName || 'User')
           : 'Agent';
-        const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
+        const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
         const text = (m.text || '').slice(0, 2000);
         lines.push(`[${ts}] ${sender}: ${text}`);
       }

@@ -1,0 +1,8 @@
+{
+  "source": "real MeshRpcDispatcher + real POST /mesh/rpc route + real createDeliverMessageHandler over loopback express (real Ed25519 keys, synthetic machine ids PROBER/PEER)",
+  "command": "MeshRpcClient.buildEnvelope(buildRopeProbeCommand(...)) -> POST /mesh/rpc (loopback capture harness, U4.3 build)",
+  "capturedAt": "2026-07-02T08:10:26Z",
+  "machine": "echo laptop (build worktree)",
+  "redactions": [],
+  "note": "byte-for-byte response body from the production dispatcher/route code path; machine ids are synthetic capture identities, no secrets present"
+}

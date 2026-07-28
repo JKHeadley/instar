@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "sessionId": "6b3a4359-6111-477e-9b4c-6dcf1620a9b5",
+  "timestamp": "2026-06-05T02:09:23.241Z",
+  "artifactPath": "upgrades/side-effects/worktree-allowlist-check-all-remotes.md",
+  "artifactSha256": "ffeee38fc155d8c7453c9920ed84b215f2633408890fd11272e4088e1afef2ed",
+  "coveredFiles": [
+    "docs/specs/worktree-allowlist-check-all-remotes.eli16.md",
+    "src/core/InstarWorktreeManager.ts",
+    "tests/unit/InstarWorktreeManager.test.ts",
+    "upgrades/next/worktree-allowlist-check-all-remotes.md",
+    "upgrades/side-effects/worktree-allowlist-check-all-remotes.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Single-function validation widening (origin-only → all-remotes) in instar worktree-create resolution; allowlist trust gate unchanged, reject messages preserved, +1 unit test. No route/config/persistence change.",
+  "eli16Path": "docs/specs/worktree-allowlist-check-all-remotes.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-allowlist-check-all-remotes.md",
+  "secondPass": "true",
+  "reviewerConcurred": null
+}

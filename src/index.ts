@@ -141,7 +141,7 @@ export type {
 export type { MigrationResult as SecretMigrationResult } from './core/SecretMigrator.js';
 export { GitStateManager } from './core/GitStateManager.js';
 export { ProjectMapper } from './core/ProjectMapper.js';
-export type { ProjectMapConfig, ProjectMap, ProjectMapEntry } from './core/ProjectMapper.js';
+export type { ProjectMapConfig, ProjectMap, ProjectMapEntry, RelatedWorktreeSummary } from './core/ProjectMapper.js';
 export { CapabilityMapper } from './core/CapabilityMapper.js';
 export type { CapabilityMap, CapabilityDomain, Capability, CapabilityType, CapabilityStatus, Provenance, CapabilityMapperConfig, DriftReport } from './core/CapabilityMapper.js';
 export { ScopeVerifier } from './core/ScopeVerifier.js';
@@ -204,8 +204,7 @@ export { TrustRecovery } from './core/TrustRecovery.js';
 export type {
   IncidentRecord, RecoverySuggestion, TrustRecoveryConfig,
 } from './core/TrustRecovery.js';
-export { AutonomySkill } from './core/AutonomySkill.js';
-export type { AutonomySkillDeps, AutonomyResponse } from './core/AutonomySkill.js';
+// AutonomySkill removed 2026-07-04 (CMT-1907) — unwired dead-code keyword intent recognizer.
 export { SecretRedactor } from './core/SecretRedactor.js';
 export type {
   SecretType, RedactionEntry, RedactionResult, RestorationResult,

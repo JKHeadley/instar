@@ -67,6 +67,10 @@ if [[ -e "$WORKTREE_PATH" ]]; then
 fi
 mkdir -p "$WORKTREES_ROOT"
 chmod 0700 "$WORKTREES_ROOT"
+# OS resource hygiene: keep macOS Spotlight/mediaanalysisd from re-indexing every
+# worktree under here (a top OS-level CPU consumer). Honored recursively; no-op
+# elsewhere. The CLI path does the same via ensureWorktreeSpotlightExclusion.
+[[ -f "$WORKTREES_ROOT/.metadata_never_index" ]] || : > "$WORKTREES_ROOT/.metadata_never_index" 2>/dev/null || true
 cd "$INSTAR_REPO"
 if git rev-parse --verify --quiet "$BRANCH" >/dev/null; then
   git worktree add "$WORKTREE_PATH" "$BRANCH"

@@ -36,18 +36,23 @@ interface MockServer {
   close: () => Promise<void>;
   setResponse: (status: number, body: unknown) => void;
   requestCount: () => number;
+  lastRequest: () => { url?: string; body?: Record<string, unknown> };
 }
 
 async function startMockServer(): Promise<MockServer> {
   let currentStatus = 200;
   let currentBody: unknown = { ok: true };
   let requests = 0;
+  let lastUrl: string | undefined;
+  let lastBody: Record<string, unknown> | undefined;
 
   const server = createServer((req, res) => {
     requests += 1;
+    lastUrl = req.url;
     const chunks: Buffer[] = [];
     req.on('data', c => chunks.push(c));
     req.on('end', () => {
+      try { lastBody = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}'); } catch { lastBody = undefined; }
       res.statusCode = currentStatus;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify(currentBody));
@@ -75,6 +80,9 @@ async function startMockServer(): Promise<MockServer> {
     requestCount() {
       return requests;
     },
+    lastRequest() {
+      return { url: lastUrl, body: lastBody };
+    },
   };
 }
 
@@ -92,7 +100,7 @@ async function runScript(script: string, args: string[], port: number, stdin?: s
     return await new Promise<RunResult>((resolve, reject) => {
       const proc = spawn('bash', [path.join(SCRIPT_DIR, script), ...args], {
         cwd: tmpCwd,
-        env: { ...process.env, INSTAR_PORT: String(port), PATH: process.env.PATH },
+        env: { ...process.env, INSTAR_PORT: String(port), INSTAR_AUTH_TOKEN: '', PATH: process.env.PATH }, // hermetic vs live-session env
       });
       let stdout = '';
       let stderr = '';
@@ -125,12 +133,12 @@ describe('reply scripts — HTTP 408 handling (ambiguous-outcome)', () => {
 
   for (const script of ['telegram-reply.sh', 'slack-reply.sh', 'whatsapp-reply.sh']) {
     describe(script, () => {
-      it('exits 0 when the server returns 408 (ambiguous outcome — do NOT retry blindly)', async () => {
+      it('classifies 408 as ambiguous and never invites blind retry', async () => {
         mock.setResponse(408, { error: 'Request timeout', timeoutMs: 30000 });
         const target = script.startsWith('whatsapp') ? '12345@s.whatsapp.net' : '42';
         const result = await runScript(script, [target], mock.port, 'hello from test\n');
 
-        expect(result.status).toBe(0);
+        expect(result.status).toBe(script === 'slack-reply.sh' ? 1 : 0);
         // stderr must loudly warn — the agent reads this to decide whether to retry.
         expect(result.stderr.toLowerCase()).toMatch(/ambiguous|timeout|do not retry|verify/);
       });
@@ -193,4 +201,42 @@ describe('reply scripts — existing contract preserved (200, 422, 5xx)', () => 
       });
     });
   }
+});
+
+describe('slack-reply.sh — thread_ts 2nd-positional argument (threads-as-sessions §5.3)', () => {
+  let mock: MockServer;
+  beforeAll(async () => { mock = await startMockServer(); });
+  afterAll(async () => { await mock.close(); });
+
+  it('posts to the channel route and includes thread_ts when a thread id is passed', async () => {
+    mock.setResponse(200, { ok: true });
+    const result = await runScript('slack-reply.sh', ['C123', '1700000000.000100'], mock.port, 'reply in thread\n');
+    expect(result.status).toBe(0);
+    const req = mock.lastRequest();
+    expect(req.url).toBe('/slack/reply/C123');
+    expect(req.body?.text).toContain('reply in thread');
+    expect(req.body?.thread_ts).toBe('1700000000.000100');
+  });
+
+  it('omits thread_ts for a channel-level reply (no 2nd positional) — today\'s default unchanged', async () => {
+    mock.setResponse(200, { ok: true });
+    const result = await runScript('slack-reply.sh', ['C123'], mock.port, 'channel reply\n');
+    expect(result.status).toBe(0);
+    const req = mock.lastRequest();
+    expect(req.url).toBe('/slack/reply/C123');
+    expect(req.body?.text).toContain('channel reply');
+    expect(req.body?.thread_ts).toBeUndefined();
+  });
+
+  it('a plain message word as the 2nd arg is NOT mistaken for a thread id (backward-compat)', async () => {
+    // The old 1-arg form `slack-reply.sh CHANNEL "two words"` must still treat
+    // everything after the channel as the message — a word like "hello" is not a
+    // Slack timestamp, so it stays part of the text, never thread_ts.
+    mock.setResponse(200, { ok: true });
+    const result = await runScript('slack-reply.sh', ['C123', 'hello', 'there'], mock.port);
+    expect(result.status).toBe(0);
+    const req = mock.lastRequest();
+    expect(String(req.body?.text).trim()).toBe('hello there');
+    expect(req.body?.thread_ts).toBeUndefined();
+  });
 });

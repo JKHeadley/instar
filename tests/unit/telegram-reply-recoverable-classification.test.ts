@@ -128,7 +128,7 @@ function runScript(topicId: number, message: string): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn('bash', [scriptPath, String(topicId), message], {
       cwd: projectDir,
-      env: { ...process.env, INSTAR_PORT: '' },
+      env: { ...process.env, INSTAR_PORT: '', INSTAR_AUTH_TOKEN: '' }, // hermetic vs live-session env
     });
     let stdout = '';
     let stderr = '';
@@ -178,6 +178,17 @@ describe('telegram-reply.sh — recoverable-class detection', () => {
     await fake.close();
     expect(res.exitCode).toBe(1);
     expect(queueRowCount()).toBe(1);
+  });
+
+  it('never claims queued when canonical persistence cannot be verified', async () => {
+    const fake = await startFakeServer({ replyStatus: 503, replyBody: '{"error":"upstream"}' });
+    writeConfig(fake.port);
+    fs.writeFileSync(path.join(projectDir, '.instar', 'state'), 'not-a-directory');
+    const res = await runScript(8, 'must remain loud');
+    await fake.close();
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).not.toContain('Queued for recovery');
+    expect(res.stderr).toContain('recovery queue persistence could not be verified');
   });
 
   it('403 with structured agent_id_mismatch → enqueues', async () => {

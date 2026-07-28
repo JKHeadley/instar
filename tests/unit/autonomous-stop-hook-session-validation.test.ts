@@ -48,20 +48,21 @@ describe('Stop hook session_id UUID validation (source analysis)', () => {
     expect(HOOK_SRC).toMatch(/Invalid session_id.*not UUID/);
   });
 
-  it('preserves the self-bootstrap path for empty session_id', () => {
-    // After clearing an invalid session_id, the self-bootstrap block should fire
+  it('preserves the self-bootstrap path for empty session_id (now the backstop)', () => {
+    // After clearing an invalid session_id, the topic-unresolved backstop
+    // self-bootstraps: the first session to fire claims the job.
     expect(HOOK_SRC).toContain('if [[ -z "$STATE_SESSION" ]]; then');
-    expect(HOOK_SRC).toContain('claimed autonomous mode');
+    expect(HOOK_SRC).toContain('OWNER_METHOD="bootstrap"');
   });
 
-  it('UUID validation runs BEFORE hook session_id parsing', () => {
-    // The validation must run before HOOK_SESSION is parsed,
-    // so that an invalid STATE_SESSION is cleared before comparison
+  it('UUID validation precedes the session-match backstop comparison', () => {
+    // The validation must run before STATE_SESSION is compared to HOOK_SESSION
+    // in the backstop, so an invalid recorded value is cleared first.
     const validationIdx = HOOK_SRC.indexOf('UUID_REGEX=');
-    const hookSessionIdx = HOOK_SRC.indexOf('HOOK_SESSION=');
+    const backstopCmpIdx = HOOK_SRC.indexOf('"$STATE_SESSION" == "$HOOK_SESSION"');
     expect(validationIdx).toBeGreaterThan(-1);
-    expect(hookSessionIdx).toBeGreaterThan(-1);
-    expect(validationIdx).toBeLessThan(hookSessionIdx);
+    expect(backstopCmpIdx).toBeGreaterThan(-1);
+    expect(validationIdx).toBeLessThan(backstopCmpIdx);
   });
 });
 

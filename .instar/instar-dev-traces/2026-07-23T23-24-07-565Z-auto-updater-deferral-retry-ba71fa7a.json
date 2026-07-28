@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "auto-updater-deferral-retry",
+  "sessionId": "0c50f55c-9d35-4f2a-9082-c1850bd89ff7",
+  "timestamp": "2026-07-23T23:24:07.565Z",
+  "artifactPath": "upgrades/side-effects/auto-updater-deferral-retry.md",
+  "artifactSha256": "0197b646e7780db58f347b190926c8097b967ca494fe6b4c7d6435be1dcad4a2",
+  "coveredFiles": [
+    "docs/specs/auto-updater-deferral-retry.eli16.md",
+    "docs/specs/auto-updater-deferral-retry.md",
+    "src/core/AutoUpdater.ts",
+    "tests/unit/AutoUpdater.test.ts",
+    "upgrades/next/auto-updater-deferral-retry.md",
+    "upgrades/side-effects/auto-updater-deferral-retry.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Focused recovery repair within the existing AutoUpdater and UpdateGate authority boundary; no schema or API change, with lifecycle second-pass review and targeted regression coverage.",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Restart deferral intent was persisted, but retry liveness depended on one in-memory timer. The already-installed loop breaker returned without re-arming that timer, leaving this machine's nextRetryAt frozen at 20:48 for more than two hours after an idle window."
+  },
+  "eli16Path": "docs/specs/auto-updater-deferral-retry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/auto-updater-deferral-retry.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "updater_deferral_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  }
+}

@@ -19,6 +19,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
+import { defaultCaptureCounters } from '../core/TopicIntent.js';
 import { renderTopicIntentBriefing } from '../core/TopicIntentBriefing.js';
 import { ArcCheck, type ArcCheckClassifyFn } from '../core/TopicIntentArcCheck.js';
 
@@ -46,14 +47,22 @@ function sanitizeMetaForDiagnostics(meta: Record<string, unknown> | undefined): 
 
 export function createTopicIntentRoutes(deps: {
   topicIntentStore: TopicIntentStore | null;
-  /** Layer 3 classifier callback. Null/undefined → arccheck route returns
-   *  a no-fire verdict (degrades open). Production wires this to a
-   *  Haiku-class call through Instar's LlmQueue. */
+  /** Layer 3 ArcCheck instance. Null/undefined → arccheck route returns
+   *  a no-fire verdict (degrades open). Production constructs one shared
+   *  instance in server.ts so the HTTP route and the in-process
+   *  outbound-gate caller use the same classifier. */
+  arcCheck?: ArcCheck | null;
+  /** Legacy entrypoint — when `arcCheck` is not provided but a classifier
+   *  function is, construct a per-route ArcCheck instance from it. Kept so
+   *  pre-existing tests and out-of-process integrations keep working
+   *  unchanged. Production passes `arcCheck` directly. */
   arcCheckClassify?: ArcCheckClassifyFn | null;
 }): Router {
   const router = Router();
   const { topicIntentStore: store } = deps;
-  const arcCheck = store && deps.arcCheckClassify ? new ArcCheck(store, deps.arcCheckClassify) : null;
+  const arcCheck = !store
+    ? null
+    : deps.arcCheck ?? (deps.arcCheckClassify ? new ArcCheck(store, deps.arcCheckClassify) : null);
 
   if (!store) {
     // Wire a 503 stub so the route surface exists even when the feature is disabled
@@ -164,8 +173,61 @@ export function createTopicIntentRoutes(deps: {
   router.get('/topic-intent/:topicId/briefing', (req: Request, res: Response) => {
     const parsed = TopicIdParam.safeParse(req.params.topicId);
     if (!parsed.success) return res.status(400).type('text/plain').send('');
-    const result = renderTopicIntentBriefing(store, parsed.data);
+    const topicId = parsed.data;
+    const result = renderTopicIntentBriefing(store, topicId);
+    // Surface-side metering (spec §10): a briefing fetch = the captured set
+    // actually reached the agent. Record it + how many refs it carried.
+    try {
+      const settled = store.getRefsAtOrAbove(topicId, 'authoritative').length;
+      const tentativePlus = store.getRefsAtOrAbove(topicId, 'tentative').length;
+      store.bumpCaptureCounters(topicId, {
+        briefing_served: 1,
+        briefing_refs_settled: settled,
+        briefing_refs_tentative: Math.max(0, tentativePlus - settled),
+      });
+    } catch { /* metering best-effort — never block a briefing fetch */ }
     res.type('text/plain').send(result.text);
+  });
+
+  /**
+   * Capture-loop funnel metrics (spec §10) — the "tune as we go" surface. Shows
+   * the WHOLE loop (captured → surfaced → used → corrected), so we can see where
+   * it leaks: capturing nothing? capturing but never surfacing? surfacing but
+   * never acted on? Operator-only (INTERNAL_PREFIXES). `refs_decayed` is computed
+   * live (decay is a read-time projection, not a persisted event).
+   */
+  router.get('/topic-intent/:topicId/capture-metrics', (req: Request, res: Response) => {
+    const parsed = TopicIdParam.safeParse(req.params.topicId);
+    if (!parsed.success) return res.status(400).json({ error: 'invalid topicId' });
+    const topicId = parsed.data;
+    const file = store.read(topicId);
+    const c = file.telemetry.capture ?? defaultCaptureCounters();
+    const refs = store.getRefsAtOrAbove(topicId, 'observation');
+    const refs_decayed = refs.filter(r => r.projection.decayApplied > 0).length;
+    res.json({
+      topicId,
+      funnel: {
+        turns_seen: c.turns_seen,
+        prefilter_skipped: c.prefilter_skipped,
+        extractions_attempted: c.extractions_attempted,
+        extractions_emitted: c.extractions_emitted,
+        refs_created: c.refs_created,
+        degraded: {
+          no_intelligence: c.degraded_no_intelligence,
+          cap_or_error: c.degraded_cap_or_error,
+          shed: c.degraded_shed,
+        },
+        rate_limited: c.rate_limited,
+        briefing_served: c.briefing_served,
+        briefing_refs: { settled: c.briefing_refs_settled, tentative: c.briefing_refs_tentative },
+        arccheck_fired: c.arccheck_fired,
+        arccheck_signalled: c.arccheck_signalled,
+        refs_decayed,
+        refkind_created: c.refkind_created ?? {},
+        last_capture_at: c.last_capture_at,
+      },
+      refsLive: refs.length,
+    });
   });
 
   /**
@@ -189,6 +251,12 @@ export function createTopicIntentRoutes(deps: {
     try {
       const forUserTurn = typeof req.body?.forUserTurn === 'number' ? req.body.forUserTurn : undefined;
       const verdict = await arcCheck.check({ topicId: parsed.data, draftText, forUserTurn });
+      // Surface-side metering (spec §10): ArcCheck ran (fired); `signalled` when
+      // it actually emitted a confirm-signal (a captured ref changed the next move).
+      store.bumpCaptureCounters(parsed.data, {
+        arccheck_fired: 1,
+        arccheck_signalled: verdict.fire ? 1 : 0,
+      });
       return res.json(verdict);
     } catch (err) {
       // Degrade open on any classifier error — never block a send on ArcCheck noise.

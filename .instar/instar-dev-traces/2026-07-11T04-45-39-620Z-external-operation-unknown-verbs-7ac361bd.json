@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "sessionId": "46e7cabc-4f2b-439e-a7a2-a88f6a73f395",
+  "timestamp": "2026-07-11T04:45:39.620Z",
+  "artifactPath": "upgrades/side-effects/external-operation-unknown-verbs.md",
+  "artifactSha256": "edd2a8fd7cc62cd49772bcac1c1b08c1400e88eef17d5c9e68bc0257b65ca864",
+  "specPath": "docs/specs/extern-op-gate-failsafe.md",
+  "coveredFiles": [
+    "docs/defect-classes.json",
+    "docs/specs/extern-op-gate-failsafe.md",
+    "docs/specs/extern-op-gate-failsafe.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/hook-installation.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A security-gate classifier fix on an always-overwritten fleet hook, driven by the approved fail-safe spec and requiring adversarial independent review plus migration parity.",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The original hook classifier encoded a closed destructive-prefix vocabulary but assigned every unmatched action to the privileged read fast path, so new connector verbs silently bypassed the authority."
+  },
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "framework_guard_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "novel",
+    "closure": "gap",
+    "gapItem": "ACT-001",
+    "component": "external-operation-gate",
+    "novelClass": {
+      "nearestExistingClass": "prompt-parser-contract-drift — rendered prompt/parser mismatch does not cover unmatched runtime classifier input inheriting privileged-safe authority",
+      "includes": [
+        "unknown action defaults to read and bypasses authority",
+        "unrecognized enum falls through to permissive allow"
+      ],
+      "excludes": [
+        "authority unreachable availability posture",
+        "explicitly allowlisted read"
+      ],
+      "severity": "critical"
+    }
+  }
+}

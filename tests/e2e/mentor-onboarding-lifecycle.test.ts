@@ -1,0 +1,316 @@
+/**
+ * Tier-3 E2E "feature is alive" test for the mentor-onboarding job (§19.4).
+ *
+ * Boots the REAL AgentServer and verifies the mentor surface is alive on the
+ * production init path AND ships dormant: GET /mentor/status is 200 (not 503)
+ * and reports enabled=false; POST /mentor/tick returns {ran:false,
+ * reason:'disabled'} — the loop never spawns or spends until a human promotes
+ * it. Also asserts the built-in job template ships off by default.
+ */
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import express from 'express';
+import request from 'supertest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { AgentServer } from '../../src/server/AgentServer.js';
+import { StateManager } from '../../src/core/StateManager.js';
+import type { InstarConfig } from '../../src/core/types.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+function createMockSessionManager() {
+  return { listRunningSessions: () => [], getSession: () => null };
+}
+
+describe('Mentor-onboarding E2E lifecycle (alive + dormant)', () => {
+  let tmpDir: string;
+  let stateDir: string;
+  let server: AgentServer;
+  let app: express.Express;
+  const AUTH = 'test-e2e-mentor-onboarding';
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mentor-e2e-'));
+    stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
+
+    const config: InstarConfig = {
+      projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10000, version: '0.0.0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      messaging: [], monitoring: {}, updates: {},
+    } as InstarConfig;
+
+    server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: new StateManager(stateDir) });
+    await server.start();
+    app = server.getApp();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/mentor-onboarding-lifecycle.test.ts' });
+  });
+
+  const auth = () => ({ Authorization: `Bearer ${AUTH}` });
+
+  it('GET /mentor/status is alive (200, not 503) and reports dormant', async () => {
+    const res = await request(app).get('/mentor/status').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.enabled).toBe(false);
+    expect(res.body.mode).toBe('off');
+  });
+
+  it('POST /mentor/tick is dormant on the production init path (no spawn/spend)', async () => {
+    const res = await request(app).post('/mentor/tick').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ran: false, reason: 'disabled' });
+  });
+
+  it('surfaces the mentor capability in /capabilities', async () => {
+    const res = await request(app).get('/capabilities').set(auth());
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).toMatch(/\/mentor/);
+  });
+
+  it('hot-reads mentor config changes from config.json without a restart', async () => {
+    const configPath = path.join(stateDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+      port: 0,
+      projectName: 'e2e',
+      agentName: 'E2E',
+      mentor: { enabled: true, mode: 'dry-run', menteeFramework: 'cursor' },
+    }));
+
+    const updated = await request(app).get('/mentor/status').set(auth());
+    expect(updated.status).toBe(200);
+    expect(updated.body).toMatchObject({ enabled: true, mode: 'dry-run', menteeFramework: 'cursor' });
+
+    fs.writeFileSync(configPath, '{not valid json');
+    const fallback = await request(app).get('/mentor/status').set(auth());
+    expect(fallback.status).toBe(200);
+    expect(fallback.body).toMatchObject({ enabled: false, mode: 'off', menteeFramework: 'codex-cli' });
+
+    fs.writeFileSync(configPath, JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
+  });
+
+  it('mentor routes require auth like every non-/health route', async () => {
+    expect((await request(app).get('/mentor/status')).status).toBe(401);
+  });
+
+  it('boots clean with the Stage-B forensics wiring (server alive, mentor dormant)', async () => {
+    // PR B wires real Stage-B forensics (rollout/log reading + LLM classify) into
+    // the runner. This asserts that wiring doesn't break boot and the mentor stays
+    // dormant on the production init path.
+    const status = await request(app).get('/mentor/status').set(auth());
+    expect(status.status).toBe(200);
+    expect(status.body.enabled).toBe(false);
+    // A dormant tick still returns disabled — the forensics path is never reached.
+    const tick = await request(app).post('/mentor/tick').set(auth());
+    expect(tick.status).toBe(200);
+    expect(tick.body).toEqual({ ran: false, reason: 'disabled' });
+  });
+
+  it('the built-in mentor job template ships OFF by default', () => {
+    const thisDir = path.dirname(fileURLToPath(import.meta.url));
+    const repoRoot = path.resolve(thisDir, '..', '..');
+    const jobPath = path.join(repoRoot, 'src', 'scaffold', 'templates', 'jobs', 'instar', 'mentor-onboarding.md');
+    expect(fs.existsSync(jobPath)).toBe(true);
+    const body = fs.readFileSync(jobPath, 'utf-8');
+    expect(body).toMatch(/^enabled:\s*false\s*$/m);
+  });
+
+  it('production delivery wiring durably breaks identical transport retries while allowing new content', async () => {
+    const runner = (server as any).mentorRunner;
+    const deliver = runner?.services?.deliverToMentee as
+      | ((framework: string, message: string) => Promise<{ delivered: boolean; reason?: string }>)
+      | undefined;
+    expect(deliver).toBeTypeOf('function');
+
+    const repeated = 'May I use the default permission rule?';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await expect(deliver!('codex-cli', repeated)).resolves.toMatchObject({
+        delivered: false,
+        reason: 'transport-unavailable',
+      });
+    }
+    await expect(deliver!('codex-cli', repeated)).resolves.toMatchObject({
+      delivered: false,
+      reason: 'identical-content-retry-exhausted',
+    });
+    await expect(deliver!('codex-cli', 'Please review the next bounded task.')).resolves.toMatchObject({
+      delivered: false,
+      reason: 'transport-unavailable',
+    });
+
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(stateDir, 'mentor-outstanding-prompts.json'), 'utf-8'),
+    ) as {
+      v: number;
+      retries: Record<string, { attempts: number; escalatedAt?: number }>;
+    };
+    expect(persisted.v).toBe(2);
+    expect(Object.values(persisted.retries).map((r) => r.attempts).sort()).toEqual([1, 3]);
+    expect(Object.values(persisted.retries).some((r) => typeof r.escalatedAt === 'number')).toBe(true);
+  });
+});
+
+describe('Mentor ledger survives a broken TokenLedger (regression: production cascade)', () => {
+  // Reproduces the exact production bug: an agent whose TokenLedger init throws
+  // (Echo's `no such column: attribution_key`) must NOT have the mentor ledger +
+  // runner taken down with it. Before the decoupling fix, both lived in one try
+  // block and a TokenLedger throw → /mentor + /framework-issues all 503.
+  let tmpDir: string;
+  let stateDir: string;
+  let server: AgentServer;
+  let app: express.Express;
+  const AUTH = 'test-e2e-mentor-tokenledger-cascade';
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mentor-cascade-e2e-'));
+    stateDir = path.join(tmpDir, '.instar');
+    const serverDataDir = path.join(stateDir, 'server-data');
+    fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    fs.mkdirSync(serverDataDir, { recursive: true });
+    // Pre-plant a CORRUPT token-ledger.db so the real TokenLedger constructor
+    // throws on open — standing in for Echo's stale-schema failure.
+    fs.writeFileSync(path.join(serverDataDir, 'token-ledger.db'), 'this is not a sqlite database — corrupt on purpose');
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
+
+    const config: InstarConfig = {
+      projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10000, version: '0.0.0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      messaging: [], monitoring: {}, updates: {},
+    } as InstarConfig;
+
+    server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: new StateManager(stateDir) });
+    await server.start();
+    app = server.getApp();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/mentor-onboarding-lifecycle.test.ts:cascade' });
+  });
+
+  const auth = () => ({ Authorization: `Bearer ${AUTH}` });
+
+  it('a corrupt token-ledger.db (TokenLedger fails) does NOT 503 the mentor surface', async () => {
+    // TokenLedger should be down, but the mentor ledger + runner are independent.
+    const status = await request(app).get('/mentor/status').set(auth());
+    expect(status.status).toBe(200); // NOT 503 — the cascade is broken
+    expect(status.body.enabled).toBe(false);
+
+    const fi = await request(app).get('/framework-issues').set(auth());
+    expect(fi.status).toBe(200); // ledger alive despite TokenLedger failure
+    expect(Array.isArray(fi.body.issues)).toBe(true);
+  });
+});
+
+/**
+ * Tier-3 E2E "feature is alive" for the autonomous-fix loop ("just be Echo",
+ * MENTOR-AUTONOMOUS-FIX-LOOP-SPEC). Boots the REAL AgentServer with
+ * mentor.autonomousFix.enabled on the production init path, then POSTs a real
+ * tick. A spy sessionManager intercepts the spawn, so we prove the production
+ * wiring end-to-end (buildMentorRunner → guardian → spawnLoopSession → the real
+ * sessionManager.spawnSession with the OPUS model + full tools + the autoloop
+ * name) WITHOUT spawning a real session. This is the single most important test
+ * for the feature: it is genuinely alive in production wiring, not just unit-true.
+ */
+describe('Autonomous-fix loop E2E (alive on the production init path, no real spawn)', () => {
+  let tmpDir: string;
+  let stateDir: string;
+  let server: AgentServer;
+  let app: express.Express;
+  const AUTH = 'test-e2e-autoloop';
+  const spawnSpy = vi.fn(async (opts: { name: string }) => ({
+    id: 'fake-loop',
+    name: opts.name,
+    tmuxSession: 'fake',
+    claudeSessionId: undefined,
+    framework: 'codex-cli',
+  }));
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autoloop-e2e-'));
+    stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    // Enable the loop ON DISK — buildMentorRunner reads config.json via
+    // readMentorConfigFromDisk, so this is the real production config path.
+    fs.writeFileSync(
+      path.join(stateDir, 'config.json'),
+      JSON.stringify({
+        port: 0,
+        projectName: 'e2e',
+        agentName: 'E2E',
+        mentor: {
+          enabled: true,
+          mode: 'off', // guardian must run regardless of mode
+          menteeFramework: 'codex-cli',
+          menteeAgentName: 'instar-codey',
+          autonomousFix: { enabled: true, model: 'opus', sessionNamePrefix: 'mentor-autoloop', maxCycleMinutes: 90 },
+        },
+      }),
+    );
+
+    const config: InstarConfig = {
+      projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10000, version: '0.0.0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      messaging: [], monitoring: {}, updates: {},
+    } as InstarConfig;
+
+    const sessionManager = {
+      listRunningSessions: () => [], // no loop alive → the gate lets a spawn through
+      getSession: () => null,
+      spawnSession: spawnSpy,
+    };
+    server = new AgentServer({ config, sessionManager: sessionManager as any, state: new StateManager(stateDir) });
+    await server.start();
+    app = server.getApp();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/mentor-onboarding-lifecycle.test.ts:autoloop' });
+  });
+
+  const auth = () => ({ Authorization: `Bearer ${AUTH}` });
+
+  it('POST /mentor/tick spawns an Opus full-tool loop session via the production wiring', async () => {
+    const res = await request(app).post('/mentor/tick').set(auth());
+    expect(res.status).toBe(202); // enabled → fire-and-forget
+    expect(res.body.accepted).toBe(true);
+    await new Promise((r) => setTimeout(r, 25)); // let the async guardian settle
+
+    const status = await request(app).get('/mentor/status').set(auth());
+    expect(status.status).toBe(200);
+    expect(status.body.lastResult?.reason).toBe('spawned');
+    expect(status.body.lastResult?.sessionName).toMatch(/^mentor-autoloop-/);
+
+    // Wiring integrity: the real spawn closure ran with Justin's constraints —
+    // the OPUS model, the autoloop name, a bounded cycle, and the FULL tool grant
+    // (allowedTools omitted, not the empty Stage-A grant).
+    expect(spawnSpy).toHaveBeenCalledOnce();
+    const spawnArgs = spawnSpy.mock.calls[0][0] as Record<string, unknown>;
+    expect(spawnArgs.model).toBe('opus');
+    expect(String(spawnArgs.name)).toMatch(/^mentor-autoloop-/);
+    expect(spawnArgs.allowedTools).toBeUndefined(); // full tools, not [] (Stage-A)
+    expect(spawnArgs.maxDurationMinutes).toBe(90);
+    // No-project-MCP: the loop session must spawn WITHOUT the project .mcp.json,
+    // or a headless run hangs on auth-required remote MCP boot (the live dogfood
+    // finding). The production wiring passes disableProjectMcp through.
+    expect(spawnArgs.disableProjectMcp).toBe(true);
+    // The goal prompt is the real dogfooding loop (not empty / not a stub).
+    expect(String(spawnArgs.prompt)).toMatch(/instar-codey/);
+    expect(String(spawnArgs.prompt)).toMatch(/HEALTH FIRST/);
+  });
+});

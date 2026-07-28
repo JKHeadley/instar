@@ -28,6 +28,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import yaml from 'js-yaml';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { buildPerSlugManifest, coerceDurationMinutes, coerceBool } from '../scheduler/buildPerSlugManifest.js';
+import { validateManifest } from '../scheduler/AgentMdJobLoader.js';
+import type { JobPriority, ModelTier } from '../core/types.js';
 
 export type DefaultAction = 'fork' | 'rename' | 'skip' | 'fail';
 
@@ -144,14 +147,34 @@ function writeUserTemplate(userDir: string, slug: string, entry: any): string {
 
 function writeManifest(scheduleDir: string, slug: string, origin: 'instar' | 'user', entry: any): string {
   fs.mkdirSync(scheduleDir, { recursive: true });
-  const manifest: Record<string, unknown> = {
+  // Build through the single typed constructor (same as InstallBuiltinJobs) so the
+  // manifest carries priority/expectedDurationMinutes/model + pass-throughs the loader
+  // requires — their omission here permanently broke migrated USER jobs (no self-heal
+  // path). See docs/specs/BUILTIN-JOB-MANIFEST-FIELDS-FIX.md.
+  // Legacy jobs.json entries (the migration source) often predate these fields,
+  // so the migration supplies sensible DEFAULTS to keep the job loadable — distinct
+  // from InstallBuiltinJobs (shipped templates must carry the fields, so it fails
+  // loud). Defaults match the CLI: priority 'medium', a small expected duration.
+  const durationMinutes = coerceDurationMinutes(entry.expectedDurationMinutes) ?? 5;
+  const priority: JobPriority = ['critical', 'high', 'medium', 'low'].includes(entry.priority)
+    ? (entry.priority as JobPriority)
+    : 'medium';
+  const manifest = buildPerSlugManifest({
     slug,
     origin,
-    schedule: entry.schedule,
+    schedule: String(entry.schedule ?? ''),
+    priority,
+    expectedDurationMinutes: durationMinutes,
     enabled: entry.enabled !== false,
     execute: entry.execute && entry.execute.type === 'prompt' ? { type: 'agentmd' } : entry.execute,
-    manifestVersion: 1,
-  };
+    model: entry.model != null && String(entry.model).trim() ? (String(entry.model) as ModelTier) : undefined,
+    tags: Array.isArray(entry.tags) ? (entry.tags as string[]) : undefined,
+    unrestrictedTools: coerceBool(entry.unrestrictedTools),
+    gate: entry.gate != null ? String(entry.gate) : undefined,
+    telegramNotify: typeof entry.telegramNotify === 'boolean' ? entry.telegramNotify : entry.telegramNotify === 'on-alert' ? 'on-alert' : undefined,
+  });
+  // Producer self-check — fail loud at migrate time, not silently at load.
+  validateManifest(manifest, slug);
   const target = path.join(scheduleDir, `${slug}.json`);
   fs.writeFileSync(target, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
   return target;

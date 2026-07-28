@@ -13,7 +13,7 @@
  *   - End-to-end: detector emits → runbook decides → gate refuses next call
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 
 import { LlmRateGate } from '../../src/monitoring/LlmRateGate.js';
@@ -161,6 +161,8 @@ describe('BurnThrottleRunbook — decision logic', () => {
     sentMessages = [];
   });
 
+  afterEach(() => vi.useRealTimers());
+
   function makeRunbook(config: Partial<Parameters<typeof BurnThrottleRunbook>[0]['config']> = {}, _ignored?: any) {
     return new BurnThrottleRunbook({
       gate,
@@ -179,6 +181,31 @@ describe('BurnThrottleRunbook — decision logic', () => {
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0].text).toMatch(/InputDetector/i);
     expect(sentMessages[0].text).toMatch(/slowed/i);
+  });
+
+  it('narrates one open and one close per episode, suppressing same-second ticks and the close cooldown', async () => {
+    vi.useFakeTimers();
+    const runbook = makeRunbook({ throttleDurationMs: 1_000, notificationCooldownMs: 2_000 });
+    const event = makeBurnEvent({ attributionKey: 'InputDetector::flood', trigger: 'absolute-share' });
+
+    expect(runbook.handle(event).kind).toBe('throttle-installed');
+    expect(runbook.handle(event).kind).toBe('throttle-suppressed-episode');
+    expect(runbook.handle(event).kind).toBe('throttle-suppressed-episode');
+    expect(sentMessages).toHaveLength(1);
+
+    now += 1_000;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sentMessages).toHaveLength(2);
+    expect(sentMessages[1].text).toMatch(/ended automatically/i);
+
+    expect(runbook.handle(event).kind).toBe('throttle-suppressed-episode');
+    expect(sentMessages).toHaveLength(2);
+
+    now += 2_001;
+    const nextEpisode = makeBurnEvent({ attributionKey: 'InputDetector::flood', trigger: 'absolute-share' });
+    nextEpisode.timestamp = '2026-05-15T22:31:00Z';
+    expect(runbook.handle(nextEpisode).kind).toBe('throttle-installed');
+    expect(sentMessages).toHaveLength(3);
   });
 
   it('alert-only-unknown for unknown::* keys by default (no auto-throttle on unknown)', () => {
