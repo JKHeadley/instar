@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "slug": "quota-snapshot-hardening",
+  "sessionId": "slack-C0BA4F4E0FP-20260723",
+  "timestamp": "2026-07-23T22:24:40.000Z",
+  "artifactPath": "upgrades/side-effects/quota-snapshot-hardening.md",
+  "artifactSha256": "c6f4c3af81f61f5ecd64b83872f7a8ea7dcca784f37ccc63dcb5e7ed46ed65a8",
+  "specPath": "docs/specs/quota-snapshot-hardening.md",
+  "coveredFiles": [
+    "src/core/OAuthRefresher.ts",
+    "src/core/QuotaPoller.ts",
+    "src/server/routes.ts",
+    "tests/unit/oauth-refresher-async-read.test.ts",
+    "tests/unit/quota-poller.test.ts",
+    "tests/integration/subscription-quota-routes.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A bounded correction to existing quota collection and its existing per-account read route. It adds a closed error classification and additive freshness metadata without new authority, persistence schema, credential exposure, timer, or autonomous action.",
+  "eli16Path": "docs/specs/quota-snapshot-hardening.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/quota-snapshot-hardening.md",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The shared OAuth reader intentionally collapsed all read failures to null for compatibility, but the quota poller needed to distinguish malformed stored JSON from an absent login. Separately, the quota route returned measuredAt without interpreting its age, leaving persisted telemetry visually current forever."
+  },
+  "classClosure": {
+    "defectClass": "bounded-read-path-classification",
+    "closure": "n/a",
+    "reason": "The change runs only inside an existing poll invocation or user-driven read request. It adds no retry, timer, self-rescheduling path, or autonomous emitter."
+  },
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

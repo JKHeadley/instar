@@ -119,12 +119,30 @@ function guard(target: string, operation: string, fnName: string): string {
 // ── Public API ──────────────────────────────────────────────────────
 
 export class SafeFsExecutor {
+  /**
+   * Recursive force-deletes default to fs.rm's native transient-error retry
+   * (ENOTEMPTY/EBUSY/EPERM). A recursive tree delete racing a concurrent
+   * writer (git finishing an object write, an mtime scanner walking the
+   * tree) fails ENOTEMPTY exactly once and succeeds milliseconds later —
+   * fs.rm retries this class natively, but only when maxRetries is set.
+   * Live: CI shard failure 2026-06-05 in handoff-manager.test.ts cleanup
+   * (`ENOTEMPTY: directory not empty, rmdir '/tmp/handoff-…/.git'`) on a
+   * loaded runner — a whole-class flake every tmpdir-cleanup test inherits.
+   * Explicit caller-set values always win; non-recursive deletes unchanged.
+   */
+  private static withRmRetryDefaults<T extends fs.RmOptions>(rmOpts: T): T {
+    if (rmOpts.recursive && rmOpts.force && rmOpts.maxRetries === undefined) {
+      return { ...rmOpts, maxRetries: 3, retryDelay: 100 };
+    }
+    return rmOpts;
+  }
+
   /** Async fs.promises.rm wrapper. */
   static async safeRm(target: string, opts: SafeRmOptions): Promise<void> {
     const { operation, ...rmOpts } = opts;
     const canonical = guard(target, operation, 'safeRm');
     try {
-      await fsp.rm(target, rmOpts);
+      await fsp.rm(target, SafeFsExecutor.withRmRetryDefaults(rmOpts));
       audit('safeRm', operation, canonical, 'allowed');
     } catch (err) {
       audit('safeRm', operation, canonical, 'denied', `rm-error: ${(err as Error).message}`);
@@ -137,7 +155,7 @@ export class SafeFsExecutor {
     const { operation, ...rmOpts } = opts;
     const canonical = guard(target, operation, 'safeRmSync');
     try {
-      fs.rmSync(target, rmOpts);
+      fs.rmSync(target, SafeFsExecutor.withRmRetryDefaults(rmOpts));
       audit('safeRmSync', operation, canonical, 'allowed');
     } catch (err) {
       audit('safeRmSync', operation, canonical, 'denied', `rm-error: ${(err as Error).message}`);

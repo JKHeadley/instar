@@ -14,6 +14,7 @@ import { mergeConfigWithSecrets } from './SecretMigrator.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import os from 'node:os';
 import type { InstarConfig, SessionManagerConfig, JobSchedulerConfig, FeedbackConfig, AgentType } from './types.js';
+import { CANONICAL_FEEDBACK_URL } from './canonicalFeedback.js';
 
 const DEFAULT_PORT = 4040;
 const DEFAULT_MAX_SESSIONS = 10;
@@ -116,6 +117,7 @@ export type FrameworkBinary =
   | 'claude'      // Claude Code CLI
   | 'codex'       // OpenAI Codex CLI
   | 'gemini'      // Gemini CLI
+  | 'pi'          // pi coding agent (@earendil-works/pi-coding-agent)
   | 'aider'       // Aider
   | 'goose'       // Block Goose
   | 'cursor-cli'  // Cursor CLI
@@ -295,6 +297,16 @@ export function detectGeminiPath(): string | null {
   return detectFrameworkBinary('gemini');
 }
 
+/**
+ * Detect the pi CLI (PI-HARNESS-INTEGRATION-SPEC Phase A sibling of the
+ * detectors above). pi installs via `npm install -g
+ * @earendil-works/pi-coding-agent`, which puts a `pi` shim on PATH — the
+ * standard install search in `detectFrameworkBinary('pi')` covers it.
+ */
+export function detectPiPath(): string | null {
+  return detectFrameworkBinary('pi');
+}
+
 // ── Framework Prerequisite Check ───────────────────────────────────────
 
 /**
@@ -304,13 +316,15 @@ export function detectGeminiPath(): string | null {
  */
 export interface FrameworkPrerequisiteInput {
   /** Framework selected by config or env. */
-  configuredFramework: 'claude-code' | 'codex-cli' | 'gemini-cli';
+  configuredFramework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
   /** Path to claude binary if detected, else null. */
   claudePathDetected: string | null;
   /** Path to codex binary if detected, else null. */
   codexPathDetected: string | null;
   /** Path to gemini binary if detected, else null. */
   geminiPathDetected?: string | null;
+  /** Path to pi binary if detected, else null. */
+  piPathDetected?: string | null;
 }
 
 export interface FrameworkPrerequisiteResult {
@@ -366,6 +380,16 @@ export function checkFrameworkPrerequisite(
         };
       }
       return { satisfied: true };
+    case 'pi-cli':
+      if (!input.piPathDetected) {
+        return {
+          satisfied: false,
+          error:
+            'pi CLI not found. The configured framework is pi-cli. '
+            + 'Install with: npm install -g @earendil-works/pi-coding-agent --ignore-scripts',
+        };
+      }
+      return { satisfied: true };
     default: {
       const _exhaustive: never = input.configuredFramework;
       void _exhaustive;
@@ -380,10 +404,10 @@ export function checkFrameworkPrerequisite(
  * unit-test the resolution independently.
  */
 export function resolveConfiguredFramework(
-  configValue: 'claude-code' | 'codex-cli' | 'gemini-cli' | undefined,
+  configValue: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | undefined,
   envValue: string | undefined,
-  enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli')[],
-): 'claude-code' | 'codex-cli' | 'gemini-cli' {
+  enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli')[],
+): 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' {
   // Precedence:
   //   1. sessions.framework (explicit per-install runtime override)
   //   2. INSTAR_FRAMEWORK env (explicit runtime override for this boot)
@@ -393,15 +417,16 @@ export function resolveConfiguredFramework(
   //      the runtime honors the wizard's framework choice even when
   //      sessions.framework and the env are both unset)
   //   4. 'claude-code' (historical default)
-  if (configValue === 'claude-code' || configValue === 'codex-cli' || configValue === 'gemini-cli') {
+  if (configValue === 'claude-code' || configValue === 'codex-cli' || configValue === 'gemini-cli' || configValue === 'pi-cli') {
     return configValue;
   }
   const env = envValue?.trim().toLowerCase();
   if (env === 'codex-cli' || env === 'codex') return 'codex-cli';
   if (env === 'gemini-cli' || env === 'gemini') return 'gemini-cli';
+  if (env === 'pi-cli' || env === 'pi') return 'pi-cli';
   if (env === 'claude-code' || env === 'claude') return 'claude-code';
   const first = enabledFrameworks?.[0];
-  if (first === 'claude-code' || first === 'codex-cli' || first === 'gemini-cli') return first;
+  if (first === 'claude-code' || first === 'codex-cli' || first === 'gemini-cli' || first === 'pi-cli') return first;
   return 'claude-code';
 }
 
@@ -763,11 +788,12 @@ export function loadConfig(projectDir?: string): InstarConfig {
     // agent (sessions.framework + INSTAR_FRAMEWORK both unset) would
     // resolve to claude-code and spawn Claude sessions on every
     // message — the framework-portability bug.
-    fileConfig.enabledFrameworks as ('claude-code' | 'codex-cli' | 'gemini-cli')[] | undefined,
+    fileConfig.enabledFrameworks as ('claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli')[] | undefined,
   );
   const claudePathDetected = fileConfig.sessions?.claudePath || detectClaudePath();
   const codexPathDetected = detectCodexPath();
   const geminiPathDetected = detectGeminiPath();
+  const piPathDetected = detectPiPath();
 
   if (!tmuxPath) {
     throw new Error('tmux not found. Install with: brew install tmux (macOS) or apt install tmux (Linux)');
@@ -777,25 +803,29 @@ export function loadConfig(projectDir?: string): InstarConfig {
     claudePathDetected,
     codexPathDetected,
     geminiPathDetected,
+    piPathDetected,
   });
   if (!prereq.satisfied) {
     throw new Error(prereq.error!);
   }
 
   // The SessionManagerConfig's claudePath field is kept for backwards-compat
-  // with existing spawn paths; for codex-cli / gemini-cli installs it carries
-  // the selected framework's binary path. Spawn paths will be migrated to read
-  // `frameworkBinaryPath` (or similar) in a follow-up slice.
+  // with existing spawn paths; for codex-cli / gemini-cli / pi-cli installs it
+  // carries the selected framework's binary path. Spawn paths will be migrated
+  // to read `frameworkBinaryPath` (or similar) in a follow-up slice.
   const claudePath =
     configuredFramework === 'codex-cli'
       ? (codexPathDetected ?? claudePathDetected ?? '')
       : configuredFramework === 'gemini-cli'
         ? (geminiPathDetected ?? claudePathDetected ?? '')
-        : (claudePathDetected ?? '');
+        : configuredFramework === 'pi-cli'
+          ? (piPathDetected ?? claudePathDetected ?? '')
+          : (claudePathDetected ?? '');
 
   const projectName = fileConfig.projectName || path.basename(resolvedProjectDir);
 
   const sessions: SessionManagerConfig = {
+    projectName,
     tmuxPath,
     claudePath,
     // Expose every detected framework binary so spawnInteractiveSession
@@ -804,6 +834,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
       ...(claudePathDetected ? { 'claude-code': claudePathDetected } : {}),
       ...(codexPathDetected ? { 'codex-cli': codexPathDetected } : {}),
       ...(geminiPathDetected ? { 'gemini-cli': geminiPathDetected } : {}),
+      ...(piPathDetected ? { 'pi-cli': piPathDetected } : {}),
     },
     // The resolved runtime framework. Both spawn paths read this as
     // the default when no per-call framework override is given, so a
@@ -822,6 +853,56 @@ export function loadConfig(projectDir?: string): InstarConfig {
     anthropicApiKey: fileConfig.sessions?.anthropicApiKey as string | undefined,
     anthropicBaseUrl: fileConfig.sessions?.anthropicBaseUrl as string | undefined,
     credentials: buildCredentialsMap(fileConfig.sessions as Record<string, unknown> | undefined),
+    // Per-component framework routing (docs/specs/per-component-framework-routing.md).
+    // LOAD-PATH FIX (2026-06-06): this field was documented + consumed
+    // (IntelligenceRouter's resolveConfig reads config.sessions.componentFrameworks
+    // live) but NEVER copied from the config FILE here — so the documented
+    // `.instar/config.json` surface was silently dead on every deployed agent
+    // (the feature's tests built config objects in-memory, which is why the
+    // file-load gap never surfaced). Pass it through; the router validates
+    // values per-call (unknown frameworks degrade to the default + report).
+    ...(fileConfig.sessions?.componentFrameworks &&
+    typeof fileConfig.sessions.componentFrameworks === 'object'
+      ? { componentFrameworks: fileConfig.sessions.componentFrameworks }
+      : {}),
+    // Per-framework default model pattern (frameworkDefaultModels['pi-cli'] →
+    // the pi-cli provider's required model). SAME LOAD-PATH GAP as componentFrameworks
+    // above (2026-06-25): server.ts reads config.sessions.frameworkDefaultModels to build
+    // the pi-cli provider, but the loader never copied it from the config FILE here — so
+    // the pattern was always undefined at boot, the factory degraded pi-cli to null
+    // ("binary missing / not built"), and pi-cli was silently UNAVAILABLE on every
+    // deployed agent despite a valid binary + config. Pass it through (the factory still
+    // guards each value; an absent/empty pattern degrades per design).
+    ...(fileConfig.sessions?.frameworkDefaultModels &&
+    typeof fileConfig.sessions.frameworkDefaultModels === 'object'
+      ? { frameworkDefaultModels: fileConfig.sessions.frameworkDefaultModels }
+      : {}),
+    // dynamicMcp (DYNAMIC-MCP-LIFECYCLE-SPEC). THE SAME LOAD-PATH GAP as
+    // componentFrameworks/frameworkDefaultModels above (THIRD instance — live-test
+    // 2026-06-27): #1293 added the feature, the `/mcp/*` routes (which read
+    // `options.config.sessions.dynamicMcp.enabled`), and SessionManager.buildSessionMcpFlags
+    // (which reads `config.sessions.dynamicMcp`) — but the loader never copied the field
+    // from the config FILE here. So the feature was UN-ENABLABLE on every deployed agent:
+    // setting `sessions.dynamicMcp.enabled: true` did nothing (routes 503'd, sessions never
+    // trimmed). The e2e/integration tests build config objects in-memory, bypassing
+    // loadConfig, so the file-load gap never surfaced until a real config-file enable was
+    // driven live. Pass it through (DynamicMcpService.enabled()/buildSessionMcpFlags still
+    // gate on `.enabled === true`, and the service construction is fail-safe).
+    ...(fileConfig.sessions?.dynamicMcp &&
+    typeof fileConfig.sessions.dynamicMcp === 'object'
+      ? { dynamicMcp: fileConfig.sessions.dynamicMcp }
+      : {}),
+    // pi-cli subscription-guard override (PI-HARNESS-INTEGRATION-SPEC §4.3).
+    // Config surface: top-level `piCli.allowAnthropicProviders` — file-config
+    // only, deliberately NOT an env var (no per-boot bypass surface).
+    ...((fileConfig as Record<string, unknown> & { piCli?: { allowAnthropicProviders?: boolean } })
+      .piCli?.allowAnthropicProviders !== undefined
+      ? {
+          piCliAllowAnthropicProviders: (fileConfig as Record<string, unknown> & {
+            piCli?: { allowAnthropicProviders?: boolean };
+          }).piCli!.allowAnthropicProviders,
+        }
+      : {}),
   };
 
   const scheduler: JobSchedulerConfig = {
@@ -841,6 +922,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
       shutdown: 95,
     },
     authToken: fileConfig.authToken as string | undefined,
+    projectName,
   };
 
   // Auto-generate contextSigningKey if not present (persists to config file)
@@ -903,7 +985,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
     },
     feedback: {
       enabled: true,
-      webhookUrl: 'https://dawn.bot-me.ai/api/instar/feedback',
+      webhookUrl: CANONICAL_FEEDBACK_URL,
       feedbackFile: path.join(stateDir, 'feedback.json'),
       ...fileConfig.feedback,
     },

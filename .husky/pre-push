@@ -13,6 +13,16 @@ if ! node scripts/pre-push-fixture-guard.mjs; then
   exit 1
 fi
 
+# ── Test-runner bound: self-disable ledger advisory (WARN-ONLY) ────────
+# Reads the local host-test-runner event ledger and WARNs on a sustained
+# self-disable pattern (off / spoofed-CI / watch / cap / posture / arm
+# divergence) — the serverless-host surface of
+# docs/specs/test-runner-concurrency-bound.md §2.6(b). STRUCTURALLY
+# non-blocking: the script always exits 0 in this mode, and `|| true`
+# guards even a crash — ledger content may only ever ADD a warning,
+# never block a push.
+node scripts/pre-push-test-runner-selfdisable.mjs || true
+
 # ── Smoke tier: run only tests affected by files changed vs the resolved base ──
 # Full suite still runs in CI across 8 sharded runners — that's the authority.
 # Pre-push is a fast signal to catch obvious breakage before it costs a CI run.

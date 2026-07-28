@@ -31,3 +31,53 @@ export function meaningfulTail(text: string, n: number): string {
   const trimmed = trimTrailingBlankRows(text.split('\n'));
   return trimmed.slice(-n).join('\n');
 }
+
+/**
+ * Extract the last completed Gemini assistant block from a live TUI pane.
+ *
+ * Gemini renders final prose as a block beginning with `✦`, then returns to an
+ * input/footer area (`Type your message`, model footer, etc.). This helper only
+ * returns a block when that idle footer appears after the assistant block, so a
+ * streaming/in-progress answer does not get relayed early.
+ */
+export function extractGeminiFinalAssistantBlock(text: string): string | null {
+  if (!text) return null;
+  const lines = trimTrailingBlankRows(text.split('\n'));
+  let start = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^\s*✦\s*/.test(lines[i])) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return null;
+
+  const after = lines.slice(start + 1).join('\n');
+  if (!/(Type your message|YOLO mode|no sandbox|\/model)/i.test(after)) return null;
+
+  const out: string[] = [];
+  const first = lines[start].replace(/^\s*✦\s*/, '').trimEnd();
+  if (first.trim()) out.push(first);
+
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*[╭╰│]/.test(line)) break;
+    if (/(Type your message|YOLO mode|no sandbox|\/model)/i.test(line)) break;
+    if (/^\s*\d+\s+GEMINI\.md files\b/i.test(line)) break;
+    if (/^\s*>/.test(line)) break;
+    out.push(line);
+  }
+
+  const trimmed = trimTrailingBlankRows(out).join('\n').trim();
+  if (!trimmed) return null;
+
+  const bodyLines = trimmed.split('\n');
+  const nonEmpty = bodyLines.filter((l) => l.trim());
+  const indents = nonEmpty
+    .map((l) => (/^(\s*)/.exec(l)?.[1].length ?? 0))
+    .filter((n) => n > 0);
+  const commonIndent = indents.length ? Math.min(...indents) : 0;
+  return commonIndent > 0
+    ? bodyLines.map((l) => l.trim() ? l.slice(Math.min(commonIndent, /^(\s*)/.exec(l)?.[1].length ?? 0)) : '').join('\n').trim()
+    : trimmed;
+}

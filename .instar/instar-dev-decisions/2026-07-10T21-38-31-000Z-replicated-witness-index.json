@@ -1,0 +1,18 @@
+{
+  "ts": "2026-07-10T21:38:31.000Z",
+  "slug": "replicated-witness-index",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [
+    "performance-only derived index for existing replicated-store witness seam",
+    "no new authority, route, config, persistent schema, or external operation",
+    "shared-infra blast radius mitigated by parity fallback and unit/integration/e2e coverage"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 0,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

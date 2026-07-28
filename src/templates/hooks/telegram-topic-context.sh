@@ -66,11 +66,16 @@ AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"
 if [ -z "$AUTH_TOKEN" ] && [ -f "$CONFIG_FILE" ]; then
   AUTH_TOKEN=$(python3 -c "import json; v=json.load(open('$CONFIG_FILE')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
 fi
+AGENT_ID="${INSTAR_AGENT_ID:-}"
+if [ -z "$AGENT_ID" ] && [ -f "$CONFIG_FILE" ]; then
+  AGENT_ID=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('projectName',''))" 2>/dev/null)
+fi
 
 # Fetch recent messages for this topic
 if [ -n "$AUTH_TOKEN" ]; then
   RECENT_MSGS=$(curl -s \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -H "X-Instar-AgentId: ${AGENT_ID}" \
     "http://localhost:${PORT}/telegram/topics/${TOPIC_ID}/messages?limit=30" 2>/dev/null)
 else
   RECENT_MSGS=$(curl -s \
@@ -85,6 +90,7 @@ TOPIC_BRIEFING=""
 if [ -n "$AUTH_TOKEN" ]; then
   TOPIC_BRIEFING=$(curl -s --max-time 2 \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -H "X-Instar-AgentId: ${AGENT_ID}" \
     "http://localhost:${PORT}/topic-intent/${TOPIC_ID}/briefing" 2>/dev/null)
 else
   TOPIC_BRIEFING=$(curl -s --max-time 2 \
@@ -99,6 +105,12 @@ fi
 # Format and output context with unanswered message detection
 echo "$RECENT_MSGS" | python3 -c "
 import sys, json
+def _localts(raw):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(raw).replace('Z', '+00:00')).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    except Exception:
+        return str(raw)[:16].replace('T', ' ')
 try:
     data = json.load(sys.stdin)
     msgs = data.get('messages', [])
@@ -108,7 +120,7 @@ try:
     print('TOPIC ${TOPIC_ID} RECENT HISTORY (auto-injected — read this before responding):')
 
     for m in msgs:
-        ts = m.get('timestamp', '')[:16].replace('T', ' ')
+        ts = _localts(m.get('timestamp', ''))
         from_user = m.get('fromUser', m.get('direction', 'in') == 'in')
         text = m.get('text', '').strip()
         sender = 'User' if from_user else 'Agent'
@@ -133,7 +145,7 @@ try:
         print('*** UNANSWERED MESSAGE(S) FROM USER ***')
         for pm in pending_user:
             pm_text = pm.get('text', '')[:200]
-            pm_ts = pm.get('timestamp', '')[:16].replace('T', ' ')
+            pm_ts = _localts(pm.get('timestamp', ''))
             print(f'  [{pm_ts}] \"{pm_text}\"')
         print()
         print('You MUST address these messages substantively. Do NOT respond with just')

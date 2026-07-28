@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "sessionId": "c8f9cf84-73e3-4804-abbb-3aeeea7f709c",
+  "timestamp": "2026-07-10T20:59:16.558Z",
+  "artifactPath": "upgrades/side-effects/subs-setup-flow-ux.md",
+  "artifactSha256": "d4626a75f4c2a648a8834709084ad16948b4ff67ee97779672f12af2ebf06c98",
+  "coveredFiles": [
+    "dashboard/index.html",
+    "dashboard/subscriptions.js",
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/specs/dashboard-ux-standard.eli16.md",
+    "docs/specs/dashboard-ux-standard.md",
+    "src/commands/server.ts",
+    "src/core/EnrollmentWizard.ts",
+    "src/server/routes.ts",
+    "tests/e2e/subscriptions-tab-lifecycle.test.ts",
+    "tests/integration/account-follow-me-enroll-start-route.test.ts",
+    "tests/integration/account-follow-me-submit-code-route.test.ts",
+    "tests/integration/account-matrix-start-cell-route.test.ts",
+    "tests/integration/subscription-enrollment-routes.test.ts",
+    "tests/integration/subscriptions-tab.test.ts",
+    "tests/unit/dashboard-refresh-interaction-hold.test.ts",
+    "tests/unit/enrollment-wizard.test.ts",
+    "tests/unit/subscriptions-render.test.ts",
+    "upgrades/next/subs-setup-flow-ux.md",
+    "upgrades/side-effects/subs-setup-flow-ux.md",
+    "upgrades/subs-setup-flow-ux.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dashboard UX defect-class fix to an already-shipped, already-dev-gated flow (multiMachine.accountFollowMe): no new blocking authority (the S7 identity gate is untouched in logic \u2014 its verdict is surfaced), no config/schema/migration surface, additive-only API response fields, no new routes. The bulk of the diff is tests (all three tiers) and presentation. The touched refusal predicates keep their exact refusal sets; the one supersede path fails toward reuse on uncertainty. PR review is the surface.",
+  "eli16Path": "upgrades/subs-setup-flow-ux.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/subs-setup-flow-ux.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The account-machine-matrix + ws52 code-paste-back features shipped functionally correct but UX-blind: the poll-rebuild renderer predated any interaction-hold rule (no F9 floor existed), the flow was split across two panels by construction, the S7 gate verdict was never surfaced to the UI, and the record-vs-pane liveness gap (D5) was a latent seam in the enrollment lifecycle exposed the first time an operator drove a re-auth on a slot whose pane had died (2026-07-10 justin-gmail incident). Root cause class: operator-surface defects invisible to the 3-tier tests then in place because no floor asserted interaction survival or record-pane coherence."
+  }
+}

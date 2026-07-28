@@ -53,12 +53,14 @@ describe('Cutover-readiness routes (spec §7 G2.4)', () => {
   let monitor: DurableParityMonitor;
   let parityCheck: (() => Promise<ParityResult>) | null;
   let importDryRun: (() => Promise<ImportRunResult>) | null;
+  let integrityImport: (() => Promise<ImportRunResult>) | null;
 
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cutready-routes-'));
     monitor = new DurableParityMonitor(new JsonlPassPersistence(path.join(dir, 'passes.jsonl')));
     parityCheck = null;
     importDryRun = null;
+    integrityImport = null;
     const readiness = new CutoverReadiness({
       parityMonitor: monitor,
       integrityReportPath: path.join(dir, 'integrity-report.json'),
@@ -66,6 +68,7 @@ describe('Cutover-readiness routes (spec §7 G2.4)', () => {
       runParityCheck: () => (parityCheck ? parityCheck() : Promise.reject(new Error('no check bound'))),
       importDryRunReportPath: path.join(dir, 'import-dryrun.json'),
       runImportDryRun: () => (importDryRun ? importDryRun() : Promise.reject(new Error('no dry-run bound'))),
+      runIntegrityImport: () => (integrityImport ? integrityImport() : Promise.reject(new Error('no integrity import bound'))),
     });
     server = await listen(buildApp(readiness));
   });
@@ -104,6 +107,35 @@ describe('Cutover-readiness routes (spec §7 G2.4)', () => {
     expect(res.status).toBe(409);
     expect((await res.json()).error).toMatch(/parity check failed/);
     expect(monitor.passes.length).toBe(0);
+  });
+
+
+  it('a CONCURRENT trigger is 409 \'already in flight\' over the full pipeline (one live fetch at a time)', async () => {
+    // The live 2026-06-05 incident shape: a slow degraded-source pass holds the
+    // handler past the client's patience; a second trigger must refuse instantly
+    // instead of piling another full fetch onto the source.
+    let release!: (v: ParityResult) => void;
+    parityCheck = () => new Promise<ParityResult>((res) => { release = res; });
+
+    const first = fetch(`${server.url}/cutover-readiness/parity-pass`, { method: 'POST' });
+    // Give the first request time to reach the handler and take the guard.
+    await new Promise((r) => setTimeout(r, 150));
+
+    const second = await fetch(`${server.url}/cutover-readiness/parity-pass`, { method: 'POST' });
+    expect(second.status).toBe(409);
+    const refusal = await second.json();
+    expect(refusal.error).toContain('already in flight');
+
+    // The guard is shared with the import dry-run (same live source).
+    const dryRun = await fetch(`${server.url}/cutover-readiness/import-dryrun`, { method: 'POST' });
+    expect(dryRun.status).toBe(409);
+    expect((await dryRun.json()).error).toContain('parity-pass');
+
+    release(CLEAN);
+    const firstRes = await first;
+    expect(firstRes.status).toBe(200);
+    expect((await firstRes.json()).recorded).toBe(true);
+    expect(monitor.passes.length).toBe(1); // exactly one pass recorded
   });
 
   it('there is NO fire-cutover route (decision 1A is structural)', async () => {
@@ -180,6 +212,55 @@ describe('Cutover-readiness routes (spec §7 G2.4)', () => {
     try {
       expect((await fetch(`${s2.url}/cutover-readiness/import-dryrun`, { method: 'POST' })).status).toBe(503);
       expect((await fetch(`${s2.url}/cutover-readiness/import-dryrun`)).status).toBe(503);
+    } finally {
+      await s2.close();
+    }
+  });
+
+  // ── the REAL integrity pass (LOAD-BEARING: greens/flips the canonical integrity leg) ──
+
+  it('POST /cutover-readiness/integrity-pass records to the CANONICAL path and GREENS the integrity leg', async () => {
+    integrityImport = async () => PASSED_RUN;
+    const res = await fetch(`${server.url}/cutover-readiness/integrity-pass`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passed: false }), // hostile body — contributes NOTHING (T7)
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.recorded).toBe(true);
+    expect(body.result.imported.clusters).toBe(1346); // from the server-side run, not the body
+    // UNLIKE the dry-run: the canonical integrity report exists + the leg reads green.
+    expect(fs.existsSync(path.join(dir, 'integrity-report.json'))).toBe(true);
+    const status = await (await fetch(`${server.url}/cutover-readiness`)).json();
+    expect(status.integrity).toMatchObject({ ran: true, passed: true });
+  });
+
+  it('a FAILED integrity pass records the failing report → integrity leg reads CLOSED, ready stays false', async () => {
+    integrityImport = async () => ({
+      ...PASSED_RUN,
+      report: { ...PASSED_RUN.report!, checksumMismatches: [{ kind: 'cluster', id: 'c1', sourceChecksum: 'a', targetChecksum: 'b' } as any], passed: false },
+      passed: false,
+    });
+    const res = await fetch(`${server.url}/cutover-readiness/integrity-pass`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).recorded).toBe(true);
+    const status = await (await fetch(`${server.url}/cutover-readiness`)).json();
+    expect(status.integrity).toMatchObject({ ran: true, passed: false });
+    expect(status.ready).toBe(false);
+  });
+
+  it('a FAILED integrity fetch is 409 and records NOTHING', async () => {
+    integrityImport = async () => { throw new Error('portal unreachable'); };
+    const res = await fetch(`${server.url}/cutover-readiness/integrity-pass`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/integrity pass failed/);
+    expect(fs.existsSync(path.join(dir, 'integrity-report.json'))).toBe(false);
+  });
+
+  it('integrity-pass route 503s when the checker is unavailable', async () => {
+    const s2 = await listen(buildApp(null));
+    try {
+      expect((await fetch(`${s2.url}/cutover-readiness/integrity-pass`, { method: 'POST' })).status).toBe(503);
     } finally {
       await s2.close();
     }

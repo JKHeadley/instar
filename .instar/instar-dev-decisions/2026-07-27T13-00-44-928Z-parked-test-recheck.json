@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-27T13:00:44.928Z",
+  "slug": "parked-test-recheck",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 185,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

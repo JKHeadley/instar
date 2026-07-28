@@ -114,6 +114,41 @@ describe('Convergence Check', () => {
       const result = runCheck('I intend to investigate this further.');
       expect(result.exitCode).toBe(0);
     });
+
+    // Word-boundary regression (live FPs, 2026-06-06): the bare `i (promise...)`
+    // pattern matched INSIDE other words — "Mini promises" (the trailing i of
+    // "Mini") and "I promised" (past-tense narration) both blocked real status
+    // reports five times in one day.
+    it('does NOT flag "Mini promises" (word ending in i + plural noun)', () => {
+      const result = runCheck('The laptop sees 460 of the Mini promises with full detail.');
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('does NOT flag past-tense narration "I promised"', () => {
+      const result = runCheck('Everything I promised earlier is done and verified.');
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('does NOT flag "she promised" / "compromise"', () => {
+      expect(runCheck('She promised to review the compromise proposal.').exitCode).toBe(0);
+    });
+
+    it('still flags a REAL first-person present-tense promise', () => {
+      const result = runCheck('I promise to deliver the report tomorrow.');
+      expect(result.exitCode).toBe(1);
+      expect(result.output).toContain('COMMITMENT');
+    });
+
+    it('still flags a bare "I promise." at sentence end', () => {
+      const result = runCheck('It will be done, I promise.');
+      expect(result.exitCode).toBe(1);
+      expect(result.output).toContain('COMMITMENT');
+    });
+
+    it('still flags "you can count on me to" and "from now on I\'ll"', () => {
+      expect(runCheck('You can count on me to follow up.').exitCode).toBe(1);
+      expect(runCheck('From now on I\'ll lead with the action.').exitCode).toBe(1);
+    });
   });
 
   // ── Category 3: Settling ───────────────────────────────────────────
@@ -237,6 +272,16 @@ describe('Convergence Check', () => {
     it('passes localhost URLs', () => {
       const result = runCheck('Server running at http://localhost:4040/health');
       expect(result.exitCode).toBe(0);
+    });
+
+    it('passes claude.com OAuth login URLs', () => {
+      // Regression: the Claude subscription OAuth login link lives on claude.com
+      // (sibling of the already-allowed claude.ai). Before this was allowlisted,
+      // delivering an enrollment login link false-flagged URL_PROVENANCE — which
+      // is why the link had to be wrapped in a private view (topic 20905 live test).
+      const result = runCheck('Sign in to enroll this account: https://claude.com/oauth/authorize?code=abc123');
+      expect(result.exitCode).toBe(0);
+      expect(result.output).not.toContain('URL_PROVENANCE');
     });
 
     it('passes the agent own configured tunnel hostname', () => {

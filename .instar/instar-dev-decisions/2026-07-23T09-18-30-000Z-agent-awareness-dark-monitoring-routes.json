@@ -1,0 +1,20 @@
+{
+  "ts": "2026-07-23T09:18:30.000Z",
+  "slug": "agent-awareness-dark-monitoring-routes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 35,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The runtime routes and capability-index entries shipped without matching fresh-template and existing-agent migration awareness."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

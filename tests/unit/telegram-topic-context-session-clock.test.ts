@@ -26,12 +26,13 @@ function genHook(): string {
 }
 
 describe('telegram-topic-context.sh — session-clock query injection', () => {
-  it('the generated hook calls emit-session-clock.sh in query mode with PORT + AUTH + TOPIC', () => {
+  it('the generated hook calls emit-session-clock.sh in query mode with PORT + AUTH + TOPIC + AGENT', () => {
     const hook = genHook();
     expect(hook).toContain('emit-session-clock.sh');
     expect(hook).toContain('query');
     // the call passes the resolved vars (literal in the generated bash)
-    expect(hook).toMatch(/emit-session-clock\.sh"\s+query\s+"\$TOPIC_ID"\s+"\$PORT"\s+"\$AUTH_TOKEN"/);
+    expect(hook).toMatch(/emit-session-clock\.sh"\s+query\s+"\$TOPIC_ID"\s+"\$PORT"\s+"\$AUTH_TOKEN"\s+"\$AGENT_ID"/);
+    expect(hook).toContain('X-Instar-AgentId: ${AGENT_ID}');
     // still emits the absolute CURRENT TIME block (unchanged)
     expect(hook).toContain('CURRENT TIME');
   });

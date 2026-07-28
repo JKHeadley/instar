@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "sessionId": "46e7cabc-4f2b-439e-a7a2-a88f6a73f395",
+  "timestamp": "2026-07-11T04:11:44.877Z",
+  "artifactPath": "upgrades/side-effects/telegram-reply-worktree-home.md",
+  "artifactSha256": "5c8c810124ead483652a6ab302292dde539fadee7b867d438c5a26a3a83873b9",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/templates/scripts/telegram-reply.sh",
+    "tests/integration/telegram-reply-end-to-end.test.ts",
+    "tests/unit/PostUpdateMigrator-telegramReply.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A tightly scoped relay-path correctness fix with deterministic structural ownership, loud invariant refusal, migration parity, and independent high-risk review; no schema or API change.",
+  "eli16Path": "upgrades/eli16/telegram-reply-worktree-home.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-reply-worktree-home.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "framework_guard_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

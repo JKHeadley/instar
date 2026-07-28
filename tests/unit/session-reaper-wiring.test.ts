@@ -39,10 +39,36 @@ describe('SessionReaper wiring integrity', () => {
     // passed (else the tightening silently never engages — the dead-dep trap).
     expect(/descendantCpuSeconds:\s*\(s\)\s*=>\s*sessionManager\.descendantCpuSeconds\(s\)/.test(src)).toBe(true);
     // The flag is gated by developmentAgent (dark fleet-wide, live on dev agents);
-    // an explicit config value wins via ??.
-    expect(/cpuAwareActiveProcessKeep:\s*rcfg\.cpuAwareActiveProcessKeep\s*\?\?\s*!!config\.developmentAgent/.test(src)).toBe(true);
+    // an explicit config value wins. Resolved via the resolveDevAgentGate funnel
+    // (DEV-AGENT-DARK-GATE-CONFORMANCE-SPEC) rather than a hand-rolled `?? !!`.
+    expect(/cpuAwareActiveProcessKeep:\s*resolveDevAgentGate\(\s*rcfg\.cpuAwareActiveProcessKeep,\s*config\s*\)/.test(src)).toBe(true);
     // The observe-only busy-orphan detection rides the same dev-gate.
-    expect(/busyOrphanDetection:\s*rcfg\.busyOrphanDetection\s*\?\?\s*!!config\.developmentAgent/.test(src)).toBe(true);
+    expect(/busyOrphanDetection:\s*resolveDevAgentGate\(\s*rcfg\.busyOrphanDetection,\s*config\s*\)/.test(src)).toBe(true);
+  });
+
+  it('reaper terminate dep threads the F8 lease carve-out through to the authority', () => {
+    // F8 (roadmap 0.6): the closeout's bypassLeaseForTopicMovedCloseout must
+    // survive the server.ts terminate-dep hop into terminateSession — dropping
+    // it there would silently restore the not-lease-holder veto the carve-out
+    // exists to lift (the dead-dep trap, again).
+    const src = read('src/commands/server.ts');
+    expect(/bypassLeaseForTopicMovedCloseout:\s*opts\?\.bypassLeaseForTopicMovedCloseout/.test(src)).toBe(true);
+  });
+
+  it('F8 scope-guard: the lease carve-out is minted ONLY inside the topic-moved closeout machinery', () => {
+    // The carve-out's whole safety story is its scope: only the closeout of a
+    // session whose topic PROVABLY moved away (topicOwnerElsewhere + dwell,
+    // both enforced before attemptCloseoutTerminate is reachable) may lift the
+    // lease gate. The reaper's OTHER terminate (the idle reap) must never
+    // carry it — exact-object toHaveBeenCalledWith assertions in
+    // session-reaper.test.ts prove the runtime side; this pins the source side.
+    const src = read('src/monitoring/SessionReaper.ts');
+    const mints = src.match(/bypassLeaseForTopicMovedCloseout:\s*true/g) ?? [];
+    expect(mints.length).toBe(2); // both arms of the ONE closeout terminate call
+    const closeoutStart = src.indexOf('private async attemptCloseoutTerminate(');
+    const closeoutEnd = src.indexOf('\n  private ', closeoutStart + 1);
+    const body = src.slice(closeoutStart, closeoutEnd === -1 ? undefined : closeoutEnd);
+    expect((body.match(/bypassLeaseForTopicMovedCloseout:\s*true/g) ?? []).length).toBe(2);
   });
 
   it('AgentServer threads options.sessionReaper into the route context', () => {

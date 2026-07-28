@@ -1,0 +1,18 @@
+{
+  "ts": "2026-07-11T10:08:47.569Z",
+  "slug": "unknown",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 8,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Annotation-only correction on one bounded kill attempt tied to a single detect timeout; no recurring loop is added."
+  },
+  "verdict": "pass"
+}

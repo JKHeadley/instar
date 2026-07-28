@@ -54,6 +54,10 @@ describe('Attention topic-flood guard (integration with real TelegramAdapter)', 
         token: 'test-token-123',
         chatId: '-100123456',
         pollIntervalMs: 100,
+        // This file pins the LEGACY per-item behavior the guard was built to
+        // shape — the shipped default is single-topic routing (covered in
+        // tests/unit/attention-single-topic-routing.test.ts + the burst tests).
+        attentionRouting: { mode: 'per-item' },
         // Tight per-source budget so the test is fast and deterministic; large
         // window + generous global ceiling so these per-source tests aren't
         // perturbed by the global cap (the global cap has its own unit coverage).

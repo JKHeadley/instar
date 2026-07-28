@@ -26,11 +26,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkEli16Overview, MIN_ELI16_CHARS } from './eli16-overview-check.mjs';
 import { verifyProposalDerivedRunbooks } from '../skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs';
 import { classifyTier, decideRequirementSet } from './lib/classify-tier.mjs';
+import { recognizeConvergence } from './lib/convergence-recognition.mjs';
+import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality, isAuthorizationSurfaceFile, artifactAddressesAgentProposesApproves, operatorSurfaceRequiresRawInput } from './lib/operator-surface.mjs';
+import { selfActionDeclarationVerdict } from './lib/self-action-detect.mjs';
+import { validateAuditReport, parseFrontmatter } from './write-audit-convergence.mjs';
+import { scanForSecrets } from './audit-secret-patterns.mjs';
+
+// Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
+// The precommit reads NO config file and runs pre-compile, so it cannot import
+// the TS config loader. The flag specReview.requireConvergenceReport is threaded
+// in as an ENV VAR by the .husky/pre-commit hook, mirroring the existing in-file
+// INSTAR_DEV_ALLOW_ORPHAN_DEFERRALS pattern. When unset, the new report-backing
+// branch never runs → byte-identical to today's precommit behavior.
+const REQUIRE_CONVERGENCE_REPORT = process.env.INSTAR_DEV_REQUIRE_CONVERGENCE_REPORT === '1';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,6 +58,23 @@ const TRACES_DIR = path.join(ROOT, '.instar', 'instar-dev-traces');
 // DECISIONS_DIR instead: distinct filenames can never conflict.
 // (The frozen legacy file remains at .instar/instar-dev-decisions.jsonl.)
 const DECISIONS_DIR = path.join(ROOT, '.instar', 'instar-dev-decisions');
+
+// Set by writeDecisionAudit; consumed by the process 'exit' handler that
+// finalizes the entry's verdict. BOTH the declaration AND the handler
+// registration live here, above the top-level audit call site — placed
+// after it, the declaration TDZ-throws inside writeDecisionAudit's
+// try/catch, and the handler registration is never even reached when
+// blockCommit exits first (top-level statements run in source order).
+let pendingAuditEntry = null;
+process.on('exit', (code) => {
+  if (!pendingAuditEntry) return;
+  try {
+    const { entryPath, entryData } = pendingAuditEntry;
+    entryData.verdict = code === 0 ? 'pass' : 'blocked';
+    fs.writeFileSync(entryPath, JSON.stringify(entryData, null, 2) + '\n');
+    execSync(`git add ${JSON.stringify(path.relative(ROOT, entryPath))}`, { cwd: ROOT });
+  } catch { /* best-effort — 'pending' is still more truthful than no verdict */ }
+});
 const WINDOW_MS = 60 * 60 * 1000; // 60 minutes
 const MIN_ARTIFACT_CHARS = 200;
 
@@ -97,6 +127,74 @@ const staged = stagedOutput
 if (staged.length === 0) {
   // No staged files — nothing to check.
   process.exit(0);
+}
+
+// ─── Step 1.5: audit-convergence gate ─────────────────────────────────────
+// (audit-convergence-enforcement §2). Placed BEFORE the in-scope early-exit so
+// it fires for docs-only audit commits (a `docs/audits/*.md` commit is exactly
+// the dominant case and would be dead code after the in-scope filter). Validates
+// the STAGED blob (`git show :<path>`), never the worktree copy. FAIL-CLOSED on
+// any validator crash — the honest escape is to drop the `converged:` line.
+function stagedBlob(file) {
+  try {
+    return execSync(`git show :${JSON.stringify(file)}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+  } catch {
+    return null; // deleted/renamed away — nothing to validate
+  }
+}
+function frontmatterHas(content, key) {
+  try { return !!parseFrontmatter(content).fields[key]; } catch { return false; }
+}
+const auditReports = staged.filter((f) => /^docs\/audits\/.+\.md$/.test(f));
+const otherDocsMd = staged.filter((f) => /^docs\/.+\.md$/.test(f) && !/^docs\/audits\//.test(f));
+
+// Canonical-path-only: a `converged:` audit stamp is legitimate ONLY under
+// docs/audits/. A staged docs/**/*.md OUTSIDE it carrying an `audit:` key is a
+// misplaced (or rogue) audit report — block. (Keyed on `audit:`, not a bare
+// `converged:`, to avoid colliding with generic doc vocabulary — codex-R3.)
+for (const f of otherDocsMd) {
+  const content = stagedBlob(f);
+  if (content && frontmatterHas(content, 'audit')) {
+    console.error(`[instar-dev-precommit] BLOCKED: ${f} carries an \`audit:\` frontmatter key outside docs/audits/.`);
+    console.error('  → an audit report + its `converged:` stamp are legitimate only at docs/audits/<slug>.md.');
+    process.exit(1);
+  }
+}
+
+for (const f of auditReports) {
+  const content = stagedBlob(f);
+  if (!content) continue;
+
+  // (1) secret scan — the one hard block (irreversible: git history + push).
+  const secrets = scanForSecrets(content);
+  if (secrets.length) {
+    console.error(`[instar-dev-precommit] BLOCKED: ${f} appears to contain credential material:`);
+    for (const s of secrets) console.error(`    line ${s.line}: matches ${s.name} — reference path+line, NEVER quote the secret`);
+    process.exit(1);
+  }
+
+  // (2) convergence validation — only when the report CLAIMS converged.
+  if (frontmatterHas(content, 'converged')) {
+    let result;
+    try {
+      const stagedNames = new Set(staged);
+      result = validateAuditReport(content, {
+        root: ROOT,
+        stagedSet: stagedNames,
+        basenameSlug: path.basename(f, '.md'),
+      });
+    } catch (err) {
+      // fail-CLOSED — never let a validator crash pass a stamp.
+      console.error(`[instar-dev-precommit] BLOCKED (fail-closed): validator crashed on ${f}: ${err.message}`);
+      console.error('  → honest escape: remove the `converged:` line and commit the audit as honestly-incomplete.');
+      process.exit(1);
+    }
+    if (!result.ok) {
+      console.error(`[instar-dev-precommit] BLOCKED: ${f} claims \`converged:\` but the ledger does not earn it: ${result.reason}`);
+      console.error('  → an honestly-incomplete audit is fine to commit; it just cannot carry a `converged:` stamp.');
+      process.exit(1);
+    }
+  }
 }
 
 // ─── Step 2: classify staged files ───────────────────────────────────────
@@ -153,10 +251,14 @@ if (bootstrapTrigger) {
 
 let tierSignal = { suggestedTier: 2, sizeTier: 2, riskFloor: 1, reasons: [] };
 let totalChangedLoc = 0;
+// Hoisted to module scope (docs/specs/self-action-convergence.md → E3 impl
+// note): addedDiffText is computed in the Step-3.5 block but consumed later by
+// assertSelfActionDeclared at BOTH the enforceTier1 and Tier-2 pass-through call
+// sites. It must outlive the block.
+let addedDiffText = '';
 {
   let addedLines = 0;
   let deletedLines = 0;
-  let addedDiffText = '';
   try {
     const numstat = execSync(
       `git diff --cached --numstat -- ${inScopeFiles.map((f) => JSON.stringify(f)).join(' ')}`,
@@ -235,8 +337,11 @@ if (traceEntries.length === 0) {
 }
 
 // ─── Step 4.5: read the agent's DECLARED tier + branch ───────────────────
-// The agent records its tier in the trace JSON. We peek the freshest fresh
-// trace to read `trace.tier` (1|2|3). decideRequirementSet() factors the pure
+// The agent records its tier in the trace JSON. Select the freshest trace that
+// actually covers THIS staged change before reading its identity or tier. A
+// merely-newer trace from another worktree/task must never label this decision
+// audit (the feedback-class failure behind fb-2b24aa04-540).
+// decideRequirementSet() factors the pure
 // enforcement decision:
 //   - tier 1            → 'tier1-lite'  (ELI16 + side-effects staged; no spec)
 //   - tier 2 / 3        → 'tier2-full'  (the EXISTING full validation, unchanged)
@@ -245,8 +350,28 @@ if (traceEntries.length === 0) {
 let declaredTier = null;
 let tierReasoning = '';
 let freshestTrace = null;
+let freshestTraceEntry = null;
+for (const entry of traceEntries) {
+  try {
+    const candidate = JSON.parse(fs.readFileSync(entry.file, 'utf8'));
+    const covered = new Set(candidate?.coveredFiles || []);
+    if (candidate?.phase === 'complete' && inScopeFiles.every((f) => covered.has(f))) {
+      freshestTrace = candidate;
+      freshestTraceEntry = entry;
+      break;
+    }
+  } catch {
+    // The full validation path below reports malformed attempts. They are not
+    // eligible to provide identity/tier metadata for this staged change.
+  }
+}
+if (!freshestTrace || !freshestTraceEntry) {
+  blockCommit(
+    inScopeFiles,
+    'No fresh complete trace covers this staged change. Run the /instar-dev skill for the files being committed.',
+  );
+}
 try {
-  freshestTrace = JSON.parse(fs.readFileSync(traceEntries[0].file, 'utf8'));
   if (freshestTrace && (freshestTrace.tier === 1 || freshestTrace.tier === 2 || freshestTrace.tier === 3)) {
     declaredTier = freshestTrace.tier;
   }
@@ -258,8 +383,49 @@ try {
   // path (the existing Step 5 loop will surface the malformed-JSON attempt).
 }
 
-const slug = (freshestTrace && (freshestTrace.slug || freshestTrace.name)) || 'unknown';
+const slug = (freshestTrace && (
+  freshestTrace.slug ||
+  freshestTrace.name ||
+  (typeof freshestTrace.artifactPath === 'string'
+    ? path.basename(freshestTrace.artifactPath, path.extname(freshestTrace.artifactPath))
+    : null)
+)) || 'unknown';
 const decision = decideRequirementSet(declaredTier);
+
+// ─── Step 4.55: causal autopsy (directive 2026-06-05) ───────────────────
+// Low-ceremony lanes (Tier-1) ship without an independent reviewer, so the
+// compensating control is a durable causal record per issue: every fix-class
+// commit SHOULD declare what caused the issue it fixes — a prior PR, an
+// environment shift that invalidated old assumptions, plain new code, a
+// latent bug, or honestly unknown. The field rides the decision audit so
+// meta-analysis ("are we converging or playing whack-a-mole?") is a query
+// over .instar/instar-dev-decisions/, not archaeology. ADVISORY in this
+// slice: absence warns on fix-class signals, never blocks. A PRESENT but
+// malformed autopsy blocks — a corrupt record is worse than none.
+const AUTOPSY_ORIGINS = ['prior-pr', 'environment-shift', 'new-code', 'latent', 'unknown'];
+let causalAutopsy = null;
+let autopsyError = null;
+if (freshestTrace && freshestTrace.causalAutopsy !== undefined) {
+  const ca = freshestTrace.causalAutopsy;
+  const validPrs = (a) => Array.isArray(a) && a.length > 0 && a.every((n) => Number.isInteger(n) && n > 0);
+  if (!ca || typeof ca !== 'object' || Array.isArray(ca)) {
+    autopsyError = 'causalAutopsy must be an object: { origin, relatedPrs?, notes? }';
+  } else if (!AUTOPSY_ORIGINS.includes(ca.origin)) {
+    autopsyError = `causalAutopsy.origin must be one of ${AUTOPSY_ORIGINS.join(' | ')} (got ${JSON.stringify(ca.origin)})`;
+  } else if (ca.origin === 'prior-pr' && !validPrs(ca.relatedPrs)) {
+    autopsyError = 'causalAutopsy.origin "prior-pr" requires relatedPrs: a non-empty array of positive PR numbers';
+  } else if (ca.relatedPrs !== undefined && !validPrs(ca.relatedPrs)) {
+    autopsyError = 'causalAutopsy.relatedPrs must be a non-empty array of positive integers when present';
+  } else if (ca.notes !== undefined && typeof ca.notes !== 'string') {
+    autopsyError = 'causalAutopsy.notes must be a string when present';
+  } else {
+    causalAutopsy = {
+      origin: ca.origin,
+      ...(ca.relatedPrs !== undefined ? { relatedPrs: ca.relatedPrs } : {}),
+      ...(ca.notes !== undefined ? { notes: ca.notes } : {}),
+    };
+  }
+}
 
 // AUDIT (all in-scope cases): one JSON line, written regardless of branch.
 // belowFloor = the agent declared UNDER the risk-signaled floor. We never
@@ -274,7 +440,55 @@ const decisionEntryPath = writeDecisionAudit({
   belowFloor,
   files: inScopeFiles.length,
   loc: totalChangedLoc,
+  causalAutopsy,
+  classClosure: (freshestTrace && typeof freshestTrace.classClosure === 'object' && freshestTrace.classClosure) || null,
 });
+// Malformed autopsy blocks AFTER the audit write — the blocked attempt is
+// recorded (verdict 'blocked' via the exit handler), same as every gate
+// refusal. Validated-when-present: absence never reaches this.
+if (autopsyError) {
+  blockCommit(
+    inScopeFiles,
+    `Invalid causalAutopsy in trace: ${autopsyError}\n` +
+    `  Shape: { "origin": "prior-pr|environment-shift|new-code|latent|unknown", "relatedPrs": [123], "notes": "..." }\n` +
+    `  (origin "prior-pr" requires relatedPrs; the field is otherwise optional-but-validated.)`,
+  );
+}
+// Advisory (never blocks): a fix-class commit with NO autopsy gets a loud
+// nudge. Fix-class signal = branch name says fix, or a staged release-note
+// fragment declares change_type: fix.
+if (!causalAutopsy) {
+  let fixClassSignal = false;
+  try {
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: ROOT, encoding: 'utf8' }).trim();
+    if (/(^|[\/-])fix([\/-]|$)/i.test(branch)) fixClassSignal = true;
+  } catch { /* detached HEAD / no commits — stay quiet, advisory only */ }
+  if (!fixClassSignal) {
+    try {
+      const staged = execSync('git diff --cached --name-only', { cwd: ROOT, encoding: 'utf8' })
+        .split('\n').map((s) => s.trim()).filter(Boolean);
+      for (const f of staged) {
+        if (!/^upgrades\/next\/.+\.md$/.test(f)) continue;
+        const fp = path.join(ROOT, f);
+        if (fs.existsSync(fp) && /change_type:\s*fix/.test(fs.readFileSync(fp, 'utf8'))) {
+          fixClassSignal = true;
+          break;
+        }
+      }
+    } catch { /* advisory only */ }
+  }
+  if (fixClassSignal) {
+    console.error('');
+    console.error('┌──────────────────────────────────────────────────────────────────┐');
+    console.error('│  ⚠ ADVISORY — fix-class commit with no causalAutopsy in trace.    │');
+    console.error('│    What caused the issue this fixes? Add to your trace JSON:      │');
+    console.error('│    "causalAutopsy": { "origin": "prior-pr|environment-shift|      │');
+    console.error('│      new-code|latent|unknown", "relatedPrs": [N], "notes": "…" }  │');
+    console.error('│    NOT blocked — but the meta-analysis record stays blind here.   │');
+    console.error('└──────────────────────────────────────────────────────────────────┘');
+    console.error('');
+  }
+}
 if (belowFloor) {
   console.error('');
   console.error('┌──────────────────────────────────────────────────────────────────┐');
@@ -295,7 +509,7 @@ if (belowFloor) {
 // (The tests/lint requirement from the spec lives in the pre-PUSH gate, not
 // here: this pre-COMMIT hook checks ARTIFACTS only.)
 if (decision.requirementSet === 'tier1-lite') {
-  enforceTier1(freshestTrace, traceEntries[0].file);
+  enforceTier1(freshestTrace, freshestTraceEntry.file);
   // enforceTier1 either passes through (process.exit(0)) or blockCommit()s.
 }
 
@@ -422,10 +636,34 @@ if (!specFmMatch) {
   );
 }
 const specFm = specFmMatch[1];
-const convergenceMatch = specFm.match(/^\s*review-convergence\s*:\s*["']?([^"'\n]+)/m);
-const approvedMatch = specFm.match(/^\s*approved\s*:\s*(true|"true"|'true')/m);
 
-if (!convergenceMatch) {
+// Convergence / approval / report recognition is factored into a pure,
+// dependency-free module (scripts/lib/convergence-recognition.mjs) that a unit
+// test cross-checks against the TS validator's `isConvergenceTagPresent` —
+// keeping the two gates in agreement (CONVERGING-AUDIT-DEFAULT.md, Part C). The
+// report-existence input depends on the spec's slug + the env flag, computed
+// just below; the recognizer does no I/O of its own.
+
+// Slug → report path, matching StageTransitionValidator's derivation exactly.
+const specSlugMatch = specFm.match(/^\s*slug\s*:\s*["']?([a-z0-9][a-z0-9-]{0,63})["']?\s*$/m);
+const specSlug = specSlugMatch ? specSlugMatch[1] : '';
+const convergenceReportRel = specSlug
+  ? path.join('docs/specs/reports', `${specSlug}-convergence.md`)
+  : '';
+// Only probe the filesystem when the report requirement is actually on. With
+// the flag unset, reportExists stays false but is never consulted (the
+// recognizer's reportBacked is vacuously true), so this branch is byte-inert.
+const convergenceReportExists =
+  REQUIRE_CONVERGENCE_REPORT && convergenceReportRel
+    ? fs.existsSync(path.resolve(ROOT, convergenceReportRel))
+    : false;
+
+const recognition = recognizeConvergence(specFm, {
+  requireReport: REQUIRE_CONVERGENCE_REPORT,
+  reportExists: convergenceReportExists,
+});
+
+if (!recognition.converged) {
   blockCommit(
     inScopeFiles,
     [
@@ -435,7 +673,7 @@ if (!convergenceMatch) {
   );
 }
 
-if (!approvedMatch) {
+if (!recognition.approved) {
   blockCommit(
     inScopeFiles,
     [
@@ -445,6 +683,35 @@ if (!approvedMatch) {
     ].join('\n'),
   );
 }
+
+// ── Report-backing (Part B — dark, env-gated) ──
+// When INSTAR_DEV_REQUIRE_CONVERGENCE_REPORT=1, a converged + approved spec must
+// ALSO have its converging-audit report on disk (proving the audit RAN, not just
+// that a tag was added). This brings the precommit UP to the formal validator's
+// strictness (which requires the report unconditionally). With the env unset,
+// recognition.reportBacked is always true and this branch never blocks.
+if (!recognition.reportBacked) {
+  blockCommit(
+    inScopeFiles,
+    [
+      `Spec ${spec} is tagged review-convergence + approved, but its converging-audit`,
+      `report is missing: ${convergenceReportRel || '(spec has no valid slug to locate a report)'}`,
+      '',
+      'INSTAR_DEV_REQUIRE_CONVERGENCE_REPORT is on (specReview.requireConvergenceReport:',
+      'true) — a convergence tag without its report can fake convergence. The report is',
+      'the audit\'s proof-of-work; run /spec-converge to produce it (Phase 5 writes',
+      `docs/specs/reports/<slug>-convergence.md), then commit. To turn this requirement`,
+      'off, set specReview.requireConvergenceReport: false in your instar config.',
+    ].join('\n'),
+  );
+}
+
+// ── Part D: surface cross-model-review depth (observe-only, never blocks) ──
+// The converging audit records how much external (cross-model) review actually
+// ran. Surfacing it here makes the audit's depth visible to the operator/agent
+// reading the gate output, without ever gating on it (Signal vs. Authority).
+const crossModelMatch = specFm.match(/^\s*cross-model-review\s*:\s*["']?([^"'\n]+)/m);
+const crossModelReview = crossModelMatch ? crossModelMatch[1].trim() : 'not-recorded';
 
 // ─── Step 7: ELI16 overview verification ─────────────────────────────────
 // Every approved spec must ship with a plain-English ELI16 overview. The
@@ -723,10 +990,16 @@ if (!promotionGateResult.ok) {
 // ─── Pass ────────────────────────────────────────────────────────────────
 
 assertFrameworkGenerality(inScopeFiles, validTrace.trace);
+assertOperatorSurfaceQuality(staged, validTrace.trace);
+assertSelfActionDeclared(addedDiffText, inScopeFiles, validTrace.trace);
+enforceDuplicateBuildBackstop(validTrace.trace);
 
 console.error(
-  `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved, ELI16 overview ${eli16Rel} present (${eli16Result.charCount} chars), promotion-gate: ${promotionGateResult.reason}.`,
+  `[instar-dev-precommit] OK — trace ${path.basename(validTrace.entry.file)} covers ${inScopeFiles.length} in-scope file(s), artifact ${validTrace.trace.artifactPath} verified, spec ${spec} is converged + approved` +
+    `${REQUIRE_CONVERGENCE_REPORT ? ` + report-backed (${convergenceReportRel})` : ''}` +
+    ` [cross-model: ${crossModelReview}], ELI16 overview ${eli16Rel} present (${eli16Result.charCount} chars), promotion-gate: ${promotionGateResult.reason}.`,
 );
+removeDupBuildMarkerOnCommitSuccess();
 process.exit(0);
 
 // Framework-generality review gate. Changes to the session launch/inject
@@ -767,6 +1040,286 @@ function assertFrameworkGenerality(inScopeFiles, trace) {
   }
 }
 
+// Operator-Surface Quality review gate (docs/STANDARDS-REGISTRY.md →
+// "Operator-Surface Quality", CMT-1434). A change touching an operator surface
+// (dashboard renderers/markup, approval pages, grant/secret forms) must answer
+// the operator-surface-quality question in the side-effects artifact IN WRITING:
+// does the surface lead with its primary action, expose zero raw internals,
+// de-emphasize destructive actions, and work at phone width? A "reachable but
+// bad" surface passes Mobile-Complete and still fails the operator (the
+// 2026-06-12 "abysmal" Mandates-grant-form lesson) — this makes the quality
+// question unskippable. Operator-surface files are NOT in the gate's inScope set
+// (they live under dashboard/), so we scan the full STAGED set, not inScopeFiles.
+// Scoped tight so a non-surface commit pays nothing. Companion to
+// assertFrameworkGenerality.
+function assertOperatorSurfaceQuality(stagedFiles, trace) {
+  const touched = (stagedFiles || []).filter(isOperatorSurfaceFile);
+  if (touched.length === 0) return;
+  const artifactRel = trace.sideEffectsPath || trace.artifactPath;
+  if (!artifactRel) return; // a missing artifact is already blocked upstream
+  const artifactAbs = path.resolve(ROOT, artifactRel);
+  if (!fs.existsSync(artifactAbs)) return;
+  const content = fs.readFileSync(artifactAbs, 'utf8');
+  // The artifact must engage the operator-surface-quality question (the §6b
+  // section seeded by skills/instar-dev/templates/side-effects-artifact.md).
+  if (!artifactAddressesOperatorSurfaceQuality(content)) {
+    blockCommit(
+      touched,
+      [
+        'Operator-Surface Quality review gate:',
+        `  ${touched.join(', ')} change an OPERATOR SURFACE,`,
+        '  but the side-effects artifact never answers the operator-surface-quality',
+        '  question — a surface can be phone-reachable (Mobile-Complete) and still be',
+        '  unusable (the 2026-06-12 "abysmal" Mandates grant-form lesson, CMT-1434).',
+        '',
+        '  Add the "## 6b. Operator-surface quality" section and answer in writing:',
+        '  does the surface (1) lead with its primary action, (2) expose zero raw',
+        '  internals as primary content, (3) de-emphasize destructive actions, and',
+        '  (4) read in plain language at phone width? (Standard:',
+        '  docs/STANDARDS-REGISTRY.md → "Operator-Surface Quality". Template:',
+        '  skills/instar-dev/templates/side-effects-artifact.md §6b.)',
+      ].join('\n'),
+    );
+  }
+  // "Agent Proposes, Operator Approves" — the authorization-surface subset additionally
+  // requires the artifact to confirm the operator is APPROVING (not authoring) and that
+  // the authority text is SERVER-authored (not agent free-text — the display-integrity
+  // corollary). Same structural-presence strength.
+  const authTouched = (stagedFiles || []).filter(isAuthorizationSurfaceFile);
+  if (authTouched.length > 0 && !artifactAddressesAgentProposesApproves(content)) {
+    blockCommit(
+      authTouched,
+      [
+        'Agent-Proposes-Operator-Approves review gate:',
+        `  ${authTouched.join(', ')} change an AUTHORIZATION/APPROVAL surface,`,
+        '  but the side-effects artifact never answers the agent-proposes/operator-approves',
+        '  question. The operator must be APPROVING a server-authored request, never',
+        '  AUTHORING authority from raw fields (the 2026-06-13 raw-JSON mandate-form lesson),',
+        '  and the authority text they approve must be server-authored, never agent free-text.',
+        '',
+        '  Confirm in writing in the side-effects artifact: does the operator (1) approve a',
+        '  pre-filled request rather than construct one, and (2) read an authority statement',
+        '  authored by the SERVER from structured data, not agent-supplied free-text?',
+        '  (Standard: docs/STANDARDS-REGISTRY.md → "Agent Proposes, Operator Approves".)',
+      ].join('\n'),
+    );
+  }
+  // "Operators Act in Taps, Not Text" clause (ws52-operator-tap-not-text, Part C arm 1).
+  // MECHANICAL upgrade of §6b from prose-attestation to a real inspection of the
+  // SURFACE FILE: an operator surface must never require the operator to paste raw
+  // technical text (a JSON template in a textarea, an input labelled for a
+  // fingerprint/token/base64/curl, or instructions to paste/author such text). The
+  // 2026-06-13 raw-JSON mandate-form passed the prose gate; it must not pass this one.
+  // Opt out ONLY with the explicit, co-located power-user marker (and that surface
+  // must provably never be the default operator path — verified in review).
+  for (const surface of touched) {
+    const abs = path.resolve(ROOT, surface);
+    if (!fs.existsSync(abs)) continue;
+    const surfaceContent = fs.readFileSync(abs, 'utf8');
+    const verdict = operatorSurfaceRequiresRawInput(surfaceContent);
+    if (verdict.requiresRawInput && !verdict.hasPowerUserMarker) {
+      blockCommit(
+        [surface],
+        [
+          'Operators-Act-in-Taps-Not-Text gate:',
+          `  ${surface} is an operator surface that REQUIRES the operator to paste/enter`,
+          '  raw or technical text — a developer action, not an operator action:',
+          ...verdict.reasons.map((r) => `    • ${r}`),
+          '',
+          '  Operators act in taps and plain-language choices; the UI must assemble any',
+          '  structured data (JSON, fingerprints, IDs) from those taps. A flow needing raw',
+          '  technical input is finished for an engineer, not its user (operator feedback,',
+          '  2026-06-17; the 2026-06-13 raw-JSON mandate-form regression).',
+          '',
+          '  Fix: build the one-tap/selection surface so the operator never sees raw text.',
+          '  If this is GENUINELY a power-user surface that is never the default operator',
+          '  path, mark it explicitly and co-located:',
+          '    /* operator-surface-power-user: <why this is never the default path> */',
+          '  (Standard: docs/STANDARDS-REGISTRY.md → "Operator-Surface Quality" →',
+          '  "Operators Act in Taps, Not Text" clause.)',
+        ].join('\n'),
+      );
+    }
+  }
+}
+
+// Self-Action Convergence gate (docs/specs/self-action-convergence.md → E3).
+// The light (Tier-1) path is where #1035 (swap-thrash) slipped through with no
+// adversarial reviewer. When an ADDED diff introduces/modifies a self-action
+// emit (restart|swap|respawn|spawn|notify|retry|re-drive|kill) AND a src/ file
+// is touched, the change must declare the `unbounded-self-action` class in the
+// TRACE — either a real classClosure declaration (guard|gap) OR an explicit
+// negative declaration (closure:'n/a' + reason) — the trace-level analog of the
+// D4 lint's allowlist. A genuine one-shot user-driven call costs one attested
+// line, never an unescapable block.
+//
+// FAIL-OPEN on tooling failure (the safe asymmetry): empty addedDiffText, no
+// src/ file, or an unreadable artifact does NOT fire — a false-negative here is
+// backstopped by the E2 CI lint; a false-positive that blocked all commits
+// would sever the developer's ability to ship. Called at BOTH pass-through
+// points (enforceTier1 + the Tier-2 fall-through) — the both-call-sites detail
+// is load-bearing (the light path is where #1035 escaped).
+function assertSelfActionDeclared(addedDiffText, inScopeFilesArg, trace) {
+  const verdict = selfActionDeclarationVerdict({
+    addedDiffText,
+    inScopeFiles: inScopeFilesArg,
+    classClosure: trace && trace.classClosure,
+  });
+  if (!verdict.required) return; // fail-open / not a self-action change
+
+  if (!verdict.satisfied) {
+    blockCommit(
+      inScopeFilesArg,
+      [
+        'Self-Action Convergence gate:',
+        '  This change ADDS or modifies a self-triggered action in src/ (a',
+        '  restart / swap / respawn / spawn / notify / retry / re-drive / kill),',
+        '  but the trace carries no `unbounded-self-action` class declaration.',
+        '',
+        '  A self-triggered action must be proven to CONVERGE under sustained',
+        '  pressure (not just be individually correct). Declare it in your trace:',
+        '',
+        '  • If it is a self-triggered controller — register it in',
+        '    src/testing/selfActionRegistry.ts (so tests/unit/self-action-convergence.test.ts',
+        '    proves it settles) and declare closure:"guard" citing that ratchet:',
+        '      node scripts/class-closure-declare.mjs --to-trace \\',
+        '        --class unbounded-self-action --closure guard \\',
+        '        --citation tests/unit/self-action-convergence.test.ts \\',
+        '        --enforcement ratchet --how-caught "<convergence argument: steady-state bound + settling brake>"',
+        '',
+        '  • If the guard is out of THIS change\'s scope — closure:"gap" with a',
+        '    tracked evolution-action id (--closure gap --gap-item <id>).',
+        '',
+        '  • If it is genuinely a ONE-SHOT / user-driven action (not a',
+        '    self-triggered loop) — an explicit negative declaration:',
+        '      { "defectClass": "unbounded-self-action", "closure": "n/a",',
+        '        "reason": "one-shot user-driven action, not a self-triggered loop" }',
+        '',
+        '  (Standard: docs/STANDARDS-REGISTRY.md → "Capacity Safety — No Unbounded',
+        '  Self-Action". Spec: docs/specs/self-action-convergence.md → Part E3.)',
+      ].join('\n'),
+    );
+  }
+
+  // Mirror check (the display-only human mirror — the two hosts #1347 uses).
+  // Fail-OPEN if the artifact is unreadable.
+  const artifactRel = trace && (trace.sideEffectsPath || trace.artifactPath);
+  if (artifactRel) {
+    const abs = path.resolve(ROOT, artifactRel);
+    if (fs.existsSync(abs)) {
+      const content = fs.readFileSync(abs, 'utf8');
+      if (!/unbounded-self-action/.test(content)) {
+        blockCommit(
+          inScopeFilesArg,
+          [
+            'Self-Action Convergence gate (mirror):',
+            '  The trace declares the unbounded-self-action class, but the staged',
+            `  side-effects artifact (${artifactRel}) never mentions it — the`,
+            '  display-only human mirror must AGREE with the machine-readable trace',
+            '  declaration (the two hosts #1347 uses).',
+            '',
+            '  Add the class-closure declaration to the side-effects artifact\'s',
+            '  "## Class-Closure Declaration" section.',
+          ].join('\n'),
+        );
+      }
+    }
+  }
+}
+
+// Duplicate-build guard — precommit PRESENCE backstop
+// (docs/specs/duplicate-build-guard.md §3.4, second enforced moment).
+// PRESENCE-ONLY: it gates on the trace FIELD existing, never on the verdict's
+// VALUE — it MUST accept decision:"proceed" on a likely-duplicate (the human
+// is the authority; a value-gate would make this validator a meaning-authority,
+// forbidden by docs/signal-vs-authority.md; the "hard-invariant validation"
+// carve-out is exactly what a structural field-validator is). It DOES
+// distinguish the §3.4 `check-errored` auto-stub from an author disposition:
+// the stub satisfies presence (never wedges the commit) but WARNS loudly.
+//
+// Rollout scoping (spec §5 + first-ship compatibility): the backstop only
+// REFUSES a missing field when the guard is provably live for THIS build —
+// either INSTAR_DUP_BUILD_CHECK is explicitly on, or the build-start check
+// actually ran here (its stub exists in this worktree, so the trace SHOULD
+// carry the field — re-running write-trace.mjs folds it in). Traces written
+// before the guard existed (env unset, no stub) get a loud WARN, never a
+// refusal. INSTAR_DUP_BUILD_CHECK=off no-ops the whole backstop.
+// §3.2 terminal lifecycle: at commit success the build's in-flight ledger
+// marker is REMOVED (mirrors PendingInjectStore "recorded at spawn, cleared
+// after"). Fail-open: any error is swallowed — marker cleanup must never
+// block a commit; a leaked marker self-heals via liveness + compaction.
+function removeDupBuildMarkerOnCommitSuccess() {
+  try {
+    const mode = String(process.env.INSTAR_DUP_BUILD_CHECK ?? '').toLowerCase();
+    if (mode === 'off' || mode === '0' || mode === 'false') return;
+    if (!fs.existsSync(path.join(ROOT, '.instar', 'dup-build-check.json'))) return;
+    execFileSync('node', [path.join(ROOT, 'scripts', 'lib', 'duplicate-build-check.mjs'), '--remove-marker'], {
+      cwd: ROOT,
+      timeout: 3000,
+      stdio: 'ignore',
+    });
+  } catch { /* fail-open — never block the commit on cleanup */ }
+}
+
+function enforceDuplicateBuildBackstop(trace) {
+  try {
+    const mode = String(process.env.INSTAR_DUP_BUILD_CHECK ?? '').toLowerCase();
+    if (mode === 'off' || mode === '0' || mode === 'false') return;
+    const explicitlyOn = mode === 'on' || mode === '1' || mode === 'true';
+
+    const field = trace && trace.duplicateBuildCheck;
+    if (field && typeof field === 'object' && !Array.isArray(field)) {
+      if (field.verdict === 'check-errored') {
+        // Presence satisfied — but a build that ran on a FAILED check is a
+        // visible second-look signal, not silently indistinguishable from an
+        // author-reviewed proceed (§3.4). WARN, never block.
+        console.error('');
+        console.error('┌──────────────────────────────────────────────────────────────────┐');
+        console.error('│  ⚠ DUPLICATE-BUILD CHECK ERRORED (fail-open auto-stub).           │');
+        console.error('│    This build proceeded WITHOUT a working duplicate-build check.  │');
+        console.error('│    NOT blocked — but give the overlap question a second look:     │');
+        console.error('│    node scripts/lib/duplicate-build-check.mjs <specPath>          │');
+        console.error('└──────────────────────────────────────────────────────────────────┘');
+        console.error('');
+      }
+      return; // presence-only — the verdict's VALUE is never gated on.
+    }
+
+    const stubExists = fs.existsSync(path.join(ROOT, '.instar', 'dup-build-check.json'));
+    if (explicitlyOn || stubExists) {
+      blockCommit(
+        inScopeFiles,
+        [
+          'Duplicate-build backstop: the trace carries no duplicateBuildCheck field.',
+          '',
+          'The duplicate-build guard is live for this build' +
+            (stubExists ? ' (its check stub exists at .instar/dup-build-check.json)' : ' (INSTAR_DUP_BUILD_CHECK is on)') + ',',
+          'so the trace must record the check verdict + your proceed/abandon disposition.',
+          '',
+          'Fix:',
+          '  1. Run the check (if you have not): node scripts/lib/duplicate-build-check.mjs <specPath>',
+          '  2. On a verify/likely-duplicate verdict, record your disposition:',
+          '     node scripts/lib/duplicate-build-check.mjs --record-disposition --decision proceed --reason "…" [--ack EV-1]',
+          '  3. Re-run write-trace.mjs (it folds the stub into the trace) and commit fresh.',
+          '',
+          'This backstop is PRESENCE-ONLY: it never gates on the verdict value —',
+          'a recorded proceed-on-likely-duplicate passes (you are the authority).',
+          '(docs/specs/duplicate-build-guard.md §3.4; off-switch: INSTAR_DUP_BUILD_CHECK=off)',
+        ].join('\n'),
+      );
+    } else {
+      // Guard not yet live for this build — advisory only (a trace written
+      // before the guard existed must not be refused retroactively).
+      console.error(
+        '[instar-dev-precommit] note: trace has no duplicateBuildCheck field (duplicate-build guard not live for this build — advisory only).',
+      );
+    }
+  } catch {
+    // Fail-open (FD5): the backstop must never crash the gate on its own bug.
+    // (blockCommit exits the process directly, so a real refusal never lands here.)
+  }
+}
+
 function blockCommit(files, reason) {
   console.error('');
   console.error('╔════════════════════════════════════════════════════════════════════╗');
@@ -797,7 +1350,7 @@ function blockCommit(files, reason) {
 // fire, the line just evaporated with the worktree). If the commit is later
 // blocked by the gate, the staged line simply rides the retry commit — both
 // lines describe real gate evaluations.
-function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc }) {
+function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc, causalAutopsy = null, classClosure = null }) {
   try {
     fs.mkdirSync(DECISIONS_DIR, { recursive: true });
     const ts = new Date().toISOString();
@@ -811,29 +1364,56 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
     while (fs.existsSync(entryPath)) {
       entryPath = path.join(DECISIONS_DIR, `${ts.replace(/[:.]/g, '-')}-${safeSlug}-${n++}.json`);
     }
-    fs.writeFileSync(
-      entryPath,
-      JSON.stringify({
-        ts,
-        slug,
-        suggestedTier,
-        declaredTier,
-        // riskFloor (the number) keeps the entry self-contained for later review
-        // without re-running the classifier — not just the derived belowFloor.
-        riskFloor,
-        riskFloorReasons,
-        belowFloor,
-        files,
-        loc,
-      }, null, 2) + '\n',
-    );
+    const entryData = {
+      ts,
+      slug,
+      suggestedTier,
+      declaredTier,
+      // riskFloor (the number) keeps the entry self-contained for later review
+      // without re-running the classifier — not just the derived belowFloor.
+      riskFloor,
+      riskFloorReasons,
+      belowFloor,
+      files,
+      loc,
+      // Causal autopsy (directive 2026-06-05): what caused the issue this
+      // commit fixes — prior-pr / environment-shift / new-code / latent /
+      // unknown, with linked PRs. null = not declared (advisory in slice 1).
+      // This is THE meta-analysis substrate: convergence vs whack-a-mole is
+      // a query over these entries, not archaeology.
+      causalAutopsy,
+      // Class-closure declaration (docs/specs/class-closure-gate.md +
+      // self-action-convergence.md → E3): persisted from the instar-dev TRACE
+      // into the machine-readable decision-audit host the CI class-closure lint
+      // reads — closing the chicken-and-egg (the trace is authored before the
+      // commit; the entry is written by this hook). null = not declared.
+      classClosure,
+      // Finalized by the process exit handler below: 'pass' when the gate
+      // allowed the commit, 'blocked' otherwise. The riding-the-retry design
+      // (a blocked evaluation's entry rides the next successful commit, see
+      // header comment) is deliberate — but without a verdict, a rode-along
+      // entry written under a stale/unresolved trace slug READS as a real
+      // shipped decision for that slug. Live recurrence (2026-06-05): both
+      // echo (#836) and codey (#842) shipped mislabeled "unknown"/foreign-slug
+      // entries in one day. The verdict makes every entry self-describing.
+      verdict: 'pending',
+    };
+    fs.writeFileSync(entryPath, JSON.stringify(entryData, null, 2) + '\n');
     execSync(`git add ${JSON.stringify(path.relative(ROOT, entryPath))}`, { cwd: ROOT });
+    pendingAuditEntry = { entryPath, entryData };
     return entryPath;
   } catch {
     // best-effort — never block on audit I/O
     return null;
   }
 }
+
+// ── Verdict finalization ──────────────────────────────────────────────────
+// The process 'exit' handler that finalizes each entry's verdict is
+// registered next to the pendingAuditEntry declaration near the top of this
+// file (it must be registered BEFORE the top-level gate flow can exit). One
+// hook covers every exit path: enforceTier1's process.exit(0), the Tier-2
+// fall-through, and every blockCommit.
 
 // ─── Tier-1 lite enforcement ──────────────────────────────────────────────
 // Tier-1 requirement set: a staged ELI16 (trace.eli16Path) passing the length
@@ -941,11 +1521,15 @@ function enforceTier1(trace, traceFile) {
   }
 
   assertFrameworkGenerality(inScopeFiles, trace);
+  assertOperatorSurfaceQuality(staged, trace);
+  assertSelfActionDeclared(addedDiffText, inScopeFiles, trace);
+  enforceDuplicateBuildBackstop(trace);
 
   console.error(
     `[instar-dev-precommit] OK (Tier 1) — trace ${traceName} covers ${inScopeFiles.length} in-scope file(s), ` +
       `ELI16 ${eli16Rel} (${eli16Content.trim().length} chars) + side-effects ${sideEffectsRel} staged & verified. ` +
       `No converged spec required for Tier 1.`,
   );
+  removeDupBuildMarkerOnCommitSuccess();
   process.exit(0);
 }

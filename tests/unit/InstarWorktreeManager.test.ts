@@ -184,6 +184,109 @@ describe('resolveAgentHome', () => {
       }),
     ).toThrow(/violates expected pattern/);
   });
+
+  // ── Legacy-home acceptance (registry-path-verified) ──────────────────
+  //
+  // Agents onboarded before the worktree convention live outside
+  // ~/.instar/agents (the live fixture: instar-codey's home is
+  // ~/Documents/Projects/instar-codey, registered in the registry with
+  // exactly that path). The ONLY accepted evidence is the registry's own
+  // recorded home path — file contents inside the candidate count for
+  // nothing.
+
+  function makeLegacyHome(name: string): string {
+    const home = path.join(tmp, `legacy-${name}`);
+    fs.mkdirSync(path.join(home, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.instar', 'AGENT.md'), '# Agent\n');
+    return home;
+  }
+
+  it('accepts a legacy home whose path the registry records (env var route)', () => {
+    const { instarHome } = makeAgentHome({ instarHomeRoot: tmp, agentName: 'compliant' });
+    const legacyHome = makeLegacyHome('codey');
+    const result = resolveAgentHome({
+      env: { INSTAR_AGENT_HOME: legacyHome },
+      instarHome,
+      registryEntriesLookup: () => [{ name: 'instar-codey', path: legacyHome }],
+    });
+    expect(result.agentHome).toBe(fs.realpathSync(legacyHome));
+    expect(result.agentName).toBe('instar-codey'); // name from the REGISTRY, not the dir
+  });
+
+  it('accepts a legacy home via CWD walk-up when the registry records its path', () => {
+    const { instarHome } = makeAgentHome({ instarHomeRoot: tmp, agentName: 'compliant' });
+    const legacyHome = makeLegacyHome('walker');
+    const cwd = path.join(legacyHome, 'src', 'deep');
+    fs.mkdirSync(cwd, { recursive: true });
+    const result = resolveAgentHome({
+      env: {},
+      cwd,
+      instarHome,
+      registryEntriesLookup: () => [{ name: 'legacy-walker', path: legacyHome }],
+    });
+    expect(result.agentName).toBe('legacy-walker');
+  });
+
+  it('accepts when the registry recorded a symlink to the legacy home (realpath equality)', () => {
+    const { instarHome } = makeAgentHome({ instarHomeRoot: tmp, agentName: 'compliant' });
+    const legacyHome = makeLegacyHome('sym');
+    const link = path.join(tmp, 'sym-link-to-home');
+    fs.symlinkSync(legacyHome, link);
+    const result = resolveAgentHome({
+      env: { INSTAR_AGENT_HOME: legacyHome },
+      instarHome,
+      registryEntriesLookup: () => [{ name: 'sym-agent', path: link }],
+    });
+    expect(result.agentHome).toBe(fs.realpathSync(legacyHome));
+    expect(result.agentName).toBe('sym-agent');
+  });
+
+  it('still refuses a planted AGENT.md dir the registry does not vouch for', () => {
+    const { instarHome } = makeAgentHome({ instarHomeRoot: tmp, agentName: 'real-agent' });
+    const planted = makeLegacyHome('hostile');
+    // Even a planted config.json must not help — only the registry path counts.
+    fs.writeFileSync(
+      path.join(planted, '.instar', 'config.json'),
+      JSON.stringify({ projectName: 'real-agent', port: 4099 }),
+    );
+    expect(() =>
+      resolveAgentHome({
+        env: {},
+        cwd: planted,
+        instarHome,
+        registryEntriesLookup: () => [
+          { name: 'real-agent', path: path.join(tmp, 'somewhere-else') },
+        ],
+      }),
+    ).toThrow(/does not match any registered agent's recorded home path/);
+  });
+
+  it('refuses a registry-path match whose entry name violates the name pattern', () => {
+    const { instarHome } = makeAgentHome({ instarHomeRoot: tmp, agentName: 'compliant' });
+    const legacyHome = makeLegacyHome('badname');
+    expect(() =>
+      resolveAgentHome({
+        env: { INSTAR_AGENT_HOME: legacyHome },
+        instarHome,
+        registryEntriesLookup: () => [{ name: 'B@D NAME', path: legacyHome }],
+      }),
+    ).toThrow(/does not match any registered agent's recorded home path/);
+  });
+
+  it('refuses entries with missing/dangling paths without consulting file evidence', () => {
+    const { instarHome } = makeAgentHome({ instarHomeRoot: tmp, agentName: 'compliant' });
+    const legacyHome = makeLegacyHome('dangling');
+    expect(() =>
+      resolveAgentHome({
+        env: { INSTAR_AGENT_HOME: legacyHome },
+        instarHome,
+        registryEntriesLookup: () => [
+          { name: 'no-path-agent' }, // entry without a recorded path
+          { name: 'gone-agent', path: path.join(tmp, 'does-not-exist') },
+        ],
+      }),
+    ).toThrow(/does not match any registered agent's recorded home path/);
+  });
 });
 
 // ── Instar repo resolution ───────────────────────────────────────────────

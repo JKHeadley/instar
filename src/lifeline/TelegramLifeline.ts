@@ -58,13 +58,18 @@ import {
   isTerminalForwardError,
   type VersionSkewBody,
 } from './forwardErrors.js';
+import { decideReplay, type ForwardOutcome } from './replayPolicy.js';
 import { writeStartupMarker } from './startupMarker.js';
 import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
+import { decidePollAction, type PollOverride } from './pollDecision.js';
+import { readPollIntent, effectivePollIntent, writePollActive, pidAlive } from '../core/pollIntent.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { writeLease as writePollOwnerLease } from './TelegramPollOwnerLease.js';
 import { RestartOrchestrator } from './RestartOrchestrator.js';
 import { writeWakeRequestIfSlept } from './agentSleepWake.js';
 import { detectLaunchdSupervised } from './detectLaunchdSupervised.js';
 import { LifelineDriftPromoter, DRIFT_RESTART_PENDING_NOTICE_FILE } from './LifelineDriftPromoter.js';
+import { buildQueuedNotice } from './queuedNotice.js';
 import {
   LifelineHealthWatchdog,
   DEFAULT_WATCHDOG_THRESHOLDS,
@@ -82,6 +87,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { applyTelegramFormatter } from '../messaging/TelegramAdapter.js';
 import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
+import { formatLocalTimestamp } from '../utils/localTime.js';
 
 /**
  * Acquire an exclusive lock file to prevent multiple lifeline instances.
@@ -262,6 +268,13 @@ export class TelegramLifeline {
   private lockPath: string;
   private consecutive409s = 0;
   private consecutive429s = 0;
+  /**
+   * B1 (multimachine-lease-poll-robustness, Decision 4) — the monotonic ms at
+   * which the lease intent first became "awake" while we were NOT yet polling,
+   * for the START debounce (intent must be stably awake before we start, to ride
+   * out a flap). Reset to 0 whenever the intent is not awake / we already poll.
+   */
+  private pollIntentAwakeSinceMs = 0;
   private pollBackoffMs = 2000; // Grows on 409/429 errors
 
   // Doctor session tracking (Crash Recovery UX)
@@ -291,6 +304,17 @@ export class TelegramLifeline {
       projectName: this.projectConfig.projectName,
       port: this.projectConfig.port,
       stateDir: this.projectConfig.stateDir,
+      // Amplifier #2 (spec §A.5): the supervisor defers a restart while an in-flight
+      // sync-op marker is set. The supervisor is config-less, so the developmentAgent
+      // dark-gate is resolved HERE (TelegramLifeline has projectConfig) and passed as a
+      // plain boolean. Ships dark on the fleet / live on a dev agent; an explicit
+      // monitoring.tmuxResilience.inFlightMarker.enabled in config always wins.
+      // `stateDir` above lets the supervisor's default inflightMarkerProvider bind to
+      // the right mirror file.
+      inflightDeferEnabled: resolveDevAgentGate(
+        this.projectConfig.monitoring?.tmuxResilience?.inFlightMarker?.enabled,
+        this.projectConfig,
+      ),
     });
 
     // Load persisted rate limit state (survives process restarts)
@@ -319,6 +343,15 @@ export class TelegramLifeline {
     this.supervisor.on('circuitBroken', (totalFailures: number, lastCrashOutput: string) => {
       console.error(`[Lifeline] Circuit breaker triggered after ${totalFailures} failures`);
       this.notifyCircuitBroken(totalFailures, lastCrashOutput);
+    });
+
+    // Eternal Sentinel condition 4 (P19): the slow-retry healer never gives up,
+    // but after a sustained-failure threshold it must tell the operator ONCE
+    // per episode instead of flailing silently for days. The one-shot latch
+    // lives supervisor-side; this is purely the delivery.
+    this.supervisor.on('sentinelStalled', (info: { hoursStalled: number; retryIntervalHours: number }) => {
+      console.error(`[Lifeline] Slow-retry sentinel stalled ${info.hoursStalled}h without recovery — notifying operator once`);
+      this.notifySentinelStalled(info);
     });
 
     this.supervisor.on('updateApplied', (targetVersion: string) => {
@@ -416,7 +449,16 @@ export class TelegramLifeline {
       );
     } catch { /* non-critical */ }
     try {
-      this.stopHeartbeat = startHeartbeat(this.projectConfig.projectDir + '-lifeline');
+      // reRegister callback: if an old lifeline generation's shutdown deleted
+      // this generation's registration (coordinated version-skew restart,
+      // drift auto-promote), the next heartbeat resurrects the entry.
+      this.stopHeartbeat = startHeartbeat(this.projectConfig.projectDir + '-lifeline', undefined, () => {
+        registerAgent(
+          this.projectConfig.projectDir + '-lifeline',
+          `${this.projectConfig.projectName}-lifeline`,
+          this.projectConfig.port + 1000,
+        );
+      });
     } catch (err) {
       console.error(`[Lifeline] Registry heartbeat failed to start (non-critical): ${err instanceof Error ? err.message : err}`);
     }
@@ -469,7 +511,13 @@ export class TelegramLifeline {
       if (this.supervisor.healthy && this.queue.length > 0) {
         this.replayQueue();
       }
+      // B1 — reconcile poll-ownership to the lease intent (no-op unless
+      // pollFollowsLease is on; DRY-RUN by default — see reconcilePolling).
+      this.reconcilePolling();
     }, 15_000);
+    // B1 — one immediate reconcile so the poll-active truth file + the would-action
+    // log appear at boot, not only after the first 15s tick.
+    this.reconcilePolling();
 
     // Coordinated restart channel: every 30s, check for a lifeline-restart
     // signal written by the AutoUpdater (major.minor crossing), the server
@@ -583,7 +631,10 @@ export class TelegramLifeline {
     if (this.sessionRecoveryInterval) { clearInterval(this.sessionRecoveryInterval); this.sessionRecoveryInterval = null; }
     if (this.watchdog) this.watchdog.stop();
     try { if (this.stopHeartbeat) this.stopHeartbeat(); } catch { /* non-critical */ }
-    try { unregisterAgent(this.projectConfig.projectDir + '-lifeline'); } catch { /* non-critical */ }
+    // pid-guarded: only remove our OWN registration — an old lifeline
+    // generation's late shutdown must not delete the successor's fresh entry
+    // (registry lost-update race; same shape as the server-side fix).
+    try { unregisterAgent(this.projectConfig.projectDir + '-lifeline', { onlyIfPid: process.pid }); } catch { /* non-critical */ }
     try { releaseLockFile(this.lockPath); } catch { /* non-critical */ }
     try { await this.supervisor.stop(); } catch { /* best-effort */ }
   }
@@ -940,6 +991,89 @@ export class TelegramLifeline {
 
   // ── Telegram Polling ──────────────────────────────────────
 
+  /**
+   * B1 (multimachine-lease-poll-robustness, Decisions 4/5/6) — reconcile the
+   * Telegram poll to the fenced-lease intent the server publishes. Runs on the
+   * existing 15s loop. Ships DRY-RUN by default (even on a dev agent): it reads
+   * the intent, computes the start/stop/hold action, LOGS it, and writes the
+   * lifeline-poll-active.json truth source for B5 — but it does NOT start/stop the
+   * real poll until `pollFollowsLease.dryRun:false`. The live flip is gated on the
+   * Phase-4 two-host proof (and Decision 12: B2+B5 live), so this can never
+   * disturb the Phase-0 stabilization on the live agent.
+   */
+  private reconcilePolling(): void {
+    const mm = (this.projectConfig as { multiMachine?: {
+      pollFollowsLease?: { enabled?: boolean; dryRun?: boolean };
+      telegramPolling?: boolean;
+      pollOverride?: string;
+      developmentAgent?: boolean;
+    }; developmentAgent?: boolean }).multiMachine;
+    const enabled = resolveDevAgentGate(mm?.pollFollowsLease?.enabled, this.projectConfig as { developmentAgent?: boolean });
+    if (!enabled) return; // static-flag behavior unchanged
+    const dryRun = mm?.pollFollowsLease?.dryRun !== false; // default DRY-RUN even on dev
+
+    const stateDir = this.projectConfig.stateDir;
+    // Always publish the TRUTH (our real poll state) for B5 — safe, observe-only.
+    try { writePollActive(stateDir, this.polling); } catch { /* advisory */ }
+
+    // Effective intent (freshness/dead-writer gated → null = no opinion → HOLD).
+    const rec = readPollIntent(stateDir);
+    const intentShouldPoll = effectivePollIntent(rec, {
+      nowMs: Date.now(),
+      maxStaleMs: 90_000,
+      serverPidAlive: rec ? pidAlive(rec.serverPid) : false,
+    });
+
+    // Operator override (LOCAL config floor; Phase-0 telegramPolling:false survives
+    // as force-mute; force-poll needs the explicit pollOverride).
+    let override: PollOverride = null;
+    if (mm?.pollOverride === 'force-poll') override = 'force-poll';
+    else if (mm?.pollOverride === 'force-mute' || mm?.telegramPolling === false) override = 'force-mute';
+
+    // START debounce bookkeeping (intent stably awake while not polling).
+    const now = Date.now();
+    if (intentShouldPoll === true && !this.polling) {
+      if (this.pollIntentAwakeSinceMs === 0) this.pollIntentAwakeSinceMs = now;
+    } else {
+      this.pollIntentAwakeSinceMs = 0;
+    }
+    const POLL_START_DEBOUNCE_MS = 20_000;
+    const startDebounceElapsed =
+      this.pollIntentAwakeSinceMs > 0 && now - this.pollIntentAwakeSinceMs >= POLL_START_DEBOUNCE_MS;
+
+    const action = decidePollAction({
+      currentlyPolling: this.polling,
+      intentShouldPoll,
+      override,
+      // Peer poll-state cross-check (B5 surface) is a follow-up; the 409 signal is
+      // the partition-immune backstop and peerPresumedGone stays conservative
+      // (false → START always rides the debounce, never an unsafe fast-path here).
+      anotherMachinePolling: this.consecutive409s > 0,
+      recentLocal409: this.consecutive409s > 0,
+      startDebounceElapsed,
+      peerPresumedGone: false,
+    });
+
+    if (action === 'hold') return;
+    if (dryRun) {
+      // A start/stop is an infrequent real transition — log each (not spammy).
+      console.log(`[Lifeline] [poll-follows-lease] would ${action} polling (intent=${intentShouldPoll}, currentlyPolling=${this.polling}, dry-run)`);
+      return;
+    }
+    // LIVE (dryRun:false) — apply. STOP is immediate; START flushes first.
+    if (action === 'stop') {
+      this.polling = false;
+      console.log('[Lifeline] [poll-follows-lease] stopping poll (lost the lease)');
+    } else if (action === 'start') {
+      void this.flushStaleConnection().then(() => {
+        this.polling = true;
+        void this.poll();
+        console.log('[Lifeline] [poll-follows-lease] starting poll (became the awake holder)');
+      });
+    }
+    try { writePollActive(stateDir, this.polling); } catch { /* advisory */ }
+  }
+
   private async poll(): Promise<void> {
     if (!this.polling) return;
 
@@ -1078,7 +1212,8 @@ export class TelegramLifeline {
         await this.sendToTopic(topicId, '✓ Delivered');
         return;
       }
-      // Server appears healthy but forward failed — queue with accurate message
+      // Server appears healthy but forward failed — queue and tell the user we
+      // are reconnecting (NOT that the server is restarting: it is confirmed up).
       this.queue.enqueue({
         id: `tg-${msg.message_id}`,
         topicId,
@@ -1090,7 +1225,7 @@ export class TelegramLifeline {
       });
       if (this.shouldSendQueueAck(topicId)) {
         await this.sendToTopic(topicId,
-          `Server is restarting. Your message has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
+          buildQueuedNotice('message', this.queue.length, /* serverHealthy */ true)
         );
       }
       return;
@@ -1110,7 +1245,7 @@ export class TelegramLifeline {
     // Notify user that message is queued (rate-limited to prevent spam during restart loops)
     if (this.shouldSendQueueAck(topicId)) {
       await this.sendToTopic(topicId,
-        `Server is temporarily down. Your message has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
+        buildQueuedNotice('message', this.queue.length, /* serverHealthy */ false)
       );
     }
   }
@@ -1158,15 +1293,9 @@ export class TelegramLifeline {
     });
 
     if (this.shouldSendQueueAck(topicId)) {
-      if (this.supervisor.healthy) {
-        await this.sendToTopic(topicId,
-          `Server is restarting. Your photo has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      } else {
-        await this.sendToTopic(topicId,
-          `Server is temporarily down. Your photo has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      }
+      await this.sendToTopic(topicId,
+        buildQueuedNotice('photo', this.queue.length, this.supervisor.healthy)
+      );
     }
   }
 
@@ -1270,15 +1399,9 @@ export class TelegramLifeline {
     });
 
     if (this.shouldSendQueueAck(topicId)) {
-      if (this.supervisor.healthy) {
-        await this.sendToTopic(topicId,
-          `Server is restarting. Your file has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      } else {
-        await this.sendToTopic(topicId,
-          `Server is temporarily down. Your file has been queued (${this.queue.length} in queue). It will be delivered when the server recovers.`
-        );
-      }
+      await this.sendToTopic(topicId,
+        buildQueuedNotice('file', this.queue.length, this.supervisor.healthy)
+      );
     }
   }
 
@@ -1372,11 +1495,30 @@ export class TelegramLifeline {
     }
   }
 
+  /**
+   * Boolean façade kept for the inbound-handler callers that only care whether
+   * the forward landed. Replay uses {@link forwardToServerClassified} so it can
+   * tell a message-specific rejection (poison) from a transient outage.
+   */
   private async forwardToServer(
     topicId: number,
     text: string,
     rawMsg: NonNullable<TelegramUpdate['message']>,
   ): Promise<boolean> {
+    return (await this.forwardToServerClassified(topicId, text, rawMsg)) === 'ok';
+  }
+
+  /**
+   * Forward a message to the server and classify the result so replay can
+   * budget correctly: only a genuine HTTP-400 rejection ('poison') burns the
+   * drop budget; timeout / 5xx / 503-boot / network refusal are 'transient'
+   * (never drop a real message), and 426 is 'skew' (coordinated restart).
+   */
+  private async forwardToServerClassified(
+    topicId: number,
+    text: string,
+    rawMsg: NonNullable<TelegramUpdate['message']>,
+  ): Promise<ForwardOutcome> {
     // a2a spoof-defense fields (MENTOR-LIVE-READINESS-SPEC §Recipient side). The
     // server's /internal/telegram-forward handler passes these to
     // `TelegramAdapter.dispatchAgentMessageHook` so the a2a hook can distinguish
@@ -1392,6 +1534,20 @@ export class TelegramLifeline {
     const senderBotId =
       senderChatId ?? (senderIsBot && rawFrom?.id !== undefined ? String(rawFrom.id) : undefined);
 
+    // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches any
+    // profile-ingress recognition. Carry the platform forward metadata across
+    // the lifeline hop; an older server ignores the extra field.
+    const rawForward = rawMsg as unknown as Record<string, unknown>;
+    const isForwarded = Boolean(rawForward.forward_origin || rawForward.forward_from || rawForward.forward_date);
+
+    // Scope-accretion ratification (spec autonomous-scope-accretion-completion.md
+    // R38/R45): carry reply_to_message_id across the lifeline hop so a
+    // reply-anchored confirmation of a server-authored enumeration works on
+    // lifeline-owned-polling agents. An older server ignores the extra field;
+    // an older lifeline omits it → only the explicit "ratify"-token confirmation
+    // binds (the safe, stricter direction).
+    const replyToMessageId = (rawMsg as { reply_to_message?: { message_id?: number } }).reply_to_message?.message_id;
+
     const buildBody = (includeVersion: boolean): string =>
       JSON.stringify({
         topicId,
@@ -1402,6 +1558,8 @@ export class TelegramLifeline {
         messageId: rawMsg.message_id,
         timestamp: new Date(rawMsg.date * 1000).toISOString(),
         senderIsBot,
+        ...(typeof replyToMessageId === 'number' ? { replyToMessageId } : {}),
+        ...(isForwarded ? { forwarded: true } : {}),
         ...(senderChatId !== undefined ? { senderChatId } : {}),
         ...(senderBotId !== undefined ? { senderBotId } : {}),
         ...(includeVersion ? { lifelineVersion: this.lifelineVersion } : {}),
@@ -1486,15 +1644,21 @@ export class TelegramLifeline {
       // gets its own user-visible notification.
       this.versionSkewActive = false;
       this.versionSkewAlertSentAt = 0;
-      return true;
+      return 'ok';
     } catch (err) {
       // Version-skew handler: emit signal + request restart via orchestrator.
       if (err instanceof ForwardVersionSkewError) {
         this.handleVersionSkew(err, topicId);
-        return false;
+        return 'skew';
       }
       this.consecutiveForwardFailures++;
-      return false;
+      // A genuine HTTP-400 is the ONLY message-specific ("poison") failure —
+      // the server looked at this message and refused it. Everything else
+      // (transient 5xx, 503 boot, fetch timeout/AbortError, network refusal)
+      // is a capacity/availability failure that says nothing about the message
+      // and must NOT burn the replay drop budget.
+      if (err instanceof ForwardBadRequestError) return 'poison';
+      return 'transient';
     }
   }
 
@@ -1686,7 +1850,7 @@ export class TelegramLifeline {
         `  Restart attempts: ${status.restartAttempts}`,
         `  Total failures: ${status.totalFailures}`,
         `  Queued messages: ${queueSize}`,
-        `  Last healthy: ${status.lastHealthy ? new Date(status.lastHealthy).toISOString().slice(11, 19) : 'never'}`,
+        `  Last healthy: ${status.lastHealthy ? formatLocalTimestamp(status.lastHealthy, { date: false, seconds: true }) : 'never'}`,
       ];
       if (status.circuitBroken) {
         lines.push(`  Circuit breaker: TRIPPED — use /lifeline reset to retry`);
@@ -1768,62 +1932,32 @@ export class TelegramLifeline {
 
   // ── Queue Replay ──────────────────────────────────────────
 
-  /** Max times a message can fail replay before being dropped. */
-  private static readonly MAX_REPLAY_FAILURES = 3;
-
   private async replayQueue(): Promise<void> {
-    const messages = this.queue.drain();
+    // Durable consume: work from a SNAPSHOT and remove a message from the
+    // PERSISTED queue only after it is delivered or deliberately dropped. The
+    // old drain() emptied the on-disk queue up front, so a process exit
+    // mid-replay (update / version-skew / launchd restart — all common during
+    // the very episodes that trigger queuing) lost the in-memory messages with
+    // no trace. That is the 2026-06-06 topic-21487 untracked-loss: a real user
+    // question vanished without even a dropped-messages.json record.
+    const messages = this.queue.peek();
     if (messages.length === 0) return;
 
     console.log(`[Lifeline] Replaying ${messages.length} queued messages`);
     let replayed = 0;
     let failed = 0;
     let dropped = 0;
+    const deliveredByTopic = new Map<number, number>();
 
     for (const msg of messages) {
-      // Drop messages that have failed too many times — they likely cause crashes
-      const failures = msg.replayFailures ?? 0;
-      // CRITICAL: never drop while a version-skew episode is in flight.
-      // The drop policy assumes failures are transient or message-specific;
-      // a hard incompatibility (HTTP 426) makes EVERY forward fail for a
-      // reason unrelated to the message. Dropping under skew turns a
-      // recoverable outage into silent data loss (the 2026-05-20
-      // b2lead-insights failure mode). Re-queue without incrementing the
-      // failure counter until the lifeline restarts onto a compatible
-      // version and forward starts succeeding again.
-      if (this.versionSkewActive) {
-        this.queue.enqueue(msg);
-        // Don't count toward replay-budget; the next replay tick will
-        // try again after the orchestrator-driven restart.
-        failed++;
-        continue;
-      }
-      if (failures >= TelegramLifeline.MAX_REPLAY_FAILURES) {
-        dropped++;
-        // Before the drop becomes silent: persist the record, report a
-        // degradation, and tell the original sender their message was lost.
-        try {
-          await notifyMessageDropped({
-            stateDir: this.projectConfig.stateDir,
-            topicId: msg.topicId,
-            messageId: msg.id,
-            senderName: msg.fromFirstName ?? msg.fromUsername ?? String(msg.fromUserId),
-            text: msg.text,
-            retryCount: failures,
-            reason: `Handoff to server failed after ${failures} replay attempts`,
-            sendToTopic: (topicId, body) => this.sendToTopic(topicId, body),
-          });
-        } catch (err) {
-          // notifyMessageDropped only throws on true disk failure after the notice/report paths
-          // had their chance — surface and continue; we still want to drop this message so
-          // the queue doesn't stall.
-          console.error(`[Lifeline] notifyMessageDropped threw for ${msg.id}:`, err instanceof Error ? err.message : err);
-        }
-        console.warn(`[Lifeline] Dropping message ${msg.id} after ${failures} replay failures: ${msg.text.slice(0, 80)}`);
-        continue;
-      }
+      // CRITICAL: never drop while a version-skew episode is in flight. A hard
+      // incompatibility (HTTP 426) makes EVERY forward fail for a reason
+      // unrelated to the message; the coordinated restart resolves it. Stop
+      // replaying and leave every remaining message safely on disk (the
+      // 2026-05-20 b2lead-insights silent-drop failure mode).
+      if (this.versionSkewActive) break;
 
-      const forwarded = await this.forwardToServer(msg.topicId, msg.text, {
+      const outcome = await this.forwardToServerClassified(msg.topicId, msg.text, {
         message_id: parseInt(msg.id.replace('tg-', ''), 10) || 0,
         from: {
           id: msg.fromUserId,
@@ -1836,26 +1970,56 @@ export class TelegramLifeline {
         date: Math.floor(new Date(msg.timestamp).getTime() / 1000),
       });
 
-      if (forwarded) {
+      const decision = decideReplay(outcome, {
+        poisonFailures: msg.replayFailures ?? 0,
+        transientFailures: msg.transientReplayFailures ?? 0,
+      });
+
+      if (decision.action === 'delivered') {
+        this.queue.markDelivered(msg.id); // remember id so a redelivery can't re-queue it
         replayed++;
+        deliveredByTopic.set(msg.topicId, (deliveredByTopic.get(msg.topicId) ?? 0) + 1);
+      } else if (decision.action === 'drop') {
+        dropped++;
+        // Before the drop becomes silent: persist the record, report a
+        // degradation, and tell the original sender their message was lost.
+        try {
+          await notifyMessageDropped({
+            stateDir: this.projectConfig.stateDir,
+            topicId: msg.topicId,
+            messageId: msg.id,
+            senderName: msg.fromFirstName ?? msg.fromUsername ?? String(msg.fromUserId),
+            text: msg.text,
+            retryCount: decision.poisonFailures + decision.transientFailures,
+            reason: decision.dropReason ?? 'Message could not be delivered',
+            sendToTopic: (topicId, body) => this.sendToTopic(topicId, body),
+          });
+        } catch (err) {
+          // notifyMessageDropped only throws on true disk failure after the notice/report paths
+          // had their chance — surface and continue; we still want to drop this message so
+          // the queue doesn't stall.
+          console.error(`[Lifeline] notifyMessageDropped threw for ${msg.id}:`, err instanceof Error ? err.message : err);
+        }
+        console.warn(`[Lifeline] Dropping message ${msg.id}: ${decision.dropReason} — ${msg.text.slice(0, 80)}`);
+        this.queue.markDelivered(msg.id); // deliberately handled — don't let a redelivery re-queue it
       } else {
-        // Re-queue with incremented failure counter
-        msg.replayFailures = failures + 1;
-        this.queue.enqueue(msg);
+        // requeue — persist the updated strike counters IN PLACE; the message
+        // stays on disk for the next replay tick. A transient failure NEVER
+        // burns the poison budget, so a slow / overloaded / restarting server
+        // can no longer drop a real message (the 2026-06-06 topic-21487
+        // false-drop bug, where a CPU-starved-but-up server burned all 3
+        // attempts in ~90s and dropped the user's question).
+        this.queue.updateReplayCounters(msg.id, {
+          replayFailures: decision.poisonFailures,
+          transientReplayFailures: decision.transientFailures,
+        });
         failed++;
-        // If the server just went down during replay, stop replaying —
-        // remaining messages will be replayed on next recovery
-        if (!this.supervisor.healthy) {
+        // If the server is unavailable, stop replaying — the remaining messages
+        // are already safely persisted (we only remove on delivery/drop) and
+        // will be retried on the next recovery.
+        if (outcome === 'transient' && !this.supervisor.healthy) {
           const remaining = messages.length - replayed - failed - dropped;
-          if (remaining > 0) {
-            console.log(`[Lifeline] Server went down during replay — re-queuing ${remaining} remaining messages`);
-            // Re-queue remaining unprocessed messages (preserve their failure counts)
-            const currentIndex = messages.indexOf(msg);
-            for (let i = currentIndex + 1; i < messages.length; i++) {
-              this.queue.enqueue(messages[i]);
-            }
-            failed += remaining;
-          }
+          console.log(`[Lifeline] Server unavailable during replay — ${remaining} message(s) remain queued`);
           break;
         }
       }
@@ -1868,15 +2032,10 @@ export class TelegramLifeline {
       console.log(`[Lifeline] Replay complete: ${replayed} delivered, ${failed} re-queued, ${dropped} dropped`);
     }
 
-    // Notify the user that their queued messages were delivered
+    // Notify the user that their queued messages were delivered.
     if (replayed > 0) {
-      // Collect unique topics that received replayed messages
-      const replayedTopics = new Set(
-        messages.filter((_, i) => i < replayed + failed + dropped).map(m => m.topicId)
-      );
-      for (const topicId of replayedTopics) {
+      for (const [topicId, count] of deliveredByTopic) {
         try {
-          const count = messages.filter(m => m.topicId === topicId).length;
           await this.sendToTopic(topicId,
             count === 1
               ? '✓ Server recovered — your queued message has been delivered.'
@@ -2022,6 +2181,24 @@ export class TelegramLifeline {
       debugCommand +
       `\n\nTo retry: /lifeline reset (resets circuit breaker and restarts)\n` +
       `You'll be notified when the server recovers.`
+    ).catch(() => {});
+  }
+
+  /**
+   * One-per-episode escalation for the slow-retry Eternal Sentinel (P19
+   * condition 4). The supervisor keeps retrying after this — the message
+   * exists so "never give up" can never again mean "flail silently for days."
+   */
+  private async notifySentinelStalled(info: { hoursStalled: number; retryIntervalHours: number }): Promise<void> {
+    const topicId = this.lifelineTopicId ?? 1;
+    await this.sendToTopic(topicId,
+      `⏳ STILL DOWN AFTER ${info.hoursStalled} HOURS\n\n` +
+      `My server has been down for about ${info.hoursStalled} hours. I've kept retrying every ` +
+      `${info.retryIntervalHours} hours and will keep trying — but at this point a human may be needed.\n\n` +
+      `What you can do:\n` +
+      `  /lifeline doctor — spawns a diagnostic session that reads the crash logs\n` +
+      `  /lifeline reset — retry immediately instead of waiting for the next cycle\n\n` +
+      `This is the only nudge I'll send for this outage — I'll tell you when the server recovers.`
     ).catch(() => {});
   }
 

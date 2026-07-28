@@ -37,6 +37,10 @@ export interface BuildPerSlugManifestInput {
   machines?: string[];
   /** 'none' → spawn the job session with zero project MCP servers (claude-code only). */
   mcpAccess?: 'project' | 'none';
+  /** DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC §2.8 / D11 — run on every machine
+   *  independently (skip the global jobSlug claim/lease). See JobDefinition
+   *  for the misuse warning. */
+  perMachineIndependent?: boolean;
   /** Preserved across regeneration (operator may have disabled the default). */
   disabledAtBodyHash?: string;
 }
@@ -60,6 +64,7 @@ export function buildPerSlugManifest(input: BuildPerSlugManifestInput): PerSlugM
   if (input.topicId !== undefined) m.topicId = input.topicId;
   if (input.machines !== undefined) m.machines = input.machines;
   if (input.mcpAccess !== undefined) m.mcpAccess = input.mcpAccess;
+  if (input.perMachineIndependent !== undefined) m.perMachineIndependent = input.perMachineIndependent;
   if (input.disabledAtBodyHash !== undefined) m.disabledAtBodyHash = input.disabledAtBodyHash;
   return m;
 }

@@ -44,6 +44,14 @@ afterEach(() => {
 });
 
 describe('resolveEli16Path', () => {
+  it('does not double-append when the spec already ends in .eli16.md', () => {
+    specPath = path.join(tmpDir, 'already.eli16.md');
+    const fm = writeSpec('title: Already ELI16');
+    const r = resolveEli16Path(specPath, fm);
+    expect(r.siblingPath).toBe(path.join(tmpDir, 'already.overview.md'));
+    expect(r.resolvedPath).toBeNull();
+  });
+
   it('returns sibling path when sibling exists and frontmatter is silent', () => {
     const fm = writeSpec('title: Foo');
     const siblingPath = path.join(tmpDir, 'foo.eli16.md');

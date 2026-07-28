@@ -117,6 +117,6 @@ describe('TopicFrameworksStore', () => {
   });
 
   it('SUPPORTED_FRAMEWORKS exposes all supported values', () => {
-    expect([...SUPPORTED_FRAMEWORKS].sort()).toEqual(['claude-code', 'codex-cli', 'gemini-cli']);
+    expect([...SUPPORTED_FRAMEWORKS].sort()).toEqual(['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli']);
   });
 });

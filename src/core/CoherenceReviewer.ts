@@ -8,6 +8,11 @@
 
 import crypto from 'node:crypto';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
+import { isCapacityUnavailable } from './SpawnCapIntelligenceProvider.js';
+import type {
+  ConversationContextMessage,
+  ConversationContextMeta,
+} from './untrustedConversationContext.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,6 +45,34 @@ export interface ReviewResult {
   reviewer: string;
   /** Latency in ms */
   latencyMs: number;
+  /**
+   * True if THIS reviewer's LLM call was SHED because the host spawn cap was
+   * saturated (fork-bomb prevention P3, forkbomb-prevention-simple
+   * §D-DISPOSITION). The OUTBOUND CoherenceGate._evaluate treats ANY
+   * capacity-unavailable reviewer result as a fail-CLOSED block-the-turn
+   * (pass=false) — NOT a benign abstain that fails open — so an unreviewed
+   * outbound turn is held under capacity pressure rather than delivered.
+   */
+  capacityUnavailable?: boolean;
+  /**
+   * True if THIS reviewer ABSTAINED — its LLM call errored, timed out, or
+   * returned unparseable output, so it has NO opinion (reviewer-fail-closed-on-abstain
+   * spec, CMT-1794). Distinct from capacityUnavailable (spawn-cap shed). HOST-set
+   * in the trusted catch/parse paths, NEVER model-set, so message content cannot
+   * forge it. `pass` is an inert placeholder when this is true — NEVER trusted.
+   * CoherenceGate counts an abstained result as an abstain (NOT a pass): excluded
+   * from the pass/block tallies + passCount, increments abstainCount, and consults
+   * resolveCriticality so a high-criticality abstain on an external channel fails
+   * CLOSED via the existing highCritTimeout path.
+   */
+  abstained?: boolean;
+  /**
+   * STRUCTURED failure class for an abstain (never a string-match of the error
+   * text — the standard this work enforces). The disposition layer distinguishes
+   * a backend-down abstain (transient) from a content-induced one, and any
+   * UNKNOWN cause defaults to the conservative HOLD path.
+   */
+  abstainCause?: 'provider-error' | 'timeout' | 'unparseable' | 'unknown';
 }
 
 export interface ReviewContext {
@@ -73,6 +106,23 @@ export interface ReviewContext {
   relationshipContext?: { communicationStyle?: string; formality?: string; themes?: string[] };
   /** Canonical state context — known projects, URLs, facts from CanonicalState registry */
   canonicalStateContext?: string;
+  /**
+   * Recent conversation for the topic (context-aware-outbound-review §D3).
+   * STRUCTURAL availability: CoherenceGate places these two fields ONLY on the
+   * AUGMENTED shallow copy handed to reviewers in the resolved opt-in set —
+   * and only when `recipientType === 'primary-user'`. Every other reviewer
+   * receives the base ctx, which never carries conversation — a reviewer that
+   * was not handed the fields CANNOT render them, no matter what its
+   * buildPrompt does. Bodies are untrusted DATA; the shared renderer
+   * (untrustedConversationContext.ts) envelopes them.
+   */
+  recentConversation?: ConversationContextMessage[];
+  /**
+   * Non-body metadata about the injected context (counts + truncation +
+   * source + the structural askLicenseMode). This — never bodies — is what
+   * audit surfaces record (§D7).
+   */
+  conversationContextMeta?: ConversationContextMeta;
 }
 
 export interface ReviewerOptions {
@@ -147,13 +197,36 @@ export abstract class CoherenceReviewer {
       const raw = await Promise.race([
         this.callApi(prompt),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Reviewer timeout')), timeoutMs),
+          setTimeout(() => {
+            // Typed timeout so the catch classifies abstainCause STRUCTURALLY
+            // (via .code), never by string-matching the message (CMT-1794).
+            const e = new Error('Reviewer timeout') as Error & { code?: string };
+            e.code = 'reviewer-timeout';
+            reject(e);
+          }, timeoutMs),
         ),
       ]);
 
       const parsed = this.parseResponse(raw, this.name);
       const latencyMs = Date.now() - start;
       this.metrics.totalLatencyMs += latencyMs;
+
+      // An ABSTAIN (unparseable output) must NOT inflate passCount — else a
+      // degraded reviewer reads as healthy during an outage (spec §2). Count it
+      // as an error instead, and propagate the abstain flag to the gate.
+      if (parsed.abstained) {
+        this.metrics.errorCount++;
+        return {
+          pass: true, // inert placeholder — never trusted while abstained
+          severity: 'warn',
+          issue: '',
+          suggestion: '',
+          reviewer: this.name,
+          latencyMs,
+          abstained: true,
+          abstainCause: parsed.abstainCause ?? 'unparseable',
+        };
+      }
 
       if (parsed.pass) {
         this.metrics.passCount++;
@@ -169,11 +242,32 @@ export abstract class CoherenceReviewer {
         reviewer: this.name,
         latencyMs,
       };
-    } catch {
-      // Fail-open: reviewer error = no opinion
+    } catch (err) {
       const latencyMs = Date.now() - start;
       this.metrics.totalLatencyMs += latencyMs;
       this.metrics.errorCount++;
+      // Fork-bomb P3 fail-CLOSED (forkbomb-prevention-simple §D-DISPOSITION):
+      // a capacity shed (host spawn cap saturated) is NOT a benign abstain. Tag
+      // the result so CoherenceGate._evaluate blocks the turn (pass=false)
+      // rather than letting an UN-reviewed outbound message fail open.
+      if (isCapacityUnavailable(err)) {
+        return {
+          pass: false,
+          severity: 'block',
+          issue: 'Outbound coherence review unavailable — host spawn capacity saturated.',
+          suggestion: 'Held (fail-closed) under load; retry shortly.',
+          reviewer: this.name,
+          latencyMs,
+          capacityUnavailable: true,
+        };
+      }
+      // ABSTAIN (reviewer-fail-closed-on-abstain, CMT-1794): a non-capacity LLM
+      // error/timeout = NO opinion, NOT a benign pass. Tag it so CoherenceGate
+      // counts it as an abstain (not a genuine pass) and consults criticality —
+      // a high-criticality abstain on an external channel then fails CLOSED via
+      // the existing highCritTimeout path. `pass:true` is an inert placeholder,
+      // never trusted while `abstained` is set. abstainCause is the STRUCTURED
+      // class (the call threw → 'provider-error'); never a string-match.
       return {
         pass: true,
         severity: 'warn',
@@ -181,6 +275,10 @@ export abstract class CoherenceReviewer {
         suggestion: '',
         reviewer: this.name,
         latencyMs,
+        abstained: true,
+        // STRUCTURAL classification via the typed timeout .code — not a
+        // string-match of the message (the standard this work enforces).
+        abstainCause: (err as { code?: string })?.code === 'reviewer-timeout' ? 'timeout' : 'provider-error',
       };
     }
   }
@@ -189,6 +287,21 @@ export abstract class CoherenceReviewer {
    * Each reviewer overrides this to build its specific prompt.
    */
   protected abstract buildPrompt(context: ReviewContext): string;
+
+  /**
+   * Whether this reviewer OPTS IN to receiving recent conversation
+   * (context-aware-outbound-review §D3). Default false for every built-in —
+   * the built-in opt-in set is config-resolved
+   * (`responseReview.conversationalContext.injectReviewers`, v1 default
+   * `['conversational-tone']`). Custom DynamicReviewers override this via
+   * their `contextRequirements['recent-conversation']` key. Opt-in is only
+   * honored WITHIN the gate's structural scoping (primary-user recipient) —
+   * a config-only opt-in can never expand exposure beyond what the round-1
+   * M1 exclusion accepted.
+   */
+  wantsRecentConversation(): boolean {
+    return false;
+  }
 
   /**
    * Generate a randomized boundary token for prompt injection hardening.
@@ -222,8 +335,12 @@ export abstract class CoherenceReviewer {
   protected parseResponse(
     raw: string,
     name: string,
-  ): { pass: boolean; severity: string; issue: string; suggestion: string } {
-    const failOpen = { pass: true, severity: 'warn', issue: '', suggestion: '' };
+  ): { pass: boolean; severity: string; issue: string; suggestion: string; abstained?: boolean; abstainCause?: 'unparseable' } {
+    // ABSTAIN on unparseable output (reviewer-fail-closed-on-abstain, CMT-1794):
+    // malformed model output = NO opinion, never a benign pass. `pass:true` is an
+    // inert placeholder; review() propagates `abstained` into the ReviewResult so
+    // CoherenceGate counts it as an abstain (not a pass) and consults criticality.
+    const failOpen = { pass: true, severity: 'warn', issue: '', suggestion: '', abstained: true, abstainCause: 'unparseable' as const };
 
     try {
       // Try to extract JSON from the response (may have surrounding text)
@@ -288,14 +405,23 @@ export abstract class CoherenceReviewer {
       // High-stakes reviewers wait (bounded) for a rate-limit window to clear
       // rather than fail open; undefined for best-effort reviewers.
       rateLimitWaitMs: this.options.rateLimitWaitMs,
-      attribution: { component: 'CoherenceReviewer' }, // attribution for /metrics/features
+      // gating:true (reviewer-fail-closed-on-abstain §8, CMT-1794) — these are
+      // GATING calls (they block outbound), so the router's failureSwap tries
+      // another harness/account BEFORE the reviewer abstains: a single-provider
+      // blip swaps (review stays alive) and fail-closed engages only on a true
+      // multi-provider outage (the No-Silent-Degradation canonical pattern).
+      attribution: { component: 'CoherenceReviewer', gating: true },
     };
     // IntelligenceProvider implementations set their own timeouts; wrap here too.
     return await Promise.race([
       this.intelligence.evaluate(prompt, intelOptions),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Reviewer timeout after ${timeoutMs}ms`)), timeoutMs),
-      ),
+      new Promise<never>((_, reject) => {
+        // Typed timeout (.code) so review()'s catch classifies abstainCause
+        // STRUCTURALLY, never by string-matching the message (CMT-1794).
+        const e = new Error(`Reviewer timeout after ${timeoutMs}ms`) as Error & { code?: string };
+        e.code = 'reviewer-timeout';
+        setTimeout(() => reject(e), timeoutMs);
+      }),
     ]);
   }
 

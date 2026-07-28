@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-21T06:31:52.499Z",
+  "slug": "autonomous-throughput-floor",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 6,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

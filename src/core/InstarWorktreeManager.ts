@@ -46,6 +46,10 @@ export interface ResolveAgentHomeOptions {
   instarHome?: string;
   /** Override registry lookup (for tests). Returns the set of registered agent names. */
   registryLookup?: () => Set<string>;
+  /** Override registry entries lookup (for tests). Returns name + recorded
+   *  home path pairs — the legacy-home acceptance path matches the candidate
+   *  against these recorded paths. */
+  registryEntriesLookup?: () => ReadonlyArray<{ name: string; path?: string }>;
 }
 
 export interface ResolvedAgentHome {
@@ -215,8 +219,21 @@ export function resolveAgentHome(opts: ResolveAgentHomeOptions = {}): ResolvedAg
     ? agentsRootReal
     : `${agentsRootReal}${path.sep}`;
   if (!candidateReal.startsWith(expectedPrefix)) {
+    // Legacy-home acceptance: agents onboarded before the worktree convention
+    // live outside the agents root (e.g. ~/Documents/Projects/<agent>). The
+    // ONLY accepted evidence is the instar registry's own recorded home path —
+    // operator-controlled state a planted .instar/AGENT.md cannot forge. The
+    // candidate must realpath-equal a registered entry's path AND the entry
+    // name must pass the same charset clamp as compliant homes. Worktrees for
+    // a legacy home land at <legacyHome>/.worktrees/ — still inside the
+    // agent's own granted territory, which is the convention's actual intent.
+    const legacy = matchRegisteredLegacyHome(candidateReal, opts);
+    if (legacy) return legacy;
     throw new Error(
-      `agent home: ${candidateReal} is not under the instar agents root ${agentsRootReal}`,
+      `agent home: ${candidateReal} is not under the instar agents root ${agentsRootReal} ` +
+      `and does not match any registered agent's recorded home path. If this IS a live ` +
+      `legacy agent home, its server must be registered (run it once so it heartbeats into ` +
+      `the registry); otherwise set INSTAR_AGENT_HOME to the agent's real home.`,
     );
   }
   const remainder = candidateReal.slice(expectedPrefix.length).replace(/\/+$/, '');
@@ -242,6 +259,39 @@ export function resolveAgentHome(opts: ResolveAgentHomeOptions = {}): ResolvedAg
   }
 
   return { agentHome: candidateReal, agentName: remainder };
+}
+
+/**
+ * Match a candidate directory against the registry's recorded agent-home
+ * paths (legacy-home acceptance). Returns the resolved home when exactly the
+ * registry vouches for the path; null otherwise (caller produces the refusal).
+ *
+ * Deliberately narrow: file evidence inside the candidate (.instar/AGENT.md,
+ * config.json) counts for NOTHING here — only the registry's own record,
+ * realpath-resolved so a symlinked registration still matches.
+ */
+function matchRegisteredLegacyHome(
+  candidateReal: string,
+  opts: ResolveAgentHomeOptions,
+): ResolvedAgentHome | null {
+  // Hermeticity rule: when the caller seamed the registry in ANY form
+  // (registryLookup or registryEntriesLookup), never consult the real
+  // on-disk registry — a name-only seam means "no entries with paths".
+  const entries = opts.registryEntriesLookup
+    ? opts.registryEntriesLookup()
+    : opts.registryLookup
+      ? []
+      : loadRegistry().entries.map((e) => ({ name: e.name, path: e.path }));
+  for (const entry of entries) {
+    if (!entry.path) continue;
+    const entryReal = realpathOrNull(entry.path);
+    if (!entryReal || entryReal !== candidateReal) continue;
+    // Same charset clamp as compliant homes — a registry entry with a hostile
+    // name never resolves (falls through to the generic refusal).
+    if (!AGENT_NAME_PATTERN.test(entry.name)) continue;
+    return { agentHome: candidateReal, agentName: entry.name };
+  }
+  return null;
 }
 
 function walkUpForAgentMd(start: string): string | null {
@@ -757,6 +807,78 @@ export function ensureWorktreeSpotlightExclusion(worktreesDir: string): boolean 
     // block worktree creation or a migration pass.
     return false;
   }
+}
+
+/**
+ * Drop a `.metadata_never_index` marker at this agent's Claude Code transcript
+ * directory (`<claudeHome>/projects/<encoded-agent-home>`) so macOS Spotlight
+ * (mds_stores) stops re-indexing the constantly-appended JSONL session
+ * transcripts. These are the single largest Spotlight churn source on a busy
+ * agent: every assistant/user turn appends to them and an active home accumulates
+ * many GB (measured ~18GB on a busy fleet box), which Spotlight re-indexes on
+ * every change — pinning mds_stores at 60-90% of a core. instar already READS
+ * these transcripts (TokenLedger / CompactionSentinel), so excluding them from
+ * indexing is the matching OS hygiene; nothing usefully Spotlight-searches a
+ * Claude JSONL transcript. Claude encodes the project dir by mapping every
+ * non-alphanumeric char to '-' (`/Users/justin/.instar/agents/echo` ->
+ * `-Users-justin--instar-agents-echo`); we mirror that. Graceful no-op when the
+ * transcript dir doesn't exist yet (no sessions run) or on non-macOS; idempotent.
+ * Returns true iff it created the marker.
+ *
+ * Part of the Responsible Resource Usage standard — OS resource hygiene.
+ */
+export function ensureClaudeTranscriptSpotlightExclusion(
+  agentHome: string,
+  claudeHome?: string,
+): boolean {
+  const home = claudeHome ?? path.join(process.env.HOME || os.homedir(), '.claude');
+  const encoded = agentHome.replace(/[^a-zA-Z0-9]/g, '-');
+  const transcriptDir = path.join(home, 'projects', encoded);
+  if (!fs.existsSync(transcriptDir)) return false;
+  // Reuse the generic marker-dropper (dir-agnostic despite the name).
+  return ensureWorktreeSpotlightExclusion(transcriptDir);
+}
+
+/**
+ * The high-churn subdirectories of the agent's runtime data dir (`<stateDir>` =
+ * `<agentHome>/.instar`). Worktrees (#588), node_modules (#606), and Claude
+ * transcripts (#903) are excluded, but the agent's OWN runtime data was never
+ * touched — and it is a top OS-indexer fuel source on a busy box:
+ *   - `telegram-images/` — every photo a user sends is downloaded here; macOS
+ *     `mediaanalysisd` performs vision analysis on each one (measured pinning a
+ *     core at ~70-80% against a few hundred accumulated images).
+ *   - `server-data/` — SQLite databases (+ WAL/SHM) rewritten continuously by
+ *     every feature; constant mutation = constant `mds_stores` re-indexing.
+ *   - `logs/` — `server.log` is appended on essentially every tick.
+ *   - `state/` — JSON state files rewritten constantly.
+ * None of these are usefully Spotlight-searchable (instar reads them via fs, not
+ * mdfind), so excluding them is pure OS hygiene.
+ */
+const AGENT_DATA_SPOTLIGHT_SUBDIRS = ['telegram-images', 'server-data', 'logs', 'state'];
+
+/**
+ * Drop a `.metadata_never_index` marker in each high-churn subdir of the agent's
+ * runtime data dir (`<stateDir>`) so macOS Spotlight (mds_stores) + mediaanalysisd
+ * stop re-indexing the agent's own constantly-mutating images / databases / logs /
+ * state. This closes the gap left by the worktree, node_modules, and transcript
+ * exclusions — the agent's own `.instar/` data was the remaining unexcluded churn
+ * source (measured: mediaanalysisd ~72-78% CPU + mds_stores ~28-48% on a busy box
+ * whose ~/.instar was never excluded). Markers sit INSIDE each subdir (gitignored
+ * runtime trees → no git noise), are honored recursively, are harmless on
+ * non-macOS, and idempotent. Returns the list of subdir names where a marker was
+ * newly created (empty if all already present or none exist).
+ *
+ * Part of the Responsible Resource Usage standard — OS resource hygiene.
+ */
+export function ensureAgentDataSpotlightExclusion(stateDir: string): string[] {
+  const created: string[] = [];
+  for (const sub of AGENT_DATA_SPOTLIGHT_SUBDIRS) {
+    const dir = path.join(stateDir, sub);
+    if (!fs.existsSync(dir)) continue;
+    // Reuse the generic marker-dropper (dir-agnostic despite the name).
+    if (ensureWorktreeSpotlightExclusion(dir)) created.push(sub);
+  }
+  return created;
 }
 
 // ── Audit ledger ─────────────────────────────────────────────────────────

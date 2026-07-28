@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-24T19:56:07.283Z",
+  "slug": "l0-delivery-age-guard",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 197,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

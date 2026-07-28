@@ -117,10 +117,17 @@ describe('Route completeness and safety', () => {
   });
 
   it('all error responses include instanceof Error check', () => {
-    // Count catch blocks that should have instanceof Error
+    // Count catch blocks that should type-check the error before using it.
     const catchBlocks = routesSource.match(/catch \(err\)/g) || [];
-    const instanceofChecks = routesSource.match(/err instanceof Error/g) || [];
-    // Every catch block should have an instanceof check
+    // The gate's INTENT is "every catch type-checks `err` before touching it".
+    // `err instanceof Error` is the common form, but a catch that narrows to a
+    // SPECIFIC typed error (e.g. `err instanceof InvalidCursorError`) and
+    // re-throws the rest satisfies the same intent — so recognize any
+    // `err instanceof <Something>Error` check, not just the bare `Error` one.
+    // (Narrowing the regex to `Error` exactly produced a false-negative once a
+    // route added an `instanceof InvalidCursorError` + re-throw handler.)
+    const instanceofChecks = routesSource.match(/err instanceof [A-Za-z]*Error\b/g) || [];
+    // Every catch block should have a typed-error check.
     expect(instanceofChecks.length).toBeGreaterThanOrEqual(catchBlocks.length);
   });
 });

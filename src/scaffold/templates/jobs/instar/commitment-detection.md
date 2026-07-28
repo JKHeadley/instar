@@ -19,11 +19,12 @@ mcpAccess: none
 Scan recent messages for commitments and promises.
 
 AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
 
 1. Read your bookmark: cat .instar/state/commitment-detection-bookmark.json 2>/dev/null || echo '{"lastProcessedId": 0}'
 2. Fetch new messages since bookmark from Telegram message log: tail -100 .instar/telegram-messages.jsonl
 3. For each new message, check: does it contain a commitment, promise, or action item? Look for patterns like 'I will', 'let me', 'I\'ll build', 'we should', 'TODO', 'action item', deadlines, etc.
-4. For each detected commitment, register it: curl -s -X POST http://localhost:${INSTAR_PORT:-4042}/evolution/actions -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"title":"...","source":"commitment-detection","description":"...","dueDate":"..."}'
+4. For each detected commitment, register it: curl -s -X POST http://localhost:${INSTAR_PORT:-4042}/evolution/actions -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" -H 'Content-Type: application/json' -d '{"title":"...","source":"commitment-detection","description":"...","dueDate":"..."}'
 5. Update bookmark with the last processed message ID.
 
 Only process NEW messages since last bookmark. Exit silently if no new commitments found.

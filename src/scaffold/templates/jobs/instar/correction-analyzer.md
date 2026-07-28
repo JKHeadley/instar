@@ -16,12 +16,16 @@ mcpAccess: none
 ---
 Run the weekly Correction & Preference Learning analysis. This job exists because a correction the user makes in three different sessions over a week looks like three unrelated one-offs — the recurring ones, the ones that matter most, are exactly the ones no single session can see. This turns the accumulated, distilled record into a routed lesson, and closes the loop on the preference path.
 
+AUTH="${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
+PORT="${INSTAR_PORT:-4042}"
+
 The job:
 
 1. Confirm the feature is on. If `monitoring.correctionLearning.enabled` is not true, exit silently — there is nothing to do.
 
 2. Call the analyzer + closed-loop tick:
-   `curl -s -X POST -H "Authorization: Bearer $AUTH" http://localhost:$PORT/corrections/analyze`
+   `curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/corrections/analyze`
    The response is `{ analysis: { considered, crossed, belowThreshold }, routed: { total, toFeedback, toPreferences, toAttention }, verified }`. The endpoint does the deterministic work: it only routes a learning that crosses the THREE-PRONGED recurrence gate (minSupport AND distinct calendar days AND a second orthogonal prong), keying on a code-determined provenance weight so an injected prompt cannot steer it. An explicit preference is written to the preferences file the session-start hook injects on every boot; an infra-gap becomes a human-approved tracked draft (or, only if autoFeedback is on, a /feedback proposal through the real route guards); a policy-relaxation learning is routed to the Attention queue for your one-tap approval — never silently applied. It can NEVER mint a proposal or edit a memory file (by-construction authority guard).
 
 3. **Tier-1 supervision (your job).** For each routed learning, sanity-check it against its own evidence before you surface it: does the summary actually match a recurring correction, and does the support count justify acting on it? If a routed learning looks malformed or unsupported, do NOT surface it — note it and move on. You are the validation wrapper around the deterministic core.

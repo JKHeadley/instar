@@ -8,6 +8,7 @@
  */
 
 import type { MachineCapacity } from './types.js';
+import { machineServesChannel } from './machineServesChannel.js';
 
 /** Per-topic placement metadata (persisted with the topic; §L4). */
 export interface TopicPlacement {
@@ -41,6 +42,12 @@ export interface PlacementRequest {
   machineRegistry: MachineCapacity[];
   currentOwner?: string;
   reason: 'new' | 'failover' | 'rebalance' | 'pin';
+  /** The channel scope (platform + telegram chatId / slack workspaceId + channelId) this placement
+   *  is for — threaded from the caller so placement can avoid a machine whose adapter can't reach it
+   *  (spec: placement-platform-workspace-aware). Absent (legacy caller) → every machine resolves
+   *  `unknown` → the platform/workspace filter no-ops (fail-open). The FAILOVER caller MUST pass it
+   *  (the live-test bug was a failover placement). */
+  channel?: import('./machineServesChannel.js').ChannelScope & { channelId?: string };
 }
 
 export interface PlacementDecision {
@@ -106,11 +113,26 @@ export function validateTopicPlacement(tp: unknown, capabilityWhitelist: string[
 
 const MEM_PRESSURE_NUM: Record<string, number> = { low: 0, moderate: 1, high: 2, critical: 3 };
 
+/**
+ * U4.1 §2E (R-r2-2) optional seams. `sustainedOnline`: the hard-pin fulfilment
+ * hysteresis — a pinned placement proceeds only when the pinned machine has
+ * been CONTINUOUSLY online for the sustained window (a flapping machine never
+ * triggers ping-pong). A machine failing the gate makes the hard pin
+ * `hard-pin-unavailable` → QUEUED (the shipped queued-never-rerouted contract —
+ * placement never drifts to another machine because the pinned one flapped).
+ * Absent ⇒ plain-online eligibility (today's exact behavior).
+ */
+export interface PlacementExecutorSeams {
+  sustainedOnline?: (machineId: string) => boolean;
+}
+
 export class PlacementExecutor {
   private readonly policy: PlacementPolicy;
-  constructor(policy: PlacementPolicy = DEFAULT_PLACEMENT_POLICY) {
+  private readonly seams: PlacementExecutorSeams;
+  constructor(policy: PlacementPolicy = DEFAULT_PLACEMENT_POLICY, seams: PlacementExecutorSeams = {}) {
     validatePlacementPolicy(policy);
     this.policy = policy;
+    this.seams = seams;
   }
 
   /** Score a candidate (lower = better): weighted load + session-ratio + mem pressure. */
@@ -149,6 +171,34 @@ export class PlacementExecutor {
     let candidates = allQuotaBlocked ? eligible : quotaOk;
     const quotaNote = allQuotaBlocked ? 'all-machines-quota-blocked' : undefined;
 
+    // Platform/workspace reachability gate (spec: placement-platform-workspace-aware).
+    // A machine whose adapter is NOT connected to this channel's platform/workspace
+    // STRUCTURALLY cannot serve it — placing there is a permanent black-hole (the live-test
+    // Slack bug: the channel's workspace was on a machine connected to a DIFFERENT workspace).
+    // Three-valued (machineServesChannel): drop only KNOWN-`no` machines; an absent/legacy
+    // signal is `unknown` → fail-open. Rank `yes` ABOVE `unknown` so a missing signal can never
+    // OUTRANK a known-reachable machine by load and recreate the black-hole. If EVERY candidate
+    // is `no`, the channel is structurally unservable → `queued` + `no-machine-serves-channel`
+    // (the existing unsatisfiable contract — same shape as no-capable-machine; the consumer raises
+    // ONE deduped Attention item keyed on the channel) — NEVER a black-hole pick. Absent req.channel
+    // (legacy caller) → every machine `unknown` → this gate is a no-op (fail-open).
+    if (req.channel) {
+      const serveOf = (m: MachineCapacity) => machineServesChannel(m.servesChannels, req.channel);
+      const yes = candidates.filter((m) => serveOf(m) === 'yes');
+      const unknown = candidates.filter((m) => serveOf(m) === 'unknown');
+      const serveCandidates = yes.length > 0 ? yes : unknown; // yes-over-unknown ranking
+      if (serveCandidates.length > 0) {
+        candidates = serveCandidates;
+      } else if (candidates.length > 0) {
+        // every quota-ok candidate STRUCTURALLY cannot serve this channel.
+        return { chosenMachine: null, score: 0, reason: 'no-machine-serves-channel', outcome: 'queued', escalationReason: 'no-machine-serves-channel' };
+      }
+      // Narrow `eligible` too so the hard-pin path refuses a pin to a structural-`no` machine
+      // (→ hard-pin-unsatisfiable via the existing hard-pin-unavailable branch) instead of
+      // honoring it onto a non-serving machine. A pin to an `unknown` machine stays honored (fail-open).
+      eligible = eligible.filter((m) => serveOf(m) !== 'no');
+    }
+
     for (const step of this.policy.ordering) {
       if (step === 'hard-constraint') {
         // Required capabilities.
@@ -165,7 +215,15 @@ export class PlacementExecutor {
         // the decision reason carries the quota note so the caller can surface it.
         if (tp.pinned && tp.preferredMachine) {
           const pinned = eligible.find((m) => m.machineId === tp.preferredMachine);
-          if (!pinned) {
+          // U4.1 §2E (i): fulfilment requires SUSTAINED online — a pinned machine
+          // that only just flapped back on is treated as unavailable (→ QUEUED,
+          // never re-routed; the same honest contract as offline). Absent seam /
+          // seam fault ⇒ plain-online (today's behavior — fail toward placement).
+          let sustainedOk = true;
+          if (pinned && this.seams.sustainedOnline) {
+            try { sustainedOk = this.seams.sustainedOnline(pinned.machineId); } catch { sustainedOk = true; /* @silent-fallback-ok — a broken hysteresis signal degrades to plain-online eligibility (today's exact behavior): fail toward PLACEMENT, never a wedged pin (U4.1 §2E) */ }
+          }
+          if (!pinned || !sustainedOk) {
             return { chosenMachine: null, score: 0, reason: 'hard-pin-unavailable', outcome: 'queued', escalationReason: 'hard-pin-unsatisfiable' };
           }
           return {

@@ -1,0 +1,13 @@
+{
+  "ts": "2026-06-21T09:03:40.953Z",
+  "slug": "commitment-tracker-verify-batches-saves",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 80,
+  "causalAutopsy": null,
+  "verdict": "blocked"
+}

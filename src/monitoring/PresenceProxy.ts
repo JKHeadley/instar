@@ -19,13 +19,20 @@ import { execSync } from 'child_process';
 import type { IntelligenceProvider, IntelligenceOptions } from '../core/types.js';
 import type { MessageLoggedEvent } from '../messaging/shared/MessagingEventBus.js';
 import { isSystemOrProxyMessage } from '../messaging/shared/isSystemOrProxyMessage.js';
-import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
+import { classifyStuckSignature } from './StuckSignatureClassifier.js';
 import { LlmAbortedError } from './LlmQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import { looksActivelyWorking } from './sentinelWiring.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
+
+/**
+ * Sentinel returned by maybeStuckMessage (Finding b) meaning "the session is
+ * stuck, but a recovery sentinel owns the user voice — send NOTHING this fire"
+ * (the one-voice silent-suppress, distinct from null = "not stuck, normal path").
+ */
+const PRESENCE_SUPPRESS = Symbol('presence-proxy-suppress');
 
 export interface PresenceProxyConfig {
   stateDir: string;
@@ -67,6 +74,17 @@ export interface PresenceProxyConfig {
   releaseProxyMutex?: (topicId: number, holder: 'presence-proxy' | 'promise-beacon') => void;
 
   /**
+   * WS3 one-voice gate (MULTI-MACHINE-SEAMLESSNESS-SPEC, closes F18): when
+   * wired, the election decides whether THIS machine speaks the 🔭 standby
+   * voice for a topic — only the topic's owner machine answers; unknown
+   * ownership fails toward speech via lease-holder/tiebreak so the pool is
+   * never silent. PromiseBeacon already had this gate; PresenceProxy lacked
+   * one entirely (both machines could answer for the same topic). Absent →
+   * exactly today's behavior.
+   */
+  speakerElection?: import('./SpeakerElection.js').SpeakerElection;
+
+  /**
    * BUILD-STALL-VISIBILITY-SPEC Fix 2 "Routing" — when a /build heartbeat has
    * landed on this topic recently, PresenceProxy suppresses its generic
    * Tier 2/3 standby so the user hears one progress voice per channel.
@@ -101,6 +119,33 @@ export interface PresenceProxyConfig {
 
   // Optional: context exhaustion auto-recovery
   recoverContextExhaustion?: (topicId: number, sessionName: string) => Promise<{ recovered: boolean }>;
+  /** Durable context-wall latch, used when the original pane banner has
+   * scrolled away. Signal-only for Tier 1/2; Tier 3 may invoke the existing
+   * recovery callback exactly as it does for a live-tail context match. */
+  hasContextExhaustionLatch?: (topicId: number) => boolean;
+
+  /**
+   * Honest turn-receipts: when a recovery sentinel (ContextWedgeSentinel,
+   * etc.) is ALREADY handling this session's stuck state, it owns the user
+   * voice — PresenceProxy must not also message about the wedge. Wired to the
+   * composed sentinel recovery checker. Absent/undefined = no suppression
+   * (the honest classifier is then the only voice, which is still correct).
+   */
+  isStuckRecoveryActive?: (sessionName: string) => boolean;
+
+  /**
+   * honest-session-state-surfaces Finding (b): when true, the honest stuck
+   * classification (rate-limited / policy-wedge / context-wedge /
+   * context-too-long) is lifted into Tier 1 and Tier 2 — so a live-but-failing
+   * session is reported with its REAL reason at the 20s / 2-minute marks instead
+   * of "actively working" (the classifier already runs at Tier 3 only). Signal
+   * only: it only substitutes which message string is sent (or sends none, when
+   * a recovery sentinel owns the voice); it NEVER alters the tier schedule,
+   * gates, or initiates recovery. Resolved at construction from the dev-gated
+   * `monitoring.standbyHonestyTiers.enabled` flag. Absent/false → Tier 1/2
+   * byte-identical to today.
+   */
+  standbyHonestyTiers?: boolean;
 
   // Timer config
   tier1DelayMs?: number;       // Default: 20000
@@ -220,6 +265,39 @@ const INJECTION_PATTERNS = [
   /^\s*<\/?(?:system|instruction|prompt)/i,
 ];
 
+// Input-box GHOST TEXT (the 2026-06-06 presence-confabulation incident):
+// codex renders rotating placeholder suggestions inside its empty input box
+// ("› Write tests for @filename", "› Implement {feature}"). ANSI-stripping
+// erases the dim styling, so by the time the snapshot reaches the assessment
+// LLM the ghost text is indistinguishable from a typed command — and the LLM
+// reported "preparing to write tests for the referenced file" for a session
+// that was IDLE at a fresh prompt (topic 2271, 00:35:28Z). Status confabulated
+// from UI chrome.
+//
+// Match conservatively: only `›`-prefixed input-box lines whose content is
+// recognizably TEMPLATE text — it contains a `{placeholder}` or `@filename`
+// token, or exact-matches the known codex suggestion set. A real typed-but-
+// unsubmitted command stays visible (it is genuine pane state); only text the
+// USER NEVER WROTE is stripped.
+const KNOWN_INPUT_BOX_GHOSTS = new Set(
+  [
+    'implement {feature}',
+    'write tests for @filename',
+    'find and fix a bug in @filename',
+    'explain this codebase',
+    'summarize recent commits',
+  ],
+);
+const INPUT_BOX_LINE = /^\s*[›❯>]\s+(.*\S)\s*$/;
+const TEMPLATE_TOKEN = /\{[a-z_-]+\}|@filename\b/i;
+
+function isInputBoxGhostLine(line: string): boolean {
+  const m = INPUT_BOX_LINE.exec(line);
+  if (!m) return false;
+  const content = m[1].trim();
+  return TEMPLATE_TOKEN.test(content) || KNOWN_INPUT_BOX_GHOSTS.has(content.toLowerCase());
+}
+
 export function sanitizeTmuxOutput(raw: string, extraPatterns?: string[]): string {
   let output = raw;
 
@@ -240,10 +318,11 @@ export function sanitizeTmuxOutput(raw: string, extraPatterns?: string[]): strin
     output = output.replace(pattern, '[REDACTED]');
   }
 
-  // Remove lines matching injection patterns
+  // Remove lines matching injection patterns, and input-box ghost-text lines
+  // (placeholder suggestions the user never typed — see isInputBoxGhostLine).
   output = output
     .split('\n')
-    .filter(line => !INJECTION_PATTERNS.some(p => p.test(line)))
+    .filter(line => !INJECTION_PATTERNS.some(p => p.test(line)) && !isInputBoxGhostLine(line))
     .join('\n');
 
   return output.trim();
@@ -1013,6 +1092,67 @@ export class PresenceProxy {
     }
   }
 
+  // ─── Honest stuck-state pre-check (Finding b) ──────────────────────────
+  //
+  // honest-session-state-surfaces Finding (b): lift the Tier-3 honest
+  // classification into Tier 1 / Tier 2. Reuses the SAME tail-gated
+  // classifyStuckSignature on the SAME sanitized snapshot — no new detector,
+  // no new parse surface. Returns one of three outcomes:
+  //   - a string   → the session is stuck (no recovery owner): send THIS line
+  //                   in place of the would-be LLM/"working" copy.
+  //   - SUPPRESS    → the session is stuck BUT a recovery sentinel owns the
+  //                   voice: send NO message this fire (one-voice silent-suppress,
+  //                   mirroring Tier 3's silent `return` at the same condition).
+  //                   It does NOT fall through to the "actively working" copy.
+  //   - null        → not stuck (or flag off / no snapshot): normal LLM path,
+  //                   unchanged.
+  // Scheduling is NEVER altered by this pre-check (see "Scheduling is never
+  // gated" in the spec) — the caller continues exactly as today in all cases.
+  // No-leak: emits ONLY `StuckClassification.message` verbatim with the tier
+  // prefix — never concatenates pane-derived text.
+  private maybeStuckMessage(
+    topicId: number,
+    snapshot: string | null,
+    sessionName: string,
+    tierLabel: 1 | 2,
+  ): string | typeof PRESENCE_SUPPRESS | null {
+    if (!this.config.standbyHonestyTiers) return null;
+    if (this.config.hasContextExhaustionLatch?.(topicId)) {
+      if (this.config.isStuckRecoveryActive?.(sessionName)) {
+        return PRESENCE_SUPPRESS;
+      }
+      const prefix = tierLabel === 1
+        ? `${this.prefix} `
+        : `${this.prefix} 2-minute update — `;
+      return `${prefix}This conversation is latched at its context limit and cannot produce another reply until recovery starts.`;
+    }
+    if (!snapshot) return null;
+    let stuck;
+    try {
+      stuck = classifyStuckSignature(snapshot);
+    } catch {
+      // Fail toward today's behavior — never fabricate an honest claim.
+      return null;
+    }
+    if (!stuck) return null;
+    // The framework approval-prompt class is NEVER surfaced to the user — the
+    // PermissionPromptAutoResolver auto-clears it, and only if it genuinely
+    // cannot does it raise a Terminal Attention defect (the sole surface).
+    // Suppress here UNCONDITIONALLY (a consumer policy, not a classifier
+    // contract inversion), with no lifecycle gap.
+    if (stuck.kind === 'approval-prompt-waiting') return PRESENCE_SUPPRESS;
+    // A recovery sentinel already messaging about this stuck state owns the
+    // voice — mirror Tier 3's silent return (suppress, do NOT fall through to
+    // the "actively working" fallback, which would re-introduce the lie).
+    if (this.config.isStuckRecoveryActive?.(sessionName)) {
+      return PRESENCE_SUPPRESS;
+    }
+    const prefix = tierLabel === 1
+      ? `${this.prefix} `
+      : `${this.prefix} 2-minute update — `;
+    return `${prefix}${stuck.message}`;
+  }
+
   // ─── Tier 1: Status Update ─────────────────────────────────────────────
 
   private async fireTier1(topicId: number, state: PresenceState): Promise<void> {
@@ -1076,7 +1216,25 @@ export class PresenceProxy {
       return;
     }
 
-    if (!snapshot || snapshot.trim().length < 10) {
+    // ── Honest stuck-state pre-check (Finding b) ──
+    // If the live tail shows a known "alive but failing every turn" signature,
+    // surface the REAL reason instead of "actively working" — at Tier 1 too,
+    // not only Tier 3. Substitutes the message string only; scheduling is
+    // unchanged below. SUPPRESS = a recovery sentinel owns the voice → send
+    // nothing this fire, but still schedule Tier 2.
+    const honest1 = this.maybeStuckMessage(topicId, snapshot, state.sessionName, 1);
+    if (honest1 === PRESENCE_SUPPRESS) {
+      if (state.cancelled) return;
+      state.tier1FiredAt = Date.now();
+      this.persistState(topicId, state);
+      const remainingToTier2 = this.tier2DelayMs - (Date.now() - state.userMessageAt);
+      if (remainingToTier2 > 0) this.scheduleTier(topicId, 2, remainingToTier2);
+      return;
+    }
+
+    if (typeof honest1 === 'string') {
+      message = honest1;
+    } else if (!snapshot || snapshot.trim().length < 10) {
       message = `${this.prefix} ${this.config.agentName} is active but hasn't produced visible output yet. Your message has been delivered.`;
     } else {
       try {
@@ -1178,27 +1336,46 @@ export class PresenceProxy {
       }
     }
 
+    // ── Honest stuck-state pre-check (Finding b) ──
+    // Same lift as Tier 1: surface the REAL reason instead of "is still
+    // working" at the 2-minute mark. Substitutes the message string only;
+    // Tier 3 is still scheduled below in every branch (never gated).
+    const honest2 = this.maybeStuckMessage(topicId, snapshot, state.sessionName, 2);
+    if (honest2 === PRESENCE_SUPPRESS) {
+      if (state.cancelled) return;
+      state.tier2FiredAt = Date.now();
+      this.persistState(topicId, state);
+      const remainingToTier3 = this.tier3DelayMs - (Date.now() - state.userMessageAt);
+      if (remainingToTier3 > 0) this.scheduleTier(topicId, 3, remainingToTier3);
+      return;
+    }
+
     // Check if output changed since Tier 1
     const outputChanged = state.tier1SnapshotHash !== hash;
 
     let message: string;
 
-    try {
-      const summary = await this.callLlm(
-        this.buildTier2Prompt(state, snapshot, outputChanged),
-        { model: this.config.tier2Model ?? 'fast', maxTokens: 500 },
-        'low',
-        this.config.llmTimeoutMs?.t2 ?? 15_000,
-      );
-      state.llmCallCount++;
-      state.lastLlmCallAt = Date.now();
+    if (typeof honest2 === 'string') {
+      // Honest stuck reason — skip the LLM path entirely.
+      message = honest2;
+    } else {
+      try {
+        const summary = await this.callLlm(
+          this.buildTier2Prompt(state, snapshot, outputChanged),
+          { model: this.config.tier2Model ?? 'fast', maxTokens: 500 },
+          'low',
+          this.config.llmTimeoutMs?.t2 ?? 15_000,
+        );
+        state.llmCallCount++;
+        state.lastLlmCallAt = Date.now();
 
-      const guard = guardProxyOutput(summary);
-      message = guard.safe
-        ? `${this.prefix} 2-minute update — ${summary}`
-        : `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Output has changed since the last check.' : 'Output appears unchanged — may be waiting on a long operation.'}`;
-    } catch {
-      message = `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Making progress — output has changed.' : 'Output unchanged — possibly waiting on a long operation.'}`;
+        const guard = guardProxyOutput(summary);
+        message = guard.safe
+          ? `${this.prefix} 2-minute update — ${summary}`
+          : `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Output has changed since the last check.' : 'Output appears unchanged — may be waiting on a long operation.'}`;
+      } catch {
+        message = `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Making progress — output has changed.' : 'Output unchanged — possibly waiting on a long operation.'}`;
+      }
     }
 
     if (state.cancelled) return;
@@ -1313,15 +1490,85 @@ export class PresenceProxy {
       }
     }
 
-    // ── Context exhaustion: auto-recover before LLM call ──
+    // A durable context-wall latch outranks the pane tail. The original banner
+    // can scroll away while the session remains unable to answer; reporting
+    // "actively working" in that state is the exact standby-honesty failure.
+    if (this.config.hasContextExhaustionLatch?.(topicId)) {
+      if (this.config.isStuckRecoveryActive?.(state.sessionName)) {
+        this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+        this.persistState(topicId, state);
+        return;
+      }
+      if (this.config.recoverContextExhaustion) {
+        const result = await this.config.recoverContextExhaustion(topicId, state.sessionName);
+        if (result.recovered) {
+          state.tier3FiredAt = Date.now();
+          state.tier3Assessment = 'waiting';
+          state.tier3Summary = 'Latched context exhaustion — auto-recovered';
+          await this.sendProxyMessage(
+            topicId,
+            '🔄 The session was latched at its context limit — recovery has started with recent history.',
+            3,
+          );
+          this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+          this.persistState(topicId, state);
+          this.cleanupState(topicId);
+          return;
+        }
+      }
+      state.tier3FiredAt = Date.now();
+      state.tier3Assessment = 'dead';
+      state.tier3Summary = 'Latched context exhaustion';
+      await this.sendProxyMessage(
+        topicId,
+        `${this.prefix} 5-minute check — This conversation is latched at its context limit and cannot produce another reply until recovery succeeds.`,
+        3,
+      );
+      this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+      this.persistState(topicId, state);
+      this.cleanupState(topicId);
+      return;
+    }
+
+    // ── Honest turn-receipts: classify a live-but-failing session ──
+    // A session can be ALIVE (child process running) yet failing every turn:
+    // rate-limited, policy-wedged, context-wedged, or out of context window.
+    // The process-tree check below would mislabel all of these "working" —
+    // the exact lie behind "🔭 actively working" while the session is dead.
+    // classifyStuckSignature is TAIL-GATED: the signature must be the live
+    // tail, not a stale mention in scrollback (which is why "conversation too
+    // long" previously fired as noise on healthy sessions). When it matches,
+    // we surface the REAL reason instead of "working". Recovery still belongs
+    // to the sentinels — if one already owns this session's recovery, it owns
+    // the voice and we stay silent.
     if (snapshot) {
-      const ctxCheck = detectContextExhaustion(snapshot);
-      if (ctxCheck.matched && ctxCheck.confidence === 'high') {
+      const stuck = classifyStuckSignature(snapshot);
+      if (stuck) {
+        // Framework approval-prompt: NEVER surfaced to the user, NEVER 'dead'
+        // (so it is not respawned). The PermissionPromptAutoResolver owns
+        // clearing it; the only user-facing surface is its Terminal defect.
+        // Unconditional suppression (consumer policy), with no lifecycle gap.
+        if (stuck.kind === 'approval-prompt-waiting') {
+          state.tier3Assessment = 'waiting';
+          state.tier3Summary = 'approval-prompt (auto-clearing)';
+          this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+          this.persistState(topicId, state);
+          return;
+        }
         if (state.cancelled) {
           this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
           return;
         }
-        if (this.config.recoverContextExhaustion) {
+        // A sentinel already messaging about this stuck state owns the voice.
+        if (this.config.isStuckRecoveryActive?.(state.sessionName)) {
+          this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+          this.persistState(topicId, state);
+          return;
+        }
+
+        // context-too-long: try the existing auto-recovery first; only if it
+        // is unavailable/fails do we surface the honest "start fresh" message.
+        if (stuck.kind === 'context-too-long' && this.config.recoverContextExhaustion) {
           const result = await this.config.recoverContextExhaustion(topicId, state.sessionName);
           if (result.recovered) {
             state.tier3FiredAt = Date.now();
@@ -1335,12 +1582,13 @@ export class PresenceProxy {
             return;
           }
         }
-        // No recovery callback or recovery failed — notify user
+
+        // rate-limited self-clears (assessment 'waiting'); the wedges and an
+        // unrecovered context-too-long need a fresh session (assessment 'dead').
         state.tier3FiredAt = Date.now();
-        state.tier3Assessment = 'dead';
-        state.tier3Summary = 'Conversation too long — session cannot continue';
-        await this.sendProxyMessage(topicId,
-          `${this.prefix} 5-minute check — Session hit "conversation too long" and can't continue. Send a new message to start a fresh session with your recent history.`, 3);
+        state.tier3Assessment = stuck.kind === 'rate-limited' ? 'waiting' : 'dead';
+        state.tier3Summary = stuck.detail ? `${stuck.kind} (${stuck.detail})` : stuck.kind;
+        await this.sendProxyMessage(topicId, `${this.prefix} ${stuck.message}`, 3);
         this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
         this.persistState(topicId, state);
         this.cleanupState(topicId);
@@ -1398,8 +1646,20 @@ export class PresenceProxy {
       // Active child processes = working
       assessment = 'working';
       summary = 'Active child processes detected.';
+    } else if (
+      snapshot
+      && looksActivelyWorking(snapshot, this.config.agentFramework)
+      && state.tier2SnapshotHash !== crypto.createHash('sha256').update(snapshot).digest('hex')
+    ) {
+      // An affirmative live framework signal is stronger than an interpretive
+      // model verdict. In-process Codex work has no child process to discover,
+      // so allowing tier 3 to override fresh terminal evidence created false
+      // "stuck" alarms. A frozen live-looking marker is not freshness proof;
+      // unchanged output still proceeds to the stall assessment below.
+      assessment = 'working';
+      summary = 'The session still shows an active-work signal.';
     } else {
-      // No active processes — use LLM to assess
+      // No active processes or deterministic live signal — use LLM to assess.
       try {
         const llmResult = await this.callLlm(
           this.buildTier3Prompt(state, snapshot, processes),
@@ -1764,6 +2024,17 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
   }
 
   private async sendProxyMessage(topicId: number, text: string, tier: number): Promise<void> {
+    // WS3 one-voice election: only this topic's owner machine speaks the 🔭
+    // voice. Single chokepoint for every tier emission. Silent/defer verdicts
+    // simply skip this send — the proxy's own cadence re-evaluates later, and
+    // the owning machine's PresenceProxy carries the voice.
+    if (this.config.speakerElection) {
+      const verdict = this.config.speakerElection.decide(topicId);
+      if (!verdict.speak) {
+        console.log(`[PresenceProxy] one-voice gate: not this machine's topic (${verdict.reason}) — skipping tier ${tier} send for topic ${topicId}`);
+        return;
+      }
+    }
     // Spec A10: acquire shared per-topic proxy mutex if one is wired.
     // PromiseBeacon consumes the same coordinator; the acquire here guarantees
     // only one proxy-class emitter fires per topic at a time.
