@@ -3,11 +3,11 @@
  * POST /decision-quality/grade-pass (llm-decision-quality-meter §5.5).
  *
  * DETERMINISTIC-ONLY (FD11): the LLM evidence-interpreter rung ships NO code.
- * This pass drives the ONE window-close rule the grading JOB owns —
- * `hog-sustained-right-v1` (owningComponent 'DecisionGrading') — over the
- * durable ExternalHogDecisionStore, plus the durable per-decision-point cursor
- * bookkeeping (keyset (ts, correlation_id), bounded per run, idempotent grade
- * upserts, P19 backoff). Every OTHER evidence rule fires at its own owner (the
+ * This pass drives the registered window-close rules owned by
+ * `DecisionGrading`: the hog sustained-right rule over its durable evidence
+ * store plus four Phase-B evidence-absent terminalizers. It owns durable
+ * per-decision-point cursor bookkeeping (keyset (ts, correlation_id), bounded
+ * per run, idempotent grade upserts, P19 backoff). Every OTHER evidence rule fires at its own owner (the
  * sentinel's scan-tick / grade-on-supersede for respawn-wrong + leave-recurrence;
  * the completion realcheck arm) — never here.
  *
@@ -25,7 +25,10 @@
  * `unknown`/`expired`). No LLM tokens are spent (deterministic predicates only).
  */
 
-import { DP_EXTERNAL_HOG_KILL_LEAVE } from '../data/provenanceCoverage.js';
+import {
+  DP_COMPLETION_CLAIM_VERIFY, DP_CORRECTION_CLASS_REVIEW, DP_EXTERNAL_HOG_KILL_LEAVE,
+  DP_FEEDBACK_READINESS, DP_MESSAGING_TONE_GATE,
+} from '../data/provenanceCoverage.js';
 import {
   HOG_SUSTAINED_RIGHT_RULE_ID,
   evaluateHogSustainedRight,
@@ -74,18 +77,27 @@ export interface DecisionGradingPassResult {
 }
 
 /**
- * The DecisionGrading-owned window-close points this pass drives (§5.5). ONE
- * today (`hog-sustained-right-v1` over `external-hog-kill-leave`); adding another
- * appends its point id here. The per-point sub-budget (`perPointSubBudget`)
+ * The DecisionGrading-owned window-close points this pass drives (§5.5). The
+ * per-point sub-budget (`perPointSubBudget`)
  * divides the GLOBAL row budget across THIS set round-robin so no single point
  * can consume a whole pass and starve a sibling's maturing evidence window
  * (LES r6 / §5.5 — the fairness bound the census `SUBBUDGET_IMPLEMENTED` flag
- * asserts is in place before a third ENROLLED customer). MessagingToneGate (the
- * third enrolled customer) is graded by its own evidence source, not this pass —
- * so it is not listed here, but its enrollment is what tripped the structural
- * requirement that this sub-budget exist.
+ * asserts is in place before high-volume enrolled customers can be graded.
  */
-export const GRADE_PASS_POINTS: ReadonlyArray<string> = [DP_EXTERNAL_HOG_KILL_LEAVE];
+const WINDOW_UNKNOWN_RULES: Readonly<Record<string, string>> = {
+  [DP_MESSAGING_TONE_GATE]: 'tone-window-unknown-v1',
+  [DP_CORRECTION_CLASS_REVIEW]: 'correction-review-window-unknown-v1',
+  [DP_COMPLETION_CLAIM_VERIFY]: 'completion-claim-window-unknown-v1',
+  [DP_FEEDBACK_READINESS]: 'feedback-readiness-window-unknown-v1',
+};
+
+export const GRADE_PASS_POINTS: ReadonlyArray<string> = [
+  DP_EXTERNAL_HOG_KILL_LEAVE,
+  DP_MESSAGING_TONE_GATE,
+  DP_CORRECTION_CLASS_REVIEW,
+  DP_COMPLETION_CLAIM_VERIFY,
+  DP_FEEDBACK_READINESS,
+];
 
 /**
  * The per-point row slice of the GLOBAL grading budget (§5.5 fairness). Divides
@@ -156,16 +168,18 @@ function gradeOnePoint(args: {
     return;
   }
 
-  // No durable evidence source wired (the sentinel store is not constructed) →
-  // nothing to grade; leave the cursor untouched.
-  if (!hogStore) {
+  const windowUnknownRule = WINDOW_UNKNOWN_RULES[point];
+  // The hog point requires its dedicated evidence store. Phase-B point
+  // terminalizers use the quality row's own age and therefore need no second
+  // store.
+  if (point === DP_EXTERNAL_HOG_KILL_LEAVE && !hogStore) {
     result.cursors[point] = { ts: cursor.cursorTs, correlationId: cursor.cursorCorrelationId };
     return;
   }
 
   // correlationId → hog record (bounded: the store retains a handful of slots).
   const byCorr = new Map<string, HogDecisionRecord>();
-  for (const { record } of hogStore.list()) {
+  for (const { record } of hogStore?.list() ?? []) {
     if (record.correlationId) byCorr.set(record.correlationId, record);
   }
 
@@ -196,7 +210,27 @@ function gradeOnePoint(args: {
       break;
     }
 
-    // Window CLOSED — resolve now.
+    // Window CLOSED — Phase B's per-point terminalizers record an honest
+    // unknown. Silence never becomes a fabricated right/wrong grade.
+    if (windowUnknownRule) {
+      const res = annotate({
+        correlationId: row.correlationId,
+        ruleId: windowUnknownRule,
+        gradedBy: { component: DECISION_GRADING_COMPONENT },
+        grade: 'unknown',
+        decisionPoint: point,
+        evidence: { rule: windowUnknownRule, windowClosed: true, evidenceAbsent: true },
+        ts: nowMs,
+      });
+      if (!res.applied) { sawPending = true; break; }
+      result.graded++;
+      result.byRule[windowUnknownRule] = (result.byRule[windowUnknownRule] ?? 0) + 1;
+      cursorTs = row.ts;
+      cursorCorr = row.correlationId;
+      continue;
+    }
+
+    // Window CLOSED — resolve the hog point now.
     if (rec) {
       const grade = evaluateHogSustainedRight(rec, nowMs);
       if (grade === 'right') {

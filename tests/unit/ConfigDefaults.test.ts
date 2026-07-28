@@ -169,6 +169,9 @@ describe('ConfigDefaults', () => {
         expect(sp.enabled).toBe(false);
         expect(sp.stage).toBe('dark');
         expect(sp.dryRun).toBe(true);
+        expect(sp.promotionModel).toBe('off');
+        expect(sp.promotionCeiling).toBe('dark');
+        expect(sp.promotionTickMs).toBe(60000);
         // Clock-skew knobs present + honor the §L2 startup invariant.
         expect(sp.clockSkewToleranceMs).toBe(300000);
         expect(sp.maxExpectedNtpDriftMs).toBe(250);
@@ -177,6 +180,8 @@ describe('ConfigDefaults', () => {
       const mig = (getMigrationDefaults('managed-project').multiMachine as any).sessionPool;
       expect(mig.enabled).toBe(false);
       expect(mig.stage).toBe('dark');
+      expect(mig.promotionModel).toBe('off');
+      expect(mig.promotionCeiling).toBe('dark');
     });
 
     it('ships threadline.a2aCheckIn (A2A Coherence Layer 4) DARK by default + migrates it', () => {

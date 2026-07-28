@@ -64,11 +64,75 @@ function line(msg: string): void {
   }
 }
 
-function skipLine(sem: HostTestRunnerSemaphore, reason: string, posture: TestPosture, loud: boolean, extra = ''): void {
+/**
+ * Map the shared detector's result onto the escalation lines, or null when it does not apply.
+ *
+ * EXPORTED AND PURE so it can be tested against the detector's REAL output shape. The first version
+ * of this inlined the mapping inside a best-effort try/catch and guessed the field names (`id`
+ * instead of `pattern`, an array instead of `{findings}`). The catch then swallowed the resulting
+ * error, so the escalation silently never printed — a silent fallback hiding a bug, inside a change
+ * whose entire subject is warnings that get ignored. It was found by running it and looking, not by
+ * the code telling me.
+ */
+export function sustainedOffEscalationLines(
+  detectResult: { findings?: Array<{ pattern?: string; count?: number; threshold?: number }> } | null | undefined,
+): string[] | null {
+  const hit = detectResult?.findings?.find((f) => f?.pattern === 'sustained-off');
+  if (!hit) return null;
+  const count = Number(hit.count);
+  const threshold = Number(hit.threshold);
+  // A finding missing its numbers must produce NOTHING, not "self-disable #0 … threshold 0".
+  // Defaulting them to 0 made `count < threshold` false and emitted a confident nonsense warning —
+  // caught by the malformed-input test, which is precisely why that test asserts on junk rather
+  // than only on the happy path. A degenerate input must not yield an authoritative-looking line.
+  if (!Number.isFinite(count) || !Number.isFinite(threshold)) return null;
+  if (threshold <= 0 || count < threshold) return null;
+  return [
+    '',
+    `WARN: this is self-disable #${count} on this host within the detector's window (threshold ${threshold}).`,
+    'WARN: that is no longer an exception — it is the pattern the detector exists to find.',
+    'WARN: `instar dev:preflight` FAILS on this signature, so it will surface later whether or not it is noticed now.',
+  ];
+}
+
+/**
+ * How many times has this host ALREADY self-disabled the bound recently?
+ *
+ * WHY THIS EXISTS. The skip line below is deterministic and identical every time. That is right for a
+ * single skip and useless for a pattern: on 2026-07-27 an agent disabled the bound 37 times in three
+ * hours, saw this exact warning 37 times, and read it as routine test output. The threshold detector
+ * caught it — but hours later, via a failing `dev:preflight`, long after every individual decision.
+ *
+ * **A warning that looks identical on the 1st and the 30th occurrence is not a warning about a
+ * pattern.** This surfaces the repetition at the moment of use, the only moment the reader can still
+ * choose differently.
+ *
+ * Reuses the SHARED detector rather than re-counting, so the threshold and window live once and this
+ * line can never drift from the preflight verdict. Best-effort: a failure here leaves the
+ * deterministic line intact and never affects the run.
+ */
+async function sustainedOffLines(): Promise<string[] | null> {
+  try {
+    const mod = await import('../../scripts/lib/test-runner-selfdisable-patterns.mjs');
+    const { events } = mod.readLedgerEvents(mod.resolveLedgerPaths(process.env));
+    return sustainedOffEscalationLines(mod.detectSelfDisablePatterns(events));
+  } catch {
+    /* @silent-fallback-ok: the deterministic line above already printed; escalation is additive. */
+    return null;
+  }
+}
+
+async function skipLine(sem: HostTestRunnerSemaphore, reason: string, posture: TestPosture, loud: boolean, extra = ''): Promise<void> {
   // Every skip prints ONE deterministic line naming reason + posture and
   // appends the same to the ledger — an inert bound is never silent (§2.6).
   if (loud) {
     line(`WARN: SKIPPING the host-wide test-runner bound (reason: ${reason}) — posture: ${posture}.${extra ? ` ${extra}` : ''} A self-disabled bound explains more incidents than a broken one.`);
+    if (reason === 'off') {
+      // AWAITED, not fire-and-forget. The first version used `void …then(…)` and the escalation
+      // never printed: globalSetup returns before the promise settles, so the warning about an
+      // ignored warning was itself silently dropped. Caught by running it.
+      for (const l of (await sustainedOffLines()) ?? []) line(l);
+    }
   } else {
     line(`skip (${reason}) — posture: ${posture}${extra ? ` ${extra}` : ''}`);
   }
@@ -97,14 +161,14 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
 
     // ── Kill switch (env-only — §2.6) ─────────────────────────────────────
     if (isKillSwitchOff()) {
-      skipLine(sem, 'off', posture, true, 'Unset INSTAR_HOST_TEST_SEMAPHORE to re-arm.');
+      await skipLine(sem, 'off', posture, true, 'Unset INSTAR_HOST_TEST_SEMAPHORE to re-arm.');
       return;
     }
 
     // ── CI exemption (hardened; spoof-suspect contexts are LOUD — §2.6) ──
     if (isCiEnvironment()) {
       const spoofSuspect = isAgentContext();
-      skipLine(sem, 'CI', posture, spoofSuspect, spoofSuspect ? '(CI env in an agent context — a spoofed CI export on a dev host is graded like `off`.)' : '');
+      await skipLine(sem, 'CI', posture, spoofSuspect, spoofSuspect ? '(CI env in an agent context — a spoofed CI export on a dev host is graded like `off`.)' : '');
       return;
     }
 
@@ -112,7 +176,7 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
 
     // ── list / collect invocations — no-op (never waits or consumes) ─────
     if (argv.isList) {
-      skipLine(sem, 'list', posture, false);
+      await skipLine(sem, 'list', posture, false);
       return;
     }
 
@@ -122,7 +186,7 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
       const defaultedIntoWatch = !argv.explicitWatch; // bare `vitest` in a TTY
       const agentCtx = isAgentContext();
       const loud = defaultedIntoWatch || agentCtx;
-      skipLine(
+      await skipLine(
         sem,
         'watch',
         posture,
@@ -177,7 +241,7 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
       // Config-file/tuning postures cannot turn the chokepoint off (§2.6) —
       // only the env kill switch (handled above). 'off' here is unreachable
       // via tuning by construction; guard anyway (fail toward bounding).
-      skipLine(sem, 'off', posture, true);
+      await skipLine(sem, 'off', posture, true);
       return;
     }
 
@@ -210,7 +274,7 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
     // ── Re-entrancy: lane-scoped ancestry+holders cross-check (§2.5) ──────
     const flags = heldFlags();
     if (flags.has(lane)) {
-      skipLine(sem, 'reentrant', posture, false, '(in-process same-lane slot already held)');
+      await skipLine(sem, 'reentrant', posture, false, '(in-process same-lane slot already held)');
       return;
     }
     const nested = checkNestedUnderHolder(readHoldersRaw(sem), lane, {

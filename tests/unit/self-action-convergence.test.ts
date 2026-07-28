@@ -56,6 +56,7 @@ function makePressureFixture(overrides: Partial<PressureFixture> = {}): Pressure
   const clock = overrides.clock ?? makeClock();
   return {
     clock,
+    durableState: new Map<string, unknown>(),
     everyAccountHot: () => true,
     everySessionBusy: () => true,
     targetAlwaysRejects: () => true,
@@ -134,6 +135,37 @@ describe('self-action convergence ratchet — every registered controller SETTLE
           const maxPerTarget = Math.max(0, ...sink.perTarget.values());
           expect(maxPerTarget).toBeLessThanOrEqual(controller.perTargetBoundK);
         });
+
+        if (controller.restartPosture.pressureSurvives) {
+          for (const restartPercent of [25, 50, 75]) {
+            it(`keeps the same bound across reconstruction at ${restartPercent}% of sustained pressure`, () => {
+              const restart = controller.restartPosture.restartUnderPressure;
+              expect(restart).toBeTypeOf('function');
+              const fixture = makePressureFixture();
+              const sink = makeActionSink();
+              let instance = controller.makeUnderPressure(fixture, sink);
+              const restartAt = Math.floor(controller.ticks * restartPercent / 100);
+              for (let i = 0; i < controller.ticks; i++) {
+                if (i === restartAt) instance = restart(fixture, sink);
+                instance.tick();
+                fixture.clock.advance(controller.tickMs);
+              }
+              expect(sink.count).toBeLessThanOrEqual(controller.boundK);
+            });
+          }
+
+          it('keeps the same bound when reconstructed before every tick', () => {
+            const restart = controller.restartPosture.restartUnderPressure;
+            expect(restart).toBeTypeOf('function');
+            const fixture = makePressureFixture();
+            const sink = makeActionSink();
+            for (let i = 0; i < controller.ticks; i++) {
+              restart(fixture, sink).tick();
+              fixture.clock.advance(controller.tickMs);
+            }
+            expect(sink.count).toBeLessThanOrEqual(controller.boundK);
+          });
+        }
       }
     });
   }
@@ -179,6 +211,17 @@ describe('self-action registry — wiring integrity (Testing Integrity)', () => 
     for (const controller of SELF_ACTION_CONTROLLERS) {
       expect(controller.ticks).toBeGreaterThan(0);
       expect(controller.tickMs).toBeGreaterThan(0);
+    }
+  });
+
+  it('every controller declares a non-vacuous restart posture', () => {
+    for (const controller of SELF_ACTION_CONTROLLERS) {
+      expect(controller.restartPosture).toBeTruthy();
+      if (controller.restartPosture.pressureSurvives) {
+        expect(controller.restartPosture.restartUnderPressure).toBeTypeOf('function');
+      } else {
+        expect(controller.restartPosture.resetSafeReason.trim().length).toBeGreaterThan(20);
+      }
     }
   });
 

@@ -28,8 +28,10 @@ describe('llm-decision-grading job template', () => {
     expect(fs.existsSync(TEMPLATE)).toBe(true);
   });
 
-  it('ships OFF by default (enabled:false — cost-bearing job class, spec §5.7)', () => {
-    expect(parse().frontmatter.enabled).toBe(false);
+  it('ships ON by default so registered outcome evidence cannot remain permanently ungraded', () => {
+    const { frontmatter } = parse();
+    expect(frontmatter.enabled).toBe(true);
+    expect(frontmatter.description).toContain('operator-directed goal-4 Tier-1 activation');
   });
 
   it('is tier-1 supervised on haiku (wraps the deterministic grade-pass endpoint)', () => {

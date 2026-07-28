@@ -59,7 +59,7 @@ export interface CoherenceCriticalFlag {
 }
 
 /**
- * The 7 WS2 replicated stores whose per-store `enabled` (+ dryRun) is
+ * The coherence-critical replicated stores whose per-store `enabled` (+ dryRun) is
  * coherence-critical (replicated-memory reach: a non-advertising peer silently
  * drops the kind). Shipped as a CODE constant, NOT config-derived, so the
  * manifest is fleet-uniform (a fleet config with no stateSync block still
@@ -73,6 +73,7 @@ export const COHERENCE_STATE_SYNC_STORES = [
   'evolutionActions',
   'userRegistry',
   'topicOperator',
+  'classReview',
 ] as const;
 
 function stateSyncEntries(): CoherenceCriticalFlag[] {
@@ -91,6 +92,22 @@ function stateSyncEntries(): CoherenceCriticalFlag[] {
  * code-shipped. Order is stable (drives manifestHash determinism after sort).
  */
 export const COHERENCE_CRITICAL_FLAGS: CoherenceCriticalFlag[] = [
+  {
+    key: 'mutualSsh.enabled',
+    configPath: 'multiMachine.mutualSsh.enabled',
+    resolution: 'dev-gate+dryRun',
+    dryRunConfigPath: 'multiMachine.mutualSsh.dryRun',
+    readSource: 'boot',
+    guarantee: 'mutual directional SSH proof readiness — a half-enabled pool cannot establish both directions',
+  },
+  {
+    key: 'peerExecution.enabled',
+    configPath: 'multiMachine.peerExecution.enabled',
+    resolution: 'dev-gate+dryRun',
+    dryRunConfigPath: 'multiMachine.peerExecution.dryRun',
+    readSource: 'boot',
+    guarantee: 'standing peer key admission — every machine must agree whether mutually verified peers receive agent-home SSH access',
+  },
   {
     key: 'seamlessness.ws13PinReplicate',
     configPath: 'multiMachine.seamlessness.ws13PinReplicate',
@@ -144,6 +161,13 @@ export const COHERENCE_CRITICAL_FLAGS: CoherenceCriticalFlag[] = [
     resolution: 'raw',
     readSource: 'live',
     guarantee: 'whether the pool routes real traffic at all (+ the exactlyOnceIngress default it drives)',
+  },
+  {
+    key: 'sessionPool.promotionActivation',
+    configPath: 'multiMachine.sessionPool.promotionModel',
+    resolution: 'raw',
+    readSource: 'boot',
+    guarantee: 'all machines agree whether promotion is off, manual, or automatic and share the same operator ceiling',
   },
   // ownership-gated-spawn-and-judgment-within-floors §3.2.0: all three
   // pool-behavior flags are coherence-critical — a pool split on any of them
@@ -263,6 +287,7 @@ export const COHERENCE_MANIFEST_EXCLUSIONS: CoherenceManifestExclusion[] = [
   { configPath: 'multiMachine.sessionPool.inboundQueue.enabled', reason: 'per-machine durable inbound queue; its own /pool/queue loss-notices surface skew' },
   { configPath: 'multiMachine.sessionPool.holdForStability.enabled', reason: 'per-machine hold policy; trails inboundQueue by one rung, no cross-machine data guarantee' },
   { configPath: 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled', reason: 'per-machine spawn ownership check; no silent cross-machine guarantee' },
+  { configPath: 'multiMachine.sessionPool.failoverRunner.enabled', reason: 'per-machine failover-drill runner; produces this agent\'s own honest failover-E2E green into its local rollout gate, no cross-machine coherence guarantee it owns (dark, dry-run-first)' },
   { configPath: 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled', reason: 'lease self-heal reconciler; the lease/split-brain machinery owns its coherence' },
   { configPath: 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled', reason: 'lease self-heal reconciler; lease-layer owned' },
   { configPath: 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled', reason: 'lease self-heal reconciler; lease-layer owned' },
@@ -386,6 +411,14 @@ export function resolveFlagValue(entry: CoherenceCriticalFlag, view: CoherenceCo
         : (getByPath(cfg, 'multiMachine.sessionPool') as Record<string, unknown> | undefined);
       const stage = pool && typeof pool.stage === 'string' ? pool.stage : 'dark';
       return clampValue(stage);
+    }
+    case 'sessionPool.promotionActivation': {
+      const pool = getByPath(cfg, 'multiMachine.sessionPool') as Record<string, unknown> | undefined;
+      const model = pool?.promotionModel === 'auto-climb' || pool?.promotionModel === 'operator'
+        ? pool.promotionModel
+        : 'off';
+      const ceiling = typeof pool?.promotionCeiling === 'string' ? pool.promotionCeiling : 'dark';
+      return clampValue(`${model}:${ceiling}`);
     }
     case 'exactlyOnceIngress': {
       const mm = getByPath(cfg, 'multiMachine') as Record<string, unknown> | undefined;

@@ -43,6 +43,7 @@ function throwFetch(): FetchImpl {
 const ACCT = {
   id: 'claude-1',
   nickname: 'primary',
+  email: 'primary@example.test',
   provider: 'anthropic' as const,
   framework: 'claude-code' as const,
   configHome: '/home/x/.claude-primary',
@@ -152,15 +153,94 @@ describe('QuotaPoller', () => {
   // ── pollAccount lifecycle ─────────────────────────────────────────
   it('pollAccount returns a snapshot on a clean read', async () => {
     const p = new QuotaPoller({ pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x' });
-    pool.add({ ...ACCT });
+    pool.addFixture({ ...ACCT });
     const snap = await p.pollAccount(pool.get('claude-1')!);
     expect(snap?.sevenDay?.utilizationPct).toBe(71);
   });
 
+  it('attributes quota to live token identity, marks drift, and caches the oracle probe', async () => {
+    pool.addFixture({ ...ACCT, email: 'expected@example.test' });
+    pool.addFixture({
+      id: 'claude-2', nickname: 'actual', provider: 'anthropic', framework: 'claude-code',
+      configHome: '/home/x/.claude-actual', email: 'actual@example.test',
+    });
+    let probes = 0;
+    const p = new QuotaPoller({
+      pool,
+      fetchImpl: okFetch(LIVE_USAGE_BODY),
+      tokenResolver: () => 'sk-ant-oat01-x',
+      resolveSlotIdentity: async () => { probes++; return { accountId: 'claude-2', email: 'actual@example.test' }; },
+    });
+
+    await p.pollAll();
+    expect(pool.get('claude-1')?.identityDrifted).toBe(true);
+    expect(pool.get('claude-1')?.identityDrift?.actualAccountId).toBe('claude-2');
+    expect(pool.get('claude-2')?.lastQuota?.sevenDay?.utilizationPct).toBe(71);
+    await p.pollAccount(pool.get('claude-1')!);
+    expect(probes).toBe(2); // one probe per distinct slot; second claude-1 read is cached
+  });
+
+  it('self-closes drift and its residual callback on the first matching identity poll', async () => {
+    pool.addFixture({ ...ACCT, email: 'expected@example.test' });
+    pool.update(ACCT.id, {
+      identityDrifted: true,
+      identityDrift: {
+        expectedAccountId: ACCT.id, actualAccountId: 'other', slot: ACCT.configHome,
+        detectedAt: '2026-01-01T00:00:00.000Z', lastConfirmedAt: '2026-01-01T00:00:00.000Z',
+        repairState: 'owner-relogin-required',
+      },
+    });
+    const restored: Array<[string, string]> = [];
+    const p = new QuotaPoller({
+      pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x',
+      resolveSlotIdentity: async () => ({ accountId: ACCT.id, email: 'expected@example.test' }),
+      onIdentityRestored: (id, attentionId) => { restored.push([id, attentionId]); },
+    });
+    await p.pollAccount(pool.get(ACCT.id)!);
+    expect(pool.get(ACCT.id)?.identityDrifted).toBe(false);
+    expect(pool.get(ACCT.id)?.identityDrift).toBeUndefined();
+    expect(restored).toEqual([[ACCT.id, `credential-identity-drift-${ACCT.id}-2026-01-01T00:00:00.000Z`]]);
+  });
+
+  it('invalidates cached pre-repair identity so the immediate poll observes the repaired tenant', async () => {
+    pool.addFixture({ ...ACCT });
+    pool.addFixture({ ...ACCT, id: 'claude-2', configHome: '/home/x/.claude-2' });
+    let live = 'claude-2';
+    let probes = 0;
+    const p = new QuotaPoller({
+      pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x',
+      resolveSlotIdentity: async () => { probes++; return { accountId: live }; },
+    });
+    await p.pollAccount(pool.get(ACCT.id)!);
+    expect(pool.get(ACCT.id)?.identityDrifted).toBe(true);
+    live = ACCT.id;
+    p.invalidateIdentityCache([ACCT.configHome]);
+    await p.pollAccount(pool.get(ACCT.id)!);
+    expect(probes).toBe(2);
+    expect(pool.get(ACCT.id)?.identityDrifted).toBe(false);
+  });
+
   it('pollAccount returns null when the token is unresolvable', async () => {
     const p = new QuotaPoller({ pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => null });
-    pool.add({ ...ACCT });
+    pool.addFixture({ ...ACCT });
     expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
+  });
+
+  it('pollAccount surfaces an unparseable credential blob as needs-reauth', async () => {
+    const warnings: string[] = [];
+    const p = new QuotaPoller({
+      pool,
+      fetchImpl: okFetch(LIVE_USAGE_BODY),
+      tokenResolver: () => ({ reauthNeeded: true, reason: 'unparseable-credential-blob' }),
+      logger: { log: () => {}, warn: (message) => warnings.push(message) },
+    });
+    pool.addFixture({ ...ACCT });
+
+    expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
+    expect(pool.get('claude-1')!.status).toBe('needs-reauth');
+    expect(warnings).toContain(
+      '[QuotaPoller] account claude-1 → needs-reauth (unparseable-credential-blob)',
+    );
   });
 
   it('pollAccount flags needs-reauth on a 401 when the refresh token is dead', async () => {
@@ -171,7 +251,7 @@ describe('QuotaPoller', () => {
       tokenResolver: () => 'sk-ant-oat01-x',
       refresher: async () => ({ ok: false, reason: 'no-refresh-token' }),
     });
-    pool.add({ ...ACCT });
+    pool.addFixture({ ...ACCT });
     const snap = await p.pollAccount(pool.get('claude-1')!);
     expect(snap).toBeNull();
     expect(pool.get('claude-1')!.status).toBe('needs-reauth');
@@ -192,7 +272,7 @@ describe('QuotaPoller', () => {
       tokenResolver: () => 'sk-ant-oat01-EXPIRED',
       refresher: async () => ({ ok: true, accessToken: 'sk-ant-oat01-FRESH', expiresAt: 9e12, rotated: true }),
     });
-    pool.add({ ...ACCT, status: 'active' });
+    pool.addFixture({ ...ACCT, status: 'active' });
     const snap = await p.pollAccount(pool.get('claude-1')!);
     expect(snap?.sevenDay?.utilizationPct).toBe(71); // recovered: got the usage
     expect(pool.get('claude-1')!.status).toBe('active'); // NOT needs-reauth
@@ -207,14 +287,14 @@ describe('QuotaPoller', () => {
       tokenResolver: () => 'sk-ant-oat01-x',
       refresher: async () => ({ ok: true, accessToken: 'sk-ant-oat01-FRESH', expiresAt: 9e12, rotated: false }),
     });
-    pool.add({ ...ACCT });
+    pool.addFixture({ ...ACCT });
     expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
     expect(pool.get('claude-1')!.status).toBe('needs-reauth');
   });
 
   it('pollAccount returns null on a network error (no status change)', async () => {
     const p = new QuotaPoller({ pool, fetchImpl: throwFetch(), tokenResolver: () => 'sk-ant-oat01-x' });
-    pool.add({ ...ACCT, status: 'active' });
+    pool.addFixture({ ...ACCT, status: 'active' });
     expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
     expect(pool.get('claude-1')!.status).toBe('active');
   });
@@ -233,9 +313,9 @@ describe('QuotaPoller', () => {
         secondary: { usedPercent: 64, remainingPercent: 36, windowMinutes: 10080, resetsAt: 1781269200, resetsAtIso: '2026-06-12T13:00:00.000Z', resetsInSeconds: 1 },
       }),
     });
-    pool.add({ ...ACCT, id: 'claude-1' });
-    pool.add({ ...ACCT, id: 'codex-1', provider: 'openai', framework: 'codex-cli' });
-    pool.add({ ...ACCT, id: 'claude-off', status: 'disabled' }); // skipped (disabled)
+    pool.addFixture({ ...ACCT, id: 'claude-1' });
+    pool.addFixture({ ...ACCT, id: 'codex-1', provider: 'openai', framework: 'codex-cli' });
+    pool.addFixture({ ...ACCT, id: 'claude-off', status: 'disabled' }); // skipped (disabled)
     const res = await p.pollAll();
     expect(res.polled).toBe(2);
     expect(pool.get('claude-1')!.lastQuota?.sevenDay?.utilizationPct).toBe(71);
@@ -259,7 +339,7 @@ describe('QuotaPoller', () => {
         secondary: { usedPercent: 40, remainingPercent: 60, windowMinutes: 10080, resetsAt: 2, resetsAtIso: '2026-06-12T00:00:00Z', resetsInSeconds: 1 },
       }),
     });
-    pool.add({ ...ACCT, id: 'codex-reset', provider: 'openai', framework: 'codex-cli' });
+    pool.addFixture({ ...ACCT, id: 'codex-reset', provider: 'openai', framework: 'codex-cli' });
     await p.pollAll();
     expect(pool.get('codex-reset')!.lastQuota).toMatchObject({
       fiveHour: { utilizationPct: 0, resetsAt: '' },
@@ -270,7 +350,7 @@ describe('QuotaPoller', () => {
 
   it('pollAll restores a needs-reauth account to active on a clean read', async () => {
     const p = new QuotaPoller({ pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x' });
-    pool.add({ ...ACCT, status: 'needs-reauth' });
+    pool.addFixture({ ...ACCT, status: 'needs-reauth' });
     await p.pollAll();
     expect(pool.get('claude-1')!.status).toBe('active');
   });
@@ -282,7 +362,7 @@ describe('QuotaPoller', () => {
     let clock = Date.parse('2026-06-07T05:00:00Z');
     const fetchImpl: FetchImpl = async () => ({ ok: true, status: 200, json: async () => body });
     const p = new QuotaPoller({ pool, fetchImpl, tokenResolver: () => 'sk-ant-oat01-x' });
-    pool.add({ ...ACCT });
+    pool.addFixture({ ...ACCT });
 
     // Manually drive two reads with controlled measuredAt via mapUsageResponse paths:
     // first read

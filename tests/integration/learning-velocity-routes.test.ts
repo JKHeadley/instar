@@ -80,21 +80,29 @@ describe('GET /metrics/learning-velocity (integration)', () => {
         { id: 'LRN-3', source: { discoveredAt: agoIso(8) } },
       ],
     }));
-    // (2) evolution actions — JSON array under .actions, top-level createdAt
+    // (2) evolution actions — counted ON COMPLETION (ACT-1244). These fixtures
+    // previously carried only `createdAt` and were counted as learning, which is the
+    // inversion being fixed: they now count only when `completed` with a
+    // `completedAt`. The third filed-but-unfinished action must NOT count.
     fs.writeFileSync(path.join(evoDir(stateDir), 'action-queue.json'), JSON.stringify({
       actions: [
-        { id: 'ACT-1', createdAt: agoIso(10) },
-        { id: 'ACT-2', createdAt: agoIso(2) },
+        { id: 'ACT-1', createdAt: agoIso(20), status: 'completed', completedAt: agoIso(10) },
+        { id: 'ACT-2', createdAt: agoIso(9), status: 'completed', completedAt: agoIso(2) },
+        { id: 'ACT-3', createdAt: agoIso(5), status: 'pending' },
       ],
     }));
     // (3) corrections — from the SQLite ledger (mocked), detectedAt
     const res = await request(appWith([{ detectedAt: agoIso(1) }])).get('/metrics/learning-velocity?windowDays=30');
 
     expect(res.status).toBe(200);
-    expect(res.body.totalEvents).toBe(6);
+    expect(res.body.totalEvents).toBe(6); // 3 learnings + 2 COMPLETED actions + 1 correction
     expect(res.body.byType.learning).toBe(3);
     expect(res.body.byType.evolution).toBe(2);
     expect(res.body.byType.correction).toBe(1);
+    // The filed-but-unfinished action is visible as an exclusion, not silently dropped.
+    expect(res.body.evolutionActions.considered).toBe(3);
+    expect(res.body.evolutionActions.counted).toBe(2);
+    expect(res.body.evolutionActions.excluded['not-completed:pending']).toBe(1);
     expect(res.body.typeDiversity).toBe(3);
     expect(res.body.adaptabilityScore).toBeGreaterThan(0);
     expect(['accelerating', 'steady', 'declining']).toContain(res.body.trend);
@@ -113,11 +121,80 @@ describe('GET /metrics/learning-velocity (integration)', () => {
 
   it('survives a missing correctionLedger (correctionLearning off)', async () => {
     fs.writeFileSync(path.join(evoDir(stateDir), 'action-queue.json'), JSON.stringify({
-      actions: [{ id: 'ACT-1', createdAt: agoIso(3) }],
+      actions: [{ id: 'ACT-1', createdAt: agoIso(9), status: 'completed', completedAt: agoIso(3) }],
     }));
     const res = await request(appWith()).get('/metrics/learning-velocity?windowDays=30');
     expect(res.status).toBe(200);
     expect(res.body.totalEvents).toBe(1);
     expect(res.body.byType.evolution).toBe(1);
+  });
+
+  it('REFUSES to score filing as learning: the real-shaped queue counts only completions', async () => {
+    // The live inversion (ACT-1244, measured on this agent 2026-07-25): 739 of 771
+    // "learning events" were items FILED, 494 of them explicitly auto-abandoned. So
+    // the faster work was abandoned, the higher the adaptability score climbed. This
+    // fixture is that queue in miniature.
+    fs.writeFileSync(path.join(evoDir(stateDir), 'action-queue.json'), JSON.stringify({
+      actions: [
+        // the abandonment sweep's own wording — the single largest real bucket
+        { id: 'ACT-A', createdAt: agoIso(25), status: 'cancelled',
+          resolution: 'Abandoned without active tracking since creation date (3+ weeks); commitment closed' },
+        { id: 'ACT-B', createdAt: agoIso(24), status: 'cancelled',
+          resolution: 'Abandoned without active tracking since creation date (3+ weeks)' },
+        // cancelled for a real, considered reason — still not learning
+        { id: 'ACT-C', createdAt: agoIso(20), status: 'cancelled', resolution: 'Superseded by later work' },
+        { id: 'ACT-D', createdAt: agoIso(15), status: 'pending' },
+        { id: 'ACT-E', createdAt: agoIso(12), status: 'in_progress' },
+        // the ONLY thing that finished
+        { id: 'ACT-F', createdAt: agoIso(20), status: 'completed', completedAt: agoIso(4) },
+      ],
+    }));
+    const res = await request(appWith()).get('/metrics/learning-velocity?windowDays=30');
+
+    expect(res.status).toBe(200);
+    // Under the OLD rule all six counted (every action at its createdAt). Now: one.
+    expect(res.body.byType.evolution).toBe(1);
+    expect(res.body.totalEvents).toBe(1);
+
+    const acct = res.body.evolutionActions;
+    expect(acct.considered).toBe(6);
+    expect(acct.counted).toBe(1);
+    // The abandoned class is named specifically — it is the bucket the old metric
+    // scored as learning, so it must be legible rather than lumped in with the rest.
+    expect(acct.excluded['auto-abandoned']).toBe(2);
+    expect(acct.excluded['not-completed:cancelled']).toBe(1);
+    expect(acct.excluded['not-completed:pending']).toBe(1);
+    expect(acct.excluded['not-completed:in_progress']).toBe(1);
+    // The rule travels with the number.
+    expect(res.body.counting).toMatch(/count on completion/i);
+    expect(res.body.counting).toMatch(/never on filing/i);
+  });
+
+  it('a completed action with NO completedAt is excluded, not back-dated to createdAt', async () => {
+    // Counting it at createdAt would re-import the filing bias through the one door
+    // left open — a completion whose timestamp is missing is unplaceable, not free.
+    fs.writeFileSync(path.join(evoDir(stateDir), 'action-queue.json'), JSON.stringify({
+      actions: [{ id: 'ACT-1', createdAt: agoIso(3), status: 'completed' }],
+    }));
+    const res = await request(appWith()).get('/metrics/learning-velocity?windowDays=30');
+    expect(res.status).toBe(200);
+    expect(res.body.totalEvents).toBe(0);
+    expect(res.body.evolutionActions.excluded['completed-without-timestamp']).toBe(1);
+  });
+
+  it('a completion OUTSIDE the window is excluded by date, not by status', async () => {
+    // Both sides of the window boundary, so "counts completions" cannot quietly
+    // become "counts all completions ever".
+    fs.writeFileSync(path.join(evoDir(stateDir), 'action-queue.json'), JSON.stringify({
+      actions: [
+        { id: 'OLD', createdAt: agoIso(120), status: 'completed', completedAt: agoIso(90) },
+        { id: 'NEW', createdAt: agoIso(40), status: 'completed', completedAt: agoIso(5) },
+      ],
+    }));
+    const res = await request(appWith()).get('/metrics/learning-velocity?windowDays=30');
+    expect(res.body.byType.evolution).toBe(1);
+    // Both were COUNTED as candidates; the window did the excluding, and the
+    // accounting reflects that honestly rather than hiding it.
+    expect(res.body.evolutionActions.counted).toBe(2);
   });
 });

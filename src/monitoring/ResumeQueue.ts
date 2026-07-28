@@ -63,6 +63,10 @@ export interface ResumeQueueEntry {
   sessionName: string;
   tmuxSession: string;
   topicId?: number;
+  /** Threadline conversation recovered after an unbound warm worker is reaped. */
+  threadId?: string;
+  /** Canonical inbound message whose processing must be retried. */
+  threadlineMessageId?: string;
   /** Conversation-resume UUID snapshot at enqueue time (R2.6 revalidates). */
   resumeUuid?: string;
   jobSlug?: string;
@@ -185,6 +189,8 @@ export interface ResumeCandidateInput {
   sessionName: string;
   tmuxSession: string;
   topicId?: number | null;
+  threadId?: string;
+  threadlineMessageId?: string;
   jobSlug?: string;
   jobResumeOptIn?: boolean;
   resumeUuid?: string | null;
@@ -226,7 +232,8 @@ export function classifyEligibility(
   // Post-transfer closeouts: the conversation continues on the owning machine.
   if (input.reason.startsWith('topic moved')) return { eligible: false, why: 'topic-moved' };
   const topicBound = input.topicId != null;
-  if (!topicBound && !input.jobSlug) return { eligible: false, why: 'no-resume-path' };
+  const threadBound = !!input.threadId && !!input.threadlineMessageId;
+  if (!topicBound && !input.jobSlug && !threadBound) return { eligible: false, why: 'no-resume-path' };
   if (!topicBound && input.jobSlug && !input.jobResumeOptIn) {
     return { eligible: false, why: 'job-not-opted-in' };
   }
@@ -625,8 +632,9 @@ export class ResumeQueue {
     return enqueued;
   }
 
-  private stableKeyFor(input: { topicId?: number | null; jobSlug?: string; tmuxSession: string }): string {
+  private stableKeyFor(input: { topicId?: number | null; threadId?: string; jobSlug?: string; tmuxSession: string }): string {
     if (input.topicId != null) return `topic:${input.topicId}`;
+    if (input.threadId) return `thread:${input.threadId}`;
     if (input.jobSlug) return `job:${input.jobSlug}`;
     return `tmux:${input.tmuxSession}`;
   }
@@ -712,11 +720,13 @@ export class ResumeQueue {
       sessionName: input.sessionName,
       tmuxSession: input.tmuxSession,
       ...(input.topicId != null ? { topicId: input.topicId } : {}),
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+      ...(input.threadlineMessageId ? { threadlineMessageId: input.threadlineMessageId } : {}),
       ...(input.resumeUuid ? { resumeUuid: input.resumeUuid } : {}),
       ...(input.jobSlug ? { jobSlug: input.jobSlug } : {}),
       cwd: input.cwd,
       ...(input.worktreePath ? { worktreePath: input.worktreePath } : {}),
-      priorityClass: input.topicId != null ? 'interactive' : input.jobSlug ? 'job' : 'other',
+      priorityClass: input.topicId != null || input.threadId ? 'interactive' : input.jobSlug ? 'job' : 'other',
       reason: input.reason.slice(0, REASON_CAP),
       workEvidence: clampWorkEvidence(input.workEvidence),
       attempts: 0,

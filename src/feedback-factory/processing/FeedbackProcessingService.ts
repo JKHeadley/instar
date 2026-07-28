@@ -27,6 +27,8 @@ import { join } from 'node:path';
 import { JsonlFeedbackStore } from '../store/JsonlFeedbackStore.js';
 import { processUnprocessed } from '../processor/process.js';
 import type { ProcessResult } from '../processor/process.js';
+import type { Cluster } from '../processor/types.js';
+import type { FeedbackSourceGeneration, FeedbackSourceHandoff } from '../store/FeedbackSourceGenerations.js';
 
 export interface FeedbackProcessingStats {
   total: number;
@@ -34,6 +36,7 @@ export interface FeedbackProcessingStats {
   clusterCount: number;
   dispatchCount: number;
   lastWriteAt: string | null;
+  sourceLagBytes?: number;
 }
 
 export interface FeedbackProcessingServiceOptions {
@@ -55,9 +58,27 @@ export class FeedbackProcessingService {
     // OWN store instance and appends `unprocessed` rows to feedback.jsonl after
     // this service was constructed at boot. Without the reload, stats() would
     // report a snapshot frozen at construction time and mask post-boot ingest.
-    this.store.reload();
-    return this.store.stats();
+    this.store.syncExternalAppends(500);
+    return { ...this.store.stats(), sourceLagBytes: this.store.lagBytes() };
   }
+
+  /** Reloaded active-cluster snapshot for the operated readiness drain. */
+  activeClusters(): Cluster[] {
+    this.store.syncExternalAppends(500);
+    return this.store.getActiveClusters().map((cluster) => ({ ...cluster }));
+  }
+
+  hasActiveCluster(clusterId: string): boolean {
+    this.store.syncExternalAppends(500);
+    const cluster = this.store.getCluster(clusterId);
+    return Boolean(cluster && cluster.status !== 'resolved');
+  }
+
+  sourceFeedbackPath(): string { return this.store.sourceFeedbackPath(); }
+  sourceFeedbackGenerationPlan(fromGenerationId?: string | null): FeedbackSourceGeneration[] {
+    return this.store.sourceFeedbackGenerationPlan(fromGenerationId);
+  }
+  compactFeedbackSource(now?: number): FeedbackSourceHandoff | null { return this.store.compactFeedbackSource(now); }
 
   /**
    * Run one clustering+apply pass over the canonical store and return the
@@ -71,9 +92,16 @@ export class FeedbackProcessingService {
     // this reload, every pass after the initial backlog would be a permanent
     // no-op over newly-ingested reports (the exact "ingested but never clustered"
     // defect spec §191 closes).
-    this.store.reload();
+    this.store.syncExternalAppends(500);
     const result = processUnprocessed(this.store, now ?? new Date().toISOString());
-    return { result, stats: this.store.stats() };
+    return { result, stats: { ...this.store.stats(), sourceLagBytes: this.store.lagBytes() } };
+  }
+
+  /** Cluster only rows admitted by the durable SQLite source projection. */
+  processProjected(records: Array<Record<string, unknown>>, now?: string): { result: ProcessResult; stats: FeedbackProcessingStats } {
+    this.store.syncExternalAppends(500);
+    const result = this.store.withProjectedFeedbackScope(records, () => processUnprocessed(this.store, now ?? new Date().toISOString()));
+    return { result, stats: { ...this.store.stats(), sourceLagBytes: this.store.lagBytes() } };
   }
 }
 

@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-23T21:12:50.606Z",
+  "slug": "census-pending-tracker-adjudication",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 90,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "PROVENANCE_COVERAGE ships pending:ACT-NNNN trackers as source constants but validated them against the machine-local, unreplicated evolution action queue. Latent on a single-machine install; surfaced 2026-07-23 when the Mac Mini (high-water ACT-1119) flagged all 49 entries citing ACT-1193, which lives on the Laptop (high-water ACT-1211). evolutionActions stateSync cannot converge them — the journal-apply side is an explicitly unbuilt rollout stage."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

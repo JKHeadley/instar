@@ -139,4 +139,17 @@ describe('LlmQueue', () => {
     await pbg;
     await pint;
   });
+
+  it('atomically meters component budgets and reconciles actual usage', async () => {
+    const q = new LlmQueue({ maxConcurrent: 1, maxDailyCents: 100 });
+    const request = { component: 'claim-verification', estimatedInputTokens: 100, maxOutputTokens: 50,
+      estimatedCostCents: 1, hourly: { requests: 1 },
+      daily: { requests: 2, inputTokens: 1_000, outputTokens: 1_000, costCents: 10 },
+      run: async (_signal: AbortSignal, report: (usage: { inputTokens: number; outputTokens: number }) => void) => {
+        report({ inputTokens: 40, outputTokens: 10 }); return 'ok';
+      } };
+    await expect(q.enqueueMetered(request)).resolves.toBe('ok');
+    expect(q.getMeteredUsage('claim-verification')).toEqual({ requests: 1, inputTokens: 40, outputTokens: 10, costCents: 1 });
+    await expect(q.enqueueMetered(request)).rejects.toThrow(/budget exhausted/);
+  });
 });

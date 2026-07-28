@@ -90,6 +90,10 @@ export interface ClaudeOauth {
   [k: string]: unknown;
 }
 
+export type ClaudeOauthReadResult =
+  | { ok: true; oauth: ClaudeOauth }
+  | { ok: false; reason: 'missing-or-unreadable' | 'unparseable' | 'missing-oauth-block' };
+
 /**
  * A credential store for one config home. `read` returns the RAW JSON string of
  * the stored entry (so the refresher can merge-preserve every field); `write`
@@ -325,14 +329,28 @@ export async function readClaudeOauthAsync(
   configHome: string,
   store: CredentialStore = defaultCredentialStore,
 ): Promise<ClaudeOauth | null> {
+  const result = await readClaudeOauthAsyncDetailed(configHome, store);
+  return result.ok ? result.oauth : null;
+}
+
+/**
+ * Detailed non-blocking read for callers that must distinguish malformed
+ * credential JSON from an absent login. Failure never returns raw material.
+ */
+export async function readClaudeOauthAsyncDetailed(
+  configHome: string,
+  store: CredentialStore = defaultCredentialStore,
+): Promise<ClaudeOauthReadResult> {
   const raw = store.readAsync ? await store.readAsync(configHome) : store.read(configHome);
-  if (!raw) return null;
+  if (!raw) return { ok: false, reason: 'missing-or-unreadable' };
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const oauth = parsed?.claudeAiOauth;
-    return oauth && typeof oauth === 'object' ? (oauth as ClaudeOauth) : null;
+    return oauth && typeof oauth === 'object'
+      ? { ok: true, oauth: oauth as ClaudeOauth }
+      : { ok: false, reason: 'missing-oauth-block' };
   } catch {
-    return null; // @silent-fallback-ok: unparseable entry
+    return { ok: false, reason: 'unparseable' };
   }
 }
 

@@ -72,3 +72,21 @@ export function buildClassifierPrompt(facts: ExternalHogFacts, matchedClass: str
     '{"action":"leave"} if it is plausibly doing real work, or {"action":"alert"} to just flag it.',
   ].join('\n');
 }
+
+/**
+ * The zombie-classify PROMPT TEMPLATE export (benchmark-divergence-detector
+ * FD6): the exact prompt skeleton with PINNED placeholder tokens where the
+ * per-candidate facts interpolate. Derived from `buildClassifierPrompt` itself
+ * (a pure function), so any change to the prompt's static text changes this
+ * template — and therefore its FD1-canonicalized hash — which is exactly the
+ * Q0 drift signal the detector exists to raise. Statically imported by the
+ * FD6 registry (src/data/benchmarkDivergenceRegistry.ts); NEVER resolved via a
+ * file path or line number.
+ */
+export const EXTERNAL_HOG_CLASSIFIER_PROMPT_TEMPLATE: string = buildClassifierPrompt(
+  {
+    name: '{{name}}',
+    argv: '{{argv}}',
+  } as unknown as ExternalHogFacts,
+  '{{matchedClass}}',
+);

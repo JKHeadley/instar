@@ -158,7 +158,12 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
     // /a2a/inbox is the same-machine a2a transport — callers hold the TARGET
     // agent's per-agent token (from AgentRegistry), not the API bearer token,
     // so the inbox route enforces `verifyAgentToken` in its handler.
-    if (req.path === '/messages/relay-agent' || req.path === '/messages/relay-machine' || req.path === '/a2a/inbox') {
+    if (
+      req.path === '/messages/relay-agent'
+      || req.path === '/messages/relay-machine'
+      || req.path === '/a2a/inbox'
+      || req.path === '/a2a/apprenticeship/cycles'
+    ) {
       next();
       return;
     }

@@ -44,6 +44,21 @@ export const PROVENANCE_ROW_BYTE_CLAMP = 64 * 1024;
 /** How large the precomputed redacted context view may grow (chars). */
 const REDACTED_CONTEXT_CLAMP = 2_000;
 
+/**
+ * Reserved top-level context key whose value is MACHINE-LOCAL BY CONSTRUCTION.
+ *
+ * Anything under this key is stripped before `contextRedacted` is built, so it lives
+ * only in `contextFull` — the field readRedacted() omits and the cross-machine
+ * allowlist excludes. This is the ONLY sanctioned way for a content-class envelope to
+ * retain a genuine body (e.g. an outbound message being judged for correctness later)
+ * without that body reaching a served surface.
+ *
+ * Deliberately a reserved KEY rather than a per-callsite path list: the provenance log
+ * must not need to know which decision points carry content, and a new enrolling
+ * callsite must not be able to leak by forgetting to register itself somewhere.
+ */
+export const CONTENT_FULL_KEY = '_contentFull';
+
 /** Flush the append buffer at this many rows or this many ms, whichever first. */
 const FLUSH_MAX_ROWS = 50;
 const FLUSH_INTERVAL_MS = 1_000;
@@ -128,6 +143,8 @@ export interface DecisionRowInput {
   contentClass?: string;
   /** Who minted the correlation id ('router'; breaker mints never settle). */
   mintedBy?: string;
+  /** Stable identity for an automated message template; body never stored here. */
+  templateFingerprint?: string;
 }
 
 export interface ProvenanceRow {
@@ -161,6 +178,7 @@ export interface ProvenanceRow {
   promptId?: string;
   contentClass?: string;
   mintedBy?: string;
+  templateFingerprint?: string;
   /** Outcome rows only (§5.4): FD3 grade, validated at write (invalid → omitted + counted). */
   grade?: string;
   /** Outcome rows only: the grading component (the ruleId's registered owner). */
@@ -171,6 +189,15 @@ export interface ProvenanceRow {
 
 /** The HTTP-served view: everything EXCEPT the machine-local full context. */
 export type RedactedProvenanceRow = Omit<ProvenanceRow, 'contextFull'>;
+
+/** Internal, content-free projection consumed by DeferralPatternSentinel.
+ * Never HTTP-served: it exposes only timestamp, the canonical recognizer boolean,
+ * and the candidate identity hash already present in tone provenance. */
+export interface DeferralPatternProvenanceObservation {
+  observedAt: number;
+  deferralShapeDetected: boolean;
+  candidateSha256: string;
+}
 
 export interface JudgmentProvenanceLogOptions {
   /** Absolute directory, canonically `<agent>/state/judgment-provenance`. */
@@ -286,7 +313,26 @@ export class JudgmentProvenanceLog {
     }
     let contextRedacted: string;
     try {
-      contextRedacted = JSON.stringify(scrub(input.context)).slice(0, REDACTED_CONTEXT_CLAMP);
+      // CONTENT-BEARING CONTAINMENT. `contextRedacted` is a SERVED field: it is
+      // returned by readRedacted() and is on the cross-machine allowlist
+      // (REDACTED_PROVENANCE_FIELDS), so whatever lands here is readable locally AND
+      // travels to peer machines on a pool merge. The scrubbers applied to it are
+      // CREDENTIAL-shape scrubbers, not PII scrubbing — they will not remove ordinary
+      // prose.
+      //
+      // That was safe while every envelope held identity + bounded code-derived
+      // features only. A decision point that must retain genuine content for later
+      // retrospective judging (decision-input-capture) breaks that assumption, and the
+      // failure is silent: the body simply appears in a served field nobody re-audited.
+      //
+      // So the reserved top-level key `_contentFull` is machine-local BY CONSTRUCTION —
+      // stripped here before the redacted projection is built, and therefore present
+      // only in `contextFull`, which readRedacted omits. A builder that needs to retain
+      // content puts it there and nowhere else. Non-content metadata ABOUT that content
+      // (redaction kinds, truncation flags) stays in the visible envelope, because those
+      // are exactly the fields a reader needs in order to trust the row.
+      const { [CONTENT_FULL_KEY]: _contentFull, ...redactable } = input.context;
+      contextRedacted = JSON.stringify(scrub(redactable)).slice(0, REDACTED_CONTEXT_CLAMP);
     } catch {
       contextRedacted = '[unserializable-context]';
     }
@@ -309,6 +355,7 @@ export class JudgmentProvenanceLog {
       tokensIn: input.tokensIn,
       tokensOut: input.tokensOut,
       latencyMs: input.latencyMs,
+      templateFingerprint: input.templateFingerprint,
       ...(seamRow
         ? {
             correlationId: input.correlationId,
@@ -494,6 +541,71 @@ export class JudgmentProvenanceLog {
           out.push(redacted);
         } catch {
           /* @silent-fallback-ok: a torn/corrupt row is skipped — the read surface is observability. */
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Internal typed projection over the EXISTING provenance store for ACT-896.
+   * This is intentionally not a second ledger and not an HTTP surface. Corrupt,
+   * truncated, non-tone, or shape-invalid rows are skipped toward silence.
+   */
+  async readDeferralPatternObservations(opts?: {
+    limit?: number;
+    sinceMs?: number;
+  }): Promise<DeferralPatternProvenanceObservation[]> {
+    const limit = Math.min(Math.max(opts?.limit ?? 1_000, 1), 10_000);
+    const sinceMs = opts?.sinceMs;
+    await this.flush();
+    const out: DeferralPatternProvenanceObservation[] = [];
+    let files: string[];
+    try {
+      files = (await fsp.readdir(this.dir))
+        .filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f))
+        .sort()
+        .reverse();
+    } catch {
+      /* @silent-fallback-ok — absent provenance storage means no observations. */
+      return [];
+    }
+    for (const f of files) {
+      if (out.length >= limit) break;
+      let content: string;
+      try {
+        content = await fsp.readFile(path.join(this.dir, f), 'utf-8');
+      } catch {
+        /* @silent-fallback-ok — internal observability projection skips unreadable days. */
+        continue;
+      }
+      for (const line of content.split('\n').filter(Boolean).reverse()) {
+        if (out.length >= limit) break;
+        try {
+          const row = JSON.parse(line) as ProvenanceRow;
+          if (row.kind !== 'decision' || row.decisionPoint !== 'messaging-tone-gate') continue;
+          const observedAt = Date.parse(row.ts);
+          if (!Number.isFinite(observedAt) || (sinceMs !== undefined && observedAt < sinceMs)) continue;
+          const context = row.contextFull;
+          if (!context || typeof context !== 'object' || Array.isArray(context)) continue;
+          const c = context as Record<string, unknown>;
+          const candidate = c.candidate;
+          if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+          const candidateSha256 = (candidate as Record<string, unknown>).sha256;
+          if (
+            typeof c.deferralShapeDetected !== 'boolean' ||
+            typeof candidateSha256 !== 'string' ||
+            !/^[0-9a-f]{64}$/i.test(candidateSha256)
+          ) {
+            continue;
+          }
+          out.push({
+            observedAt,
+            deferralShapeDetected: c.deferralShapeDetected,
+            candidateSha256: candidateSha256.toLowerCase(),
+          });
+        } catch {
+          /* @silent-fallback-ok — internal observability projection skips torn rows */
         }
       }
     }

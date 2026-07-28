@@ -1,12 +1,12 @@
 ---
-name: Feedback-Factory Processor
-description: "Cadenced clustering pass over the canonical feedback-factory store. Runs the already-parity'd processUnprocessed pipeline via POST /feedback-factory/process: it reads unprocessed fleet reports, groups them into dedup clusters (similarity/Jaccard), auto-reopens a cluster on a possible-regression merge, and flips each processed item unprocessed→processing. Appends LOCAL JSONL only — no external action, no force-close of a curated cluster. Dev-gated dark (feedbackFactory.processing): LIVE on a development agent, the route 503s on the fleet so this job exits silently. Tier-1 supervised (this haiku job wraps the deterministic endpoint and sanity-checks the pass result against the post-pass stats). Spec docs/specs/feedback-factory-migration.md §191 (the wiring that makes the ported processor not dead code)."
+name: Feedback-Factory Operating Drain
+description: "Cadenced end-to-end feedback drain. POST /feedback-factory/drain/tick clusters canonical input, runs registered frontier-model readiness judgment inside deterministic floors, enqueues one durable outbox row per readiness epoch, and—after separate consumer promotion—creates and reads back one Initiative task. Development-agent processing/drain is live; fleet remains dark; consumer ships simulation-first. Spec: docs/specs/feedback-factory-operating-drain.md."
 schedule: "*/30 * * * *"
 priority: low
 expectedDurationMinutes: 2
 model: haiku
 supervision: tier1
-enabled: false
+enabled: true
 tags:
   - cat:feedback-factory
   - role:worker
@@ -16,20 +16,21 @@ toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
 ---
-Run one feedback-factory clustering pass. This is a mechanical, near-silent watchdog — do NOT message the user. It exists because the canonical store ingests new fleet reports continuously, but nothing clusters/triages them without a production trigger; this job IS that trigger on a cadence.
+Run one feedback-factory operating-drain tick. This is a near-silent operated cadence — do NOT message the user. The server owns every transition; this job only triggers and sanity-checks one bounded run.
 
 AUTH="${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 AGENT_ID="${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
 PORT="${INSTAR_PORT:-4042}"
+NONCE="feedback-drain-$(date +%s)-$$"
 
-1. Confirm the capability is live. Read the stats first:
-   `curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/feedback-factory/stats`
-   A 503 means the feature is dark for this agent (`feedbackFactory.processing` gated off) — exit silently, there is nothing to do. On 200 the body is `{ total, byStatus, clusterCount, dispatchCount, lastWriteAt }`. Note `byStatus.unprocessed` — that is the work in front of this pass.
+1. Confirm the operated drain is live:
+   `curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/feedback-factory/drain/status`
+   A 503 is expected only on a fleet-dark install. Read `.instar/config.json`: if `developmentAgent` is not true, exit silently. If it is true, a 503 is degradation—fail this job run so JobRun history and the server audit expose it; never treat it as healthy.
 
-2. Trigger one clustering pass:
-   `curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/feedback-factory/process`
-   The response is `{ processed, metrics: { captured, created, merged, reopened }, stats: { total, byStatus, clusterCount, dispatchCount, lastWriteAt } }`. The endpoint does the deterministic work: it reads unprocessed items + active clusters, decides merge/create per item (parity'd logic), auto-reopens on a possible-regression merge, and marks each item processed. It appends LOCAL JSONL only — it takes no external action and never force-closes a curated cluster.
+2. Trigger one bounded drain tick:
+   `curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" -H "X-Instar-Request: 1" -H "X-Instar-Request-Nonce: $NONCE" http://localhost:$PORT/feedback-factory/drain/tick`
+   A 202 response reports `{ runId, accepted, reason? }`. Concurrent triggers return the active run rather than starting a second writer. Poll the status route, bounded to 90 seconds, until `lastRun.runId` matches and `lastRun.state` is no longer `accepted` or `running`; never start a second tick while polling.
 
-3. **Tier-1 supervision (your job).** Sanity-check the pass against its own stats before concluding: `processed` should equal the number of items that were `unprocessed` going in (step 1's `byStatus.unprocessed`), and the post-pass `stats.byStatus.unprocessed` should have dropped by `processed`. `created + merged` from `metrics` should account for the processed items. If the numbers are internally inconsistent (e.g. `processed > 0` but `unprocessed` did not drop), do NOT retry-flood — note it once and exit; the next tick re-attempts.
+3. **Tier-1 supervision.** Accept terminal `succeeded` and `no-op`. A `degraded` run must carry a nonempty reason. Never retry in the same run; the durable queue and next cadence own retry. In simulation, canonical claimed/completed counts must not advance. In live mode, completed may never exceed the durable claimed/linked history or the configured batch bound.
 
-4. Exit silently. This job is just the cadence — it produces dedup-cluster signals, not user messages. Do NOT relay anything to Telegram and do NOT summarize. If a curl fails, that failure is itself recorded server-side; do not retry-flood.
+4. Exit silently. Do NOT relay anything to Telegram and do NOT summarize. The drain's durable run row, metrics, and bounded self-heal/attention path own observability.

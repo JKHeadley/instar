@@ -1,0 +1,15 @@
+{
+  "ts": "2026-07-22T19:47:00.000Z",
+  "slug": "deferral-detection-floor",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 200,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "deferral-floor: deterministic, high-precision recognizer for the premature-deferral shape (user-directed request + operational-unblock action, minus genuine-decision/credential overrides) — the structural fix for the 2026-07-22 self-unblock correction (agent asked operator to do what it could do itself). Sibling of self-stop-floor. Pure, unwired = zero runtime effect; ships signal-only + observe-only first. Additive. Built directly by Echo. tsc clean, 12/12 green, both boundaries."
+}

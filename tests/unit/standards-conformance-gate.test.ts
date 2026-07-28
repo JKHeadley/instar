@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   parseStandardsRegistry,
+  parseStandardsRegistryDetailed,
   loadStandardsRegistry,
   runRegistryCanary,
   MIN_EXPECTED_ARTICLES,
@@ -48,10 +49,66 @@ describe('StandardsRegistryParser', () => {
   it('excludes non-standards ### subheadings (Genesis, How a standard joins, etc.)', () => {
     const articles = loadStandardsRegistry(REGISTRY_PATH);
     const families = new Set(articles.map(a => a.family));
-    // Only the five standards families — never "Genesis" / "Why this exists".
+    // Structural exclusion: a `##` section only counts as a family when at least
+    // one `###` under it carries a `**Rule.**`. The prose sections never do.
     for (const f of families) {
-      expect(['The Root', 'The Substrate', 'Building', 'Shipping', 'Interaction']).toContain(f);
+      expect(['Why this exists', 'Genesis', 'Two layers', 'How a new standard joins this registry', 'The Stakes'])
+        .not.toContain(f);
     }
+  });
+
+  it('does NOT silently drop a standards family the parser was never told about', () => {
+    // Regression guard for honest-denominators instance 4 (2026-07-25): family
+    // detection was a hardcoded five-name allowlist, so "The Fractal" — a real
+    // family in the registry — had every article under it discarded with no
+    // signal anywhere. Assert BOTH that it is present now and that detection is
+    // structural, so the next family added needs no code change to be seen.
+    const { articles, diagnostics } = parseStandardsRegistryDetailed(fs.readFileSync(REGISTRY_PATH, 'utf-8'));
+    expect(diagnostics.families).toContain('The Fractal');
+    expect(articles.some(a => a.family === 'The Fractal')).toBe(true);
+
+    const invented = `## An Entirely New Family — invented in this test\n\n### Some New Standard\n**Rule.** it holds.\n`;
+    const fresh = parseStandardsRegistryDetailed(invented);
+    expect(fresh.diagnostics.families).toEqual(['An Entirely New Family']);
+    expect(fresh.articles).toHaveLength(1);
+  });
+
+  it('canary reports the denominator it checked, and says so when it could not check', () => {
+    const md = fs.readFileSync(REGISTRY_PATH, 'utf-8');
+    const { articles, diagnostics } = parseStandardsRegistryDetailed(md);
+
+    const withDiag = runRegistryCanary(articles, diagnostics);
+    expect(withDiag.completenessAssessed).toBe(true);
+    expect(withDiag.articleHeadings).toBe(diagnostics.articleHeadings);
+    expect(withDiag.articleHeadings).toBeGreaterThan(MIN_EXPECTED_ARTICLES);
+    expect(withDiag.ok).toBe(true);
+
+    // Called WITHOUT diagnostics the canary cannot assess completeness, and must
+    // report that rather than implying a clean bill of health.
+    const withoutDiag = runRegistryCanary(articles);
+    expect(withoutDiag.completenessAssessed).toBe(false);
+    expect(withoutDiag.articleHeadings).toBeNull();
+  });
+
+  it('CANARY FAILS when an article heading inside a family parses with no rule (the silent drop)', () => {
+    // The old absolute floor could not see this: 20 healthy articles + one heading
+    // silently discarded still cleared "≥ 15 parsed". The completeness check names it.
+    let md = '## Building — engineering discipline\n\n';
+    for (let i = 0; i < 20; i++) md += `### Filler ${i}\n**Rule.** r${i}.\n\n`;
+    md += '### Dropped On The Floor\nprose but no rule line\n';
+    const { articles, diagnostics } = parseStandardsRegistryDetailed(md);
+
+    expect(articles).toHaveLength(20);
+    expect(diagnostics.articleHeadings).toBe(21);
+    expect(diagnostics.droppedHeadings).toEqual(['Building › Dropped On The Floor']);
+
+    // Floor-only: passes the count check (the blind spot).
+    expect(runRegistryCanary(articles).failures.join(' ')).not.toMatch(/Dropped On The Floor/);
+    // With diagnostics: fails and names the lost heading.
+    const canary = runRegistryCanary(articles, diagnostics);
+    expect(canary.ok).toBe(false);
+    expect(canary.failures.join(' ')).toMatch(/Dropped On The Floor/);
+    expect(canary.failures.join(' ')).toMatch(/of 21 article headings/);
   });
 
   it('CANARY FAILS on a drifted registry (too few articles)', () => {

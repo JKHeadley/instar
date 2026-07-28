@@ -218,17 +218,14 @@ gap: `lastSwapAt` entries are never evicted — fixed alongside, §3.5.)
 All brakes live at the proactive DECISION chokepoint
 (`ProactiveSwapMonitor.evaluate`). The reactive path is untouched (§3.4).
 
-**Candidate-set rule (frontloaded decision Q3, §14):** UNTAGGED sessions —
-sessions whose account resolves through the DEFAULT config slot rather than an
-explicit account tag — are **excluded from the proactive candidate set
-entirely**. Proactively swapping an untagged session mutates
-`resolveDefaultAccountId`, i.e. changes which account EVERY future untagged
-spawn lands on — a background optimizer must never mutate the default-slot
-binding as a side effect (default-slot optimization is `POST
-/credentials/set-default`'s job, an explicit operator-visible lever). Reactive
-rescue of untagged sessions is unchanged (a walled untagged session still
-swaps, forced); its ledger row carries `defaultAccountChanged: true` so the
-side effect is visible, never silent.
+**Candidate-set rule (frontloaded decision Q3, §14; superseded 2026-07-22):**
+The original rule excluded untagged sessions because it assumed their swap
+mutated the global default slot. `proactive-default-account-swap.md` supersedes
+that exclusion after verifying the refresh funnel pins only the respawned
+conversation and leaves the configured default unchanged. A refreshable
+untagged session may now resolve its effective source through the default login;
+the ledger records `sourceWasUntagged: true`, never
+`defaultAccountChanged: true`. All other brakes in this spec still apply.
 
 ### 3.1 Brake (a) — the all-hot brake
 
@@ -1388,9 +1385,10 @@ instead of accepting-then-failing:
 - **I9 (a deferred intent is never stale at fire time):** every deferral
   retry re-runs the full brake pipeline; an intent invalidated by an
   account-change underneath it never executes (§4.2).
-- **I10 (default-slot integrity):** no proactive swap ever changes which
-  account the default config slot serves — untagged sessions are outside the
-  proactive candidate set by construction (§3, Q3).
+- **I10 (default-slot integrity; amended):** no proactive swap ever changes
+  which account the default config slot serves. A bound untagged session may be
+  moved only by pinning that respawned conversation to the selected account;
+  the global default and other untagged sessions remain unchanged.
 - **I11 (callerClass provenance):** `callerClass` is set only by
   server-internal call sites — no route ever populates it from request input
   (§4.2). A wire-derived `recovery` class would bypass the gate and the
@@ -1989,11 +1987,11 @@ Run on the dev agent, real pool, real sessions:
    accepted explicitly, bounded by the pre-existing 5-per-10-min refresh rate
    counter (§3.1). §3.4's wording is reconciled with the 120 s grace ("within
    `reactiveGraceMs` + one tick", not "immediately").
-3. **Q3 — untagged sessions are excluded from the proactive candidate set**
-   (§3). A background optimizer must not mutate the default-slot binding
-   (`resolveDefaultAccountId`) as a side effect; that lever is `POST
-   /credentials/set-default`. Reactive rescue of untagged sessions is
-   unchanged and its ledger row carries `defaultAccountChanged: true`.
+3. **Q3 — untagged sessions were excluded from the proactive candidate set**
+   (superseded by `proactive-default-account-swap.md`, 2026-07-22). The original
+   choice assumed a move changed where every future untagged spawn lands. The
+   actual refresh funnel pins only the moved conversation, so a bound untagged
+   session is eligible while the configured default remains unchanged.
 4. **Q4 — inbound re-injection reads the in-memory map in v1**, and the
    ledger `inbound` field is the honest tri-state
    `'reinjected'|'none'|'unknown'` (`unknown` = post-restart, or the

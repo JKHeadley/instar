@@ -89,6 +89,8 @@ const PENDING_BASELINE = [
   'TaskClassifier',
   'ResumeValidator',
   'CoherenceReviewer',
+  'GoalPriorityExtractor',
+  'AlignmentReviewer',
 ].sort();
 
 // ── Pinned argued-FALSE baseline (2026-07-02). SHRINK-ONLY: flipping a false to

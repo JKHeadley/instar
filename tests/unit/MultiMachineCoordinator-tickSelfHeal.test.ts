@@ -143,6 +143,28 @@ describe('MultiMachineCoordinator F1 — tick self-heal', () => {
     coord.stop();
   });
 
+  it('F1b watchdog: an UNINITIALIZED first-tick watermark is unknown, not a stall', () => {
+    const coord = makeCoord(dir, { tickWatchdog: { staleFactorMissedTicks: 2 } });
+    const c = coord as any;
+    c.monoNowMs = () => 1_000_000_000;
+    c.lastTickRunMonoMs = 0;
+    c.heartbeatMonitorArmedMonoMs = 1_000_000_000;
+    c.runTickWatchdog();
+    expect(c.watchdogReArmTimes.length).toBe(0);
+    coord.stop();
+  });
+
+  it('F1b watchdog: a timer armed but missing its FIRST callback eventually becomes stale', () => {
+    const coord = makeCoord(dir, { tickWatchdog: { staleFactorMissedTicks: 2 } });
+    const c = coord as any;
+    c.monoNowMs = () => 1_000_000_000;
+    c.lastTickRunMonoMs = 0;
+    c.heartbeatMonitorArmedMonoMs = 1;
+    c.runTickWatchdog();
+    expect(c.watchdogReArmTimes).toHaveLength(1);
+    coord.stop();
+  });
+
   it('F1b watchdog: SELF-DISARMS after maxReArmsPerHour re-arms', () => {
     const coord = makeCoord(dir, { tickWatchdog: { staleFactorMissedTicks: 2, maxReArmsPerHour: 3 } });
     const c = coord as any;

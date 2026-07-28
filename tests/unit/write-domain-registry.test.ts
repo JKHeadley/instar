@@ -141,6 +141,36 @@ describe('wave-1 route entries (§3.5)', () => {
     expect(reg.entryForRoute('POST', '/sessions/spawn')).toBeNull();
     expect(reg.entryForRoute('DELETE', '/attention/att-1')).toBeNull();
   });
+
+  it('classifies apprenticeship instance mutations as cluster-shared', () => {
+    const entry = reg.entryForRoute('POST', '/apprenticeship/instances/example/rung-transition');
+    expect(entry?.domain).toBe('cluster-shared');
+  });
+
+  it('the physical Playwright seat lease is machine-local outside git sync', () => {
+    for (const path of ['/playwright-profiles/seat/acquire', '/playwright-profiles/seat/release']) {
+      const entry = reg.entryForRoute('POST', path);
+      expect(entry?.domain).toBe('machine-local');
+      expect(entry?.story?.logical).toBe('per-machine-path');
+      expect(entry?.story?.onSharedGitSyncedPath).toBe(false);
+    }
+  });
+
+  it('Codex continuation mutations stay with the local owning session', () => {
+    for (const path of [
+      '/continuation/start',
+      '/continuation/123/complete',
+      '/continuation/123/stop',
+      '/continuation/stop-all',
+      '/continuation/decide',
+    ]) {
+      const entry = reg.entryForRoute('POST', path);
+      expect(entry?.domain, path).toBe('machine-local');
+      expect(entry?.story?.logical, path).toBe('git-sync-excluded');
+      expect(entry?.story?.onSharedGitSyncedPath, path).toBe(true);
+      expect(entry?.story?.fileLevel, path).toBe('git-sync-excluded');
+    }
+  });
 });
 
 describe('registry↔wiring identity (the PR-#334 dead-code lesson)', () => {

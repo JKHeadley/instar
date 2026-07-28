@@ -27,8 +27,34 @@ import path from 'node:path';
 import type { PipelineStage } from './InitiativeTracker.js';
 import { extractFrontmatter } from './SafeYaml.js';
 
+/**
+ * What a PASSING `building → merged` verdict established. The validator proves
+ * these four things (PR merged, a real merge-commit sha, that sha reachable from
+ * canonical main, CI rollup green) and until 2026-07-26 returned a bare
+ * `{ ok: true }` — one bit. So the caller could not persist what had just been
+ * checked, and the record ended up asserting `merged` while unable to say what
+ * merged it.
+ *
+ * The asymmetry is the point: a REFUSAL already carried `reason` + `code`, so the
+ * validator explained itself when it said no and said nothing when it said yes.
+ * Evidence on the success path restores the symmetry — and it is what the
+ * merged-state reconcilers consume, so without it they select nothing and their
+ * silence is indistinguishable from "no regressions found".
+ */
+export interface MergedEvidence {
+  prNumber: number;
+  /** GitHub-reported merge commit sha, format-validated above. */
+  mergeCommitOid: string;
+  /** The canonical-main ref the sha was proven reachable from — NOT assumed to
+   *  be `origin/main`, which is the agent's FORK on a dev-agent home. A later
+   *  re-check must use the SAME ref or it will contradict this verdict. */
+  mergeBaseBranch: string;
+  /** ISO instant this evidence was established. */
+  verifiedAt: string;
+}
+
 export type StageTransitionResult =
-  | { ok: true }
+  | { ok: true; evidence?: MergedEvidence }
   | { ok: false; reason: string; code: string };
 
 /**
@@ -68,7 +94,20 @@ export interface ValidationContext {
 export interface GhPrView {
   state: string;
   mergeCommit: { oid: string } | null;
-  statusCheckRollup: Array<{ conclusion?: string | null; status?: string | null; state?: string | null }>;
+  /**
+   * GitHub returns EVERY check run, including SUPERSEDED ones — a check that failed
+   * and was then re-run appears TWICE. `name`/`context` and the timestamps are needed
+   * to tell the current run from the stale one (see `ciIsGreen`).
+   */
+  statusCheckRollup: Array<{
+    conclusion?: string | null;
+    status?: string | null;
+    state?: string | null;
+    name?: string | null;
+    context?: string | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
+  }>;
 }
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -284,7 +323,21 @@ export async function validateStageTransition(
     // and passes it as `mergeBaseBranch`; this default preserves prior behavior
     // for canonical-origin installs.
     const mergeBaseBranch = ctx.mergeBaseBranch ?? 'origin/main';
-    const ancestor = ctx.gitMergeBaseIsAncestor(oid, mergeBaseBranch);
+    // "I could not check" is NOT "it is not there" (found 2026-07-25: the route's
+    // helper swallowed a SourceTreeGuard REFUSAL and returned false, so a merge that
+    // was demonstrably on main reported as unreachable — a refusal rendered as a
+    // fact). A helper that cannot complete the check must throw; that becomes a
+    // DISTINCT verdict the caller can act on, never a fabricated negative.
+    let ancestor: boolean;
+    try {
+      ancestor = ctx.gitMergeBaseIsAncestor(oid, mergeBaseBranch);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `could not verify whether mergeCommit.oid ${oid} is reachable from ${mergeBaseBranch}: ${err instanceof Error ? err.message : String(err)}`,
+        code: 'MERGE_BASE_UNVERIFIABLE',
+      };
+    }
     if (!ancestor) {
       return {
         ok: false,
@@ -295,7 +348,17 @@ export async function validateStageTransition(
     if (!ciIsGreen(view.statusCheckRollup)) {
       return { ok: false, reason: 'CI rollup is not green', code: 'CI_NOT_GREEN' };
     }
-    return { ok: true };
+    // Hand back WHAT was proven, not just THAT something was. The caller
+    // persists this onto the item so the record can name its own evidence.
+    return {
+      ok: true,
+      evidence: {
+        prNumber: ctx.prNumber,
+        mergeCommitOid: oid,
+        mergeBaseBranch,
+        verifiedAt: new Date().toISOString(),
+      },
+    };
   }
 
   // ── outline (creation default) ───────────────────────────────────
@@ -411,13 +474,64 @@ async function loadFrontmatter(
   }
 }
 
-function ciIsGreen(rollup: GhPrView['statusCheckRollup']): boolean {
-  if (!Array.isArray(rollup) || rollup.length === 0) {
+type RollupEntry = GhPrView['statusCheckRollup'][number];
+
+/** Completion time of a check run, for ordering. 0 when unknown. */
+function runTime(c: RollupEntry): number {
+  const t = Date.parse(c.completedAt ?? c.startedAt ?? '');
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/**
+ * Collapse the rollup to the LATEST run per check name.
+ *
+ * GitHub's `statusCheckRollup` returns every run of every check, INCLUDING superseded
+ * ones. A check that failed and was then re-run to green appears twice, and the failed
+ * entry never goes away. Found 2026-07-25: PR #1641 merged legitimately (branch
+ * protection saw the passing `eli16` run) yet its rollup still carried
+ * `eli16: FAILURE` from 01:43:52 alongside `eli16: SUCCESS` from 01:45:22 — four check
+ * names were duplicated. The old `ciIsGreen` iterated every entry and refused on the
+ * stale failure, so the tracker could never record a correct merge whose CI had ever
+ * been red. A superseded check-run is a stale SYMBOL; the check's current state is the
+ * latest run, which is exactly what GitHub's own merge gate uses.
+ *
+ * Two deliberate safety choices, because a dedupe must never become a way to HIDE a
+ * real failure:
+ *  - Unnamed entries (bare status contexts with neither `name` nor `context`) are keyed
+ *    individually, so none is silently collapsed into another.
+ *  - When two runs of the same name cannot be ORDERED (equal or missing timestamps),
+ *    the FAILING one wins. Unorderable runs fail closed rather than letting an
+ *    undatable success mask a red.
+ */
+function latestRunPerCheck(rollup: GhPrView['statusCheckRollup']): RollupEntry[] {
+  const byKey = new Map<string, RollupEntry>();
+  let unnamed = 0;
+  const isBad = (c: RollupEntry): boolean => {
+    const concl = (c.conclusion ?? c.state ?? '').toUpperCase();
+    const status = (c.status ?? '').toUpperCase();
+    if (status && status !== 'COMPLETED' && status !== 'SUCCESS' && status !== 'NEUTRAL') return true;
+    return Boolean(concl) && concl !== 'SUCCESS' && concl !== 'SKIPPED' && concl !== 'NEUTRAL';
+  };
+  for (const c of rollup) {
+    const name = (c.name ?? c.context ?? '').trim();
+    const key = name || `\u0000unnamed-${unnamed++}`;
+    const prev = byKey.get(key);
+    if (!prev) { byKey.set(key, c); continue; }
+    const dt = runTime(c) - runTime(prev);
+    if (dt > 0) byKey.set(key, c);
+    else if (dt === 0 && isBad(c)) byKey.set(key, c); // unorderable → the failure wins
+  }
+  return [...byKey.values()];
+}
+
+function ciIsGreen(rollupRaw: GhPrView['statusCheckRollup']): boolean {
+  if (!Array.isArray(rollupRaw) || rollupRaw.length === 0) {
     // Empty rollup = no checks defined. Per spec we treat green as
     // "no failing checks" — an empty rollup is acceptable (small repos
     // without CI). This matches `gh pr merge --auto` semantics.
     return true;
   }
+  const rollup = latestRunPerCheck(rollupRaw);
   for (const check of rollup) {
     const concl = (check.conclusion ?? check.state ?? '').toUpperCase();
     const status = (check.status ?? '').toUpperCase();

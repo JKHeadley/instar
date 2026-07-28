@@ -26,10 +26,20 @@ import { activeSpawnPollers } from '../core/SpawnCapIntelligenceProvider.js';
 import { poolPollerVerdict } from '../core/pollerCount.js';
 import { writeServeProgress } from '../core/serveProgress.js';
 import { readDoorwayRegistry } from '../core/DoorwayRegistryReader.js';
+import {
+  clampPeerFinding as clampBenchmarkPeerFinding,
+  mergeFindingsByKey as mergeBenchmarkFindingsByKey,
+  FD9_DAY_RE as BENCHMARK_DAY_RE,
+  type FindingView as BenchmarkFindingView,
+} from '../core/benchmarkDivergenceCore.js';
+import { ANALYZE_MIN_INTERVAL_MS as BENCHMARK_ANALYZE_MIN_INTERVAL_MS } from '../monitoring/BenchmarkDivergenceAnalyzer.js';
 import { getCurrentBootId } from './boot-id.js';
 import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/nobodyPollingRecovery.js';
 import { canonicalPushKey } from '../core/PrHandLease.js';
 import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
+import { QUOTA_SNAPSHOT_STALE_AFTER_MS } from '../core/QuotaPoller.js';
+import { SubscriptionAccountEmailRegistrar } from '../core/SubscriptionPool.js';
+import { CredentialIdentityOracle } from '../core/CredentialIdentityOracle.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -55,8 +65,11 @@ import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { WorkQueueRegistry } from '../core/WorkQueue.js';
+import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjection, readDoorwaySources, type CapabilityProjection } from '../core/CapabilityRegistry.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
+import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
 import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
 import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/AuthorizationRequestStore.js';
@@ -75,16 +88,18 @@ import {
   PlaywrightRegistryCorruptError,
   DEFAULT_BLOCK_MAX_BYTES as PLAYWRIGHT_BLOCK_MAX_BYTES,
 } from '../core/PlaywrightProfileRegistry.js';
+import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
 import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
-import { buildDegradedToneResult } from '../core/MessagingToneGate.js';
+import { RULE_DISPOSITIONS, buildDegradedToneResult, resolveToneGateOperatorConfig, fingerprintAutomatedTemplate } from '../core/MessagingToneGate.js';
 import type { WriteOperation, WriteToken } from '../core/StateWriteAuthority.js';
 import { writeLifelineRestartSignal } from '../core/version-skew.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
 import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
 import type { StopSignals } from '../core/CompletionEvaluator.js';
+import { CodexTaskContinuationStore, parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJournalReader.js';
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
@@ -104,10 +119,13 @@ import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
+import { decorateWithRopeCondition } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
-import { annotateDecisionOutcome, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
-import { PROVENANCE_COVERAGE } from '../data/provenanceCoverage.js';
+import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
+import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
+import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
+import { CheckInReminderReconciler } from '../monitoring/CheckInReminderReconciler.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -116,6 +134,9 @@ import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
 import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
+import { validateTurnEvidence } from '../monitoring/TurnEvidence.js';
+import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
+import { routeActionClaim, type ClaimClauseArbitration } from '../monitoring/ClaimClauseArbiter.js';
 import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
 import { APPRENTICESHIP_CYCLE_CHANNELS } from '../monitoring/ApprenticeshipCycleStore.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
@@ -147,6 +168,7 @@ import { randomUUID as cryptoRandomUUID } from 'node:crypto';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { resolveGhBinary } from '../core/resolveGhBinary.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { validateStageTransition, type ValidationContext as StageValidationContext } from '../core/StageTransitionValidator.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
@@ -246,7 +268,7 @@ import type { TopicMemory } from '../memory/TopicMemory.js';
 import type { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
 import type { ProjectMapper } from '../core/ProjectMapper.js';
 import type { CartographerTree } from '../core/CartographerTree.js';
-import { verifyMergedItemsViaGit } from '../core/ProjectRoundExecution.js';
+import { verifyMergedItemsViaGit, resolveCanonicalMainRef } from '../core/ProjectRoundExecution.js';
 import type { ProjectDriftChecker } from '../core/ProjectDriftChecker.js';
 import type { ScopeVerifier } from '../core/ScopeVerifier.js';
 import type { HighRiskAction } from '../core/ScopeVerifier.js';
@@ -269,6 +291,7 @@ import {
   DEFAULT_MAX_CONCURRENT_AUTONOMOUS,
 } from '../core/AutonomousSessions.js';
 import { AutonomousRunStore, hashPathSet, type AutonomousRunRecord } from '../core/AutonomousRunStore.js';
+import { PriorityLedger } from '../monitoring/GoalRealignment.js';
 import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import {
   runAccretionSweep,
@@ -279,10 +302,17 @@ import {
 } from '../core/ScopeAccretionSweep.js';
 import { resolveCorroboration } from '../core/ScopeAccretionCorroboration.js';
 import { ScopeAccretionRatifier } from '../core/ScopeAccretionRatifier.js';
+import {
+  runStallGateValidation,
+  readInstallProvenance,
+  degradedAcceptanceHash,
+  canonicalRowHash,
+  canonicalRowSetHash,
+} from '../core/ApprenticeshipStallGate.js';
 import type { MemoryPressureMonitor } from '../monitoring/MemoryPressureMonitor.js';
 import type { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import type { SystemReviewer } from '../monitoring/SystemReviewer.js';
-import { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
+import { CommitmentPersistenceError, CommitmentTracker } from '../monitoring/CommitmentTracker.js';
 import type { SemanticMemory } from '../memory/SemanticMemory.js';
 import type { SessionActivitySentinel } from '../monitoring/SessionActivitySentinel.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
@@ -306,11 +336,15 @@ import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
+import { resolveChannels } from '../core/channelRegistry.js';
+import { buildChannelDefinitions } from '../core/instarChannels.js';
+import { buildUserChannelDefinitions } from '../core/userChannels.js';
 import { evaluateSendGate, negotiatorLogDir } from '../threadline/NegotiatorGate.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { recordThreadMessage } from '../threadline/recordThreadMessage.js';
 import { THREAD_ID_RE } from '../threadline/ThreadLog.js';
 import { readThreadHistoryUnion, type CanonicalReadDeps, type AggregateMessage } from '../threadline/canonicalHistoryRead.js';
+import { isAuthenticatedThreadlineInbound } from '../threadline/ThreadlineReplyValidation.js';
 import { computeSymmetryState, localThreadSync, honorPeerThreadSync, type SymmetryState } from '../threadline/threadSymmetry.js';
 import { resolveSingleNegotiatorConfig, readNegotiatorCounts } from '../threadline/NegotiatorLease.js';
 import { evaluateOutboundCredentialShare } from '../threadline/CredentialShareGate.js';
@@ -329,6 +363,9 @@ import type { CoherenceGate } from '../core/CoherenceGate.js';
 import type { MessagingToneGate } from '../core/MessagingToneGate.js';
 import { isJunkPayload } from '../core/junk-payload.js';
 import { detectLocalhostLink } from '../core/localhost-link.js';
+import { RelayRefusedError } from '../core/TelegramRelay.js';
+import { scrubForStore } from '../core/durableSecretScrub.js';
+import { credentialGuardMessage, detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
@@ -708,6 +745,9 @@ export function createDeliveryFailedHandler(opts: {
 }
 
 export interface RouteContext {
+  capabilityRegistry?: CapabilityRegistryReceiver | null;
+  /** Unified work-intake registry; absent while fleet rollout is dark. */
+  workQueue?: WorkQueueRegistry | null;
   config: InstarConfig;
   /** Live-config READ handle (mtime-staleness re-reader). Routes that must
    *  honor config flips WITHOUT a restart (outbound-advisory rollback
@@ -765,6 +805,12 @@ export interface RouteContext {
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
    *  Subscription & Auth Standard). Null until an operator opts in / enrolls. */
   subscriptionPool: import('../core/SubscriptionPool.js').SubscriptionPool | null;
+  /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
+  subscriptionIdentityOracle?: {
+    resolveSlotTenant(slot: string): Promise<{ email?: string; unavailable?: boolean; reason?: string }>;
+  };
+  subscriptionEmailBinding?: import('../core/SubscriptionPool.js').SubscriptionEmailBindingAuthority;
+  subscriptionEmailBarrier?: import('../core/SubscriptionPool.js').SubscriptionEmailReconciliationBarrier;
   /** WS5.2 Account Follow-Me — cross-machine per-peer account views for depth detection. Prod-wired
    *  to the `?scope=pool` fan-out; absent ⇒ local-only (single-machine = no depth-zero peers). */
   accountFollowMePeerViews?: () => Promise<import('../core/accountFollowMeDepth.js').MachinePoolView[]>;
@@ -781,6 +827,8 @@ export interface RouteContext {
   inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
   /** EnrollmentWizard (P2.1) — mobile-first login + auto-reissue. Null until wired. */
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
+  /** Deterministic test seam after plain enrollment completion owns its id. */
+  enrollmentCompleteInFlightHook?: (id: string) => void | Promise<void>;
   /** WS5.2 R12 — Account Follow-Me revocation data-plane executor. Constructed in the server with
    *  REAL deps (cooperative local wipe + durable pending store + attention emit). Null when the
    *  server wiring did not construct it (e.g. lightweight test harnesses). The `/mandate/:id/revoke`
@@ -807,6 +855,13 @@ export interface RouteContext {
     /** B3b — the autonomous balancer (Increment B). Its `status()` is surfaced on
      *  GET /credentials/rebalancer (last pass + breaker). Optional so tests can omit it. */
     rebalancer?: import('../core/CredentialRebalancer.js').CredentialRebalancer;
+    /** Pure, credential-free dry-run plan restoring each confirmed tenant to its labelled home. */
+    repairPlan?: () => Promise<import('../core/CredentialIdentityRepairPlan.js').CredentialIdentityRepairPlan>;
+    executeRepairPlan?: () => Promise<{
+      plan: import('../core/CredentialIdentityRepairPlan.js').CredentialIdentityRepairPlan;
+      results: Array<{ move: import('../core/CredentialIdentityRepairPlan.js').CredentialRepairMove; outcome: string; reason: string }>;
+      vacateResults: Array<{ impostorSlot: string; retainedSlot: string; accountId: string; outcome: string; reason: string }>;
+    }>;
     /** Raw-blob reader for a slot (restore-enrollment coherence probe). Injectable for tests. */
     readBlob?: (slot: string) => Promise<{ raw: string; oauth: import('../core/OAuthRefresher.js').ClaudeOauth | null } | null>;
   } | null;
@@ -855,6 +910,8 @@ export interface RouteContext {
    *  read FRESH from disk). Tests inject this to control listVaultNames /
    *  hostname hermetically. When absent the route builds the default. */
   playwrightRegistry?: () => PlaywrightProfileRegistry;
+  /** Test/embedding override for the host-wide physical Playwright seat lease. */
+  playwrightSeatLease?: () => PlaywrightSeatLease;
   /** Agent-initiated session respawn. Null when no Telegram adapter is
    *  wired (v1 requires a Telegram-bound session). */
   sessionRefresh: SessionRefresh | null;
@@ -1011,6 +1068,12 @@ export interface RouteContext {
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
+  blockerLifecycleService?: import('../monitoring/BlockerLifecycleService.js').BlockerLifecycleService | null;
+  /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8/FD10)
+   *  — backs GET /benchmark-divergence (+pool), POST /benchmark-divergence/analyze,
+   *  GET /benchmark-divergence/rollup-aggregates. Null when the ledger failed;
+   *  the routes 503 when the dev-agent gate resolves the detector dark. */
+  benchmarkDivergenceAnalyzer?: import('../monitoring/BenchmarkDivergenceAnalyzer.js').BenchmarkDivergenceAnalyzer | null;
   /** Routing Control Room price authority (read-only reporting; routing-control-room-spend
    *  Increment A). Null when the spend view is dark (dev-gated). */
   routingPriceAuthority: import('../core/routingPriceAuthority.js').RoutingPriceAuthority | null;
@@ -1100,6 +1163,22 @@ export interface RouteContext {
    *  GET /feedback-factory/stats + POST /feedback-factory/process. Null when
    *  dev-gate dark (feedbackFactory.processing) → both routes 503. */
   feedbackProcessing?: import('../feedback-factory/processing/FeedbackProcessingService.js').FeedbackProcessingService | null;
+  /** Operated feedback drain, including its operator-rooted readiness authority
+   *  registry and consumer promotion record. */
+  feedbackDrain?: {
+    service: import('../feedback-factory/drain/FeedbackDrainService.js').FeedbackDrainService;
+    store: import('../feedback-factory/drain/FeedbackDrainStore.js').FeedbackDrainStore;
+    promotion: import('../feedback-factory/drain/FeedbackConsumerPromotionStore.js').FeedbackConsumerPromotionStore;
+    tickProxy: import('../feedback-factory/drain/FeedbackDrainTickProxy.js').FeedbackDrainTickProxy;
+    checkpointBackup: (trigger: 'promotion' | 'failover') => void;
+    finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
+      oldOwnerQuiesced?: boolean; splitBrainRecoveryPacket?: { incidentId: string; oldOwnerStatus: 'unreachable-or-fenced'; operatorDecisionRef: string } }) => {
+      ownerAuthorityEpoch: number; invalidatedClaims: number; abandonedRuns: number;
+      reconciliation: import('../feedback-factory/drain/FeedbackDrainStore.js').InitiativeLinkReconciliationResult;
+    };
+    isRestorePending: () => boolean;
+  } | null;
+  feedbackDrainPosture?: { state: 'dark' | 'unavailable' | 'live'; reason: 'intentionally-fleet-dark' | 'misclassified-development-install' | 'enabled-missing-canonical-data-directory' | 'enabled-missing-operated-host-owner' | 'initialization-failure' | 'live-healthy' };
   /** Cross-topic activity index (Parallel-Work Awareness Phase A). Backs GET /parallel-work/activities. */
   parallelActivityIndex?: import('../core/ParallelActivityIndex.js').ParallelActivityIndex | null;
   /** The shared intelligence provider (an IntelligenceRouter when per-component routing is wired). Backs GET /intelligence/routing. */
@@ -1124,6 +1203,9 @@ export interface RouteContext {
    *  records only). Null/absent when monitoring.correctionLearning.enabled is
    *  false (default) → /corrections 503s. */
   correctionLedger?: import('../monitoring/CorrectionLedger.js').CorrectionLedger | null;
+  classReviewStore?: import('../monitoring/ClassReviewStore.js').ClassReviewStore | null;
+  correctionClassReview?: import('../monitoring/CorrectionClassReview.js').CorrectionClassReview | null;
+  completionClaimVerifier?: import('../monitoring/CompletionClaimVerifier.js').CompletionClaimVerifier | null;
   /** BlockerLedger — the resolution-workflow + memory layer completing Principle 1.
    *  Null/absent when monitoring.blockerLedger.enabled is false (default, ships dark)
    *  → /blockers/* 503s. Powers GET /blockers, GET /blockers/:id, POST /blockers,
@@ -1155,9 +1237,14 @@ export interface RouteContext {
    *  instance-as-project registry, the retro-gate (pending→active) and the
    *  doc-as-required-artifact gate (active→complete). */
   apprenticeshipProgram?: import('../core/ApprenticeshipProgram.js').ApprenticeshipProgram | null;
+  /** Stall-coverage matrix acceptance machinery (framework-stall-coverage-matrix
+   *  §2.2). Null when the program is unavailable → matrix-acceptance routes 503. */
+  apprenticeshipMatrixAcceptance?: import('../core/ApprenticeshipMatrixAcceptance.js').MatrixAcceptanceStore | null;
   /** Apprenticeship differential-cycle store. Null when SQLite/state init fails
    *  → /apprenticeship/cycles* 503s. */
   apprenticeshipCycleStore?: import('../monitoring/ApprenticeshipCycleStore.js').ApprenticeshipCycleStore | null;
+  /** Read-only same-host peer aggregation for apprenticeship cycle evidence. */
+  apprenticeshipPeerCycleReader?: ((instanceId: string) => Promise<import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead>) | null;
   /** Observe-only overdue-cycle SLA monitor. Null when disabled/unavailable. */
   apprenticeshipCycleSlaMonitor?: import('../monitoring/ApprenticeshipCycleSlaMonitor.js').ApprenticeshipCycleSlaMonitor | null;
   /** Observe-only Gemini long-capacity-block escalation monitor. Null when disabled.
@@ -1177,6 +1264,8 @@ export interface RouteContext {
   autonomousLivenessReconciler?:
     | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
     | null;
+  /** AutonomousThroughputFloor status. Null while fleet-dark. */
+  autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
   /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
    *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
   enforcedTerminationStatus?: (() => unknown) | null;
@@ -1220,11 +1309,20 @@ export interface RouteContext {
   /** Multi-Machine Session Pool registry (§L2) — live MachineCapacity view behind
    *  GET /pool + the Machines dashboard tab. Null/absent when not wired (ships dark). */
   machinePoolRegistry?: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null;
+  /** Mutual SSH-subsystem pool health (scrubbed; no key bodies or raw addresses). */
+  mutualSshHealth?: (() => unknown) | null;
   /** Durable Inbound Message Queue engine getter — late-bound (the engine is
    *  constructed in the mesh block after the server). Null/absent or a null
    *  return = the queue is dark/gated; GET /pool/queue answers 503. */
   getInboundQueue?: (() => import('../core/QueueDrainLoop.js').QueueDrainLoop | null) | null;
   getMachineCoherence?: (() => import('../monitoring/MachineCoherenceSentinel.js').MachineCoherenceSentinel | null) | null;
+  getSingleMachineFailoverGap?: (() => import('../monitoring/SingleMachineFailoverGapDetector.js').SingleMachineFailoverGapDetector | null) | null;
+  getMissingLoginSession?: (() => import('../monitoring/MissingLoginSessionDetector.js').MissingLoginSessionDetector | null) | null;
+  /** SessionPoolFailoverRunner status getter (§Rollout, Track H) — GET
+   *  /session-pool/failover-runner. Null/absent (dev-gated dark) → the route 503s. */
+  getSessionPoolFailoverRunner?: (() => import('../core/sessionPoolFailoverRunnerConfig.js').SessionPoolFailoverRunnerStatus | null) | null;
+  /** Promotion activation; absent/off makes POST /session-pool/promote return 503. */
+  sessionPoolPromotionActivation?: import('../core/sessionPoolPromotionActivation.js').SessionPoolPromotionActivation | null;
   /** MeshRpc dispatcher (§L0) — the receive side behind POST /mesh/rpc (signed,
    *  recipient-bound, RBAC-gated m2m commands). Null/absent when not wired (dark). */
   meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher | null;
@@ -1348,7 +1446,12 @@ export interface RouteContext {
    *  current owner — local or remote — to DRAIN its live session for a
    *  transfer (finish the turn bounded, close, land the target's claim).
    *  Null/absent → the transfer route uses today's pin-and-release path. */
-  sendDrain?: ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean }>) | null;
+  sendDrain?: ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<{ ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean; claimLanded?: boolean }>) | null;
+  /** WS1.4 cross-machine consent preflight: ask the current owner whether this
+   *  topic has a live autonomous run before the holder authorizes a move. */
+  autonomousRunOnMachine?: ((machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>) | null;
+  /** Working-set acquire kick for an explicit transfer target. */
+  kickWorkingSetOnMachine?: ((machineId: string, topic: number) => void) | null;
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
   resolvePeerUrls?: (() => Array<{ machineId: string; url: string }>) | null;
@@ -1432,6 +1535,38 @@ export interface RouteContext {
   startTime: Date;
 }
 
+export type SubscriptionPoolWriteCapability =
+  | 'requiresEmailReconciliation'
+  | 'readOnlyOrNonIdentity';
+
+/**
+ * Default-deny inventory for every mutating /subscription-pool route.
+ * The companion ratchet compares this registry to the real Express surface:
+ * a new write cannot silently bypass boot identity reconciliation.
+ */
+export const SUBSCRIPTION_POOL_WRITE_CAPABILITIES: Readonly<Record<string, SubscriptionPoolWriteCapability>> =
+  Object.freeze({
+    'POST /subscription-pool': 'requiresEmailReconciliation',
+    'POST /subscription-pool/:id/repair-email': 'requiresEmailReconciliation',
+    'POST /subscription-pool/enroll': 'requiresEmailReconciliation',
+    'POST /subscription-pool/enroll/:id/complete': 'requiresEmailReconciliation',
+    'POST /subscription-pool/follow-me/enroll/:id/complete': 'requiresEmailReconciliation',
+    'POST /subscription-pool/follow-me/enroll/start': 'requiresEmailReconciliation',
+    'POST /subscription-pool/matrix/start-cell': 'requiresEmailReconciliation',
+    'DELETE /subscription-pool/:id': 'readOnlyOrNonIdentity',
+    'PATCH /subscription-pool/:id': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/enroll/:id/cancel': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/enroll/reissue-expired': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/cancel': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/enroll/:id/cancel': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/enroll/:id/submit-code': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/scan': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/follow-me/submit-code': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/poll': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/proactive-swap/check': 'readOnlyOrNonIdentity',
+    'POST /subscription-pool/swap': 'readOnlyOrNonIdentity',
+  });
+
 // Validation patterns for route parameters
 const SESSION_NAME_RE = /^[a-zA-Z0-9_-]{1,200}$/;
 const JOB_SLUG_RE = /^[a-zA-Z0-9_-]{1,100}$/;
@@ -1450,53 +1585,6 @@ function hashAuthHeader(header: unknown): string {
 }
 
 
-/**
- * Resolve the canonical-main ref a merged PR's commit must be reachable from,
- * for the projects `building → merged` gate (StageTransitionValidator).
- *
- * Default is `origin/main`. But on a dev-agent home `origin` is the agent's
- * FORK (e.g. instar-echo) while PRs merge on the UPSTREAM repo (JKHeadley/instar),
- * so origin/main never contains the merge commit → every advance failed
- * MERGE_COMMIT_UNREACHABLE. We ask gh which repo it resolves for this cwd
- * (the same repo `gh pr view` reads), then find the LOCAL remote whose URL
- * points at that repo and return `<remote>/main`. Falls back to `origin/main`
- * when gh or the remote mapping is unavailable (canonical-origin installs).
- *
- * READ-ONLY: `gh repo view` + `git remote -v` (the latter via
- * SafeGitExecutor.readSync — `remote` is a READONLY_GIT_VERB, shape-checked
- * to list/get-url only).
- */
-function resolveCanonicalMainRef(repoPath: string): string {
-  const FALLBACK = 'origin/main';
-  try {
-    const ghRepo = execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], {
-      cwd: repoPath,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    if (!ghRepo) return FALLBACK;
-    // `git remote -v` is read-only (shape-checked by readSync). Find the remote
-    // whose fetch URL contains the gh-resolved "owner/repo".
-    const remotesOut = SafeGitExecutor.readSync(['remote', '-v'], {
-      cwd: repoPath,
-      operation: 'projects.advance.resolveCanonicalMainRef',
-      encoding: 'utf-8',
-    });
-    for (const line of remotesOut.split('\n')) {
-      // format: "<name>\t<url> (fetch)"
-      const m = /^(\S+)\s+(\S+)\s+\(fetch\)/.exec(line.trim());
-      if (!m) continue;
-      const [, name, url] = m;
-      // match owner/repo with or without a trailing .git
-      if (url.includes(ghRepo) || url.includes(`${ghRepo}.git`)) {
-        return `${name}/main`;
-      }
-    }
-    return FALLBACK;
-  } catch { /* @silent-fallback-ok: resolving the canonical-main ref is best-effort — gh missing / not-a-gh-repo / git error falls back to the documented `origin/main` default (the prior behavior), which the merge-base gate then re-validates. Not a degradation: it's the conservative default this resolver exists to refine, not replace. */
-    return FALLBACK; // gh missing / not a gh repo / git error → preserve default
-  }
-}
 
 /**
  * Read-check-increment for the per-token projects-creation counter.
@@ -1721,21 +1809,150 @@ function pickDecisionQualityPointFields(row: Record<string, unknown>): Record<st
 }
 
 /**
- * Alive ACT ids (registered AND non-terminal) from the runtime evolution queue
- * — the agent-side half of the §5.6 pending-ref-dead check. null when the queue
- * file is absent/unreadable (⇒ the check is skipped honestly rather than
- * false-flagging every pending ref on an agent that has no queue yet).
+ * Alive ACT ids (registered AND non-terminal) from the runtime evolution queue,
+ * plus the queue's id HIGH-WATER MARK — the agent-side half of the §5.6
+ * pending-ref-dead check. null when the queue file is absent/unreadable (⇒ the
+ * check is skipped honestly rather than false-flagging every pending ref on an
+ * agent that has no queue yet).
+ *
+ * WHY the high-water mark (2026-07-23 false-alarm fix): PROVENANCE_COVERAGE
+ * declares its `pending:ACT-NNNN` tracker ids as SHIPPED SOURCE CONSTANTS —
+ * identical on every install — while the evolution action queue is MACHINE-LOCAL
+ * and unreplicated (the evolutionActions stateSync send side is wired but the
+ * journal-apply side is an unbuilt later rollout stage, so two machines' queues
+ * genuinely diverge and never converge). Measured 2026-07-23: `ACT-1193` is
+ * `pending` on one machine (max id ACT-1211) and simply ABSENT on its peer (max
+ * id ACT-1119) — which made that peer report all 49 pending coverage entries as
+ * dangling trackers. Nothing had been deleted; the peer had never minted an id
+ * that high.
+ *
+ * An id ABOVE the local high-water mark is therefore proof the action was minted
+ * on another machine, NOT proof it was deleted here — a categorically different
+ * (and unactionable-locally) state that must not be reported as a dead tracker.
  */
-function readLiveEvolutionActs(stateDir: string): Set<string> | null {
+export interface LiveEvolutionActs {
+  /** Registered AND non-terminal ids on THIS machine. */
+  readonly alive: ReadonlySet<string>;
+  /** Largest numeric ACT id this machine's queue has ever minted (0 = empty queue). */
+  readonly highWater: number;
+}
+
+/** Numeric suffix of an `ACT-NNNN` id; null when it does not parse. */
+export function parseActOrdinal(id: string): number | null {
+  const m = /^ACT-(\d+)$/.exec(id.trim());
+  if (!m) return null;
+  const n = Number.parseInt(m[1], 10);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * Adjudicate ONE pending coverage tracker against this machine's action queue
+ * (§5.6). Pure + exported so the decision boundary is unit-testable without the
+ * Express surface.
+ *
+ * - `alive`        — registered and non-terminal here; nothing to report.
+ * - `unverifiable` — above this machine's id high-water mark ⇒ minted on a peer
+ *                    whose queue does not replicate here. NOT a deletion.
+ * - `dead`         — within the range this machine has minted, yet absent or
+ *                    terminal ⇒ the tracker genuinely went away. This is the
+ *                    signal the check exists to give, and it is preserved.
+ *
+ * An id that does not parse keeps the strict `dead` reading so a malformed
+ * tracker still surfaces rather than hiding in the unverifiable bucket.
+ */
+export type PendingTrackerVerdict = 'alive' | 'dead' | 'unverifiable';
+
+/**
+ * A pending tracker reference, typed by KIND.
+ *
+ * WHY A KIND EXISTS (census-tracker-ref-kinds): `ACT-1193` was never a *broken*
+ * id — it is the wrong KIND of id for the job. An evolution-action id is a
+ * MACHINE-LOCAL bookkeeping handle, and `PROVENANCE_COVERAGE` is a shipped
+ * source constant that is byte-identical on every install. A per-machine handle
+ * written into a fleet-wide constant can only resolve on the one machine that
+ * minted it, so the debt check is structurally incapable of answering anywhere
+ * else. The 2026-07-23 fix stopped that reading as a DELETION (`unverifiable`
+ * instead of `dead`), which was correct — but a check that can only ever answer
+ * "I don't know" is not yet doing its job.
+ *
+ * A `backlog:` ref resolves against BACKLOG_TRACKERS — a SHIPPED SOURCE
+ * CONSTANT, byte-identical on every install. That is the whole difference.
+ *
+ * REJECTED ALTERNATIVE, recorded because it is the intuitive one and it is
+ * wrong: anchoring to a spec DOCUMENT path (`spec:<slug>`). `docs/` is excluded
+ * from the published package (`.npmignore`; absent from package.json `files[]`),
+ * so a file-existence check resolves FALSE on every fleet install — turning 49
+ * `unverifiable` entries into 49 fleet-wide false DELETIONS. That is strictly
+ * worse than the status quo and re-runs the exact false alarm the 2026-07-23 fix
+ * removed. Caught by external cross-model review, 2026-07-25.
+ */
+export type TrackerRef =
+  | { kind: 'act'; id: string }
+  | { kind: 'backlog'; key: string }
+  | { kind: 'unknown' };
+
+/**
+ * Classify a tracker ref. Shape-only — resolution is the adjudicator's job.
+ *
+ * `backlog:<key>` names an entry in BACKLOG_TRACKERS. The key is charset-clamped
+ * to the same shape the ratchet enforces, so a malformed ref parses as `unknown`
+ * (and reads `dead`) rather than silently becoming a lookup miss.
+ */
+export function parseTrackerRef(ref: string): TrackerRef {
+  const s = (ref ?? '').trim();
+  if (/^ACT-\d+$/.test(s)) return { kind: 'act', id: s };
+  const m = /^backlog:([a-z0-9][a-z0-9-]*)$/.exec(s);
+  if (m) return { kind: 'backlog', key: m[1] };
+  return { kind: 'unknown' };
+}
+
+export function adjudicatePendingTracker(
+  act: string,
+  // NULLABLE on purpose: a machine with no evolution queue on disk can still
+  // adjudicate a `backlog:` ref (it needs no queue). Before this, the CALLSITE
+  // skipped adjudication entirely when the queue was missing, which would have
+  // made every fleet-stable ref silently uncounted on exactly the installs the
+  // fleet-stable kind exists to serve.
+  liveActs: LiveEvolutionActs | null,
+): PendingTrackerVerdict {
+  const ref = parseTrackerRef(act);
+
+  if (ref.kind === 'backlog') {
+    // Pure lookup over a shipped constant: the same answer on every machine,
+    // with no filesystem and no packaging assumption. A missing key IS a real
+    // deletion — the registry ships with the code, so its absence is a fact
+    // everywhere at once rather than a local gap. `unverifiable` is therefore
+    // unreachable for this kind BY CONSTRUCTION, which is the point.
+    return backlogTrackerExists(ref.key) ? 'alive' : 'dead';
+  }
+
+  // ── ACT kind: unchanged behaviour ──────────────────────────────────────
+  // No queue readable ⇒ this machine cannot resolve a machine-local id. Report
+  // `unverifiable`, never `dead`: not-knowing must not be reported as deletion,
+  // which is the false alarm the 2026-07-23 fix removed.
+  if (liveActs === null) return 'unverifiable';
+  if (liveActs.alive.has(act)) return 'alive';
+  const ord = parseActOrdinal(act);
+  if (ord !== null && ord > liveActs.highWater) return 'unverifiable';
+  return 'dead';
+}
+
+function readLiveEvolutionActs(stateDir: string): LiveEvolutionActs | null {
   try {
     const p = path.join(stateDir, 'state', 'evolution', 'action-queue.json');
     if (!fs.existsSync(p)) return null;
     const aq = JSON.parse(fs.readFileSync(p, 'utf-8')) as { actions?: Array<{ id?: string; status?: string }> };
     const alive = new Set<string>();
+    let highWater = 0;
     for (const a of aq.actions ?? []) {
-      if (a.id && (a.status === 'pending' || a.status === 'in_progress')) alive.add(a.id);
+      if (!a.id) continue;
+      // High-water spans EVERY id the queue holds, terminal ones included — a
+      // completed/cancelled action still proves this machine minted that far.
+      const ord = parseActOrdinal(a.id);
+      if (ord !== null && ord > highWater) highWater = ord;
+      if (a.status === 'pending' || a.status === 'in_progress') alive.add(a.id);
     }
-    return alive;
+    return { alive, highWater };
   } catch {
     // @silent-fallback-ok: an unreadable queue ⇒ skip pending-ref-dead (never a
     // false "dead" flag); observe-only surface, never a throw.
@@ -1745,6 +1962,38 @@ function readLiveEvolutionActs(stateDir: string): Set<string> | null {
 
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
+
+  router.get('/capability-registry', (_req, res) => {
+    const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
+    if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
+    if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
+    const projectionFile = path.join(ctx.config.stateDir, 'capability-registry.json');
+    let projection: CapabilityProjection | null = new CapabilityRegistryWriter(projectionFile, 'local').read();
+    if (!projection) {
+      try {
+        const local = readDoorwaySources(ctx.config.projectDir, ctx.config.stateDir, new Date().toISOString(), 'local');
+        projection = { schemaVersion: 1, machineId: 'local', machineEpoch: 0, projectionSeq: 0, ...local, truncated: false, entries: local.entries } as CapabilityProjection;
+      } catch (error) {
+        DegradationReporter.getInstance().report({
+          feature: 'CapabilityRegistry.routeProjection',
+          primary: 'Durable or freshly rebuilt local capability projection',
+          fallback: 'Receiver snapshot or truthful never-observed response',
+          reason: `local doorway projection unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          impact: 'The read route omits local doorway evidence until a projection or receiver snapshot is available.',
+        });
+      }
+    }
+    const fallbackRows = ctx.capabilityRegistry.snapshot();
+    const scanState = projection?.scanState ?? (fallbackRows.length ? 'observed' : 'never-observed');
+    const capabilities = projection ? classifyProjection(projection) : fallbackRows;
+    return res.status(200).json({ advisory: true, scanState, capabilities });
+  });
+  router.get('/capability-registry/health', (_req, res) => {
+    const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
+    if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
+    if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
+    return res.status(200).json({ advisory: true, ...ctx.capabilityRegistry.health() });
+  });
 
   /**
    * Standby-write reconciliation route seam (spec §3.4): the admission check
@@ -1825,6 +2074,32 @@ export function createRoutes(ctx: RouteContext): Router {
   // routes) can reference it lexically; the gate/route logic lives with the
   // other /autonomous routes below.
   const autonomousRunStore = new AutonomousRunStore(ctx.config.stateDir);
+  const goalRealignmentLedger = new PriorityLedger({ stateDir: ctx.config.stateDir });
+
+  // Periodic Goal Re-Alignment Phase 1 pull surface. The route is the only
+  // user-visible output of this phase: ledger + candidate inbox + recent
+  // dry-run verdicts. There is deliberately no injection/action endpoint.
+  router.get('/goal-realignment', (req, res) => {
+    const config = ctx.config.monitoring?.goalRealignment;
+    if (!resolveDevAgentGate(config?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'goal realignment is dark on this agent' });
+      return;
+    }
+    const rawTopic = typeof req.query.topicId === 'string' ? req.query.topicId : undefined;
+    const topicId = rawTopic === undefined ? undefined : Number(rawTopic);
+    if (rawTopic !== undefined && (!Number.isInteger(topicId) || (topicId as number) < 0)) {
+      res.status(400).json({ error: 'topicId must be a non-negative integer' });
+      return;
+    }
+    res.json({
+      enabled: true,
+      dryRun: true,
+      cadenceMinutes: config?.cadenceMinutes ?? 60,
+      recencyDaysForNewPriorities: config?.recencyDays ?? 7,
+      priorityLifetime: 'until-explicitly-superseded-or-confirmed-addressed',
+      ...goalRealignmentLedger.overview(topicId),
+    });
+  });
 
   // Truncation detector for Telegram messages (Drop Zone integration)
   const truncationDetector = new TruncationDetector();
@@ -1925,6 +2200,177 @@ export function createRoutes(ctx: RouteContext): Router {
     | { ok: true }
     | { ok: false; status: number; reason: string; body: Record<string, unknown> };
 
+  /**
+   * Minimum override-reason length. Low ON PURPOSE — this is a "did you type
+   * anything" floor, not a quality bar. A length check cannot judge whether a
+   * reason is good; that is the bulk judge's job, later, reading the recorded
+   * text. Setting it high would only teach the agent to pad.
+   */
+  const TONE_ADVISORY_REASON_MIN = 8;
+
+  /**
+   * Record how the agent REACTED to an advisory nudge — the tone gate's first
+   * real evidence source (`tone-agent-override-v1` / `tone-agent-complied-v1`).
+   *
+   * override → the verdict is graded `wrong`; complied → `right`. Both land at
+   * the `self-report` rung, so an interested party's account can never outrank
+   * an independent grader.
+   *
+   * Silent no-op without a `decisionRef`: an outcome with nothing to join to is
+   * an orphan row that inflates volume and grades nothing. Total and
+   * fire-and-forget — observability must never break the message path.
+   */
+  /**
+   * A router-minted correlation id: `d-<uuid>` / `b-<uuid>`, optionally with a
+   * machine segment. The agent hands this back through request metadata, so it
+   * is UNTRUSTED input to a durable write — shape-check before it reaches the
+   * annotate chokepoint. (The chokepoint validates grade/rung/owner but has
+   * never had to validate a correlation id, because until this feature no
+   * agent-supplied string could reach it.)
+   */
+  /**
+   * Parse the four tone-advisory reaction fields off a request `metadata`
+   * object, clamped. One helper rather than four inline ternaries per callsite:
+   * the review found the fields plumbed into 2 of 7 outbound routes, and
+   * per-callsite duplication is exactly how that happens again.
+   */
+  function toneAdvisoryMetadata(metadata: Record<string, unknown> | undefined): {
+    toneAdvisoryAck?: string;
+    toneAdvisoryAckReason?: string;
+    toneAdvisoryDecisionRef?: string;
+    toneAdvisoryComplied?: string;
+  } {
+    const str = (v: unknown, max: number): string | undefined =>
+      typeof v === 'string' ? v.slice(0, max) : undefined;
+    return {
+      toneAdvisoryAck: str(metadata?.toneAdvisoryAck, 64),
+      toneAdvisoryAckReason: str(metadata?.toneAdvisoryAckReason, 500),
+      toneAdvisoryDecisionRef: str(metadata?.toneAdvisoryDecisionRef, 128),
+      toneAdvisoryComplied: str(metadata?.toneAdvisoryComplied, 64),
+    };
+  }
+
+  /**
+   * ── Server-side compliance correlation ──────────────────────────────────
+   *
+   * The problem this removes: an override is STRUCTURALLY enforced (the message
+   * will not send without its reason, so the `wrong` grade always lands), while
+   * compliance was an opt-in field the agent had to remember on a revised
+   * re-send. That asymmetry biases the sample toward "the gate was wrong" — the
+   * exact bias the compliance path exists to prevent — and "remember to declare
+   * it" is precisely the willpower this codebase refuses to build on.
+   *
+   * So the server remembers instead. When an advisory 422 goes out we note
+   * (topic → rule, decisionRef, text fingerprint). If the next PASSING send to
+   * that topic within the window carries DIFFERENT text, the agent revised: the
+   * original verdict is graded `right` automatically, with no agent metadata.
+   *
+   * Deliberately conservative — it grades `right` only on positive evidence of a
+   * revision (a passing send with changed text inside the window). A silent
+   * abandonment records nothing rather than being counted either way.
+   */
+  // 10 minutes, not 30: the correlation cannot distinguish "revised the nudged
+  // message" from "gave up on it and sent something unrelated next". A shorter
+  // window is the cheap discriminator — a revision follows a nudge promptly,
+  // while an unrelated message is more likely to arrive later. A similarity
+  // threshold was considered and REJECTED: a genuine rewrite in response to a
+  // nudge often shares almost no wording with the original ("I put it in
+  // docs/x.md" → "want a link or the summary here?"), so similarity would
+  // silently discard exactly the compliances worth recording.
+  const ADVISORY_PENDING_TTL_MS = 10 * 60 * 1000;
+  const ADVISORY_PENDING_MAX = 500;
+  const pendingAdvisories = new Map<number, { rule: string; decisionRef?: string; textSha: string; at: number }>();
+
+  function sha256Short(s: string): string {
+    return createHash('sha256').update(s).digest('hex').slice(0, 32);
+  }
+
+  function notePendingAdvisory(topicId: number | undefined, rule: string, decisionRef: string | undefined, text: string): void {
+    if (typeof topicId !== 'number') return;
+    // Bounded: drop the oldest rather than grow without limit.
+    if (pendingAdvisories.size >= ADVISORY_PENDING_MAX) {
+      const oldest = [...pendingAdvisories.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (oldest) pendingAdvisories.delete(oldest[0]);
+    }
+    pendingAdvisories.set(topicId, { rule, decisionRef, textSha: sha256Short(text), at: Date.now() });
+  }
+
+  /** Returns the reaction to record, if this passing send revises a pending advisory. */
+  function takeRevisionOf(topicId: number | undefined, text: string): { rule: string; decisionRef?: string } | null {
+    if (typeof topicId !== 'number') return null;
+    const p = pendingAdvisories.get(topicId);
+    if (!p) return null;
+    if (Date.now() - p.at > ADVISORY_PENDING_TTL_MS) {
+      pendingAdvisories.delete(topicId);
+      return null;
+    }
+    // Identical text is not a revision — it is a resend, and a resend that
+    // happens to pass is NOT evidence the gate was right.
+    if (sha256Short(text) === p.textSha) return null;
+    pendingAdvisories.delete(topicId);
+    return { rule: p.rule, decisionRef: p.decisionRef };
+  }
+
+  function isPlausibleDecisionRef(ref: string): boolean {
+    return /^[db]-[0-9a-f]{8}(-[0-9a-f-]{8,})?[0-9a-f-]*$/i.test(ref) && ref.length <= 128;
+  }
+
+  function recordToneAdvisoryReaction(input: {
+    decisionRef?: string;
+    rule: string;
+    reaction: 'override' | 'complied';
+    reason?: string;
+    /**
+     * How a `complied` was established. `declared` = the agent named the rule it
+     * accepted; `inferred` = the SERVER correlated a revised re-send after a
+     * nudge. The two are NOT equally strong — an inferred credit cannot tell a
+     * revision from an unrelated next message — so the distinction is RECORDED
+     * on the row rather than flattened. A later judge can weight or discard the
+     * inferred ones; it cannot recover a distinction that was never written down.
+     */
+    derivation?: 'declared' | 'inferred';
+  }): void {
+    try {
+      if (!input.decisionRef || !isPlausibleDecisionRef(input.decisionRef)) return;
+      const ref = input.decisionRef;
+      const reaction = input.reaction;
+      const rule = input.rule;
+      const derivation = input.derivation;
+      // The reason IS the evidence, and it is agent-authored free text landing
+      // in two durable stores. The chokepoint's own scrub is weaker than the
+      // pattern set this very change treats as authoritative (it misses a
+      // 20-char AWS key), so scrub with the strong list HERE before handing it
+      // over. A guard that walls a credential in the message body while storing
+      // one from the reason field would be theatre.
+      const note = input.reason ? scrubForStore(input.reason).text.slice(0, 500) : undefined;
+      // ── Off the send path ────────────────────────────────────────────────
+      // `upsertOutcome` is a synchronous better-sqlite3 transaction that
+      // recomputes the whole (decision_point, day) rollup twice over a window-
+      // function view SQLite cannot push a predicate into. Measured: ~3ms at
+      // today's 1.4k rows, ~80ms at 60k, ~190ms at 120k — and this change puts
+      // the FIRST high-frequency conversational path in front of it. The result
+      // is discarded either way, so there is no reason for the operator's reply
+      // latency to carry a growing rollup recompute.
+      setImmediate(() => {
+        try {
+          annotateDecisionOutcome({
+            correlationId: ref,
+            ruleId: reaction === 'override' ? 'tone-agent-override-v1' : 'tone-agent-complied-v1',
+            gradedBy: { component: 'ToneGateAdvisory' },
+            grade: reaction === 'override' ? 'wrong' : 'right',
+            decisionPoint: DP_MESSAGING_TONE_GATE,
+            ...(note ? { evidenceNote: note } : {}),
+            evidence: { reaction, rule, ...(derivation ? { derivation } : {}) },
+          });
+        } catch {
+          /* @silent-fallback-ok — recording a reaction must never affect delivery */
+        }
+      });
+    } catch {
+      /* @silent-fallback-ok — recording a reaction must never affect delivery */
+    }
+  }
+
   async function evaluateOutbound(
     text: string,
     channel: string,
@@ -1944,6 +2390,31 @@ export function createRoutes(ctx: RouteContext): Router {
       // forgetting to opt in. Also gated by the global failClosedOnExhaustion
       // kill-switch (false reverts every path to fail-open without a deploy).
       failClosedOnBudgetTimeout?: boolean;
+      /**
+       * The FULL rule id the sender explicitly acknowledges (advisory-rule
+       * override, operator directive 2026-07-18). When it matches a cited
+       * ADVISORY rule, the message is delivered unchanged and the override is
+       * RECORDED (decision log + acked-advisory audit) — a signal for the
+       * decision-quality meter, never authority. Never overrides a blocking rule.
+       */
+      toneAdvisoryAck?: string;
+      /**
+       * WHY the agent is overriding — REQUIRED alongside `toneAdvisoryAck`.
+       * Recorded as the evidence note on the `tone-agent-override-v1` outcome.
+       */
+      toneAdvisoryAckReason?: string;
+      /**
+       * The `decisionRef` returned on the advisory response, joining this
+       * reaction to the exact verdict it answers. Falls back to the current
+       * review's own id when omitted (a re-review of the same text).
+       */
+      toneAdvisoryDecisionRef?: string;
+      /**
+       * The rule the agent ACCEPTED: set on the revised re-send so a good catch
+       * is graded `right`. Without it, compliance is invisible and the meter
+       * only ever sees the overrides — a systematically unflattering sample.
+       */
+      toneAdvisoryComplied?: string;
     },
   ): Promise<OutboundEvaluation> {
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
@@ -1968,6 +2439,31 @@ export function createRoutes(ctx: RouteContext): Router {
               `If the operator explicitly asked for the raw local URL, resend with metadata.allowLocalhostLink: true.`,
             blockedBy: 'localhost-link-guard',
             match: localLink.match,
+          },
+        };
+      }
+    }
+
+    // ── Live-credential hard wall (operator directive 2026-07-19) ──────────
+    // The ONE non-overridable outbound check, and the precondition that makes
+    // the advisory migration safe: every LLM judgment became an overridable
+    // nudge, so the thing that must never be overridable moved to a
+    // deterministic guard. Runs BEFORE the authority — like the localhost-link
+    // guard — so it holds on installs with no gate configured, during a
+    // provider outage, and under spawn-cap saturation. No `metadata` escape
+    // hatch exists by design; the error names the credential CLASS only.
+    {
+      const cred = detectOutboundCredential(text);
+      if (cred.detected && cred.kind) {
+        return {
+          ok: false,
+          status: 422,
+          reason: 'credential-exposure-guard',
+          body: {
+            error: credentialGuardMessage(cred.kind),
+            blockedBy: 'credential-exposure-guard',
+            credentialKind: cred.kind,
+            overridable: false,
           },
         };
       }
@@ -2232,9 +2728,11 @@ export function createRoutes(ctx: RouteContext): Router {
       // single-human-operator), and decide whether an availability failure should
       // DELIVER (operator's own channel, 'tiered' mode, not dryRun) vs HOLD.
       const recipientClass = resolveToneRecipientClass(ctx.topicOperatorStore, options.topicId);
-      const _toneCfg = (ctx.config as {
-        messaging?: { toneGate?: { failClosedOnExhaustion?: boolean; failClosedMode?: 'always' | 'tiered' | 'never'; toneTierDryRun?: boolean } };
-      }).messaging?.toneGate;
+      // Single wiring point (tone-gate capture wiring fix): the top-level
+      // toneGate block via the shared resolver — the old inlined
+      // messaging?.toneGate read here was the second copy of the knob list
+      // against the structurally-dead location (messaging is an array).
+      const _toneCfg = resolveToneGateOperatorConfig(ctx.config);
       const _toneMode: 'always' | 'tiered' | 'never' =
         _toneCfg?.failClosedMode ?? (_toneCfg?.failClosedOnExhaustion === false ? 'never' : 'always');
       const operatorTierDeliver =
@@ -2255,8 +2753,14 @@ export function createRoutes(ctx: RouteContext): Router {
       const budgetFailClosed = !operatorTierDeliver && perCallAllowsClosed && globalFailClosed !== false;
       const budgetDegrade =
         budgetFailClosed && globalFailClosed !== true
-          ? (latencyMs: number) => buildDegradedToneResult(text, latencyMs, 'budget-timeout')
+          ? (latencyMs: number) =>
+              // Same disposition as review()'s fast-throw degrade: the SLOW and
+              // FAST manifestations of one outage must not disagree about
+              // whether a caught artifact is a nudge or a wall.
+              buildDegradedToneResult(text, latencyMs, 'budget-timeout', _toneCfg?.advisoryMigration === true)
           : undefined;
+      const templateFingerprint =
+        options.messageKind === 'automated' ? fingerprintAutomatedTemplate(text) : undefined;
       const result = await reviewWithinBudget(
         ctx.messagingToneGate.review(text, {
           channel,
@@ -2264,6 +2768,7 @@ export function createRoutes(ctx: RouteContext): Router {
           signals,
           targetStyle: ctx.config.messagingStyle,
           messageKind: options.messageKind,
+          templateFingerprint,
           agentState,
           recipientClass,
           // Undefined in observe-only mode (the default) and on every uncertainty,
@@ -2296,7 +2801,177 @@ export function createRoutes(ctx: RouteContext): Router {
         result,
       });
 
+      // ── Compliance credit ────────────────────────────────────────────────
+      // The revised re-send passed → the ORIGINAL verdict is graded `right`.
+      // Recording only overrides would measure the gate exclusively through the
+      // cases the agent disputed: a sample guaranteed to look worse than the
+      // gate is.
+      //
+      // The SERVER correlates this (see notePendingAdvisory) so it does not
+      // depend on the agent remembering two metadata fields across a revise
+      // cycle — the override path is structurally enforced, and an opt-in
+      // counterpart would leave the sample permanently skewed. The explicit
+      // `toneAdvisoryComplied` remains honored as a direct declaration.
+      if (result.pass) {
+        const revised = takeRevisionOf(options.topicId, text);
+        if (options.toneAdvisoryComplied) {
+          recordToneAdvisoryReaction({
+            decisionRef: options.toneAdvisoryDecisionRef ?? revised?.decisionRef,
+            rule: options.toneAdvisoryComplied,
+            reaction: 'complied',
+            derivation: 'declared',
+          });
+        } else if (revised) {
+          recordToneAdvisoryReaction({
+            decisionRef: revised.decisionRef,
+            rule: revised.rule,
+            reaction: 'complied',
+            derivation: 'inferred',
+          });
+        }
+      }
+
       if (!result.pass) {
+        // ── Advisory disposition (operator directive 2026-07-18, topic 29723) ──
+        // An advisory-rule citation is a NUDGE, never a terminal block: the
+        // message is returned to the AGENT (not sent, not dropped) with the
+        // pitfall named, and the agent holds the ultimate decision — revise, or
+        // resend unchanged with metadata.toneAdvisoryAck = "<rule>" to
+        // acknowledge; the override is RECORDED (a decision-quality signal,
+        // never authority). A blocking rule can NEVER be overridden this way.
+        // ── The evidence-capturability invariant ─────────────────────────────
+        // NEVER trade authority for evidence we are not collecting.
+        //
+        // The migration's entire justification is that an overridable nudge
+        // produces the disagreement data a hard block cannot. That bargain is
+        // void whenever the reaction could not actually be recorded, and there
+        // are two independent ways for that to be true — both reachable in the
+        // DEFAULT configuration, which is what makes this a real hazard rather
+        // than a theoretical one:
+        //
+        //   1. The quality seam is dark or dry-run. `provenance.uniformSeam` is
+        //      a SEPARATE gate from `toneGate.advisoryMigration`, and its dryRun
+        //      DEFAULTS TRUE — so flipping the migration on without it would
+        //      hand out every loosening and record nothing.
+        //   2. No `decisionRef` was minted. The budget-timeout degrade builds
+        //      its verdict in the route, outside the gate, where the router's
+        //      correlation id is unreachable — precisely the path that fires
+        //      under load.
+        //
+        // In either case the verdict falls back to a BLOCK. That is the safe
+        // direction (it preserves today's behaviour rather than relaxing it),
+        // and it makes the migration self-limiting: it can only ever be as live
+        // as its own evidence collection.
+        //
+        // SCOPE: only a MIGRATION-derived advisory is subject to this. A rule
+        // whose BASELINE disposition is already advisory (B21, which shipped
+        // that way in the correction-derived-hardening work) never made the
+        // evidence bargain — it was always simply the agent's call — so
+        // demoting it here would silently harden a shipped, working behaviour
+        // on every install where the quality seam is dark. That would be a
+        // regression introduced by a safety check, which is its own bug class.
+        if (
+          result.advisory === true &&
+          RULE_DISPOSITIONS[result.rule] !== 'advisory' &&
+          (!result.decisionRef || !decisionQualityRecordingLive())
+        ) {
+          logToneGateDecision({
+            text,
+            channel,
+            topicId: options.topicId,
+            signals,
+            result: { ...result, advisory: false, advisoryUnrecordable: true },
+          });
+          return {
+            ok: false,
+            status: 422,
+            reason: 'tone-gate-blocked',
+            body: {
+              error: 'tone-gate-blocked',
+              rule: result.rule,
+              issue: result.issue,
+              suggestion: result.suggestion,
+              // Named, never silent: the operator can see WHY a nudge came back
+              // as a wall (No Silent Degradation).
+              advisoryUnavailable: !result.decisionRef
+                ? 'no-decision-ref'
+                : 'quality-recording-not-live',
+              latencyMs: result.latencyMs,
+            },
+          };
+        }
+        if (result.advisory === true) {
+          if (options.toneAdvisoryAck === result.rule) {
+            // The override REASON is structurally required, not requested. The
+            // whole point of the migration is the evidence: an override with no
+            // recorded reason is an ungradeable event, and "remember to explain
+            // yourself" is exactly the willpower this codebase refuses to rely
+            // on. So a reasonless ack is refused and the message stays unsent.
+            const reason = (options.toneAdvisoryAckReason ?? '').trim();
+            if (reason.length < TONE_ADVISORY_REASON_MIN) {
+              return {
+                ok: false,
+                status: 422,
+                reason: 'tone-gate-advisory-reason-required',
+                body: {
+                  error: 'tone-gate-advisory-reason-required',
+                  notSent: true,
+                  rule: result.rule,
+                  howToProceed:
+                    `The override needs a reason: re-send with metadata.toneAdvisoryAck = "${result.rule}" AND ` +
+                    `metadata.toneAdvisoryAckReason = a short sentence on why the nudge is wrong here. ` +
+                    `It is recorded as the evidence that grades this check.`,
+                },
+              };
+            }
+            const overridden = {
+              ...result,
+              advisoryOverridden: true,
+              overrideReasonHead: scrubForStore(reason).text.slice(0, 120),
+            };
+            logToneGateDecision({
+              text,
+              channel,
+              topicId: options.topicId,
+              signals,
+              result: overridden,
+            });
+            recordToneAdvisoryReaction({
+              decisionRef: options.toneAdvisoryDecisionRef ?? result.decisionRef,
+              rule: result.rule,
+              reaction: 'override',
+              reason,
+            });
+            return { ok: true };
+          }
+          // Remember it so a later revised send is credited WITHOUT the agent
+          // having to carry metadata back (the asymmetry fix).
+          notePendingAdvisory(options.topicId, result.rule, result.decisionRef, text);
+          return {
+            ok: false,
+            status: 422,
+            reason: 'tone-gate-advisory',
+            body: {
+              error: 'tone-gate-advisory',
+              notSent: true,
+              rule: result.rule,
+              issue: result.issue,
+              suggestion: result.suggestion,
+              // Handed back so the resend can JOIN its reaction to this exact
+              // decision. Without it an override is an orphan the grader can
+              // never attach to the verdict it disputes.
+              ...(result.decisionRef ? { decisionRef: result.decisionRef } : {}),
+              howToProceed:
+                `ADVISORY — the message was NOT sent, and the decision is yours. Either (a) revise and re-send, adding ` +
+                `metadata.toneAdvisoryComplied = "${result.rule}"` +
+                (result.decisionRef ? ` and metadata.toneAdvisoryDecisionRef = "${result.decisionRef}"` : '') +
+                ` so the check gets credit for a catch; or (b) re-send unchanged with metadata.toneAdvisoryAck = ` +
+                `"${result.rule}" plus metadata.toneAdvisoryAckReason explaining why the nudge is wrong here. ` +
+                `Both are recorded — they are how this check learns whether it is any good.`,
+              latencyMs: result.latencyMs,
+            },
+          };
+        }
         return {
           ok: false,
           status: 422,
@@ -2333,6 +3008,10 @@ export function createRoutes(ctx: RouteContext): Router {
       allowLocalhostLink?: boolean;
       messageKind?: MessageKind;
       failClosedOnBudgetTimeout?: boolean;
+      toneAdvisoryAck?: string;
+      toneAdvisoryAckReason?: string;
+      toneAdvisoryDecisionRef?: string;
+      toneAdvisoryComplied?: string;
     },
   ): Promise<boolean> {
     // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
@@ -2396,7 +3075,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       await ctx.telegram.sendToTopic(updatesTopicId, text);
       return { ok: true };
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — structured failure is returned to the caller
       return { ok: false, reason: err instanceof Error ? err.message : 'send-error' };
     }
   }
@@ -2681,6 +3360,22 @@ export function createRoutes(ctx: RouteContext): Router {
         // failure so it is AUDITED, never silent (the No-Silent-Degradation
         // reconciliation rests on this being observable).
         failedOpenOperatorChannel: entry.result.failedOpenOperatorChannel || false,
+        // ── Advisory migration audit (ALWAYS ON) ──────────────────────────
+        // The override is the one event this whole feature exists to observe,
+        // and until this line existed an override logged BYTE-IDENTICALLY to
+        // the verdict it overrode. The structured evidence row is the rich
+        // record, but it lives behind a separate feature gate that defaults to
+        // recording nothing — so the audit that must never be absent belongs
+        // HERE, on the unconditional stderr line, not there.
+        advisory: entry.result.advisory || false,
+        advisoryOverridden: entry.result.advisoryOverridden || false,
+        // Present only when the advisory disposition was withdrawn because its
+        // evidence could not be captured — names the reason rather than
+        // silently reverting to a wall.
+        advisoryUnrecordable: entry.result.advisoryUnrecordable || false,
+        // A bounded, scrubbed head of the override reason. Enough to audit that
+        // a reason existed and roughly what it said; never the whole field.
+        overrideReasonHead: entry.result.overrideReasonHead ?? null,
         latencyMs: entry.result.latencyMs,
         signals: {
           junk: entry.signals.junk?.detected ?? null,
@@ -3134,7 +3829,7 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({ contextText: '', source: 'no-recall', elapsedMs: 0, resultsCount: 0, cacheKey: '' });
       return;
     }
-    const result = recall.recall({ userMessage, sessionId });
+    const result = await recall.recall({ userMessage, sessionId });
     res.json(result);
   });
 
@@ -3238,7 +3933,18 @@ export function createRoutes(ctx: RouteContext): Router {
         });
       }
     } catch { /* Layer 2 is a belt — never let it break the hot path */ }
-    res.json(state);
+    res.json({
+      ...state,
+      breaker: ctx.unjustifiedStopGate?.breakerState() ?? null,
+    });
+  });
+
+  router.post('/internal/stop-gate/reset-breaker', (_req, res) => {
+    if (!ctx.unjustifiedStopGate) {
+      res.status(503).json({ error: 'Stop-gate authority is not initialized' });
+      return;
+    }
+    res.json({ reset: true, breaker: ctx.unjustifiedStopGate.resetBreaker() });
   });
 
   router.get('/internal/stop-gate/kill-switch', (_req, res) => {
@@ -4972,12 +5678,93 @@ export function createRoutes(ctx: RouteContext): Router {
     recordMetric: (o) => scopeAccretionMetric(o, 'ratification'),
     log: (m) => console.warn(m),
   });
+  // ── Stall-coverage matrix acceptance helpers (framework-stall-coverage-matrix §2.2) ──
+  // The CURRENT matrix state for an instance: on a fleet (no-source) install
+  // the degraded verdict hash; else the whole-matrix content hash + the parsed
+  // rows keyed by rowId. Used at mint AND re-run at bind time for every scope
+  // (accept-then-edit voids the challenge).
+  type MatrixRowLike = Parameters<typeof canonicalRowHash>[0];
+  const resolveMatrixState = (
+    instanceId: string,
+    framework: string,
+  ):
+    | { kind: 'degraded'; contentHash: string }
+    | { kind: 'source'; contentHash: string; rowsById: Map<string, MatrixRowLike> }
+    | null => {
+    try {
+      const logPath = path.join(ctx.config.stateDir, 'logs', 'apprenticeship-decisions.jsonl');
+      const prov = readInstallProvenance(logPath);
+      if (prov.ok && prov.installClass === 'fleet') {
+        return { kind: 'degraded', contentHash: degradedAcceptanceHash(instanceId, framework) };
+      }
+      const out = runStallGateValidation({
+        repoRoot: ctx.config.projectDir,
+        framework,
+        nowIso: new Date().toISOString(),
+      });
+      if (out.fileMissing || !out.result) return null;
+      const rowsById = new Map<string, MatrixRowLike>();
+      for (const r of out.rawRows ?? []) {
+        if (typeof r.class === 'string') rowsById.set(`${framework}:${r.class}`, r);
+      }
+      return { kind: 'source', contentHash: out.result.contentHash, rowsById };
+    } catch {
+      // @silent-fallback-ok — null = "nothing enumerable"; the routes answer an
+      // explicit 409 / hash-mismatch refusal on it, never a silent success.
+      return null;
+    }
+  };
+  const ROW_ID_RE = /^[a-z0-9-]+:[a-z0-9-]+$/;
+  const RULE_RE = /^[a-z0-9-]{1,64}$/;
+  /** The CURRENT content hash for a challenge's SCOPE (Decision 20 binding
+   *  granularity) — recomputed at bind time so accept-then-edit voids. */
+  const resolveChallengeCurrentHash = (challenge: {
+    instanceId: string; framework: string; scope: string; rowIds: string[];
+  }): string | null => {
+    const state = resolveMatrixState(challenge.instanceId, challenge.framework);
+    if (!state) return null;
+    if (challenge.scope === 'degraded') return state.kind === 'degraded' ? state.contentHash : null;
+    if (state.kind !== 'source') return null;
+    if (challenge.scope === 'whole-set') return state.contentHash;
+    if (challenge.scope === 'rows') {
+      const entries: Array<{ rowId: string; row: MatrixRowLike }> = [];
+      for (const id of challenge.rowIds) {
+        const row = state.rowsById.get(id);
+        if (!row) return null;
+        entries.push({ rowId: id, row });
+      }
+      return canonicalRowSetHash(entries);
+    }
+    if (challenge.scope === 'override') {
+      const row = challenge.rowIds.length === 1 ? state.rowsById.get(challenge.rowIds[0]) : undefined;
+      return row ? canonicalRowHash(row) : null;
+    }
+    return null;
+  };
+  // Conversational bind (mirrors the ratifier's reply-anchor mechanic): a
+  // verified-operator reply onto a recorded enumeration message binds the
+  // challenge. Signal-only — fire-and-forget on both ingress paths.
+  const observeMatrixAcceptanceInbound = (evt: {
+    topicId: number; text: string; senderUid: string; messageId: number; replyToMessageId?: number;
+  }): void => {
+    const store = ctx.apprenticeshipMatrixAcceptance;
+    if (!store) return;
+    void store.observeInbound(evt, {
+      getOperatorUid: (topicId: number) => ctx.topicOperatorStore?.getOperator(topicId)?.uid ?? null,
+      resolveCurrentContentHash: (challenge) => resolveChallengeCurrentHash(challenge),
+      ack: async (topicId: number, text: string) => {
+        if (ctx.telegram) await ctx.telegram.sendToTopic(topicId, text);
+      },
+    });
+  };
+
   if (ctx.telegram) {
     // Direct-poll ingress (the server long-polls Telegram itself, R45). The
-    // lifeline-forward ingress fires the same observer inside
+    // lifeline-forward ingress fires the same observers inside
     // POST /internal/telegram-forward below.
     ctx.telegram.onScopeAccretionInbound = (evt) => {
       void scopeAccretionRatifier.observeInbound(evt);
+      observeMatrixAcceptanceInbound(evt);
     };
   }
 
@@ -5061,6 +5848,96 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(409).json({ ok: false, error: 'runId mismatch', currentRunId: rec.runId });
       return;
     }
+    const rawRealcheck = body.realcheck;
+    const rawRealcheckRow = rawRealcheck && typeof rawRealcheck === 'object'
+      ? rawRealcheck as Record<string, unknown>
+      : null;
+    const realcheckPayloadValid = rawRealcheckRow?.configured === false || (
+      rawRealcheckRow?.configured === true && (rawRealcheckRow.outcome === 'pass' || rawRealcheckRow.outcome === 'fail')
+    );
+    const realcheck = rawRealcheckRow?.configured === true && realcheckPayloadValid
+      ? {
+          configured: true as const,
+          outcome: rawRealcheckRow.outcome as 'pass' | 'fail',
+          ...(typeof rawRealcheckRow.exitCode === 'number' && Number.isFinite(rawRealcheckRow.exitCode)
+            ? { exitCode: Math.max(-1, Math.min(255, Math.trunc(rawRealcheckRow.exitCode))) }
+            : {}),
+        }
+      : { configured: false as const };
+    const terminal = body.terminal !== false;
+    const correlationId = rec.lastCompletionCorrelationId;
+    const priorObservation = correlationId ? rec.realcheckOutcomeByCorrelation?.[correlationId] : undefined;
+    let realcheckAnnotation = 'skipped-unconfigured';
+    if (body.met !== true) {
+      realcheckAnnotation = 'skipped-not-met';
+    } else if (realcheck.configured && priorObservation && priorObservation.outcome !== realcheck.outcome) {
+      realcheckAnnotation = 'conflicting-observation';
+    } else if (realcheck.configured && priorObservation?.applied) {
+      realcheckAnnotation = 'duplicate-observation';
+    } else if (rec.status !== 'active' && !(realcheck.configured && priorObservation && !priorObservation.applied)) {
+      realcheckAnnotation = 'skipped-terminal-record';
+    } else {
+      const observedAtMs = Date.parse(rec.lastCompletionCorrelationAt ?? '');
+      const stableObservedAtMs = Number.isFinite(observedAtMs) ? observedAtMs : Date.parse(rec.registeredAt);
+      let reservationReady = !realcheck.configured || !correlationId || priorObservation !== undefined;
+      if (!reservationReady && realcheck.configured && correlationId) {
+        try {
+          const reserved = autonomousRunStore.update(rec.topicId, rec.runId, (current) => {
+            current.realcheckOutcomeByCorrelation ??= {};
+            current.realcheckOutcomeByCorrelation[correlationId] ??= {
+              outcome: realcheck.outcome,
+              observedAtMs: stableObservedAtMs,
+              applied: false,
+            };
+          });
+          if (!reserved) throw new Error('run-record-missing');
+          reservationReady = true;
+        } catch {
+          realcheckAnnotation = 'observation-persist-error';
+        }
+      }
+      if (reservationReady) {
+        realcheckAnnotation = annotateCompletionRealcheck(
+          rec,
+          { met: body.met === true, realcheck },
+          (annotation) => {
+            const applied = annotateDecisionOutcome({
+              correlationId: annotation.correlationId,
+              ruleId: annotation.ruleId,
+              gradedBy: { component: annotation.gradedBy.component },
+              grade: annotation.grade,
+              decisionPoint: DP_COMPLETION_EVALUATE,
+              evidence: annotation.evidence,
+            });
+            if (!applied.applied) throw new Error(applied.rejected ?? (applied.disabled ? 'disabled' : 'not-applied'));
+          },
+          stableObservedAtMs,
+        );
+        if ((realcheckAnnotation === 'annotated-right' || realcheckAnnotation === 'annotated-wrong') && correlationId && realcheck.configured) {
+          try {
+            const marked = autonomousRunStore.update(rec.topicId, rec.runId, (current) => {
+              const receipt = current.realcheckOutcomeByCorrelation?.[correlationId];
+              if (receipt?.outcome === realcheck.outcome) receipt.applied = true;
+            });
+            if (!marked) throw new Error('run-record-missing');
+          } catch {
+            // The pre-annotation reservation still blocks opposite replay. A
+            // same-outcome replay safely retries the idempotent annotation.
+            realcheckAnnotation = 'annotation-applied-receipt-pending';
+          }
+        }
+      }
+    }
+    if (!terminal) {
+      res.json({
+        ok: true,
+        runId: rec.runId,
+        terminal: false,
+        realcheckAnnotation,
+        ...(rawRealcheck !== undefined && !realcheckPayloadValid ? { realcheckPayloadInvalid: true } : {}),
+      });
+      return;
+    }
     let unbuiltEnumerated = 0;
     if (scopeAccretionEffective(rec)) {
       try {
@@ -5076,7 +5953,14 @@ export function createRoutes(ctx: RouteContext): Router {
       }
     }
     autonomousRunStore.markTerminal(rec.topicId, rec.runId, 'ended', reason);
-    res.json({ ok: true, runId: rec.runId, unbuiltEnumerated });
+    res.json({
+      ok: true,
+      runId: rec.runId,
+      terminal: true,
+      unbuiltEnumerated,
+      realcheckAnnotation,
+      ...(rawRealcheck !== undefined && !realcheckPayloadValid ? { realcheckPayloadInvalid: true } : {}),
+    });
   });
 
   // ── POST /autonomous/:topic/ratify-deferral (R23 path 1 — PIN, phone-first) ──
@@ -5147,6 +6031,103 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ sessions: listAutonomousJobs(ctx.config.stateDir) });
   });
 
+  // Ordinary Codex task-ledger continuation. This is deliberately separate
+  // from autonomous registration/completion semantics, but shares the trusted
+  // Stop-hook execution primitive.
+  const continuationStore = () => new CodexTaskContinuationStore(
+    ctx.config.stateDir,
+    ctx.liveConfig?.get(
+      'autonomousSessions.codexTaskContinuation',
+      ctx.config.autonomousSessions?.codexTaskContinuation,
+    ) ?? ctx.config.autonomousSessions?.codexTaskContinuation,
+  );
+
+  router.get('/continuation/:topic/status', (req, res) => {
+    const store = continuationStore();
+    const ledger = store.read(req.params.topic);
+    const startedAtMs = ledger ? Date.parse(ledger.startedAt) : Number.NaN;
+    const expiresAtMs = ledger && Number.isFinite(startedAtMs)
+      ? startedAtMs + ledger.durationSeconds * 1000
+      : Number.NaN;
+    res.json({
+      enabled: store.enabled,
+      active: ledger?.active === true,
+      topicId: req.params.topic,
+      continuationCount: ledger?.continuationCount ?? 0,
+      maxContinuations: ledger?.maxContinuations ?? null,
+      startedAt: ledger?.startedAt ?? null,
+      expiresAt: Number.isFinite(expiresAtMs) ? new Date(expiresAtMs).toISOString() : null,
+      taskCount: ledger ? parseContinuationTasks(ledger.body).length : 0,
+      openTaskCount: ledger ? parseContinuationTasks(ledger.body).filter((t) => t.open).length : 0,
+    });
+  });
+
+  router.post('/continuation/:topic/renew', (req, res) => {
+    if (refuseInadmissibleWrite(req, res, { topicId: req.params.topic })) return;
+    try {
+      const body = req.body as Record<string, unknown>;
+      const ledger = continuationStore().renew(req.params.topic, {
+        sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+        durationSeconds: typeof body.durationSeconds === 'number' ? body.durationSeconds : undefined,
+        maxContinuations: typeof body.maxContinuations === 'number' ? body.maxContinuations : undefined,
+      });
+      res.status(201).json({ ok: true, topicId: ledger.topicId, generation: ledger.generationId });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'invalid-request';
+      res.status(reason === 'continuation-disabled' ? 503 : 400).json({ ok: false, error: reason });
+    }
+  });
+
+  router.post('/continuation/start', (req, res) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      if (refuseInadmissibleWrite(req, res, { topicId: String(body.topicId ?? '') })) return;
+      const ledger = continuationStore().start({
+        topicId: String(body.topicId ?? ''),
+        sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+        tasks: Array.isArray(body.tasks) ? body.tasks.map(String) : [],
+        durationSeconds: typeof body.durationSeconds === 'number' ? body.durationSeconds : undefined,
+        maxContinuations: typeof body.maxContinuations === 'number' ? body.maxContinuations : undefined,
+      });
+      res.status(201).json({ ok: true, topicId: ledger.topicId, generation: ledger.generationId });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'invalid-request';
+      res.status(reason === 'continuation-disabled' ? 503 : 400).json({ ok: false, error: reason });
+    }
+  });
+
+  router.post('/continuation/:topic/complete', (req, res) => {
+    if (refuseInadmissibleWrite(req, res, { topicId: req.params.topic })) return;
+    try {
+      const ordinal = Number((req.body as Record<string, unknown>)?.ordinal);
+      const ledger = continuationStore().complete(req.params.topic, ordinal);
+      res.json({ ok: true, continuationCount: ledger.continuationCount });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'invalid-request' });
+    }
+  });
+
+  router.post('/continuation/:topic/stop', (req, res) => {
+    if (refuseInadmissibleWrite(req, res, { topicId: req.params.topic })) return;
+    const stopped = continuationStore().stop(req.params.topic);
+    try { ctx.operatorStopRecorder?.(Number(req.params.topic)); } catch { /* stop remains authoritative */ }
+    res.json({ ok: true, stopped });
+  });
+
+  router.post('/continuation/stop-all', (req, res) => {
+    if (refuseInadmissibleWrite(req, res)) return;
+    const stopped = continuationStore().stopAll();
+    try { ctx.operatorStopRecorder?.(null); } catch { /* stop remains authoritative */ }
+    res.json({ ok: true, stopped });
+  });
+
+  router.post('/continuation/decide', (req, res) => {
+    const body = req.body as Record<string, unknown>;
+    if (refuseInadmissibleWrite(req, res, { topicId: String(body.topicId ?? '') })) return;
+    const decision = continuationStore().decide(String(body.topicId ?? ''), String(body.sessionId ?? ''));
+    res.json(decision);
+  });
+
   // Level-triggered liveness reconciler status (spec: autonomous-liveness-reconciler.md).
   // 503 when dark/disabled (dev-gate resolves enablement); else the content-free
   // status (topic ids + counters + conditions — no topic content/paths/secrets).
@@ -5156,6 +6137,13 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.autonomousLivenessReconciler.status());
+  });
+  router.get('/autonomous/throughput-floor', (_req, res) => {
+    if (!ctx.autonomousThroughputFloor) {
+      res.status(503).json({ error: 'autonomous-throughput-floor not available on this agent' });
+      return;
+    }
+    res.json(ctx.autonomousThroughputFloor.status());
   });
 
   // ── Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §6) ──
@@ -6043,7 +7031,7 @@ export function createRoutes(ctx: RouteContext): Router {
         nodeCount: 0, authoredCount: 0, neverAuthoredCount: 0, staleCount: 0, generatedAt: null,
         freshness: {
           nodeCount: 0, authorableCount: 0, freshCount: 0, staleCount: 0, neverAuthoredCount: 0,
-          neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0, authorFailedCount: 0, freshRatio: 1, generatedAt: null,
+          neverAuthoredWithinGrace: 0, neverAuthoredPastGrace: 0, authorFailedCount: 0, freshRatio: null, generatedAt: null,
         },
         sweepEnabled: sweepCfg?.enabled === true,
         ...meta,
@@ -6235,12 +7223,23 @@ export function createRoutes(ctx: RouteContext): Router {
     let report: StandardsCoverageReport;
     try { report = conformanceReport(); }
     catch (err) { res.status(500).json({ error: 'coverage compute failed', detail: err instanceof Error ? err.message : String(err) }); return; }
+    // `converged` means ONLY "the deterministic pass is stable" — re-running on
+    // unchanged inputs is byte-identical. It has never meant "the standards are
+    // healthy", but sitting bare beside `enforcedRatio` it read that way: on
+    // 2026-07-25 this response reported `converged: true` next to `0.0455` over a
+    // registry fragment, and the agent reading it drew the wrong conclusion twice
+    // in one day, then quoted it to the operator. The meaning now travels with the
+    // field, and the trustworthiness of the ratio travels beside it.
     res.json({
       enabled: true,
       generatedAt: report.generatedAt,
-      // The deterministic pass always converges — re-running on unchanged inputs is
-      // byte-identical, so `converged` is structurally true.
       converged: true,
+      convergedMeans: 'the deterministic pass is stable on unchanged inputs; NOT that standards are healthy',
+      // `assessmentConfidence` + `confidenceReason` arrive via the summary spread and are
+      // the fields to read. `assessmentTrustworthy` is retained (deprecated) for one
+      // release: it is TRUE only on a 'verified' verdict, which requires an external
+      // expectation that does not exist yet — so a stale-but-coherent registry now reads
+      // 'unverified' with the reason attached instead of asserting trust it never earned.
       ...report.summary,
     });
   });
@@ -7987,7 +8986,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // Default: 10 spawns per 60 seconds, which is generous for normal use.
   const spawnLimiter = rateLimiter(60_000, 10);
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug, framework } = req.body;
+    const { name, prompt, model, jobSlug, framework, ultracode } = req.body;
 
     if (!name || !prompt) {
       res.status(400).json({ error: '"name" and "prompt" are required' });
@@ -8045,9 +9044,24 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"jobSlug" must contain only letters, numbers, hyphens, underscores' });
       return;
     }
+    if (ultracode !== undefined && typeof ultracode !== 'boolean') {
+      res.status(400).json({ error: '"ultracode" must be a boolean' });
+      return;
+    }
+    // Match SessionManager's omitted-framework resolution. A Codex-default
+    // agent must not pass this guard merely because the request omitted the
+    // explicit framework and then receive a cosmetic keyword on a Codex turn.
+    const effectiveSpawnFramework = framework
+      ?? ctx.config.sessions?.framework
+      ?? ctx.config.enabledFrameworks?.[0]
+      ?? 'claude-code';
+    if (ultracode === true && effectiveSpawnFramework !== 'claude-code') {
+      res.status(400).json({ error: '"ultracode" is supported only for framework "claude-code"' });
+      return;
+    }
 
     try {
-      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug, framework });
+      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug, framework, ultracode });
       res.status(201).json(session);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -8571,7 +9585,9 @@ export function createRoutes(ctx: RouteContext): Router {
           ),
         }
       : summary.totals;
-    res.json({ ...summary, totals, features });
+    const classReview = ctx.classReviewStore?.health() ?? null;
+    const claimVerificationServerAdmittedOnly = ctx.completionClaimVerifier?.stats?.() ?? null;
+    res.json({ ...summary, totals, features, classReview, claimVerificationServerAdmittedOnly });
   });
 
   // ── GrowthMilestoneAnalyst (the proactive growth & milestone analyst) ──────
@@ -8894,13 +9910,62 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
       } catch { /* skip unreadable source */ }
-      // (2) Evolution actions — a JSON array under .actions (each with top-level
-      // createdAt), NOT a logs/*.jsonl stream.
+      // (2) Evolution actions — COUNTED ON COMPLETION, NOT ON FILING.
+      //
+      // The metric's own inversion (ACT-1244, verified 2026-07-25). The old line
+      // counted EVERY action at its `createdAt`, so 739 of 771 "learning events" —
+      // 96% — were items merely FILED. Measured the same day on this agent's real
+      // queue: of 1,285 actions, 740 were still pending, 523 cancelled (494 of those
+      // carrying the resolution "Abandoned without active tracking since creation
+      // date"), 20 completed, 2 in progress.
+      //
+      // So the metric answering "are we learning?" was almost purely a measure of
+      // filing RATE — and filing is precisely what we do INSTEAD of finishing: the
+      // faster work was abandoned, the higher the adaptability score climbed. It read
+      // 88/100 "accelerating" on the morning the operator halted all work because the
+      // opposite was visibly true.
+      //
+      // A learning event is a piece of work that FINISHED. An action contributes one
+      // only when it reached `completed`, stamped at `completedAt` (when the learning
+      // actually happened) rather than `createdAt` (when the intention was recorded).
+      // Pending, in_progress, cancelled and auto-abandoned contribute nothing and are
+      // accounted for by exclusion reason, so a low score is legible as "little has
+      // finished" rather than mistaken for "we stopped learning".
+      const actionAccounting = {
+        considered: 0,
+        counted: 0,
+        excluded: {} as Record<string, number>,
+      };
+      const excludeAction = (reason: string): void => {
+        actionAccounting.excluded[reason] = (actionAccounting.excluded[reason] ?? 0) + 1;
+      };
       try {
         const p = path.join(ctx.config.stateDir, 'state', 'evolution', 'action-queue.json');
         if (fs.existsSync(p)) {
           const aq = JSON.parse(fs.readFileSync(p, 'utf-8'));
-          for (const a of (aq.actions ?? [])) push(tsField(a), 'evolution');
+          for (const a of (aq.actions ?? [])) {
+            actionAccounting.considered += 1;
+            const rec = (a ?? {}) as Record<string, unknown>;
+            const status = typeof rec.status === 'string' ? rec.status : 'unknown';
+            if (status !== 'completed') {
+              // Name the auto-abandoned class specifically: it is the single largest
+              // bucket and the one the old metric scored as learning.
+              const resolution = typeof rec.resolution === 'string' ? rec.resolution : '';
+              excludeAction(status === 'cancelled' && /abandoned without active tracking/i.test(resolution)
+                ? 'auto-abandoned'
+                : `not-completed:${status}`);
+              continue;
+            }
+            // A completion with no completion timestamp cannot be placed in the
+            // window; counting it at createdAt would re-import the filing bias.
+            const completedAt = rec.completedAt ?? rec.updatedAt;
+            if (completedAt === undefined || completedAt === null || completedAt === '') {
+              excludeAction('completed-without-timestamp');
+              continue;
+            }
+            push(completedAt, 'evolution');
+            actionAccounting.counted += 1;
+          }
         }
       } catch { /* skip unreadable source */ }
       // (3) Corrections — persisted in the SQLite CorrectionLedger, not a JSONL file.
@@ -8912,7 +9977,15 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         } catch { /* skip ledger error */ }
       }
-      res.json(computeLearningVelocity(events, new Date().toISOString(), windowDays));
+      // The score never travels without what it was computed over (the
+      // honest-denominator rule applied to this metric): `counting` states the rule in
+      // one line, and `evolutionActions` shows how much was excluded and why — so a
+      // reader can tell "we are not learning" from "almost nothing has finished yet".
+      res.json({
+        ...computeLearningVelocity(events, new Date().toISOString(), windowDays),
+        counting: 'evolution actions count on completion (completedAt), never on filing (createdAt)',
+        evolutionActions: actionAccounting,
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to compute learning velocity' });
     }
@@ -10180,6 +11253,219 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       metrics: result.metrics,
       stats,
     });
+  });
+
+  router.get('/feedback-factory/drain/status', (_req, res) => {
+    if (!ctx.feedbackDrain) {
+      res.status(503).json({ error: 'feedback-factory drain unavailable', posture: ctx.feedbackDrainPosture ?? { state: 'unavailable', reason: 'initialization-failure' } });
+      return;
+    }
+    const authority = ctx.feedbackDrain.store.getAuthority('feedback-readiness-default');
+    res.json({
+      posture: ctx.feedbackDrainPosture ?? { state: 'live', reason: 'live-healthy' },
+      restorePending: ctx.feedbackDrain.isRestorePending(),
+      ...ctx.feedbackDrain.service.stats(),
+      authority: authority ? {
+        authorityId: authority.authorityId,
+        agentId: authority.agentId,
+        ownerEpoch: authority.ownerEpoch,
+        engineClass: 'registered-frontier-model',
+        generation: authority.generation,
+        revoked: authority.revoked,
+        mode: ctx.feedbackDrain.store.authorityPosture(authority.authorityId, authority.generation).mode,
+      } : null,
+      consumerPromotion: (() => {
+        const promotion = ctx.feedbackDrain!.promotion.read();
+        return promotion ? { live: ctx.feedbackDrain!.promotion.isLive(), approvedBatchBound: promotion.approvedBatchBound, approvedAt: promotion.approvedAt, revoked: promotion.revokedAt !== null } : null;
+      })(),
+    });
+  });
+
+  const feedbackRestorePendingGate = (res: import('express').Response): boolean => {
+    if (!ctx.feedbackDrain?.isRestorePending()) return false;
+    res.status(409).json({ error: 'feedback drain restore finalization is pending' });
+    return true;
+  };
+
+  router.post('/feedback-factory/drain/tick', (req, res) => {
+    void (async () => {
+      if (!ctx.feedbackDrain) {
+        res.status(503).json({ error: 'feedback-factory drain unavailable (dark or initialization failed)' });
+        return;
+      }
+      if (feedbackRestorePendingGate(res)) return;
+      if (req.headers['x-instar-request'] !== '1') {
+        res.status(403).json({ error: 'X-Instar-Request: 1 required' });
+        return;
+      }
+      const proxyEnvelope = req.body?.proxyEnvelope as import('../feedback-factory/drain/FeedbackDrainTickProxy.js').DrainTickProxyEnvelope | undefined;
+      if (proxyEnvelope) {
+        const result = await ctx.feedbackDrain.tickProxy.receive(proxyEnvelope);
+        res.status(result.status).json(result.body);
+        return;
+      }
+      const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+      const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+      const result = await ctx.feedbackDrain.tickProxy.request({ agentId, nonce });
+      res.status(result.status).json(result.body);
+    })();
+  });
+
+  router.post('/feedback-factory/drain/runs/:runId/cancel', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    try {
+      ctx.feedbackDrain.service.requestRunCancellation(String(req.params.runId));
+      res.json({ runId: String(req.params.runId), cancellationRequested: true });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'run cancellation failed' });
+    }
+  });
+
+  router.get('/feedback-factory/backlog/analysis', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    // This authenticated analysis admits a durable replay nonce, so it is a
+    // mutation for restore-pending purposes even though its response is read-only.
+    if (feedbackRestorePendingGate(res)) return;
+    const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+    const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+    if (!ctx.feedbackDrain.service.canAgentMutateReadiness(agentId) || !/^[A-Za-z0-9._:-]{16,128}$/.test(nonce)) {
+      res.status(403).json({ error: 'current registered readiness agent and bounded nonce required' }); return;
+    }
+    if (!ctx.feedbackDrain.store.admitRequestNonce(agentId, nonce)) { res.status(409).json({ error: 'request nonce replayed' }); return; }
+    const limit = Number(req.query.limit ?? 50);
+    res.json(ctx.feedbackDrain.service.analyzeHistoricalBacklog(Number.isFinite(limit) ? limit : 50));
+  });
+
+  const feedbackMutationIntentValid = (req: import('express').Request, res: import('express').Response): boolean => {
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return false;
+    }
+    const origin = req.get('origin');
+    if (origin) {
+      try {
+        const parsed = new URL(origin);
+        if (!['http:', 'https:'].includes(parsed.protocol) || parsed.host !== req.get('host')) {
+          res.status(403).json({ error: 'same-origin mutation required' }); return false;
+        }
+      } catch { res.status(403).json({ error: 'same-origin mutation required' }); return false; }
+    }
+    return checkMandatePin(req, res);
+  };
+
+  router.post('/feedback-factory/drain/failover/finalize', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const result = ctx.feedbackDrain.finalizeFailoverRestore({
+        restoredOwnerAuthorityEpoch: Number(req.body?.restoredOwnerAuthorityEpoch),
+        operatorDecisionRef: String(req.body?.operatorDecisionRef ?? ''),
+        snapshotId: String(req.body?.snapshotId ?? ''), manifestChecksum: String(req.body?.manifestChecksum ?? ''),
+        oldOwnerQuiesced: req.body?.oldOwnerQuiesced === true,
+        splitBrainRecoveryPacket: req.body?.splitBrainRecoveryPacket,
+      });
+      res.json({ finalized: true, ...result });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'failover restore finalization failed' });
+    }
+  });
+
+  // Operator-rooted authority mutation. Runtime agents/models cannot call this
+  // with Bearer alone, so “registered” is a real security boundary.
+  router.post('/feedback-factory/readiness-authorities', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const body = req.body ?? {};
+      const action = body.action as 'create' | 'replace' | 'revoke' | 'restore';
+      if (!['create', 'replace', 'revoke', 'restore'].includes(action)) throw new Error('invalid authority action');
+      const existing = ctx.feedbackDrain.store.getAuthority(String(body.authorityId ?? 'feedback-readiness-default'));
+      const source = (action === 'revoke' || action === 'restore') && existing ? existing : body;
+      const record = ctx.feedbackDrain.store.mutateAuthority({
+        action,
+        operatorDecisionRef: String(body.operatorDecisionRef ?? ''),
+        authorityId: String(source.authorityId ?? 'feedback-readiness-default'),
+        agentId: String(source.agentId ?? ''), ownerMachineId: String(source.ownerMachineId ?? ''),
+        ownerEpoch: Number(source.ownerEpoch), provider: String(source.provider ?? ''),
+        modelFamily: String(source.modelFamily ?? ''), promptVersion: String(source.promptVersion ?? ''),
+        schemaVersion: String(source.schemaVersion ?? ''), decisionPointId: String(source.decisionPointId ?? ''),
+        maxBatch: Number(source.maxBatch), maxTokens: Number(source.maxTokens), maxDailySpendUsd: Number(source.maxDailySpendUsd),
+      });
+      res.json({ authorityId: record.authorityId, generation: record.generation, revoked: record.revoked });
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : 'authority mutation failed' });
+    }
+  });
+
+  router.post('/feedback-factory/readiness/hold', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const clusterId = String(req.body?.clusterId ?? '');
+      const reason = String(req.body?.reason ?? 'human-break-glass');
+      if (!clusterId || clusterId.length > 200) throw new Error('bounded clusterId required');
+      const row = ctx.feedbackDrain.store.holdReadiness(clusterId, reason);
+      res.json({ clusterId: row.clusterId, state: row.state, reasonCode: row.reasonCode });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'hold failed' }); }
+  });
+
+  router.post('/feedback-factory/readiness/release', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    const humanPath = typeof req.body?.pin === 'string';
+    if (humanPath) {
+      if (!feedbackMutationIntentValid(req, res)) return;
+    } else {
+      if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+      const agentId = typeof req.headers['x-instar-agentid'] === 'string' ? req.headers['x-instar-agentid'] : '';
+      const nonce = typeof req.headers['x-instar-request-nonce'] === 'string' ? req.headers['x-instar-request-nonce'] : '';
+      if (!ctx.feedbackDrain.service.canAgentMutateReadiness(agentId) || !/^[A-Za-z0-9._:-]{16,128}$/.test(nonce)) {
+        res.status(403).json({ error: 'current registered readiness agent and bounded nonce required' }); return;
+      }
+      if (!ctx.feedbackDrain.store.admitRequestNonce(agentId, nonce)) { res.status(409).json({ error: 'request nonce replayed' }); return; }
+    }
+    try {
+      const clusterId = String(req.body?.clusterId ?? '');
+      if (req.body?.predicate !== 'source-projection-authority') throw new Error('named deterministic revalidation predicate required');
+      const sourcePresent = ctx.feedbackDrain.service.sourceClusterPresent(clusterId) &&
+        ctx.feedbackDrain.store.integrityCheck() && ctx.feedbackDrain.store.verifyAuthorityAudit() &&
+        Boolean(ctx.feedbackDrain.store.getAuthority('feedback-readiness-default'));
+      const row = ctx.feedbackDrain.store.releaseHeld(clusterId, { revalidated: sourcePresent, reason: 'source-projection-authority-revalidated' });
+      res.json({ clusterId: row.clusterId, state: row.state, reasonCode: row.reasonCode });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'release failed' }); }
+  });
+
+  router.post('/feedback-factory/consumer/promote', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const record = ctx.feedbackDrain.promotion.promote({
+        approvedBatchBound: Number(req.body?.approvedBatchBound),
+        evidenceHash: String(req.body?.evidenceHash ?? ''),
+        operatorDecisionId: String(req.body?.operatorDecisionId ?? ''),
+      });
+      try { ctx.feedbackDrain.checkpointBackup('promotion'); }
+      catch (backupError) {
+        ctx.feedbackDrain.promotion.revoke();
+        throw new Error(`promotion checkpoint failed; consumer returned to simulation: ${backupError instanceof Error ? backupError.message : 'backup unavailable'}`);
+      }
+      res.json({ promoted: true, approvedBatchBound: record.approvedBatchBound, approvedAt: record.approvedAt });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'promotion failed' }); }
+  });
+
+  router.post('/feedback-factory/consumer/revoke', (req, res) => {
+    if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
+    if (feedbackRestorePendingGate(res)) return;
+    if (!feedbackMutationIntentValid(req, res)) return;
+    try {
+      const record = ctx.feedbackDrain.promotion.revoke();
+      ctx.feedbackDrain.checkpointBackup('promotion');
+      res.json({ revoked: true, revokedAt: record.revokedAt });
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'revoke failed' }); }
   });
 
   // The readiness signal. Read-only.
@@ -12545,6 +13831,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const senderClass = coerceSenderClass(metadata?.senderClass);
     const advisoryAck = metadata?.advisoryAck === true;
     const advisoryCodes = coerceAdvisoryCodes(metadata?.advisoryCodes);
+    // Advisory-rule override (operator directive 2026-07-18): the FULL rule id
+    // the sender explicitly acknowledges. Length-clamped; validated against the
+    // cited rule at the seam (a mismatch or a blocking rule is never overridden).
+    const toneAdvisoryAckReason =
+      typeof metadata?.toneAdvisoryAckReason === 'string'
+        ? metadata.toneAdvisoryAckReason.slice(0, 500)
+        : undefined;
+    const toneAdvisoryDecisionRef =
+      typeof metadata?.toneAdvisoryDecisionRef === 'string'
+        ? metadata.toneAdvisoryDecisionRef.slice(0, 128)
+        : undefined;
+    const toneAdvisoryComplied =
+      typeof metadata?.toneAdvisoryComplied === 'string'
+        ? metadata.toneAdvisoryComplied.slice(0, 64)
+        : undefined;
+    const toneAdvisoryAck =
+      typeof metadata?.toneAdvisoryAck === 'string'
+        ? metadata.toneAdvisoryAck.slice(0, 64)
+        : undefined;
     const metadataJobSlug = typeof metadata?.jobSlug === 'string' ? metadata.jobSlug.slice(0, 128) : '';
 
     // ── Observability breadcrumbs (§2.1 — visibility on the named dodge
@@ -12629,6 +13934,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         allowDuplicate,
         allowLocalhostLink,
         messageKind,
+        toneAdvisoryAck,
+        toneAdvisoryAckReason,
+        toneAdvisoryDecisionRef,
+        toneAdvisoryComplied,
       }))
     )
       return;
@@ -12659,12 +13968,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // lease holder, the kind metadata must survive the hop so the
         // HOLDER's gate/audit see accurate context. Direct sends ignore it.
         kindMetadata:
-          messageKind || senderClass || advisoryAck
+          messageKind || senderClass || advisoryAck || toneAdvisoryAck || toneAdvisoryComplied
             ? {
                 ...(messageKind ? { messageKind } : {}),
                 ...(senderClass ? { senderClass } : {}),
                 ...(metadataJobSlug ? { jobSlug: metadataJobSlug } : {}),
                 ...(advisoryAck ? { advisoryAck: true, advisoryCodes } : {}),
+                // ── Tone-advisory reaction across the relay hop ─────────────
+                // A tokenless standby SKIPS its own gate and relays to the
+                // lease holder, which gates on receipt. Without these four the
+                // holder re-cites the advisory on every attempt and the ack can
+                // never reach it — a relayed topic would hold a permanently
+                // unsendable message with no recourse, which is the exact
+                // failure the migration exists to remove.
+                ...(toneAdvisoryAck ? { toneAdvisoryAck } : {}),
+                ...(toneAdvisoryAckReason ? { toneAdvisoryAckReason } : {}),
+                ...(toneAdvisoryDecisionRef ? { toneAdvisoryDecisionRef } : {}),
+                ...(toneAdvisoryComplied ? { toneAdvisoryComplied } : {}),
               }
             : undefined,
       });
@@ -12757,6 +14077,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // retry of this exact text is not wrongly suppressed as a duplicate. Safe
       // no-op when nothing was reserved (allowDuplicate / below-floor text).
       outboundContentDedup.releaseReservation(topicId, text);
+      // ── Holder refusal, relayed verbatim ────────────────────────────────
+      // On a tokenless standby the tone gate runs on the HOLDER, so its 422
+      // arrives here as a thrown RelayRefusedError. Re-emit the holder's own
+      // status and body: reporting an actionable refusal (a nudge with a rule,
+      // a decisionRef and how to proceed) as a generic 500 is what left a
+      // relayed topic holding a permanently unanswerable message.
+      if (err instanceof RelayRefusedError) {
+        res.status(err.status).json({ ...err.body, relayedFromHolder: true });
+        return;
+      }
       // @silent-fallback-ok — NOT a silent fallback: this catch surfaces a 500 to the
       // caller. The tag exists because the no-silent-fallbacks scanner's fixed 20-line
       // window reaches past this route's end into the next route's `db = null`
@@ -12809,6 +14139,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         try { db.close(); } catch { /* best-effort */ }
       }
     }
+  });
+
+  // ── Unified work-intake registry (dev-agent live, fleet dark) ──
+  /** GET /work-queue — ranked active work from the unified intake registry. */
+  router.get('/work-queue', (_req, res) => {
+    if (!resolveDevAgentGate(ctx.config.workQueue?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'work queue is not enabled' });
+      return;
+    }
+    if (!ctx.workQueue) { res.status(503).json({ error: 'work queue unavailable' }); return; }
+    res.json({ items: ctx.workQueue.list() });
+  });
+  // @write-domain:none
+  /** POST /work-queue/rescore — recompute rankings without durable writes. */
+  router.post('/work-queue/rescore', (_req, res) => {
+    if (!resolveDevAgentGate(ctx.config.workQueue?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'work queue is not enabled' });
+      return;
+    }
+    if (!ctx.workQueue) { res.status(503).json({ error: 'work queue unavailable' }); return; }
+    res.json({ items: ctx.workQueue.rescore() });
   });
 
   // POST /build/heartbeat — /build pipeline status relay.
@@ -12967,6 +14318,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // verdicts (a fast block) still hold; only the no-verdict-in-time path
         // delivers. (Block/allow on a returned verdict is unchanged.)
         failClosedOnBudgetTimeout: false,
+        // Channel parity for the advisory migration. This route is MANDATED by
+        // the agent template for every ship/restart narration and has no
+        // fallback channel — so an advisory 422 here that promised an override
+        // the route could not accept would loop the agent with nowhere to go.
+        ...toneAdvisoryMetadata(metadata),
       })
     )
       return;
@@ -13514,7 +14870,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // ── Slack ──────────────────────────────────────────────────────
 
-  router.post('/slack/reply/:channelId', async (req, res) => {
+  const handleSlackReply = async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
     if (!ctx.slack) {
       res.status(503).json({ error: 'Slack not configured' });
       return;
@@ -13551,6 +14907,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       await checkOutboundMessage(text, 'slack', res, {
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
+        // Channel parity: the override/compliance evidence path is not a
+        // Telegram feature. A Slack override that recorded nothing would make
+        // the meter's sample silently channel-dependent.
+        ...toneAdvisoryMetadata(metadata),
         // Kind threading mirrors /telegram/reply — the jargon/filePath signal
         // computation is single-sourced inside evaluateOutbound, so every
         // channel gets it uniformly (spec outbound-jargon-filepath-gap §2.2).
@@ -13627,7 +14987,56 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  };
+
+  // Spawned-session relay. Destination fields are deliberately absent: the
+  // authenticated bootstrap conversation is the only source of channel/thread
+  // authority (slack-session-reply-relay §Authority and source binding).
+  router.post('/slack/session-reply', async (req, res) => {
+    const bodyKeys = Object.keys(req.body ?? {}).sort();
+    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text')) {
+      res.status(400).json({ error: 'spawned Slack session body permits only conversationId and text' });
+      return;
+    }
+    if ('channelId' in (req.body ?? {}) || 'thread_ts' in (req.body ?? {}) || 'threadTs' in (req.body ?? {})) {
+      res.status(400).json({ error: 'caller-supplied Slack destination is forbidden' });
+      return;
+    }
+    const conversationId = Number(req.body?.conversationId);
+    if (!Number.isSafeInteger(conversationId) || conversationId >= 0) {
+      res.status(400).json({ error: 'negative conversationId required' });
+      return;
+    }
+    const bindHeader = req.headers['x-instar-bind-token'];
+    const rawToken = Array.isArray(bindHeader) ? bindHeader[0] : bindHeader;
+    const verdict = verifyConversationBind({
+      bindAuth: ctx.conversationBindAuth,
+      numericTopicId: conversationId,
+      rawToken: typeof rawToken === 'string' ? rawToken : undefined,
+      attention: ctx.telegram,
+    });
+    if (!verdict.ok) {
+      res.status(403).json({ error: 'conversation-bind-refused', detail: verdict.detail });
+      return;
+    }
+    const target = ctx.conversationRegistry?.resolve(conversationId);
+    if (!target || target.platform !== 'slack' || target.origin === 'replicated') {
+      res.status(409).json({ error: 'slack-adapter-authority-unavailable' });
+      return;
+    }
+    if (!SLACK_CHANNEL_ID_RE.test(target.channelId)
+      || (target.threadTs !== null && !SLACK_THREAD_TS_RE.test(target.threadTs))) {
+      res.status(409).json({ error: 'conversation-target-invalid' });
+      return;
+    }
+    (req.params as Record<string, string>).channelId = target.channelId;
+    req.body.thread_ts = target.threadTs ?? undefined;
+    await handleSlackReply(req, res);
   });
+
+  // System/legacy sender surface. Spawned session prompts never use this raw
+  // destination route; keeping it preserves existing internal callers.
+  router.post('/slack/reply/:channelId', handleSlackReply);
 
   router.post('/internal/slack-forward', async (req, res) => {
     // ── Typed refusal (spec slack-outbound-robustness §2.7, round-1 M6) ──
@@ -13831,7 +15240,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     try {
-      const item = await ctx.telegram.createAttentionItem({
+      const create = ctx.telegram.createAttentionItem({
         id,
         title,
         summary,
@@ -13842,6 +15251,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         lane,
         healthKey,
       });
+      // Acceptance of an attention item must not inherit Telegram latency.
+      // The adapter persists/idempotently owns the item before its network
+      // routing; return the accepted envelope if the external send is slow.
+      const item = await Promise.race([
+        create,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+      ]);
+      if (item === null) {
+        res.status(201).json({ id, title, summary, category: category || 'general', priority, description: description || undefined, sourceContext: sourceContext || undefined, lane, healthKey, status: 'OPEN' });
+        return;
+      }
       res.status(201).json(item);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -14471,17 +15891,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const candidateIds = candidates.map((c) => c.id);
       if (candidateIds.length > 0) {
         let verified: Set<string> = new Set();
+        let regressedIds: Set<string> = new Set();
         try {
-          verified = await verifyMergedItemsViaGit(project.targetRepoPath, candidateIds, ctx.initiativeTracker);
+          const outcome = await verifyMergedItemsViaGit(
+            project.targetRepoPath,
+            candidateIds,
+            ctx.initiativeTracker,
+            // The fork-origin fix the advance path already applies. Without it a
+            // dev-agent home checks the agent's FORK, where the merge commit is
+            // genuinely absent, and every healthy item reads as regressed.
+            resolveCanonicalMainRef(project.targetRepoPath),
+          );
+          verified = outcome.verified;
+          regressedIds = outcome.regressed;
         } catch {
-          // git not available, no network, etc. — leave verified empty so we
-          // still update ciCheckedAt to back off; better than a hot loop.
+          // Whole-call failure — leave BOTH sets empty so every candidate falls
+          // into the unverifiable branch below. We still bump ciCheckedAt to back
+          // off rather than spin, but we do not invent a verdict.
         }
         let touched = false;
         for (const cand of candidates) {
           const child = ctx.initiativeTracker.get(cand.id);
           if (!child) continue;
           const isMerged = verified.has(cand.id);
+          const isRegressed = regressedIds.has(cand.id);
+          // "I could not check" is not a verdict. Previously anything not in
+          // `verified` was marked `regressed`, so a guard refusal, a missing
+          // binary or a bad ref demoted a healthy item and cleared its round's
+          // schedule. Only git's documented exit 1 demotes now; an unverifiable
+          // item keeps its stage and only takes the ciCheckedAt backoff, so the
+          // question is asked again later instead of being answered wrongly now.
+          if (!isMerged && !isRegressed) {
+            try {
+              await ctx.initiativeTracker.update(cand.id, {
+                ciCheckedAt: new Date(nowMs).toISOString(),
+                ifMatch: child.version,
+              });
+              touched = true;
+            } catch { /* @silent-fallback-ok — backoff only; stage untouched */ }
+            continue;
+          }
           try {
             await ctx.initiativeTracker.update(cand.id, {
               pipelineStage: isMerged ? 'merged' : 'regressed',
@@ -14746,27 +16195,59 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // out multimachine-coherence P0). Both helpers are READ-ONLY git/gh against
       // the project's target repo.
       ghPrView: async (prNumber: number) => {
+        // Resolve gh by absolute path: the server is launched by launchd with a
+        // minimal PATH that omits /opt/homebrew/bin, so bare 'gh' died with a raw
+        // `spawnSync gh ENOENT` and NO project item could reach `merged`
+        // (found 2026-07-25). A missing binary is now a NAMED diagnostic rather
+        // than an opaque spawn error — the gate still refuses, but says why.
+        const ghBin = resolveGhBinary();
+        if (!ghBin) {
+          throw new Error(
+            'the GitHub CLI (gh) could not be found. The server may be running with a ' +
+            'minimal PATH; set INSTAR_GH_PATH to its absolute path. The merge cannot be ' +
+            'verified without it, so this transition is refused rather than assumed.',
+          );
+        }
         const out = execFileSync(
-          'gh',
+          ghBin,
           ['pr', 'view', String(prNumber), '--json', 'state,mergeCommit,statusCheckRollup'],
           { cwd: project.targetRepoPath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
         );
         return JSON.parse(out) as import('../core/StageTransitionValidator.js').GhPrView;
       },
       gitMergeBaseIsAncestor: (sha: string, branch: string) => {
-        // `merge-base --is-ancestor` is a READ-ONLY verb (in SafeGitExecutor's
-        // READONLY_GIT_VERBS) — routed through readSync (the sanctioned read
-        // path), not raw execFileSync, per the destructive-tool funnel. It
-        // exits 0 (ancestor → readSync returns) or 1 (not → readSync throws).
+        // `merge-base --is-ancestor` is a READ-ONLY verb — routed through readSync
+        // (the sanctioned read path), not raw execFileSync, per the destructive-tool
+        // funnel. It exits 0 (ancestor) or 1 (not an ancestor).
+        //
+        // `sourceTreeReadOk` is REQUIRED here and its absence was a live defect
+        // (found 2026-07-25 recording PR #1641 as merged). readSync runs the
+        // SourceTreeGuard unless the caller declares a read, and a project's
+        // targetRepoPath IS an instar source tree — so the guard refused this query
+        // every time. `merge-base` is already in SOURCE_TREE_READ_TIER_VERBS, i.e.
+        // the permission for exactly this read exists; it simply was never asked for.
+        //
+        // The far worse half was below: the old `catch { return false }` converted
+        // that REFUSAL into "the merge commit is not on main" — a fabricated factual
+        // claim, and the reason this step's failure was indistinguishable from a real
+        // negative for as long as it existed. A refusal is not an answer. Only git's
+        // documented exit status 1 means "not an ancestor"; every other failure
+        // (guard refusal, missing binary, bad revision → 128, timeout) is UNVERIFIABLE
+        // and is rethrown so the validator can say so instead of guessing.
         try {
           SafeGitExecutor.readSync(['merge-base', '--is-ancestor', sha, branch], {
             cwd: project.targetRepoPath,
             operation: 'projects.advance.mergeBaseIsAncestor',
             stdio: ['ignore', 'ignore', 'ignore'],
+            sourceTreeReadOk: true,
           });
-          return true; // exit 0 = sha is an ancestor of branch
-        } catch { /* @silent-fallback-ok: merge-base --is-ancestor signals via exit code (0 ancestor / 1 not); a non-zero exit IS the negative answer, not a degradation — returning false is the correct, complete result, and the validator surfaces MERGE_COMMIT_UNREACHABLE to the caller. */
-          return false; // exit 1 = not an ancestor; any other failure = treat as not-ancestor (validator re-checks)
+          return true; // exit 0 = sha IS an ancestor of branch
+        } catch (err) {
+          const status = (err as { status?: unknown }).status;
+          if (status === 1) return false; // the ONLY genuine "not an ancestor"
+          throw new Error(
+            `merge-base --is-ancestor could not be verified (${err instanceof Error ? err.message : String(err)})`,
+          );
         }
       },
       // Resolve the canonical-main ref the merge commit must be reachable from.
@@ -14789,8 +16270,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     try {
+      // Persist the evidence the gate just established, in the SAME write that
+      // records the stage. Before 2026-07-26 the validated artifact built the
+      // validation context and was then discarded, so an item read `merged`
+      // while carrying no prNumber, no merge commit and no check timestamp —
+      // strictness at the gate, amnesia in the record. Two merged-state
+      // reconcilers select on `mergeCommitOid`, so nothing being written meant
+      // they matched nothing and reported nothing, which reads exactly like
+      // "no regressions found".
       const updated = await ctx.initiativeTracker.update(itemId, {
         pipelineStage: targetStage,
+        ...(result.evidence
+          ? {
+              prNumber: result.evidence.prNumber,
+              mergeCommitOid: result.evidence.mergeCommitOid,
+              ciCheckedAt: result.evidence.verifiedAt,
+            }
+          : {}),
         ifMatch: child.version,
       });
       // Bump the project version too so concurrent advance calls don't
@@ -14802,8 +16298,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ifMatch: project.version,
       });
       res.json({
-        item: { id: updated.id, pipelineStage: updated.pipelineStage, version: updated.version },
+        item: {
+          id: updated.id,
+          pipelineStage: updated.pipelineStage,
+          version: updated.version,
+          // Echo back what the record now holds, so a caller can confirm the
+          // evidence landed instead of trusting that it did.
+          prNumber: updated.prNumber,
+          mergeCommitOid: updated.mergeCommitOid,
+          ciCheckedAt: updated.ciCheckedAt,
+        },
         project: { id: refreshed.id, version: refreshed.version },
+        ...(result.evidence ? { evidence: result.evidence } : {}),
       });
     } catch (err) {
       if (err instanceof Error && err.name === 'OccVersionMismatchError') {
@@ -14989,7 +16495,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // single-machine view on installs where the pool registry isn't wired (dark).
   router.get('/pool', (_req, res) => {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
-    const machines = ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [];
+    // Rope-condition decoration: the registry's `online` flag feeds placement and
+    // ages out on the conservative failoverThreshold (~15 min observed), while
+    // the rope-health monitor knows a peer's transports are down within one
+    // evaluation. Attach the live classification so reachability renders
+    // honestly without touching placement semantics. Monitor dark → absent.
+    const machines = decorateWithRopeCondition(
+      ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [],
+      ctx.ropeHealthMonitor?.status().peers,
+    );
+    const sshEnrollment = ctx.mutualSshHealth ? ctx.mutualSshHealth() : null;
     res.json({
       enabled: !!ctx.machinePoolRegistry,
       router: sync
@@ -15003,7 +16518,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
         : null,
       machines,
+      sshEnrollment,
     });
+  });
+
+  router.get('/machines/ssh-health', (_req, res) => {
+    if (!ctx.mutualSshHealth) {
+      res.status(503).json({ error: 'mutual SSH subsystem is dark on this agent' });
+      return;
+    }
+    res.json(ctx.mutualSshHealth());
   });
 
   // GET /pool/reconciler — Fix #3 observability (Observable Intelligence). The WS1.3
@@ -15217,6 +16741,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       let right = 0;
       let wrong = 0;
       let unknown = 0;
+      // right+wrong outcomes whose evidence is the interested party's own
+      // account (see the honesty marker on gradeDistribution below).
+      let selfReportGraded = 0;
       const byRule: Record<string, GradeCounts> = {};
       const byRung: Record<string, GradeCounts> = {};
       const byStrength: Record<string, GradeCounts> = {};
@@ -15224,6 +16751,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (r.grade === 'right') right += r.n;
         else if (r.grade === 'wrong') wrong += r.n;
         else if (r.grade === 'unknown') unknown += r.n;
+        if ((r.grade === 'right' || r.grade === 'wrong') && r.evidenceStrength === 'self-report') {
+          selfReportGraded += r.n;
+        }
         bump(byRule, r.ruleId, r.grade, r.n);
         bump(byRung, r.rung, r.grade, r.n);
         bump(byStrength, r.evidenceStrength, r.grade, r.n);
@@ -15240,7 +16770,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         outcomesKnownRatio: decisions > 0 ? outcomesKnown / decisions : 0,
         // Below the minimum sample an aggregate rate is not actionable (§5.5 codex r5).
         insufficientEvidence: outcomesKnown < minSample,
-        gradeDistribution: { right, wrong, unknown, expired: expiredByPoint.get(entry.decisionPoint) ?? 0 },
+        gradeDistribution: {
+          right,
+          wrong,
+          unknown,
+          expired: expiredByPoint.get(entry.decisionPoint) ?? 0,
+          // ── Self-report honesty marker ────────────────────────────────────
+          // `byStrength` segregates evidence classes, but this FLAT sibling
+          // blends them — and it is the field a casual reader (or a future
+          // automated consumer) quotes. With the tone gate's agent-reaction
+          // rules registered, a decision point can now have right/wrong grades
+          // that are ENTIRELY the agent's own account of a judgment about its
+          // own message. Unmarked, that reads as measured error rate.
+          //
+          // These two fields let any consumer of the flat distribution see how
+          // much of it is self-report without having to know `byStrength`
+          // exists. `selfReportOnly` is the loud case: every graded outcome
+          // here is the interested party's word.
+          selfReportShare: right + wrong > 0 ? selfReportGraded / (right + wrong) : 0,
+          selfReportOnly: right + wrong > 0 && selfReportGraded === right + wrong,
+        },
         // Strength FIRST (default aggregate) — proof-like and heuristic grades are never conflated.
         byStrength,
         byRule,
@@ -15256,15 +16805,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     let pending = 0;
     let exempt = 0;
     const pendingRefDead: string[] = [];
+    // Trackers this machine cannot adjudicate: minted above its own id high-water
+    // mark, i.e. created on a peer whose action queue does not replicate here.
+    // NOT dead — unverifiable locally (see readLiveEvolutionActs).
+    const pendingRefUnverifiable: string[] = [];
     const liveActs = readLiveEvolutionActs(ctx.config.stateDir);
     for (const entry of PROVENANCE_COVERAGE) {
       if (entry.status === 'wired') wired++;
       else if (entry.status.startsWith('pending:')) {
         pending++;
-        if (liveActs !== null) {
-          const act = entry.status.slice('pending:'.length);
-          if (!liveActs.has(act)) pendingRefDead.push(`${entry.decisionPoint}:${act}`);
-        }
+        const act = entry.status.slice('pending:'.length);
+        // No liveActs guard here: the adjudicator handles a missing queue itself
+        // (ACT ⇒ unverifiable, backlog ⇒ resolved against the shipped registry).
+        const verdict = adjudicatePendingTracker(act, liveActs);
+        if (verdict === 'dead') pendingRefDead.push(`${entry.decisionPoint}:${act}`);
+        else if (verdict === 'unverifiable') pendingRefUnverifiable.push(`${entry.decisionPoint}:${act}`);
       } else if (entry.status.startsWith('exempt:')) exempt++;
     }
 
@@ -15275,11 +16830,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       totalCounters.droppedByBudget += c.droppedByBudget;
     }
 
+    const wiredButNoGrader = findWiredWithoutGraders();
     return {
       sinceHours,
       gate: { enabled: true, dryRun: ctx.config.provenance?.uniformSeam?.dryRun !== false },
       points,
-      censusDebt: { wired, pending, exempt, pendingRefDead },
+      censusDebt: { wired, pending, exempt, pendingRefDead, pendingRefUnverifiable, wiredButNoGrader },
       counters: totalCounters,
       // The four §5.5 annotation-rejection counters, by class.
       rejections: getDecisionAnnotationRejectionCounters(),
@@ -15378,7 +16934,163 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json(result);
     } catch (err) {
+      // @silent-fallback-ok: NOT silent — the failure is surfaced to the caller as
+      // an HTTP 500 with the error message; nothing is swallowed. (Newly flagged
+      // only by the no-silent-fallbacks 20-line-window bleeding into the adjacent
+      // benchmark-divergence helper's `return false` inserted just below.)
       res.status(500).json({ error: `grade-pass failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // ── Benchmark-Divergence Detector routes (benchmark-divergence-detector FD10) ──
+  // All three routes 503 when the detector resolves DARK (resolveDevAgentGate on
+  // benchmarkDivergence.enabled — live-in-dryRun on a dev agent, dark fleet).
+  const benchmarkDivergenceOn = (): boolean =>
+    resolveDevAgentGate(ctx.config.benchmarkDivergence?.enabled, ctx.config);
+  const benchmarkDivergenceUnavailable = (res: import('express').Response): boolean => {
+    if (!benchmarkDivergenceOn()) {
+      res.status(503).json({ error: 'benchmark-divergence detector is off (benchmarkDivergence resolves dark on this agent)' });
+      return true;
+    }
+    if (!ctx.benchmarkDivergenceAnalyzer) {
+      res.status(503).json({ error: 'benchmark-divergence substrate unavailable (feature-metrics ledger not constructed)' });
+      return true;
+    }
+    return false;
+  };
+
+  // GET /benchmark-divergence — the FD10 read surface. Frozen envelope:
+  // { enabled, dryRun, analyzer, mirror, summary, findings[], scope }; every
+  // finding row carries advisory:true + locally-regenerated question text.
+  // CONTENT-FREE: never joins/inlines raw decision context (question 1 answers
+  // by correlation-id POINTERS into the meter's own surfaces). A plain-scope
+  // read on a non-holder is tagged analyzer.stale:true. ?scope=pool merges
+  // peers' findings through the FD9 allowlist (peer questions DROPPED and
+  // regenerated locally; failed/suspect carry normalized enums + clamped ids
+  // only), fronted by the shared PoolPollCache when wired, ordered per key
+  // (analysisWindow.toDay DESC, lastSeenAt DESC).
+  router.get('/benchmark-divergence', async (req, res) => {
+    if (benchmarkDivergenceUnavailable(res)) return;
+    try {
+      const analyzer = ctx.benchmarkDivergenceAnalyzer!;
+      const s = analyzer.settings();
+      const localFindings = analyzer.readLocalFindingViews();
+      const base = {
+        enabled: true,
+        dryRun: s.dryRun,
+        analyzer: analyzer.status(),
+        mirror: analyzer.mirrorStatus(),
+        summary: analyzer.summary(),
+      };
+      if (req.query.scope !== 'pool') {
+        res.json({ ...base, findings: localFindings, scope: 'local' });
+        return;
+      }
+      const peers = ctx.resolvePeerUrls?.() ?? [];
+      const bdExtraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+      const failed: Array<{ machineId: string; reason: string }> = [];
+      const suspect: Array<{ machineId: string; reasons: string[] }> = [];
+      const remote: BenchmarkFindingView[] = [];
+      const todayDay = new Date().toISOString().slice(0, 10);
+      let peersOk = 0;
+      await Promise.all(
+        peers.map(async (p) => {
+          if (!isPeerUrlAllowedForCredentials(p.url, bdExtraAllowlist).ok) {
+            failed.push({ machineId: p.machineId, reason: 'url-rejected' });
+            return;
+          }
+          const fetchPeerFindings = async (): Promise<{ findings?: unknown[] }> => {
+            const r = await fetch(`${p.url}/benchmark-divergence`, {
+              headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (!r.ok) throw new Error(`http-${r.status}`);
+            return (await r.json()) as { findings?: unknown[] };
+          };
+          try {
+            let body: { findings?: unknown[] };
+            if (ctx.poolPollCache) {
+              const cached = await ctx.poolPollCache.fetchPeer(p.machineId, '/benchmark-divergence', fetchPeerFindings);
+              body = cached.body as { findings?: unknown[] };
+            } else {
+              body = await fetchPeerFindings();
+            }
+            const rows = Array.isArray(body.findings) ? body.findings : [];
+            const reasons = new Set<string>();
+            if (rows.length > 500) reasons.add('row-volume-exceeded');
+            for (const raw of rows.slice(0, 500)) {
+              // FD9 allowlist admission: hostile fields stripped, peer question
+              // text DROPPED (regenerated locally), enum/charset clamps.
+              const view = clampBenchmarkPeerFinding(raw, { todayDay, maxAgeDays: s.byModelRetentionDays });
+              if (view) remote.push({ ...view, machineId: p.machineId } as BenchmarkFindingView);
+              else reasons.add('implausible-row');
+            }
+            if (reasons.size > 0) suspect.push({ machineId: p.machineId, reasons: Array.from(reasons).sort() });
+            peersOk++;
+          } catch (err) {
+            failed.push({
+              machineId: p.machineId,
+              reason: err instanceof Error && err.name === 'TimeoutError' ? 'timeout' : 'unreachable',
+            });
+          }
+        }),
+      );
+      const mergedFindings = mergeBenchmarkFindingsByKey([...localFindings, ...remote]);
+      res.json({
+        ...base,
+        findings: mergedFindings,
+        scope: 'pool',
+        pool: { peersQueried: peers.length, peersOk, failed, suspect },
+      });
+    } catch (err) {
+      res.status(500).json({ error: `benchmark-divergence read failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // POST /benchmark-divergence/analyze — trigger one analysis pass (FD8).
+  // Lease-gated (non-holder ⇒ 409 naming the holder), rate-limited (429),
+  // single-flight + idempotent (an in-flight pass answers calmly, never
+  // duplicates). Body {"trigger":"cadence"} (the built-in job) rides the
+  // bounded jitter; default manual runs immediately.
+  router.post('/benchmark-divergence/analyze', async (req, res) => {
+    if (benchmarkDivergenceUnavailable(res)) return;
+    try {
+      const trigger = (req.body as { trigger?: string } | undefined)?.trigger === 'cadence' ? 'cadence' : 'manual';
+      const result = await ctx.benchmarkDivergenceAnalyzer!.analyze(trigger);
+      if (result.reason === 'not-holder' || result.reason === 'lease-lost') {
+        res.status(409).json({ error: 'not-lease-holder', holderMachineId: result.holderMachineId ?? null, reason: result.reason });
+        return;
+      }
+      if (result.reason === 'rate-limited') {
+        res.status(429).json({ error: 'rate-limited', minIntervalMs: BENCHMARK_ANALYZE_MIN_INTERVAL_MS });
+        return;
+      }
+      if (result.reason === 'disabled') {
+        res.status(503).json({ error: 'benchmark-divergence detector is off (benchmarkDivergence resolves dark on this agent)' });
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: `benchmark-divergence analyze failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // GET /benchmark-divergence/rollup-aggregates?fromDay=&toDay= — the FD10 peer
+  // collection route: this machine's matured-window per-model aggregates. The
+  // SERVING peer clamps the range (min of requested, its own maxDaysPerAnalysis,
+  // its retention) and bounds the response (maxAggregateRowsPerPeer).
+  router.get('/benchmark-divergence/rollup-aggregates', (req, res) => {
+    if (benchmarkDivergenceUnavailable(res)) return;
+    try {
+      const fromDay = String(req.query.fromDay ?? '');
+      const toDay = String(req.query.toDay ?? '');
+      if (!BENCHMARK_DAY_RE.test(fromDay) || !BENCHMARK_DAY_RE.test(toDay) || fromDay > toDay) {
+        res.status(400).json({ error: 'fromDay/toDay must be strict YYYY-MM-DD with fromDay <= toDay' });
+        return;
+      }
+      res.json(ctx.benchmarkDivergenceAnalyzer!.rollupAggregates(fromDay, toDay));
+    } catch (err) {
+      res.status(500).json({ error: `benchmark-divergence aggregates read failed: ${err instanceof Error ? err.message : String(err)}` });
     }
   });
 
@@ -15576,6 +17288,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     res.json(sentinel.status());
+  });
+
+  // GET /pool/failover-gap — the single-machine failover-gap detector's status
+  // snapshot (increment 2). 503 when the guard is dark on this agent (dev-gated:
+  // `enabled` OMITTED → resolveDevAgentGate; never constructed on the fleet).
+  // Read-only observability — the guard is pure signal.
+  router.get('/pool/failover-gap', (_req, res) => {
+    const s = ctx.getSingleMachineFailoverGap?.() ?? null;
+    if (!s) {
+      res.status(503).json({ error: 'single-machine failover-gap guard not enabled on this agent (dev-gated dark; monitoring.singleMachineFailoverGap.enabled)' });
+      return;
+    }
+    res.json(s.status());
+  });
+
+  // GET /pool/missing-login — the missing-login-session detector's status snapshot
+  // (increment 2). 503 when the guard is dark on this agent (dev-gated: `enabled`
+  // OMITTED → resolveDevAgentGate; never constructed on the fleet). Read-only
+  // observability — the guard is pure signal.
+  router.get('/pool/missing-login', (_req, res) => {
+    const s = ctx.getMissingLoginSession?.() ?? null;
+    if (!s) {
+      res.status(503).json({ error: 'missing-login-session guard not enabled on this agent (dev-gated dark; monitoring.missingLoginSession.enabled)' });
+      return;
+    }
+    res.json(s.status());
   });
 
   // ── Replicated-store conflict + rollback surfaces (multi-machine-replicated-
@@ -15776,14 +17514,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   // POST /pool/transfer — deterministic topic transfer that does NOT depend on
-  // natural-language phrasing. Body: { topic, to: "<nickname|machineId>", confirm? }.
+  // natural-language phrasing. Body: { topic, to: "<nickname|machineId>", confirm?, confirmationChallenge? }.
   // Runs the SAME validated planner as "move this to <nickname>" (rate-limit, online,
   // already-there checks), sets the placement pin, and releases local ownership so the
   // next message re-places onto the target. A non-holder PROXIES to the holder (whose
   // pin store drives routing). This is the reliable lever a session can call directly
   // instead of hoping a phrase is recognized. 503 when the pool isn't wired (dark).
   router.post('/pool/transfer', async (req, res) => {
-    const body = (req.body ?? {}) as { topic?: unknown; to?: unknown; confirm?: unknown };
+    const body = (req.body ?? {}) as { topic?: unknown; to?: unknown; confirm?: unknown; confirmationChallenge?: unknown };
     const topicId = body.topic != null ? String(body.topic).trim() : '';
     const to = typeof body.to === 'string' ? body.to.trim() : '';
     if (!topicId || !to) {
@@ -15801,11 +17539,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const r = await fetch(`${holderUrl}/pool/transfer`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ topic: topicId, to, confirm: body.confirm === true }),
+          body: JSON.stringify({
+            topic: topicId,
+            to,
+            confirm: body.confirm === true,
+            ...(typeof body.confirmationChallenge === 'string'
+              ? { confirmationChallenge: body.confirmationChallenge }
+              : {}),
+          }),
         });
         // @silent-fallback-ok — if the holder's body isn't JSON we still forward its
         // status code with an empty object; the status is the signal, not the body.
         const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        // A proxied transfer returns before the holder-only implementation below,
+        // so the machine that received the operator request must also arm the
+        // acquire carrier after the holder proves the seat moved. This is
+        // deliberately redundant with the holder's remote kick: when this machine
+        // is the destination it has the shortest, most reliable path to its local
+        // coordinator, while duplicate kicks are collapsed by coordinator
+        // single-flight/rate limiting. Bind the kick to the holder-authored target
+        // rather than the caller's nickname so a forged/misresolved request cannot
+        // fetch a different topic onto this machine.
+        if (r.ok && j.seatMoved === true && typeof j.targetMachine === 'string') {
+          const topicNum = Number(topicId);
+          if (Number.isFinite(topicNum)) {
+            try { ctx.kickWorkingSetOnMachine?.(j.targetMachine, topicNum); }
+            catch { /* @silent-fallback-ok — transfer already completed; bounded carrier retries and the manual fetch reflex remain available */ }
+          }
+        }
         res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
       } catch (err) {
         // @silent-fallback-ok — NOT silent: a failed proxy surfaces an explicit 502 with the
@@ -15834,7 +17595,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     };
     // WS1.4: a LIVE autonomous run on this topic (this machine's stateDir is
     // the run registry — the run lives where its state file lives).
-    const liveAutonomousRun = (sk: string): { goal: string | null; remainingMinutes: number | null } | null => {
+    const liveAutonomousRun = (sk: string): { goal: string | null; remainingMinutes: number | null; runKey: string | null } | null => {
       try {
         const job = listAutonomousJobs(ctx.config.stateDir).find((j) => j.topic === sk && j.active && !j.paused);
         if (!job) return null;
@@ -15843,9 +17604,41 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const endMs = Date.parse(job.startedAt) + job.durationSeconds * 1000;
           if (Number.isFinite(endMs)) remainingMinutes = Math.max(0, Math.round((endMs - Date.now()) / 60_000));
         }
-        return { goal: job.goal, remainingMinutes };
+        return { goal: job.goal, remainingMinutes, runKey: job.startedAt };
       } catch { return null; /* @silent-fallback-ok — unreadable run registry → veto not applied; the transfer behaves as before WS1.4 */ }
     };
+    // The holder is authoritative for the pin, but the autonomous state file
+    // lives on the current OWNER. Probe that owner before planning, otherwise a
+    // holder/owner split silently bypasses the consent gate and the drain
+    // suspends real work without confirmation.
+    const ownershipBeforePlan = ctx.sessionOwnershipRegistry.read(topicId);
+    const ownerBeforePlan = ownershipBeforePlan?.ownerMachineId ?? null;
+    let ownerAutonomousRun: { goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null = null;
+    if (ownerBeforePlan && ownerBeforePlan !== self) {
+      if (!ctx.autonomousRunOnMachine) {
+        ownerAutonomousRun = { goal: 'owner run state could not be verified', remainingMinutes: null, runKey: 'unverified' };
+      } else {
+        try {
+          ownerAutonomousRun = await ctx.autonomousRunOnMachine(ownerBeforePlan, topicId);
+        } catch {
+          // Fail closed: an unreachable owner cannot prove that moving it will not
+          // suspend a live run. The confirmation remains explicit and retryable.
+          ownerAutonomousRun = { goal: 'owner run state could not be verified', remainingMinutes: null, runKey: 'unverified' };
+        }
+      }
+      const ownershipAfterProbe = ctx.sessionOwnershipRegistry.read(topicId);
+      if (
+        ownershipAfterProbe?.ownerMachineId !== ownershipBeforePlan?.ownerMachineId ||
+        ownershipAfterProbe?.ownershipEpoch !== ownershipBeforePlan?.ownershipEpoch
+      ) {
+        res.status(409).json({
+          retryRequired: true,
+          error: 'topic ownership changed while transfer conditions were being checked; retry the transfer',
+        });
+        return;
+      }
+    }
+    const selectedAutonomousRun = liveAutonomousRun(topicId) ?? ownerAutonomousRun;
     const plan = planTransferByNickname(
       { intent: 'transfer', nickname: to, matchedVerb: 'transfer' },
       {
@@ -15861,7 +17654,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // the confirmed call re-evaluates the full chain and a confirm can
         // never silently consent to a condition the caller was not shown
         // (second-pass finding, 2026-06-13).
-        autonomousRunActive: liveAutonomousRun,
+        autonomousRunActive: () => selectedAutonomousRun,
       },
       topicId,
     );
@@ -15875,11 +17668,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       return;
     }
-    if (plan.action === 'confirm-required' && body.confirm !== true) {
+    if (plan.action === 'confirm-required') {
+      const confirmationChallenge = createHash('sha256').update(JSON.stringify({
+        topicId,
+        targetMachine: plan.targetMachine,
+        detail: plan.detail,
+        owner: ownershipBeforePlan?.ownerMachineId ?? null,
+        ownershipEpoch: ownershipBeforePlan?.ownershipEpoch ?? null,
+        runKey: selectedAutonomousRun?.runKey ?? null,
+        runGoal: selectedAutonomousRun?.goal ?? null,
+      })).digest('hex');
       // `detail` names every condition the confirm would consent to
       // ('+'-joined) — callers relay the prompt, which already states all of them.
-      res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine, detail: plan.detail });
-      return;
+      if (body.confirm !== true || body.confirmationChallenge !== confirmationChallenge) {
+        res.status(409).json({ needsConfirmation: true, prompt: plan.confirmationPrompt, targetMachine: plan.targetMachine, detail: plan.detail, confirmationChallenge });
+        return;
+      }
     }
     // transfer | noop | confirmed → set the pin and release local ownership if we hold it.
     const target = plan.targetMachine!;
@@ -15897,10 +17701,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     //   · refused-*/no-handler/timeout/no-flag → DEGRADE to today's pin path
     //     (recorded in the response; the reconciler + closeout converge it).
     // The capability gate means an old peer is never sent a doomed order.
-    let drainLeg: { attempted: boolean; ok?: boolean; status?: string; reason?: string } = { attempted: false };
+    let drainLeg: { attempted: boolean; ok?: boolean; status?: string; reason?: string; claimLanded?: boolean } = { attempted: false };
     let drainRunSuspended = false;
     try {
       const currentOwner = plan.action !== 'noop' ? ctx.sessionOwnershipRegistry.ownerOf(topicId) : null;
+      const ownershipAtDrain = ctx.sessionOwnershipRegistry.read(topicId);
+      if (
+        plan.action !== 'noop' &&
+        (ownershipAtDrain?.ownerMachineId !== ownershipBeforePlan?.ownerMachineId ||
+          ownershipAtDrain?.ownershipEpoch !== ownershipBeforePlan?.ownershipEpoch)
+      ) {
+        res.status(409).json({
+          retryRequired: true,
+          error: 'topic ownership changed before drain; retry the transfer',
+        });
+        return;
+      }
       const ownerCap = currentOwner && currentOwner !== self ? ctx.machinePoolRegistry?.getCapacity(currentOwner) : null;
       const ownerCanDrain =
         currentOwner != null &&
@@ -15911,7 +17727,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (ownerCanDrain) {
         const observedEpoch = ctx.sessionOwnershipRegistry.read(topicId)?.ownershipEpoch ?? 0;
         const r = await ctx.sendDrain!(currentOwner!, topicId, target, observedEpoch);
-        drainLeg = { attempted: true, ok: r.ok, status: r.status, reason: r.reason };
+        drainLeg = { attempted: true, ok: r.ok, status: r.status, reason: r.reason, claimLanded: r.claimLanded };
         drainRunSuspended = r.runSuspended === true;
         if (r.status === 'aborted-emergency-stop') {
           res.status(409).json({
@@ -16156,14 +17972,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const post = ctx.sessionOwnershipRegistry.read(topicId);
       if (plan.action === 'noop') {
         seatMoved = true; // already-there / no move required — the seat is at the target
-      } else if (post?.status === 'active' && ownerNow === target) {
-        seatMoved = true; // the target is the confirmed active owner — a real move
+      } else if (
+        (post?.status === 'active' && ownerNow === target) ||
+        (drainLeg.ok === true &&
+          (drainLeg.status === 'drained' || drainLeg.status === 'drained-interrupted') &&
+          drainLeg.claimLanded === true)
+      ) {
+        // Either the local echo already converged, or the authenticated owner
+        // directly proved that its fenced target-claim CAS landed.
+        seatMoved = true;
       } else {
         seatMoved = false;
         seatMoveReason =
           drainLeg.attempted && drainLeg.ok === false
             ? 'drain failed — the seat did not move (topic stays whole on its current machine)'
             : 'ownership did not transfer to the target (the pin is set, but the target is not the active owner)';
+      }
+    }
+    if (seatMoved && plan.action !== 'noop') {
+      const topicNum = Number(topicId);
+      if (Number.isFinite(topicNum)) {
+        try { ctx.kickWorkingSetOnMachine?.(target, topicNum); }
+        catch { /* @silent-fallback-ok — the kick has bounded retries and the manual fetch surface remains available; transfer authority is already complete */ }
       }
     }
     res.json({
@@ -16338,6 +18168,49 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return { stage, result: row?.result ?? null, commitSha: row?.commitSha ?? null, ranAt: row?.ranAt ?? null, verified: row ? store.verify(row) : null };
     });
     res.json({ latestPerStage, total: store.all().length });
+  });
+
+  // GET /session-pool/failover-runner — the in-agent failover-runner's status
+  // (§Rollout, Track H). Read-only. 503 when the runner is dark (dev-gated:
+  // enabled OMITTED → resolveDevAgentGate; single-machine/fleet). When live it
+  // reports the resolved gate (enabled/dryRun), which store the recorded verdict
+  // lands in (real promotion store vs the dry-run SIDE store), the proven stage +
+  // commit, the cadence, in-flight state, and the last run's outcome + counters.
+  router.get('/session-pool/failover-runner', (_req, res) => {
+    const status = ctx.getSessionPoolFailoverRunner?.() ?? null;
+    if (!status) {
+      res.status(503).json({ error: 'session-pool failover-runner not enabled on this agent (dev-gated dark; multiMachine.sessionPool.failoverRunner.enabled)' });
+      return;
+    }
+    res.json(status);
+  });
+
+  // POST /session-pool/promote — operator-triggered ONE-STEP promotion.
+  // Available in both live promotion models; default-off is an honest 503.
+  // The controller delegates to SessionPoolRolloutDriver → StageAdvancer, so a
+  // missing/stale/red/tampered green or the operator ceiling still refuses.
+  router.post('/session-pool/promote', (_req, res) => {
+    const activation = ctx.sessionPoolPromotionActivation;
+    if (!activation) {
+      res.status(503).json({
+        error: 'session-pool promotion is off (multiMachine.sessionPool.promotionModel)',
+      });
+      return;
+    }
+    try {
+      const result = activation.promoteOne();
+      if (!result) {
+        res.status(503).json({
+          error: 'session-pool promotion is off (multiMachine.sessionPool.promotionModel)',
+        });
+        return;
+      }
+      res.json({ ok: true, ...activation.status(), result });
+    } catch (err) {
+      res.status(500).json({
+        error: `session-pool promotion failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   });
 
   // PATCH /pool/machines/:id — rename a machine (§L2 user-editable nickname).
@@ -16839,6 +18712,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       await checkOutboundMessage(text, 'whatsapp', res, {
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
+        // Channel parity for the advisory migration — an override path that
+        // works on Telegram and silently does not on WhatsApp would make the
+        // meter's sample channel-dependent, and strand this channel's agent.
+        ...toneAdvisoryMetadata(metadata),
       })
     )
       return;
@@ -16899,6 +18776,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         await checkOutboundMessage(text, 'imessage', res, {
           allowDebugText: imessageMetadata?.allowDebugText === true,
           allowDuplicate: imessageMetadata?.allowDuplicate === true,
+          ...toneAdvisoryMetadata(imessageMetadata),
         })
       )
         return;
@@ -18955,6 +20833,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         replyToMessageId: fwdReplyTo,
         at: Date.now(),
       });
+      observeMatrixAcceptanceInbound({
+        topicId: Number(topicId),
+        text: String(text),
+        senderUid: String(fromUserId ?? ''),
+        messageId: Number(messageId) || 0,
+        replyToMessageId: fwdReplyTo,
+      });
     }
 
     // ── Exactly-once ingress gate (spec §8 G3a) ──────────────────────
@@ -19819,7 +21704,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { title, description, priority, commitTo, dueBy, source, tags } = req.body;
+    const { title, description, priority, commitTo, dueBy, source } = req.body;
+    const tags = Array.isArray(req.body.tags) ? req.body.tags.filter((tag: unknown): tag is string => typeof tag === 'string') : [];
     if (!title || typeof title !== 'string' || title.length > 500) {
       res.status(400).json({ error: '"title" must be a string under 500 characters' });
       return;
@@ -19833,10 +21719,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // has touched no store. (Wave 1 classifies this family machine-local ⇒
     // admit everywhere; the check still runs first in every mode, §9.15.)
     if (refuseInadmissibleWrite(req, res)) return;
-    const action = ctx.evolution.addAction({
-      title, description, priority, commitTo, dueBy, source, tags,
+    const originCorrection = tags.includes('origin:correction');
+    const admission = evaluateCorrectionInstanceFix({
+      originCorrection,
+      correctionId: typeof req.body.correctionId === 'string' ? req.body.correctionId : undefined,
+      claimedClassReviewRef: typeof req.body.classReviewRef === 'string' ? req.body.classReviewRef : undefined,
+      dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false,
+      correctionLedger: ctx.correctionLedger ?? null,
+      classReviewStore: ctx.classReviewStore ?? null,
     });
-    res.status(201).json(action);
+    if (!admission.allow) {
+      res.status(409).json({ error: 'correction-derived action requires a corresponding filled class review', reason: admission.reason });
+      return;
+    }
+    const stampedTags = admission.classReviewRef
+      ? [...tags.filter((tag: string) => !tag.startsWith('class-review:')), `class-review:${admission.classReviewRef}`]
+      : tags;
+    const action = ctx.evolution.addAction({
+      title, description, priority, commitTo, dueBy, source, tags: stampedTags,
+    });
+    res.status(201).json({ ...action, classReviewAdmission: { wouldRefuse: admission.wouldRefuse, reason: admission.reason } });
   });
 
   router.patch('/evolution/actions/:id', (req, res) => {
@@ -19844,18 +21746,50 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { status, resolution } = req.body;
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+      ? req.body as Record<string, unknown>
+      : {};
+    const supportedFields = new Set(['status', 'resolution']);
+    const unsupportedFields = Object.keys(body).filter((field) => !supportedFields.has(field));
+    if (unsupportedFields.length > 0) {
+      res.status(400).json({
+        error: `Unsupported field(s): ${unsupportedFields.join(', ')}`,
+        unsupportedFields,
+        supportedFields: Array.from(supportedFields),
+      });
+      return;
+    }
+    const hasStatus = Object.prototype.hasOwnProperty.call(body, 'status');
+    const hasResolution = Object.prototype.hasOwnProperty.call(body, 'resolution');
+    const status = hasStatus ? body.status : undefined;
+    const resolution = hasResolution ? body.resolution : undefined;
     const validStatuses = ['pending', 'in_progress', 'completed', 'cancelled'];
-    if (status && !validStatuses.includes(status)) {
+    if (status !== undefined && (typeof status !== 'string' || !validStatuses.includes(status))) {
       res.status(400).json({ error: `"status" must be one of: ${validStatuses.join(', ')}` });
+      return;
+    }
+    if (resolution !== undefined && (typeof resolution !== 'string' || resolution.length === 0)) {
+      res.status(400).json({ error: '"resolution" must be a non-empty string' });
+      return;
+    }
+    const updates: { status?: 'pending' | 'in_progress' | 'completed' | 'cancelled'; resolution?: string } = {};
+    if (typeof status === 'string') updates.status = status as 'pending' | 'in_progress' | 'completed' | 'cancelled';
+    if (typeof resolution === 'string') updates.resolution = resolution;
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: 'Request body must include at least one supported field: status, resolution' });
       return;
     }
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
     if (refuseInadmissibleWrite(req, res)) return;
-    const success = ctx.evolution.updateAction(req.params.id, { status, resolution });
+    const currentAction = ctx.evolution.listActions({}).find((action) => action.id === req.params.id);
+    const success = ctx.evolution.updateAction(req.params.id, updates);
     if (!success) {
       res.status(404).json({ error: 'Action not found' });
       return;
+    }
+    if (status === 'completed' && currentAction && ctx.classReviewStore) {
+      const refTag = currentAction.tags?.find((tag) => tag.startsWith('class-review:'));
+      if (refTag) ctx.classReviewStore.transitionOutcome(refTag.slice('class-review:'.length), 'process', 'shipped');
     }
     res.json({ ok: true, id: req.params.id, status });
   });
@@ -20441,16 +22375,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.post('/intent/journal', async (req, res) => {
     try {
-      const { DecisionJournal } = await import('../core/DecisionJournal.js');
+      const { DecisionJournal, validateDecisionSubmission } = await import(
+        '../core/DecisionJournal.js'
+      );
       const { EvidencePolicyError } = await import('../memory/SemanticMemory.js');
       const journal = new DecisionJournal(ctx.config.stateDir);
 
-      const { sessionId, decision, evidence, ...rest } = req.body || {};
-
-      if (!sessionId || !decision) {
-        res.status(400).json({ error: 'sessionId and decision are required' });
+      // Refuse before recording. A submission that names no guiding principle,
+      // or that carries a field no reader consumes, would otherwise succeed and
+      // look recorded without being recorded.
+      const verdict = validateDecisionSubmission(req.body);
+      if (!verdict.ok) {
+        res.status(400).json({
+          error: verdict.message,
+          reason: verdict.reason,
+          unknownFields: verdict.unknownFields,
+          missingFields: verdict.missingFields,
+        });
         return;
       }
+
+      const { sessionId, decision, evidence, ...rest } = req.body || {};
 
       // WikiClaim Phase 3 (spec § Producers line 258): every decision must
       // cite at least one evidence row. The route accepts an explicit
@@ -20897,6 +22842,62 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // POST /playwright-profiles/seat/acquire — host-wide physical browser-seat lease.
+  // The PreToolUse MCP hook calls this before EVERY Playwright tool (including reads),
+  // so two drives cannot interleave clicks against one logged-in browser profile.
+  // Same-holder calls renew idempotently; a crashed/quiet drive releases by TTL.
+  router.post('/playwright-profiles/seat/acquire', (req, res) => {
+    if (refuseInadmissibleWrite(req, res)) return;
+    // Deliberately NOT coupled to the profile-registry rollout gate: the MCP
+    // hook is fleet-wide, and host-seat safety must remain available when the
+    // optional registry/activation UI is dark.
+    const holderId = typeof req.body?.holderId === 'string' ? req.body.holderId : '';
+    const holderLabel = typeof req.body?.holderLabel === 'string' ? req.body.holderLabel : '';
+    if (!holderId) {
+      res.status(400).json({ error: 'holderId is required' });
+      return;
+    }
+    try {
+      const result = (ctx.playwrightSeatLease?.() ?? new PlaywrightSeatLease()).acquire(holderId, holderLabel);
+      if (!result.acquired) {
+        res.status(409).json({
+          error: 'playwright operator seat is in use',
+          holderLabel: result.holderLabel,
+          retryAfterMs: result.retryAfterMs,
+          expiresAt: result.expiresAt,
+        });
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      // An unavailable lease store must not make browser access disappear. The
+      // hook treats this as degraded/fail-open; only a positive conflict blocks.
+      res.status(503).json({ error: err instanceof Error ? err.message : 'playwright seat lease unavailable' });
+    }
+  });
+
+  // POST /playwright-profiles/seat/release — voluntary standalone-script path.
+  // Ownership is checked by the shared lease store, so a late cleanup cannot
+  // release a newer browser drive's lease.
+  router.post('/playwright-profiles/seat/release', (req, res) => {
+    if (refuseInadmissibleWrite(req, res)) return;
+    const holderId = typeof req.body?.holderId === 'string' ? req.body.holderId : '';
+    if (!holderId) {
+      res.status(400).json({ error: 'holderId is required' });
+      return;
+    }
+    try {
+      const result = (ctx.playwrightSeatLease?.() ?? new PlaywrightSeatLease()).release(holderId);
+      if (!result.released && result.reason === 'ownership-mismatch') {
+        res.status(409).json({ error: 'playwright operator seat is held by another drive', ...result });
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      res.status(503).json({ error: err instanceof Error ? err.message : 'playwright seat lease unavailable' });
+    }
+  });
+
   // GET /playwright-profiles/session-context — the compact boot pointer (?full=1 bypasses the cap).
   router.get('/playwright-profiles/session-context', (req, res) => {
     if (!playwrightFeatureEnabled()) {
@@ -21190,7 +23191,304 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       topicId: typeof body.topicId === 'number' ? body.topicId : null,
     });
     if (!rec) { res.status(500).json({ error: 'failed to record (logged via fail-open path)' }); return; }
+    // This bearer-authenticated one-tap is agent-self. The caller cannot
+    // elevate origin with a request field; operator-attributed capture uses the
+    // authenticated messaging ingress seam.
+    ctx.correctionClassReview?.record(rec, 'agent-self');
     res.status(201).json(CorrectionLedger.toApiView(rec));
+  });
+
+  // Drive 7 WS1 read surface. Rows contain only boundary-scrubbed text and
+  // closed-enum lifecycle fields; raw CorrectionLedger.learning never appears.
+  router.get('/class-reviews', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const lifecycle = typeof req.query.status === 'string' && ['open', 'parked', 'resolved', 'superseded', 'reopened'].includes(req.query.status)
+      ? req.query.status as import('../monitoring/ClassReviewStore.js').ReviewLifecycle : undefined;
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 1000));
+    const records = ctx.classReviewStore.list({ lifecycle, limit });
+    res.json({ records, count: records.length, open: ctx.classReviewStore.countOpen() });
+  });
+
+  router.get('/class-reviews/:dedupeKey', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const record = ctx.classReviewStore.get(req.params.dedupeKey);
+    if (!record) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(record);
+  });
+
+  router.post('/class-reviews/backfill', (req, res) => {
+    if (!ctx.classReviewStore || !ctx.correctionClassReview || !ctx.correctionLedger) {
+      res.status(503).json({ error: 'correction-class-review disabled' }); return;
+    }
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    const limit = Math.max(1, Math.min(Number(req.body?.limit) || 100, 1000));
+    const result = ctx.correctionClassReview.backfill(ctx.correctionLedger.list({ limit }), {}, limit);
+    const agingDays = Math.max(1, ctx.config.monitoring?.correctionClassReview?.agingDays ?? 7);
+    const activeActionIds = new Set((ctx.evolution?.listActions({ status: 'in_progress' }) ?? []).map((action) => action.id));
+    const aged = ctx.classReviewStore.ageExpiredUnreviewed(new Date(Date.now() - agingDays * 86_400_000), limit, activeActionIds);
+    if (aged.length > 0) void ctx.telegram?.createAttentionItem({
+      id: 'correction-class-review:expired-unreviewed', title: 'Correction class reviews need disposition',
+      summary: `${aged.length} proposed correction class-review arm(s) aged into parked-open status. They remain unresolved and will re-surface on the slow review cadence.`,
+      priority: 'NORMAL', category: 'general', sourceContext: 'correction-class-review-aging',
+    });
+    res.json({ ...result, aged: aged.length, dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false });
+  });
+
+  router.patch('/class-reviews/:dedupeKey/outcome', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expected = ctx.config.dashboardPin ?? '';
+    const pinOk = pin.length === expected.length && pin.length > 0
+      && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
+    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    const arm = req.body?.arm;
+    const outcome = req.body?.outcome;
+    if (!['standard', 'process'].includes(arm) || !['ratified', 'shipped', 'rejected', 'deferred'].includes(outcome)) {
+      res.status(400).json({ error: 'invalid arm or outcome' }); return;
+    }
+    let record;
+    if (outcome === 'deferred') {
+      if (!ctx.commitmentTracker) { res.status(503).json({ error: 'commitment tracker required for deferred disposition' }); return; }
+      const tracking = ctx.commitmentTracker.record({
+        type: 'one-time-action', source: 'manual', owner: 'agent', blockedOn: 'none',
+        userRequest: `Revisit deferred ${arm} outcome for correction class review ${req.params.dedupeKey}`,
+        agentResponse: 'I will re-surface this parked-open class review for a deliberate disposition.',
+        externalKey: `class-review-deferred:${req.params.dedupeKey}:${arm}`,
+      });
+      record = ctx.classReviewStore.defer(req.params.dedupeKey, arm, tracking.id);
+    } else {
+      record = ctx.classReviewStore.transitionOutcome(req.params.dedupeKey, arm, outcome);
+    }
+    if (!record) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(record);
+  });
+
+  router.patch('/class-reviews/:dedupeKey/lifecycle', (req, res) => {
+    if (!ctx.classReviewStore) { res.status(503).json({ error: 'correction-class-review disabled' }); return; }
+    const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expected = ctx.config.dashboardPin ?? '';
+    const pinOk = pin.length === expected.length && pin.length > 0 && timingSafeEqual(Buffer.from(pin), Buffer.from(expected));
+    if (!pinOk) { res.status(403).json({ error: 'operator PIN required' }); return; }
+    const action = req.body?.action;
+    let record = null;
+    if (action === 'reopen') record = ctx.classReviewStore.reopen(req.params.dedupeKey);
+    else if (action === 'supersede') {
+      if (typeof req.body?.supersededBy !== 'string' || typeof req.body?.reason !== 'string' || !req.body.reason.trim()) {
+        res.status(400).json({ error: 'supersededBy and non-empty reason are required' }); return;
+      }
+      record = ctx.classReviewStore.supersede(req.params.dedupeKey, req.body.supersededBy, { actor: 'operator-pin', reason: req.body.reason });
+    } else { res.status(400).json({ error: 'action must be reopen or supersede' }); return; }
+    if (!record) { res.status(404).json({ error: 'not found or invalid lifecycle transition' }); return; }
+    res.json(record);
+  });
+
+  const registerUnifiedFutureClaims = (input: {
+    message: string; topicId?: number; rawBindToken?: string; arbitration?: ClaimClauseArbitration;
+  }): { registered: number; reason?: string } => {
+    if (!ctx.commitmentTracker || typeof input.topicId !== 'number' || !Number.isSafeInteger(input.topicId)) {
+      return { registered: 0, reason: 'no-commitment-tracker-or-topic' };
+    }
+    const acGet = <T>(leaf: string, dflt: T): T =>
+      (ctx.liveConfig?.get<T | undefined>(`actionClaim.${leaf}`, undefined) ??
+        ctx.liveConfig?.get<T>(`messaging.actionClaim.${leaf}`, dflt)) as T;
+    if (!(acGet<boolean>('enabled', false) ?? false)) return { registered: 0, reason: 'action-claim-disabled' };
+    const topicId = input.topicId;
+    const isMinted = topicId < 0;
+    if (isMinted && !resolveDevAgentGate(acGet<boolean | undefined>('slack.enabled', undefined), ctx.config)) {
+      return { registered: 0, reason: 'slack-lane-dark' };
+    }
+    if (isMinted && (acGet<boolean>('slack.dryRun', true) ?? true)) return { registered: 0, reason: 'slack-dry-run' };
+    const bind = verifyConversationBind({ bindAuth: ctx.conversationBindAuth, numericTopicId: topicId,
+      rawToken: input.rawBindToken, attention: ctx.telegram });
+    if (!bind.ok) return { registered: 0, reason: 'conversation-bind-not-authorized' };
+    const clauses = input.arbitration?.authoritative
+      ? input.arbitration.clauses.filter((clause) => clause.label === 'future-commitment').map((clause) => clause.text)
+      : [input.message];
+    let registered = 0;
+    for (const clause of clauses) {
+      const action = routeActionClaim(clause, { completionEnabled: true, completionDryRun: false },
+        input.arbitration?.authoritative
+          ? { authoritative: true, clauses: input.arbitration.clauses.filter((candidate) => candidate.text === clause) }
+          : input.arbitration);
+      let lane: 'action' | 'time'; let verb: string | undefined; let externalKey: string;
+      if (action.isActionClaim && action.claim) {
+        lane = 'action'; verb = action.claim.normalizedClaimVerb;
+        externalKey = `actionclaim:${createHash('sha256').update(`${topicId}|${verb}`).digest('hex').slice(0, 16)}`;
+      } else {
+        const timed = CommitmentTracker.detectTimePromise(clause.slice(0, 500));
+        if (!timed) continue;
+        lane = 'time';
+        externalKey = `timepromise:${createHash('sha256').update(`${topicId}|${clause.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200)}`).digest('hex').slice(0, 16)}`;
+      }
+      const open = ctx.commitmentTracker.getActive().filter((commitment) => commitment.topicId === topicId
+        && typeof commitment.externalKey === 'string'
+        && (commitment.externalKey.startsWith('actionclaim:') || commitment.externalKey.startsWith('timepromise:')));
+      const cap = acGet<number>('perTopicCap', 5) ?? 5;
+      if (!open.some((commitment) => commitment.externalKey === externalKey) && open.length >= cap) continue;
+      ctx.commitmentTracker.record({ type: 'one-time-action', source: 'sentinel', topicId,
+        userRequest: lane === 'action' ? `(action-claim) follow through on: ${verb}` : '(time-promise) follow through on the promise made in this clause',
+        agentResponse: clause.slice(0, 500), externalKey,
+        expiresAt: new Date(Date.now() + (acGet<number>('expiresHours', 6) ?? 6) * 3_600_000).toISOString(),
+        ...(bind.boundBy ? { boundBy: bind.boundBy } : {}),
+      });
+      registered++;
+    }
+    return { registered };
+  };
+
+  // Observe-only v1. The Stop hook parses locally and sends structural-only
+  // evidence; a transcript path is never accepted by this server boundary.
+  router.post('/completion-claim/observe', (req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return;
+    }
+    const message = typeof req.body?.message === 'string' ? req.body.message : '';
+    if (!message) { res.status(400).json({ error: 'message is required' }); return; }
+    if (Buffer.byteLength(message, 'utf8') > 32_768) { res.status(413).json({ error: 'claim observation input bound exceeded' }); return; }
+    const forbiddenAuthorityFields = ['agentId', 'sessionId', 'projectDir', 'repository', 'machineId', 'ownershipEpoch'];
+    if (forbiddenAuthorityFields.some((field) => field in (req.body ?? {}))) {
+      res.status(400).json({ error: 'authority context is derived server-side' }); return;
+    }
+    if ('transcriptPath' in (req.body ?? {}) || 'transcript_path' in (req.body ?? {})) {
+      res.status(400).json({ error: 'transcript paths are not accepted; send structural TurnEvidence' }); return;
+    }
+    const hasV1Envelope = 'hookSchemaVersion' in (req.body ?? {}) || 'messageAttemptId' in (req.body ?? {}) || 'turnEvidence' in (req.body ?? {});
+    const messageAttemptId = typeof req.body?.messageAttemptId === 'string' ? req.body.messageAttemptId : undefined;
+    if (hasV1Envelope && (req.body?.hookSchemaVersion !== 1 || !messageAttemptId
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(messageAttemptId))) {
+      res.status(400).json({ error: 'valid hookSchemaVersion and UUIDv7 messageAttemptId are required' }); return;
+    }
+    const evidence = validateTurnEvidence(hasV1Envelope ? req.body?.turnEvidence : req.body?.evidence);
+    if (!evidence) { res.status(400).json({ error: 'valid structural evidence is required' }); return; }
+    const topicId = typeof (hasV1Envelope ? req.body?.topicHint : req.body?.topicId) === 'number'
+      && Number.isSafeInteger(hasV1Envelope ? req.body.topicHint : req.body.topicId)
+      ? Number(hasV1Envelope ? req.body.topicHint : req.body.topicId) : undefined;
+    const rawBindHeader = req.headers['x-instar-bind-token'];
+    const rawBindToken = (Array.isArray(rawBindHeader) ? rawBindHeader[0] : rawBindHeader)
+      ?? (typeof req.body?.bindToken === 'string' ? req.body.bindToken : undefined);
+    const observationBind = topicId === undefined ? null : verifyConversationBind({ bindAuth: ctx.conversationBindAuth,
+      numericTopicId: topicId, rawToken: rawBindToken, attention: ctx.telegram });
+    const boundObservationTopicId = observationBind?.ok ? topicId : undefined;
+    const boundSessionName = observationBind?.ok && observationBind.boundBy?.startsWith('session:')
+      ? observationBind.boundBy.slice('session:'.length) : undefined;
+    const boundSession = boundSessionName ? ctx.state.listSessions().find((session) => session.tmuxSession === boundSessionName) : undefined;
+    const observationNow = new Date();
+    const sessionSnapshot = boundSession ? {
+      state: String(boundSession.status),
+      elapsedMs: Math.max(0, observationNow.getTime() - Date.parse(boundSession.startedAt)),
+      revision: `${boundSession.id}:${boundSession.status}:${boundSession.startedAt}`,
+      observedAt: observationNow.toISOString(),
+    } : undefined;
+    const commitmentSnapshots = Object.fromEntries((boundObservationTopicId === undefined ? [] : (ctx.commitmentTracker?.getActive() ?? [])
+      .filter((commitment) => commitment.topicId === boundObservationTopicId))
+      .slice(0, 100)
+      .map((commitment) => [commitment.id, { state: commitment.status,
+        revision: `${commitment.id}:${commitment.status}:${commitment.lastVerifiedAt ?? commitment.createdAt}`,
+        observedAt: observationNow.toISOString() }]));
+    const guardSnapshots = Object.fromEntries((ctx.guardRegistry?.registeredKeys() ?? []).slice(0, 100).flatMap((key) => {
+      const read = ctx.guardRegistry?.read(key);
+      if (!read || read.kind !== 'ok') return [];
+      const state = !read.status.enabled ? 'off' : read.status.dryRun ? 'dry-run' : 'on';
+      return [[key, { state, revision: `${key}:${state}:${read.status.lastTickAt ?? 0}`,
+        observedAt: observationNow.toISOString() }]];
+    }));
+    const admission = ctx.completionClaimVerifier.enqueue(message, evidence, (arbitration) => {
+      if (ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+        registerUnifiedFutureClaims({ message, topicId, rawBindToken, arbitration });
+      }
+    }, { ...(messageAttemptId ? { messageAttemptId } : {}), ...(boundObservationTopicId !== undefined ? { topicId: boundObservationTopicId } : {}),
+      ...(sessionSnapshot ? { sessionSnapshot } : {}), commitmentSnapshots, guardSnapshots, originFramework: 'claude-code' });
+    if (!admission.accepted && ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+      // Queue pressure/duplicate/provider uncertainty must never suppress the
+      // already-shipped Action-Claim behavior.
+      registerUnifiedFutureClaims({ message, topicId, rawBindToken });
+    }
+    const status = admission.accepted ? 202 : admission.reason === 'queue-full' ? 429 : 200;
+    res.status(status).json({ observed: admission.accepted, queued: admission.accepted, blocked: false,
+      evidenceAvailable: !evidence.unavailable, canaryOk: evidence.canaryOk, reason: admission.reason });
+  });
+
+  /**
+   * Read-only counters for the completion-claim verifier.
+   *
+   * `CompletionClaimVerifier.stats()` has existed since the verifier shipped and was
+   * called by no route, so the feature ran (and still runs) in dryRun with its own
+   * declared graduation evidence unobservable — `docs/specs/claim-verification-sentinel.md`
+   * names `rollout-evidence-type: endpoint` with a `classified-completion-claims >= 1`
+   * criterion, which nothing could evaluate. A dark feature whose rollout criterion
+   * cannot be read is a feature that stays dark forever, which is the failure this
+   * exposes rather than a new capability.
+   *
+   * Local-scope only and deliberately so: the audit route already owns the pool
+   * projection, and duplicating a fan-out here would add a second cross-machine
+   * surface for the same data. Gates nothing, mutates nothing.
+   */
+  router.get('/completion-claim/stats', (_req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    const stats = ctx.completionClaimVerifier.stats();
+    res.json({
+      stats,
+      // The spec's graduation metric, surfaced by the name the spec uses so the
+      // rollout check does not have to know the internal counter's field name.
+      'classified-completion-claims': stats.classifiedTurns,
+      scope: 'local',
+    });
+  });
+
+  router.get('/completion-claim/audit', async (req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
+    const poolProjection = req.query.projection === 'pool' || req.query.scope === 'pool';
+    const localPage = poolProjection ? ctx.completionClaimVerifier.readPoolPage(limit,
+      typeof req.query.cursor === 'string' ? req.query.cursor : undefined) : undefined;
+    const records = localPage?.records ?? ctx.completionClaimVerifier.readAudit(limit);
+    if (req.query.scope !== 'pool') { res.json({ records, count: records.length,
+      ...(localPage?.nextCursor ? { nextCursor: localPage.nextCursor } : {}), scope: 'local', denominator: 'server-admitted-only' }); return; }
+    const allPeers = ctx.resolvePeerUrls?.() ?? [];
+    const peers = allPeers.slice(0, 16);
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    const remote: Array<Record<string, unknown>> = [];
+    const failed: Array<{ machineId: string; error: string }> = [];
+    let remainingBytes = 256 * 1024;
+    await Promise.all(peers.map(async (peer) => {
+      if (!isPeerUrlAllowedForCredentials(peer.url, extraAllowlist).ok) {
+        failed.push({ machineId: peer.machineId, error: 'url-rejected' }); return;
+      }
+      try {
+        const response = await fetch(`${peer.url}/completion-claim/audit?limit=${limit}&projection=pool`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(250),
+        });
+        if (!response.ok) { failed.push({ machineId: peer.machineId, error: `HTTP ${response.status}` }); return; }
+        const raw = await response.text();
+        const size = Buffer.byteLength(raw);
+        if (size > remainingBytes) { failed.push({ machineId: peer.machineId, error: 'response-bound' }); return; }
+        remainingBytes -= size;
+        const body = JSON.parse(raw) as { records?: Array<Record<string, unknown>> };
+        for (const row of (body.records ?? []).slice(0, limit)) {
+          // Explicit allowlist: peer audit prose and unknown fields never cross.
+          remote.push({ machineId: peer.machineId, remote: true, automationEligible: false,
+            ...(typeof row.day === 'string' ? { day: row.day.slice(0, 10) } : {}),
+            ...(typeof row.claimShapeId === 'string' ? { claimShapeId: row.claimShapeId.slice(0, 128) } : {}),
+            ...(typeof row.modelDoor === 'string' ? { modelDoor: row.modelDoor.slice(0, 64) } : {}),
+            ...(typeof row.verifierVersion === 'string' ? { verifierVersion: row.verifierVersion.slice(0, 64) } : {}),
+            ...(typeof row.count === 'number' ? { count: Math.max(0, Math.floor(row.count)) } : {}),
+            ...(row.verdicts && typeof row.verdicts === 'object' ? { verdicts: Object.fromEntries(
+              ['supported', 'refuted', 'unverifiable', 'unknown'].flatMap((key) => {
+                const value = (row.verdicts as Record<string, unknown>)[key];
+                return typeof value === 'number' && Number.isFinite(value) ? [[key, Math.max(0, Math.floor(value))]] : [];
+              })) } : {}),
+          });
+        }
+      } catch (error) { failed.push({ machineId: peer.machineId, error: error instanceof Error ? error.name : 'unreachable' }); }
+    }));
+    const merged = ([...records.map((row) => ({ ...row, remote: false })), ...remote] as Array<Record<string, unknown>>)
+      .sort((a, b) => `${a.remote ? String(a.machineId) : 'local'}|${String(a.day ?? '')}|${String(a.claimShapeId ?? '')}`
+        .localeCompare(`${b.remote ? String(b.machineId) : 'local'}|${String(b.day ?? '')}|${String(b.claimShapeId ?? '')}`))
+      .slice(0, Math.min(limit, 200));
+    res.json({ records: merged, count: merged.length, ...(localPage?.nextCursor ? { nextCursor: localPage.nextCursor } : {}),
+      scope: 'pool', denominator: 'server-admitted-only', partial: failed.length > 0 || allPeers.length > peers.length,
+      pool: { peersQueried: peers.length, peersOmitted: Math.max(0, allPeers.length - peers.length), failed } });
   });
 
   // The recurrence analyzer + closed-loop tick (Correction & Preference Learning
@@ -21258,7 +23556,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // record to the next run; any other non-201 is a guard rejection (don't
           // retry). The driver serializes the batch + stops on the first 429.
           return { posted: resp.status === 201, rateLimited: resp.status === 429 };
-        } catch { return { posted: false }; }
+        } catch { /* @silent-fallback-ok — driver retains the source row for bounded retry */ return { posted: false }; }
       };
       const attentionRoute = async (item: { id: string; title: string; summary: string; priority?: string }): Promise<boolean> => {
         try {
@@ -21272,7 +23570,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             body: JSON.stringify({ source: 'correction-loop', body: item.summary, ...item }),
           });
           return resp.status === 201;
-        } catch { return false; }
+        } catch { /* @silent-fallback-ok — missing attention never changes correction work authority */ return false; }
       };
 
       const driver = new CorrectionLoopDriver(ctx.correctionLedger, analyzer, {
@@ -21357,6 +23655,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   //   POST /apprenticeship/cycles/:id/close   — mark row closed (404 missing)
   router.post('/apprenticeship/cycles', (req, res) => {
     if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled — cycle referential integrity unavailable' }); return; }
     try {
       const body = req.body ?? {};
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -21391,6 +23690,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           );
         }
       }
+      const instanceId = typeof body.instanceId === 'string' ? body.instanceId.trim() : '';
+      const instance = instanceId ? ctx.apprenticeshipProgram.get(instanceId) : null;
+      if (!instance) {
+        throw new Error(`instanceId "${instanceId}" does not exist in the apprenticeship registry`);
+      }
+      // Cycles are evidence of work performed inside a live instance. Pending
+      // has not passed its start gate; blocked is paused; complete/abandoned
+      // are terminal history. Active-only keeps the registry authoritative.
+      if (instance.status !== 'active') {
+        throw new Error(
+          `instanceId "${instanceId}" is ${instance.status}; cycles are recordable only while the instance is active`,
+        );
+      }
       const cycle = ctx.apprenticeshipCycleStore.record({
         ...body,
         kind: typeof body.kind === 'string' ? body.kind : 'mentor-mentee-differential',
@@ -21410,12 +23722,49 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ cycles: ctx.apprenticeshipCycleStore.list({ instanceId, limit }) });
   });
 
+  // Same-host cross-agent read leg for role coverage. The general API bearer
+  // cannot authenticate to another agent (tokens are deliberately per-agent),
+  // so this narrow read-only endpoint uses the existing target-agent token
+  // boundary shared by /a2a/inbox. It exposes only bounded cycle rows for one
+  // exact instance; no write or lifecycle authority crosses agents.
+  router.get('/a2a/apprenticeship/cycles', (req, res) => {
+    const authHeader = req.headers.authorization;
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (!bearerToken || !verifyAgentToken(ctx.config.projectName, bearerToken)) {
+      res.status(401).json({ error: 'Invalid or missing agent token' });
+      return;
+    }
+    if (!ctx.apprenticeshipCycleStore) {
+      res.status(503).json({ error: 'apprenticeship cycle store disabled' });
+      return;
+    }
+    const instanceId = typeof req.query.instanceId === 'string' ? req.query.instanceId.trim() : '';
+    if (!instanceId) {
+      res.status(400).json({ error: 'instanceId is required' });
+      return;
+    }
+    res.json({ cycles: ctx.apprenticeshipCycleStore.list({ instanceId, limit: 500 }) });
+  });
+
   router.get('/apprenticeship/cycles/overdue', (req, res) => {
     if (!ctx.apprenticeshipCycleSlaMonitor) { res.status(503).json({ error: 'apprenticeship cycle SLA monitor disabled' }); return; }
     const instanceId = typeof req.query.instanceId === 'string' && req.query.instanceId.trim() !== ''
       ? req.query.instanceId
       : undefined;
     res.json({ overdue: ctx.apprenticeshipCycleSlaMonitor.listOverdue(instanceId) });
+  });
+
+  // Honest read-only audit of historical cycle rows against the live registry.
+  // Never rewrites or deletes legacy rows. Bounded to the store's public 500-row
+  // read ceiling and names truncation explicitly.
+  router.get('/apprenticeship/cycles/integrity', (_req, res) => {
+    if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled — cycle referential integrity unavailable' }); return; }
+    const cycles = ctx.apprenticeshipCycleStore.list({ limit: 500 });
+    const dangling = cycles
+      .filter((cycle) => !ctx.apprenticeshipProgram!.get(cycle.instanceId))
+      .map((cycle) => ({ cycleId: cycle.id, instanceId: cycle.instanceId, createdAt: cycle.createdAt }));
+    res.json({ scanned: cycles.length, danglingCount: dangling.length, dangling, truncated: cycles.length === 500 });
   });
 
   // GET /gemini/capacity — observe-only live view of the Gemini capacity gate
@@ -21445,7 +23794,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ instances: ctx.apprenticeshipProgram.list() });
   });
 
-  router.get('/apprenticeship/instances/:id/role-coverage', (req, res) => {
+  router.get('/apprenticeship/instances/:id/role-coverage', async (req, res) => {
     if (!ctx.apprenticeshipCycleStore) { res.status(503).json({ error: 'apprenticeship cycle store disabled' }); return; }
     try {
       // Optional ?oversightStarvationThreshold=N tunes the keystone-balance
@@ -21459,7 +23808,39 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const rawDormancy = req.query.keystoneDormancyMs;
       const parsedDormancy = typeof rawDormancy === 'string' ? Number.parseInt(rawDormancy, 10) : NaN;
       if (Number.isFinite(parsedDormancy) && parsedDormancy > 0) opts.keystoneDormancyMs = parsedDormancy;
-      res.json(ctx.apprenticeshipCycleStore.roleCoverage(req.params.id, opts));
+      let peerRead: import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead = {
+        cycles: [], sources: [], complete: true, omittedPeerCount: 0,
+      };
+      if (ctx.apprenticeshipPeerCycleReader) {
+        try {
+          peerRead = await ctx.apprenticeshipPeerCycleReader(req.params.id);
+        } catch (error) {
+          // @silent-fallback-ok — the failure is returned explicitly in aggregation.peerSources
+          // The local store remains valid evidence. Preserve the read and name
+          // the missing cross-agent census instead of turning observability into
+          // a 400 or silently presenting a complete local-only answer.
+          peerRead = {
+            cycles: [],
+            sources: [{
+              agent: 'registry', port: 0, cycleCount: 0, truncated: false,
+              error: error instanceof Error ? error.message : String(error),
+            }],
+            complete: false,
+            omittedPeerCount: 0,
+          };
+        }
+      }
+      const coverage = ctx.apprenticeshipCycleStore.roleCoverage(req.params.id, opts, peerRead.cycles);
+      res.json({
+        ...coverage,
+        aggregation: {
+          scope: ctx.apprenticeshipPeerCycleReader ? 'registered-agents' : 'local',
+          complete: peerRead.complete && coverage.coverageConflictingCycleIds.length === 0,
+          peerSources: peerRead.sources,
+          omittedPeerCount: peerRead.omittedPeerCount,
+          conflictingCycleIds: coverage.coverageConflictingCycleIds,
+        },
+      });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -21493,14 +23874,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.post('/apprenticeship/instances/:id/transition', (req, res) => {
+  router.post('/apprenticeship/instances/:id/transition', async (req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     const to = (req.body ?? {}).to;
-    if (!['pending', 'active', 'complete', 'blocked'].includes(to)) {
-      res.status(400).json({ error: 'to must be one of pending | active | complete | blocked' });
+    if (!['pending', 'active', 'complete', 'blocked', 'abandoned'].includes(to)) {
+      res.status(400).json({ error: 'to must be one of pending | active | complete | blocked | abandoned' });
       return;
     }
-    const result = ctx.apprenticeshipProgram.transition(req.params.id, to);
+    const result = await ctx.apprenticeshipProgram.transition(req.params.id, to);
     if (!result.ok) {
       // 404 for a missing instance; 409 for a refused/illegal transition.
       const code = result.reason.includes('not found') ? 404 : 409;
@@ -21510,6 +23891,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ ok: true, reason: result.reason, instance: result.instance });
   });
 
+  router.post('/apprenticeship/instances/:id/rung-transition', (req, res) => {
+    if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
+    const body = req.body ?? {};
+    const result = ctx.apprenticeshipProgram.transitionRung(
+      req.params.id,
+      body.to,
+      typeof body.evidenceRef === 'string' ? body.evidenceRef : '',
+    );
+    if (!result.ok) {
+      res.status(result.reason.includes('not found') ? 404 : 409).json(result);
+      return;
+    }
+    res.json(result);
+  });
+
   router.post('/apprenticeship/instances/:id/can-start', (req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     const inst = ctx.apprenticeshipProgram.get(req.params.id);
@@ -21517,11 +23913,145 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json(ctx.apprenticeshipProgram.evaluateStartGate(inst));
   });
 
-  router.post('/apprenticeship/instances/:id/can-complete', (req, res) => {
+  router.post('/apprenticeship/instances/:id/can-complete', async (req, res) => {
     if (!ctx.apprenticeshipProgram) { res.status(503).json({ error: 'apprenticeship program disabled' }); return; }
     const inst = ctx.apprenticeshipProgram.get(req.params.id);
     if (!inst) { res.status(404).json({ error: 'not found' }); return; }
-    res.json(ctx.apprenticeshipProgram.evaluateCompletionGate(inst));
+    res.json(await ctx.apprenticeshipProgram.evaluateCompletionGate(inst));
+  });
+
+  // ── Stall-coverage matrix acceptance (framework-stall-coverage-matrix §2.2) ──
+  //
+  //   POST /apprenticeship/instances/:id/matrix-acceptance/enumerate — Bearer;
+  //     the SERVER renders + records the exact enumerated set (a challenge).
+  //     Optional { topicId } posts the enumeration to the topic so the
+  //     verified operator can bind it with a reply-anchored yes/approve (the
+  //     ScopeAccretionRatifier mechanic).
+  //   POST /apprenticeship/instances/:id/matrix-acceptance — dashboard-PIN
+  //     bind: { pin, challengeId }. Requester ≠ acceptor is structural — the
+  //     Bearer token alone can NEVER record an acceptance (Decision 14).
+  router.post('/apprenticeship/instances/:id/matrix-acceptance/enumerate', async (req, res) => {
+    if (!ctx.apprenticeshipProgram || !ctx.apprenticeshipMatrixAcceptance) {
+      res.status(503).json({ error: 'apprenticeship program disabled' });
+      return;
+    }
+    const inst = ctx.apprenticeshipProgram.get(req.params.id);
+    if (!inst) { res.status(404).json({ error: 'not found' }); return; }
+    const state = resolveMatrixState(inst.id, inst.framework);
+    if (!state) {
+      res.status(409).json({ error: `no stall-coverage matrix content to enumerate for framework '${inst.framework}'` });
+      return;
+    }
+    // Scope-aware mint (Decision 20): whole-set (default) / rows / override.
+    // Rows + override are the production path for `acceptanceRef:` clears and
+    // the §3.4 per-instance relief — hashed via the SAME canonical-row
+    // serialization the gate re-derives at verify time.
+    const requestedScope = typeof req.body?.scope === 'string' ? req.body.scope : 'whole-set';
+    let enumerated: { scope: 'whole-set' | 'degraded' | 'rows' | 'override'; contentHash: string; rowIds: string[]; rule?: string };
+    if (state.kind === 'degraded') {
+      if (requestedScope !== 'whole-set' && requestedScope !== 'degraded') {
+        res.status(409).json({ error: 'row/override-scoped acceptance is not available on a no-source install (degraded verdict only)' });
+        return;
+      }
+      enumerated = { scope: 'degraded', contentHash: state.contentHash, rowIds: [] };
+    } else if (requestedScope === 'whole-set') {
+      enumerated = { scope: 'whole-set', contentHash: state.contentHash, rowIds: [...state.rowsById.keys()] };
+    } else if (requestedScope === 'rows') {
+      const rowIds = Array.isArray(req.body?.rowIds)
+        ? (req.body.rowIds as unknown[]).filter((x): x is string => typeof x === 'string')
+        : [];
+      if (rowIds.length === 0 || rowIds.length > 64 || !rowIds.every((id) => ROW_ID_RE.test(id))) {
+        res.status(400).json({ error: '"rowIds" (non-empty array of "<framework>:<classId>" strings) required for scope "rows"' });
+        return;
+      }
+      const entries: Array<{ rowId: string; row: Parameters<typeof canonicalRowHash>[0] }> = [];
+      for (const id of rowIds) {
+        const row = state.rowsById.get(id);
+        if (!row) {
+          res.status(409).json({ error: `rowId '${id}' does not resolve to a current matrix row` });
+          return;
+        }
+        entries.push({ rowId: id, row });
+      }
+      enumerated = { scope: 'rows', contentHash: canonicalRowSetHash(entries), rowIds: [...rowIds].sort() };
+    } else if (requestedScope === 'override') {
+      const rule = typeof req.body?.rule === 'string' ? req.body.rule : '';
+      const classId = typeof req.body?.classId === 'string' ? req.body.classId : '';
+      if (!RULE_RE.test(rule) || !/^[a-z0-9-]+$/.test(classId)) {
+        res.status(400).json({ error: '"rule" (kebab rule name) and "classId" required for scope "override"' });
+        return;
+      }
+      const rowId = `${inst.framework}:${classId}`;
+      const row = state.rowsById.get(rowId);
+      if (!row) {
+        res.status(409).json({ error: `classId '${classId}' does not resolve to a current matrix row` });
+        return;
+      }
+      enumerated = { scope: 'override', contentHash: canonicalRowHash(row), rowIds: [rowId], rule };
+    } else {
+      res.status(400).json({ error: '"scope" must be one of whole-set | rows | override' });
+      return;
+    }
+    const challenge = ctx.apprenticeshipMatrixAcceptance.mintChallenge({
+      instanceId: inst.id,
+      framework: inst.framework,
+      scope: enumerated.scope,
+      contentHash: enumerated.contentHash,
+      rowIds: enumerated.rowIds,
+      ...(enumerated.rule ? { rule: enumerated.rule } : {}),
+    });
+    const renderedText = ctx.apprenticeshipMatrixAcceptance.renderEnumeration(challenge);
+    // Conversational arm: post the server-authored enumeration to the topic so
+    // a reply-anchored verified-operator confirmation can bind it.
+    let posted: { topicId: number; messageId: number } | null = null;
+    const topicId = typeof req.body?.topicId === 'number' ? req.body.topicId : null;
+    if (topicId !== null && ctx.telegram) {
+      try {
+        const sent = await ctx.telegram.sendToTopic(topicId, renderedText);
+        posted = { topicId, messageId: sent.messageId };
+        ctx.apprenticeshipMatrixAcceptance.attachMessage(challenge.challengeId, posted);
+      } catch {
+        // @silent-fallback-ok — a failed Telegram post only loses the
+        // conversational anchor; the challenge is recorded and the PIN path
+        // remains fully available (the response reports posted: null).
+        posted = null;
+      }
+    }
+    res.json({
+      challengeId: challenge.challengeId,
+      scope: challenge.scope,
+      contentHash: challenge.contentHash,
+      rowIds: challenge.rowIds,
+      ...(challenge.rule ? { rule: challenge.rule } : {}),
+      renderedText,
+      posted,
+    });
+  });
+
+  router.post('/apprenticeship/instances/:id/matrix-acceptance', (req, res) => {
+    if (!ctx.apprenticeshipProgram || !ctx.apprenticeshipMatrixAcceptance) {
+      res.status(503).json({ error: 'apprenticeship program disabled' });
+      return;
+    }
+    if (!checkMandatePin(req, res)) return; // PIN-gated: a Bearer token is structurally insufficient
+    const inst = ctx.apprenticeshipProgram.get(req.params.id);
+    if (!inst) { res.status(404).json({ error: 'not found' }); return; }
+    const challengeId = typeof req.body?.challengeId === 'string' ? req.body.challengeId : '';
+    if (!challengeId) { res.status(400).json({ error: '"challengeId" (string) required' }); return; }
+    const challenge = ctx.apprenticeshipMatrixAcceptance.getChallenge(challengeId);
+    if (!challenge || challenge.instanceId !== inst.id) {
+      res.status(404).json({ error: 'unknown challenge for this instance' });
+      return;
+    }
+    // Re-resolve the CURRENT content for the challenge's SCOPE at bind time —
+    // accept-then-edit voids the challenge (§2.2 / Decision 20).
+    const bound = ctx.apprenticeshipMatrixAcceptance.bind({
+      challengeId,
+      principal: { kind: 'operator-pin', id: 'dashboard-pin' },
+      currentContentHash: resolveChallengeCurrentHash(challenge),
+    });
+    if (!bound.ok) { res.status(409).json({ ok: false, reason: bound.reason }); return; }
+    res.json({ ok: true, reason: bound.reason, challengeRef: challengeId });
   });
 
   // ORG-INTENT.md tradeoff resolution (Phase 3 of the ORG-INTENT runtime
@@ -23453,6 +25983,327 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   /**
    * Get all commitments with optional status filter.
    */
+  const blockerPoolCache = new Map<string, { at: number; value: { origins: unknown[]; failures: Array<{ machineId: string; reason: string }>; poolComplete: boolean } }>();
+  const sanitizeBlockerCounters = (raw: unknown): Record<string, number | boolean> | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const source = raw as Record<string, unknown>;
+    const integerKeys = ['attempted', 'inserted', 'deduped', 'failed', 'queueOverflow', 'reconciled',
+      'requestSamplesMissing', 'requestDroppedCapacity', 'clearDroppedCapacity'];
+    if (!integerKeys.every(k => Number.isSafeInteger(source[k]) && (source[k] as number) >= 0) ||
+        typeof source.breakerOpen !== 'boolean') return null;
+    return { ...Object.fromEntries(integerKeys.map(k => [k, source[k] as number])), breakerOpen: source.breakerOpen };
+  };
+  const sanitizeBlockerFactors = (kind: 'summary' | 'trend', raw: unknown): unknown[] | null => {
+    if (!Array.isArray(raw) || raw.length !== 3) return null;
+    const finiteOrNull = (v: unknown) => v === null || (typeof v === 'number' && Number.isFinite(v));
+    const out: unknown[] = [];
+    const seen = new Set<string>();
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') return null;
+      const f = item as Record<string, unknown>;
+      if (!['request-to-persist', 'clear-latency', 'deliverable-completion'].includes(String(f.factor))) return null;
+      if (seen.has(String(f.factor))) return null;
+      seen.add(String(f.factor));
+      if (kind === 'summary') {
+        const expectedRecoverability = f.factor === 'request-to-persist' ? 'best-effort' : 'reconcilable';
+        if (f.recoverability !== expectedRecoverability ||
+            !['completed', 'missing', 'excluded'].every(k => Number.isSafeInteger(f[k]) && (f[k] as number) >= 0) ||
+            !finiteOrNull(f.coverage) || (typeof f.coverage === 'number' && (f.coverage < 0 || f.coverage > 1)) ||
+            !finiteOrNull(f.medianMs) || (typeof f.medianMs === 'number' && f.medianMs < 0) ||
+            !finiteOrNull(f.p95Ms) || (typeof f.p95Ms === 'number' && f.p95Ms < 0) ||
+            !f.outcomes || typeof f.outcomes !== 'object') return null;
+        const outcomes = f.outcomes as Record<string, unknown>;
+        const outcomeKeys = ['observed', 'legacy-missing-start', 'clock-regression-or-implausible', 'request-row-missing', 'episode-dropped-capacity'];
+        if (!outcomeKeys.every(k => Number.isSafeInteger(outcomes[k]) && (outcomes[k] as number) >= 0)) return null;
+        const countFields = f.factor === 'deliverable-completion'
+          ? (f.unit === 'count' && f.total === f.completed && typeof f.averagePerDay === 'number' &&
+              Number.isFinite(f.averagePerDay) && f.averagePerDay >= 0 && f.missing === 0 && f.excluded === 0 &&
+              f.medianMs === null && f.p95Ms === null && outcomes.observed === f.completed &&
+              f.coverage === ((f.completed as number) === 0 ? null : 1) && f.window && typeof f.window === 'object' &&
+              (f.window as Record<string, unknown>).kind === 'rolling-hours' &&
+              typeof (f.window as Record<string, unknown>).hours === 'number' &&
+              Number.isFinite((f.window as Record<string, unknown>).hours) &&
+              ((f.window as Record<string, unknown>).hours as number) >= 1 &&
+              ((f.window as Record<string, unknown>).hours as number) <= 168
+            ? { unit: 'count', window: { kind: 'rolling-hours', hours: (f.window as Record<string, unknown>).hours },
+              total: f.total, averagePerDay: f.averagePerDay } : null)
+          : {};
+        if (countFields === null) return null;
+        out.push({ factor: f.factor, ...countFields, recoverability: f.recoverability, completed: f.completed, missing: f.missing,
+          excluded: f.excluded, coverage: f.coverage, medianMs: f.medianMs, p95Ms: f.p95Ms,
+          outcomes: Object.fromEntries(outcomeKeys.map(k => [k, outcomes[k]])) });
+      } else {
+        if (f.factor === 'deliverable-completion') {
+          if (f.unit !== 'count' || !Array.isArray(f.days) || f.days.length > 89 || !finiteOrNull(f.ratio) ||
+              !f.window || typeof f.window !== 'object' ||
+              (f.window as Record<string, unknown>).kind !== 'rolling-days' ||
+              !Number.isSafeInteger((f.window as Record<string, unknown>).days) ||
+              ((f.window as Record<string, unknown>).days as number) < 7 ||
+              ((f.window as Record<string, unknown>).days as number) > 90 ||
+              (f.window as Record<string, unknown>).dailyBuckets !== 'utc' ||
+              (f.window as Record<string, unknown>).currentDay !== 'partial' ||
+              !Number.isSafeInteger(f.windowTotal) || (f.windowTotal as number) < 0 ||
+              !Number.isSafeInteger(f.currentDayCount) || (f.currentDayCount as number) < 0 ||
+              !Array.isArray(f.cumulativeDays) || f.cumulativeDays.length !== f.days.length + 1 ||
+              (typeof f.ratio === 'number' && f.ratio < 0) ||
+              !['climbing', 'flat', 'declining', 'insufficient-data'].includes(String(f.direction)) ||
+              !(f.reason === null || ['insufficient-days', 'zero-denominator'].includes(String(f.reason)))) return null;
+          const days = f.days.map(d => {
+            if (!d || typeof d !== 'object') return null;
+            const row = d as Record<string, unknown>;
+            return /^\d{4}-\d{2}-\d{2}$/.test(String(row.day)) && Number.isSafeInteger(row.count) && (row.count as number) >= 0
+              ? { day: row.day, count: row.count } : null;
+          });
+          if (days.some(d => d === null)) return null;
+          for (let i = 1; i < days.length; i++) {
+            const previous = Date.parse(`${days[i - 1]!.day as string}T00:00:00.000Z`);
+            const current = Date.parse(`${days[i]!.day as string}T00:00:00.000Z`);
+            if (current - previous !== 86_400_000) return null;
+          }
+          let runningTotal = 0;
+          const cumulativeDays = f.cumulativeDays.map((d, index) => {
+            if (!d || typeof d !== 'object') return null;
+            const row = d as Record<string, unknown>;
+            const expectedDay = index < days.length ? days[index]!.day : undefined;
+            const validDay = /^\d{4}-\d{2}-\d{2}$/.test(String(row.day));
+            const validCount = Number.isSafeInteger(row.count) && (row.count as number) >= 0;
+            if (!validDay || !validCount || !Number.isSafeInteger(row.cumulative) || typeof row.complete !== 'boolean') return null;
+            runningTotal += row.count as number;
+            if (row.cumulative !== runningTotal || row.complete !== (index < days.length) ||
+                (index < days.length && row.day !== expectedDay)) return null;
+            return { day: row.day, count: row.count, cumulative: row.cumulative, complete: row.complete };
+          });
+          if (cumulativeDays.some(d => d === null) || runningTotal !== f.windowTotal ||
+              cumulativeDays[cumulativeDays.length - 1]?.count !== f.currentDayCount) return null;
+          const liveDay = cumulativeDays[cumulativeDays.length - 1]?.day;
+          const expectedLiveDay = days.length > 0
+            ? new Date(Date.parse(`${days[days.length - 1]!.day as string}T00:00:00.000Z`) + 86_400_000).toISOString().slice(0, 10)
+            : undefined;
+          if (expectedLiveDay !== undefined && liveDay !== expectedLiveDay) return null;
+          const half = (v: unknown) => {
+            if (!v || typeof v !== 'object') return null;
+            const h = v as Record<string, unknown>;
+            return Number.isSafeInteger(h.days) && (h.days as number) >= 0 && Number.isSafeInteger(h.total) &&
+              (h.total as number) >= 0 && finiteOrNull(h.meanPerDay) && (h.meanPerDay === null || (h.meanPerDay as number) >= 0)
+              ? { days: h.days, total: h.total, meanPerDay: h.meanPerDay } : null;
+          };
+          const firstHalf = half(f.firstHalf); const secondHalf = half(f.secondHalf);
+          if (!firstHalf || !secondHalf) return null;
+          const split = days.length >> 1;
+          const derivedHalf = (part: Array<{ day: unknown; count: unknown }>) => {
+            const total = part.reduce((sum, row) => sum + Number(row.count), 0);
+            return { days: part.length, total, meanPerDay: total / part.length };
+          };
+          const expectedFirst = derivedHalf(days.slice(0, split) as Array<{ day: unknown; count: unknown }>);
+          const expectedSecond = derivedHalf(days.slice(split) as Array<{ day: unknown; count: unknown }>);
+          const sameNumber = (a: unknown, b: number) => typeof a === 'number' && Number.isFinite(a) &&
+            Math.abs(a - b) <= Number.EPSILON * Math.max(1, Math.abs(a), Math.abs(b)) * 8;
+          if (firstHalf.days !== expectedFirst.days || firstHalf.total !== expectedFirst.total ||
+              !sameNumber(firstHalf.meanPerDay, expectedFirst.meanPerDay) ||
+              secondHalf.days !== expectedSecond.days || secondHalf.total !== expectedSecond.total ||
+              !sameNumber(secondHalf.meanPerDay, expectedSecond.meanPerDay)) return null;
+          if (expectedFirst.meanPerDay === 0) {
+            const expectedDirection = expectedSecond.total > 0 ? 'climbing' : 'flat';
+            if (f.ratio !== null || f.reason !== 'zero-denominator' || f.direction !== expectedDirection) return null;
+          } else {
+            const expectedRatio = expectedSecond.meanPerDay / expectedFirst.meanPerDay;
+            const expectedDirection = expectedRatio > 1 ? 'climbing' : expectedRatio < 1 ? 'declining' : 'flat';
+            if (!sameNumber(f.ratio, expectedRatio) || f.reason !== null || f.direction !== expectedDirection) return null;
+          }
+          out.push({ factor: f.factor, unit: 'count', window: { kind: 'rolling-days',
+            days: (f.window as Record<string, unknown>).days, dailyBuckets: 'utc', currentDay: 'partial' }, windowTotal: f.windowTotal,
+            currentDayCount: f.currentDayCount, cumulativeDays, days, firstHalf, secondHalf,
+            ratio: f.ratio, direction: f.direction, reason: f.reason });
+          continue;
+        }
+        if (!Array.isArray(f.days) || f.days.length > 90 || !finiteOrNull(f.ratio) ||
+            (typeof f.ratio === 'number' && f.ratio < 0) ||
+            !(f.reason === null || ['insufficient-days', 'insufficient-samples', 'zero-denominator'].includes(String(f.reason)))) return null;
+        const days = f.days.map(d => {
+          if (!d || typeof d !== 'object') return null;
+          const row = d as Record<string, unknown>;
+          return /^\d{4}-\d{2}-\d{2}$/.test(String(row.day)) && finiteOrNull(row.medianMs) &&
+            (row.medianMs === null || (row.medianMs as number) >= 0) && Number.isSafeInteger(row.samples) && (row.samples as number) >= 0
+            ? { day: row.day, medianMs: row.medianMs, samples: row.samples } : null;
+        });
+        if (days.some(d => d === null)) return null;
+        const half = (v: unknown) => {
+          if (!v || typeof v !== 'object') return null;
+          const h = v as Record<string, unknown>;
+          return Number.isSafeInteger(h.days) && (h.days as number) >= 0 && Number.isSafeInteger(h.samples) &&
+            (h.samples as number) >= 0 && finiteOrNull(h.meanMs) && (h.meanMs === null || (h.meanMs as number) >= 0)
+            ? { days: h.days, samples: h.samples, meanMs: h.meanMs } : null;
+        };
+        const firstHalf = half(f.firstHalf); const secondHalf = half(f.secondHalf);
+        if (!firstHalf || !secondHalf) return null;
+        out.push({ factor: f.factor, days, firstHalf, secondHalf, ratio: f.ratio, reason: f.reason });
+      }
+    }
+    if (seen.size !== 3) return null;
+    return out;
+  };
+  const sanitizeMaturation = (kind: 'summary' | 'trend', raw: unknown): Record<string, unknown> | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const m = raw as Record<string, unknown>;
+    if (kind === 'summary') {
+      if (!['eligible', 'evaluated', 'missedDue'].every(k => Number.isSafeInteger(m[k]) && (m[k] as number) >= 0) ||
+          !m.byStatus || typeof m.byStatus !== 'object' || !Array.isArray(m.features) || m.features.length > 512) return null;
+      const statuses = ['ready', 'hold', 'stale-evidence', 'insufficient-evidence', 'missing-contract', 'invalid-contract', 'missed-cadence'];
+      const byStatus = m.byStatus as Record<string, unknown>;
+      if (!statuses.filter(k => k !== 'invalid-contract').every(k => Number.isSafeInteger(byStatus[k]) && (byStatus[k] as number) >= 0) ||
+          !(byStatus['invalid-contract'] === undefined || (Number.isSafeInteger(byStatus['invalid-contract']) && (byStatus['invalid-contract'] as number) >= 0))) return null;
+      const features = m.features.map(v => {
+        if (!v || typeof v !== 'object') return null;
+        const f = v as Record<string, unknown>;
+        if (typeof f.featureId !== 'string' || f.featureId.length > 63 || !(f.rung === null || typeof f.rung === 'string') ||
+            !statuses.includes(String(f.status)) || !Number.isSafeInteger(f.passingMetrics) || !Number.isSafeInteger(f.totalMetrics) ||
+            !(f.minNormalizedMargin === null || (typeof f.minNormalizedMargin === 'number' && Number.isFinite(f.minNormalizedMargin)))) return null;
+        return { featureId: f.featureId, rung: f.rung, status: f.status, evaluatedAt: f.evaluatedAt,
+          passingMetrics: f.passingMetrics, totalMetrics: f.totalMetrics,
+          minNormalizedMargin: f.minNormalizedMargin, newestEvidenceAt: f.newestEvidenceAt ?? null };
+      });
+      if (features.some(v => v === null)) return null;
+      const dispositions = ['active', 'composed', 'excluded'];
+      let accounting: unknown[] = []; let accountingCounts: Record<string, unknown> | undefined;
+      if (m.accounting !== undefined || m.accountingCounts !== undefined) {
+        if (!Array.isArray(m.accounting) || m.accounting.length > 512 || !m.accountingCounts || typeof m.accountingCounts !== 'object') return null;
+        if (!Number.isSafeInteger(m.legacyEligible) || (m.legacyEligible as number) < 0) return null;
+        accountingCounts = m.accountingCounts as Record<string, unknown>;
+        if (!dispositions.every(k => Number.isSafeInteger(accountingCounts![k]) && (accountingCounts![k] as number) >= 0)) return null;
+        accounting = m.accounting.map(v => {
+          if (!v || typeof v !== 'object') return null;
+          const a = v as Record<string, unknown>;
+          if (typeof a.featureId !== 'string' || a.featureId.length > 63 || !dispositions.includes(String(a.disposition)) ||
+              typeof a.status !== 'string' || a.status.length > 32 || !(a.flagPath === null || typeof a.flagPath === 'string') ||
+              !['self-owner', 'parent-owner-evidence-only', 'none'].includes(String(a.promotionAuthority)) ||
+              !Number.isSafeInteger(a.sourcePrNumber) || (a.sourcePrNumber as number) < 1 ||
+              !(a.rung === null || ['test-agent-live', 'dev-agent-live', 'fleet'].includes(String(a.rung))) ||
+              !(a.ownerFeatureId === null || typeof a.ownerFeatureId === 'string') ||
+              !(a.graduationCriterion === null || typeof a.graduationCriterion === 'string') ||
+              !(a.evidenceSource === null || (typeof a.evidenceSource === 'object' &&
+                ['endpoint', 'log-filter'].includes(String((a.evidenceSource as Record<string, unknown>).type)) &&
+                typeof (a.evidenceSource as Record<string, unknown>).ref === 'string')) ||
+              !(a.contractError == null || ['invalid-json', 'oversized', 'invalid-shape', 'unknown-source-ref'].includes(String(a.contractError))) ||
+              !Number.isSafeInteger(a.metricCount) || (a.metricCount as number) < 0 || !Array.isArray(a.metricDescriptors) ||
+              a.metricDescriptors.length !== a.metricCount) return null;
+          const metricDescriptors = a.metricDescriptors.map(value => {
+            if (!value || typeof value !== 'object') return null;
+            const d = value as Record<string, unknown>;
+            return typeof d.id === 'string' && ['blocker-summary', 'blocker-trend', 'feature-summary'].includes(String(d.source)) &&
+              typeof d.sourceRef === 'string' && d.descriptorVersion === 1 && ['at-least', 'at-most'].includes(String(d.direction)) &&
+              typeof d.threshold === 'number' && Number.isFinite(d.threshold) && Number.isSafeInteger(d.minSamples) && (d.minSamples as number) > 0
+              ? d : null;
+          });
+          if (metricDescriptors.some(value => value === null)) return null;
+          return { ...a, metricDescriptors };
+        });
+        if (accounting.some(v => v === null)) return null;
+        const actualCounts = { active: 0, composed: 0, excluded: 0 };
+        for (const raw of accounting) {
+          const row = raw as Record<string, unknown>;
+          actualCounts[row.disposition as keyof typeof actualCounts]++;
+          if ((row.disposition === 'active') !== (row.rung !== null)) return null;
+          const expectedAuthority = row.disposition === 'active' ? 'self-owner'
+            : row.disposition === 'composed' ? 'parent-owner-evidence-only' : 'none';
+          if (row.promotionAuthority !== expectedAuthority) return null;
+        }
+        if (dispositions.some(k => actualCounts[k as keyof typeof actualCounts] !== accountingCounts![k]) ||
+            m.eligible !== actualCounts.active + actualCounts.composed + (m.legacyEligible as number)) return null;
+      }
+      return { eligible: m.eligible, evaluated: m.evaluated, missedDue: m.missedDue,
+        byStatus: Object.fromEntries(statuses.map(k => [k, byStatus[k] ?? 0])), features,
+        ...(accountingCounts ? { accountingCounts: Object.fromEntries(dispositions.map(k => [k, accountingCounts![k]])),
+          legacyEligible: m.legacyEligible, accounting } : {}) };
+    }
+    if (!Array.isArray(m.features) || m.features.length > 512) return null;
+    return { features: m.features.slice(0, 512) };
+  };
+  const blockerPoolRead = async (kind: 'summary' | 'trend', query: string, local: Record<string, unknown>) => {
+    const cacheKey = `${kind}?${query}`;
+    const cached = blockerPoolCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < 60_000) return cached.value;
+    const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
+    const origins: unknown[] = [local];
+    const failures: Array<{ machineId: string; reason: string }> = [];
+    const started = Date.now();
+    let responseBytes = Buffer.byteLength(JSON.stringify(local));
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    for (let i = 0; i < peers.length; i += 4) {
+      await Promise.all(peers.slice(i, i + 4).map(async p => {
+        if (Date.now() - started > 2_500) { failures.push({ machineId: p.machineId, reason: 'deadline' }); return; }
+        if (!isPeerUrlAllowedForCredentials(p.url, extraAllowlist).ok) {
+          failures.push({ machineId: p.machineId, reason: 'omitted-cap' }); return;
+        }
+        try {
+          const response = await fetch(`${p.url}/blocker-lifecycle/${kind}?${query}&scope=local`, {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(750),
+          });
+          if (response.status === 404) { failures.push({ machineId: p.machineId, reason: 'unsupported' }); return; }
+          if (!response.ok) { failures.push({ machineId: p.machineId, reason: 'http-error' }); return; }
+          const text = await response.text();
+          if (Buffer.byteLength(text) > 512 * 1024) { failures.push({ machineId: p.machineId, reason: 'truncated' }); return; }
+          const body = JSON.parse(text) as { schemaVersion?: unknown; origins?: unknown[] };
+          if (body.schemaVersion !== 2) {
+            failures.push({ machineId: p.machineId, reason: body.schemaVersion === 1 ? 'unsupported' : 'invalid-body' }); return;
+          }
+          if (!Array.isArray(body.origins) || body.origins.length !== 1) {
+            failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return;
+          }
+          const origin = body.origins[0];
+          if (!origin || typeof origin !== 'object') { failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return; }
+          const candidate = origin as Record<string, unknown>;
+          const factors = sanitizeBlockerFactors(kind, candidate.factors);
+          const maturation = sanitizeMaturation(kind, candidate.maturation);
+          const counters = kind === 'summary' ? sanitizeBlockerCounters(candidate.counters) : null;
+          if (!maturation) {
+            failures.push({ machineId: p.machineId, reason: 'unsupported-maturation' }); return;
+          }
+          if (!factors || (kind === 'summary' && !counters)) {
+            failures.push({ machineId: p.machineId, reason: 'invalid-body' }); return;
+          }
+          const sanitized = kind === 'summary'
+            ? { machineId: p.machineId, factors, maturation, counters }
+            : { machineId: p.machineId, factors, maturation };
+          const bytes = Buffer.byteLength(JSON.stringify(sanitized));
+          if (responseBytes + bytes > 4 * 1024 * 1024) { failures.push({ machineId: p.machineId, reason: 'truncated' }); return; }
+          responseBytes += bytes;
+          origins.push(sanitized);
+        } catch (err) {
+          failures.push({ machineId: p.machineId, reason: err instanceof Error && err.name === 'TimeoutError' ? 'deadline' : 'unreachable' });
+        }
+      }));
+    }
+    const value = { origins, failures, poolComplete: failures.length === 0 };
+    blockerPoolCache.set(cacheKey, { at: Date.now(), value });
+    return value;
+  };
+
+  router.get('/blocker-lifecycle/summary', async (req, res) => {
+    if (!ctx.blockerLifecycleService?.available()) { res.status(503).json({ error: 'blocker-lifecycle-unavailable' }); return; }
+    const sinceHours = Number(req.query.sinceHours ?? 24);
+    const scope = String(req.query.scope ?? 'local');
+    if (!Number.isFinite(sinceHours) || sinceHours < 1 || sinceHours > 168 || !['local', 'pool'].includes(scope)) {
+      res.status(400).json({ error: 'invalid-blocker-lifecycle-query' }); return;
+    }
+    const local = ctx.blockerLifecycleService.localSummary(sinceHours);
+    const pool = scope === 'pool' ? await blockerPoolRead('summary', `sinceHours=${sinceHours}`, local)
+      : { origins: [local], failures: [], poolComplete: true };
+    res.json({ schemaVersion: 2, scope, ...pool, generatedAt: new Date().toISOString() });
+  });
+
+  router.get('/blocker-lifecycle/trend', async (req, res) => {
+    if (!ctx.blockerLifecycleService?.available()) { res.status(503).json({ error: 'blocker-lifecycle-unavailable' }); return; }
+    const windowDays = Number(req.query.windowDays ?? 7);
+    const scope = String(req.query.scope ?? 'local');
+    if (!Number.isInteger(windowDays) || windowDays < 7 || windowDays > 90 || !['local', 'pool'].includes(scope)) {
+      res.status(400).json({ error: 'invalid-blocker-lifecycle-query' }); return;
+    }
+    const local = ctx.blockerLifecycleService.localTrend(windowDays);
+    const pool = scope === 'pool' ? await blockerPoolRead('trend', `windowDays=${windowDays}`, local)
+      : { origins: [local], failures: [], poolComplete: true };
+    res.json({ schemaVersion: 2, scope, ...pool, generatedAt: new Date().toISOString() });
+  });
+
   router.get('/commitments', async (req, res) => {
     if (!ctx.commitmentTracker) {
       res.json({ enabled: false, commitments: [] });
@@ -23537,6 +26388,117 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * counter is the rollout hard-stop signal. MUST be registered before
    * `/commitments/:id` or Express routes the literal here to the :id handler.
    */
+  /**
+   * POST /commitments/check-in-reminder/pass — run ONE check-in reminder pass
+   * (ACT-724; docs/specs/dated-commitment-reminder.md).
+   *
+   * Driven by the `commitment-checkin-reminder` built-in job. Idempotent: the
+   * `checkInReminderSentAt` stamp means a re-run sends nothing, so a retried or
+   * duplicated trigger is safe.
+   */
+  router.post('/commitments/check-in-reminder/pass', async (_req, res) => {
+    const cfg = (ctx.config as Record<string, any>).commitments?.checkInReminder as
+      | { enabled?: boolean; dryRun?: boolean; maxPerPass?: number }
+      | undefined;
+    const enabled = resolveDevAgentGate(cfg?.enabled, ctx.config);
+    if (!enabled || !ctx.commitmentTracker) {
+      res.status(503).json({ error: 'check-in-reminder-not-enabled' });
+      return;
+    }
+    // Deterministic delivery — NOT the tone-gated path. A reminder must not be
+    // holdable by a gate that fails closed; the text is a fixed template with
+    // no agent prose, so there is nothing for a tone gate to judge.
+    const telegram = ctx.telegram;
+    const dryRun = cfg?.dryRun !== false;
+    // A transport is required only to SEND. A dry run sends nothing, so demanding
+    // one would make the soak — the whole point of the dark window — impossible
+    // on an agent with no messaging configured, and would report the feature as
+    // unavailable when it is merely quiet.
+    if (!telegram && !dryRun) {
+      res.status(503).json({ error: 'no-delivery-transport' });
+      return;
+    }
+    try {
+      const reconciler = new CheckInReminderReconciler(
+        {
+          tracker: ctx.commitmentTracker,
+          send: async (topicId, text) => {
+            if (!telegram) throw new Error('no-delivery-transport');
+            // Route the send through the SAME durable content dedup the
+            // /telegram/reply route uses.
+            //
+            // This is load-bearing and was nearly a false claim: the reconciler
+            // sends first and stamps after, so a crash in between re-sends on
+            // the next pass. The spec justified that by saying "the relay
+            // absorbs the duplicate" — but the dedup lives in the reply ROUTE,
+            // and `sendToTopic` bypasses it entirely. Asserting the mitigation
+            // without wiring it would have been a safety property that existed
+            // only in the comment. (Caught in review round 2, 2026-07-25.)
+            //
+            // A duplicate is treated as SUCCESS-equivalent: the user already has
+            // this exact reminder, so the send is complete and the caller may
+            // stamp. Treating it as a failure would retry-loop until the window
+            // expired and then genuinely double-send.
+            if (outboundContentDedup.isDuplicate(topicId, text)) {
+              return { ok: true, suppressedDuplicate: true } as unknown;
+            }
+            if (!outboundContentDedup.tryReserve(topicId, text)) {
+              return { ok: true, suppressedDuplicate: true } as unknown;
+            }
+            try {
+              const r = await telegram.sendToTopic(topicId, text);
+              outboundContentDedup.record(topicId, text);
+              return r;
+            } catch (err) {
+              // Release so a genuine transport failure is retried rather than
+              // suppressed as a "duplicate" on the next pass.
+              outboundContentDedup.releaseReservation(topicId, text);
+              throw err;
+            }
+          },
+        },
+        {
+          enabled: true,
+          // dryRun defaults TRUE: the graduated state is an explicit operator
+          // decision, never something that arrives by omission.
+          dryRun,
+          ...(typeof cfg?.maxPerPass === 'number' ? { maxPerPass: cfg.maxPerPass } : {}),
+        },
+      );
+      const report = await reconciler.runPass();
+      res.json(report);
+    } catch (err) {
+      res.status(500).json({ error: 'check-in-reminder-pass-failed', detail: String(err) });
+    }
+  });
+
+  /** GET /commitments/check-in-reminder — read-only posture + the dated backlog. */
+  router.get('/commitments/check-in-reminder', (_req, res) => {
+    const cfg = (ctx.config as Record<string, any>).commitments?.checkInReminder as
+      | { enabled?: boolean; dryRun?: boolean; maxPerPass?: number }
+      | undefined;
+    const enabled = resolveDevAgentGate(cfg?.enabled, ctx.config);
+    if (!enabled || !ctx.commitmentTracker) {
+      res.status(503).json({ error: 'check-in-reminder-not-enabled' });
+      return;
+    }
+    const all = ctx.commitmentTracker.getAll();
+    const dated = all.filter((c) => !!c.checkInAt);
+    res.json({
+      enabled: true,
+      dryRun: cfg?.dryRun !== false,
+      datedCount: dated.length,
+      // Surfaced deliberately: an exhausted reminder is a promise the user did
+      // NOT receive, and it must be visible rather than buried in a stamp.
+      undelivered: dated
+        .filter((c) => !!c.checkInReminderFailedAt)
+        .map((c) => ({ id: c.id, topicId: c.topicId, checkInAt: c.checkInAt, attempts: c.checkInReminderAttempts ?? 0 })),
+      pending: dated
+        .filter((c) => !c.checkInReminderSentAt && !c.checkInReminderFailedAt)
+        .map((c) => ({ id: c.id, topicId: c.topicId, checkInAt: c.checkInAt })),
+    });
+  });
+
   router.get('/commitments/escalation-metrics', (_req, res) => {
     if (!ctx.commitmentTracker) {
       res.json({ enabled: false });
@@ -23678,7 +26640,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             softDeadlineAt, hardDeadlineAt, sessionEpoch,
             ownerMachineId, externalKey, beaconCreatedBySource,
             // C1+C2 "The Agent Carries the Loop" state model (§4.1).
-            owner, blockedOn, actionClass, supersededBy } = req.body;
+            owner, blockedOn, actionClass, supersededBy,
+            correctionId, classReviewRef, origin } = req.body;
 
     if (!type || !userRequest || !agentResponse) {
       res.status(400).json({ error: 'type, userRequest, and agentResponse are required' });
@@ -23686,6 +26649,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (!['config-change', 'behavioral', 'one-time-action'].includes(type)) {
       res.status(400).json({ error: 'type must be config-change, behavioral, or one-time-action' });
+      return;
+    }
+    const correctionDerived = origin === 'correction' || typeof correctionId === 'string' || typeof classReviewRef === 'string';
+    const classReviewAdmission = evaluateCorrectionInstanceFix({
+      originCorrection: correctionDerived,
+      correctionId: typeof correctionId === 'string' ? correctionId : undefined,
+      claimedClassReviewRef: typeof classReviewRef === 'string' ? classReviewRef : undefined,
+      dryRun: ctx.config.monitoring?.correctionClassReview?.dryRun !== false,
+      correctionLedger: ctx.correctionLedger ?? null,
+      classReviewStore: ctx.classReviewStore ?? null,
+    });
+    if (!classReviewAdmission.allow) {
+      res.status(409).json({ error: 'correction-derived commitment requires a corresponding filled class review', reason: classReviewAdmission.reason });
       return;
     }
     // Beacon validation: must have topicId and at least one deadline marker.
@@ -23740,6 +26716,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         softDeadlineAt, hardDeadlineAt, sessionEpoch,
         ownerMachineId, externalKey, beaconCreatedBySource,
         owner, blockedOn, actionClass, supersededBy,
+        ...(typeof correctionId === 'string' ? { correctionId } : {}),
+        ...(classReviewAdmission.classReviewRef ? { classReviewRef: classReviewAdmission.classReviewRef } : {}),
         ...(boundBy ? { boundBy } : {}),
       });
       // §6.1 dark-window honesty (adversarial-A6/NEW#4): while followThrough
@@ -23763,7 +26741,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
         } catch { /* attention is observability */ }
       }
-      res.status(201).json(commitment);
+      res.status(201).json({ ...commitment, classReviewAdmission: {
+        wouldRefuse: classReviewAdmission.wouldRefuse, reason: classReviewAdmission.reason,
+      } });
     } catch (err) {
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
@@ -23860,6 +26840,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const { message, topicId } = req.body ?? {};
     if (typeof message !== 'string' || typeof topicId !== 'number') {
       res.status(400).json({ error: 'message (string) and topicId (number) are required' });
+      return;
+    }
+    const completionLive = !!ctx.completionClaimVerifier
+      && resolveDevAgentGate(ctx.config.monitoring?.completionClaimVerification?.enabled, ctx.config)
+      && ctx.config.monitoring?.completionClaimVerification?.dryRun === false;
+    if (completionLive && ctx.completionClaimVerifier!.getRecentAuthoritativeArbitration(message)?.authoritative) {
+      res.json({ observed: true, registered: false, reason: 'shared-arbiter-authoritative' });
       return;
     }
     const numericTopicId = Number.isSafeInteger(topicId) ? topicId : undefined;
@@ -24301,6 +27288,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const updated = ctx.commitmentTracker.transitionState(req.params.id, { owner, blockedOn, actionClass, supersededBy });
       res.json({ transitioned: true, id: updated.id, owner: updated.owner, blockedOn: updated.blockedOn });
     } catch (err) {
+      if (err instanceof CommitmentPersistenceError) {
+        res.status(503).json({ error: 'commitment-persistence-unavailable' });
+        return;
+      }
       const msg = (err as Error).message;
       const code = /not found/.test(msg) ? 404 : /terminal/.test(msg) ? 409 : 400;
       res.status(code).json({ error: msg });
@@ -24375,6 +27366,47 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // GET routes return { enabled: false } when the pool is not configured so
   // they answer 200 (not 503) on every install.
 
+  const subscriptionEmailReconciliation = () => {
+    const barrier = ctx.subscriptionEmailBarrier;
+    if (barrier && typeof barrier.snapshot === 'function') return barrier.snapshot();
+    const state = barrier && typeof barrier.status === 'function'
+      ? barrier.status()
+      : barrier?.isBlocking() ? 'running' : 'complete';
+    return {
+      state,
+      unresolvedCount: ctx.subscriptionPool?.listEmailGaps?.().length ?? 0,
+      repairRunsFreshProbe: true as const,
+    };
+  };
+  const enforceSubscriptionPoolWriteCapability = (route: string) =>
+    (_req: ExpressRequest, res: ExpressResponse, next: () => void): void => {
+    const capability = SUBSCRIPTION_POOL_WRITE_CAPABILITIES[route];
+    if (!capability) {
+      res.status(500).json({ error: 'Subscription identity mutation route is not classified.' });
+      return;
+    }
+    if (capability === 'readOnlyOrNonIdentity' || !ctx.subscriptionEmailBarrier?.isBlocking()) {
+      next();
+      return;
+    }
+    res.status(503).json({
+      error: 'Account identity reconciliation is still starting. Try again shortly.',
+      code: 'subscription-account-email-reconciliation-running',
+      retryable: true,
+      emailReconciliation: { state: 'running' },
+    });
+  };
+  const subscriptionEmailGaps = () =>
+    (ctx.subscriptionPool?.listEmailGaps?.() ?? []).map((account) => ({
+      accountId: account.accountId,
+      nickname: account.nickname,
+      provider: account.provider,
+      framework: account.framework,
+      reason: ctx.subscriptionEmailBarrier?.timedOutAccount(account.accountId)
+        ? 'reconciliation-timeout'
+        : 'account-record-missing-email',
+    }));
+
   router.get('/subscription-pool', async (req, res) => {
     // WS5.1 — pool-scope read: "how much quota is left across ALL my machines /
     // accounts?" in ONE view. Mirrors GET /sessions?scope=pool exactly: fan out
@@ -24392,7 +27424,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const selfMachineNickname = selfMachineId
         ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
         : null;
-      const selfAccounts = (ctx.subscriptionPool?.list() ?? []).map((a) => ({
+      const localRows = ctx.subscriptionPool?.list() ?? [];
+      const selfAccounts = localRows.map((a) => ({
         ...a,
         machineId: selfMachineId,
         machineNickname: selfMachineNickname ?? undefined,
@@ -24402,6 +27435,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const peers = ctx.resolvePeerUrls?.() ?? [];
       const failed: Array<{ machineId: string; error: string }> = [];
       const remote: Record<string, unknown>[] = [];
+      const remoteEmailGaps: Record<string, unknown>[] = [];
+      const remoteReconciliation: Array<{
+        state: 'running' | 'degraded' | 'complete';
+        unresolvedCount: number;
+      }> = [];
       await Promise.all(peers.map(async (p) => {
         try {
           const r = await fetch(`${p.url}/subscription-pool`, {
@@ -24413,7 +27451,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             failed.push({ machineId: p.machineId, error: r.status === 401 || r.status === 403 ? 'unauthorized' : 'error' });
             return;
           }
-          const body = (await r.json()) as { accounts?: Record<string, unknown>[] };
+          const body = (await r.json()) as {
+            accounts?: Record<string, unknown>[];
+            emailGaps?: Record<string, unknown>[];
+            emailReconciliation?: {
+              state?: 'running' | 'degraded' | 'complete';
+              unresolvedCount?: number;
+            };
+          };
           const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
           for (const a of body.accounts ?? []) {
             remote.push({
@@ -24421,6 +27466,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               machineId: a.machineId ?? p.machineId,
               machineNickname: a.machineNickname ?? nickname ?? undefined,
               remote: true,
+            });
+          }
+          for (const gap of body.emailGaps ?? []) {
+            remoteEmailGaps.push({
+              ...gap,
+              machineId: gap.machineId ?? p.machineId,
+              machineNickname: gap.machineNickname ?? nickname ?? undefined,
+              remote: true,
+            });
+          }
+          if (body.emailReconciliation?.state) {
+            remoteReconciliation.push({
+              state: body.emailReconciliation.state,
+              unresolvedCount: Number(body.emailReconciliation.unresolvedCount ?? 0),
             });
           }
         } catch (err) {
@@ -24433,9 +27492,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
       }));
 
+      const localReconciliation = subscriptionEmailReconciliation();
+      const reconciliationRows = [localReconciliation, ...remoteReconciliation];
+      const aggregateState = reconciliationRows.some((row) => row.state === 'running')
+        ? 'running'
+        : reconciliationRows.some((row) => row.state === 'degraded') ? 'degraded' : 'complete';
       res.json({
         enabled: !!ctx.subscriptionPool,
         accounts: [...selfAccounts, ...remote],
+        emailGaps: [
+          ...subscriptionEmailGaps().map((gap) => ({
+            ...gap,
+            machineId: selfMachineId,
+            machineNickname: selfMachineNickname ?? undefined,
+            remote: false,
+          })),
+          ...remoteEmailGaps,
+        ],
+        emailReconciliation: {
+          state: aggregateState,
+          unresolvedCount: reconciliationRows.reduce((sum, row) => sum + row.unresolvedCount, 0),
+          repairRunsFreshProbe: true,
+        },
         pool: {
           selfMachineId,
           selfMachineNickname,
@@ -24453,7 +27531,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const accounts = ctx.subscriptionPool.list();
-    res.json({ enabled: true, count: accounts.length, accounts });
+    const emailGaps = subscriptionEmailGaps();
+    res.json({
+      enabled: true,
+      count: accounts.length,
+      accounts,
+      emailGaps,
+      emailReconciliation: subscriptionEmailReconciliation(),
+    });
   });
 
   // D5 (topic 29836) — record-state ⟂ pane-liveness. A pending login is only genuinely
@@ -24488,19 +27573,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const pool = ctx.subscriptionPool!;
     const existing = pool.get(login.id);
     if (existing) {
-      return pool.update(login.id, {
+      return new SubscriptionAccountEmailRegistrar(
+        pool,
+        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+      ).completeValidated(login.id, email, {
         nickname: login.label,
         status: 'active',
-        email,
         ...(login.configHome ? { configHome: login.configHome } : {}),
       });
     }
-    return pool.add({
+    return new SubscriptionAccountEmailRegistrar(
+      pool,
+      ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+      ctx.subscriptionEmailBinding,
+    ).completeNewValidated({
       id: login.id, nickname: login.label,
-      provider: login.provider as Parameters<typeof pool.add>[0]['provider'],
-      framework: login.framework as Parameters<typeof pool.add>[0]['framework'],
+      provider: login.provider as import('../core/SubscriptionPool.js').SubscriptionProvider,
+      framework: login.framework as import('../core/SubscriptionPool.js').SubscriptionFramework,
       configHome: login.configHome ?? '', status: 'active', email,
     });
+  };
+
+  // A completed sign-in has replaced the credential at this slot. Discard the
+  // pre-login identity observation and immediately re-probe only this account;
+  // otherwise identityDrifted remains latched until the next scheduled sweep.
+  // Completion remains successful if the fresh quota read is temporarily
+  // unavailable: the normal poll loop will retry, while the cache is already
+  // invalidated so it cannot reuse pre-login identity evidence.
+  const reverifyCompletedEnrollment = async (
+    login: { id: string; configHome?: string },
+  ): Promise<void> => {
+    const poller = ctx.quotaPoller;
+    const account = ctx.subscriptionPool?.get(login.id);
+    if (!poller || !account) return;
+    poller.invalidateIdentityCache([login.configHome || account.configHome]);
+    try { await poller.pollAccount(account); }
+    catch (err) {
+      console.warn(`[subscription-pool] immediate post-enrollment verification deferred for ${login.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   // P2.1 — the "Pending Logins" surface (the phone/dashboard panel). MUST be
@@ -24594,7 +27704,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Run ONE proactive-swap pass now (the deterministic "show me it works" lever):
   // refresh the poll if near the wall, then pre-emptively swap at-pressure sessions.
   // POST so it never collides with GET /subscription-pool/:id.
-  router.post('/subscription-pool/proactive-swap/check', async (_req, res) => {
+  router.post('/subscription-pool/proactive-swap/check', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/proactive-swap/check'), async (_req, res) => {
     if (!ctx.proactiveSwapMonitor) {
       res.json({ enabled: false, swapped: [], considered: 0, refreshed: false });
       return;
@@ -24604,6 +27714,40 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ enabled: true, ...result });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'proactive check failed' });
+    }
+  });
+
+  router.post('/subscription-pool/:id/repair-email', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/:id/repair-email'), async (req, res) => {
+    if (!ctx.subscriptionPool) {
+      res.status(404).json({ error: 'SubscriptionPool not configured' });
+      return;
+    }
+    const suppliedPin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expectedPin = ctx.config.dashboardPin ?? '';
+    const pinOk = suppliedPin.length === expectedPin.length && suppliedPin.length > 0 &&
+      timingSafeEqual(Buffer.from(suppliedPin), Buffer.from(expectedPin));
+    if (!pinOk) {
+      res.status(401).json({ error: 'Dashboard PIN required.' });
+      return;
+    }
+    try {
+      const registrar = new SubscriptionAccountEmailRegistrar(
+        ctx.subscriptionPool,
+        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+        ctx.subscriptionEmailBinding,
+      );
+      res.json(await registrar.repairLegacy(req.params.id));
+    } catch (err) {
+      const code = err instanceof Error && 'code' in err ? String(err.code) : 'identity-oracle-unavailable';
+      const status = code === 'subscription-account-not-found'
+        ? 404
+        : code === 'subscription-account-identity-provider-unsupported' ? 400 : 409;
+      res.status(status).json({
+        error: err instanceof Error ? err.message : 'Account identity could not be repaired.',
+        code,
+        repairRequired: true,
+        emailReconciliation: subscriptionEmailReconciliation(),
+      });
     }
   });
 
@@ -24620,7 +27764,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json(account);
   });
 
-  router.post('/subscription-pool', (req, res) => {
+  router.post('/subscription-pool', enforceSubscriptionPoolWriteCapability('POST /subscription-pool'), async (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
@@ -24633,27 +27777,62 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     try {
+      if (!/^[a-z0-9-]+$/.test(String(id))) {
+        res.status(400).json({ error: 'id must match ^[a-z0-9-]+$' });
+        return;
+      }
+      if (ctx.subscriptionPool.get(String(id))) {
+        res.status(400).json({ error: `account ${String(id)} already exists` });
+        return;
+      }
+      for (const key of Object.keys(req.body ?? {})) {
+        if (/(?:access|refresh)?token|api_?key|credentials?|secret|password|oauth/i.test(key)) {
+          res.status(400).json({
+            error: `the registry stores login LOCATION, never credentials — field "${key}" is not allowed`,
+          });
+          return;
+        }
+      }
+      if (provider !== 'anthropic' || framework !== 'claude-code') {
+        res.status(400).json({
+          error: `provider identity verification is not supported for ${String(provider)}/${String(framework)}`,
+          code: 'subscription-account-identity-provider-unsupported',
+        });
+        return;
+      }
       // Pass the full body as rawExtra so the credential-field guard rejects any
       // attempt to smuggle a token into the registry (structural invariant).
-      const account = ctx.subscriptionPool.add(
+      const account = await new SubscriptionAccountEmailRegistrar(
+        ctx.subscriptionPool,
+        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+      ).register(
         { id, nickname, provider, framework, configHome, status, email },
         req.body,
       );
       res.status(201).json(account);
     } catch (err) {
+      const code = err instanceof Error && 'code' in err ? String(err.code) : undefined;
       const isValidation = err instanceof Error && err.name === 'ValidationError';
-      res.status(isValidation ? 400 : 500).json({
+      res.status(code ? 400 : isValidation ? 400 : 500).json({
         error: err instanceof Error ? err.message : 'failed to add account',
+        ...(code ? { code } : {}),
       });
     }
   });
 
-  router.patch('/subscription-pool/:id', (req, res) => {
+  router.patch('/subscription-pool/:id', enforceSubscriptionPoolWriteCapability('PATCH /subscription-pool/:id'), (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
     }
     const { nickname, framework, configHome, status, lastQuota, lastUsedAt, email } = req.body ?? {};
+    if (email !== undefined) {
+      res.status(409).json({
+        error: 'Account email is credential-attested identity and cannot be edited directly.',
+        code: 'identity-email-direct-mutation-refused',
+      });
+      return;
+    }
     // Census #10/#11: while live credential re-pointing is enabled the account `configHome` is
     // enrollment metadata, NOT the credential's live location (the ledger owns location). A hand
     // edit here would silently desync the ledger and re-point sessions to the wrong slot, so the
@@ -24675,7 +27854,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const updated = ctx.subscriptionPool.update(
         req.params.id,
-        { nickname, framework, configHome, status, lastQuota, lastUsedAt, email },
+        { nickname, framework, configHome, status, lastQuota, lastUsedAt },
         req.body,
       );
       if (!updated) {
@@ -24691,7 +27870,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.delete('/subscription-pool/:id', (req, res) => {
+  router.delete('/subscription-pool/:id', enforceSubscriptionPoolWriteCapability('DELETE /subscription-pool/:id'), (req, res) => {
     if (!ctx.subscriptionPool) {
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
@@ -24711,7 +27890,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // normal GET /subscription-pool. { enabled:false } when the poller is unwired
   // (200, never 503).
 
-  router.post('/subscription-pool/poll', async (_req, res) => {
+  router.post('/subscription-pool/poll', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/poll'), async (_req, res) => {
     if (!ctx.quotaPoller) {
       res.json({ enabled: false, polled: 0, failed: 0 });
       return;
@@ -24735,10 +27914,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const burnRate = ctx.quotaPoller ? ctx.quotaPoller.burnRate(req.params.id) : null;
+    const snapshot = account.lastQuota ?? null;
+    const measuredAtMs = snapshot?.measuredAt ? Date.parse(snapshot.measuredAt) : NaN;
+    const snapshotAgeMs = Number.isFinite(measuredAtMs)
+      ? Math.max(0, Date.now() - measuredAtMs)
+      : null;
+    const staleSnapshot = snapshot !== null && (
+      snapshotAgeMs === null ||
+      snapshotAgeMs > QUOTA_SNAPSHOT_STALE_AFTER_MS
+    );
     res.json({
       accountId: account.id,
-      snapshot: account.lastQuota ?? null,
+      snapshot,
       burnRate,
+      staleSnapshot,
+      snapshotAgeMs,
     });
   });
 
@@ -24746,7 +27936,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // surface). Resumes `sessionName` on another eligible account, preserving the
   // conversation via --resume. Body: { sessionName, exhaustedAccountId }.
   // POST (not GET) so it never collides with GET /subscription-pool/:id.
-  router.post('/subscription-pool/swap', async (req, res) => {
+  router.post('/subscription-pool/swap', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/swap'), async (req, res) => {
     if (!ctx.quotaAwareScheduler) {
       res.json({ enabled: false, swapped: false, reason: 'scheduler not configured' });
       return;
@@ -24774,7 +27964,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // code. List/sweep routes answer 200 { enabled:false } when the wizard is
   // unwired (dark) — never 503.
 
-  router.post('/subscription-pool/enroll', async (req, res) => {
+  router.post('/subscription-pool/enroll', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll'), async (req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, started: false, reason: 'enrollment wizard not configured' });
       return;
@@ -24805,7 +27995,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // reader, prod-wired to ?scope=pool) and surfaces ONE aggregated phone-first consent. The
   // agent NEVER self-enrolls — authorization is the operator's mandate, issued on the target's
   // own dashboard (per-server, OQ6). Dark behind multiMachine.accountFollowMe (503 when off).
-  router.post('/subscription-pool/follow-me/scan', async (_req, res) => {
+  router.post('/subscription-pool/follow-me/scan', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/scan'), async (_req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; maxFollowMachines?: number } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -24876,7 +28066,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // NEVER from the request body — so `completeFollowMe` can later validate the minted account against
   // what the operator actually approved. Unresolvable email ⇒ 409 fail-closed (never start blank).
   // Dark behind multiMachine.accountFollowMe (503 when off). Mirrors the scan route's dark-gate exactly.
-  router.post('/subscription-pool/follow-me/enroll/start', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/start', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/start'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; remoteScrapeTimeoutMs?: number } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -24951,7 +28141,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
       const target = resolveFollowMeEnrollTarget({ accountId, localAccounts, peerViews });
       if (!target.resolved) {
-        res.status(409).json({ error: 'cannot resolve approved account email' });
+        res.status(target.code === 'subscription-account-not-found' ? 404 : 409)
+          .json({ error: target.reason, code: target.code, accountId, repairRequired: true });
         return;
       }
 
@@ -25052,7 +28243,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // paste the returned code); this is the second part, off-chat. The code is the
   // operator's own single-use auth code; the provider validates it — instar holds no
   // new authority and never stores/logs the code value. Dev-gated like the rest.
-  router.post('/subscription-pool/follow-me/enroll/:id/submit-code', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/:id/submit-code', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/:id/submit-code'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25086,9 +28277,43 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Resolve the pending login → its configHome + framework → the enroll pane session
     // name (derived through the shared helper so it can NEVER drift from enroll-start's spawn).
-    const login = ctx.enrollmentWizard.pending().find((l) => l.id === id);
+    let login = ctx.enrollmentWizard.pending().find((l) => l.id === id);
     if (!login) {
-      res.status(404).json({ error: `no pending login "${id}" is waiting for a code — start the sign-in again from the dashboard grid` });
+      // The operator submitted against a flow that disappeared across a restart
+      // or exhausted cleanup. Never collapse that honest lifecycle state into a
+      // raw 404/502. If the account still provably needs a login, mint its fresh
+      // replacement now and return the public flow so the cell can redraw.
+      const account = ctx.subscriptionPool.get(id);
+      const stillNeedsSignIn = account?.status === 'needs-reauth' || (
+        account?.identityDrifted === true &&
+        (account.identityDrift?.repairState === 'owner-relogin-required' ||
+          account.identityDrift?.actualAccountId === 'missing-local-login')
+      );
+      if (account && stillNeedsSignIn) {
+        try {
+          const freshLogin = await ctx.enrollmentWizard.start({
+            id: account.id,
+            label: account.nickname,
+            provider: account.provider,
+            framework: account.framework,
+            configHome: account.configHome,
+            expectedEmail: account.email,
+            remote: true,
+          });
+          res.status(409).json({
+            code: 'login-expired-fresh-ready',
+            error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now',
+            freshLogin,
+          });
+          return;
+        } catch (err) {
+          console.warn(`[follow-me] expired login refresh failed id=${id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      res.status(410).json({
+        code: 'login-expired',
+        error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell',
+      });
       return;
     }
     // Narrow the authority (codex finding #4): this paste-back path is ONLY for the
@@ -25134,7 +28359,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // affordance — never a "may have closed" guess. Wording floor: the message only references
     // affordances that exist on the surface it lands on (the grid's Retry — never "Approve").
     if (rawFrame == null || !frame.trim()) {
-      res.status(409).json({ code: 'pane-dead', error: `this sign-in's window is no longer running on its machine, so it can't take a code — start the sign-in again from the dashboard grid` });
+      const freshLogin = await ctx.enrollmentWizard.refresh(id);
+      if (freshLogin) {
+        res.status(409).json({
+          code: 'login-expired-fresh-ready',
+          error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now',
+          freshLogin,
+        });
+        return;
+      }
+      res.status(410).json({
+        code: 'login-expired',
+        error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell',
+      });
       return;
     }
     if (!looksReady || looksLikeShell) {
@@ -25176,6 +28413,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // Upsert (D5): a re-auth of an EXISTING pool account updates it back to active;
             // only a genuinely-new account is added.
             const acct = upsertValidatedAccount(result.login, result.email);
+            await reverifyCompletedEnrollment(result.login);
             logOutcome('validated');
             // `email` rides along so the dashboard's terminal success state can NAME the
             // verified account ("headley.justin@gmail.com is set up on this machine") —
@@ -25210,7 +28448,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Bearer-only like submit-code (the PIN gate lives on start-cell, the mint) — a
   // per-machine PIN can't cross the mesh, which is what lets the fronting relay reach a
   // peer's cancel. Dark behind multiMachine.accountFollowMe. Spec: matrix-cell-operator-cancel.
-  router.post('/subscription-pool/follow-me/enroll/:id/cancel', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/:id/cancel', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/:id/cancel'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25227,7 +28465,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // it carries the code one authed hop to the machine that owns the login pane. self →
   // local submit-code; peer → POST {code} to that peer's local submit-code. The code rides
   // the Bearer-authed API + authed mesh hop only, never chat. Dark target → honest 502.
-  router.post('/subscription-pool/follow-me/submit-code', async (req, res) => {
+  router.post('/subscription-pool/follow-me/submit-code', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/submit-code'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25271,7 +28509,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // calls this; it carries the cancel one authed hop to the machine that owns the login
   // pane. self → local cancel; peer → POST to that peer's local cancel. Mirrors
   // follow-me/submit-code exactly (Bearer-authed mesh hop; dark/offline target → 502).
-  router.post('/subscription-pool/follow-me/cancel', async (req, res) => {
+  router.post('/subscription-pool/follow-me/cancel', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/cancel'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25319,7 +28557,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // new authority — it just drives the existing chain in one call so the frontend never handles
   // fingerprints or raw mandate JSON. Idempotent: a re-tap reuses an existing valid pending login
   // for this pair (no duplicate, no stacked mandate). Dark behind multiMachine.accountFollowMe.
-  router.post('/subscription-pool/matrix/start-cell', async (req, res) => {
+  router.post('/subscription-pool/matrix/start-cell', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/matrix/start-cell'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25363,8 +28601,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
         const target = resolveFollowMeEnrollTarget({ accountId, localAccounts, peerViews });
         if (!target.resolved) {
-          console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=cannot-resolve-email`);
-          res.status(409).json({ error: 'cannot resolve approved account email' });
+          console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=${target.code}`);
+          res.status(target.code === 'subscription-account-not-found' ? 404 : 409)
+            .json({ error: target.reason, code: target.code, accountId, repairRequired: true });
           return;
         }
         const existing = ctx.enrollmentWizard.pending().find(
@@ -25380,7 +28619,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (existing) {
           console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=reused-pending`);
           // Flow-detail passthrough (topic 29836 D2/D3): expectedEmail (which account the OAuth
-          // page MUST show), ttlExpiresAt (link-expiry countdown), notice (the two-codes heads-up)
+          // page MUST show), ttlExpiresAt (link-expiry countdown), notice (optional flow heads-up)
           // and kind ride along so the matrix CELL can carry the complete flow end-to-end instead
           // of stranding those steps in the bottom Pending-logins panel. All operator-facing,
           // never secrets (same fields the pending-logins surface already serves).
@@ -25488,7 +28727,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   // Single-segment path → no collision with /enroll/:id/complete (3 segments).
-  router.post('/subscription-pool/enroll/reissue-expired', async (_req, res) => {
+  router.post('/subscription-pool/enroll/reissue-expired', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll/reissue-expired'), async (_req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, reissued: [] });
       return;
@@ -25501,7 +28740,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.post('/subscription-pool/enroll/:id/cancel', (req, res) => {
+  router.post('/subscription-pool/enroll/:id/cancel', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll/:id/cancel'), (req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, cancelled: false, reason: 'enrollment wizard not configured' });
       return;
@@ -25509,7 +28748,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     cancelEnrollment(req.params.id, plainCompleteInFlight, 'enroll', res);
   });
 
-  router.post('/subscription-pool/enroll/:id/complete', async (req, res) => {
+  router.post('/subscription-pool/enroll/:id/complete', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/enroll/:id/complete'), async (req, res) => {
     if (!ctx.enrollmentWizard) {
       res.json({ enabled: false, completed: false, reason: 'enrollment wizard not configured' });
       return;
@@ -25522,6 +28761,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     plainCompleteInFlight.add(id);
     try {
+      await ctx.enrollmentCompleteInFlightHook?.(id);
       // Keep a short observable critical section so a concurrent cancel stands aside.
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       const login = ctx.enrollmentWizard.complete(id);
@@ -25529,6 +28769,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(404).json({ error: `pending login ${id} not found` });
         return;
       }
+      await reverifyCompletedEnrollment(login);
       res.json({ enabled: true, login });
     } finally {
       plainCompleteInFlight.delete(id);
@@ -25541,7 +28782,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // the account becomes a selectable pool account. A surprise/mismatched/unverifiable email is
   // HELD (NOT added to the pool) and raises a HIGH attention item. Only a verified match adds
   // the account to the SubscriptionPool. Dark behind multiMachine.accountFollowMe (503 when off).
-  router.post('/subscription-pool/follow-me/enroll/:id/complete', async (req, res) => {
+  router.post('/subscription-pool/follow-me/enroll/:id/complete', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/follow-me/enroll/:id/complete'), async (req, res) => {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
@@ -25570,6 +28811,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Upsert (D5): a re-auth of an EXISTING pool account updates it back to active.
       const { login, email } = result;
       const account = upsertValidatedAccount(login, email);
+      await reverifyCompletedEnrollment(login);
       res.status(201).json({ enabled: true, outcome: 'validated', account });
     } catch (err) {
       const isValidation = err instanceof Error && err.name === 'ValidationError';
@@ -25622,6 +28864,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       journalTail: led.getJournal().slice(-20),
       forcedBudgetRemaining: cr.levers.forcedBudgetRemaining(),
     });
+  });
+
+  // GET /credentials/repair-plan — mandatory dry-run/read surface before any
+  // identity-drift repair mutation. It contains account ids + slot labels only.
+  router.get('/credentials/repair-plan', async (_req, res) => {
+    const cr = ctx.credentialRepointing;
+    if (!cr || !credRepointEnabled() || !cr.repairPlan) {
+      res.status(503).json({ enabled: false, reason: 'credential identity repair is disabled or not wired' });
+      return;
+    }
+    const plan = await cr.repairPlan();
+    cr.audit.audit({ event: 'identity-repair-plan-read', moves: plan.moves.length, residuals: plan.ownerReloginAccountIds.length });
+    credSend(res, 200, { enabled: true, dryRun: true, plan });
+  });
+
+  // POST /credentials/repair-plan/execute — reuse the staged swap executor;
+  // never implements a second credential-write path. Executor config still
+  // controls dark/dry-run, and every move has its own live identity pre-flight.
+  router.post('/credentials/repair-plan/execute', async (_req, res) => {
+    const cr = credLeverGuard(res);
+    if (!cr || !cr.executeRepairPlan) return;
+    const { plan, results, vacateResults } = await cr.executeRepairPlan();
+    cr.audit.audit({ event: 'identity-repair-plan-executed', moves: results.length, outcomes: results.map((r) => r.outcome) });
+    credSend(res, 200, { enabled: true, dryRun: ctx.config.subscriptionPool?.credentialRepointing?.dryRun !== false, plan, results, vacateResults });
   });
 
   // GET /credentials/rebalancer — the autonomous balancer's last-pass surface. The CredentialRebalancer
@@ -26917,6 +30183,81 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   }
 
+  // ── Channel Registry (auth-gated read) ──────────────────────────────
+  // "Which ways of reaching a peer exist, and which work right now?" The channel SET is code-defined,
+  // so a channel that failed to construct still gets a row saying so — see src/core/channelRegistry.ts
+  // for why that invariant is the whole point.
+  router.get('/channels', async (_req, res) => {
+    try {
+      const relayClient = ctx.threadlineRelayClient;
+      const defs = buildChannelDefinitions({
+        relayStatus: () => {
+          if (!relayClient) return null;
+          const connected = relayClient.connectionState === 'connected';
+          return { ready: connected, connected };
+        },
+        mutualSshConstructed: () =>
+          Boolean((globalThis as { __instarMutualSshRuntime?: unknown }).__instarMutualSshRuntime),
+        mutualSshEnabled: () => ctx.config.multiMachine?.mutualSsh?.enabled === true,
+        // Peer HTTP needs a configured peer AND a credential for its authenticated routes. We hold
+        // neither by default, and saying so plainly beats probing something we could not use anyway.
+        peerHttp: async () => ({
+          reachable: false,
+          haveCredential: false,
+          detail: 'no peer HTTP endpoint configured for this agent',
+        }),
+      });
+      // The DIRECT USER channels ride the same registry rather than a second surface: "which channel
+      // should I use?" is one question, and splitting the answer would force a caller to already know
+      // which list to consult. Every probe below reads LIVE adapter state — never config, because
+      // `configured: true` survives the connection dying (see src/core/userChannels.ts).
+      const telegramAdapter = ctx.telegram;
+      const slackAdapter = ctx.slack;
+      const userDefs = buildUserChannelDefinitions({
+        telegramStatus: () => {
+          if (!telegramAdapter || typeof telegramAdapter.getStatus !== 'function') return null;
+          const s = telegramAdapter.getStatus();
+          return {
+            started: s.started,
+            fatalReason: s.fatalReason,
+            consecutivePollErrors: s.consecutivePollErrors,
+            lastError: s.lastError,
+            stoppedAt: s.stoppedAt,
+          };
+        },
+        // `isConnected()` clears on disconnect; `started` means "ever connected" and would report a
+        // long-dead socket as healthy forever.
+        slackConnected: () =>
+          slackAdapter && typeof slackAdapter.isConnected === 'function' ? slackAdapter.isConnected() : null,
+        slackEnabled: () => Boolean(slackAdapter),
+        // `getStatus().state` is a real state machine, so `qr-pending` (waiting on a human to
+        // scan) stays distinguishable from `disconnected` (the link dropped).
+        whatsappState: () =>
+          ctx.whatsapp && typeof ctx.whatsapp.getStatus === 'function'
+            ? ctx.whatsapp.getStatus().state
+            : null,
+        // `getConnectionInfo().state`, NOT the sibling `connectedAt` — that field is computed as
+        // `started ? new Date().toISOString() : undefined`, so it reports the moment you asked
+        // rather than the moment it connected.
+        imessageState: () =>
+          ctx.imessage && typeof ctx.imessage.getConnectionInfo === 'function'
+            ? ctx.imessage.getConnectionInfo().state
+            : null,
+      });
+      const report = await resolveChannels([...defs, ...userDefs]);
+      return res.status(200).json({ advisory: true, ...report });
+    } catch (error) {
+      // A registry that 500s teaches nothing. Report the failure as the registry's own verdict.
+      return res.status(200).json({
+        advisory: true,
+        channels: [],
+        summary: { total: 0, working: 0, unusable: 0, unknown: 0 },
+        error: `channel registry could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+        generatedAt: new Date().toISOString(),
+      });
+    }
+  });
+
   // ── Threadline Status (auth-gated) ──────────────────────────────────
   router.get('/threadline/status', (_req, res) => {
     const relayClient = ctx.threadlineRelayClient;
@@ -26986,6 +30327,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const {
       targetAgent,
       message,
+      inReplyTo,
       threadId,
       waitForReply,
       timeoutSeconds,
@@ -26998,6 +30340,35 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!targetAgent || !message) {
       res.status(400).json({ success: false, error: 'Missing required fields: targetAgent, message' });
       return;
+    }
+    const replyClaimOwner = typeof originSessionName === 'string' && originSessionName
+      ? originSessionName : `relay-send:${randomUUID()}`;
+    const boundWarmInbound = typeof originSessionName === 'string' && typeof threadId === 'string'
+      && ctx.threadResumeMap?.get(threadId)?.sessionName === originSessionName
+      ? ctx.listenerManager?.readLatestCanonicalInboxForThread(threadId) : null;
+    if (boundWarmInbound && inReplyTo !== boundWarmInbound.id) {
+      res.status(400).json({ success: false, error: 'Warm Threadline replies require inReplyTo for the current inbound message.' });
+      return;
+    }
+    if (typeof inReplyTo === 'string') {
+      if (!isAuthenticatedThreadlineInbound(
+        { listenerManager: ctx.listenerManager, threadLog: ctx.threadLog },
+        threadId,
+        inReplyTo,
+      )) {
+        res.status(400).json({ success: false, error: 'inReplyTo must name an authenticated inbound on this thread.' });
+        return;
+      }
+    }
+    if (typeof inReplyTo === 'string' && ctx.listenerManager
+      && !ctx.listenerManager.tryClaimReply(inReplyTo, replyClaimOwner)) {
+      res.status(409).json({ success: false, error: 'A reply for this inbound message is already in flight.' });
+      return;
+    }
+    if (typeof inReplyTo === 'string' && ctx.listenerManager) {
+      res.once('finish', () => {
+        if (res.statusCode >= 400) ctx.listenerManager?.releaseReplyClaim(inReplyTo, replyClaimOwner);
+      });
     }
 
     // ── Outbound credential-share intent (Secure A2A Verified Pairing §3.5) ──
@@ -27565,10 +30936,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                         threadId: effectiveThreadId,
                         text: message,
                         messageId: msgId,
+                        inReplyTo: typeof inReplyTo === 'string' ? inReplyTo : undefined,
                         outcome,
                       });
+                      if (typeof inReplyTo === 'string') ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
                     } catch (err) {
                       console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+                      if (typeof inReplyTo === 'string') ctx.listenerManager.retainReplyClaimFailure(inReplyTo, replyClaimOwner);
                     }
                   }
                   // (The canonical-log append for this outbound leg already ran
@@ -27711,10 +31085,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             threadId: effectiveRelayThreadId,
             text: message,
             messageId: relayMsgId,
+            inReplyTo: typeof inReplyTo === 'string' ? inReplyTo : undefined,
             outcome: 'relay-sent',
           });
+          if (typeof inReplyTo === 'string') ctx.listenerManager.releaseReplyClaim(inReplyTo, replyClaimOwner);
         } catch (err) {
           console.warn(`[relay-send] Canonical outbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+          if (typeof inReplyTo === 'string') ctx.listenerManager.retainReplyClaimFailure(inReplyTo, replyClaimOwner);
         }
       }
       // Robustness Phase 2 (D-B): append the relay-delivered outbound leg to the

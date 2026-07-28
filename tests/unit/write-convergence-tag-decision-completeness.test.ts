@@ -16,7 +16,10 @@ import os from 'node:os';
 // The module is import-safe (main is guarded behind an argv check).
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — plain .mjs module without type declarations
-import { findOpenQuestions } from '../../skills/spec-converge/scripts/write-convergence-tag.mjs';
+import {
+  findOpenQuestions,
+  findDecisionPointGaps,
+} from '../../skills/spec-converge/scripts/write-convergence-tag.mjs';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const SCRIPT = path.resolve(
@@ -124,6 +127,62 @@ describe('findOpenQuestions (criterion-2 parser)', () => {
       '- a stray question? this is fine here',
     ].join('\n');
     expect(findOpenQuestions(body)).toEqual([]);
+  });
+
+  /**
+   * THE BUG: a section NUMBER made a live user-decision invisible to the gate.
+   *
+   * `## 9. Open questions` did not match `^##\s+Open questions\b`, so the
+   * no-match branch returned `[]` — "nothing parked on the user" — for a spec
+   * that had a live, unanswered question sitting right under the heading. The
+   * skill calls this gate structural and says the criterion "cannot be skipped
+   * by prose"; it could be skipped by a section number.
+   *
+   * These assert the DEFECT is caught, not merely that the current parser runs:
+   * each numbered case must FAIL against the pre-fix regex.
+   */
+  it.each([
+    ['## 9. Open questions', 'numbered'],
+    ['## 8b. Open questions', 'numbered + letter'],
+    ['## 1.2 Open questions', 'dotted'],
+    ['## 3) Open questions', 'paren'],
+    ['## 9. Open questions (round 2)', 'numbered + suffix variant'],
+  ])('catches a live question under a %s heading (%s)', (heading) => {
+    const body = `${heading}\n- **Q1:** A or B? (user to decide)\n`;
+    expect(findOpenQuestions(body)).toEqual(['- **Q1:** A or B? (user to decide)']);
+  });
+
+  it('still treats a none-marker under a numbered heading as resolved', () => {
+    // The fix must not flip the gate to refusing every numbered spec — it makes
+    // the section VISIBLE, it does not make resolution harder.
+    expect(findOpenQuestions('## 9. Open questions\n\n*(none)*\n')).toEqual([]);
+  });
+
+  it('a genuinely absent section is still "nothing parked" (semantics unchanged)', () => {
+    // Deliberately NOT changed by this fix: whether an absent section should
+    // fail closed is a separate argued decision, tracked rather than smuggled in.
+    expect(findOpenQuestions('# T\n\n## Design\nstuff')).toEqual([]);
+  });
+});
+
+describe('gate heading recognition is SYMMETRIC across both sections', () => {
+  /**
+   * The asymmetry was the tell: on the identical numbered-heading input,
+   * findDecisionPointGaps failed CLOSED (refuse) while findOpenQuestions failed
+   * OPEN (pass silently). Two sibling checks, eight lines apart, opposite
+   * defaults for one quantity. Both now share a single heading builder so a
+   * future variance fix cannot land on one and miss the other.
+   */
+  it('recognises a numbered Decision points touched heading', () => {
+    const body = '## 6. Decision points touched\n- routing choice — invariant (deterministic)\n';
+    expect(findDecisionPointGaps(body, 'x')).toEqual({ ok: true });
+  });
+
+  it('both gates see a numbered heading, or neither does', () => {
+    const oq = findOpenQuestions('## 9. Open questions\n- **Q1:** live?\n');
+    const dp = findDecisionPointGaps('## 6. Decision points touched\n*(none)*\n', 'x');
+    expect(oq).toHaveLength(1); // section visible → live question caught
+    expect(dp.ok).toBe(true); // section visible → not a false "missing-section"
   });
 });
 

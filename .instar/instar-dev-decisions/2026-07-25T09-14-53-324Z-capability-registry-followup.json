@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-25T09:14:53.324Z",
+  "slug": "capability-registry-followup",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

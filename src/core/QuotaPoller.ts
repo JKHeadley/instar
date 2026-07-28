@@ -40,12 +40,13 @@ import type {
   AccountQuotaSnapshot,
 } from './SubscriptionPool.js';
 import {
-  readClaudeOauthAsync,
+  readClaudeOauthAsyncDetailed,
   refreshClaudeToken,
   expandHome,
   type RefreshResult,
 } from './OAuthRefresher.js';
 import type { CredentialLocationGate } from './CredentialLocationGate.js';
+import type { CredentialLocationLedger } from './CredentialLocationLedger.js';
 import {
   readLatestCodexUsage,
   type CodexUsageSnapshot,
@@ -53,15 +54,21 @@ import {
 } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 
 /**
- * Injectable token resolver — returns an account's OAuth access token or null.
+ * Injectable token resolver — returns an account's OAuth access token, null,
+ * or a closed re-auth reason when the credential itself is malformed.
  * The default (`defaultTokenResolver`) is ASYNC so the per-account keychain read happens OFF the
  * event loop (a slow/contended `securityd` read used to freeze the loop every poll cycle — the
  * dashboard-flap / false-sleep residual). `pollAccount` `await`s the result, so a SYNC resolver
  * (e.g. a test stub returning a plain string) is equally valid — hence the union return type.
  */
+export type TokenResolution =
+  | string
+  | null
+  | { reauthNeeded: true; reason: 'unparseable-credential-blob' };
+
 export type TokenResolver = (
   account: SubscriptionAccount,
-) => string | null | Promise<string | null>;
+) => TokenResolution | Promise<TokenResolution>;
 
 /**
  * Injectable account refresher — exchanges a config home's stored refresh token
@@ -105,6 +112,17 @@ export interface QuotaPollerConfig {
    * (or flag-off / ledger-unknown) → byte-for-byte today's enrollment-home behavior.
    */
   locationGate?: CredentialLocationGate;
+  /** Cached identity truth for Claude credential slots (default host TTL: ~6h). */
+  resolveSlotIdentity?: (slot: string) => Promise<
+    | { accountId: string; email?: string }
+    | { unavailable: true; reason: string }
+  >;
+  identityCacheTtlMs?: number;
+  /** Reconcile confirmed live attribution into the durable location ledger. */
+  locationLedger?: CredentialLocationLedger;
+  /** One deduped attention item per drift episode (id is stable until self-close). */
+  emitIdentityDriftAttention?: (item: { id: string; title: string; summary: string }) => void | Promise<void>;
+  onIdentityRestored?: (accountId: string, attentionId: string) => void | Promise<void>;
 }
 
 /** Outcome of a single usage read (internal). */
@@ -122,10 +140,12 @@ export interface BurnRate {
 }
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+export const QUOTA_SNAPSHOT_STALE_AFTER_MS = 30 * 60 * 1000;
 
 /**
  * Resolve a claude-code account's OAuth access token from its config home,
- * TRANSIENTLY. Never persisted, never logged. Reads via the shared OAuthRefresher
+ * TRANSIENTLY, or a closed re-auth result for malformed stored JSON. Never
+ * persisted, never logged. Reads via the shared OAuthRefresher
  * locator (macOS keychain `Claude Code-credentials-<sha256(configHome)[0:8]>`,
  * else `<configHome>/.credentials.json`) so the resolver and the refresher always
  * agree on WHERE a config home's credentials live. NOTE: an EXPIRED access token
@@ -134,7 +154,7 @@ const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
  */
 export async function defaultTokenResolver(
   account: SubscriptionAccount,
-): Promise<string | null> {
+): Promise<TokenResolution> {
   if (account.provider !== 'anthropic' || account.framework !== 'claude-code') {
     return null;
   }
@@ -142,8 +162,13 @@ export async function defaultTokenResolver(
   // OFF the event loop via `readClaudeOauthAsync` (promisified `security` spawn). The earlier sync
   // read blocked the loop for the full spawn duration each cycle — under multi-agent `securityd`
   // contention that was seconds, and across N accounts a burst (the residual freeze this fixes).
-  const oauth = await readClaudeOauthAsync(account.configHome);
-  const tok = oauth?.accessToken;
+  const read = await readClaudeOauthAsyncDetailed(account.configHome);
+  if (!read.ok) {
+    return read.reason === 'unparseable'
+      ? { reauthNeeded: true, reason: 'unparseable-credential-blob' }
+      : null;
+  }
+  const tok = read.oauth.accessToken;
   return typeof tok === 'string' && tok.startsWith('sk-ant-oat') ? tok : null;
 }
 
@@ -263,6 +288,13 @@ export class QuotaPoller {
   private readonly now: () => number;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private readonly locationGate?: CredentialLocationGate;
+  private readonly resolveSlotIdentity?: QuotaPollerConfig['resolveSlotIdentity'];
+  private readonly identityCacheTtlMs: number;
+  private readonly locationLedger?: CredentialLocationLedger;
+  private readonly emitIdentityDriftAttention?: QuotaPollerConfig['emitIdentityDriftAttention'];
+  private readonly onIdentityRestored?: QuotaPollerConfig['onIdentityRestored'];
+  private readonly identityCache = new Map<string, { at: number; value: Awaited<ReturnType<NonNullable<QuotaPollerConfig['resolveSlotIdentity']>>> }>();
+  private readonly attributionByExpected = new Map<string, string>();
   private interval: ReturnType<typeof setInterval> | null = null;
   /** Most-recent snapshot per account id. */
   private readonly lastByAccount = new Map<string, AccountQuotaSnapshot>();
@@ -282,6 +314,82 @@ export class QuotaPoller {
     this.now = config.now ?? (() => Date.now());
     this.logger = config.logger ?? { log: () => {}, warn: () => {} };
     this.locationGate = config.locationGate;
+    this.resolveSlotIdentity = config.resolveSlotIdentity;
+    this.identityCacheTtlMs = config.identityCacheTtlMs ?? 6 * 60 * 60_000;
+    this.locationLedger = config.locationLedger;
+    this.emitIdentityDriftAttention = config.emitIdentityDriftAttention;
+    this.onIdentityRestored = config.onIdentityRestored;
+  }
+
+  private async identityForSlot(slot: string) {
+    if (!this.resolveSlotIdentity) return null;
+    const cached = this.identityCache.get(slot);
+    const now = this.now();
+    if (cached && now - cached.at < this.identityCacheTtlMs) return cached.value;
+    const value = await this.resolveSlotIdentity(slot);
+    this.identityCache.set(slot, { at: now, value });
+    return value;
+  }
+
+  /** Credential mutations must invalidate observations made before the write. */
+  invalidateIdentityCache(slots: string[]): void {
+    for (const slot of slots) this.identityCache.delete(slot);
+  }
+
+  /** Identity truth wins over a stale registry/ledger label. */
+  private async reconcileIdentity(expected: SubscriptionAccount, slot: string): Promise<SubscriptionAccount | null> {
+    this.attributionByExpected.set(expected.id, expected.id);
+    if (expected.framework !== 'claude-code') return expected;
+    const identity = await this.identityForSlot(slot);
+    if (!identity || 'unavailable' in identity) return expected; // uncertainty never mutates truth
+    const actual = this.pool.get(identity.accountId);
+    const nowIso = new Date(this.now()).toISOString();
+    if (identity.accountId === expected.id) {
+      if (expected.identityDrifted) {
+        const attentionId = `credential-identity-drift-${expected.id}-${expected.identityDrift?.detectedAt ?? nowIso}`;
+        this.pool.update(expected.id, { identityDrifted: false, identityDrift: null });
+        try { void this.onIdentityRestored?.(expected.id, attentionId); }
+        catch { /* @silent-fallback-ok: drift state is already self-closed; commitment cleanup retries on a later confirmed poll */ }
+      }
+      this.locationLedger?.recordAssignment(slot, expected.id, {
+        verifiedAt: nowIso,
+        op: 'reconcile',
+        source: 'quota-poll-identity-oracle',
+      });
+      this.attributionByExpected.set(expected.id, expected.id);
+      return expected;
+    }
+
+    const detectedAt = expected.identityDrift?.detectedAt ?? nowIso;
+    const actualId = actual?.id ?? identity.accountId;
+    this.pool.update(expected.id, {
+      identityDrifted: true,
+      identityDrift: {
+        expectedAccountId: expected.id,
+        actualAccountId: actualId,
+        ...(identity.email ? { actualEmail: identity.email } : {}),
+        slot,
+        detectedAt,
+        lastConfirmedAt: nowIso,
+        repairState: 'planned',
+      },
+    });
+    // Registry truth is explicit + journalled. This changes attribution only;
+    // the separately planned executor move restores the labelled physical home.
+    this.locationLedger?.recordAssignment(slot, actualId, {
+      verifiedAt: nowIso,
+      op: 'reconcile',
+      source: 'quota-poll-identity-oracle',
+    });
+    this.attributionByExpected.set(expected.id, actualId);
+    try {
+      void this.emitIdentityDriftAttention?.({
+        id: `credential-identity-drift-${expected.id}-${detectedAt}`,
+        title: `Credential identity drift: ${expected.id}`,
+        summary: `Slot ${slot} is labelled ${expected.id} but live identity is ${actualId}. ${actual ? `Quota was attributed to ${actualId}` : 'The confirmed identity is not enrolled in the registry'}; the slot is excluded from swaps pending audited repair.`,
+      });
+    } catch { /* @silent-fallback-ok: attribution + exclusion are already enforced; attention is best-effort */ }
+    return actual ? { ...actual, configHome: slot } : null;
   }
 
   /**
@@ -365,7 +473,12 @@ export class QuotaPoller {
     // attribution) targets the account's LIVE slot per the ledger gate — NOT its enrollment home —
     // so a swap mid-poll can't read/refresh/flag the wrong tenant. account.id is preserved (only
     // the slot home moves), so pool.update + logging still name the right account.
-    const slotAccount = this.accountForReads(account);
+    const routedAccount = this.accountForReads(account);
+    // Preserve the ledger-routed home through identity reconciliation. Passing
+    // the enrollment object here silently discarded census routing whenever
+    // the optional identity oracle was absent or confirmed the expected id.
+    const slotAccount = await this.reconcileIdentity(routedAccount, routedAccount.configHome);
+    if (!slotAccount) return null;
 
     if (account.provider === 'openai' && account.framework === 'codex-cli') {
       const nowMs = this.now();
@@ -388,17 +501,23 @@ export class QuotaPoller {
       };
       if (fiveHour) snap.fiveHour = fiveHour;
       if (sevenDay) snap.sevenDay = sevenDay;
-      const priorLast = this.lastByAccount.get(account.id);
-      if (priorLast) this.prevByAccount.set(account.id, priorLast);
-      this.lastByAccount.set(account.id, snap);
+      const attributedId = slotAccount.id;
+      const priorLast = this.lastByAccount.get(attributedId);
+      if (priorLast) this.prevByAccount.set(attributedId, priorLast);
+      this.lastByAccount.set(attributedId, snap);
       return snap;
     }
 
-    const token = await this.tokenResolver(slotAccount);
-    if (!token) {
+    const tokenResolution = await this.tokenResolver(slotAccount);
+    if (typeof tokenResolution !== 'string') {
+      if (tokenResolution?.reauthNeeded) {
+        this.markNeedsReauth(slotAccount, tokenResolution.reason);
+        return null;
+      }
       this.logger.warn(`[QuotaPoller] no resolvable token for account ${account.id} — skipping`);
       return null;
     }
+    const token = tokenResolution;
 
     const read = await this.readUsage(token);
     if (read === null) return null; // network failure
@@ -417,14 +536,14 @@ export class QuotaPoller {
           return null;
         }
         // No refresh token, or the exchange was rejected — genuine re-auth.
-        this.markNeedsReauth(account, refreshed.reason);
+        this.markNeedsReauth(slotAccount, refreshed.reason);
         return null;
       }
       const retry = await this.readUsage(refreshed.accessToken);
       if (retry === null) return null; // network blip on the retry → next cycle
       if (retry.authFailed) {
         // Fresh token still rejected — treat as genuinely failed.
-        this.markNeedsReauth(account, 'usage still auth-failed after refresh');
+        this.markNeedsReauth(slotAccount, 'usage still auth-failed after refresh');
         return null;
       }
       // Recovered silently — no operator action needed. Record for visibility.
@@ -445,9 +564,10 @@ export class QuotaPoller {
 
     const snap = mapUsageResponse(body, 'oauth-usage-endpoint-fallback', new Date(this.now()).toISOString());
     // Shift the prior "last" down to "prev" so burnRate has a distinct baseline.
-    const priorLast = this.lastByAccount.get(account.id);
-    if (priorLast) this.prevByAccount.set(account.id, priorLast);
-    this.lastByAccount.set(account.id, snap);
+    const attributedId = slotAccount.id;
+    const priorLast = this.lastByAccount.get(attributedId);
+    if (priorLast) this.prevByAccount.set(attributedId, priorLast);
+    this.lastByAccount.set(attributedId, snap);
     return snap;
   }
 
@@ -471,24 +591,15 @@ export class QuotaPoller {
         continue;
       }
       polled++;
+      const attributedId = this.attributionByExpected.get(account.id) ?? account.id;
       const patch: Parameters<SubscriptionPool['update']>[1] = { lastQuota: snap };
       // A clean read on an account previously flagged needs-reauth restores it.
       if (account.status === 'needs-reauth') patch.status = 'active';
-      // Census #3: email auto-patch. When credential re-pointing is enabled the enrollment home
-      // no longer maps 1:1 to a tenant (a swap moves the credential), so reading the slot's
-      // `.claude.json` email and writing it onto this pool account would CROSS-CONTAMINATE pool
-      // emails and poison the recovery probe's email→account map. So while the gate is enabled the
-      // auto-patch is SUPPRESSED (the ledger + identity oracle own divergence detection now). With
-      // the gate absent/off this is byte-for-byte today's behavior.
-      if (account.framework === 'claude-code' && !this.locationGate?.isEnabled()) {
-        // Auto-populate the account email from the config home's own login record,
-        // so the stored email always reflects which account actually authenticated
-        // (a login into the wrong account surfaces here instead of hiding).
-        const email = readAccountEmail(account.configHome);
-        if (email && email !== account.email) patch.email = email;
-      }
+      // Email is provider-attested identity, not quota metadata. Quota polling
+      // must never mutate it; drift detection and the identity registrar own
+      // that authority.
       try {
-        this.pool.update(account.id, patch);
+        this.pool.update(attributedId, patch);
       } catch {
         // @silent-fallback-ok: persistence best-effort; snapshot retained in memory
       }

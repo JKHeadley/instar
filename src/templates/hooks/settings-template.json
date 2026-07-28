@@ -209,6 +209,16 @@
             "timeout": 6000
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/completion-claim-observe.js",
+            "timeout": 6000
+          }
+        ]
       }
     ]
   }

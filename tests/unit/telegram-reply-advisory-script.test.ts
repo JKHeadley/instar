@@ -14,7 +14,8 @@
  *  5. conversational session (no kind env) → NO preflight call, legacy body;
  *  6. script-class sender → NO preflight call, kind metadata still rides;
  *  7. curl --max-time is SECONDS within the [1,10] clamp (ms→s ceil);
- *  8. a recoverable send failure queues the row WITH message_metadata.
+ *  8. a definitive recoverable HTTP failure queues the row WITH metadata;
+ *  9. a transport-ambiguous failure does not queue or invite a blind retry.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -325,24 +326,36 @@ describe('curl --max-time clamp (ms→s ceil, [1,10])', () => {
   });
 });
 
-describe('recoverable send failure queues the metadata', () => {
-  it('HTTP 000 → queue row carries message_metadata', async () => {
+describe('send failure outcome contract', () => {
+  it('HTTP 500 → queue row carries message_metadata', async () => {
     await expect(
       runScript({
         env: AUTOMATED_ENV,
         text: 'Your weekly check finished — all clear.',
-        curl: { preflightBody: '{"advisories":[]}', sendExit: 7 },
+        curl: { preflightBody: '{"advisories":[]}', sendHttpCode: '500' },
       }),
-    ).rejects.toMatchObject({ code: 1 }); // queued-for-recovery exits 1
+    ).rejects.toMatchObject({ code: 1 });
     const dbPath = path.join(dir, '.instar', 'state', 'pending-relay.echo.sqlite');
     expect(fs.existsSync(dbPath)).toBe(true);
-    const { stdout } = await execFileAsync('python3', [
+    const { stdout: metadataJson } = await execFileAsync('python3', [
       '-c',
       `import sqlite3, json; c = sqlite3.connect('${dbPath}'); print(c.execute('select message_metadata from entries').fetchone()[0])`,
     ]);
-    const meta = JSON.parse(stdout.trim());
+    const meta = JSON.parse(metadataJson.trim());
     expect(meta.messageKind).toBe('automated');
     expect(meta.senderClass).toBe('llm-session');
     expect(meta.jobSlug).toBe('evolution-overdue-check');
+  });
+
+  it('curl failure / HTTP 000 → exits 0 with AMBIGUOUS and does not enqueue', async () => {
+    const { stdout, stderr } = await runScript({
+      env: AUTOMATED_ENV,
+      text: 'Your weekly check finished — all clear.',
+      curl: { preflightBody: '{"advisories":[]}', sendExit: 7 },
+    });
+    expect(stdout).toContain('AMBIGUOUS: no HTTP outcome — verify delivery before retrying');
+    expect(stderr).toContain('AMBIGUOUS: Telegram relay transport ended without an HTTP outcome (curl 7).');
+    const dbPath = path.join(dir, '.instar', 'state', 'pending-relay.echo.sqlite');
+    expect(fs.existsSync(dbPath)).toBe(false);
   });
 });

@@ -89,6 +89,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // uxConfirm pre-routing judgment calls (same pass).
   OverrideDetector: 'gate',
   TaskClassifier: 'gate',
+  FeedbackReadinessArbiter: 'gate',
 
   // ── Reflectors / reviewers (deeper after-the-fact analysis) ──
   JobReflector: 'reflector',
@@ -138,12 +139,16 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   ResumeValidator: 'gate',               // does a resume UUID match the topic? (pre-resume gate)
   Usher: 'reflector',                    // route a turn to candidate topics
   TopicIntentExtractor: 'reflector',     // extract topic intent from a turn
+  GoalPriorityExtractor: 'reflector',    // extract verified operator priorities at intake
+  AlignmentReviewer: 'reflector',        // compare active run focus with the durable priority digest
   PreCompactionFlush: 'reflector',       // extract durable facts before compaction
   TreeSynthesis: 'reflector',            // synthesize knowledge fragments → answer
   LLMConflictResolver: 'reflector',      // resolve divergent multi-machine state
   openConversationBrief: 'reflector',    // generate an A2A conversation brief
   'a2a-checkin': 'reflector',            // summarize A2A check-in threads (server:a2a-checkin)
   'correction-learning': 'reflector',    // distill recurring corrections → preference (server:correction-learning)
+  'correction-class-review': 'reflector', // standards/process class review proposal for each correction
+  'completion-claim-verify': 'reflector', // observe-only completion evidence assessment
   'mentor-stage-b': 'reflector',         // classify mentor signals → forensic findings
 };
 

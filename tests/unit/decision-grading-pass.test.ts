@@ -10,7 +10,10 @@ import {
   type HogEvidenceScanView,
 } from '../../src/monitoring/ExternalHogDecisionStore.js';
 import type { HogDecisionSeed } from '../../src/monitoring/ExternalHogScanTick.js';
-import { DP_EXTERNAL_HOG_KILL_LEAVE } from '../../src/data/provenanceCoverage.js';
+import {
+  DP_COMPLETION_CLAIM_VERIFY, DP_CORRECTION_CLASS_REVIEW, DP_EXTERNAL_HOG_KILL_LEAVE,
+  DP_FEEDBACK_READINESS, DP_MESSAGING_TONE_GATE,
+} from '../../src/data/provenanceCoverage.js';
 import {
   DecisionQualityRecorderImpl,
   installDecisionQualityRecorder,
@@ -91,6 +94,45 @@ afterEach(() => {
 });
 
 describe('runDecisionGradingPass — hog-sustained-right window-close grading', () => {
+  it('drains each Phase B point after its window as an honest unknown, bounded and idempotent', () => {
+    const ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    installLiveRecorder(ledger);
+    const points = [DP_MESSAGING_TONE_GATE, DP_CORRECTION_CLASS_REVIEW,
+      DP_COMPLETION_CLAIM_VERIFY, DP_FEEDBACK_READINESS];
+    points.forEach((point, index) => ledger.recordDecision({
+      correlationId: `d-phase-b-${index}`, decisionPoint: point, ts: T0,
+    }));
+
+    const pass = () => runDecisionGradingPass({
+      ledger, hogStore: null, annotate: annotateDecisionOutcome,
+      maxDecisionsPerPass: 200, evidenceWindowMs: WINDOW, now: () => T0 + WINDOW + 1,
+    });
+    const first = pass();
+    expect(first.graded).toBe(4);
+    for (let index = 0; index < points.length; index++) {
+      expect(ledger.getWinningGrades([`d-phase-b-${index}`])[0]).toMatchObject({
+        grade: 'unknown', evidenceStrength: 'negative-evidence',
+      });
+      expect(first.cursors[points[index]]).toEqual({ ts: T0, correlationId: `d-phase-b-${index}` });
+    }
+    expect(pass().graded).toBe(0);
+    ledger.close();
+  });
+
+  it('does not terminalize a Phase B decision before its evidence window closes', () => {
+    const ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    installLiveRecorder(ledger);
+    ledger.recordDecision({ correlationId: 'd-tone-open', decisionPoint: DP_MESSAGING_TONE_GATE, ts: T0 });
+    const result = runDecisionGradingPass({
+      ledger, hogStore: null, annotate: annotateDecisionOutcome,
+      maxDecisionsPerPass: 200, evidenceWindowMs: WINDOW, now: () => T0 + HOUR,
+    });
+    expect(result.graded).toBe(0);
+    expect(result.cursors[DP_MESSAGING_TONE_GATE]).toEqual({ ts: 0, correlationId: '' });
+    expect(ledger.getWinningGrades(['d-tone-open'])).toHaveLength(0);
+    ledger.close();
+  });
+
   it('grades a window-closed enacted kill `right`, advances the cursor, and is idempotent on re-run', () => {
     const ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
     installLiveRecorder(ledger);
@@ -245,9 +287,8 @@ describe('wiring integrity (P8/P9)', () => {
 describe('perPointSubBudget — §5.5 fairness sub-budget (the SUBBUDGET_IMPLEMENTED primitive)', () => {
   it('returns the FULL budget for a single point (byte-identical to the pre-sub-budget behavior)', () => {
     expect(perPointSubBudget(200, 1)).toBe(200);
-    // Today the pass drives exactly one point → the slice IS the whole budget.
-    expect(GRADE_PASS_POINTS.length).toBe(1);
-    expect(perPointSubBudget(200, GRADE_PASS_POINTS.length)).toBe(200);
+    expect(GRADE_PASS_POINTS).toHaveLength(5);
+    expect(perPointSubBudget(200, GRADE_PASS_POINTS.length)).toBe(40);
   });
 
   it('divides the global budget evenly so no point can consume a whole pass (a second point → half each)', () => {

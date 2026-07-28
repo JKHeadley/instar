@@ -52,7 +52,7 @@ function okFetch(zones: string[] = []): typeof fetch {
 }
 
 describe('buildProductionProbeProviders — coverage', () => {
-  it('returns a REAL provider for EVERY one of the 9 sources', () => {
+  it('returns a REAL provider for EVERY one of the 10 sources', () => {
     const providers = buildProductionProbeProviders({});
     for (const source of SELF_UNBLOCK_PROBE_SOURCES) {
       expect(typeof providers[source]).toBe('function');
@@ -227,5 +227,210 @@ describe('unreachable + secret-safety honesty', () => {
         expect(serialized).not.toContain(secret);
       }
     }
+  });
+});
+
+// ─── owned-identities (correction-derived-hardening) ────────────────────────────
+
+describe('owned-identities probe — registry-declared, liveness-gated, fail-closed, secret-safe', () => {
+  const REGISTRY = JSON.stringify([
+    {
+      identity: 'owner-test@sagemindai.io',
+      service: 'slack-workspace',
+      roles: ['owner'],
+      scopeTags: ['slack:T0TESTTEAM', 'google:sagemindai.io'],
+      credentialRef: 'file:.instar/slack-live-test/test-users.json#owner-test',
+      note: 'test workspace owner',
+    },
+    {
+      identity: 'admin-test@sagemindai.io',
+      service: 'slack-workspace',
+      scopeTags: ['slack:T0ADMINONLY'],
+      credentialRef: 'vault:admin-test-password',
+      // A STRAY secret-shaped field someone mistakenly stored — must never leak.
+      password: 'SUPER-SECRET-PW-999',
+    },
+    {
+      identity: 'stale-test@sagemindai.io',
+      service: 'slack-workspace',
+      scopeTags: ['slack:T0STALETEAM'],
+      // No credentialRef — unverifiable → must contribute NOTHING.
+    },
+  ]);
+
+  function depsWithRegistry(
+    raw: string | Error,
+    opts: { fileRefLive?: boolean; vaultKeys?: string[] } = {},
+  ): SelfUnblockProbeDeps {
+    return {
+      ownedIdentitiesPath: '/fake/home/.instar/owned-identities.json',
+      readFileUtf8: () => {
+        if (raw instanceof Error) throw raw;
+        return raw;
+      },
+      fileExists: () => opts.fileRefLive ?? true,
+      getVaultKeys: () => opts.vaultKeys ?? [],
+    };
+  }
+
+  it('advertises tags ONLY from entries whose credentialRef resolves (file stat + vault-key presence)', async () => {
+    const providers = buildProductionProbeProviders(
+      depsWithRegistry(REGISTRY, { fileRefLive: true, vaultKeys: ['admin-test-password'] }),
+    );
+    const r = await providers['owned-identities']!('slack:T0TESTTEAM');
+    expect(r.reachable).toBe(true);
+    expect([...(r.advertisedScopeTags ?? [])].sort()).toEqual([
+      'google:sagemindai.io',
+      'slack:T0ADMINONLY',
+      'slack:T0TESTTEAM',
+    ]);
+    // The no-credentialRef entry contributed nothing and is reported as skipped.
+    expect(r.advertisedScopeTags).not.toContain('slack:T0STALETEAM');
+    expect(r.detail).toContain('2 live identities');
+    expect(r.detail).toContain('1 skipped');
+  });
+
+  it('LIVENESS GATE: a stale entry (dangling file ref, absent vault key) advertises NOTHING — the stranding path is closed', async () => {
+    // Every ref fails liveness → the probe is unreachable, tags empty → a
+    // checklist run over this registry EXHAUSTS (the agent can still escalate).
+    const providers = buildProductionProbeProviders(
+      depsWithRegistry(REGISTRY, { fileRefLive: false, vaultKeys: [] }),
+    );
+    const r = await providers['owned-identities']!('slack:T0TESTTEAM');
+    expect(r.reachable).toBe(false);
+    expect(r.advertisedScopeTags ?? []).toEqual([]);
+    expect(r.detail).toContain('no live entries');
+  });
+
+  it('path not wired → unreachable (fail-closed)', async () => {
+    const providers = buildProductionProbeProviders({});
+    const r = await providers['owned-identities']!('slack:T0TESTTEAM');
+    expect(r.reachable).toBe(false);
+    expect(r.detail).toContain('not wired');
+  });
+
+  it('missing/unreadable registry → unreachable, never a throw', async () => {
+    const providers = buildProductionProbeProviders(depsWithRegistry(new Error('ENOENT')));
+    const r = await providers['owned-identities']!('slack:T0TESTTEAM');
+    expect(r.reachable).toBe(false);
+    expect(r.detail).toContain('absent or unreadable');
+  });
+
+  it('malformed JSON and non-array roots → unreachable (fail-closed)', async () => {
+    const bad = buildProductionProbeProviders(depsWithRegistry('{not json'));
+    expect((await bad['owned-identities']!('t')).reachable).toBe(false);
+    const nonArray = buildProductionProbeProviders(depsWithRegistry('{"identity":"x"}'));
+    expect((await nonArray['owned-identities']!('t')).reachable).toBe(false);
+  });
+
+  it('a stray password-shaped field in an entry NEVER appears in any output field', async () => {
+    const providers = buildProductionProbeProviders(
+      depsWithRegistry(REGISTRY, { fileRefLive: true, vaultKeys: ['admin-test-password'] }),
+    );
+    const r = await providers['owned-identities']!('slack:T0TESTTEAM');
+    expect(JSON.stringify(r)).not.toContain('SUPER-SECRET-PW-999');
+    // The credential POINTER is also not surfaced (names + tags only).
+    expect(JSON.stringify(r)).not.toContain('test-users.json');
+  });
+
+  it('a LIVE registry scopeTag matching the target short-circuits a checklist run as a self-unblock hit', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sup-owned-'));
+    try {
+      const store = new SelfUnblockRunStore({ stateDir: tmpDir });
+      const providers = buildProductionProbeProviders({
+        ...depsWithRegistry(REGISTRY, { fileRefLive: true }),
+        getCloudflareToken: () => null,
+      });
+      const checklist = new SelfUnblockChecklist({ providers, store });
+      const run = await checklist.run({ target: 'slack:T0TESTTEAM', requiredAttemptType: 'self-fetch' });
+      expect(run.exhausted).toBe(false);
+      const owned = run.probes.find((p) => p.source === 'owned-identities');
+      expect(owned?.holdsRelevantCred).toBe(true);
+    } finally {
+      SafeFsExecutor.safeRmSync(tmpDir, {
+        recursive: true,
+        force: true,
+        operation: 'tests/unit/SelfUnblockProbeProviders.test.ts:owned-identities',
+      });
+    }
+  });
+
+  it('JAIL: a file ref outside the agent home never resolves — even when the file exists', async () => {
+    const registry = JSON.stringify([
+      { identity: 'esc-1', scopeTags: ['slack:T0X'], credentialRef: 'file:/etc/hosts' },
+      { identity: 'esc-2', scopeTags: ['slack:T0Y'], credentialRef: 'file:../../outside/secret.json' },
+    ]);
+    const statted: string[] = [];
+    const providers = buildProductionProbeProviders({
+      ownedIdentitiesPath: '/fake/home/.instar/owned-identities.json',
+      readFileUtf8: () => registry,
+      fileExists: (p2: string) => {
+        statted.push(p2);
+        return true; // every stat says "exists" — the jail must refuse BEFORE the stat
+      },
+    });
+    const r = await providers['owned-identities']!('slack:T0X');
+    expect(r.reachable).toBe(false);
+    expect(r.advertisedScopeTags ?? []).toEqual([]);
+    // Neither out-of-jail path was ever statted.
+    expect(statted).toEqual([]);
+  });
+
+  it('CLAMP: an oversized/control-char identity name is clamped before it rides the result', async () => {
+    const registry = JSON.stringify([
+      {
+        identity: 'x'.repeat(5000) + '\u0007\n<script>',
+        scopeTags: ['slack:T0X'],
+        credentialRef: 'file:.instar/x.json',
+      },
+    ]);
+    const providers = buildProductionProbeProviders({
+      ownedIdentitiesPath: '/fake/home/.instar/owned-identities.json',
+      readFileUtf8: () => registry,
+      fileExists: () => true,
+    });
+    const r = await providers['owned-identities']!('slack:T0X');
+    expect(r.reachable).toBe(true);
+    const serialized = JSON.stringify(r);
+    expect(serialized.length).toBeLessThan(1000);
+    expect(serialized).not.toContain('\u0007');
+  });
+
+  it('a STALE registry never suppresses exhaustion — a full checklist run over dangling refs EXHAUSTS', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sup-owned-stale-'));
+    try {
+      const store = new SelfUnblockRunStore({ stateDir: tmpDir });
+      const providers = buildProductionProbeProviders({
+        ...depsWithRegistry(REGISTRY, { fileRefLive: false, vaultKeys: [] }),
+        getCloudflareToken: () => null,
+      });
+      const checklist = new SelfUnblockChecklist({ providers, store });
+      const run = await checklist.run({ target: 'slack:T0TESTTEAM', requiredAttemptType: 'self-fetch' });
+      expect(run.exhausted).toBe(true);
+    } finally {
+      SafeFsExecutor.safeRmSync(tmpDir, {
+        recursive: true,
+        force: true,
+        operation: 'tests/unit/SelfUnblockProbeProviders.test.ts:owned-stale',
+      });
+    }
+  });
+});
+
+// ─── wiring integrity (Testing Integrity Standard; parent-feature regression class) ──
+
+describe('owned-identities production wiring', () => {
+  it('AgentServer wires ownedIdentitiesPath into buildProductionProbeProviders (the provider-exists-but-never-wired regression class)', () => {
+    // The parent feature\'s founding gap was a provider that existed but was never
+    // instantiated in production. This ratchet reads the single production
+    // callsite and asserts the dep is threaded — a removal breaks this test
+    // before it silently ships an unwired probe.
+    const src = fs.readFileSync(
+      path.join(__dirname, '../../src/server/AgentServer.ts'),
+      'utf8',
+    );
+    const callsite = src.slice(src.indexOf('buildProductionProbeProviders({'));
+    const block = callsite.slice(0, callsite.indexOf('});') + 3);
+    expect(block).toContain("ownedIdentitiesPath: path.join(stateDir, 'owned-identities.json')");
   });
 });

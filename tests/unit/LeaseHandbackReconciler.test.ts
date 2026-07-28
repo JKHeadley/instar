@@ -27,7 +27,11 @@ import {
   type HandbackOfferResponse,
 } from '../../src/core/LeaseHandbackReconciler.js';
 import { writeHandbackLatch, readHandbackLatchUntilMs, readHandbackLatchRecord, clearHandbackLatch } from '../../src/core/handbackLatch.js';
-import { setRopeHealthProvider, ropeReachableOnAnyRope } from '../../src/core/ropeHealth.js';
+import {
+  setRopeHealthProvider,
+  ropeHealthProviderFromSnapshot,
+  ropeReachableOnAnyRope,
+} from '../../src/core/ropeHealth.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { HandbackConsentToken } from '../../src/core/FencedLease.js';
 
@@ -179,6 +183,39 @@ describe('LeaseHandbackReconciler — hysteresis (arm / reset)', () => {
   it('a throwing rope provider reads as no-data (fail toward holding)', () => {
     setRopeHealthProvider({ reachableOnAnyRope: () => { throw new Error('boom'); } });
     expect(ropeReachableOnAnyRope(PREFERRED)).toBeUndefined();
+    setRopeHealthProvider(null);
+  });
+
+  it('adapts production snapshots without treating never-dialed rows as healthy', () => {
+    const rows = [{ peer: PREFERRED, dead: false, lastOkAt: 0, lastFailAt: 0 }];
+    let now = 100;
+    setRopeHealthProvider(ropeHealthProviderFromSnapshot(() => rows, {
+      maxAgeMs: 50,
+      now: () => now,
+    }));
+    expect(ropeReachableOnAnyRope(PREFERRED)).toBeUndefined();
+
+    rows[0] = { peer: PREFERRED, dead: false, lastOkAt: 80, lastFailAt: 0 };
+    expect(ropeReachableOnAnyRope(PREFERRED)).toBe(true);
+
+    // Even one newer failure invalidates the older success; waiting for the
+    // resolver's three-failure "dead" threshold would be unsafe for authority.
+    rows[0] = { peer: PREFERRED, dead: false, lastOkAt: 80, lastFailAt: 90 };
+    expect(ropeReachableOnAnyRope(PREFERRED)).toBe(false);
+
+    // Same-millisecond ordering is ambiguous and therefore fails closed.
+    rows[0] = { peer: PREFERRED, dead: false, lastOkAt: 90, lastFailAt: 90 };
+    expect(ropeReachableOnAnyRope(PREFERRED)).toBe(false);
+
+    // A historical success cannot stay continuously healthy forever.
+    rows[0] = { peer: PREFERRED, dead: false, lastOkAt: 80, lastFailAt: 0 };
+    now = 131;
+    expect(ropeReachableOnAnyRope(PREFERRED)).toBe(false);
+
+    // A stale-success sibling rope cannot mask a newer failure.
+    rows.push({ peer: PREFERRED, dead: false, lastOkAt: 70, lastFailAt: 120 });
+    expect(ropeReachableOnAnyRope(PREFERRED)).toBe(false);
+    expect(ropeReachableOnAnyRope('m_never_observed')).toBeUndefined();
     setRopeHealthProvider(null);
   });
 

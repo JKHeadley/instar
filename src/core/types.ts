@@ -661,6 +661,21 @@ export interface AgentMdExecute {
 
 export interface JobState {
   slug: string;
+  /**
+   * When this job was first REGISTERED with the scheduler (ISO). Distinct from
+   * `lastRun`: it answers "how long has this job existed?" for a job that has
+   * never run.
+   *
+   * WHY IT EXISTS: the startup missed-job sweep treated every job with no
+   * `lastRun` as overdue, so a brand-new job whose first window was months away
+   * fired immediately on the next boot (ACT-724 defect (a) — an annual reminder
+   * discharged itself the day it was created). The intended rule was already
+   * written in the comment above that branch — "trigger on startup if their
+   * first expected run time has already passed" — but nothing recorded when the
+   * job started existing, so the condition was uncheckable and the code simply
+   * fired everything. This is the missing fact.
+   */
+  firstSeenAt?: string;
   lastRun?: string;
   lastResult?: 'success' | 'failure' | 'timeout' | 'pending';
   /** Error message from the last failure (cleared on success) */
@@ -974,6 +989,8 @@ export interface IntelligenceProvider {
 }
 
 export interface IntelligenceOptions {
+  /** Optional shared-queue cancellation signal for preemptible background work. */
+  signal?: AbortSignal;
   /** Model tier preference (implementations may override based on availability) */
   model?: 'fast' | 'balanced' | 'capable';
   /**
@@ -2281,9 +2298,8 @@ export interface MachineCapacity {
 }
 
 /** The compact posture block that rides the capacity heartbeat
- *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Counts plus per-key detail for ONLY
- *  the two sharpest signals (offDeviantKeys, offRuntimeDivergentKeys) —
- *  bounded by the manifest size. */
+ *  (GUARD-POSTURE-ENDPOINT-SPEC §2.3). Counts plus bounded per-key detail for
+ *  the read surfaces that must not collapse an absent class into all-clear. */
 export interface GuardPostureSummary {
   onConfirmed: number;
   onUnverified: number;
@@ -2300,6 +2316,11 @@ export interface GuardPostureSummary {
    *  heartbeat so a peer gap is visible fleet-wide. Optional for wire back-compat —
    *  an un-upgraded peer omits them and the probe Array.isArray-guards the read. */
   loadBearingGapKeys?: string[];
+  /** Full count plus at most 16 deterministic keys. Read-surface context only:
+   *  probes and pool notifications deliberately ignore these fields because
+   *  the underlying missing/errored/stale/divergent classes already alarm. */
+  loadBearingUninspectable?: number;
+  loadBearingUninspectableKeys?: string[];
   loadBearingSoakingKeys?: string[];
   loadBearingAcceptedKeys?: string[];
   generatedAt: string;
@@ -2475,6 +2496,23 @@ export interface MultiMachineConfig {
   failoverTimeoutMinutes: number;
   /** Whether to require human confirmation before auto-failover */
   autoFailoverConfirm: boolean;
+  /** Restricted mutual SSH-subsystem proof. Enabled is dev-gated; dryRun ships first. */
+  mutualSsh?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    requiredForEmployeeRole?: boolean;
+    freshnessMs?: number;
+    cadenceMs?: number;
+    probeDeadlineMs?: number;
+    concurrency?: number;
+  };
+  /** Standing peer execution via this agent account's authorized_keys. Dev-gated and dry-run-first. */
+  peerExecution?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    requiredForReadiness?: boolean;
+    port?: number;
+  };
   /**
    * Coordination mode (Gap 1 — Active/Active support).
    * - 'primary-standby': One awake, others standby with failover (default)
@@ -2900,6 +2938,16 @@ export interface SessionPoolConfig {
   /** Master switch. Default false — the entire session-pool layer is inert when false. */
   enabled?: boolean;
   /**
+   * Promotion activation selector. `off` is the fleet default; `auto-climb`
+   * drives one green-gated step per cadence; `operator` exposes only the manual
+   * one-step route. The manual route also remains available in auto-climb mode.
+   */
+  promotionModel?: 'auto-climb' | 'operator' | 'off';
+  /** Highest stage either promotion model may reach. Default dark (fail-closed). */
+  promotionCeiling?: 'dark' | 'shadow' | 'live-transfer' | 'rebalance';
+  /** Auto-climb cadence in ms; runtime floor 60000. Default 60000. */
+  promotionTickMs?: number;
+  /**
    * Graduated rollout stage (spec §Rollout). 'dark' (code shipped, placement
    * dry-run, always local) → 'shadow' (real placement + ownership, no transfer)
    * → 'live-transfer' (failover + pin transfers) → 'rebalance' (load-driven).
@@ -2976,6 +3024,8 @@ export interface SessionPoolConfig {
   ownershipGatedSpawn?: {
     enabled?: boolean;
     dryRun?: boolean;
+    /** Bind a verified live-other-owner refusal when durable custody is live. */
+    enforceLiveOwner?: boolean;
   };
   /**
    * Duplicate-session reconciler (same spec §3.2 — Layer B). `enabled` OMITTED
@@ -3017,6 +3067,27 @@ export interface SessionPoolConfig {
   commitmentCustodyTransfer?: {
     enabled?: boolean;
     dryRun?: boolean;
+  };
+  /**
+   * SessionPoolFailoverRunner boot-wiring (§Rollout, Track H) — the in-agent
+   * PRODUCER of a real failover-E2E green so a DEPLOYED dev agent can promote its
+   * own sessionPool stage instead of sitting at `shadow` forever. `enabled` is
+   * DELIBERATELY OMITTED from ConfigDefaults (developmentAgent gate — dev-live,
+   * dark fleet; DEV_GATED_FEATURES). Ships dryRun:true FIRST: the runner runs the
+   * real two-node failover E2E subprocess and records its verdict, but a recorded
+   * green PROMOTES the stage (real authority), so while dryRun holds the verdict
+   * lands in a SIDE store the promotion path never reads — nothing promotes until
+   * a deliberate dryRun:false. Config resolver + defaults live in
+   * `src/core/sessionPoolFailoverRunnerConfig.ts`.
+   */
+  failoverRunner?: {
+    enabled?: boolean;
+    /** Default true — record to a SIDE store, never the promotion store. */
+    dryRun?: boolean;
+    /** Slow cadence the heavy E2E runs on (ms). Default 3600000 (1h), floored at 60000. */
+    tickIntervalMs?: number;
+    /** Bounded wall-clock budget for the failover E2E subprocess (ms). Default 180000. */
+    checkTimeoutMs?: number;
   };
   /**
    * MeshRpc (§L0) command timestamp tolerance (ms) — a signed command whose
@@ -3264,6 +3335,10 @@ export interface InstarConfig {
    * (Introduced 2026-06-02 — Justin's ask, topic 13481.)
    */
   developmentAgent?: boolean;
+  /** Unified work-intake registry rollout; omitted resolves live only on dev agents. */
+  workQueue?: { enabled?: boolean };
+  /** Capability registry read surface; omitted resolves via the dev-agent gate. */
+  capabilityRegistry?: { enabled?: boolean };
   /**
    * Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) — the
    * deterministic "what I already have" block injected at session start: vault
@@ -3305,6 +3380,19 @@ export interface InstarConfig {
     autoExpiry?: EvolutionManagerConfig['autoExpiry'];
   };
   /**
+   * Apprenticeship-program gates (docs/specs/framework-stall-coverage-matrix.md
+   * §3.4). `stallCoverageGate` is read LIVE at the gate callsite — no restart.
+   * Absence resolves to the inline code default {enabled: true, dryRun: true};
+   * a malformed block resolves to the safe default with a loud log line.
+   * Deliberately NO migrateConfig entry (absence = default, spec §3.4).
+   */
+  apprenticeship?: {
+    stallCoverageGate?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+    };
+  };
+  /**
    * Feedback-factory operated-instance config (docs/specs/feedback-factory-migration.md).
    * `receiverPersistence` is the Option-B receiving end: the canonical front (Vercel)
    * writes accepted reports to a durable Blob inbox; the InboxDrainer on THIS machine
@@ -3314,6 +3402,9 @@ export interface InstarConfig {
    * config.json.
    */
   feedbackFactory?: {
+    /** Sole machine-registry owner of the canonical feedback drain. Nonowners
+     * proxy one authenticated hop to this machine and never execute locally. */
+    operatedHostMachineId?: string;
     receiverPersistence?: {
       /** Master switch. Dark default — nothing runs unless explicitly true. */
       enabled?: boolean;
@@ -3345,6 +3436,21 @@ export interface InstarConfig {
       /** Canonical store directory (default mirrors receiverPersistence:
        *  <stateDir>/state/feedback-factory/store). */
       dataDir?: string;
+    };
+    /** Operated durable readiness/outbox drain. Dev-live, fleet-dark. */
+    drain?: {
+      enabled?: boolean;
+      /** Canonical SQLite path; defaults beside the canonical feedback store. */
+      dbPath?: string;
+      maxReadyScansPerTick?: number;
+      maxClaimsPerTick?: number;
+      maxWallClockMs?: number;
+    };
+    /** Initiative handoff consumer. Dev-live in simulation until promoted. */
+    consumer?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+      maxClaimsPerTick?: number;
     };
   };
   /**
@@ -3928,6 +4034,31 @@ export interface InstarConfig {
   users: UserProfile[];
   /** Messaging adapters to enable */
   messaging: MessagingAdapterConfig[];
+  /**
+   * Operator config for the outbound Messaging Tone Gate, read LIVE via the
+   * gate's config getter (no restart needed). TOP-LEVEL by necessity:
+   * `messaging` is an array of adapter configs, so the historically-documented
+   * `messaging.toneGate.*` location was structurally unreachable — no config
+   * could ever set it (the 2026-07-24 candidate-body wiring gap).
+   */
+  toneGate?: {
+    /** Kill-switch for fail-closed-on-provider-exhaustion (default true). */
+    failClosedOnExhaustion?: boolean;
+    /** Fail-direction policy: 'always' (default) | 'tiered' (opt-in) | 'never'. */
+    failClosedMode?: 'always' | 'tiered' | 'never';
+    /** Soak flag for 'tiered' — log would-deliver without delivering. */
+    toneTierDryRun?: boolean;
+    /** Opt-in candidate-body capture for decision-quality benchmarking. */
+    recordCandidateBody?: boolean;
+  };
+  /**
+   * L0 zombie-free delivery invariant arm flag (drive12 UX-first enforcement
+   * spec, Increment 1). When true, outbound recovery queues enforce their
+   * per-class max age at DEQUEUE time (policy: src/data/outbound-queue-expiry.json;
+   * a class's maxAgeHours 0 ⇒ no expiry). DARK by default — the test agent
+   * (Codey) arms first per the maturation ladder.
+   */
+  outboundQueueExpiry?: { enabled?: boolean };
   /** Monitoring config */
   monitoring: MonitoringConfig;
   /** Feature-rollout reconciler config (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.3
@@ -4065,6 +4196,17 @@ export interface InstarConfig {
         /** §3.3 bound 0: a reading older than this is not a measurement
          *  (default 1800000 = 30m — 2× the quota poller's 15-min cadence). */
         quotaFreshnessMs?: number;
+      };
+      /**
+       * Login-loss extension: a live, refreshable session whose source account
+       * is explicitly `owner-relogin-required` may use the same anti-thrash and
+       * SessionRefresh funnel even when quota is not high. `enabled` is omitted
+       * from defaults so the development-agent gate decides; dryRun defaults
+       * true and records only a would-swap.
+       */
+      loginLoss?: {
+        enabled?: boolean;
+        dryRun?: boolean;
       };
     };
     /**
@@ -4238,6 +4380,51 @@ export interface InstarConfig {
     };
   };
   /**
+   * Benchmark-Divergence Detector (docs/specs/benchmark-divergence-detector.md
+   * §Config surface). Observe-only detector comparing real grade-rates to the
+   * mirrored INSTAR-Bench predictions. Ships DARK on the fleet, live-in-dryRun
+   * on a development agent.
+   */
+  benchmarkDivergence?: {
+    /**
+     * OMIT-REQUIRED (never seeded by migrateConfig): resolves via
+     * `resolveDevAgentGate` — LIVE on a development agent, DARK on the fleet.
+     * An explicit value always wins.
+     */
+    enabled?: boolean;
+    /** Default TRUE (FD13): dryRun = ZERO detector-owned durable writes (no
+     *  findings, no watermark, no history; would-analyze summaries logged). */
+    dryRun?: boolean;
+    /** FD3 base divergence threshold. Default 0.15. */
+    divergenceThreshold?: number;
+    /** Graded-sample floor; falls through to provenance.quality.minSampleForRates (20). */
+    minSampleForRates?: number;
+    /** FD2 unsettled-stream bound over decided_total. Default 0.5. */
+    maxUnknownShare?: number;
+    /** FD2 pool-merged orphan-share bound. Default 0.10. */
+    maxOrphanShare?: number;
+    /** A day is matured when day ≤ today − this (FD7). Default 2. */
+    analysisMaturityLagDays?: number;
+    /** Analysis cadence (±10% jitter, FD8). Default 24. */
+    analysisCadenceHours?: number;
+    /** Rolling-window length in matured days (FD7). Default 35. */
+    maxDaysPerAnalysis?: number;
+    /** FD1 mirror location relative to the project root. Default src/data/benchmarkPredictions.json. */
+    mirrorPath?: string;
+    /** Mirror age beyond this ⇒ stale-mirror suppression (FD4). Default 30. */
+    mirrorStalenessMaxDays?: number;
+    /** decision_quality_rollup_by_model retention (its OWN knob — P19). Default 180. */
+    byModelRetentionDays?: number;
+    /** Consecutive non-actionable verdicts before chronic:true (FD8). Default 3. */
+    chronicCycles?: number;
+    /** FD11 per-key history cap (first row retained permanently). Default 50. */
+    maxHistoryPerKey?: number;
+    /** FD9 per-peer aggregate-row ceiling (hard absolute cap 10000). Default 10000. */
+    maxAggregateRowsPerPeer?: number;
+    /** FD9 new-finding-key ceiling per pass (excess → one unmapped-flood finding). Default 200. */
+    maxNewFindingKeysPerPass?: number;
+  };
+  /**
    * Constitutional ceilings carried by ratified standards (three-standards-
    * enforcement spec). Read by watchers/lints; a missing/non-numeric value
    * fails CLOSED (escalate-sooner).
@@ -4280,6 +4467,17 @@ export interface InstarConfig {
      */
     codexLoopDriver?: {
       enabled?: boolean;
+    };
+    /**
+     * Bounded continuation of ordinary Codex interactive work from an explicit
+     * per-topic task ledger. Separate from autonomous jobs; ships dark.
+     */
+    codexTaskContinuation?: {
+      enabled?: boolean;
+      maxDurationSeconds?: number;
+      maxContinuations?: number;
+      auditRetentionDays?: number;
+      auditMaxRows?: number;
     };
     /**
      * Gemini multi-turn loop-driver (need-gem-002; docs/specs/gemini-multi-turn-
@@ -4969,7 +5167,7 @@ export interface ResponseReviewConfig {
    * (held). Set false to revert THAT behavior to the prior fail-open without a
    * deploy (read live via the gate's optional liveConfig getter; a promise
    * REJECTION keeps its pre-existing unconditional fail-closed). Mirrors
-   * messaging.toneGate.failClosedOnExhaustion.
+   * toneGate.failClosedOnExhaustion (top-level).
    */
   failClosedOnCriticalAbstain?: boolean;
   /** Threshold for escalating warn-mode violations */
@@ -5210,6 +5408,14 @@ export interface MonitoringConfig {
    */
   bootHealthBeacon?: {
     enabled?: boolean;
+  };
+  /**
+   * Raw blocker lifecycle timing ledger. Observe-only and dev-gated: omission
+   * enables it on a development agent while keeping fleet agents dark.
+   */
+  blockerLifecycleLedger?: {
+    enabled?: boolean;
+    dryRun?: boolean;
   };
   /**
    * DARK-FLAGGED (DEV_GATED_FEATURES idleThrottleSettleGate; CMT-1785 follow-up):
@@ -5494,6 +5700,27 @@ export interface MonitoringConfig {
     recentOutputChangeWindowMs?: number;
   };
   /**
+   * Periodic Goal Re-Alignment Phase 1 ("see it"). Dev-gated and dry-run
+   * only: verified operator intake, durable priority ledger, and cached
+   * alignment verdicts. No injection or operator notification exists in Phase 1.
+   */
+  goalRealignment?: {
+    enabled?: boolean;
+    /** Must remain true in Phase 1; false is ignored by the runtime. */
+    dryRun?: boolean;
+    /** Eligibility wake-up, not an unconditional LLM call. Default 60. */
+    cadenceMinutes?: number;
+    /** Window for discovering NEW priorities only. Never expires ledger rows. */
+    recencyDays?: number;
+    /** Prompt projection bound; ledger rows are never trimmed. */
+    maxPriorities?: number;
+  };
+  throughputFloor?: {
+    enabled?: boolean;
+    flatlineMs?: number;
+    tickMs?: number;
+  };
+  /**
    * Blocker Ledger — the durable resolution-workflow + memory layer that
    * COMPLETES Principle 1 ("almost every blocker is a false blocker — work it").
    * The deferral-detector / B16 / B17 path already DETECTS false-blocker framing;
@@ -5588,6 +5815,21 @@ export interface MonitoringConfig {
     checkInEveryMs?: number;
     /** Ignore repeat reports within this window (default: 60_000). */
     dedupeWindowMs?: number;
+  };
+  /**
+   * Proactive compaction for autonomous Claude sessions. Explicit opt-in only
+   * (dark when absent); dry-run defaults true. It reads Claude's own
+   * "Context left until auto-compact" status and acts only at an idle boundary.
+   */
+  proactiveAutonomousCompaction?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Used-context threshold percentage (default 85). */
+    thresholdUsedPercent?: number;
+    /** Poll cadence in milliseconds (default 60_000). */
+    tickIntervalMs?: number;
+    /** Per-session action cooldown in milliseconds (default 30 minutes). */
+    cooldownMs?: number;
   };
   /**
    * SocketDisconnectSentinel — detects Claude Code's "socket connection closed
@@ -6032,6 +6274,39 @@ export interface MonitoringConfig {
    * Registered in DEV_GATED_FEATURES; GET /external-hog. Machine-local by design
    * (hardware-bound-resource — a host OS process is bound to one kernel).
    */
+  /**
+   * SingleMachineFailoverGapDetector (increment 2) — a pure SIGNAL-only guard that
+   * surfaces the "no failover target for active autonomous work" gap BEFORE it bites
+   * (the 2026-07-22 Codey overnight loss): single-machine (no online mesh peer) WHILE
+   * active autonomous runs → ONE deduped HIGH attention item. Never blocks, provisions,
+   * or kills. `enabled` is OMITTED so the runtime resolves it through the
+   * developmentAgent dark-feature gate (resolveDevAgentGate): LIVE on a dev agent, DARK
+   * on the fleet. `dryRun: true` is the graduated-rollout first rung — it computes +
+   * counts would-raise but raises NOTHING until a deliberate dryRun:false flip.
+   * Registered in DEV_GATED_FEATURES; GET /pool/failover-gap.
+   */
+  singleMachineFailoverGap?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+  };
+  /**
+   * MissingLoginSessionDetector (increment 2) — a pure SIGNAL-only guard that
+   * surfaces the "a live session is running on an account whose local login has
+   * gone missing" gap BEFORE the session walls silently (the 2026-07-22 justin-gmail
+   * silent auth-death): a running session bound to an account the subscription pool
+   * flagged `identityDrift.repairState === 'owner-relogin-required'` /
+   * `actualAccountId === 'missing-local-login'` → ONE deduped HIGH attention item.
+   * Never swaps, re-logins, or touches a session. `enabled` is OMITTED so the
+   * runtime resolves it through the developmentAgent dark-feature gate
+   * (resolveDevAgentGate): LIVE on a dev agent, DARK on the fleet. `dryRun: true`
+   * is the graduated-rollout first rung — it computes + counts would-raise but
+   * raises NOTHING until a deliberate dryRun:false flip. Registered in
+   * DEV_GATED_FEATURES; GET /pool/missing-login.
+   */
+  missingLoginSession?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+  };
   externalHogSentinel?: {
     enabled?: boolean;
     dryRun?: boolean;
@@ -6311,6 +6586,29 @@ export interface MonitoringConfig {
      *  infra-gap batch serializes under the route's 10/min IP limit (Slice 2
      *  NEW-2). Default 7000. */
     feedbackPostDelayMs?: number;
+  };
+  /** Un-gated correction durable-outcome drain; enabled on dev agents via DEV_GATED_FEATURES. */
+  correctionClassReview?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    maxReviewsPerTick?: number;
+    maxAttempts?: number;
+    maxOpenArtifacts?: number;
+    agingDays?: number;
+  };
+  /** Verify-Before-Done observe-only completion signal; never blocks in v1. */
+  completionClaimVerification?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    generalObservation?: boolean;
+    maxAuditBytes?: number;
+    maxCorpusBytes?: number;
+    maxQueued?: number;
+    maxQueuedPerTopic?: number;
+    maxConcurrent?: number;
+    maxConcurrentPerTopic?: number;
+    queueTtlMs?: number;
+    redactIdentifiers?: boolean;
   };
   /**
    * Bias-to-Action — standing-authorization signal for B17_FALSE_BLOCKER
@@ -6898,7 +7196,7 @@ export interface BackupSnapshot {
   /** When this snapshot was created */
   createdAt: string;
   /** What triggered this snapshot */
-  trigger: 'auto-session' | 'manual' | 'pre-update';
+  trigger: 'auto-session' | 'manual' | 'pre-update' | 'feedback-hourly' | 'feedback-promotion' | 'feedback-failover';
   /** Files included in this snapshot */
   files: string[];
   /** Total size in bytes */

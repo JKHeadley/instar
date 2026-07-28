@@ -119,6 +119,33 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
     }, { timeout: 5000 });
   });
 
+  it('framework handoff waits for bootstrap injection before returning the new session', async () => {
+    let resolveReady!: (v: boolean) => void;
+    const readyGate = new Promise<boolean>((r) => { resolveReady = r; });
+    vi.spyOn(manager as unknown as { waitForClaudeReadyWithRetry(s: string, t: number): Promise<boolean> }, 'waitForClaudeReadyWithRetry')
+      .mockImplementation(() => readyGate);
+    const injectSpy = vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): void }, 'injectMessage')
+      .mockImplementation(() => undefined);
+
+    let returned = false;
+    const spawning = manager.spawnInteractiveSession('CONTINUATION — prior turn', 'handoff-test', {
+      telegramTopicId: 2271,
+      framework: 'codex-cli',
+      awaitInitialInjection: true,
+    }).then((name) => { returned = true; return name; });
+
+    await vi.waitFor(() => expect(pendingFiles()).toHaveLength(1));
+    expect(returned).toBe(false);
+    resolveReady(true);
+    await spawning;
+    expect(injectSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      'CONTINUATION — prior turn',
+      { firstParty: { source: 'session-bootstrap' } },
+    );
+    expect(returned).toBe(true);
+  });
+
   it('recoverPendingInjects re-delivers into a still-alive session through the readiness path', async () => {
     // Simulate the incident: a record left by the PREVIOUS server process,
     // whose tmux session is still alive.

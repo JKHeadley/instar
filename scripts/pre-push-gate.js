@@ -345,44 +345,57 @@ if (!process.env.CI) {
   // isn't what this PR is changing. Falls back to the versioned guide when no
   // fragment / NEXT.md is staged (post-release-cut state).
   const inFlight = assembledContent !== null;
-  const guideContent = inFlight
-    ? assembledContent
-    : (versionedGuideExists ? fs.readFileSync(versionedGuidePath, 'utf-8') : null);
-  if (guideContent !== null) {
+
+  // This check is a RELEASE-LEVEL re-check on the notes THIS PUSH is shipping —
+  // which means it only has a subject when in-flight notes exist. It deliberately
+  // does NOT fall back to the versioned guide.
+  //
+  // Why (three recurrences, 2026: v1.3.492, v1.3.802, v1.3.1009): the release cut
+  // renames upgrades/next/*.md into upgrades/<version>.md and bumps package.json,
+  // but side-effects artifacts are named per CHANGE SLUG, never per version — so
+  // upgrades/side-effects/<version>.md is a file the release flow never creates.
+  // Falling back to the frozen guide therefore demanded a filename that cannot
+  // exist, on EVERY push from a clean post-release tree, for a release that had
+  // already shipped and already been reviewed.
+  //
+  // The damage was not the refusal, it was the REMEDY the message named: three
+  // separate times someone hand-wrote a placeholder upgrades/side-effects/<version>.md
+  // to get past it (see 1.3.492.md and 1.3.802.md, both of which say so in their
+  // own text). A gate whose advice is unfollowable teaches people to write junk
+  // that satisfies it.
+  //
+  // Nothing is weakened. Per-change enforcement lives in the pre-COMMIT gate
+  // (scripts/instar-dev-precommit.js — refuses in-scope staged files without an
+  // ELI16 + side-effects artifact), and check 3b above already refuses a
+  // release-relevant push that ships no fragment, with an actionable remedy.
+  if (inFlight) {
     // Extract "## What Changed" section
-    const whatChangedMatch = guideContent.match(/## What Changed\s*([\s\S]*?)(?=\n##\s|$)/);
+    const whatChangedMatch = assembledContent.match(/## What Changed\s*([\s\S]*?)(?=\n##\s|$)/);
     const whatChanged = whatChangedMatch ? whatChangedMatch[1] : '';
 
     const qualifies = FIX_PATTERNS.some((p) => p.test(whatChanged));
 
     if (qualifies) {
       const sideEffectsDir = path.join(ROOT, 'upgrades', 'side-effects');
-      // When in-flight notes (fragments/NEXT.md) drive the push, any fresh
-      // artifact (last 24h) counts — the versioned-filename requirement only
-      // applies when a versioned guide is being validated without in-flight notes.
-      const artifactName = (!inFlight && versionedGuideExists) ? `${version}.md` : null;
       let artifactFound = false;
 
       if (fs.existsSync(sideEffectsDir)) {
         const files = fs.readdirSync(sideEffectsDir).filter((f) => f.endsWith('.md'));
-        if (artifactName) {
-          artifactFound = files.includes(artifactName);
-        } else {
-          // For in-flight notes (fragments/NEXT.md), any fresh artifact from the
-          // last 24h counts. The expectation is that during release cut, the
-          // fragment/NEXT.md -> <version>.md rename pairs with an artifact rename.
-          const recent = files.filter((f) => {
-            const stat = fs.statSync(path.join(sideEffectsDir, f));
-            return Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000;
-          });
-          artifactFound = recent.length > 0;
-        }
+        // Any fresh artifact from the last 24h counts — the in-flight notes name
+        // the change, the artifact reviews it, and the two are paired by the PR
+        // rather than by filename.
+        const recent = files.filter((f) => {
+          const stat = fs.statSync(path.join(sideEffectsDir, f));
+          return Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000;
+        });
+        artifactFound = recent.length > 0;
       }
 
       if (!artifactFound) {
         errors.push(
-          `Upgrade notes claim a fix/feature but no matching side-effects review artifact found in upgrades/side-effects/. ` +
-          `Every change qualifying for review must ship with an artifact produced via the /instar-dev skill. ` +
+          `Your release-note fragment claims a fix/feature but no side-effects review artifact was written in the last 24h. ` +
+          `Add upgrades/side-effects/<slug>.md for this change (produced via the /instar-dev skill) — ` +
+          `do NOT create a version-named file to satisfy this check. ` +
           `See skills/instar-dev/SKILL.md and docs/signal-vs-authority.md.`
         );
       }

@@ -14,7 +14,7 @@ import {
   type HogEvidenceScanView,
 } from '../../src/monitoring/ExternalHogDecisionStore.js';
 import type { HogDecisionSeed } from '../../src/monitoring/ExternalHogScanTick.js';
-import { DP_EXTERNAL_HOG_KILL_LEAVE } from '../../src/data/provenanceCoverage.js';
+import { DP_EXTERNAL_HOG_KILL_LEAVE, DP_MESSAGING_TONE_GATE } from '../../src/data/provenanceCoverage.js';
 import {
   DecisionQualityRecorderImpl,
   installDecisionQualityRecorder,
@@ -177,7 +177,89 @@ describe('GET /decision-quality (integration)', () => {
   });
 });
 
+/**
+ * §5.6 census debt — pending-tracker adjudication over the REAL census.
+ *
+ * The real census now carries the fleet-stable `backlog:` kind, so this block
+ * asserts THAT kind against the live constant. The ACT-kind semantics from the
+ * 2026-07-23 false-alarm fix moved to
+ * tests/integration/decision-quality-act-tracker-routes.test.ts, where the
+ * census is INJECTED — those tests used to ride on the real census happening to
+ * cite ACT-1193, which made three of them break and two pass VACUOUSLY the
+ * moment the entries were repointed (census-tracker-ref-kinds, 2026-07-25).
+ */
+describe('GET /decision-quality censusDebt — pending-tracker adjudication', () => {
+  function writeQueue(actions: Array<{ id: string; status: string }>): void {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-census-'));
+    const dir = path.join(tmpDir, 'state', 'evolution');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'action-queue.json'), JSON.stringify({ actions }));
+  }
+
+  async function censusDebt(): Promise<Record<string, any>> {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const res = await request(appWith(ctxWith({ ledger, developmentAgent: true })))
+      .get('/decision-quality').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.status).toBe(200);
+    return res.body.censusDebt;
+  }
+
+  it('the backlog is non-empty — every assertion below has a real subject', async () => {
+    // Guards against the vacuity that broke this block's predecessor: if the
+    // pending set ever empties, "no flags" would become trivially true.
+    writeQueue([{ id: 'ACT-1119', status: 'pending' }]);
+    const debt = await censusDebt();
+    expect(debt.pending).toBeGreaterThan(0);
+  });
+
+  it('a fleet-stable ref resolves regardless of what the local action queue holds', async () => {
+    // The defect this replaced: the verdict depended on a MACHINE-LOCAL queue.
+    // Three very different queues, one answer.
+    for (const queue of [
+      [{ id: 'ACT-1119', status: 'pending' }],
+      [{ id: 'ACT-1211', status: 'pending' }],
+      [{ id: 'ACT-0001', status: 'completed' }],
+    ]) {
+      writeQueue(queue);
+      const debt = await censusDebt();
+      expect(debt.pendingRefDead, JSON.stringify(debt.pendingRefDead)).toEqual([]);
+      expect(debt.pendingRefUnverifiable, JSON.stringify(debt.pendingRefUnverifiable)).toEqual([]);
+      expect(debt.pending).toBeGreaterThan(0);
+    }
+  });
+
+  it('an ABSENT queue resolves identically — the fleet install, which could not answer before', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-census-noqueue-'));
+    const debt = await censusDebt();
+    expect(debt.pending).toBeGreaterThan(0);
+    expect(debt.pendingRefDead).toEqual([]);
+    expect(debt.pendingRefUnverifiable).toEqual([]);
+  });
+});
+
 describe('POST /decision-quality/grade-pass (integration)', () => {
+  it('turns a matured Phase B backlog row into one visible known outcome through the real routes', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    installDecisionQualityRecorder(new DecisionQualityRecorderImpl({
+      ledger, config: { developmentAgent: true, provenance: { uniformSeam: { enabled: true, dryRun: false } } },
+    }));
+    ledger.recordDecision({ correlationId: 'd-tone-backlog', decisionPoint: DP_MESSAGING_TONE_GATE,
+      feature: 'MessagingToneGate', ts: Date.now() - 8 * HOUR });
+    const app = appWith(ctxWith({ ledger, developmentAgent: true, hogStore: null }));
+
+    const before = await request(app).get('/decision-quality?sinceHours=24').set('Authorization', `Bearer ${AUTH}`);
+    const beforePoint = before.body.points.find((point: { decisionPoint: string }) => point.decisionPoint === DP_MESSAGING_TONE_GATE);
+    expect(beforePoint).toMatchObject({ outcomesKnown: 0, gradeDistribution: { unknown: 0, expired: 1 } });
+
+    const graded = await request(app).post('/decision-quality/grade-pass').set('Authorization', `Bearer ${AUTH}`).send({});
+    expect(graded.status).toBe(200);
+    expect(graded.body).toMatchObject({ graded: 1, byRule: { 'tone-window-unknown-v1': 1 } });
+
+    const after = await request(app).get('/decision-quality?sinceHours=24').set('Authorization', `Bearer ${AUTH}`);
+    const afterPoint = after.body.points.find((point: { decisionPoint: string }) => point.decisionPoint === DP_MESSAGING_TONE_GATE);
+    expect(afterPoint).toMatchObject({ outcomesKnown: 1, gradeDistribution: { unknown: 1, expired: 0 } });
+  });
+
   it('returns 503 when the seam is dark', async () => {
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
     const res = await request(appWith(ctxWith({ ledger, developmentAgent: false })))

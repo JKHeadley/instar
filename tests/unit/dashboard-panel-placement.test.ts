@@ -145,4 +145,17 @@ describe('dashboard panel placement floor', () => {
     expect(slice.includes('<main ')).toBe(false);
     expect(slice.includes('.tab-panel {')).toBe(false);
   });
+
+  it('Subscriptions owns a fluid container and no longer mounts the deprecated pending-logins mirror', () => {
+    const html = readDashboard();
+    const panel = html.match(/<div id="subscriptionsPanel"[^>]*>/)?.[0] ?? '';
+    const fluidRule = html.match(/\.subscriptions-root\s*\{[^}]*\}/)?.[0] ?? '';
+
+    expect(panel).toContain('subscriptions-root');
+    expect(panel).not.toContain('ph-root');
+    expect(fluidRule).toContain('max-width: none');
+    expect(fluidRule).toContain('min-width: 0');
+    expect(html).not.toContain('<div id="subPending"');
+    expect(html).not.toContain('<h3 class="ph-h">Pending logins</h3>');
+  });
 });

@@ -49,10 +49,19 @@ describe('server-boot wiring: PeerPresencePuller (HTTP presence transport)', () 
     expect(block).toContain('peerPresenceTimer.unref');
   });
 
-  it('resolves each peer URL via the shared peerUrl helper (lastKnownUrl)', () => {
+  it('resolves each peer URL via the shared multi-rope peerUrl helper', () => {
     const ctorIdx = src.indexOf('new presenceMod.PeerPresencePuller(');
     const block = src.slice(ctorIdx, ctorIdx + 900);
     expect(block).toContain('peerUrl(m.machineId)');
     expect(block).toContain('selfMachineId: meshSelfId');
+  });
+
+  it('uses the shared multi-rope resolver for pool-scope fanout too', () => {
+    const resolverIdx = src.indexOf('_resolvePeerUrls = () =>');
+    expect(resolverIdx).toBeGreaterThan(0);
+    const block = src.slice(resolverIdx, resolverIdx + 600);
+    expect(block).toContain('peerUrl(m.machineId)');
+    expect(block).not.toContain('!!m.entry.lastKnownUrl');
+    expect(block).not.toContain('url: m.entry.lastKnownUrl');
   });
 });

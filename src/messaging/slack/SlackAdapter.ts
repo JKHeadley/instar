@@ -716,6 +716,24 @@ export class SlackAdapter implements MessagingAdapter {
     return null;
   }
 
+  /** Fresh disk-backed reverse lookup for bindings written after this adapter
+   *  loaded its in-memory registry (SessionRefresh/monitor parity). */
+  resolveChannelForSessionFromDisk(sessionName: string): string | null {
+    try {
+      if (!fs.existsSync(this.channelRegistryPath)) return null;
+      const data = JSON.parse(fs.readFileSync(this.channelRegistryPath, 'utf-8')) as {
+        channelToSession?: Record<string, { sessionName?: string }>;
+      };
+      for (const [routingKey, entry] of Object.entries(data.channelToSession ?? {})) {
+        if (entry?.sessionName === sessionName) return routingKey;
+      }
+    } catch {
+      // @silent-fallback-ok: unreadable registry means no proven binding; the
+      // caller safely refuses a destructive refresh.
+    }
+    return null;
+  }
+
   /** Remove a channel → session binding. */
   unregisterChannel(channelId: string): void {
     this.channelToSession.delete(channelId);
@@ -1125,24 +1143,24 @@ export class SlackAdapter implements MessagingAdapter {
 
     if (this.respondMode === 'mention-only' && !isDM && !this._isBotMentioned(text)) {
       // ── Ambient "should I speak?" gate (considered/ambient mode, §5.2) ──────────
-      // This is the ONLY change to undirected handling. The gate can ONLY make the
-      // agent quieter: it runs solely when (1) a gate is attached AND (2) this exact
-      // channel is explicitly opted into proactive contribution. For every other
-      // channel — and whenever no gate is attached at all — behavior is byte-for-byte
-      // the mention-only drop below. FAIL-TO-SILENCE: any failure inside the gate
-      // returns speak=false, so we fall through to the same drop. A speak=true here
-      // means the undirected message is processed exactly like a directed one
-      // (the code below this block is unchanged); directed messages never reach here.
+      // This opt-in gate returns exactly one closed action: speak processes the
+      // message downstream, react makes one fixed eyes-reaction attempt and returns,
+      // and silent only retains bounded history. Every failure/unknown result fails
+      // to silent. With no gate or no channel opt-in, behavior remains the ordinary
+      // mention-only drop; directed messages never reach this branch.
       let ambientSpeak = false;
       if (this.ambientGate && this.ambientGate.isChannelEnabled(channelId)) {
         try {
-          const decision = await this.ambientGate.shouldSpeak({ channelId, text, channelName: undefined });
-          ambientSpeak = decision.speak === true;
-          if (ambientSpeak) {
-            // Consume one unit of the per-channel rolling-window budget only now that
-            // we've committed to processing this proactive turn.
-            this.ambientGate.recordSpoke(channelId);
+          const decision = await this.ambientGate.decideAction({ channelId, text, channelName: undefined });
+          ambientSpeak = decision.action === 'speak';
+          if (decision.action === 'speak') {
+            this.ambientGate.recordAction(channelId);
             console.log(`[slack] ambient gate cleared for ${channelId}: ${decision.reason}${decision.detail ? ` — ${decision.detail}` : ''}`);
+          } else if (decision.action === 'react') {
+            // Consume budget before the one fire-and-forget attempt. The existing
+            // primitive contains failures; there is no retry, refund, or fallback.
+            this.ambientGate.recordAction(channelId);
+            this.addReaction(channelId, ts, 'eyes');
           }
         } catch {
           // Fail-to-silence: any unexpected throw at the call site stays silent too.
@@ -2027,11 +2045,11 @@ export class SlackAdapter implements MessagingAdapter {
 
     // Collect channels that had recent sessions (these are the ones users were talking to)
     const channelsToCheck = new Set<string>();
-    for (const [channelId] of this.channelToSession) {
-      channelsToCheck.add(channelId);
+    for (const [routingKey] of this.channelToSession) {
+      channelsToCheck.add(this.parseRoutingKey(routingKey).channelId);
     }
-    for (const [channelId] of this.channelResumeMap) {
-      channelsToCheck.add(channelId);
+    for (const [routingKey] of this.channelResumeMap) {
+      channelsToCheck.add(this.parseRoutingKey(routingKey).channelId);
     }
 
     if (channelsToCheck.size === 0) {
@@ -2102,12 +2120,21 @@ export class SlackAdapter implements MessagingAdapter {
     try {
       // Collect channels from the persisted resume map (loaded from disk in constructor)
       const channelsToCheck = new Map<string, string>(); // channelId → oldest ts to check from
-      for (const [channelId, info] of this.channelResumeMap) {
+      for (const [routingKey, info] of this.channelResumeMap) {
         // Don't skip system channels — _handleMessage filters appropriately
         // Use the savedAt timestamp as the "last known alive" point
         const savedAtMs = new Date(info.savedAt).getTime();
         if (isNaN(savedAtMs)) continue;
-        channelsToCheck.set(channelId, (savedAtMs / 1000).toFixed(6));
+        // Resume maps are keyed by a session routing key. Thread sessions use
+        // `<channelId>:<thread_ts>`, but Slack history APIs accept only the raw
+        // channel id. Collapse every routing key to its API channel and retain
+        // the oldest checkpoint so one fetch covers every session in it.
+        const channelId = this.parseRoutingKey(routingKey).channelId;
+        const existingOldest = channelsToCheck.get(channelId);
+        const savedAtTs = (savedAtMs / 1000).toFixed(6);
+        if (!existingOldest || Number(savedAtTs) < Number(existingOldest)) {
+          channelsToCheck.set(channelId, savedAtTs);
+        }
       }
 
       if (channelsToCheck.size === 0) return;

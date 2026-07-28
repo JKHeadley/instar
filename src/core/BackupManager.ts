@@ -93,6 +93,7 @@ export const REMEDIATION_EXCLUDED_PATH_PREFIXES: readonly string[] = Object.free
  */
 export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   'judgment-provenance',
+  'claim-verification',
   // External-hog decision store (llm-decision-quality-meter spec §5.3): same
   // machine-local posture as the provenance rows; the filename segment closes
   // alternate relative spellings the stateDir-relative prefix cannot.
@@ -137,6 +138,13 @@ const DEFAULT_CONFIG: BackupConfig = {
     // The bulky per-thread `threadline/threads/*.log.jsonl` are EXCLUDED by design
     // (large, reconstructable via backfill; the symmetry surface flags any gap).
     'threadline/conversations.json',
+    // ClassReview is the retained audit/correspondence artifact. Include the
+    // SQLite main file plus active WAL/SHM companions as one glob so restore
+    // cannot strand a filled review behind a missing journal.
+    'class-reviews.db*',
+    // Feedback Factory operated state: canonical source generations, durable
+    // drain DB/WAL, authority-registry sidecar/audit, and consumer promotion.
+    'state/feedback-factory/store/',
   ],
 };
 
@@ -341,27 +349,27 @@ export class BackupManager {
       if (entry.endsWith('/')) {
         // Directory — copy all files in it
         if (fs.existsSync(sourcePath) && fs.statSync(sourcePath).isDirectory()) {
-          const dirEntries = fs.readdirSync(sourcePath);
           const targetDir = path.join(snapshotDir, entry);
           fs.mkdirSync(targetDir, { recursive: true });
-
-          for (const file of dirEntries) {
-            // Re-apply all three deny layers per copied file — the entry-level
-            // checks above see only the ENTRY string, so a 'state/' (or './')
-            // glob would otherwise ship excluded state via its direct children.
-            const relPath = path.join(entry, file);
-            if (isDeniedForBackup(relPath)) {
-              console.warn(`[BackupManager] Skipping blocked file in directory copy: ${relPath}`);
+          const pending = fs.readdirSync(sourcePath).map((file) => ({ absolute: path.join(sourcePath, file), relative: path.join(entry, file) }));
+          while (pending.length > 0) {
+            const next = pending.pop()!;
+            if (isDeniedForBackup(next.relative)) {
+              console.warn(`[BackupManager] Skipping blocked file in directory copy: ${next.relative}`);
               continue;
             }
-            const src = path.join(sourcePath, file);
-            if (fs.statSync(src).isFile()) {
-              const dest = path.join(targetDir, file);
-              fs.copyFileSync(src, dest);
-              const stat = fs.statSync(src);
-              totalBytes += stat.size;
-              files.push(relPath);
+            const stat = fs.lstatSync(next.absolute);
+            if (stat.isSymbolicLink()) continue;
+            if (stat.isDirectory()) {
+              for (const child of fs.readdirSync(next.absolute)) pending.push({ absolute: path.join(next.absolute, child), relative: path.join(next.relative, child) });
+              continue;
             }
+            if (!stat.isFile()) continue;
+            const dest = path.join(snapshotDir, next.relative);
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.copyFileSync(next.absolute, dest);
+            totalBytes += stat.size;
+            files.push(next.relative);
           }
         }
       } else {

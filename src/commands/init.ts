@@ -38,6 +38,7 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync, execSync } from 'node:child_process';
 import { detectTmuxPath, detectClaudePath, detectGitPath, detectGhPath, detectCodexPath, ensureStateDir, standaloneAgentsDir, getInstarVersion } from '../core/Config.js';
 import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
+import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS } from '../core/instarSettingsHooks.js';
@@ -65,6 +66,7 @@ import { dashboardRefreshGateScript, dashboardRefreshScript } from '../server/Da
 import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
 import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
+import { ensureSlackReplyRelay, isSlackConfigured } from '../core/SlackReplyRelayInstaller.js';
 
 /**
  * Find a free port in the default range (4040-4099) by checking if anything
@@ -2180,7 +2182,7 @@ Verify that the agent's awareness infrastructure is healthy: topic bindings poin
 Read the auth token once:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 Check each area:
@@ -2252,7 +2254,7 @@ Review degradation events logged by the DegradationReporter, group repeated patt
 Read the auth token:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 ### 1. Read Events
@@ -2318,7 +2320,7 @@ Cross-validate agent state files for logical consistency. Detect orphaned refere
 Read the auth token:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 ### 1. Active Job Orphan
@@ -2391,7 +2393,7 @@ Review \\\`.instar/MEMORY.md\\\` for quality and hygiene. Memory is identity —
 Read the auth token:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 Read the full file: \\\`cat .instar/MEMORY.md\\\`
@@ -2466,7 +2468,7 @@ Check whether the guardians themselves are healthy. Monitors job execution, skip
 Read the auth token:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 ### 1. Job Health
@@ -2571,7 +2573,7 @@ Check whether recent sessions contributed to long-term knowledge. Detects contin
 Read the auth token:
 
 \\\`\\\`\\\`
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \\\`\\\`\\\`
 
 ### 1. Recent Sessions
@@ -3131,7 +3133,7 @@ export function getDefaultJobs(port: number): object[] {
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 
 # Read recent activity logs to understand what happened in last 4 hours
 RECENT_LOGS=$(ls -t .instar/logs/activity-*.jsonl 2>/dev/null | head -1)
@@ -3141,7 +3143,9 @@ fi
 
 # Extract recent session activity and key events (filter out noise, keep significant events)
 echo "=== RECENT ACTIVITY (Last 4 Hours) ==="
-tail -500 "$RECENT_LOGS" 2>/dev/null | jq -r 'select(.type != "job-start" and .type != "job-queued") | "\(.timestamp) [\(.type)] \(.message // .title // .session_name // .slug // "")"' 2>/dev/null | tail -100
+tail -500 "$RECENT_LOGS" 2>/dev/null | jq -r 'select(.type | IN("job_triggered","job_gate_skip","job_skipped") | not) | "\(.timestamp) [\(.type)] \(.summary // .metadata.slug // "")"' | tail -100
+echo "--- volume summary (noise types excluded above) ---"
+tail -500 "$RECENT_LOGS" 2>/dev/null | jq -r '.type' 2>/dev/null | sort | uniq -c | sort -rn
 
 echo ""
 echo "=== YOUR TASK ==="
@@ -3155,7 +3159,7 @@ echo ""
 echo "If you find genuine learnings:"
 echo "1. Update .instar/MEMORY.md with the insight (append to the file)"
 echo "2. Be specific: include what was learned, why it matters, and how it should guide future work"
-echo "3. Signal completion: curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/reflection/record -H 'Content-Type: application/json' -d '{\"type\":\"quick\"}'"
+echo "3. Signal completion: curl -s -X POST -H \\"Authorization: Bearer \\$INSTAR_AUTH_TOKEN\\" -H \\"X-Instar-AgentId: \\$INSTAR_AGENT_ID\\" http://localhost:\${INSTAR_PORT:-${port}}/reflection/record -H 'Content-Type: application/json' -d '{\\"type\\":\\"quick\\"}'"
 echo ""
 echo "If nothing significant, do nothing. Silence means continuity is working as expected."`,
       },
@@ -3188,7 +3192,7 @@ echo "If nothing significant, do nothing. Silence means continuity is working as
       gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1`,
       execute: {
         type: 'script',
-        value: `RESULT=$(curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/feedback/retry 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('retried',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Feedback retry: $COUNT item(s) forwarded." || echo "Feedback retry: nothing pending."`,
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"; RESULT=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/feedback/retry 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('retried',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Feedback retry: $COUNT item(s) forwarded." || echo "Feedback retry: nothing pending."`,
       },
       tags: ['cat:infrastructure'],
     },
@@ -3204,7 +3208,11 @@ echo "If nothing significant, do nothing. Silence means continuity is working as
       gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('learnings',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
-        value: `Harvest and synthesize learnings: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings?applied=false
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
+PORT="\${INSTAR_PORT:-${port}}"
+
+Harvest and synthesize learnings: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/learnings?applied=false"
 
 Review unapplied learnings and look for:
 1. **Patterns**: Multiple learnings pointing to the same conclusion
@@ -3212,10 +3220,10 @@ Review unapplied learnings and look for:
 3. **Cross-domain connections**: Insights from one area that apply to another
 
 For each actionable pattern found, create an evolution proposal:
-curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals -H 'Content-Type: application/json' -d '{"title":"...","source":"insight-harvest from LRN-XXX","description":"...","type":"...","impact":"...","effort":"..."}'
+curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/proposals -H 'Content-Type: application/json' -d '{"title":"...","source":"insight-harvest from LRN-XXX","description":"...","type":"...","impact":"...","effort":"..."}'
 
 Then mark the relevant learnings as applied:
-curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/evolution/learnings/LRN-XXX/apply -H 'Content-Type: application/json' -d '{"appliedTo":"EVO-XXX"}'
+curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/learnings/LRN-XXX/apply -H 'Content-Type: application/json' -d '{"appliedTo":"EVO-XXX"}'
 
 Also update MEMORY.md with any patterns worth preserving long-term.
 
@@ -3235,15 +3243,19 @@ If no actionable patterns found, exit silently.`,
       gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/overdue 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('overdue',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
-        value: `Check for overdue commitments: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/overdue
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
+PORT="\${INSTAR_PORT:-${port}}"
+
+Check for overdue commitments: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/overdue
 
 For each overdue action:
 1. Assess: Can this be completed now? Is it still relevant?
 2. If actionable, attempt to complete it or advance it
-3. If no longer relevant, cancel it: curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions/ACT-XXX -H 'Content-Type: application/json' -d '{"status":"cancelled","resolution":"No longer relevant because..."}'
+3. If no longer relevant, cancel it: curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/actions/ACT-XXX -H 'Content-Type: application/json' -d '{"status":"cancelled","resolution":"No longer relevant because..."}'
 4. If blocked, escalate to the user via Telegram (if configured)
 
-Also check pending actions (curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions?status=pending) for items that have been pending more than 48 hours without a due date — these are forgotten commitments.
+Also check pending actions (curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/actions?status=pending") for items that have been pending more than 48 hours without a due date — these are forgotten commitments.
 
 If no overdue or stale items, exit silently.`,
       },
@@ -3393,10 +3405,10 @@ If no overdue or stale items, exit silently.`,
       expectedDurationMinutes: 1,
       model: 'haiku',
       enabled: true,
-      gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1 && AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null) && curl -sf -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/semantic/stats >/dev/null 2>&1`,
+      gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1 && AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}" && curl -sf -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/semantic/stats >/dev/null 2>&1`,
       execute: {
         type: 'script',
-        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null); AGENT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('agentName','Agent'))" 2>/dev/null); RESULT=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "Content-Type: application/json" -d "{\\"filePath\\":\\".instar/MEMORY.md\\",\\"agentName\\":\\"$AGENT\\"}" http://localhost:\${INSTAR_PORT:-${port}}/semantic/export-memory 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('entityCount',0))" 2>/dev/null || echo 0); EXCLUDED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('excludedCount',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Memory export: $COUNT entities written to MEMORY.md ($EXCLUDED excluded below threshold)." || echo "Memory export: no entities to export."`,
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"; AGENT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('agentName','Agent'))" 2>/dev/null); RESULT=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "Content-Type: application/json" -d "{\\"filePath\\":\\".instar/MEMORY.md\\",\\"agentName\\":\\"$AGENT\\"}" http://localhost:\${INSTAR_PORT:-${port}}/semantic/export-memory 2>/dev/null); COUNT=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('entityCount',0))" 2>/dev/null || echo 0); EXCLUDED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('excludedCount',0))" 2>/dev/null || echo 0); [ "$COUNT" -gt "0" ] && echo "Memory export: $COUNT entities written to MEMORY.md ($EXCLUDED excluded below threshold)." || echo "Memory export: no entities to export."`,
       },
       tags: ['cat:maintenance', 'role:worker', 'exec:script'],
     },
@@ -3429,7 +3441,7 @@ If no overdue or stale items, exit silently.`,
       gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1`,
       execute: {
         type: 'script',
-        value: `AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null); REFRESH=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/refresh 2>/dev/null); DRIFT=$(curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/drift 2>/dev/null); ADDED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('added',[])))" 2>/dev/null || echo 0); REMOVED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('removed',[])))" 2>/dev/null || echo 0); CHANGED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('changed',[])))" 2>/dev/null || echo 0); UNMAPPED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('unmapped',[])))" 2>/dev/null || echo 0); if [ "$ADDED" -gt "0" ] || [ "$REMOVED" -gt "0" ] || [ "$CHANGED" -gt "0" ] || [ "$UNMAPPED" -gt "0" ]; then echo "Capability drift detected: +$ADDED -$REMOVED ~$CHANGED ?$UNMAPPED"; echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'  + {c[\"id\"]}') for c in d.get('added',[])]; [print(f'  - {r[\"id\"]}') for r in d.get('removed',[])]; [print(f'  ~ {c[\"id\"]} ({c[\"field\"]})') for c in d.get('changed',[])]" 2>/dev/null; else echo "Capability audit: no drift detected."; fi`,
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"; REFRESH=$(curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/refresh 2>/dev/null); DRIFT=$(curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/capability-map/drift 2>/dev/null); ADDED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('added',[])))" 2>/dev/null || echo 0); REMOVED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('removed',[])))" 2>/dev/null || echo 0); CHANGED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('changed',[])))" 2>/dev/null || echo 0); UNMAPPED=$(echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('unmapped',[])))" 2>/dev/null || echo 0); if [ "$ADDED" -gt "0" ] || [ "$REMOVED" -gt "0" ] || [ "$CHANGED" -gt "0" ] || [ "$UNMAPPED" -gt "0" ]; then echo "Capability drift detected: +$ADDED -$REMOVED ~$CHANGED ?$UNMAPPED"; echo "$DRIFT" | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'  + {c[\"id\"]}') for c in d.get('added',[])]; [print(f'  - {r[\"id\"]}') for r in d.get('removed',[])]; [print(f'  ~ {c[\"id\"]} ({c[\"field\"]})') for c in d.get('changed',[])]" 2>/dev/null; else echo "Capability audit: no drift detected."; fi`,
       },
       grounding: {
         requiresIdentity: false,
@@ -3451,7 +3463,7 @@ If no overdue or stale items, exit silently.`,
         type: 'prompt',
         value: `Identity review — check your identity coherence and growth.
 
-AUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 
 1. **Check soul.md drift**: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/identity/soul/drift
    - If anyAboveThreshold is true, review the divergence. Is this healthy growth or unexpected drift?
@@ -3495,7 +3507,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=proposed 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
-        value: `Review pending evolution proposals: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=proposed\n\nFor each proposal:\n1. Read the title, description, type, and source\n2. Evaluate: Is this a genuine improvement? Is the effort worth the impact? Does it align with our goals?\n3. If approved, update status: curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"approved"}'\n4. If rejected or deferred, update with reason.\n\nDo NOT implement approved proposals — that's handled by the paired evolution-proposal-implement job.\n\nAlso check the dashboard: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution — report any highlights to the user if they seem important.\n\nIf no proposals need attention, exit silently.`,
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"\nAGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"\nPORT="\${INSTAR_PORT:-${port}}"\n\nReview pending evolution proposals: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/proposals?status=proposed"\n\nFor each proposal:\n1. Read the title, description, type, and source\n2. Evaluate: Is this a genuine improvement? Is the effort worth the impact? Does it align with our goals?\n3. If approved, update status: curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"approved"}'\n4. If rejected or deferred, update with reason.\n\nDo NOT implement approved proposals — that's handled by the paired evolution-proposal-implement job.\n\nAlso check the dashboard: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution — report any highlights to the user if they seem important.\n\nIf no proposals need attention, exit silently.`,
       },
       tags: ['cat:learning', 'role:worker', 'exec:prompt', 'pair:evolution-proposal-implement'],
     },
@@ -3511,7 +3523,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       gate: `curl -sf -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=approved 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if len(d.get('proposals',[])) > 0 else 1)"`,
       execute: {
         type: 'prompt',
-        value: `Implement approved evolution proposals: curl -s http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals?status=approved\n\nFor each approved proposal:\n1. Read the full description and understand what needs to be built\n2. Implement it: create the skill/hook/job/config change described\n3. After implementation, mark complete: curl -s -X PATCH http://localhost:\${INSTAR_PORT:-${port}}/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"implemented","resolution":"What was done"}'\n\nIf no approved proposals exist, exit silently.`,
+        value: `AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"\nAGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"\nPORT="\${INSTAR_PORT:-${port}}"\n\nImplement approved evolution proposals: curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/proposals?status=approved"\n\nFor each approved proposal:\n1. Read the full description and understand what needs to be built\n2. Implement it: create the skill/hook/job/config change described\n3. After implementation, mark complete: curl -s -X PATCH -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/evolution/proposals/EVO-XXX -H 'Content-Type: application/json' -d '{"status":"implemented","resolution":"What was done"}'\n\nIf no approved proposals exist, exit silently.`,
       },
       grounding: {
         requiresIdentity: true,
@@ -3531,7 +3543,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1`,
       execute: {
         type: 'prompt',
-        value: `Scan recent messages for commitments and promises.\n\nAUTH=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null)\n\n1. Read your bookmark: cat .instar/state/commitment-detection-bookmark.json 2>/dev/null || echo '{"lastProcessedId": 0}'\n2. Fetch new messages since bookmark from Telegram message log: tail -100 .instar/telegram-messages.jsonl\n3. For each new message, check: does it contain a commitment, promise, or action item? Look for patterns like 'I will', 'let me', 'I\\'ll build', 'we should', 'TODO', 'action item', deadlines, etc.\n4. For each detected commitment, register it: curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"title":"...","source":"commitment-detection","description":"...","dueDate":"..."}'\n5. Update bookmark with the last processed message ID.\n\nOnly process NEW messages since last bookmark. Exit silently if no new commitments found.`,
+        value: `Scan recent messages for commitments and promises.\n\nAUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"\n\n1. Read your bookmark: cat .instar/state/commitment-detection-bookmark.json 2>/dev/null || echo '{"lastProcessedId": 0}'\n2. Fetch new messages since bookmark from Telegram message log: tail -100 .instar/telegram-messages.jsonl\n3. For each new message, check: does it contain a commitment, promise, or action item? Look for patterns like 'I will', 'let me', 'I\\'ll build', 'we should', 'TODO', 'action item', deadlines, etc.\n4. For each detected commitment, register it: curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"title":"...","source":"commitment-detection","description":"...","dueDate":"..."}'\n5. Update bookmark with the last processed message ID.\n\nOnly process NEW messages since last bookmark. Exit silently if no new commitments found.`,
       },
       tags: ['cat:evolution', 'role:worker', 'exec:prompt', 'pair:evolution-overdue-check'],
     },
@@ -3828,6 +3840,24 @@ function isWhatsAppConfigured(stateDir: string): boolean {
   return !!messaging?.some(m => m.type === 'whatsapp' && m.enabled);
 }
 
+function refreshSlackRelay(projectDir: string, stateDir: string, port: number, claudeCompatibility: boolean): void {
+  const config = readConfig(stateDir);
+  if (!config || !isSlackConfigured(config)) return;
+  const outcome = ensureSlackReplyRelay({
+    projectDir,
+    stateDir,
+    config,
+    template: loadRelayTemplate('slack-reply.sh', port),
+    claudeCompatibility,
+  });
+  if (outcome.errors.length > 0) {
+    throw new Error(`Slack reply relay install failed: ${outcome.errors.join('; ')}`);
+  }
+  const canonical = path.join(stateDir, 'scripts', 'slack-reply.sh');
+  const canonicalDegradation = outcome.degraded.find(line => line.startsWith(`${canonical}:`));
+  if (canonicalDegradation) throw new Error(`Slack reply relay not ready: ${canonicalDegradation}`);
+}
+
 /**
  * Install scripts for configured integrations (e.g., Telegram relay, WhatsApp relay).
  * Called during refresh to ensure scripts exist for all configured integrations.
@@ -3861,6 +3891,8 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   if (isWhatsAppConfigured(stateDir)) {
     installWhatsAppRelay(projectDir, port);
   }
+
+  refreshSlackRelay(projectDir, stateDir, port, claudeEnabled);
 
   // smart-fetch.py + git-sync-gate.sh both target `.claude/scripts/` and
   // are Claude-Code-specific (the agentic-web fetch script and the
@@ -4076,6 +4108,14 @@ Use \`threadline_relay explain\` for full details.
 }
 
 function installHooks(stateDir: string): void {
+  // Install provenance (framework-stall-coverage-matrix §3.2 degraded rung):
+  // classify this install source-carrying vs fleet ONCE, from the same signals
+  // the dev-agent gate uses + presence of the analyzable tree, and append the
+  // tamper-evident record the stall-coverage gate reads. Presence-scan
+  // idempotent; installHooks is the one seam every init path funnels through
+  // (fresh, existing, standalone, refreshHooksAndSettings).
+  recordInstallProvenanceIfAbsent(path.dirname(stateDir), stateDir);
+
   const hooksBaseDir = path.join(stateDir, 'hooks');
   const hooksDir = path.join(hooksBaseDir, 'instar');
   const customHooksDir = path.join(hooksBaseDir, 'custom');
@@ -4281,6 +4321,10 @@ fi
   // Unjustified Stop Gate router — Stop hook that calls the server-side gate.
   // Shadow-mode by default; enforcement is controlled server-side.
   fs.writeFileSync(path.join(hooksDir, 'stop-gate-router.js'), migrator.getHookContent('stop-gate-router'), { mode: 0o755 });
+
+  // Verify-Before-Done observer — structural client-side TurnEvidence, always
+  // installed; fleet-dark/dev-dry-run gating occurs inside the hook + route.
+  fs.writeFileSync(path.join(hooksDir, 'completion-claim-observe.js'), migrator.getHookContent('completion-claim-observe'), { mode: 0o755 });
 
   // Hook event reporter — posts hook events to the Instar server for observability
   // and session resumption (claudeSessionId). Uses command hooks because Claude Code

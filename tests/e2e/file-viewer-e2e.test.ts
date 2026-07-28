@@ -817,6 +817,31 @@ describe('E2E: Dashboard File Viewer', () => {
       // URL should be properly encoded
       expect(res.body.relative).toBe('/dashboard?tab=files&path=docs%2FREADME.md');
     });
+
+    it("generates links under the DEFAULT project-root config ['./'] (regression: was a blanket 403)", async () => {
+      // files-link-allowed-paths spec: the link route's drifted inline check
+      // never learned the '.'/'./' root convention, so the DEFAULT config
+      // 403'd every link. The suite's other link tests use scoped paths
+      // ('.claude/', 'docs/') — exactly why this never surfaced here before.
+      await request(baseUrl, 'PATCH', '/api/files/config', {
+        allowedPaths: ['./'],
+      }, { 'x-instar-request': '1' });
+      try {
+        const res = await request(baseUrl, 'GET', '/api/files/link?path=.claude/CLAUDE.md');
+        expect(res.status).toBe(200);
+        expect(res.body.path).toBe('.claude/CLAUDE.md');
+        // Traversal + absolute must still be rejected under the root config.
+        const trav = await request(baseUrl, 'GET', `/api/files/link?path=${encodeURIComponent('../outside.txt')}`);
+        expect(trav.status).toBe(403);
+        const abs = await request(baseUrl, 'GET', `/api/files/link?path=${encodeURIComponent('/etc/passwd')}`);
+        expect(abs.status).toBe(403);
+      } finally {
+        // Restore the allowedPaths the surrounding tests established.
+        await request(baseUrl, 'PATCH', '/api/files/config', {
+          allowedPaths: ['.claude/', 'docs/'],
+        }, { 'x-instar-request': '1' });
+      }
+    });
   });
 
   // ════════════════════════════════════════════════════════════════════

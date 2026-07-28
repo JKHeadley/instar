@@ -52,6 +52,9 @@ export type LoginDriver = (req: {
    *  passes a larger value (cloud→provider latency + the two-code Claude window);
    *  omitted ⇒ the driver's own default (the local-LAN budget). */
   scrapeTimeoutMs?: number;
+  /** Consent boundary: only an explicit operator initiation may open a browser.
+   *  Background renewal still mints a fresh URL/code, but suppresses browser launch. */
+  openBrowser?: boolean;
 }) => Promise<LoginArtifact>;
 
 /**
@@ -171,27 +174,6 @@ export class EnrollmentWizard {
   }
 
   /**
-   * Operator-facing heads-up about a flow's quirks, surfaced on the pending login.
-   * The url-code-paste (Claude) flow on a brand-new account slot frequently issues
-   * TWO codes in sequence: Anthropic first emails an email-VERIFICATION code, then
-   * (after that's accepted) the page shows the sign-in code to paste back. Enrolling
-   * is always a new slot, so the operator should expect — and not be confused by —
-   * the two-step sequence (this confusion was flagged in live testing, topic 20905).
-   * device-code (Codex) is a single code, so no notice. Returns undefined when there
-   * is nothing to warn about.
-   */
-  static flowNotice(kind: LoginFlowKind): string | undefined {
-    if (kind === 'url-code-paste') {
-      return (
-        'Heads up: a brand-new Claude login often asks for TWO codes in order — ' +
-        'first an email-verification code Anthropic sends you, then the sign-in code ' +
-        'shown after that. Enter the email code first; the sign-in code comes next.'
-      );
-    }
-    return undefined;
-  }
-
-  /**
    * Start an enrollment: drive the login, capture the public code/URL, store it
    * as a pending login (TTL visible). Returns the stored PendingLogin — the
    * surface the operator's phone shows.
@@ -214,6 +196,7 @@ export class EnrollmentWizard {
         framework: input.framework,
         kind,
         configHome: input.configHome,
+        openBrowser: true,
         // Threaded only for remote drives; omitted ⇒ the driver's local-LAN default.
         ...(input.remote && typeof input.remoteScrapeTimeoutMs === 'number'
           ? { scrapeTimeoutMs: input.remoteScrapeTimeoutMs }
@@ -236,7 +219,6 @@ export class EnrollmentWizard {
       configHome: input.configHome,
       verificationUrl: artifact.verificationUrl,
       userCode: artifact.userCode,
-      notice: EnrollmentWizard.flowNotice(kind),
       expectedEmail: input.expectedEmail,
       ttlMs: artifact.ttlMs,
     });
@@ -252,14 +234,44 @@ export class EnrollmentWizard {
    * abort the sweep.
    */
   async reissueExpired(): Promise<PendingLogin[]> {
+    return this.reissueLogins(this.store.expired(), 'expired');
+  }
+
+  /**
+   * A server restart kills every framework login pane even though the durable
+   * pending-login record survives. Re-drive every non-terminal record once at
+   * boot so the durable flow regains a live backing process and fresh public
+   * URL/code before the dashboard can submit to it.
+   */
+  async recoverAfterRestart(): Promise<PendingLogin[]> {
+    const incomplete = this.store.list().filter((login) =>
+      login.status === 'pending' || login.status === 'expired');
+    return this.reissueLogins(incomplete, 'restart');
+  }
+
+  /** Refresh one known incomplete flow after its backing pane is found dead. */
+  async refresh(id: string): Promise<PendingLogin | null> {
+    const login = this.store.get(id);
+    if (!login || (login.status !== 'pending' && login.status !== 'expired')) return null;
+    const refreshed = await this.reissueLogins([login], 'dead-pane');
+    return refreshed[0] ?? null;
+  }
+
+  private async reissueLogins(
+    logins: PendingLogin[],
+    reason: 'expired' | 'restart' | 'dead-pane',
+  ): Promise<PendingLogin[]> {
     const reissued: PendingLogin[] = [];
-    for (const login of this.store.expired()) {
+    for (const login of logins) {
       try {
         const fresh = await this.driveLogin({
           provider: login.provider,
           framework: login.framework,
           kind: login.kind,
           configHome: login.configHome,
+          // Renewal is maintenance, not fresh operator consent. The new URL/code
+          // is stored and rendered; never pop a browser on a timer tick.
+          openBrowser: false,
         });
         const updated = this.store.reissue(login.id, {
           verificationUrl: fresh.verificationUrl,
@@ -268,12 +280,12 @@ export class EnrollmentWizard {
         });
         if (updated) {
           reissued.push(updated);
-          this.logger.log(`[EnrollmentWizard] auto-reissued expired login ${login.id} (reissue #${updated.reissueCount})`);
+          this.logger.log(`[EnrollmentWizard] refreshed ${reason} login ${login.id} (reissue #${updated.reissueCount})`);
         }
       } catch (err) {
         // @silent-fallback-ok: one re-drive failing must not abort the sweep;
         // the login stays expired and is retried next sweep.
-        this.logger.warn(`[EnrollmentWizard] reissue of ${login.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.logger.warn(`[EnrollmentWizard] ${reason} refresh of ${login.id} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     return reissued;

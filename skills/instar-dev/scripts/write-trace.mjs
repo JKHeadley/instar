@@ -46,6 +46,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..');
 
@@ -157,6 +158,107 @@ function buildToolchain() {
   }
 }
 
+/**
+ * Verify the commit gate is actually INSTALLED before writing a trace that implies it ran.
+ *
+ * THE FAILURE THIS EXISTS TO CATCH. A worktree created with `git worktree add` and a
+ * symlinked (or absent) node_modules has no husky shim, so `core.hooksPath` points at a
+ * directory that does not exist. `git commit` then runs NO hook: it prints nothing and
+ * succeeds. **A working gate and an uninstalled gate look identical on screen — silence.**
+ * That is not hypothetical; it happened on 2026-07-27 and a whole change was committed
+ * believing the gate had passed it, when the gate had never executed.
+ *
+ * The gate cannot report its own absence — an uninstalled hook cannot run to say it is
+ * uninstalled. So the check belongs at the nearest chokepoint the agent DOES invoke by
+ * hand, which is this script. Writing a trace is the step that asserts "this change came
+ * through the skill", and that assertion is false if the gate cannot execute.
+ *
+ * SCOPE HONESTY: this is a SIGNAL, not an authority. It refuses to write the trace and
+ * says why; it cannot block a commit, because the very condition it detects is the one
+ * where no commit hook runs. Without a trace an in-scope commit is refused ANYWAY once the
+ * hook IS installed — so the two layers compose rather than overlap. Its whole job is to
+ * turn a silent absence into a loud one at the moment the agent would otherwise proceed.
+ *
+ * Set INSTAR_DEV_ALLOW_UNINSTALLED_GATE=1 to proceed anyway (a genuinely hookless
+ * environment, e.g. a test harness). The override is recorded IN THE TRACE rather than
+ * merely permitted, so a trace written without a live gate can never later be mistaken for
+ * one the gate approved.
+ */
+function inspectGateInstallation() {
+  const result = { installed: false, reason: '', hooksPath: null };
+  let hooksPath;
+  try {
+    hooksPath = execFileSync('git', ['config', '--get', 'core.hooksPath'], {
+      cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    hooksPath = '';
+  }
+
+  if (!hooksPath) {
+    // No hooksPath set at all — git falls back to .git/hooks. Check there instead of
+    // assuming absence: a repo may legitimately install the hook the classic way.
+    let gitDir;
+    try {
+      gitDir = execFileSync('git', ['rev-parse', '--git-dir'], {
+        cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    } catch {
+      // NOT A GIT REPOSITORY AT ALL — the check does not apply.
+      //
+      // This is not a loophole, it is the check's actual scope. The hazard being guarded
+      // is "a git repo whose commit hook will not run". Where there is no repo there is no
+      // commit, so there is nothing to gate and nothing to be misled about. Test harnesses
+      // that drive this script inside a bare temp directory land here.
+      //
+      // Deliberately NOT solved by making every such harness set the override env var:
+      // that would push the burden onto whoever writes the next test remembering to do it,
+      // which is the willpower-over-structure trade this whole change exists to remove.
+      // It is also not a meaningful bypass — an agent cannot make the instar repo stop
+      // being a git repository.
+      return { installed: true, reason: '', hooksPath: null, notApplicable: true };
+    }
+    const classic = path.resolve(ROOT, gitDir, 'hooks', 'pre-commit');
+    if (fs.existsSync(classic)) return { installed: true, reason: '', hooksPath: classic };
+    return { ...result, reason: 'core.hooksPath is unset and .git/hooks/pre-commit does not exist' };
+  }
+
+  result.hooksPath = hooksPath;
+  const resolved = path.resolve(ROOT, hooksPath);
+  if (!fs.existsSync(resolved)) {
+    return { ...result, reason: `core.hooksPath is "${hooksPath}" but that directory does not exist — husky is not installed in this worktree (run \`npm ci\` then \`npx husky\`)` };
+  }
+  const preCommit = path.join(resolved, 'pre-commit');
+  if (!fs.existsSync(preCommit)) {
+    return { ...result, reason: `core.hooksPath is "${hooksPath}" but it contains no pre-commit hook` };
+  }
+  return { installed: true, reason: '', hooksPath };
+}
+
+const gate = inspectGateInstallation();
+const gateOverridden = process.env.INSTAR_DEV_ALLOW_UNINSTALLED_GATE === '1';
+if (!gate.installed && !gateOverridden) {
+  console.error('');
+  console.error('  ╔════════════════════════════════════════════════════════════════════╗');
+  console.error('  ║  REFUSING to write a trace — the commit gate is NOT installed      ║');
+  console.error('  ╚════════════════════════════════════════════════════════════════════╝');
+  console.error('');
+  console.error(`  ${gate.reason}`);
+  console.error('');
+  console.error('  A trace asserts this change came through /instar-dev. With no hook');
+  console.error('  installed, `git commit` runs NOTHING and succeeds silently — a passing');
+  console.error('  gate and an absent gate look identical on screen. Writing the trace now');
+  console.error('  would record an approval that was never given.');
+  console.error('');
+  console.error('  Fix it in this worktree:   npm ci && npx husky');
+  console.error('  Then verify:               git config core.hooksPath && ls .husky/_');
+  console.error('');
+  console.error('  If this environment genuinely has no hooks (e.g. a test harness), set');
+  console.error('  INSTAR_DEV_ALLOW_UNINSTALLED_GATE=1 — the override is recorded in the trace.');
+  console.error('');
+  process.exit(1);
+}
+
 const artifactPath = path.resolve(ROOT, artifact);
 if (!fs.existsSync(artifactPath)) {
   console.error(`Artifact not found: ${artifact}`);
@@ -212,6 +314,9 @@ const duplicateBuildCheck = readDuplicateBuildCheck();
 
 const trace = {
   version: toolchain ? 3 : 2, // v3 only when enriched; readers ignore unknown fields either way
+  // Stable work-item identity. The pre-commit decision audit consumes this;
+  // omitting it forced valid generated traces into the `unknown` bucket.
+  slug,
   sessionId: process.env.INSTAR_SESSION_ID || process.env.CLAUDE_CODE_SESSION_ID || 'unknown',
   timestamp,
   artifactPath: artifact,
@@ -232,6 +337,10 @@ const trace = {
   // Duplicate-build guard §3.4 — omitted when no stub exists so pre-guard
   // traces round-trip byte-identically.
   ...(duplicateBuildCheck ? { duplicateBuildCheck } : {}),
+  // Recorded ONLY when the gate-installation check was overridden, so a trace written
+  // without a live commit gate can never later be mistaken for one the gate approved.
+  // Absent on every normal trace, so existing traces round-trip byte-identically.
+  ...(gate.installed ? {} : { gateInstallationOverridden: true, gateInstallationReason: gate.reason }),
 };
 
 fs.writeFileSync(traceFile, JSON.stringify(trace, null, 2) + '\n');

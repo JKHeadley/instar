@@ -185,7 +185,10 @@ export interface ProjectRow {
 
 export interface AttributionKeyRow {
   attributionKey: string;
+  /** Gross usage retained for observability, including cache-read tokens. */
   totalTokens: number;
+  /** Cost-weighted burn input: gross usage minus cache-read tokens. */
+  freshTokens?: number;
   eventCount: number;
   firstTs: number;
   lastTs: number;
@@ -1195,6 +1198,7 @@ export class TokenLedger {
         `SELECT
            attribution_key AS attributionKey,
            SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) AS totalTokens,
+           SUM(input_tokens + output_tokens + cache_creation_tokens) AS freshTokens,
            COUNT(*) AS eventCount,
            MIN(ts) AS firstTs,
            MAX(ts) AS lastTs
@@ -1208,6 +1212,7 @@ export class TokenLedger {
     return rows.map(r => ({
       attributionKey: r.attributionKey,
       totalTokens: Number(r.totalTokens) || 0,
+      freshTokens: Number(r.freshTokens) || 0,
       eventCount: Number(r.eventCount) || 0,
       firstTs: Number(r.firstTs) || 0,
       lastTs: Number(r.lastTs) || 0,

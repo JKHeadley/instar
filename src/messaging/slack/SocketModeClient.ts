@@ -7,13 +7,10 @@
  *
  * Uses Node's built-in WebSocket (Node 22+) or falls back to 'ws' package.
  *
- * CONTRACT-EVIDENCE: EXEMPT — net #1 (_safeSend containment) touches NO Slack
- * Socket Mode API-contract surface. The bytes sent to Slack are byte-identical
- * (the same ack `{ envelope_id }`, the same `{"type":"ping"}`, the same queued
- * payloads); only the local non-OPEN-send guarding (readyState check + try/catch)
- * and the reconnect policy changed. No wire-protocol / envelope shape change, so
- * live-API contract evidence does not apply. Remove this marker when the file's
- * actual API surface next changes.
+ * CONTRACT-EVIDENCE: EXEMPT — dead-silence recovery changes only local socket
+ * lifecycle policy. It removes an undocumented application payload that Slack
+ * ignored and opens a fresh connection through the already-established
+ * apps.connections.open path. No Slack envelope or API request shape changes.
  */
 
 import { SlackApiClient, SlackApiError } from './SlackApiClient.js';
@@ -41,7 +38,7 @@ interface OutboundQueueItem {
 
 const MAX_OUTBOUND_QUEUE = 100;
 const HEARTBEAT_INTERVAL_MS = 30_000;   // Check connection health every 30s
-const DEAD_SILENCE_MS = 300_000;        // 5 min with no events → send liveness probe
+const DEAD_SILENCE_MS = 300_000;        // 5 min with no events → rotate the connection
 const MAX_BACKOFF_MS = 60_000;
 const TOO_MANY_WS_DELAY_MS = 30_000;
 
@@ -350,27 +347,22 @@ export class SocketModeClient {
         return;
       }
 
-      // 2. If no events for DEAD_SILENCE_MS, send a probe to test the connection.
-      //    Slack Socket Mode has no application-level ping/pong — Slack will
-      //    silently ignore any JSON we send. So we test with send(): if it
-      //    throws, the socket is dead at the OS level → force reconnect.
-      //    If send() succeeds, the TCP connection is alive — reset the silence
-      //    timer and check again later.
+      // 2. Slack Socket Mode has no documented application-level ping/pong.
+      //    A successful send of arbitrary JSON proves only that the local TCP
+      //    buffer accepted bytes; it does not prove Slack is still delivering
+      //    events. Bound that half-open state by rotating a silent connection.
+      //    _forceReconnect records the outage before teardown, which lets the
+      //    adapter recover any message that landed during the blind window.
       const sinceLastEvent = Date.now() - this.lastEventAt;
       if (sinceLastEvent > DEAD_SILENCE_MS) {
-        console.log(`[slack-socket] No events for ${Math.round(sinceLastEvent / 60000)}m — sending liveness probe`);
-        // Route through the funnel with reconnectOnFailure: a probe that throws
-        // means the socket is dead at the OS level → _safeSend forces a reconnect.
-        if (this._safeSend('{"type":"ping"}', 'liveness-probe', true)) {
-          // send() succeeded → TCP connection is alive. Reset silence timer
-          // so we don't immediately re-probe on the next tick.
-          this.lastEventAt = Date.now();
-        }
+        console.warn(`[slack-socket] No events for ${Math.round(sinceLastEvent / 60000)}m — rotating connection`);
+        this._forceReconnect('dead silence');
       }
     }, HEARTBEAT_INTERVAL_MS);
   }
 
-  private _forceReconnect(): void {
+  private _forceReconnect(reason = 'forced reconnect'): void {
+    this.handlers.onDisconnected(reason);
     this._teardownSocket(1000, 'force reconnect');
     // Trigger reconnect directly instead of relying on close event — the
     // torn-down socket's close is identity-guarded and will be ignored.

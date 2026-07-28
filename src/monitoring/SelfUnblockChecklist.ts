@@ -44,6 +44,7 @@ import * as path from 'path';
 /** The ordered probe sources (cheapest/local first). Closed taxonomy. */
 export const SELF_UNBLOCK_PROBE_SOURCES = [
   'own-vault', // 1. own per-agent vault (secret-get)
+  'owned-identities', // 1b. identities the agent itself provisioned (.instar/owned-identities.json — correction-derived-hardening)
   'org-bitwarden', // 2. org Bitwarden (durable session, §5.3)
   'cloud-vercel', // 3a. authed Vercel account
   'cloud-cloudflare', // 3b. authed Cloudflare account
@@ -68,6 +69,7 @@ export const PROBE_TIMEOUT_MS: Record<ProbeTimeoutClass, number> = {
 /** Which class each source belongs to (drives the per-probe timeout). */
 export const PROBE_SOURCE_CLASS: Record<SelfUnblockProbeSource, ProbeTimeoutClass> = {
   'own-vault': 'local',
+  'owned-identities': 'local',
   'org-bitwarden': 'remote',
   'cloud-vercel': 'remote',
   'cloud-cloudflare': 'remote',

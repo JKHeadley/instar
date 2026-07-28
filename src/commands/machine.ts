@@ -760,7 +760,10 @@ export async function doctor(options: DoctorOptions): Promise<void> {
 
   // 6. Secret Store
   try {
-    const secretStore = new SecretStore({ stateDir: config.stateDir });
+    const secretStore = new SecretStore({
+      stateDir: config.stateDir,
+      forceFileKey: config.secrets?.forceFileKey,
+    });
     if (secretStore.exists) {
       const keychainLabel = secretStore.isKeychainBacked ? 'keychain-backed' : 'file-backed key';
       checks.push({ name: 'Secret store', status: 'ok', detail: `Encrypted (${keychainLabel})` });

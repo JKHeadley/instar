@@ -46,14 +46,12 @@ describe('JobRunHistory unit tests', () => {
 
   beforeEach(() => {
     DegradationReporter.resetForTesting();
-    JobRunHistory._resetRowCapDegradationDedupForTesting();
     stateDir = createTempStateDir();
   });
 
   afterEach(() => {
     vi.useRealTimers();
     DegradationReporter.resetForTesting();
-    JobRunHistory._resetRowCapDegradationDedupForTesting();
     SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/JobRunHistory.test.ts:51' });
   });
 
@@ -795,7 +793,7 @@ describe('JobRunHistory unit tests', () => {
     });
   });
 
-  describe('row size cap diagnostics and degradation dedup', () => {
+  describe('row size cap outcome telemetry', () => {
     function configureReporter(dir: string) {
       const reporter = DegradationReporter.getInstance();
       reporter.configure({ stateDir: dir, agentName: 'test-agent', instarVersion: 'test' });
@@ -840,11 +838,11 @@ describe('JobRunHistory unit tests', () => {
       expect(raw.error).toContain('[omitted ');
       expect(raw.outputSummary).toBeUndefined();
       expect(raw['trunca' + 'ted']).toBe(true);
-      expect(reporter.getEvents()).toHaveLength(1);
-      expect(reporter.getEvents()[0].impact).toContain('deduped 1 oversized row');
+      expect(reporter.getEvents()).toHaveLength(0);
+      expect(history.stats('large-error-job').budgetCondensedRuns).toBe(1);
     });
 
-    it('dedups repeated same-slug cap degradations inside the rolling window and updates the count', () => {
+    it('records every successful cap enforcement durably without filing defects', () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-07-09T20:00:00.000Z'));
       const reporter = configureReporter(stateDir);
@@ -860,14 +858,13 @@ describe('JobRunHistory unit tests', () => {
         });
       }
 
-      expect(reportSpy).toHaveBeenCalledTimes(1);
-      expect(reporter.getEvents()).toHaveLength(1);
-      expect(reporter.getEvents()[0].reason).toContain('count=3');
-      expect(reporter.getEvents()[0].impact).toContain('deduped 3 oversized row');
+      expect(reportSpy).not.toHaveBeenCalled();
+      expect(reporter.getEvents()).toHaveLength(0);
       expect(history.query({ slug: 'dashboard-link-refresh' }).total).toBe(3);
+      expect(history.stats('dashboard-link-refresh').budgetCondensedRuns).toBe(3);
     });
 
-    it('does not dedup different slugs or a cap hit after the window expires', () => {
+    it('does not turn another slug or a later cap outcome into a degradation', () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-07-09T20:00:00.000Z'));
       const reporter = configureReporter(stateDir);
@@ -884,13 +881,38 @@ describe('JobRunHistory unit tests', () => {
       const expired = history.recordStart({ slug: 'job-a', sessionId: 's3', trigger: 'scheduled' });
       history.recordCompletion({ runId: expired, result: 'failure', error: `C ${'c'.repeat(2800)} tail-c` });
 
-      expect(reportSpy).toHaveBeenCalledTimes(3);
-      expect(reporter.getEvents()).toHaveLength(3);
-      expect(reporter.getEvents().map(e => e.reason)).toEqual([
-        expect.stringContaining('slug=job-a'),
-        expect.stringContaining('slug=job-b'),
-        expect.stringContaining('slug=job-a'),
-      ]);
+      expect(reportSpy).not.toHaveBeenCalled();
+      expect(reporter.getEvents()).toHaveLength(0);
+      expect(history.stats('job-a').budgetCondensedRuns).toBe(2);
+      expect(history.stats('job-b').budgetCondensedRuns).toBe(1);
+    });
+
+    it('refuses and reports a row whose essential identity fields alone exceed the cap', () => {
+      const reporter = configureReporter(stateDir);
+      const history = new JobRunHistory(stateDir);
+      const hugeSlug = `essential-${'s'.repeat(3000)}`;
+      const runId = history.recordStart({
+        slug: hugeSlug,
+        sessionId: `session-${'x'.repeat(3000)}`,
+        trigger: `trigger-${'y'.repeat(3000)}`,
+      });
+
+      expect(history.findRun(runId)).toBeNull();
+      expect(readRawJSONL(stateDir)).toEqual([]);
+      expect(reporter.getEvents()).toHaveLength(1);
+      expect(reporter.getEvents()[0].feature).toBe('JobRunHistory.appendLine');
+      expect(reporter.getEvents()[0].reason).toContain('Capacity invariant failed');
+      expect(reporter.getEvents()[0].reason.length).toBeLessThan(400);
+      expect(reporter.getEvents()[0].impact).toContain('not persisted');
+
+      DegradationReporter.resetForTesting();
+      const persisted = JSON.parse(fs.readFileSync(path.join(stateDir, 'degradations.json'), 'utf8')) as Array<{ feature: string; reason: string }>;
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0]).toEqual(expect.objectContaining({
+        feature: 'JobRunHistory.appendLine',
+        reason: expect.stringContaining('Capacity invariant failed'),
+      }));
+      expect(readRawJSONL(stateDir)).toEqual([]);
     });
   });
 });

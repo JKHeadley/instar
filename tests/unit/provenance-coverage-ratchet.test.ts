@@ -14,7 +14,7 @@
  *   3. PENDING + EXEMPT baselines are pinned SHRINK-ONLY, by IDENTITY
  *      (decisionPoint::component::ref) — re-pointing an entry to a different
  *      ACT, or re-classifying an exemption, is a reviewed baseline change.
- *   4. pending refs are format-valid (^ACT-\d+$); exemption taxonomy is CLOSED
+ *   4. pending refs are format-valid (^ACT-\d+$ | ^backlog:<key>$); exemption taxonomy is CLOSED
  *      (free text refused); pending/exempt reasons argue >= 40 chars.
  *   5. More than the seeded first-customer enrollment requires the grading
  *      pass's per-point sub-budget FIRST (LES r6 — the trigger is structural).
@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { COMPONENT_CATEGORY } from '../../src/core/componentCategories.js';
 import {
   PROVENANCE_COVERAGE,
+  backlogTrackerExists,
   RULE_REGISTRY,
   SUBBUDGET_IMPLEMENTED,
   EVIDENCE_RUNGS,
@@ -44,6 +45,8 @@ import {
   isEnrolled,
   getVolumeClass,
   getRule,
+  findWiredWithoutGraders,
+  findGradingContradictions,
 } from '../../src/data/provenanceCoverage.js';
 // eslint-disable-next-line import/no-relative-packages
 import { stripComments, isOutOfScope } from '../../scripts/lint-llm-attribution.js';
@@ -73,56 +76,54 @@ const baseOf = (component: string): string => component.split('/')[0].replace(/^
 // re-pointing a pending entry to a different ACT changes the line = reviewed. ──
 
 const PENDING_BASELINE = [
-  // decisionPoint::component::ACT-ref
-  'a2a-checkin-summarize::a2a-checkin::ACT-1193',
-  'cartographer-summary-author::CartographerSweep::ACT-1193',
-  'coherence-review::CoherenceReviewer::ACT-1193',
-  'commitment-detect::CommitmentSentinel::ACT-1193',
-  'contextual-evaluate::ContextualEvaluator::ACT-1193',
-  'correction-distill::correction-learning::ACT-1193',
-  'cross-model-review::crossModelReviewer::ACT-1193',
-  'dashboard-insight::DashboardInsightEngine::ACT-1193',
-  'discovery-evaluate::DiscoveryEvaluator::ACT-1193',
-  'external-operation-gate::ExternalOperationGate::ACT-1193',
-  'hub-intent-classify::HubIntentClassifier::ACT-1193',
-  'input-classify::InputClassifier::ACT-1193',
-  'input-guard::InputGuard::ACT-1193',
-  'job-reflect::JobReflector::ACT-1193',
-  'llm-conflict-resolve::LLMConflictResolver::ACT-1193',
-  'llm-sanitize::LLMSanitizer::ACT-1193',
-  'mentor-stage-b-classify::mentor-stage-b::ACT-1193',
-  'message-sentinel-classify::MessageSentinel::ACT-1193',
-  'move-intent-classify::MoveIntentClassifier::ACT-1193',
-  'open-conversation-brief::openConversationBrief::ACT-1193',
-  'override-detect::OverrideDetector::ACT-1193',
-  'pipe-session-spawn::PipeSessionSpawner::ACT-1193',
-  'pre-compaction-flush::PreCompactionFlush::ACT-1193',
-  'presence-stall-judge::PresenceProxy::ACT-1193',
-  'profile-intent-classify::ProfileIntentClassifier::ACT-1193',
-  'project-drift-check::ProjectDriftChecker::ACT-1193',
-  'prompt-injection-detect::PromptGate::ACT-1193',
-  'relationship-extract::RelationshipManager::ACT-1193',
-  'resume-sanity-check::ResumeQueueDrainer::ACT-1193',
-  'resume-uuid-validate::ResumeValidator::ACT-1193',
-  'self-knowledge-extract::SelfKnowledgeTree::ACT-1193',
-  'session-activity-digest::SessionActivitySentinel::ACT-1193',
-  'session-summary-extract::SessionSummarySentinel::ACT-1193',
-  'slack-stall-confirm::SlackAdapter::ACT-1193',
-  'stall-triage-diagnosis::StallTriageNurse::ACT-1193',
-  'standards-conformance-review::StandardsConformanceReviewer::ACT-1193',
-  'standards-coverage-enrich::StandardsCoverageEnrichment::ACT-1193',
-  'task-classify::TaskClassifier::ACT-1193',
-  'telegram-stall-confirm::TelegramAdapter::ACT-1193',
-  'temporal-coherence-check::TemporalCoherenceChecker::ACT-1193',
-  'topic-intent-arc-check::TopicIntentArcCheck::ACT-1193',
-  'topic-intent-extract::TopicIntentExtractor::ACT-1193',
-  'topic-summarize::TopicSummarizer::ACT-1193',
-  'tree-synthesize::TreeSynthesis::ACT-1193',
-  'tree-triage::TreeTriage::ACT-1193',
-  'unjustified-stop-gate::UnjustifiedStopGate::ACT-1193',
-  'usher-topic-route::Usher::ACT-1193',
-  'warrants-reply-gate::WarrantsReplyGate::ACT-1193',
-  'watchdog-stuck-judge::SessionWatchdog::ACT-1193',
+  // decisionPoint::component::tracker-ref
+  'a2a-checkin-summarize::a2a-checkin::backlog:decision-quality-enrolment',
+  'cartographer-summary-author::CartographerSweep::backlog:decision-quality-enrolment',
+  'coherence-review::CoherenceReviewer::backlog:decision-quality-enrolment',
+  'commitment-detect::CommitmentSentinel::backlog:decision-quality-enrolment',
+  'contextual-evaluate::ContextualEvaluator::backlog:decision-quality-enrolment',
+  'correction-distill::correction-learning::backlog:decision-quality-enrolment',
+  'cross-model-review::crossModelReviewer::backlog:decision-quality-enrolment',
+  'dashboard-insight::DashboardInsightEngine::backlog:decision-quality-enrolment',
+  'discovery-evaluate::DiscoveryEvaluator::backlog:decision-quality-enrolment',
+  'external-operation-gate::ExternalOperationGate::backlog:decision-quality-enrolment',
+  'hub-intent-classify::HubIntentClassifier::backlog:decision-quality-enrolment',
+  'input-classify::InputClassifier::backlog:decision-quality-enrolment',
+  'input-guard::InputGuard::backlog:decision-quality-enrolment',
+  'job-reflect::JobReflector::backlog:decision-quality-enrolment',
+  'llm-conflict-resolve::LLMConflictResolver::backlog:decision-quality-enrolment',
+  'llm-sanitize::LLMSanitizer::backlog:decision-quality-enrolment',
+  'mentor-stage-b-classify::mentor-stage-b::backlog:decision-quality-enrolment',
+  'message-sentinel-classify::MessageSentinel::backlog:decision-quality-enrolment',
+  'move-intent-classify::MoveIntentClassifier::backlog:decision-quality-enrolment',
+  'open-conversation-brief::openConversationBrief::backlog:decision-quality-enrolment',
+  'override-detect::OverrideDetector::backlog:decision-quality-enrolment',
+  'pipe-session-spawn::PipeSessionSpawner::backlog:decision-quality-enrolment',
+  'pre-compaction-flush::PreCompactionFlush::backlog:decision-quality-enrolment',
+  'presence-stall-judge::PresenceProxy::backlog:decision-quality-enrolment',
+  'profile-intent-classify::ProfileIntentClassifier::backlog:decision-quality-enrolment',
+  'project-drift-check::ProjectDriftChecker::backlog:decision-quality-enrolment',
+  'prompt-injection-detect::PromptGate::backlog:decision-quality-enrolment',
+  'relationship-extract::RelationshipManager::backlog:decision-quality-enrolment',
+  'resume-sanity-check::ResumeQueueDrainer::backlog:decision-quality-enrolment',
+  'resume-uuid-validate::ResumeValidator::backlog:decision-quality-enrolment',
+  'self-knowledge-extract::SelfKnowledgeTree::backlog:decision-quality-enrolment',
+  'session-activity-digest::SessionActivitySentinel::backlog:decision-quality-enrolment',
+  'session-summary-extract::SessionSummarySentinel::backlog:decision-quality-enrolment',
+  'slack-stall-confirm::SlackAdapter::backlog:decision-quality-enrolment',
+  'stall-triage-diagnosis::StallTriageNurse::backlog:decision-quality-enrolment',
+  'standards-conformance-review::StandardsConformanceReviewer::backlog:decision-quality-enrolment',
+  'standards-coverage-enrich::StandardsCoverageEnrichment::backlog:decision-quality-enrolment',
+  'task-classify::TaskClassifier::backlog:decision-quality-enrolment',
+  'telegram-stall-confirm::TelegramAdapter::backlog:decision-quality-enrolment',
+  'temporal-coherence-check::TemporalCoherenceChecker::backlog:decision-quality-enrolment',
+  'topic-intent-arc-check::TopicIntentArcCheck::backlog:decision-quality-enrolment',
+  'topic-summarize::TopicSummarizer::backlog:decision-quality-enrolment',
+  'tree-synthesize::TreeSynthesis::backlog:decision-quality-enrolment',
+  'tree-triage::TreeTriage::backlog:decision-quality-enrolment',
+  'usher-topic-route::Usher::backlog:decision-quality-enrolment',
+  'warrants-reply-gate::WarrantsReplyGate::backlog:decision-quality-enrolment',
+  'watchdog-stuck-judge::SessionWatchdog::backlog:decision-quality-enrolment',
 ].sort();
 
 const EXEMPT_BASELINE = [
@@ -157,12 +158,12 @@ const WIRED_AWAITING_ENROLLMENT: string[] = [].sort();
 // without minting a new version is exactly the mutation the pin refuses.
 const RULE_BASELINE = [
   // ruleId::rung::strength::owner::windowMs
-  'completion-enacted-disposition-v1::self-report::self-report::CompletionChokepoint::-',
-  'completion-realcheck-v1::deterministic-ground-truth::deterministic-proof::AutonomousRealCheck::-',
-  'hog-enacted-disposition-v1::self-report::self-report::ExternalHogSentinel::-',
-  'hog-leave-recurrence-v1::recurrence::recurrence-proxy::ExternalHogSentinel::21600000',
-  'hog-respawn-wrong-v1::deterministic-ground-truth::deterministic-proof::ExternalHogSentinel::21600000',
-  'hog-sustained-right-v1::deterministic-ground-truth::negative-evidence::DecisionGrading::21600000',
+  'completion-enacted-disposition-v1::completion-stop-rationale::self-report::self-report::CompletionChokepoint::-',
+  'completion-realcheck-v1::completion-evaluate::deterministic-ground-truth::deterministic-proof::AutonomousRealCheck::-',
+  'hog-enacted-disposition-v1::external-hog-kill-leave::self-report::self-report::ExternalHogSentinel::-',
+  'hog-leave-recurrence-v1::external-hog-kill-leave::recurrence::recurrence-proxy::ExternalHogSentinel::21600000',
+  'hog-respawn-wrong-v1::external-hog-kill-leave::deterministic-ground-truth::deterministic-proof::ExternalHogSentinel::21600000',
+  'hog-sustained-right-v1::external-hog-kill-leave::deterministic-ground-truth::negative-evidence::DecisionGrading::21600000',
 ].sort();
 
 const wiredEntries = PROVENANCE_COVERAGE.filter((e) => e.status === 'wired');
@@ -242,10 +243,25 @@ describe('provenance-coverage census ratchet (declare-or-fail)', () => {
 });
 
 describe('pending — the two-layer check, CI static half (§5.6)', () => {
-  it('pending refs are format-valid (^ACT-\\d+$) and every pending entry argues a real reason (>= 40 chars)', () => {
+  it('pending refs are format-valid (^ACT-\\d+$ | ^backlog:<key>$) and every pending entry argues a real reason (>= 40 chars)', () => {
     for (const e of pendingEntries) {
       const ref = e.status.slice('pending:'.length);
-      expect(ref, `${e.decisionPoint}: pending ref '${ref}' must be a bare evolution-queue id (ACT-<n>)`).toMatch(/^ACT-\d+$/);
+      // Exactly TWO kinds — deliberately NOT "anything". Widening this to a
+      // permissive pattern would remove the guard that makes a typo visible,
+      // which is most of this ratchet's value.
+      expect(
+        ref,
+        `${e.decisionPoint}: pending ref '${ref}' must be a machine-local evolution-queue id (ACT-<n>) or a fleet-stable backlog key (backlog:<key>)`,
+      ).toMatch(/^(?:ACT-\d+|backlog:[a-z0-9][a-z0-9-]*)$/);
+      // A backlog ref must resolve NOW — a pending entry pointing at a key that
+      // is not in the shipped registry is the dangling reference this whole
+      // change exists to make impossible, and CI is where it should die.
+      if (ref.startsWith('backlog:')) {
+        expect(
+          backlogTrackerExists(ref.slice('backlog:'.length)),
+          `${e.decisionPoint}: backlog ref '${ref}' is not in BACKLOG_TRACKERS`,
+        ).toBe(true);
+      }
       expect(
         (e.reason ?? '').length,
         `${e.decisionPoint}: pending reason must be a real argument (>= 40 chars)`,
@@ -360,9 +376,80 @@ describe('messaging-tone-gate — the third enrolled customer (§5.6 high-volume
 });
 
 describe('rule registry (§5.4.2) — enums pinned, identities immutable, dormant rung refused', () => {
+  it('CLASS: every wired point has a registered grader or an explicit measurement-only/exempt posture', () => {
+    expect(
+      findWiredWithoutGraders(),
+      'wired-but-no-grader contradiction: a point declared wired must have a RULE_REGISTRY entry ' +
+        'or an explicit measurement-only/exempt posture with a real reason',
+    ).toEqual([]);
+  });
+
+  it('CLASS: the census and registry contain no mutually contradictory grading declarations', () => {
+    expect(findGradingContradictions()).toEqual([]);
+  });
+
+  it('CLASS NEGATIVE: a synthetic wired point without either declaration is detected loudly', () => {
+    expect(
+      findWiredWithoutGraders(
+        [{
+          decisionPoint: 'synthetic-ungraded',
+          component: 'SyntheticUngraded',
+          status: 'wired',
+          volumeClass: 'full',
+          contentClass: 'metadata',
+        }],
+        {},
+      ),
+    ).toEqual(['synthetic-ungraded']);
+  });
+
+  it('CLASS NEGATIVE: duplicate points, grader+measurement-only, and rules targeting non-wired points are refused', () => {
+    const base = {
+      component: 'Synthetic',
+      status: 'wired' as const,
+      volumeClass: 'full' as const,
+      contentClass: 'metadata' as const,
+    };
+    const coverage = [
+      { ...base, decisionPoint: 'duplicate-point' },
+      { ...base, decisionPoint: 'duplicate-point', component: 'Synthetic/duplicate' },
+      {
+        ...base,
+        decisionPoint: 'both-postures',
+        component: 'Synthetic/both',
+        gradingPosture: 'measurement-only' as const,
+        gradingReason: 'This deliberately exceeds forty characters for the negative fixture.',
+      },
+      {
+        decisionPoint: 'pending-target',
+        component: 'Synthetic/pending',
+        status: 'pending:ACT-1' as const,
+        contentClass: 'metadata' as const,
+        reason: 'This deliberately exceeds forty characters for the negative fixture.',
+      },
+    ];
+    const registry = {
+      'both-v1': {
+        ruleId: 'both-v1', decisionPoint: 'both-postures', rung: 'self-report' as const,
+        evidenceStrength: 'self-report' as const, owningComponent: 'Synthetic',
+      },
+      'pending-v1': {
+        ruleId: 'pending-v1', decisionPoint: 'pending-target', rung: 'self-report' as const,
+        evidenceStrength: 'self-report' as const, owningComponent: 'Synthetic',
+      },
+    };
+    expect(findGradingContradictions(coverage, registry)).toEqual([
+      'duplicate-census:duplicate-point',
+      'grader-and-measurement-only:both-postures',
+      'rule-target-not-wired:pending-v1:pending-target',
+      'wired-but-no-grader:duplicate-point',
+    ]);
+  });
+
   it('every rule row is well-formed (key = ruleId; closed enums; non-empty owner; versioned id)', () => {
     for (const [key, rule] of Object.entries(RULE_REGISTRY)) {
       expect(rule.ruleId, `registry key '${key}' must equal its ruleId`).toBe(key);
+      expect(PROVENANCE_COVERAGE.some((e) => e.decisionPoint === rule.decisionPoint), `${key}: decisionPoint must exist in census`).toBe(true);
       expect(EVIDENCE_RUNGS, `${key}: rung`).toContain(rule.rung);
       expect(EVIDENCE_STRENGTHS, `${key}: evidenceStrength`).toContain(rule.evidenceStrength);
       expect(rule.owningComponent.trim().length, `${key}: owningComponent must name the annotator actor`).toBeGreaterThan(0);
@@ -386,7 +473,7 @@ describe('rule registry (§5.4.2) — enums pinned, identities immutable, dorman
 
   it('registered rule identities are IMMUTABLE (baseline pin — mutate = mint a new -v<n+1> instead)', () => {
     const current = Object.values(RULE_REGISTRY)
-      .map((r) => `${r.ruleId}::${r.rung}::${r.evidenceStrength}::${r.owningComponent}::${r.windowMs ?? '-'}`)
+      .map((r) => `${r.ruleId}::${r.decisionPoint}::${r.rung}::${r.evidenceStrength}::${r.owningComponent}::${r.windowMs ?? '-'}`)
       .sort();
     // Every baseline rule must still exist, byte-identical (immutability); new
     // rule VERSIONS may be added (they extend `current` without touching these).
@@ -423,7 +510,7 @@ describe('lookup helpers (the contracts later phases import)', () => {
     expect(getVolumeClass(DP_COMPLETION_STOP_RATIONALE)).toBe('full');
     // A pending point is declared but NOT enrolled — the seam writes nothing,
     // and a forward-declared volume class must not valve anything.
-    expect(getCensusEntry('coherence-review')?.status).toBe('pending:ACT-1193');
+    expect(getCensusEntry('coherence-review')?.status).toBe('pending:backlog:decision-quality-enrolment');
     expect(isEnrolled('coherence-review')).toBe(false);
     expect(getVolumeClass('coherence-review')).toBeUndefined();
     // Unknown decision points: undefined/false, never a throw (the settlement

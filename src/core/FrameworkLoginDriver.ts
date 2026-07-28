@@ -46,6 +46,15 @@ export interface FrameworkLoginRequest {
   kind: LoginFlowKind;
   /** The account's CLAUDE_CONFIG_DIR — isolates this login to its own slot. */
   configHome?: string;
+  /** False for background renewal; production must suppress browser launch. */
+  openBrowser?: boolean;
+}
+
+/** Environment prefix used by login commands when no operator initiated this drive.
+ * Claude Code honors BROWSER as its opener; `true` accepts the open request without
+ * launching an application while the CLI still prints the URL for capture. */
+export function enrollmentBrowserEnv(openBrowser: boolean | undefined): Record<string, string> {
+  return openBrowser === false ? { BROWSER: 'true' } : {};
 }
 
 /** Injected I/O so the driver is decoupled + hermetically testable. */
@@ -137,12 +146,14 @@ export class FrameworkLoginDriver {
     kind: LoginFlowKind;
     configHome?: string;
     scrapeTimeoutMs?: number;
+    openBrowser?: boolean;
   }): Promise<LoginArtifact> {
     const { session } = await this.deps.spawn({
       provider: req.provider,
       framework: req.framework,
       kind: req.kind,
       configHome: req.configHome,
+      openBrowser: req.openBrowser,
     });
     const budgetMs =
       typeof req.scrapeTimeoutMs === 'number' && Number.isFinite(req.scrapeTimeoutMs) && req.scrapeTimeoutMs > 0

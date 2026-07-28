@@ -246,6 +246,60 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
     expect(entry.verdict).toBe('pass');
     expect(entry.slug).toBe('pass-fixture');
   });
+
+  it('binds the decision audit to the newest trace that covers the staged change', async () => {
+    const srcRel = 'src/touched.ts';
+    const eli16Rel = 'upgrades/pass-fixture.eli16.md';
+    const seRel = 'upgrades/side-effects/pass-fixture.md';
+    fs.writeFileSync(path.join(sandbox, srcRel), '// touched\n');
+    fs.writeFileSync(path.join(sandbox, eli16Rel), 'E'.repeat(900));
+    fs.writeFileSync(path.join(sandbox, seRel), `# Side-Effects Review\n\n${'S'.repeat(250)}\n`);
+
+    const matching = path.join(sandbox, '.instar', 'instar-dev-traces', 'matching.json');
+    fs.writeFileSync(matching, JSON.stringify({
+      phase: 'complete', slug: 'right-work-item', tier: 1,
+      coveredFiles: [srcRel, eli16Rel, seRel], eli16Path: eli16Rel, sideEffectsPath: seRel,
+    }));
+    const foreign = path.join(sandbox, '.instar', 'instar-dev-traces', 'foreign.json');
+    fs.writeFileSync(foreign, JSON.stringify({
+      phase: 'complete', slug: 'unknown', tier: 1, coveredFiles: ['src/other.ts'],
+    }));
+    const now = Date.now();
+    fs.utimesSync(matching, new Date(now - 1_000), new Date(now - 1_000));
+    fs.utimesSync(foreign, new Date(now), new Date(now));
+    execFileSync('git', ['add', srcRel, eli16Rel, seRel], { cwd: sandbox });
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+    const entries = listEntryFiles();
+    expect(entries).toHaveLength(1);
+    const entry = JSON.parse(fs.readFileSync(path.join(sandbox, '.instar', 'instar-dev-decisions', entries[0]), 'utf8'));
+    expect(entry.slug).toBe('right-work-item');
+    expect(entries[0]).toContain('right-work-item');
+  });
+
+  it('derives stable identity from artifactPath for legacy generated traces without slug', async () => {
+    const srcRel = 'src/touched.ts';
+    const eli16Rel = 'upgrades/legacy-fixture.eli16.md';
+    const seRel = 'upgrades/side-effects/legacy-fixture.md';
+    fs.writeFileSync(path.join(sandbox, srcRel), '// touched\n');
+    fs.writeFileSync(path.join(sandbox, eli16Rel), 'E'.repeat(900));
+    fs.writeFileSync(path.join(sandbox, seRel), `# Side-Effects Review\n\n${'S'.repeat(250)}\n`);
+    fs.writeFileSync(
+      path.join(sandbox, '.instar', 'instar-dev-traces', 'legacy.json'),
+      JSON.stringify({
+        phase: 'complete', tier: 1, artifactPath: seRel,
+        coveredFiles: [srcRel, eli16Rel, seRel], eli16Path: eli16Rel, sideEffectsPath: seRel,
+      }),
+    );
+    execFileSync('git', ['add', srcRel, eli16Rel, seRel], { cwd: sandbox });
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+    const entries = listEntryFiles();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toContain('legacy-fixture');
+  });
 });
 
 // ── Causal autopsy (directive 2026-06-05) ─────────────────────────────────

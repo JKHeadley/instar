@@ -1,0 +1,23 @@
+{
+  "ts": "2026-07-26T20:53:38.978Z",
+  "slug": "channel-registry",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 10,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      1658
+    ],
+    "notes": "Not a defect — three awareness registries I did not know existed, surfaced by CI after I had hand-updated the two I did know (templates.ts + PostUpdateMigrator) and believed the Agent Awareness Standard satisfied. featureSections parity, CapabilityIndex route classification, and migrateFrameworkShadowCapabilities markers. The third is the one that matters: without it a Codex/Gemini agent never learns the capability and improvises a weaker workaround — this feature's own failure mode one layer out. Ratio worth keeping: 2 registries found by intent, 3 by machinery."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

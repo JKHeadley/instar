@@ -35,6 +35,9 @@
 
 import { createHash } from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
+import { DP_UNJUSTIFIED_STOP_GATE } from '../data/provenanceCoverage.js';
+import type { StopGateBreakerState, StopGateBreakerStateStore } from './StopGateBreakerState.js';
+import { emptyStopGateBreakerState, normalizeStopGateBreakerState } from './StopGateBreakerState.js';
 
 // ── Enumerated rule set (hard-coded, checked on every decision) ──────
 
@@ -317,12 +320,19 @@ export interface UnjustifiedStopGateConfig {
    * classification is offered. Default false.
    */
   selfDeferralGuardEnabled?: boolean;
+  /** Durable restart-surviving circuit-breaker state (machine-local StopGateDb). */
+  breakerStateStore?: StopGateBreakerStateStore;
+  /** Stable hash of the resolved provider route; excludes release/credential/request data. */
+  breakerKey?: string;
+  /** Persistence degradation signal; never allowed to affect the fail-open route. */
+  onBreakerPersistenceError?: (error: unknown) => void;
 }
 
 const DEFAULT_CLIENT_TIMEOUT_MS = 2_000;
 const DEFAULT_LLM_TIMEOUT_MS = 1_400;
 const DEFAULT_BREAKER_THRESHOLD = 3;
 const DEFAULT_BREAKER_COOLDOWN_MS = 5 * 60_000;
+const BREAKER_PROBE_LEASE_MARGIN_MS = 500;
 
 /**
  * This runs on the agent Stop critical path, so the bounded rate-limit wait must
@@ -346,10 +356,17 @@ const RATE_LIMIT_WAIT_MS = 8_000;
  *   - Kill-switch / mode=off short-circuit.
  */
 export class UnjustifiedStopGate {
-  private config: Required<UnjustifiedStopGateConfig>;
+  private config: Required<Omit<UnjustifiedStopGateConfig, 'breakerStateStore' | 'onBreakerPersistenceError'>> &
+    Pick<UnjustifiedStopGateConfig, 'breakerStateStore' | 'onBreakerPersistenceError'>;
   /** Circuit-breaker state: consecutive provider failures + open-until clock. */
   private consecutiveProviderFailures = 0;
   private breakerOpenUntil = 0;
+  private breakerProbeLeaseUntil = 0;
+  private breakerProbeToken: string | null = null;
+  private breakerFirstOpenedAt = 0;
+  private breakerSuppressedCount = 0;
+  private pendingSuppressions = 0;
+  private suppressionFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: UnjustifiedStopGateConfig) {
     this.config = {
@@ -361,7 +378,11 @@ export class UnjustifiedStopGate {
       breakerCooldownMs: config.breakerCooldownMs ?? DEFAULT_BREAKER_COOLDOWN_MS,
       now: config.now ?? Date.now,
       selfDeferralGuardEnabled: config.selfDeferralGuardEnabled ?? false,
+      breakerStateStore: config.breakerStateStore,
+      breakerKey: config.breakerKey ?? 'unjustified-stop-gate:default',
+      onBreakerPersistenceError: config.onBreakerPersistenceError,
     };
+    this.hydrateBreakerState();
     // Precompute the stable template + its hash once — the rubric text is
     // constant for the life of this authority (it only depends on the guard
     // flag), so hashing per call is wasteful.
@@ -375,26 +396,126 @@ export class UnjustifiedStopGate {
   private readonly systemPromptHash: string;
 
   /** Breaker telemetry (for /health + tests). open=true ⇒ short-circuiting. */
-  breakerState(): { open: boolean; consecutiveFailures: number; openUntil: number } {
+  breakerState(): {
+    open: boolean;
+    consecutiveFailures: number;
+    openUntil: number;
+    probeLeaseUntil: number;
+    firstOpenedAt: number;
+    suppressedCount: number;
+  } {
     return {
       open: this.config.now() < this.breakerOpenUntil,
       consecutiveFailures: this.consecutiveProviderFailures,
       openUntil: this.breakerOpenUntil,
+      probeLeaseUntil: this.breakerProbeLeaseUntil,
+      firstOpenedAt: this.breakerFirstOpenedAt,
+      suppressedCount: this.breakerSuppressedCount + this.pendingSuppressions,
     };
   }
 
-  /** Record a completed LLM response (provider reachable): reset the breaker. */
+  /** Authenticated operator repair seam: clear stale health state and admit an immediate probe. */
+  resetBreaker(): ReturnType<UnjustifiedStopGate['breakerState']> {
+    try {
+      if (this.config.breakerStateStore) {
+        this.applyBreakerState(this.config.breakerStateStore.resetBreakerState(this.config.breakerKey));
+      } else {
+        this.applyBreakerState(emptyStopGateBreakerState(this.config.breakerKey));
+      }
+    } catch (err) { // @silent-fallback-ok — callback reports persistence degradation; memory fallback preserves fail-open.
+      this.config.onBreakerPersistenceError?.(err);
+      this.applyBreakerState(emptyStopGateBreakerState(this.config.breakerKey));
+    }
+    return this.breakerState();
+  }
+
+  private applyBreakerState(state: StopGateBreakerState): void {
+    this.consecutiveProviderFailures = state.consecutiveFailures;
+    this.breakerOpenUntil = state.openUntil;
+    this.breakerProbeLeaseUntil = state.probeLeaseUntil;
+    this.breakerProbeToken = state.probeToken;
+    this.breakerFirstOpenedAt = state.firstOpenedAt;
+    this.breakerSuppressedCount = state.suppressedCount;
+  }
+
+  private hydrateBreakerState(): void {
+    const store = this.config.breakerStateStore;
+    if (!store) return;
+    try {
+      const raw = store.loadBreakerState(this.config.breakerKey);
+      if (raw) {
+        this.applyBreakerState(normalizeStopGateBreakerState(
+          raw,
+          this.config.now(),
+          this.config.breakerCooldownMs,
+          this.config.clientTimeoutMs + BREAKER_PROBE_LEASE_MARGIN_MS,
+        ));
+      }
+    } catch (err) {
+      this.config.onBreakerPersistenceError?.(err);
+    }
+  }
+
+  private scheduleSuppressionFlush(): void {
+    this.pendingSuppressions += 1;
+    if (!this.config.breakerStateStore || this.suppressionFlushTimer) return;
+    this.suppressionFlushTimer = setTimeout(() => {
+      this.suppressionFlushTimer = null;
+      const count = this.pendingSuppressions;
+      this.pendingSuppressions = 0;
+      try {
+        this.config.breakerStateStore?.addBreakerSuppressions(this.config.breakerKey, count, this.config.now());
+        this.breakerSuppressedCount += count;
+      } catch { // @silent-fallback-ok — approximate observability must never create a degradation loop.
+      }
+    }, 60_000);
+    this.suppressionFlushTimer.unref?.();
+  }
+
+  /** Record a usable, validated authority response: reset the breaker. */
   private onProviderReachable(): void {
+    try {
+      if (this.config.breakerStateStore) {
+        this.applyBreakerState(this.config.breakerStateStore.resetBreakerState(
+          this.config.breakerKey,
+          this.breakerProbeToken,
+        ));
+        return;
+      }
+    } catch (err) { // @silent-fallback-ok — callback reports persistence degradation; memory fallback preserves fail-open.
+      this.config.onBreakerPersistenceError?.(err);
+    }
     this.consecutiveProviderFailures = 0;
+    this.breakerOpenUntil = 0;
+    this.breakerProbeLeaseUntil = 0;
+    this.breakerProbeToken = null;
   }
 
   /** Record a provider failure (timeout/unavailable); open the breaker at threshold. */
-  private onProviderFailure(): void {
-    if (this.config.breakerThreshold <= 0) return; // disabled
+  private onProviderFailure(): boolean {
+    if (this.config.breakerThreshold <= 0) return false; // disabled
+    try {
+      if (this.config.breakerStateStore) {
+        this.applyBreakerState(this.config.breakerStateStore.recordBreakerFailure({
+          breakerKey: this.config.breakerKey,
+          now: this.config.now(),
+          threshold: this.config.breakerThreshold,
+          cooldownMs: this.config.breakerCooldownMs,
+          probeToken: this.breakerProbeToken,
+        }));
+        return this.config.now() < this.breakerOpenUntil;
+      }
+    } catch (err) { // @silent-fallback-ok — callback reports persistence degradation; memory fallback preserves fail-open.
+      this.config.onBreakerPersistenceError?.(err);
+    }
     this.consecutiveProviderFailures += 1;
     if (this.consecutiveProviderFailures >= this.config.breakerThreshold) {
       this.breakerOpenUntil = this.config.now() + this.config.breakerCooldownMs;
+      this.breakerFirstOpenedAt ||= this.config.now();
     }
+    this.breakerProbeLeaseUntil = 0;
+    this.breakerProbeToken = null;
+    return this.config.now() < this.breakerOpenUntil;
   }
 
   async evaluate(input: EvaluateInput): Promise<AuthorityOutcome> {
@@ -407,6 +528,7 @@ export class UnjustifiedStopGate {
     // `claude -p` judgment path against a ~2s budget on subscription agents)
     // can't churn doomed spawn-then-kill subprocesses or flood /health.
     if (start < this.breakerOpenUntil) {
+      this.scheduleSuppressionFlush();
       return {
         ok: false,
         failure: {
@@ -415,6 +537,47 @@ export class UnjustifiedStopGate {
           latencyMs: 0,
         },
       };
+    }
+    // An expired durable breaker admits exactly ONE half-open probe across
+    // restart-adjacent handles. Every concurrent caller fail-opens instantly.
+    if (this.consecutiveProviderFailures >= this.config.breakerThreshold && this.config.breakerThreshold > 0) {
+      try {
+        if (this.config.breakerStateStore) {
+          const acquired = this.config.breakerStateStore.tryAcquireBreakerProbe({
+            breakerKey: this.config.breakerKey,
+            now: start,
+            cooldownMs: this.config.breakerCooldownMs,
+            leaseMs: this.config.clientTimeoutMs + BREAKER_PROBE_LEASE_MARGIN_MS,
+          });
+          this.applyBreakerState(acquired.state);
+          if (!acquired.acquired) {
+            this.scheduleSuppressionFlush();
+            return {
+              ok: false,
+              failure: {
+                kind: 'breakerOpen',
+                detail: `gate probe already leased after ${this.consecutiveProviderFailures} consecutive failures`,
+                latencyMs: 0,
+              },
+            };
+          }
+          this.breakerProbeToken = acquired.token;
+        } else {
+          if (start < this.breakerProbeLeaseUntil) {
+            this.scheduleSuppressionFlush();
+            return { ok: false, failure: { kind: 'breakerOpen', detail: 'local half-open probe already leased', latencyMs: 0 } };
+          }
+          this.breakerProbeLeaseUntil = start + this.config.clientTimeoutMs + BREAKER_PROBE_LEASE_MARGIN_MS;
+        }
+      } catch (err) { // @silent-fallback-ok — callback reports persistence degradation; local lease preserves fail-open.
+        this.config.onBreakerPersistenceError?.(err);
+        // Memory fallback: one process, one event loop. Mark a local lease.
+        if (start < this.breakerProbeLeaseUntil) {
+          this.scheduleSuppressionFlush();
+          return { ok: false, failure: { kind: 'breakerOpen', detail: 'local half-open probe already leased', latencyMs: 0 } };
+        }
+        this.breakerProbeLeaseUntil = start + this.config.clientTimeoutMs + BREAKER_PROBE_LEASE_MARGIN_MS;
+      }
     }
 
     // Turn-End Self-Deferral Guard (Phase A) — OFF-state byte-for-byte
@@ -449,7 +612,7 @@ export class UnjustifiedStopGate {
 
     let responseText: string;
     try {
-      responseText = await this.callWithTimeout(prompt);
+      responseText = await this.callWithTimeout(prompt, input);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const latencyMs = this.config.now() - start;
@@ -483,9 +646,6 @@ export class UnjustifiedStopGate {
       };
     }
 
-    // The provider responded (reachable) — reset the breaker even if the response
-    // is later found malformed (a bad response still proves the provider is up).
-    this.onProviderReachable();
     const latencyMs = this.config.now() - start;
 
     // Parse + validate the response.
@@ -493,7 +653,15 @@ export class UnjustifiedStopGate {
     try {
       parsed = JSON.parse(responseText.trim());
     } catch {
-      return {
+      const opened = this.onProviderFailure();
+      return opened ? {
+        ok: false,
+        failure: {
+          kind: 'breakerOpen',
+          detail: `malformed authority output opened breaker after ${this.consecutiveProviderFailures} consecutive failures`,
+          latencyMs,
+        },
+      } : {
         ok: false,
         failure: {
           kind: 'malformed',
@@ -504,14 +672,58 @@ export class UnjustifiedStopGate {
     }
 
     const validation = this.validateResponse(parsed, input.evidenceMetadata);
-    if (!validation.ok) return { ok: false, failure: { ...validation.failure, latencyMs } };
+    if (!validation.ok) {
+      const opened = this.onProviderFailure();
+      return opened
+        ? { ok: false, failure: { kind: 'breakerOpen', detail: `${validation.failure.kind} opened breaker after ${this.consecutiveProviderFailures} consecutive failures`, latencyMs } }
+        : { ok: false, failure: { ...validation.failure, latencyMs } };
+    }
+
+    // A usable authority verdict (not merely transport reachability) closes the
+    // durable unusable-authority breaker.
+    this.onProviderReachable();
 
     // Carry the stable template hash on every result (§3.4). The route records
     // it only when the guard is on; here it is a cheap, always-attached field.
     return { ok: true, result: { ...validation.result, latencyMs, promptHash: this.systemPromptHash } };
   }
 
-  private async callWithTimeout(prompt: string): Promise<string> {
+  /**
+   * The §5.6 provenance context for one stop decision — IDENTITY ONLY.
+   *
+   * The gate judges a session's stop rationale, which means the input is
+   * content-bearing and largely UNTRUSTED (the stop reason and recent turns are
+   * session-provided). None of it enters the row. What goes in is what a later
+   * reader needs to reconstruct the SHAPE of the decision without republishing
+   * the conversation: hashes, counts, bounds, and code-derived booleans.
+   *
+   * Recording the rationale text would turn the provenance store into a
+   * transcript archive, which is exactly the failure the content-bearing class
+   * exists to prevent.
+   */
+  private buildStopDecisionContext(input: EvaluateInput): Record<string, unknown> {
+    const reason = input.untrustedContent?.stopReason ?? '';
+    const turns = input.untrustedContent?.recentTurns ?? [];
+    const artifacts = input.evidenceMetadata?.artifacts ?? [];
+    return {
+      // Identity of the judged text, never the text.
+      stopReasonSha256: createHash('sha256').update(reason).digest('hex'),
+      stopReasonChars: reason.length,
+      // Shape of the evidence the authority was allowed to cite.
+      artifactCount: artifacts.length,
+      artifactKinds: [...new Set(artifacts.map((a) => (a as { kind?: string }).kind ?? 'unknown'))].sort(),
+      // Which detector signals fired — code-derived booleans, safe verbatim.
+      signals: input.evidenceMetadata?.signals ?? {},
+      sessionStartTs: input.evidenceMetadata?.sessionStartTs ?? null,
+      metaSelfReferenceHint: input.evidenceMetadata?.metaSelfReferenceHint === true,
+      // Conversation shape only.
+      recentTurnCount: turns.length,
+      recentTurnChars: turns.reduce((n, t) => n + (t?.text?.length ?? 0), 0),
+      selfDeferralGuardEnabled: this.config.selfDeferralGuardEnabled === true,
+    };
+  }
+
+  private async callWithTimeout(prompt: string, input?: EvaluateInput): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.clientTimeoutMs);
     try {
@@ -524,6 +736,21 @@ export class UnjustifiedStopGate {
         temperature: 0,
         rateLimitWaitMs: RATE_LIMIT_WAIT_MS,
         attribution: { component: 'UnjustifiedStopGate' }, // attribution for /metrics/features
+        // LLM-Decision Quality Meter §5.1.4/§5.6 enrollment. Observability
+        // ONLY: the settlement seam consumes this block and records the row on
+        // its own path — it never reaches the model and never alters the
+        // continue/allow/escalate verdict. A provenance write failure is
+        // contained by the recorder's own fail-open contract.
+        ...(input
+          ? {
+              provenance: {
+                decisionPoint: DP_UNJUSTIFIED_STOP_GATE,
+                context: this.buildStopDecisionContext(input),
+                optionsPresented: ['continue', 'allow', 'escalate'],
+                promptId: this.systemPromptHash,
+              },
+            }
+          : {}),
       });
       return await Promise.race([call, abortRace]);
     } finally {

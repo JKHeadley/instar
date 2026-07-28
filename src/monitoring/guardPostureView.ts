@@ -42,6 +42,12 @@ export type GuardDivergence = 'none' | 'diverged' | 'not-applicable' | 'snapshot
 /** Staleness multiplier over a guard's self-declared cadence (spec §2.2, N=5). */
 export const STALE_TICK_MULTIPLIER = 5;
 
+/** Per-heartbeat wire bound for load-bearing keys whose protection cannot
+ * currently be proved. The full count travels separately, so truncation can
+ * never turn into an all-clear. Sixteen covers today's 13 load-bearing guards
+ * while placing a fixed ceiling on this 30-second payload. */
+export const HEARTBEAT_LOAD_BEARING_UNINSPECTABLE_KEY_CAP = 16;
+
 /** The CLOSED projection — every field a /guards row may carry. Anything not
  *  named here never leaves the server (Tier-1 allowlist test). */
 export interface GuardRuntimeProjection {
@@ -94,8 +100,12 @@ export interface GuardsSummary {
   missing: number;
   offRuntimeDivergent: number;
   runtimeEnriched: string; // "n/total"
-  // ── G3: load-bearing key-lists (the loud gap subset + the two quiet subsets) ──
+  // ── G3: load-bearing key-lists (gap, inspectability, and rollout posture) ──
   loadBearingGapKeys: string[];
+  /** Load-bearing guards whose posture cannot currently prove protection.
+   *  These retain their existing anomaly class; this list is read-surface
+   *  completeness, not a second probe alarm. */
+  loadBearingUninspectableKeys: string[];
   loadBearingSoakingKeys: string[];
   loadBearingAcceptedKeys: string[];
 }
@@ -116,6 +126,12 @@ const ROW_FIELD_ALLOWLIST: ReadonlySet<string> = new Set([
 ]);
 const RUNTIME_FIELD_ALLOWLIST: ReadonlySet<string> = new Set([
   'enabled', 'dryRun', 'lastTickAt', 'tickAgeMs', 'stale', 'jobCount', 'pausedJobCount',
+]);
+const LOAD_BEARING_UNINSPECTABLE_STATES: ReadonlySet<GuardEffectiveState> = new Set([
+  'missing',
+  'errored',
+  'on-stale',
+  'off-runtime-divergent',
 ]);
 export { ROW_FIELD_ALLOWLIST, RUNTIME_FIELD_ALLOWLIST };
 
@@ -390,12 +406,16 @@ export function buildGuardInventory(opts: {
     off: 0, offDeviant: 0, offDarkDefault: 0,
     divergedPendingRestart: 0, errored: 0, missing: 0, offRuntimeDivergent: 0,
     runtimeEnriched: '',
-    loadBearingGapKeys: [], loadBearingSoakingKeys: [], loadBearingAcceptedKeys: [],
+    loadBearingGapKeys: [], loadBearingUninspectableKeys: [],
+    loadBearingSoakingKeys: [], loadBearingAcceptedKeys: [],
   };
   let enriched = 0;
   for (const g of guards) {
     if (g.runtime) enriched++;
     if (g.loadBearingGap) summary.loadBearingGapKeys.push(g.key);
+    if (g.loadBearing && LOAD_BEARING_UNINSPECTABLE_STATES.has(g.effective)) {
+      summary.loadBearingUninspectableKeys.push(g.key);
+    }
     if (g.loadBearingSoaking) summary.loadBearingSoakingKeys.push(g.key);
     if (g.loadBearingAccepted) summary.loadBearingAcceptedKeys.push(g.key);
     switch (g.effective) {
@@ -448,11 +468,15 @@ export function buildHeartbeatPostureBlock(
     divergedPendingRestart: s.divergedPendingRestart,
     errored: s.errored,
     missing: s.missing,
-    // G3 (§2.6): the three load-bearing key-lists ride the heartbeat so a peer
-    // gap is visible fleet-wide. The heartbeat compute (server.ts site 3) threads
+    // G3 (§2.6): the load-bearing key-lists ride the heartbeat so peer posture is
+    // visible fleet-wide. The heartbeat compute (server.ts site 3) threads
     // the local accept map + `now`, so these are already correctly derived here —
     // this block just filters (an accepted guard never ships as a loadBearingGap).
     loadBearingGapKeys: [...s.loadBearingGapKeys],
+    loadBearingUninspectable: s.loadBearingUninspectableKeys.length,
+    loadBearingUninspectableKeys: [...s.loadBearingUninspectableKeys]
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, HEARTBEAT_LOAD_BEARING_UNINSPECTABLE_KEY_CAP),
     loadBearingSoakingKeys: [...s.loadBearingSoakingKeys],
     loadBearingAcceptedKeys: [...s.loadBearingAcceptedKeys],
     generatedAt,

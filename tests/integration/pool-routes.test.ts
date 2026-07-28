@@ -154,3 +154,67 @@ describe('Session Pool API — GET /pool + PATCH /pool/machines/:id (§L2)', () 
     expect(r.status).toBe(400);
   });
 });
+
+describe('GET /pool — rope-condition decoration (offline-test honesty finding)', () => {
+  let dir: string;
+  let server: Server;
+
+  async function stand(ropeHealthMonitor: unknown): Promise<void> {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pool-rope-'));
+    const idMgr = new MachineIdentityManager(path.join(dir, '.instar'));
+    idMgr.registerMachine(identity('m_a', 'mac-mini'), 'awake');
+    idMgr.registerMachine(identity('m_b', 'laptop'), 'standby');
+    const registry = new MachinePoolRegistry({
+      listMachines: () =>
+        idMgr.getActiveMachines().map(({ machineId, entry }) => ({ machineId, nickname: entry.nickname })),
+      clockSkewToleranceMs: 300_000,
+      failoverThresholdMs: 60_000,
+    });
+    // BOTH heartbeat-fresh: the registry still says online — the exact window
+    // where the rope classification must carry the honest reachability signal.
+    registry.recordHeartbeat({ machineId: 'm_a', selfReportedLastSeen: new Date().toISOString() });
+    registry.recordHeartbeat({ machineId: 'm_b', selfReportedLastSeen: new Date().toISOString() });
+    const ctx: any = {
+      config: { authToken: 'test', stateDir: dir, port: 0 },
+      stateDir: dir,
+      machinePoolRegistry: registry,
+      ropeHealthMonitor,
+    };
+    const app = express();
+    app.use(express.json());
+    app.use(createRoutes(ctx));
+    server = await listen(app);
+  }
+  afterEach(async () => {
+    await server.close();
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/pool-routes.test.ts' });
+  });
+
+  it('carries ropeCondition + ropeAllDownSince from the monitor while online is still true', async () => {
+    const allDown = Date.now() - 45_000;
+    await stand({
+      status: () => ({
+        peers: [{ machineId: 'm_b', condition: 'peer-offline', allDownSince: allDown }],
+      }),
+    });
+    const res = await fetch(server.url + '/pool');
+    const body = await res.json();
+    const b = body.machines.find((m: any) => m.machineId === 'm_b');
+    expect(b.online).toBe(true); // placement semantics untouched
+    expect(b.ropeCondition).toBe('peer-offline');
+    expect(b.ropeAllDownSince).toBe(new Date(allDown).toISOString());
+    const a = body.machines.find((m: any) => m.machineId === 'm_a');
+    expect('ropeCondition' in a).toBe(false); // untracked (self) row untouched
+  });
+
+  it('monitor dark (fleet default) → fields absent, response shape unchanged', async () => {
+    await stand(null);
+    const res = await fetch(server.url + '/pool');
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    for (const m of body.machines) {
+      expect('ropeCondition' in m).toBe(false);
+      expect('ropeAllDownSince' in m).toBe(false);
+    }
+  });
+});

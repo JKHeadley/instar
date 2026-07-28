@@ -27,13 +27,14 @@ import { LLM_BENCH_COVERAGE } from '../../src/data/llmBenchCoverage.js';
 const PENDING_BASELINE = [
   // Wave-3 only — the wave-2 set graduated to covered/exempt on 2026-07-02
   // (INSTAR-Bench v2 wave-2 authoring: 19 task batteries + 5 argued exemptions).
-  'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
+  'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
   'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
   'PreCompactionFlush', 'ProfileIntentClassifier', 'RelationshipManager',
-  'SelfKnowledgeTree',
+  'SelfKnowledgeTree', 'GoalPriorityExtractor',
   'StandardsConformanceReviewer', 'StandardsCoverageEnrichment',
   'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',
-  'crossModelReviewer', 'mentor-stage-b', 'openConversationBrief',
+  'completion-claim-verify', 'correction-class-review', 'crossModelReviewer',
+  'mentor-stage-b', 'openConversationBrief',
 ].sort();
 
 const EXEMPT_BASELINE = [

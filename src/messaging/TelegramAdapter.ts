@@ -470,6 +470,9 @@ export class TelegramAdapter implements MessagingAdapter {
   private topicToPurpose: Map<number, string> = new Map();
   private registryPath: string;
   private messageLogPath: string;
+  /** Durable append-seam dedupe, seeded from the bounded JSONL on first use. */
+  private loggedMessageKeys = new Set<string>();
+  private messageLogDedupeSeeded = false;
   private offsetPath: string;
   private stateDir: string;
   /** Per-bot state root. Equals stateDir for the primary bot; a namespaced sub-dir for
@@ -590,7 +593,7 @@ export class TelegramAdapter implements MessagingAdapter {
   // Message log callback — fires on every message logged (inbound and outbound).
   // Used by TopicMemory to dual-write to SQLite for search and summarization.
   // Includes sender identity fields (Phase 1C/1D — User-Agent Topology Spec).
-  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number }) => void) | null = null;
+  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean }) => void) | null = null;
 
   /**
    * Scope-accretion ratification observer (spec autonomous-scope-accretion-
@@ -3723,23 +3726,13 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   private appendToLog(entry: LogEntry): void {
-    // Maintain the per-topic change signal + tail cache FIRST — both paths below
-    // (shared logger / legacy file) persist the same entry, and every logged
-    // message must be visible to getTopicHistory/getTopicContentVersion callers
-    // regardless of which writer is active. Only a topic already seeded gets a
-    // cache append (an unseeded topic seeds lazily from the file on first read).
-    if (typeof entry.topicId === 'number') {
-      this.topicContentVersion.set(entry.topicId, (this.topicContentVersion.get(entry.topicId) ?? 0) + 1);
-      const tail = this.topicTailCache.get(entry.topicId);
-      if (tail) {
-        tail.push(entry);
-        if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
-      }
-    }
+    this.seedMessageLogDedupe();
+    const dedupeKey = this.messageLogDedupeKey(entry);
+    if (this.loggedMessageKeys.has(dedupeKey)) return;
 
     // Phase 1b: Delegate to shared MessageLogger when flag is enabled
     if (this.sharedLogger) {
-      this.sharedLogger.append({
+      const persisted = this.sharedLogger.append({
         messageId: entry.messageId,
         channelId: entry.topicId,
         text: entry.text,
@@ -3750,7 +3743,10 @@ export class TelegramAdapter implements MessagingAdapter {
         senderUsername: entry.senderUsername,
         platformUserId: entry.telegramUserId,
         platform: 'telegram',
+        forwarded: entry.forwarded,
       });
+      if (!persisted) return;
+      this.rememberLoggedEntry(entry, dedupeKey);
       // Also notify the Telegram-specific callback for backward compatibility
       if (this.onMessageLogged) {
         try {
@@ -3795,7 +3791,9 @@ export class TelegramAdapter implements MessagingAdapter {
         reason: `Failed to write message log: ${err instanceof Error ? err.message : String(err)}`,
         impact: 'Conversation history gap — message may be missing from JSONL backup.',
       });
+      return;
     }
+    this.rememberLoggedEntry(entry, dedupeKey);
 
     // Notify subscribers (TopicMemory for SQLite dual-write)
     if (this.onMessageLogged) {
@@ -3824,6 +3822,42 @@ export class TelegramAdapter implements MessagingAdapter {
         senderUsername: entry.senderUsername,
         platformUserId: entry.telegramUserId?.toString(),
       }).catch(err => console.error(`[telegram] EventBus message:logged error: ${err}`));
+    }
+  }
+
+  private messageLogDedupeKey(entry: Pick<LogEntry, 'messageId' | 'topicId' | 'fromUser'>): string {
+    return `${entry.fromUser ? 'in' : 'out'}:${entry.topicId ?? 'root'}:${entry.messageId}`;
+  }
+
+  /** Seed from disk so a process restart or Telegram batch replay stays idempotent. */
+  private seedMessageLogDedupe(): void {
+    if (this.messageLogDedupeSeeded) return;
+    this.messageLogDedupeSeeded = true;
+    if (!fs.existsSync(this.messageLogPath)) return;
+    try {
+      const lines = fs.readFileSync(this.messageLogPath, 'utf-8').split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const raw = JSON.parse(line) as LogEntry & { channelId?: number };
+          if (typeof raw.messageId !== 'number' || typeof raw.fromUser !== 'boolean') continue;
+          const topicId = raw.topicId ?? raw.channelId ?? null;
+          this.loggedMessageKeys.add(this.messageLogDedupeKey({ messageId: raw.messageId, topicId, fromUser: raw.fromUser }));
+        } catch { /* @silent-fallback-ok — malformed historical rows do not block new logging */ }
+      }
+    } catch (err) {
+      console.error(`[telegram] message-log dedupe seed failed: ${err}`);
+    }
+  }
+
+  /** Update memory only after the canonical append succeeds. */
+  private rememberLoggedEntry(entry: LogEntry, dedupeKey: string): void {
+    this.loggedMessageKeys.add(dedupeKey);
+    if (typeof entry.topicId !== 'number') return;
+    this.topicContentVersion.set(entry.topicId, (this.topicContentVersion.get(entry.topicId) ?? 0) + 1);
+    const tail = this.topicTailCache.get(entry.topicId);
+    if (tail) {
+      tail.push(entry);
+      if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) tail.shift();
     }
   }
 
@@ -3874,6 +3908,12 @@ export class TelegramAdapter implements MessagingAdapter {
       updatedAt: now,
     };
 
+    // Durable acceptance precedes all Telegram/network work. If the provider
+    // is stalled or the process restarts mid-send, the local attention item
+    // still exists and remains idempotently addressable.
+    this.attentionItems.set(item.id, attention);
+    this.saveAttentionItems();
+
     // ── Agent-Health lane (calm self-health notices) ─────────────────────
     // A routine self-health/housekeeping notice routes into ONE named "🩺 Agent
     // Health" topic from the very first item — it never spawns its own topic
@@ -3885,8 +3925,6 @@ export class TelegramAdapter implements MessagingAdapter {
       const laneTopicId = await this.routeToAgentHealthLane(attention);
       attention.coalesced = true;
       if (laneTopicId !== null) attention.topicId = laneTopicId;
-      this.attentionItems.set(item.id, attention);
-      this.saveAttentionItems();
       return attention;
     }
 
@@ -3901,8 +3939,6 @@ export class TelegramAdapter implements MessagingAdapter {
       const hubTopicId = await this.routeToAttentionHub(attention);
       attention.coalesced = true;
       if (hubTopicId !== null) attention.topicId = hubTopicId;
-      this.attentionItems.set(item.id, attention);
-      this.saveAttentionItems();
       return attention;
     }
 
@@ -3925,8 +3961,6 @@ export class TelegramAdapter implements MessagingAdapter {
       // Coalesced items are managed via /attention (PATCH / dashboard), not /ack.
       attention.coalesced = true;
       if (noticeTopicId !== null) attention.topicId = noticeTopicId;
-      this.attentionItems.set(item.id, attention);
-      this.saveAttentionItems();
       return attention;
     }
 
@@ -4007,8 +4041,6 @@ export class TelegramAdapter implements MessagingAdapter {
       }
     }
 
-    this.attentionItems.set(item.id, attention);
-    this.saveAttentionItems();
     return attention;
   }
 
@@ -4085,10 +4117,15 @@ export class TelegramAdapter implements MessagingAdapter {
       `<b>${this.escapeHtml(item.title)}</b>`,
       this.escapeHtml(String(item.summary ?? '').slice(0, 400)),
     ].filter(Boolean).join('\n');
+    // `line` is caller-authored, already-escaped Telegram HTML (<b> title +
+    // escaped summary). It MUST be sent with formatMode:'html' so the markdown
+    // converter does not re-escape the tags into literal `<b>`/`</b>` text — the
+    // exact rendering bug seen in this lane (2026-07-14), and the same fix the
+    // intro post and the attention-hub post already carry.
     // @silent-fallback-ok — best-effort lane post; the item is already recorded in
     // the attention store, so a transient send failure is non-fatal. If the topic
     // was deleted out from under us, drop the cached id so it's recreated next time.
-    await this.sendToTopic(topicId, line).catch(() => { this.agentHealthTopicId = null; });
+    await this.sendToTopic(topicId, line, { formatMode: 'html' }).catch(() => { this.agentHealthTopicId = null; });
     return topicId;
   }
 
@@ -4848,11 +4885,16 @@ export class TelegramAdapter implements MessagingAdapter {
     // Fire topic message callback (always fires — General topic falls back to ID 1)
     if (this.onTopicMessage) {
       try {
-        Promise.resolve(this.onTopicMessage(message)).catch(err => {
-          console.error(`[telegram] Topic message handler error: ${err}`);
-        });
+        // The poll offset advances only after processUpdate returns. Await the
+        // routing acknowledgment so restart redrive cannot race an unsettled
+        // single-agent cross-machine forward.
+        await this.onTopicMessage(message);
       } catch (err) {
-        console.error(`[telegram] Topic message handler sync error: ${err}`);
+        console.error(`[telegram] Topic message handler error: ${err}`);
+        // Propagate to poll(): it must NOT persist this update's offset. The
+        // original platform identity makes a late completion + redelivery
+        // idempotent at the owner receipt seam.
+        throw err;
       }
     }
 

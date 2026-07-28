@@ -15,6 +15,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { classifyCadenceLiveness } from './cadenceLiveness.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MachineIdentityManager } from './MachineIdentity.js';
@@ -240,6 +241,10 @@ export class MultiMachineCoordinator extends EventEmitter {
    * `watchdogReArmTimes` is a rolling window of re-arm timestamps for self-disarm.
    */
   private tickWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /** Positive evidence that the main monitor interval was installed. Before
+   * its first callback this is the cadence baseline; a missing first tick can
+   * therefore become provably stale without treating bare zero as failure. */
+  private heartbeatMonitorArmedMonoMs: number = 0;
   private lastTickRunMonoMs: number = 0;
   private leaseTickStartMonoMs: number = 0;
   private leasePullStartMonoMs: number = 0;
@@ -1319,9 +1324,13 @@ export class MultiMachineCoordinator extends EventEmitter {
   /**
    * One pull tick: fan-out pull every peer, fold the freshest lease into our
    * view, reconcile role (a pulled HIGHER-epoch peer fences us → auto-demote),
-   * then surface a SAME-epoch contested split-brain Near-Silently. Pull is for
-   * LEARNING (anti-blinding); the heartbeat tickLease remains the only path that
-   * ACTS (acquire/renew). Re-arms via `arm` even on failure.
+   * then surface a SAME-epoch contested split-brain Near-Silently. A successful
+   * peer observation also nudges the normal fenced lease tick: this closes the
+   * phase gap where stale-holder eligibility becomes true just after the slow
+   * 2-minute heartbeat tick and takeover otherwise waits almost another full
+   * heartbeat period. The nudge does not add authority — tickLease still owns
+   * every acquire/renew decision and all its observe-only/preferred/fencing
+   * gates. Re-arms via `arm` even on failure.
    */
   private async tickLeasePull(arm: () => void): Promise<void> {
     if (this.leasePulling) { arm(); return; }
@@ -1363,6 +1372,18 @@ export class MultiMachineCoordinator extends EventEmitter {
         // §Problem A — ACT on a same-epoch contested tie (not just surface it):
         // deterministic tie-break → loser relinquishes / winner advances once.
         await this.resolveContestedSplitBrain();
+        // CMT-984/CMT-992 — automatic serving takeover must follow the existing
+        // 5s anti-blinding pull cadence, not the unrelated 2-minute heartbeat
+        // phase. Once F2's monotonic non-renewal window opens (or the observed
+        // lease expires), immediately re-run the ONE authoritative lease actor.
+        // tickLease's reentrancy guard makes this safe against a concurrent
+        // heartbeat tick; observe-only machines still refuse to acquire.
+        if (
+          !this.leaseCoordinator!.holdsLease() &&
+          this.leaseCoordinator!.peerTakeoverEligible()
+        ) {
+          await this.tickLease();
+        }
       }
     } catch {
       // @silent-fallback-ok — a pull failure (incl. a bounded-await timeout) is retried next tick
@@ -1626,9 +1647,15 @@ export class MultiMachineCoordinator extends EventEmitter {
       // No lease coordinator (solo / non-git mesh) ⇒ nothing to self-heal.
       if (!this.leaseCoordinator) return;
       const now = this.monoNowMs();
-      // lastTickRunMonoMs is stamped at the TOP of checkHeartbeatAndAct; if it
-      // has not advanced within the stale window, the main loop is stalled.
-      if (this.lastTickRunMonoMs > 0 && now - this.lastTickRunMonoMs <= cfg.staleMs) return;
+      // Absence of a first tick sample is UNKNOWN by itself (P20), but the
+      // successful timer-arm event is positive evidence and starts a bounded
+      // first-fire deadline. This catches a main interval lost before callback
+      // #1 without calling ordinary startup a recovered stall.
+      const cadenceBaseline = this.lastTickRunMonoMs > 0
+        ? this.lastTickRunMonoMs
+        : this.heartbeatMonitorArmedMonoMs;
+      const liveness = classifyCadenceLiveness(cadenceBaseline, now, cfg.staleMs);
+      if (liveness.state !== 'stale') return;
 
       // Ceiling-gated guard reset: only clear a guard whose in-flight tick is
       // ALSO older than the ceiling (a stuck guard, not a slow-but-live tick).
@@ -1696,6 +1723,10 @@ export class MultiMachineCoordinator extends EventEmitter {
     this.heartbeatCheckTimer = setInterval(() => {
       this.checkHeartbeatAndAct();
     }, HEARTBEAT_CHECK_INTERVAL_MS);
+    // `0` is the explicit uninitialized sentinel for cadence watermarks. A
+    // freshly-booted monotonic clock (and fake-timer E2E) may legitimately read
+    // zero, so preserve the successful arm as a positive value.
+    this.heartbeatMonitorArmedMonoMs = Math.max(1, this.monoNowMs());
 
     if (this.heartbeatCheckTimer.unref) {
       this.heartbeatCheckTimer.unref();

@@ -54,7 +54,7 @@ function buildHarness(opts: { wireRevocation: boolean; enabled: boolean }) {
   const gate = new MandateGate({ store, conditions, audit });
 
   const pool = new SubscriptionPool({ stateDir: dir });
-  pool.add({
+  pool.addFixture({
     id: 'acct-x',
     nickname: 'SageMind - Justin',
     email: 'justin@example.com',

@@ -167,6 +167,20 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // SelfHealGate's first hardware-local relief consumer. Governor admission
+    // is capacity telemetry; the durable episode store owns the 3-attempt cap.
+    controllerId: 'feedback-factory-generated-defaults-heal',
+    actionVerb: 'retry-generated-defaults-repair',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 6,
+    windowMs: 60 * 60_000,
+    rateBucket: { ratePerWindow: 6, windowMs: 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Crash-loop respawn (amplifying) — distinct from respawn-recovery.
     controllerId: 'respawn-crashloop',
     actionVerb: 'session-respawn',

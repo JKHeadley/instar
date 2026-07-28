@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-23T20:54:06.065Z",
+  "slug": "second-node-autostart-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 48,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

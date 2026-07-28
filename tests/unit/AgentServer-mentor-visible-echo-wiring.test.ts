@@ -10,15 +10,16 @@ vi.mock('../../src/core/AgentRegistry.js', () => ({ listAgents }));
 vi.mock('../../src/messaging/AgentTokenManager.js', () => ({ getAgentToken }));
 
 describe('AgentServer mentor visible-echo wiring', () => {
-  it('runs the echo only inside successful inbox-local delivery, before fallback', () => {
+  it('runs the echo only after canonical inbox acceptance and has no Telegram delivery fallback', () => {
     const src = fs.readFileSync(new URL('../../src/server/AgentServer.ts', import.meta.url), 'utf8');
     const localSuccess = src.indexOf('if (result.agentMessage === true)');
     const echo = src.indexOf('void sendMentorVisibleEcho(opts.body, opts.visibleEcho)');
-    const fallback = src.indexOf('// ── Cross-machine Telegram fallback');
+    const noAuthority = src.indexOf('// Telegram bot-to-bot sends are never a delivery authority');
     expect(localSuccess).toBeGreaterThan(-1);
     expect(echo).toBeGreaterThan(localSuccess);
-    expect(echo).toBeLessThan(fallback);
-    expect(src.slice(fallback, fallback + 2000)).not.toContain('sendMentorVisibleEcho');
+    expect(echo).toBeLessThan(noAuthority);
+    expect(src.slice(noAuthority, noAuthority + 500)).not.toContain('sendMentorVisibleEcho');
+    expect(src).not.toContain('Legacy Telegram fallback');
   });
 
   it('wires mentor prompts with default-on config, existing bot, and resolved topic', () => {
@@ -59,5 +60,52 @@ describe('AgentServer mentor visible-echo wiring', () => {
     expect(visibleSend).toHaveBeenCalledTimes(1);
     expect(fallbackSend).not.toHaveBeenCalled();
     fetchMock.mockRestore();
+  });
+
+  it('counts mesh delivery only after inbox acceptance and mirrors only after acceptance', async () => {
+    listAgents.mockReturnValue([]);
+    const appendSent = vi.fn();
+    const server = Object.create(AgentServer.prototype) as AgentServer & Record<string, unknown>;
+    server.config = { projectName: 'echo' } as never;
+    server.getOrCreateA2aLedger = () => ({ appendSent }) as never;
+    const meshDeliver = vi.fn(async () => ({ ok: true, agentMessage: true }));
+    server.deliverA2aToMachine = meshDeliver;
+    const visibleSend = vi.fn(async () => ({ messageId: 7 }));
+
+    const delivered = await (server as any).deliverA2aMessage({
+      fromAgent: 'echo', toAgent: 'instar-codey', targetMachineId: 'mini',
+      role: 'mentor', corr: 'mesh-1', body: 'real prompt', allowedRoles: new Set(['mentor']),
+      telegramTopicId: 458, fromBotId: 'mentor-bot',
+      visibleEcho: { enabled: true, topicId: 458, roleTag: '[mentor]', bot: { sendToTopic: visibleSend } },
+    });
+
+    expect(delivered).toBe(true);
+    expect(meshDeliver).toHaveBeenCalledWith(expect.objectContaining({ machineId: 'mini', targetAgent: 'instar-codey', senderBotId: 'mentor-bot' }));
+    expect(appendSent).toHaveBeenCalledWith(expect.objectContaining({ result: 'sent', transport: 'a2a-inbox-mesh' }));
+    await vi.waitFor(() => expect(visibleSend).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not count a Telegram mirror as delivery when the mesh inbox refuses', async () => {
+    listAgents.mockReturnValue([]);
+    const appendSent = vi.fn();
+    const server = Object.create(AgentServer.prototype) as AgentServer & Record<string, unknown>;
+    server.config = { projectName: 'echo' } as never;
+    server.getOrCreateA2aLedger = () => ({ appendSent }) as never;
+    server.deliverA2aToMachine = vi.fn(async () => ({ ok: false, agentMessage: false, reason: 'not-routed' }));
+    const mirror = vi.fn(async () => ({ messageId: 8 }));
+    const legacyFallback = vi.fn(async () => ({ messageId: 9 }));
+
+    const delivered = await (server as any).deliverA2aMessage({
+      fromAgent: 'echo', toAgent: 'instar-codey', targetMachineId: 'mini',
+      role: 'mentor', corr: 'mesh-2', body: 'prompt', allowedRoles: new Set(['mentor']),
+      telegramTopicId: 458, fromBotId: 'mentor-bot', toBotId: 'mentee-bot', botToken: '1:x',
+      telegramBot: { sendToTopic: legacyFallback },
+      visibleEcho: { enabled: true, topicId: 458, roleTag: '[mentor]', bot: { sendToTopic: mirror } },
+    });
+
+    expect(delivered).toBe(false);
+    expect(appendSent).not.toHaveBeenCalled();
+    expect(mirror).not.toHaveBeenCalled();
+    expect(legacyFallback).not.toHaveBeenCalled();
   });
 });

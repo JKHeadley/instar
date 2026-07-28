@@ -96,3 +96,4 @@
 {"ts":"2026-06-20T20:35:05.000Z","slug":"mm-b1-poll-intent-producer","suggestedTier":1,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["multi-machine lease/recovery + fleet-rollout config"],"belowFloor":false,"files":3,"loc":130}
 {"ts":"2026-06-20T20:35:06.000Z","slug":"mm-b1-lifeline-consumer","suggestedTier":1,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["multi-machine lease/recovery + fleet-rollout config"],"belowFloor":false,"files":5,"loc":170}
 {"ts":"2026-06-20T20:35:07.000Z","slug":"mm-b5-pollingactive-heartbeat","suggestedTier":1,"declaredTier":2,"riskFloor":2,"riskFloorReasons":["multi-machine lease/recovery + fleet-rollout config"],"belowFloor":false,"files":5,"loc":80}
+{"ts":"2026-07-16T01:55:00.000Z","slug":"claude-ultracode-spawn","suggestedTier":1,"declaredTier":1,"riskFloor":1,"riskFloorReasons":["additive dark per-spawn prompt transform; no persistent state or authority expansion"],"belowFloor":false,"files":8,"loc":120}

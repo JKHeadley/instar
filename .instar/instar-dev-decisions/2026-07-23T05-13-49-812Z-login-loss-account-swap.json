@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-23T05:13:49.812Z",
+  "slug": "login-loss-account-swap",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/swap-continuity-wiring.test.ts",
+      "howCaught": "The login-loss level trigger settles through source repair or one bounded refresh and remains constrained by dwell, in-flight deferral, failure backoff, per-target and per-cycle caps, and the existing thrash breaker."
+    }
+  },
+  "verdict": "blocked"
+}

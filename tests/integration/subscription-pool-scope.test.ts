@@ -22,10 +22,11 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 const PROJECT_NAME = 'subscription-pool-scope-it';
 let AUTH = '';
 
-interface Acct { id: string; nickname: string; provider: string; framework: string; configHome: string; status: string }
+interface Acct { id: string; nickname: string; provider: string; framework: string; configHome: string; status: string; email: string }
 const acct = (id: string): Acct => ({
   id, nickname: id, provider: 'anthropic', framework: 'claude-code',
   configHome: `/home/.config/${id}`, status: 'active',
+  email: `${id}@example.com`,
 });
 
 interface CtxOpts {

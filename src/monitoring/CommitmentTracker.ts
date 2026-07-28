@@ -32,6 +32,30 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 export type CommitmentType = 'config-change' | 'behavioral' | 'one-time-action';
 export type CommitmentStatus = 'pending' | 'verified' | 'violated' | 'expired' | 'withdrawn' | 'delivered';
 
+export class CommitmentPersistenceError extends Error {
+  readonly code = 'COMMITMENT_PERSISTENCE_FAILED';
+  constructor(readonly errorClass: 'mkdir' | 'temp-write' | 'rename') {
+    super(`Commitment store persistence failed (${errorClass})`);
+    this.name = 'CommitmentPersistenceError';
+  }
+}
+
+export type BlockerLifecycleFactor = 'request-to-persist' | 'clear-latency';
+export interface BlockerEpisode {
+  schemaVersion: 1;
+  episodeId: string;
+  startedAtMs: number | null;
+  requestEventExpected: boolean;
+  originMachineId: string;
+  initialClass: 'external' | 'user-input' | 'user-authorization';
+  transitions: Array<{ atMs: number; from: string; to: string }>;
+  transitionOverflowCount: number;
+  closedAtMs?: number;
+  closeReason?: 'cleared' | 'delivered' | 'withdrawn' | 'expired';
+  clearSourceId?: string;
+  clearTelemetryCompleteAtMs?: number;
+}
+
 export interface Commitment {
   /** Unique identifier (CMT-xxx) */
   id: string;
@@ -75,6 +99,9 @@ export interface Commitment {
   boundBy?: string;
   /** Source: 'agent' (self-registered) or 'sentinel' (detected by LLM scanner) */
   source?: 'agent' | 'sentinel' | 'manual';
+  /** Exact motivating correction provenance for correspondence-gated work. */
+  correctionId?: string;
+  classReviewRef?: string;
 
   // ── C1+C2 "The Agent Carries the Loop" state model (owner ⟂ blockedOn) ──
   // Two ORTHOGONAL fields (spec agent-owned-followthrough §4.1, FD1/FD6):
@@ -88,6 +115,10 @@ export interface Commitment {
   owner?: 'agent' | 'user';
   /** What the next action waits on. Default 'none'. */
   blockedOn?: 'none' | 'external' | 'user-input' | 'user-authorization';
+  /** throughput-metrics v1: authoritative bounded blocker lifecycle handoff. */
+  blockerEpisodes?: BlockerEpisode[];
+  /** Capacity fallback pairing one dropped open with its later clear. */
+  blockerMeasurementDropped?: { openedAtMs: number };
   /**
    * For an owner:'agent' commitment whose work is side-effecting: the agent's
    * self-declared action class. INERT in C1+C2 (well-formedness-validated only,
@@ -197,6 +228,45 @@ export interface Commitment {
    * and cadence continues (see Round 3 clarification #4).
    */
   nextUpdateDueAt?: string;
+  /**
+   * A SPECIFIC promised moment — "I'll check in on this by Friday" (ACT-724).
+   * Exactly one reminder is posted to `topicId` when it arrives; see
+   * docs/specs/dated-commitment-reminder.md.
+   *
+   * DELIBERATELY NOT `nextUpdateDueAt`. That field is PromiseBeacon cadence
+   * input with live semantics — it moves as the beacon nudges. Overloading it
+   * would make a one-time dated reminder and a rolling cadence each a side
+   * effect of the other, so a date could be silently rescheduled by unrelated
+   * cadence logic. A promise with a date is a different thing from a nudge
+   * interval, and gets its own field.
+   */
+  checkInAt?: string;
+  /**
+   * Set ONLY after the reminder has actually been delivered.
+   *
+   * The name is load-bearing: an earlier draft stamped this BEFORE sending, so
+   * a failed send left a commitment permanently marked "sent" and the reminder
+   * never fired again — a field asserting a delivery that never happened, on a
+   * feature whose whole purpose is that promises are not silently dropped.
+   * (External review, 2026-07-25.) Send first; stamp only on success.
+   *
+   * Duplicates from a crash between send and stamp are absorbed by the relay's
+   * existing content dedup (identical text to the same topic inside its window),
+   * so at-least-once delivery does not become at-least-twice.
+   */
+  checkInReminderSentAt?: string;
+  /**
+   * How many delivery attempts have been made. Bounds retry so a permanently
+   * broken transport cannot be hammered forever, while a transient failure
+   * still gets another chance — the thing stamp-before-send gave away.
+   */
+  checkInReminderAttempts?: number;
+  /**
+   * Set when retries were EXHAUSTED without delivery. A loud give-up: the
+   * reminder is genuinely undelivered and this is the record that says so,
+   * rather than a "sent" stamp that quietly lies.
+   */
+  checkInReminderFailedAt?: string;
   /** Soft deadline — past it, cadence doubles (no terminal transition). */
   softDeadlineAt?: string;
   /** Hard deadline — past it, commitment transitions to `expired`. */
@@ -319,6 +389,8 @@ export interface CommitmentStore {
    *  replica wholesale on incarnation change instead of stranding behind a
    *  higher remembered seq (the journal §3.4 rule 3 cure). */
   storeIncarnation?: string;
+  /** Content-free daily missing-sample counters, bounded to 30 UTC days. */
+  blockerEpisodeDropBuckets?: Record<string, { request: number; clear: number }>;
 }
 
 export interface CommitmentVerificationReport {
@@ -362,6 +434,8 @@ export interface CommitmentTrackerConfig {
    *  commitment (P1.5 §3.1). Absent on single-machine agents pre-mesh; records
    *  created without it are legacy-local by definition. */
   originMachineId?: string;
+  /** Dark measure-only blocker lifecycle instrumentation. */
+  blockerLifecycleEnabled?: boolean;
   /** Check interval in ms. Default: 60_000 (1 minute) */
   checkIntervalMs?: number;
   /** Auto-expire old agent-owned open commitments. Defaults: enabled, 21d, 6h, dry-run. */
@@ -437,6 +511,8 @@ export class CommitmentTracker extends EventEmitter {
    */
   private batchingSaves = false;
   private pendingSave = false;
+  private batchSnapshot: CommitmentStore | null = null;
+  private pendingBindingReleases: Array<{ before: Commitment; after: Commitment }> = [];
 
   /**
    * Single-writer FIFO queues, keyed by commitment id. Every write path
@@ -475,6 +551,7 @@ export class CommitmentTracker extends EventEmitter {
    * already `delivered`/`withdrawn`/`expired` are skipped.
    */
   private backfillUnverifiableOneTimeActions(): void {
+    const rollback = structuredClone(this.store);
     let changed = 0;
     for (const c of this.store.commitments) {
       if (c.type !== 'one-time-action') continue;
@@ -497,7 +574,11 @@ export class CommitmentTracker extends EventEmitter {
     }
     if (changed > 0) {
       try {
-        this.saveStore();
+        const saved = this.saveStore();
+        if (saved.state === 'failed') {
+          this.store = rollback;
+          throw new CommitmentPersistenceError(saved.errorClass);
+        }
         console.log(
           `[CommitmentTracker] Backfill: ${changed} unverifiable one-time-action(s) transitioned to delivered`,
         );
@@ -593,6 +674,8 @@ export class CommitmentTracker extends EventEmitter {
     blockedOn?: 'none' | 'external' | 'user-input' | 'user-authorization';
     actionClass?: string;
     supersededBy?: string;
+    correctionId?: string;
+    classReviewRef?: string;
     /** §7: the verified bind principal (`session:<name>` from the verified
      *  token payload, or `server:<component>` for in-process callers) —
      *  recorded by the GATE, never trusted from a request body. */
@@ -668,6 +751,8 @@ export class CommitmentTracker extends EventEmitter {
       ...(boundTuple ? { boundTuple } : {}),
       ...(input.boundBy ? { boundBy: input.boundBy } : {}),
       source: input.source ?? 'agent',
+      ...(input.correctionId ? { correctionId: input.correctionId } : {}),
+      ...(input.classReviewRef ? { classReviewRef: input.classReviewRef } : {}),
       // C1+C2 "The Agent Carries the Loop" state model (spec §4.1).
       owner,
       blockedOn,
@@ -775,7 +860,9 @@ export class CommitmentTracker extends EventEmitter {
   resume(id: string): Commitment | null {
     const existing = this.store.commitments.find(c => c.id === id);
     if (!existing) return null;
-    if (['verified', 'violated', 'expired', 'withdrawn', 'delivered'].includes(existing.status)) {
+    // verified/violated are observation states and may oscillate; only lifecycle
+    // closure states permanently forbid a blocker-state transition.
+    if (['expired', 'withdrawn', 'delivered'].includes(existing.status)) {
       return null;
     }
     if (!existing.beaconPaused) return null;
@@ -983,15 +1070,35 @@ export class CommitmentTracker extends EventEmitter {
       blockedOn: patch.blockedOn ?? existing.blockedOn,
       actionClass: patch.actionClass ?? existing.actionClass,
     });
+    const supersededBy = patch.supersededBy !== undefined
+      ? patch.supersededBy.trim() || undefined
+      : existing.supersededBy;
+    if (
+      owner === existing.owner && blockedOn === (existing.blockedOn ?? 'none') &&
+      actionClass === existing.actionClass && supersededBy === existing.supersededBy
+    ) return existing;
+    // Origin-local request-to-persist clock starts after all structural
+    // validation and immediately before the authoritative synchronous mutation.
+    const persistStartedNs = process.hrtime.bigint();
     const updated = this.mutateSync(id, c => ({
       ...c,
       owner,
       blockedOn,
       actionClass,
-      ...(patch.supersededBy !== undefined
-        ? { supersededBy: patch.supersededBy.trim() || undefined }
-        : {}),
+      supersededBy,
     }));
+    if (this.config.blockerLifecycleEnabled && (existing.blockedOn ?? 'none') === 'none' && blockedOn !== 'none') {
+      const episode = [...(updated.blockerEpisodes ?? [])].reverse().find(e => e.closedAtMs === undefined);
+      if (episode) {
+        this.emit('blocker-request-persisted', {
+          commitmentId: updated.id,
+          episodeId: episode.episodeId,
+          sourceEventId: `blocker-lifecycle-v1:request:${episode.episodeId}`,
+          observedAtMs: Date.now(),
+          latencyMs: Number(process.hrtime.bigint() - persistStartedNs) / 1_000_000,
+        });
+      }
+    }
     this.emit('state-transitioned', { id, owner, blockedOn });
     return updated;
   }
@@ -1195,6 +1302,24 @@ export class CommitmentTracker extends EventEmitter {
     return this.store.commitments.find(c => c.id === id) ?? null;
   }
 
+  getBlockerEpisodeDropBuckets(): Record<string, { request: number; clear: number }> {
+    return structuredClone(this.store.blockerEpisodeDropBuckets ?? {});
+  }
+
+  markBlockerClearTelemetryComplete(commitmentId: string, episodeId: string, atMs = Date.now()): boolean {
+    const commitment = this.get(commitmentId);
+    const episode = commitment?.blockerEpisodes?.find(e => e.episodeId === episodeId);
+    if (!commitment || !episode || episode.closedAtMs === undefined) return false;
+    if (episode.clearTelemetryCompleteAtMs !== undefined) return true;
+    this.mutateSync(commitmentId, current => ({
+      ...current,
+      blockerEpisodes: (current.blockerEpisodes ?? []).map(e => e.episodeId === episodeId
+        ? { ...e, clearTelemetryCompleteAtMs: atMs }
+        : e),
+    }));
+    return true;
+  }
+
   // ── Verification ───────────────────────────────────────────────
 
   /**
@@ -1210,7 +1335,7 @@ export class CommitmentTracker extends EventEmitter {
     // (see `batchingSaves`): each `mutateSync()` below otherwise writes the whole
     // store, so a sweep over N commitments did O(N) full-store serializations and
     // froze the event loop for minutes on a large store.
-    this.batchingSaves = true;
+    this.beginSaveBatch();
     try {
       // Expire old commitments first
       this.expireCommitments();
@@ -1239,11 +1364,7 @@ export class CommitmentTracker extends EventEmitter {
 
       pending = active.filter(c => c.status === 'pending').length;
     } finally {
-      this.batchingSaves = false;
-      if (this.pendingSave) {
-        this.pendingSave = false;
-        this.saveStore();
-      }
+      this.finishSaveBatch();
     }
 
     const report: CommitmentVerificationReport = {
@@ -1305,14 +1426,39 @@ export class CommitmentTracker extends EventEmitter {
       return null;
     }
 
+    // A BEHAVIOURAL commitment is not automatically verifiable either, and it
+    // suffered the identical defect the block above was written to cure —
+    // measured live on 2026-07-26: CMT-068 at 162,344 violation ticks, and four
+    // commitments created in the same minute holding IDENTICAL counts (80,425),
+    // which individual behaviour cannot produce.
+    //
+    // The old check asked whether the commitment's ID appeared in the behavioural
+    // rules file. That file is written BY THIS CLASS from its own active list, and
+    // nothing else on the machine reads it (verified across the whole agent home),
+    // so the check verified that the system had written its own file. Its result
+    // was decided entirely by whether the optional `behavioralRule` field was
+    // populated: 74 commitments WITH the field all read `verified`; 24 WITHOUT it
+    // all read `violated`. 98 of 98, no exceptions. Not one observed behaviour.
+    //
+    // "Verified" was therefore false comfort and "violated" a false alarm — a
+    // missing optional field is not a broken promise. Same resolution as above:
+    // returning null neither violates nor delivers, so closure stays explicit
+    // (deliver()/markDelivered(), or `expiresAt`) and the overdue surfacing keeps
+    // it visible meanwhile. A promise nobody can verify should NAG, not vanish —
+    // and must never be reported as kept.
+    if (commitment.type === 'behavioral') {
+      // Preserve the one genuinely useful side effect of the old path: the rules
+      // file self-heals if it has gone missing. That is bookkeeping repair, and
+      // it is no longer mistaken for evidence about the promise.
+      this.ensureBehavioralRulesFile();
+      return null;
+    }
+
     let result: { passed: boolean; detail: string };
 
     switch (commitment.type) {
       case 'config-change':
         result = this.verifyConfigChange(commitment);
-        break;
-      case 'behavioral':
-        result = this.verifyBehavioral(commitment);
         break;
       case 'one-time-action':
         result = this.verifyOneTimeAction(commitment);
@@ -1420,9 +1566,19 @@ export class CommitmentTracker extends EventEmitter {
       };
     }
 
+    // "all verified" was a claim about commitments the sweep had never observed —
+    // the same conflation fixed at the behavioural early-return in `verifyOne`.
+    // Report what is actually known: how many carry a real verification, and how
+    // many are simply not automatically checkable. Absence of violations is not
+    // evidence of compliance.
+    const verified = active.filter(c => c.status === 'verified').length;
+    const unverified = active.length - verified;
     return {
       status: 'healthy',
-      message: `${active.length} commitment(s) tracked, all verified`,
+      message:
+        unverified === 0
+          ? `${active.length} commitment(s) tracked, all verified`
+          : `${active.length} commitment(s) tracked — ${verified} verified, ${unverified} not automatically verifiable (no violations)`,
       lastCheck: new Date().toISOString(),
     };
   }
@@ -1445,24 +1601,24 @@ export class CommitmentTracker extends EventEmitter {
     };
   }
 
-  private verifyBehavioral(commitment: Commitment): { passed: boolean; detail: string } {
-    // Behavioral commitments are "verified" if the rule text exists in the rules file
-    if (!commitment.behavioralRule) {
-      return { passed: false, detail: 'Missing behavioralRule on behavioral commitment' };
-    }
-
+  /**
+   * Self-heal the behavioural rules file if it has gone missing.
+   *
+   * REPLACES `verifyBehavioral`, which returned this file's contents as a VERDICT
+   * on whether a promise had been kept. Presence of a commitment's id in a file
+   * this class writes from its own active list is bookkeeping, not behaviour — see
+   * the reasoning at the behavioural early-return in `verifyOne`. Repairing the
+   * file is still worth doing; it just is not evidence about the promise, so this
+   * returns nothing.
+   */
+  private ensureBehavioralRulesFile(): void {
     try {
       if (!fs.existsSync(this.rulesPath)) {
         this.writeBehavioralRules();
       }
-      const content = fs.readFileSync(this.rulesPath, 'utf-8');
-      const hasRule = content.includes(commitment.id);
-      return {
-        passed: hasRule,
-        detail: hasRule ? 'Behavioral rule present in injection file' : 'Behavioral rule missing from injection file — regenerating',
-      };
     } catch {
-      return { passed: false, detail: 'Failed to read behavioral rules file' };
+      // @silent-fallback-ok — the rules file is nice-to-have; a failure here must
+      // never affect a commitment's status (that conflation was the defect).
     }
   }
 
@@ -1630,7 +1786,7 @@ export class CommitmentTracker extends EventEmitter {
 
     if (!config.dryRun && targets.length > 0) {
       const reason = `auto-expired: aged out >${config.maxAgeDays}d, presumed completed-but-unclosed`;
-      this.batchingSaves = true;
+      this.beginSaveBatch();
       try {
         for (const id of targets) {
           const updated = this.expireSync(id, reason, timestamp);
@@ -1640,11 +1796,7 @@ export class CommitmentTracker extends EventEmitter {
         }
         if (report.expired > 0) this.writeBehavioralRules();
       } finally {
-        this.batchingSaves = false;
-        if (this.pendingSave) {
-          this.pendingSave = false;
-          this.saveStore();
-        }
+        this.finishSaveBatch();
       }
     }
 
@@ -1799,13 +1951,22 @@ export class CommitmentTracker extends EventEmitter {
         continue;
       }
 
+      // Snapshot only AFTER the awaited draft and successful CAS. From here to
+      // save/rollback there is no await, so restoring cannot erase an unrelated
+      // mutation that committed while fn() was suspended.
+      const rollback = structuredClone(this.store);
+      const withLifecycle = this.applyBlockerLifecycle(current, next);
       const committed: Commitment = this.stampReplicationIfMeaningful(
         current,
-        { ...next, version: observedVersion + 1 },
+        { ...withLifecycle, version: observedVersion + 1 },
       );
       this.store.commitments[latestIdx] = committed;
-      this.saveStore();
-      this.maybeReleaseConversationBinding(current, committed);
+      const saved = this.saveStore();
+      if (saved.state === 'failed') {
+        this.store = rollback;
+        throw new CommitmentPersistenceError(saved.errorClass);
+      }
+      this.afterPersistedMutation(current, committed, saved.state);
       return committed;
     }
     throw new Error(
@@ -1829,14 +1990,111 @@ export class CommitmentTracker extends EventEmitter {
     const current = this.store.commitments[idx];
     const observedVersion = current.version ?? 0;
     const next = fn({ ...current });
+    const rollback = this.batchingSaves ? null : structuredClone(this.store);
+    const withLifecycle = this.applyBlockerLifecycle(current, next);
     const committed: Commitment = this.stampReplicationIfMeaningful(
       current,
-      { ...next, version: observedVersion + 1 },
+      { ...withLifecycle, version: observedVersion + 1 },
     );
     this.store.commitments[idx] = committed;
-    this.saveStore();
-    this.maybeReleaseConversationBinding(current, committed);
+    const saved = this.saveStore();
+    if (saved.state === 'failed') {
+      if (rollback) this.store = rollback;
+      throw new CommitmentPersistenceError(saved.errorClass);
+    }
+    this.afterPersistedMutation(current, committed, saved.state);
     return committed;
+  }
+
+  private afterPersistedMutation(before: Commitment, after: Commitment, state: 'committed' | 'deferred'): void {
+    if (state === 'deferred') {
+      this.pendingBindingReleases.push({ before, after });
+      return;
+    }
+    this.emitPersistedMutationEffects(before, after);
+  }
+
+  private emitPersistedMutationEffects(before: Commitment, after: Commitment): void {
+    this.maybeReleaseConversationBinding(before, after);
+    if (!this.config.blockerLifecycleEnabled) return;
+    const beforeById = new Map((before.blockerEpisodes ?? []).map(e => [e.episodeId, e]));
+    for (const episode of after.blockerEpisodes ?? []) {
+      const prior = beforeById.get(episode.episodeId);
+      if (episode.closedAtMs !== undefined && prior?.closedAtMs === undefined) {
+        this.emit('blocker-episode-closed', { commitmentId: after.id, episode: { ...episode } });
+      }
+    }
+  }
+
+  private applyBlockerLifecycle(before: Commitment, candidate: Commitment): Commitment {
+    if (!this.config.blockerLifecycleEnabled) return candidate;
+    const now = Date.now();
+    const from = before.blockedOn ?? 'none';
+    const to = candidate.blockedOn ?? 'none';
+    let episodes = (before.blockerEpisodes ?? []).map(e => ({ ...e, transitions: [...e.transitions] }));
+    let dropped = before.blockerMeasurementDropped ? { ...before.blockerMeasurementDropped } : undefined;
+
+    const trueTerminal = (s: CommitmentStatus): s is 'delivered' | 'withdrawn' | 'expired' =>
+      s === 'delivered' || s === 'withdrawn' || s === 'expired';
+    const closing = (from !== 'none' && to === 'none') ||
+      (!trueTerminal(before.status) && trueTerminal(candidate.status));
+
+    if (from === 'none' && to !== 'none') {
+      const retained = episodes.filter(e => e.closedAtMs === undefined || e.clearTelemetryCompleteAtMs === undefined);
+      const confirmed = episodes.filter(e => e.closedAtMs !== undefined && e.clearTelemetryCompleteAtMs !== undefined)
+        .sort((a, b) => (a.closedAtMs ?? 0) - (b.closedAtMs ?? 0));
+      episodes = [...retained, ...confirmed].slice(-64);
+      if (retained.length >= 64) {
+        this.incrementBlockerDropBucket('request', now);
+        dropped = { openedAtMs: now };
+      } else {
+        episodes.push({
+          schemaVersion: 1,
+          episodeId: randomUUID(),
+          startedAtMs: now,
+          requestEventExpected: true,
+          originMachineId: this.config.originMachineId ?? 'local',
+          initialClass: to,
+          transitions: [],
+          transitionOverflowCount: 0,
+        });
+        episodes = episodes.slice(-64);
+      }
+    } else if (from !== 'none' && to !== 'none' && from !== to) {
+      const open = [...episodes].reverse().find(e => e.closedAtMs === undefined);
+      if (open) {
+        const entry = { atMs: now, from, to };
+        if (open.transitions.length < 16) open.transitions.push(entry);
+        else {
+          open.transitions = [...open.transitions.slice(0, 8), ...open.transitions.slice(-7), entry];
+          open.transitionOverflowCount++;
+        }
+      }
+    }
+
+    if (closing) {
+      if (dropped) {
+        this.incrementBlockerDropBucket('clear', now);
+        dropped = undefined;
+      }
+      const open = [...episodes].reverse().find(e => e.closedAtMs === undefined);
+      if (open) {
+        open.closedAtMs = now;
+        open.closeReason = trueTerminal(candidate.status) ? candidate.status : 'cleared';
+        open.clearSourceId = `blocker-lifecycle-v1:clear:${open.episodeId}`;
+      }
+    }
+    return { ...candidate, blockerEpisodes: episodes, blockerMeasurementDropped: dropped };
+  }
+
+  private incrementBlockerDropBucket(kind: 'request' | 'clear', atMs: number): void {
+    const day = new Date(atMs).toISOString().slice(0, 10);
+    const buckets = { ...(this.store.blockerEpisodeDropBuckets ?? {}) };
+    const bucket = { ...(buckets[day] ?? { request: 0, clear: 0 }) };
+    bucket[kind]++;
+    buckets[day] = bucket;
+    const keep = Object.keys(buckets).sort().slice(-30);
+    this.store.blockerEpisodeDropBuckets = Object.fromEntries(keep.map(k => [k, buckets[k]]));
   }
 
   /**
@@ -1881,12 +2139,17 @@ export class CommitmentTracker extends EventEmitter {
    * writes through mutate(id, fn).
    */
   private insertNew(commitment: Commitment): Commitment {
+    const rollback = structuredClone(this.store);
     const withVersion: Commitment = this.stampReplicationIfMeaningful(
       null, // creation is always state-meaningful (P1.5 §3.2)
       { ...commitment, version: commitment.version ?? 0 },
     );
     this.store.commitments.push(withVersion);
-    this.saveStore();
+    const saved = this.saveStore();
+    if (saved.state === 'failed') {
+      this.store = rollback;
+      throw new CommitmentPersistenceError(saved.errorClass);
+    }
     return withVersion;
   }
 
@@ -1963,22 +2226,66 @@ export class CommitmentTracker extends EventEmitter {
     };
   }
 
-  private saveStore(): void {
+  private beginSaveBatch(): void {
+    if (this.batchingSaves) throw new Error('CommitmentTracker: nested save batch refused');
+    this.batchSnapshot = structuredClone(this.store);
+    this.pendingBindingReleases = [];
+    this.pendingSave = false;
+    this.batchingSaves = true;
+  }
+
+  private finishSaveBatch(): void {
+    if (!this.batchingSaves) return;
+    this.batchingSaves = false;
+    const snapshot = this.batchSnapshot;
+    this.batchSnapshot = null;
+    const releases = this.pendingBindingReleases;
+    this.pendingBindingReleases = [];
+    if (!this.pendingSave) return;
+    this.pendingSave = false;
+    const saved = this.saveStore();
+    if (saved.state === 'failed') {
+      if (snapshot) this.store = snapshot;
+      throw new CommitmentPersistenceError(saved.errorClass);
+    }
+    for (const { before, after } of releases) this.emitPersistedMutationEffects(before, after);
+  }
+
+  private saveStore(): { state: 'committed' } | { state: 'deferred' } | {
+    state: 'failed'; errorClass: 'mkdir' | 'temp-write' | 'rename';
+  } {
     // Coalesce writes during a batched sweep (see `batchingSaves`): mark dirty
     // and let the sweep flush ONE write at the end instead of O(N) here.
     if (this.batchingSaves) {
       this.pendingSave = true;
-      return;
+      return { state: 'deferred' };
     }
     this.store.lastModified = new Date().toISOString();
+    const dir = path.dirname(this.storePath);
+    const tmpPath = `${this.storePath}.${process.pid}.tmp`;
     try {
-      const dir = path.dirname(this.storePath);
       fs.mkdirSync(dir, { recursive: true });
-      const tmpPath = `${this.storePath}.${process.pid}.tmp`;
+    } catch {
+      return { state: 'failed', errorClass: 'mkdir' };
+    }
+    try {
       // Compact (not pretty-printed): this is a machine-read state file, and at
       // ~1.6MB the indentation was pure serialization + I/O overhead per write.
       fs.writeFileSync(tmpPath, JSON.stringify(this.store) + '\n');
+    } catch {
+      return { state: 'failed', errorClass: 'temp-write' };
+    }
+    try {
       fs.renameSync(tmpPath, this.storePath);
+    } catch {
+      try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/monitoring/CommitmentTracker.ts:saveStore-temp-cleanup' }); }
+      catch { /* @silent-fallback-ok — best-effort temp cleanup */ }
+      return { state: 'failed', errorClass: 'rename' };
+    }
+    // The authoritative replacement is committed. The rewind-fence sidecar is
+    // deliberately best-effort and cannot retroactively turn success into
+    // failure (a stale sidecar is harmless; an ahead sidecar would false-trip).
+    try {
       // P1.5 §3.2 rewind fence: the meta sidecar tracks the high-water
       // replicationSeq. Written AFTER the store (a crash between leaves the
       // sidecar behind the store — harmless; ahead would false-trip the
@@ -1990,8 +2297,9 @@ export class CommitmentTracker extends EventEmitter {
         fs.renameSync(metaTmp, `${this.storePath}.meta.json`);
       }
     } catch {
-      // @silent-fallback-ok — state persistence failure, will retry next cycle
+      // @silent-fallback-ok — store rename already committed; sidecar retries later
     }
+    return { state: 'committed' };
   }
 
   /**

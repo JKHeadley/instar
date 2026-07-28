@@ -40,6 +40,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 const FRONTING = 'm_fronting';
 const HOLDER = 'm_holder';
 const AUTH = 'test-token';
+const VIEW_PIN = 'view-pin-8f4d2c9a7e6b1d35';
 
 interface Server { url: string; close: () => Promise<void>; }
 async function listen(app: express.Express): Promise<Server> {
@@ -74,7 +75,7 @@ describe('WS4.4 pool-view link proxy (§WS4.4 a–e)', () => {
     holderViewer = new PrivateViewer({ viewsDir: path.join(dir, 'holder-views') });
     const view = holderViewer.create('Secret Report', '# Top secret\nholder-only body');
     viewId = view.id;
-    const pinView = holderViewer.create('Pin Report', '# pin gated', '1234');
+    const pinView = holderViewer.create('Pin Report', '# pin gated', VIEW_PIN);
     pinViewId = pinView.id;
 
     jtiStore = new PoolLinkJtiStore({ filePath: path.join(dir, 'pool-link-jtis.json'), now: () => Date.now() });
@@ -289,7 +290,7 @@ describe('WS4.4 pool-view link proxy (§WS4.4 a–e)', () => {
       expect(capturedEnvelope.command.assertion.signature).toBeTruthy();
       // …and NOTHING resembling a raw PIN / dashboard token / view PIN.
       expect(serialized).not.toContain(AUTH); // the fronting authToken (PIN-session credential) never crosses
-      expect(serialized).not.toContain('1234'); // a view PIN never crosses
+      expect(serialized).not.toContain(VIEW_PIN); // the high-entropy view PIN never crosses
       expect(serialized).not.toMatch(/"pin"\s*:/i);
       expect(serialized).not.toMatch(/"password"\s*:/i);
     } finally {

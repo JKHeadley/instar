@@ -89,6 +89,7 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | POST | `/intent/journal` | Record a decision |
 | GET | `/intent/drift` | Detect behavioral drift |
 | GET | `/intent/alignment` | Alignment score |
+| GET | `/goal-realignment` | Bounded dry-run `GoalRealignment` status: priority intake, source completeness, and latest review verdict (development agents only) |
 | GET | `/project-map` | Auto-generated project territory map |
 | POST | `/coherence/check` | Pre-action coherence verification |
 
@@ -127,6 +128,8 @@ The endpoints behind the [EXO 3.0 Alignment](/features/exo3/) capabilities. See 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/capabilities` | Feature guide and metadata |
+| GET | `/capability-registry` | Read the advisory local capability projection; distinguishes dark, unavailable, unobserved, stale, and classified evidence |
+| GET | `/capability-registry/health` | Read advisory capability-registry observation counts and status measurements |
 | GET | `/events` | Query events (`?limit=50&since=24&type=`) |
 | GET | `/quota` | Quota usage + recommendation |
 | GET | `/agents` | List all agents on this machine |
@@ -352,6 +355,11 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /decision-quality`
 - `POST /decision-quality/grade-pass`
 
+## /benchmark-divergence
+- `GET /benchmark-divergence`
+- `POST /benchmark-divergence/analyze`
+- `GET /benchmark-divergence/rollup-aggregates`
+
 ## /delivery-queue
 - `GET /delivery-queue`
 
@@ -519,6 +527,7 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /internal/stop-gate/evaluate`
 - `POST /internal/stop-gate/kill-switch`
 - `POST /internal/stop-gate/mode`
+- `POST /internal/stop-gate/reset-breaker` — clear the authenticated authority breaker after provider repair.
 - `POST /internal/telegram-callback`
 - `POST /internal/telegram-forward`
 
@@ -1054,3 +1063,11 @@ The Slack org permission gate (dark/observe-only by default — these routes are
 
 ## /whoami
 - `GET /whoami`
+
+## /work-queue
+
+The unified work-intake and prioritization registry (`WorkQueue` — see the Work Intake &
+Prioritization Queue feature page). Development-agent gated; 503 when dark.
+
+- `GET /work-queue` — the current deterministic ranked list of normalized work items.
+- `POST /work-queue/rescore` — recompute the ranking from live sources (pure compute, no durable writes).

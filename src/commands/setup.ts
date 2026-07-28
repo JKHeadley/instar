@@ -775,6 +775,19 @@ export function launchctlLoadAllowed(): boolean {
   return !process.env.VITEST && !process.env.INSTAR_SKIP_LAUNCHCTL_LOAD;
 }
 
+export function macOSAutoStartLoadCommands(
+  label: string,
+  plistPath: string,
+  uid: number,
+): Array<[string, string[]]> {
+  const domain = `gui/${uid}`;
+  return [
+    ['launchctl', ['bootout', domain, plistPath]],
+    ['launchctl', ['enable', `${domain}/${label}`]],
+    ['launchctl', ['bootstrap', domain, plistPath]],
+  ];
+}
+
 export function installAutoStart(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
   const platform = process.platform;
 
@@ -859,6 +872,17 @@ function resolveNodeCandidates(): string[] {
     if (current && fs.existsSync(current)) candidates.add(current);
   } catch { /* not found */ }
 
+  // 1b. Every PATH entry, not only the first `which node` result. The first
+  // result can be this agent's own .instar/bin/node symlink. If that symlink is
+  // being repaired, selecting it as its own target creates a self-loop and
+  // makes the agent unbootable. A later PATH entry commonly contains the real
+  // NVM/asdf/Homebrew binary we need.
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, 'node');
+    if (fs.existsSync(candidate)) candidates.add(candidate);
+  }
+
   // 2. process.execPath — the node that's running THIS process right now
   if (fs.existsSync(process.execPath)) candidates.add(process.execPath);
 
@@ -884,6 +908,12 @@ function resolveNodeCandidates(): string[] {
   } catch { /* brew not installed or node not installed via brew */ }
 
   return [...candidates];
+}
+
+/** Remove the managed symlink itself from the target candidate set. */
+export function excludeManagedNodeSymlink(candidates: string[], symlinkPath: string): string[] {
+  const managed = path.resolve(symlinkPath);
+  return candidates.filter((candidate) => path.resolve(candidate) !== managed);
 }
 
 /**
@@ -997,8 +1027,13 @@ export function ensureStableNodeSymlink(projectDir: string): string {
   const nativeModuleExists = fs.existsSync(nativeModulePath);
 
   // Resolve all available node paths and pick the most durable ABI-compatible one
-  const candidates = resolveNodeCandidates();
-  const durablePath = pickDurableNodePath(candidates, nativeModulePath) ?? findNodePath();
+  const candidates = excludeManagedNodeSymlink(resolveNodeCandidates(), symlinkPath);
+  const fallback = findNodePath();
+  const durablePath = pickDurableNodePath(candidates, nativeModulePath)
+    ?? (path.resolve(fallback) !== path.resolve(symlinkPath) ? fallback : undefined);
+  if (!durablePath) {
+    throw new Error(`No real Node binary found outside managed symlink ${symlinkPath}`);
+  }
 
   // Check if symlink exists and already points to a valid target.
   try {
@@ -1775,12 +1810,17 @@ ${argsXml}
 
     // Load the agent (skipped under test — see launchctlLoadAllowed).
     if (launchctlLoadAllowed()) {
+      const commands = macOSAutoStartLoadCommands(label, plistPath, process.getuid?.() ?? 501);
       try {
         // Unload first if already loaded
-        execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+        execFileSync(commands[0][0], commands[0][1], { stdio: 'ignore' });
       } catch { /* not loaded yet — fine */ }
 
-      execFileSync('launchctl', ['bootstrap', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+      // A previously disabled label makes bootstrap fail with the opaque
+      // launchctl "Input/output error" even when the plist is valid. Installing
+      // auto-start is an explicit request to re-enable this exact service.
+      execFileSync(commands[1][0], commands[1][1], { stdio: 'ignore' });
+      execFileSync(commands[2][0], commands[2][1], { stdio: 'ignore' });
     }
 
     // Ensure the user-machine fleet watchdog is installed alongside this agent.

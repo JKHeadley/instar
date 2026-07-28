@@ -3,6 +3,8 @@ title: Scope-Accretion Completion Discipline
 description: Work an autonomous run itself creates joins its completion bar — silent deferral of session-generated deliverables is structurally impossible.
 ---
 
+> StandingDrive composition note: `AutonomousRunStore` remains the durable run-record owner, while `StandingDriveSchema` defines the optional deterministic drive envelope. See [StandingDrive schema](/features/standing-drive/) for the inert Slice 1 boundary.
+
 An autonomous session that discovers new in-scope work mid-run can convert that
 initiative into abandonment: draft five specs, label their implementation "the
 documented stretch (out of completion condition)", satisfy the start-time

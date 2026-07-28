@@ -20,6 +20,7 @@ import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
+import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
@@ -71,8 +72,10 @@ import {
 import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
+  withClaudeUltracodePrompt,
   claudeHeadlessExtraFlags,
   resolveInteractiveFramework,
+  resolveInteractiveLaunchModel,
   resolveModelForFramework,
 } from './frameworkSessionLaunch.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
@@ -2293,6 +2296,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  covered by the existing resume-crash fallback. No effect on non-claude
      *  frameworks or interactive spawns. */
     resumeSessionId?: string;
+    /** Claude Code only: opt this spawned turn into xhigh effort + dynamic
+     * workflow orchestration via Claude's supported prompt keyword. */
+    ultracode?: boolean;
   }): Promise<Session> {
     const runningSessions = this.listRunningSessions();
     if (runningSessions.length >= this.config.maxSessions) {
@@ -2419,6 +2425,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Reply spawns set this so the codex worker can call threadline_send;
       // jobs leave it unset and keep the workspace-write sandbox.
       ...(options.codexAllowMcpTools ? { codexAllowMcpTools: true } : {}),
+      ...(options.ultracode ? { ultracode: true } : {}),
     });
 
     // Extra claude-code headless flags, spliced before the `-p` prompt positional
@@ -2744,7 +2751,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // is keyed on the session id suffix so two concurrent rerouted sessions
     // can't false-trigger each other.
     const sentinel = `INSTAR_JOB_COMPLETE_${sessionId.slice(-8)}`;
-    const promptWithSentinel = `${options.prompt}\n\nWhen you have fully completed this task, print exactly this marker as your final line: ${sentinel}`;
+    const promptWithSentinel = `${withClaudeUltracodePrompt(options.prompt, options.ultracode)}\n\nWhen you have fully completed this task, print exactly this marker as your final line: ${sentinel}`;
 
     // ── Build the INTERACTIVE launch (no `-p`) ──
     // Carry the resolved model + the A2A continuity flag through. sessionId
@@ -3756,6 +3763,42 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Resolve a running session's REAL login slot (its live `CLAUDE_CONFIG_DIR`)
+   * by reading the tmux env we set in its session env block at spawn. This is
+   * the authoritative config home the session is ACTUALLY running on — which is
+   * exactly what the MissingLoginSessionDetector must correlate on. The recorded
+   * `subscriptionAccountId` is NOT a reliable proxy: under identity drift the
+   * recorded account diverges from the config home the session really runs on
+   * (2026-07-22 justin-gmail incident — a session recorded `adriana` while its
+   * `CLAUDE_CONFIG_DIR` was the login-missing justin-gmail slot), and resolving
+   * via the account would land on the wrong slot and miss the gap entirely.
+   *
+   * Mirrors getSessionFramework's tmux-env read: bounded (2s timeout), funneled
+   * through withSyncOp so the in-flight marker sees the block, and fail-toward-
+   * silence — any error / missing var returns undefined (the caller then skips
+   * the session; a guessed/empty config home would be a false correlation). NOT
+   * cached: a quota-aware swap or a respawn can re-point a live name at a new
+   * slot, so this reads fresh each tick (a handful of sessions, cheap + bounded).
+   */
+  configHomeForSession(tmuxSession: string): string | undefined {
+    try {
+      const out = withSyncOp(() => execFileSync(
+        this.config.tmuxPath,
+        ['show-environment', '-t', `=${tmuxSession}`, 'CLAUDE_CONFIG_DIR'],
+        { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] },
+      )).trim();
+      const prefix = 'CLAUDE_CONFIG_DIR=';
+      if (!out.startsWith(prefix)) return undefined; // unset (tmux prints `-CLAUDE_CONFIG_DIR`) or absent
+      const value = out.slice(prefix.length).trim();
+      return value.length > 0 ? value : undefined;
+    } catch {
+      // @silent-fallback-ok — config-home lookup is fail-toward-silence: the
+      // detector skips a session it can't place rather than guess a slot.
+      return undefined;
+    }
+  }
+
+  /**
    * Send input to a running tmux session.
    */
   sendInput(tmuxSession: string, input: string): boolean {
@@ -4326,6 +4369,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  tree, not the module-level project dir. Unset = projectDir (today's
      *  behavior, byte-for-byte). */
     cwd?: string;
+    /** Do not return control to the bridge until the initial bootstrap has
+     * actually been injected. Used for framework handoffs so a newly mapped
+     * session cannot receive a user turn before its continuation context. */
+    awaitInitialInjection?: boolean;
   }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
@@ -4606,7 +4653,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Left undefined only when no model was pinned (the CLI uses its own
       // account default).
       framework,
-      ...(resolveModelForFramework(framework, launchDefaultModel) ? { model: resolveModelForFramework(framework, launchDefaultModel) } : {}),
+      ...(resolveInteractiveLaunchModel(framework, launchDefaultModel, options?.codexLocalProvider)
+        ? { model: resolveInteractiveLaunchModel(framework, launchDefaultModel, options?.codexLocalProvider) }
+        : {}),
       // P1.3: which subscription-pool account this session runs under (an explicit
       // quota-aware swap/placement, OR the resolver-pinned account for B1 — the
       // user-facing interactive lane is now tagged just like the headless lane).
@@ -4641,7 +4690,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         initialMessage: effectiveInitialMessage,
         telegramTopicId: options?.telegramTopicId,
       });
-      this.handleReadyAndInject(tmuxSession, name, effectiveInitialMessage, readyTimeout, options).catch((err) => {
+      const injection = this.handleReadyAndInject(tmuxSession, name, effectiveInitialMessage, readyTimeout, options);
+      if (options?.awaitInitialInjection) {
+        await injection;
+      } else injection.catch((err) => {
         console.error(`[SessionManager] Error during ready-and-inject for "${tmuxSession}": ${err}`);
       });
     }
@@ -5730,6 +5782,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Classify what a live session's pane is showing: `ready`, `menu`, or
+   * `not-ready`.
+   *
+   * Exists for callers whose not-ready branch is DESTRUCTIVE. `waitForClaudeReady`
+   * collapses to a boolean, and the Slack stuck-session path in `server.ts` KILLS
+   * a live session on `false` — so a pane merely sitting on a startup question
+   * (`menu`) would be destroyed for politely waiting on an answer. Those callers
+   * ask this instead and leave a `menu` alone.
+   *
+   * Returns `null` when the pane cannot be captured — an unreadable pane is not
+   * evidence of anything, and must not be read as a reason to act.
+   */
+  classifyPaneState(tmuxSession: string): PaneReadiness | null {
+    const output = this.captureOutput(tmuxSession, 20);
+    if (!output) return null;
+    const lines = output.split('\n').filter(l => l.trim());
+    if (lines.length === 0) return null;
+    return classifyPaneReadiness(lines.slice(-6).join('\n'));
+  }
+
+  /**
    * Detect whether Claude Code's prompt is visible in a tmux session.
    * Also auto-accepts consent dialogs that block startup.
    *
@@ -5771,20 +5844,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // blank lines or separators push them around.
     const tail = lines.slice(-6).join('\n');
 
-    // Primary: the prompt character
-    if (tail.includes('❯')) return true;
-
-    // Secondary: permission mode indicators (visible in status bar)
-    if (tail.includes('bypass permissions')) return true;
-
-    // Tertiary: model/effort indicators in the status bar
-    // These appear when Claude Code has fully loaded and is ready for input.
-    if (/\/(effort|model|fast)/.test(tail)) return true;
-
-    // Quaternary: the "medium · /effort" or "high · /effort" pattern
-    if (/(?:low|medium|high)\s*·\s*\/effort/.test(tail)) return true;
-
-    return false;
+    // Classification lives in claudeReadinessProbe.ts — pure, so the 2026-07-26
+    // banner that fooled the old probe is a literal regression fixture there.
+    return isReadyPromptTail(tail);
   }
 
   /**

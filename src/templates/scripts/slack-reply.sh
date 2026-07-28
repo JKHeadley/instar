@@ -17,17 +17,25 @@
 # (today's default behavior, unchanged).
 # slack-reply-feature: thread-ts-arg
 # slack-reply-feature: delivery-id  (pre-POST X-Instar-DeliveryId + 409 non-losing, §2.6/R8-M1 Arm C)
+# slack-reply-feature: session-bound-v1
 
 set -euo pipefail
 
-CHANNEL_ID="$1"
-shift
+SESSION_MODE=false
+CHANNEL_ID=""
+if [ -n "${INSTAR_CONVERSATION_ID:-}" ] && [ "${INSTAR_CONVERSATION_ID#-}" != "${INSTAR_CONVERSATION_ID}" ]; then
+  SESSION_MODE=true
+else
+  CHANNEL_ID="${1:-}"
+  [ -n "$CHANNEL_ID" ] || { echo "Error: channel id required outside a spawned Slack session" >&2; exit 1; }
+  shift
+fi
 
 # Optional 2nd positional THREAD_TS — recognized only when it looks like a Slack
 # timestamp (digits.digits). This keeps the 1-arg form ("CHANNEL_ID message…")
 # backward-compatible: a normal message word is never mistaken for a thread id.
 THREAD_TS=""
-if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]]; then
+if [ "$SESSION_MODE" = false ] && [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]]; then
   THREAD_TS="$1"
   shift
 fi
@@ -87,7 +95,10 @@ if [ -z "$ESCAPED" ]; then
 fi
 
 # Build JSON body — include thread_ts only when threading a reply.
-if [ -n "$THREAD_TS" ]; then
+if [ "$SESSION_MODE" = true ]; then
+  [ -n "${INSTAR_BIND_TOKEN:-}" ] || { echo "Error: spawned Slack session binding is missing" >&2; exit 1; }
+  BODY_JSON="{\"text\": ${ESCAPED}, \"conversationId\": ${INSTAR_CONVERSATION_ID}}"
+elif [ -n "$THREAD_TS" ]; then
   BODY_JSON="{\"text\": ${ESCAPED}, \"thread_ts\": \"${THREAD_TS}\"}"
 else
   BODY_JSON="{\"text\": ${ESCAPED}}"
@@ -100,32 +111,63 @@ fi
 # idempotent:true instead of re-posting (the double-post window the deployed
 # headerless send left open). A mint failure (python3 gone) degrades to today's
 # headerless send — fail toward delivery, never a refused send.
-DELIVERY_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
+DELIVERY_ID="${INSTAR_DELIVERY_ID:-}"
+if [ -n "$DELIVERY_ID" ] && [[ ! "$DELIVERY_ID" =~ ^[0-9a-fA-F-]{16,64}$ ]]; then
+  echo "Error: INSTAR_DELIVERY_ID is malformed" >&2
+  exit 1
+fi
+[ -n "$DELIVERY_ID" ] || DELIVERY_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
+
+if [ "$SESSION_MODE" = true ]; then
+  REPLY_URL="http://localhost:${PORT}/slack/session-reply"
+else
+  REPLY_URL="http://localhost:${PORT}/slack/reply/${CHANNEL_ID}"
+fi
 
 # Send via Instar server
-RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-  "http://localhost:${PORT}/slack/reply/${CHANNEL_ID}" \
+set +e
+RESPONSE=$(curl -sS --connect-timeout 3 --max-time 35 -w "\n%{http_code}" -X POST \
+  "$REPLY_URL" \
   -H "Content-Type: application/json" \
   ${AUTH:+-H "Authorization: Bearer $AUTH"} \
   ${AGENT_ID:+-H "X-Instar-AgentId: $AGENT_ID"} \
+  ${INSTAR_BIND_TOKEN:+-H "X-Instar-Bind-Token: $INSTAR_BIND_TOKEN"} \
   ${DELIVERY_ID:+-H "X-Instar-DeliveryId: $DELIVERY_ID"} \
   -d "$BODY_JSON")
+CURL_STATUS=$?
+set -e
+
+if [ "$CURL_STATUS" -ne 0 ]; then
+  echo "AMBIGUOUS: relay transport failed after request start; outcome unknown." >&2
+  echo "  Do NOT auto-retry. Verify Slack first. Delivery id: ${DELIVERY_ID}" >&2
+  exit 1
+fi
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
 if [ "$HTTP_CODE" = "200" ]; then
-  echo "Sent ${#MESSAGE} chars to channel ${CHANNEL_ID}"
+  if [ "$SESSION_MODE" = true ]; then
+    echo "Sent ${#MESSAGE} chars to the bound Slack conversation"
+  else
+    echo "Sent ${#MESSAGE} chars to channel ${CHANNEL_ID}"
+  fi
 elif [ "$HTTP_CODE" = "408" ]; then
   # Request timeout on the server side — the outbound path (tone gate + Slack API)
   # exceeded the route's budget. The actual send may have completed anyway.
-  # Report AMBIGUOUS and exit 0 so the agent verifies before retrying (a retry
-  # would double-send since the first attempt likely went through).
+  # Report AMBIGUOUS and fail so no caller mistakes uncertainty for success.
   echo "AMBIGUOUS (HTTP 408): server timed out; the message MAY have been delivered." >&2
   echo "  Do NOT retry blindly — check the channel to verify delivery before resending." >&2
   echo "  If the message is there, proceed; if not, retry with a shorter/simpler version." >&2
+  echo "  Delivery id for a verified same-attempt retry: ${DELIVERY_ID}" >&2
+  if [ -n "${INSTAR_SESSION_NAME:-}" ]; then
+    DIAG_DIR="${TMPDIR:-/tmp}/instar-slack-relay"
+    mkdir -p "$DIAG_DIR" && chmod 700 "$DIAG_DIR"
+    printf '%s\n' "$DELIVERY_ID" > "$DIAG_DIR/${INSTAR_SESSION_NAME//[^A-Za-z0-9_.-]/_}.delivery-id"
+    chmod 600 "$DIAG_DIR/${INSTAR_SESSION_NAME//[^A-Za-z0-9_.-]/_}.delivery-id"
+  fi
   echo "AMBIGUOUS (HTTP 408): outcome unknown — verify in conversation before retrying"
-  exit 0
+  exit 1
 elif [ "$HTTP_CODE" = "409" ]; then
   # 409 delivery-in-flight (spec R8-M1 Arm C): the server's §2.4 single-flight
   # reservation saw a concurrent POST for THIS delivery-id still in flight — the

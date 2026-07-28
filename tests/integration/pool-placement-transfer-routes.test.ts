@@ -46,7 +46,12 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
   let server: Server;
   let placements: Array<Record<string, unknown>>;
   let sendDrainCalls: Array<{ owner: string; sk: string; target: string; epoch: number }>;
-  let sendDrainImpl: (owner: string, sk: string, target: string, epoch: number) => { ok: boolean; status?: string; reason?: string; runSuspended?: boolean };
+  let sendDrainImpl: (owner: string, sk: string, target: string, epoch: number) => { ok: boolean; status?: string; reason?: string; runSuspended?: boolean; claimLanded?: boolean };
+  let remoteAutonomousRun: { goal: string | null; remainingMinutes: number | null } | null;
+  let remoteProbeImpl: (() => Promise<{ goal: string | null; remainingMinutes: number | null } | null>) | null;
+  let remoteProbeCapabilityPresent: boolean;
+  let workingSetKicks: Array<{ machineId: string; topic: number }>;
+  let routeCtx: any;
   const SELF = 'm_a'; // "Mac Mini" — the holder answering these requests
   const PEER = 'm_b'; // "Laptop"
 
@@ -88,7 +93,11 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
     placements = [];
     sendDrainCalls = [];
     sendDrainImpl = () => ({ ok: true, status: 'drained' });
-    const ctx: any = {
+    remoteAutonomousRun = null;
+    remoteProbeImpl = null;
+    remoteProbeCapabilityPresent = true;
+    workingSetKicks = [];
+    routeCtx = {
       config: { authToken: 'test', stateDir: dir, port: 0 },
       stateDir: dir,
       coordinator,
@@ -101,14 +110,20 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
       sessionOwnershipRegistry: ownReg,
       topicPinStore: pinStore,
       meshSelfId: SELF,
+      kickWorkingSetOnMachine: (machineId: string, topic: number) => workingSetKicks.push({ machineId, topic }),
       resolveRouterUrl: () => null, // we are the holder → answer locally
       // Coherence journal seam (finding #5): capture every placement entry the
       // transfer handler emits, exactly as the live journal would receive it.
       state: { getCoherenceJournal: () => ({ emitPlacement: (topic: number, data: Record<string, unknown>) => placements.push({ topic, ...data }) }) },
     };
+    Object.defineProperty(routeCtx, 'autonomousRunOnMachine', {
+      get: () => remoteProbeCapabilityPresent
+        ? async () => remoteProbeImpl ? remoteProbeImpl() : remoteAutonomousRun
+        : null,
+    });
     const app = express();
     app.use(express.json());
-    app.use(createRoutes(ctx));
+    app.use(createRoutes(routeCtx));
     server = await listen(app);
   });
   afterEach(async () => {
@@ -120,6 +135,28 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
     const res = await fetch(server.url + p, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) } });
     return { status: res.status, body: await res.json().catch(() => ({})) };
   }
+
+  it('kicks the destination carrier after a proxied holder proves the seat moved', async () => {
+    const holderApp = express();
+    holderApp.use(express.json());
+    holderApp.post('/pool/transfer', (_req, res) => {
+      res.json({ ok: true, seatMoved: true, topicId: '3550', targetMachine: SELF });
+    });
+    const holder = await listen(holderApp);
+    routeCtx.resolveRouterUrl = () => holder.url;
+    try {
+      const r = await api('/pool/transfer', {
+        method: 'POST',
+        body: JSON.stringify({ topic: 3550, to: 'Mac Mini' }),
+      });
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({ seatMoved: true, handledBy: 'holder-proxy' });
+      expect(workingSetKicks).toEqual([{ machineId: SELF, topic: 3550 }]);
+    } finally {
+      await holder.close();
+      routeCtx.resolveRouterUrl = () => null;
+    }
+  });
 
   // ── GET /pool/placement ──────────────────────────────────────────────
   it('GET /pool/placement requires a topic (400)', async () => {
@@ -308,13 +345,95 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
     const noConfirm = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 204, to: 'Studio' }) });
     expect(noConfirm.status).toBe(409);
     expect(noConfirm.body.needsConfirmation).toBe(true);
-    const withConfirm = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 205, to: 'Studio', confirm: true }) });
+    const withConfirm = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 204, to: 'Studio', confirm: true, confirmationChallenge: noConfirm.body.confirmationChallenge }) });
     expect(withConfirm.status).toBe(200);
     expect(withConfirm.body.targetMachine).toBe('m_c');
   });
 
   // ── WS1.2 drain leg (active-conversation transfers COMPLETE) ──────────
   describe('WS1.2 drain leg', () => {
+    it('REMOTE owner with a live autonomous run requires confirmation before any drain', async () => {
+      own('309', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      remoteAutonomousRun = { goal: 'long-running build', remainingMinutes: 42 };
+
+      const noConfirm = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 309, to: 'Mac Mini' }) });
+      expect(noConfirm.status).toBe(409);
+      expect(noConfirm.body.needsConfirmation).toBe(true);
+      expect(noConfirm.body.detail).toContain('autonomous-run-in-flight');
+      expect(sendDrainCalls).toHaveLength(0);
+
+      sendDrainImpl = () => ({ ok: true, status: 'drained', claimLanded: true });
+      const confirmed = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 309, to: 'Mac Mini', confirm: true, confirmationChallenge: noConfirm.body.confirmationChallenge }) });
+      expect(confirmed.status).toBe(200);
+      expect(sendDrainCalls).toHaveLength(1);
+      expect(workingSetKicks).toContainEqual({ machineId: SELF, topic: 309 });
+    });
+
+    it('REMOTE owner without a preflight capability fails closed behind confirmation', async () => {
+      own('310', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      // Exercise an explicitly absent callback, matching a partially wired or
+      // version-skewed holder rather than treating absence as "no run".
+      remoteProbeCapabilityPresent = false;
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 310, to: 'Mac Mini' }) });
+      expect(r.status).toBe(409);
+      expect(r.body.needsConfirmation).toBe(true);
+      expect(sendDrainCalls).toHaveLength(0);
+    });
+
+    it('owner/epoch change during remote run probe returns retry-required before drain', async () => {
+      own('311', PEER);
+      remoteProbeImpl = async () => {
+        ownReg.cas({ type: 'transfer', from: PEER, to: SELF }, { sessionKey: '311', sender: 'ROUTER', nonce: 'move-during-probe' });
+        return null;
+      };
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 311, to: 'Mac Mini' }) });
+      expect(r.status).toBe(409);
+      expect(r.body.retryRequired).toBe(true);
+      expect(sendDrainCalls).toHaveLength(0);
+    });
+
+    it('a challenge cannot confirm conditions that changed after the prompt', async () => {
+      own('312', PEER);
+      remoteAutonomousRun = { goal: 'run A', remainingMinutes: 42 };
+      const first = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 312, to: 'Mac Mini' }) });
+      expect(first.status).toBe(409);
+      remoteAutonomousRun = { goal: 'run B', remainingMinutes: 42 };
+      const changed = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 312, to: 'Mac Mini', confirm: true, confirmationChallenge: first.body.confirmationChallenge }) });
+      expect(changed.status).toBe(409);
+      expect(changed.body.needsConfirmation).toBe(true);
+      expect(changed.body.confirmationChallenge).not.toBe(first.body.confirmationChallenge);
+      expect(sendDrainCalls).toHaveLength(0);
+    });
+
+    it('a challenge cannot confirm a replaced SELF-owned autonomous run', async () => {
+      own('313', SELF);
+      const autonomousDir = path.join(dir, 'autonomous');
+      fs.mkdirSync(autonomousDir, { recursive: true });
+      const runFile = path.join(autonomousDir, '313.local.md');
+      fs.writeFileSync(runFile, '---\nactive: true\npaused: false\nreport_topic: "313"\ngoal: "local run A"\nstarted_at: "2026-07-17T20:00:00Z"\nduration_seconds: 7200\n---\n');
+
+      const first = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 313, to: 'Laptop' }) });
+      expect(first.status).toBe(409);
+      fs.writeFileSync(runFile, '---\nactive: true\npaused: false\nreport_topic: "313"\ngoal: "local run B"\nstarted_at: "2026-07-17T20:30:00Z"\nduration_seconds: 7200\n---\n');
+
+      const changed = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 313, to: 'Laptop', confirm: true, confirmationChallenge: first.body.confirmationChallenge }) });
+      expect(changed.status).toBe(409);
+      expect(changed.body.confirmationChallenge).not.toBe(first.body.confirmationChallenge);
+      expect(sendDrainCalls).toHaveLength(0);
+    });
+
     it('SELF-owned topic → drain ordered on the local owner BEFORE the pin, outcome in the response', async () => {
       own('300', SELF);
       const epochBefore = ownReg.read('300')!.ownershipEpoch;
@@ -324,6 +443,7 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
       expect(sendDrainCalls[0]).toMatchObject({ owner: SELF, sk: '300', target: PEER, epoch: epochBefore });
       expect(r.body.drain).toMatchObject({ attempted: true, ok: true, status: 'drained' });
       expect(pinStore.get('300')?.preferredMachine).toBe(PEER);
+      expect(workingSetKicks).toContainEqual({ machineId: PEER, topic: 300 });
     });
 
     it('REMOTE owner advertising ws12DrainReceive → drain ordered on that peer', async () => {
@@ -339,6 +459,39 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
       expect(sendDrainCalls).toHaveLength(1);
       expect(sendDrainCalls[0].owner).toBe(PEER);
       expect(sendDrainCalls[0].target).toBe(SELF);
+    });
+
+    it('REMOTE owner claim proof makes seatMoved true while the router echo is still stale', async () => {
+      own('307', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      sendDrainImpl = () => ({ ok: true, status: 'drained', claimLanded: true });
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 307, to: 'Mac Mini' }) });
+      expect(r.status).toBe(200);
+      expect(r.body.seatMoved).toBe(true);
+      expect(r.body.drain).toMatchObject({ attempted: true, ok: true, claimLanded: true });
+      // The injected local registry deliberately remains stale at the response
+      // boundary; the signed owner-side claim result is the direct proof.
+      expect(ownReg.ownerOf('307')).toBe(PEER);
+    });
+
+    it('an inconsistent failed drain cannot smuggle claim proof into seatMoved', async () => {
+      own('308', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      sendDrainImpl = () => ({ ok: false, status: 'refused-cas-lost', claimLanded: true });
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 308, to: 'Mac Mini' }) });
+      expect(r.status).toBe(200);
+      expect(r.body.seatMoved).toBe(false);
+      expect(r.body.drain).toMatchObject({ attempted: true, ok: false, claimLanded: true });
     });
 
     it('REMOTE owner WITHOUT the capability flag → no drain order (degrades to today\'s path)', async () => {

@@ -341,6 +341,48 @@ describe('dry-run posture (Increment-1 default)', () => {
     expect(row).toBeTruthy();
     expect(row!.owner).toBe('laptop');
     expect(row!.dryRun).toBe(true);
+    expect(typeof row!.decisionId).toBe('string');
+  });
+
+  it('links a dry-run decision to a stable survivor on the next observation', async () => {
+    const deps = makeDeps({ readPin: vi.fn(() => ({ pinned: true, preferredMachine: 'laptop' })) });
+    const r = new DuplicateSessionReconciler(cfg({ dryRun: true }), deps);
+    await r.tick();
+    const decision = deps.rows.find((x) => x.kind === 'would-converge');
+    await r.tick();
+    expect(deps.rows).toContainEqual(expect.objectContaining({
+      kind: 'would-converge-followup', decisionId: decision?.decisionId,
+      outcome: 'duplicate-persists-survivor-stable', priorOwner: 'laptop', observedOwner: 'laptop',
+    }));
+  });
+
+  it('links a dry-run decision to a duplicate that is no longer discovered', async () => {
+    const deps = makeDeps({ readPin: vi.fn(() => ({ pinned: true, preferredMachine: 'laptop' })) });
+    const r = new DuplicateSessionReconciler(cfg({ dryRun: true }), deps);
+    await r.tick();
+    const decision = deps.rows.find((x) => x.kind === 'would-converge');
+    (deps.discoverCandidates as ReturnType<typeof vi.fn>).mockResolvedValue({ candidates: [] });
+    await r.tick();
+    expect(deps.rows).toContainEqual(expect.objectContaining({
+      kind: 'would-converge-followup', decisionId: decision?.decisionId,
+      outcome: 'duplicate-not-rediscovered',
+    }));
+  });
+
+  it('does not treat degraded non-discovery as duplicate resolution', async () => {
+    const deps = makeDeps({ readPin: vi.fn(() => ({ pinned: true, preferredMachine: 'laptop' })) });
+    const r = new DuplicateSessionReconciler(cfg({ dryRun: true }), deps);
+    await r.tick();
+    const decision = deps.rows.find((x) => x.kind === 'would-converge');
+    (deps.discoverCandidates as ReturnType<typeof vi.fn>).mockResolvedValue({ candidates: [], degraded: 'peer unavailable' });
+    await r.tick();
+    expect(deps.rows).toContainEqual(expect.objectContaining({
+      kind: 'would-converge-followup', decisionId: decision?.decisionId,
+      outcome: 'discovery-unknown',
+    }));
+    expect(deps.rows).not.toContainEqual(expect.objectContaining({
+      decisionId: decision?.decisionId, outcome: 'duplicate-not-rediscovered',
+    }));
   });
 
   it('dry-run on a PERSISTING duplicate journals fresh verdicts until the P19 breaker clamps — never attempt-exhaustion, never unbounded journal spam', async () => {

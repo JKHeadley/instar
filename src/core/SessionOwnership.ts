@@ -242,5 +242,5 @@ export function mayEmit(
  * session's CAS sequence is caught.
  */
 export function ownershipNonceKey(sessionKey: string, sender: string, ownershipEpoch: number, nonce: string): string {
-  return `${sessionKey} ${sender} ${ownershipEpoch} ${nonce}`;
+  return `${sessionKey}\u0000${sender}\u0000${ownershipEpoch}\u0000${nonce}`;
 }

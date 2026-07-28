@@ -252,6 +252,9 @@ export class AutonomousLivenessReconciler {
   private readonly pressureSurfaced = new Set<number>();
   private lastTickAt: number | null = null;
   private respawnTotal = 0;
+  /** Observe-only decisions awaiting one next-tick outcome classification. */
+  private readonly dryRunFollowups = new Map<number, { decisionId: string; decidedAt: number; startedAtMs: number | null }>();
+  private dryRunDecisionSeq = 0;
   /** Effective inflight TTL (cfg.inflightSpawnTtlMs ?? respawnTimeoutMs + grace). */
   private readonly inflightTtlMs: number;
 
@@ -325,9 +328,50 @@ export class AutonomousLivenessReconciler {
     }
 
     // Hoist the once-per-tick snapshots (criterion 6, pressure gate).
-    const liveTopics = this.safe(() => this.deps.liveTopicSnapshot(), new Set<number>());
+    let liveTopicsEvidence: Set<number> | null = null;
+    try {
+      liveTopicsEvidence = this.deps.liveTopicSnapshot();
+    } catch {
+      // Actuation still fails safe below; evidence classification stays honest.
+    }
+    const liveTopics = liveTopicsEvidence ?? new Set<number>();
     const pressure = this.safe(() => this.deps.pressureTier(), 'critical' as const);
     const queuePaused = this.safeBool(() => this.deps.queuePaused(), false);
+
+    // Close the observe-only evidence loop before making this tick's decisions.
+    // This never actuates: it classifies what happened after the prior
+    // would-respawn so production soak can measure false positives.
+    if (this.cfg.dryRun) {
+      const runsByTopic = new Map(runs.map((run) => [run.topicId, run]));
+      for (const [topicId, pending] of this.dryRunFollowups) {
+        const run = runsByTopic.get(topicId);
+        let outcome = 'still-orphaned';
+        if (!run || run.remainingSeconds <= 0) outcome = 'run-ended';
+        else if (liveTopicsEvidence == null) outcome = 'evidence-unknown';
+        else if (liveTopicsEvidence.has(topicId)) outcome = 'recovered-live';
+        else {
+          try {
+            if (this.deps.operatorStoppedSince(topicId, new Date(pending.startedAtMs ?? 0).toISOString())) {
+              outcome = 'operator-stopped';
+            } else if (this.deps.topicOwnerElsewhere(topicId)) outcome = 'owner-moved';
+            else if (!this.deps.holdsLease()) outcome = 'lease-lost';
+            else if (this.deps.topicInResumeQueue(topicId)) outcome = 'queued-elsewhere';
+          } catch {
+            outcome = 'evidence-unknown';
+          }
+        }
+        this.deps.audit({
+          ts: new Date(now).toISOString(),
+          event: 'would-respawn-followup',
+          topicId,
+          decisionId: pending.decisionId,
+          decidedAt: new Date(pending.decidedAt).toISOString(),
+          outcome,
+          dryRun: true,
+        });
+        this.dryRunFollowups.delete(topicId);
+      }
+    }
 
     const candidateTopics = new Set<number>();
     let actedThisTick = false;
@@ -336,11 +380,6 @@ export class AutonomousLivenessReconciler {
       const topicId = run.topicId;
 
       // ── Candidate criteria (each fails toward NOT-a-candidate — the safe side) ──
-      // Global gate: an emergency-paused queue means "halt all automation".
-      if (queuePaused) {
-        this.observed.delete(topicId);
-        continue;
-      }
       // Criterion 1: active + remaining + CURRENT generation (obsolete run rejected).
       if (run.remainingSeconds <= 0) {
         this.observed.delete(topicId);
@@ -434,6 +473,21 @@ export class AutonomousLivenessReconciler {
           count: obs.count,
           needed: this.cfg.debounceTicks,
           remainingSeconds: run.remainingSeconds,
+        });
+        continue;
+      }
+
+      // A paused resume queue is an actuation brake, not an evidence brake.
+      // Keep the orphan in observation (and in dry-run evidence) so a pause
+      // cannot create a silent dead-but-active window.
+      if (queuePaused) {
+        this.setCondition(topicId, 'blocked-queue-owns', now);
+        this.deps.audit({
+          ts: new Date(now).toISOString(),
+          event: 'would-respawn-paused',
+          topicId,
+          remainingSeconds: run.remainingSeconds,
+          dryRun: this.cfg.dryRun,
         });
         continue;
       }
@@ -595,6 +649,7 @@ export class AutonomousLivenessReconciler {
 
     // ── dryRun: log what we WOULD do and actuate nothing ──
     if (this.cfg.dryRun) {
+      const decisionId = `liveness:${topicId}:${now}:${++this.dryRunDecisionSeq}`;
       this.deps.audit({
         ts: new Date(now).toISOString(),
         event: 'would-respawn',
@@ -602,7 +657,9 @@ export class AutonomousLivenessReconciler {
         dryRun: true,
         remainingSeconds: run.remainingSeconds,
         resumeUuid: resumeUuid ? 'present' : 'fresh-fallback',
+        decisionId,
       });
+      this.dryRunFollowups.set(topicId, { decisionId, decidedAt: now, startedAtMs: run.startedAtMs });
       // Shadow the cap (spec adversarial F6): record a shadow redie so the
       // reaper-thrash/cap BEHAVIOR — which real dryRun can't trigger (no real
       // respawn ⇒ no re-die) — still becomes observable as a would-have-capped

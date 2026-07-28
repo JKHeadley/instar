@@ -133,12 +133,12 @@ describe('reply scripts — HTTP 408 handling (ambiguous-outcome)', () => {
 
   for (const script of ['telegram-reply.sh', 'slack-reply.sh', 'whatsapp-reply.sh']) {
     describe(script, () => {
-      it('exits 0 when the server returns 408 (ambiguous outcome — do NOT retry blindly)', async () => {
+      it('classifies 408 as ambiguous and never invites blind retry', async () => {
         mock.setResponse(408, { error: 'Request timeout', timeoutMs: 30000 });
         const target = script.startsWith('whatsapp') ? '12345@s.whatsapp.net' : '42';
         const result = await runScript(script, [target], mock.port, 'hello from test\n');
 
-        expect(result.status).toBe(0);
+        expect(result.status).toBe(script === 'slack-reply.sh' ? 1 : 0);
         // stderr must loudly warn — the agent reads this to decide whether to retry.
         expect(result.stderr.toLowerCase()).toMatch(/ambiguous|timeout|do not retry|verify/);
       });
