@@ -532,7 +532,23 @@ export class GitSyncManager {
       this.gitExec(['commit', '-m', message]);
 
       if (this.autoPush) {
-        this.gitExec(['push']);
+        try {
+          this.gitExec(['push']);
+        } catch (pushErr) {
+          // A branch with NO upstream cannot be pushed by a bare `git push` —
+          // git exits non-zero, the catch below returns `false`, and `false` is
+          // the SAME value this method returns for "no dirty paths" and
+          // "nothing staged". So the caller cannot tell a failed sync from
+          // having nothing to sync, and cross-machine state goes quiet with no
+          // signal: commits land locally and never reach origin.
+          //
+          // Retry ONCE with an explicit upstream. This is a no-op when tracking
+          // already exists, so the happy path is unchanged — the bare push is
+          // still attempted first and only a failure reaches here.
+          const branch = this.gitExec(['symbolic-ref', '--short', 'HEAD']).trim();
+          if (!branch) throw pushErr;
+          this.gitExec(['push', '-u', 'origin', branch]);
+        }
       }
 
       return true;
