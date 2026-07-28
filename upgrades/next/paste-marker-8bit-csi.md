@@ -1,0 +1,28 @@
+<!-- bump: patch -->
+
+## What Changed
+
+`SessionManager.rawInject` strips embedded bracketed-paste markers so an injected message cannot forge
+a paste boundary and have its remainder read as keystrokes. The comment promised *"any EMBEDDED
+bracketed-paste markers"*; the regex required a literal `ESC`, so the **8-bit CSI (0x9B)** spelling of
+the same control sequence passed through untouched.
+
+Verified by running both payloads: 7-bit stripped, 8-bit not. Now both are.
+
+## What to Tell Your User
+
+Nothing — a defence-in-depth guard on the message-injection path, with no user-visible behaviour change.
+
+## Summary of New Capabilities
+
+None. It closes a coverage gap in an existing sanitiser.
+
+## Evidence
+
+- Red → green: the 8-bit test fails without the change (1 failed / 24 passed); 25/25 with it.
+- A second test asserts a benign literal `"[201~"` (no control byte) is still delivered verbatim, and it
+  passes in **both** directions — the widening does not eat ordinary text.
+- **No exploit is claimed.** Whether an 8-bit CSI is honoured depends on terminal/TUI mode, untested
+  here. What is proven is that the sanitiser did not do what its comment said.
+- Deliberately a one-regex widening rather than PR #158's full C0/C1 strip: that variant rewrites
+  legitimate message bytes and deserves its own review.

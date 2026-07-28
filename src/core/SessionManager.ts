@@ -5432,7 +5432,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // otherwise forge a paste boundary and submit extra REPL turns — the
     // headless `-p` argv path was immune, and InputGuard only scans topic-bound
     // sessions, so rerouted job/A2A prompts need this sanitizer at the chokepoint.
-    text = text.replace(/\x1b\[20[01]~/g, '');
+    // BOTH encodings: CSI has a two-byte 7-bit form (ESC '[') and a single-byte
+    // 8-bit form (0x9B). The original pattern required a literal ESC, so the
+    // 8-bit spelling of the SAME control sequence passed through untouched —
+    // verified by running both payloads against it. Widened rather than
+    // replaced with a full C0/C1 strip so legitimate message bytes are still
+    // delivered verbatim; this removes only the sequence that can forge a
+    // paste boundary.
+    text = text.replace(/(?:\x1b\[|\x9b)20[01]~/g, '');
     // Reset idle-prompt timer — this session is about to receive new input,
     // so it's not a zombie. Without this, the zombie detector can kill a session
     // that just received a message but hasn't produced output yet.

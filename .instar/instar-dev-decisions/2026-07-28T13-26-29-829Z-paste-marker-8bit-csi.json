@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-28T13:26:29.829Z",
+  "slug": "paste-marker-8bit-csi",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 9,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
