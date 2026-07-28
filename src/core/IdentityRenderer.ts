@@ -144,11 +144,24 @@ export function renderIdentity(options: RenderIdentityOptions): RenderIdentityRe
     const relayAppendix = options.appendTelegramRelayBlock
       ? '\n\n' + buildPersistentRelayAppendix(framework)
       : '';
-    fs.writeFileSync(target, banner + content + relayAppendix, 'utf-8');
+    const continuationAppendix = framework === 'codex-cli'
+      ? '\n\n' + buildCodexContinuationAppendix()
+      : '';
+    fs.writeFileSync(target, banner + content + relayAppendix + continuationAppendix, 'utf-8');
     shadowsWritten.push(target);
   }
 
   return { source, shadowsWritten, skipped };
+}
+
+function buildCodexContinuationAppendix(): string {
+  return [
+    `## Multi-step Work Continuation`,
+    ``,
+    `When you accept a multi-step assignment, check the local continuation capability before beginning. If it is enabled, start a bounded per-topic checklist through the authenticated local continuation API. Keep the checklist honest as work completes. The existing Codex Stop hook will continue turns only while explicit unchecked tasks remain; an empty or fully checked list ends normally.`,
+    ``,
+    `Do not create filler tasks. Never restart a stopped ledger. An operator stop, the hard off-switch, the duration ceiling, and the continuation-count ceiling always win. The user should never be asked to run commands or maintain the checklist—you own this lifecycle as part of accepting the work.`,
+  ].join('\n');
 }
 
 /**
@@ -182,6 +195,7 @@ function buildPersistentRelayAppendix(framework: string): string {
     '```',
     ``,
     `(Replace \`N\` with the topic id from the prefix. If \`.instar/scripts/telegram-reply.sh\` is missing on an older install, fall back to \`.claude/scripts/telegram-reply.sh\`.)`,
+    `If the response itself contains a literal \`EOF\` line or shell-sensitive content that could break the heredoc wrapper, base64-encode the response text and pipe that encoded text to \`telegram-reply.sh --stdin-base64 N\` instead.`,
     ``,
     `Rules:`,
     `- Strip the \`[telegram:N]\` prefix before interpreting the message.`,

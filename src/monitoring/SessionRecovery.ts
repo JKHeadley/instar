@@ -29,6 +29,10 @@ import { detectCrashedSession, detectErrorLoop, type CrashInfo, type ErrorLoopIn
 import { truncateJsonlToSafePoint, type TruncationStrategy } from './jsonl-truncator.js';
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import {
+  transcriptDelta,
+  type TranscriptProbe,
+} from './transcriptProber.js';
 
 // ============================================================================
 // Types
@@ -42,11 +46,25 @@ export interface SessionRecoveryConfig {
   cooldownMs: number;
   /** Project directory (used to find JSONL files) */
   projectDir: string;
+  /** A context-wall latch older than this forces recovery even when work
+   * evidence remains ambiguous. Default: 30 minutes. */
+  contextExhaustionDeferralCeilingMs: number;
 }
 
 export interface RecoveryAttempt {
   lastAttempt: number;
   count: number;
+}
+
+function isTranscriptProbe(value: unknown): value is TranscriptProbe {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as Partial<TranscriptProbe>;
+  return typeof row.resolved === 'boolean'
+    && typeof row.path === 'string'
+    && typeof row.size === 'number'
+    && Number.isFinite(row.size)
+    && typeof row.mtime === 'number'
+    && Number.isFinite(row.mtime);
 }
 
 export interface RecoveryResult {
@@ -55,6 +73,13 @@ export interface RecoveryResult {
   strategy?: TruncationStrategy;
   attemptNumber?: number;
   message: string;
+  /** True when the kill was DEFERRED because the work-check found the session
+   *  alive and actively producing work (active child processes). The session
+   *  was NOT killed and is NOT dead — callers MUST NOT treat this as a failed
+   *  recovery of a dead session, and MUST NOT notify the user (a deferral is
+   *  the system deciding the session is fine; telling the user it died is a
+   *  false death report — the 2026-06-06 "conversation too long" flood). */
+  deferred?: boolean;
 }
 
 export interface SessionRecoveryDeps {
@@ -79,6 +104,14 @@ export interface SessionRecoveryDeps {
    * to the pre-Phase-2 behavior).
    */
   hasActiveProcesses?: (sessionName: string) => boolean;
+  /**
+   * Session-specific transcript receipt used by context-wall recovery. Growth
+   * is positive proof of work; a static transcript is proof that helper-process
+   * existence alone must not veto recovery.
+   */
+  probeTranscript?: (sessionName: string) => TranscriptProbe;
+  /** Deterministic clock seam for latch ceilings and tests. */
+  now?: () => number;
   /** Respawn a session for a topic, optionally with a recovery prompt */
   respawnSession: (topicId: number, sessionName?: string, recoveryPrompt?: string) => Promise<void>;
   /** Send a message to a topic */
@@ -87,6 +120,18 @@ export interface SessionRecoveryDeps {
   captureSessionOutput?: (sessionName: string, lines: number) => string | null;
   /** Respawn a session fresh (no --resume) for context exhaustion recovery */
   respawnSessionFresh?: (topicId: number, sessionName?: string, recoveryPrompt?: string) => Promise<void>;
+  /**
+   * Non-destructive context-wall escalation: press `/compact` for a session
+   * genuinely stuck at "Context limit reached · /compact or /clear to continue"
+   * and verify the wall cleared. This PRESERVES the conversation (Claude
+   * compacts in place) — the rung that should be tried BEFORE the destructive
+   * fresh respawn. Resolves `{ cleared: true }` when the wall is gone after
+   * compaction, `{ cleared: false, reason }` when compaction itself fails
+   * (e.g. the conversation is too long to even compact) or times out — in
+   * which case recovery falls through to the fresh respawn. Undefined ⇒ the
+   * rung is skipped (pre-escalation behavior: straight to fresh respawn).
+   */
+  attemptCompaction?: (sessionName: string) => Promise<{ cleared: boolean; reason?: string }>;
   /**
    * Get recent messages for a topic (used by context-exhaustion recovery to
    * capture any in-flight agent reply that lands between detection and respawn,
@@ -97,7 +142,72 @@ export interface SessionRecoveryDeps {
     fromUser: boolean;
     timestamp: string | number | Date;
   }>;
+
+  // ── Part D: double-dispatch recovery gate (docs/specs/ownership-follows-live-work.md) ──
+  // Injected primitives that let `checkAndRecover` consult per-topic ownership
+  // BEFORE re-running a recovery locally, so a machine that no longer owns a topic
+  // FORWARDS to the owner instead of double-dispatching the same inbound. All
+  // optional — when absent (or `ownershipFollowsLiveWork()` resolves false) the
+  // gate is a strict no-op and the existing recovery logic runs unchanged (the
+  // byte-identical legacy path). The decision logic lives in `checkAndRecover` so
+  // both sides of every ownership state are unit-testable here.
+
+  /** The dev-gated flag (resolveDevAgentGate). False / absent ⇒ gate is a no-op. */
+  ownershipFollowsLiveWork?: () => boolean;
+  /**
+   * `ownReg.ownerOf(String(topicId))` — the topic's owner machine id, or null
+   * when no record / released. MAY THROW (registry unreadable); the gate treats a
+   * throw as the fail-OPEN registry-unknown branch (re-run locally + telemetry),
+   * distinct from a reachability throw (which names a peer → withhold).
+   */
+  ownerOfTopic?: (topicId: number) => string | null;
+  /** This machine's mesh id (null when single-machine / not yet resolved). */
+  selfMachineId?: () => string | null;
+  /**
+   * Is the (peer) owner machine reachable right now?
+   * `machinePoolRegistry.getCapacity(owner)?.online === true`. MAY THROW /
+   * be indeterminate → the gate treats that as the UNREACHABLE-peer branch
+   * (withhold the local re-run; the record NAMES a peer, so we don't
+   * double-dispatch) — NOT the fail-open registry-unknown branch.
+   */
+  isOwnerReachable?: (owner: string) => boolean;
+  /**
+   * Forward the topic's ALREADY-DURABLE pending inbound through the existing
+   * route() drain (FIFO, never a fabricated message). Returns the count forwarded
+   * + a `nonePending` flag (true ⇒ nothing to serve; the gate withholds the local
+   * respawn and emits no forward). Ordering + exactly-once are the queue drain's +
+   * route()'s per-event-id ledger's responsibility — the gate adds neither.
+   */
+  forwardPendingInboundViaRoute?: (topicId: number) => Promise<{ forwarded: number; nonePending: boolean }>;
+  /**
+   * Emit ONE neutral observational telemetry row for the fail-OPEN /
+   * reachability-unknown branches (`recovery-gate-registry-unknown` /
+   * `recovery-gate-reachability-unknown`) to the machine-local sentinel-events
+   * audit, so the fail-open tradeoff is MEASURED (the fleet-promotion gate reads
+   * it), not assumed. Best-effort; a throw never affects the recovery decision.
+   */
+  emitRecoveryGateTelemetry?: (row: {
+    kind: 'recovery-gate-registry-unknown' | 'recovery-gate-reachability-unknown';
+    topicId: number;
+    decision: 're-run-local' | 'withhold';
+    reason: string;
+  }) => void;
 }
+
+/**
+ * Part D decision (docs/specs/ownership-follows-live-work.md). The MIXED safe
+ * direction, named honestly per ownership state:
+ *  - `proceed`   → re-run locally (owner === self, or null/released, or the
+ *    fail-OPEN registry-unknown branch — re-running cannot double-dispatch when
+ *    nobody else owns it, and a dead conversation is a worse failure than a rare
+ *    double-reply on an UNKNOWN-ownership registry blip).
+ *  - `forward`   → owner is a REACHABLE peer: do NOT re-run; forward to the owner.
+ *  - `withhold`  → owner is an UNREACHABLE peer (incl. reachability throw): the
+ *    record names a peer, so withhold the local re-run; the message rides the
+ *    durable inbound queue / forward path (bounded by that queue's TTL +
+ *    loss-notice — never an unbounded hold, never a silent strand).
+ */
+export type OwnershipRecoveryDecision = 'proceed' | 'forward' | 'withhold';
 
 // ============================================================================
 // SessionRecovery Class
@@ -107,6 +217,13 @@ export class SessionRecovery extends EventEmitter {
   private config: SessionRecoveryConfig;
   private deps: SessionRecoveryDeps;
   private recoveryAttempts: Map<string, RecoveryAttempt> = new Map();
+  /** Durable memory that the existing context detector matched for a topic.
+   * The timestamp supplies the bounded-deferral ceiling; the optional probe is
+   * the prior observation used to prove transcript growth. */
+  private contextWedgedSeen = new Map<number, {
+    firstSeenAt: number;
+    transcript?: TranscriptProbe;
+  }>();
   private stateFilePath: string;
 
   constructor(config: Partial<SessionRecoveryConfig>, deps: SessionRecoveryDeps) {
@@ -116,6 +233,8 @@ export class SessionRecovery extends EventEmitter {
       maxAttempts: config.maxAttempts ?? 3,
       cooldownMs: config.cooldownMs ?? 15 * 60 * 1000,
       projectDir: config.projectDir || process.cwd(),
+      contextExhaustionDeferralCeilingMs:
+        config.contextExhaustionDeferralCeilingMs ?? 30 * 60 * 1000,
     };
     this.deps = deps;
     this.stateFilePath = path.join(this.config.projectDir, '.instar', 'recovery-state.json');
@@ -136,6 +255,44 @@ export class SessionRecovery extends EventEmitter {
       return { recovered: false, failureType: null, message: 'Recovery disabled' };
     }
 
+    // ── Part D: double-dispatch recovery gate (ownership-follows-live-work) ──────
+    // BEFORE any recovery sub-path respawns/re-injects, consult per-topic ownership.
+    // A `forward`/`withhold` decision means another machine owns this topic (or its
+    // owner is briefly unreachable) — re-running here would double-dispatch the same
+    // inbound. Strict no-op when the flag is OFF / deps absent (legacy behavior).
+    const ownershipDecision = this.decideOwnershipForRecovery(topicId);
+    if (ownershipDecision === 'forward') {
+      // Reachable peer owns the topic: do NOT recover locally — forward the topic's
+      // pending inbound through route() (which re-resolves the live owner + applies
+      // isRemotelyHandled at dispatch). No pending inbound ⇒ nothing to serve; the
+      // leftover idle session is converged by the existing reaper/reconciler.
+      let forwarded = 0;
+      let nonePending = true;
+      try {
+        const r = await this.deps.forwardPendingInboundViaRoute?.(topicId);
+        if (r) { forwarded = r.forwarded; nonePending = r.nonePending; }
+      } catch { /* @silent-fallback-ok — forward is best-effort; route()'s own ledger owns delivery + exactly-once */ }
+      return {
+        recovered: false,
+        failureType: null,
+        message: nonePending
+          ? `Recovery skipped — topic ${topicId} owned by a reachable peer and no pending inbound to forward`
+          : `Recovery forwarded — topic ${topicId} owned by a reachable peer; ${forwarded} pending inbound routed to the owner`,
+      };
+    }
+    if (ownershipDecision === 'withhold') {
+      // Unreachable peer owns the topic (incl. reachability-throw): WITHHOLD the
+      // local re-run. The message is NOT lost — it rides the existing durable inbound
+      // queue / forward path; if the owner stays dark the ownership reconciler +
+      // failover (force-claim on death evidence) eventually move ownership.
+      return {
+        recovered: false,
+        failureType: null,
+        message: `Recovery withheld — topic ${topicId} owned by an unreachable peer; the message rides the durable inbound queue (not re-run locally to avoid double-dispatch)`,
+      };
+    }
+    // ownershipDecision === 'proceed' → fall through to today's recovery logic.
+
     const processAlive = this.deps.isSessionAlive(sessionName);
 
     // 1. Check for context exhaustion (process alive but conversation too long)
@@ -144,13 +301,19 @@ export class SessionRecovery extends EventEmitter {
     // it just can't accept any more input without hitting the same error.
     if (processAlive && this.deps.captureSessionOutput) {
       const tmuxOutput = this.deps.captureSessionOutput(sessionName, 50);
+      let matchedPattern: string | null = null;
       if (tmuxOutput) {
         const contextCheck = detectContextExhaustion(tmuxOutput);
         if (contextCheck.matched) {
-          const result = await this.recoverFromContextExhaustion(topicId, sessionName, contextCheck.pattern || 'unknown');
-          this.logEvent(result, topicId, sessionName);
-          return result;
+          this.markContextWedgedSeen(topicId);
+          matchedPattern = contextCheck.pattern;
         }
+      }
+      if (matchedPattern || this.hasContextWedgedSeen(topicId)) {
+        const result = await this.recoverFromContextExhaustion(topicId, sessionName, matchedPattern);
+        if (result.recovered) this.clearContextWedgedSeen(topicId);
+        this.logEvent(result, topicId, sessionName);
+        return result;
       }
     }
 
@@ -189,6 +352,97 @@ export class SessionRecovery extends EventEmitter {
     }
 
     return { recovered: false, failureType: null, message: 'No mechanical failure detected' };
+  }
+
+  /** Remember only that the unchanged detector has already matched this topic. */
+  markContextWedgedSeen(topicId: number): void {
+    if (this.contextWedgedSeen.has(topicId)) return;
+    this.contextWedgedSeen.set(topicId, { firstSeenAt: this.now() });
+    this.saveState();
+  }
+
+  /** Mechanical read seam for SessionMonitor; this makes no recovery decision. */
+  hasContextWedgedSeen(topicId: number): boolean {
+    return this.contextWedgedSeen.has(topicId);
+  }
+
+  /** Explicit manual-intervention seam; successful recovery uses this same clear. */
+  clearContextWedgedSeen(topicId: number): void {
+    if (!this.contextWedgedSeen.delete(topicId)) return;
+    this.saveState();
+  }
+
+  /** First detector observation, exposed for honest status surfaces/tests. */
+  getContextWedgedFirstSeenAt(topicId: number): number | null {
+    return this.contextWedgedSeen.get(topicId)?.firstSeenAt ?? null;
+  }
+
+  /**
+   * Part D decision logic (docs/specs/ownership-follows-live-work.md). Resolves the
+   * per-topic ownership state into a recovery direction. The safe direction is
+   * MIXED and named honestly per state (NOT uniformly fail-closed):
+   *  - owner === self / null / released → `proceed` (re-run locally; no competing
+   *    owner can double-dispatch, and NOT re-running would silently drop the recovery).
+   *  - owner === reachable peer → `forward` (the owner serves it; double-dispatch avoided).
+   *  - owner === unreachable peer (incl. `isOwnerReachable` THROW / indeterminate) →
+   *    `withhold` (the record NAMES a peer, so the safe direction is no-double-dispatch).
+   *  - `ownerOf` THROWS / registry unreadable → `proceed` — **fail-OPEN, labeled as
+   *    such** + a `recovery-gate-registry-unknown` telemetry row: we have NO owner
+   *    evidence at all, and a dead conversation is a worse failure than a rare
+   *    double-reply. (A *persistent* registry failure degrades to the OLD
+   *    double-dispatch-prone behavior — an already-broken state, not a new regression.)
+   */
+  private decideOwnershipForRecovery(topicId: number): OwnershipRecoveryDecision {
+    // Flag OFF / deps absent → strict no-op (legacy behavior: always proceed).
+    if (!this.deps.ownershipFollowsLiveWork || !this.deps.ownershipFollowsLiveWork()) return 'proceed';
+    if (!this.deps.ownerOfTopic || !this.deps.selfMachineId) return 'proceed';
+
+    const self = this.deps.selfMachineId();
+    if (!self) return 'proceed'; // single-machine / mesh id not resolved → no peer can own it
+
+    let owner: string | null;
+    try {
+      owner = this.deps.ownerOfTopic(topicId);
+    } catch {
+      // ownerOf THREW / registry unreadable → FAIL-OPEN (re-run locally), labeled
+      // as such + measured. We have NO owner evidence (distinct from a reachability
+      // throw, where the record DID name a peer). A registry read error is rare +
+      // transient; a recovery path that silently does nothing on a blip is the worse
+      // failure (a dead conversation). The fleet-promotion gate reads this count.
+      try {
+        this.deps.emitRecoveryGateTelemetry?.({
+          kind: 'recovery-gate-registry-unknown',
+          topicId,
+          decision: 're-run-local',
+          reason: 'ownerOf threw / registry unreadable — fail-open to conversation continuity',
+        });
+      } catch { /* @silent-fallback-ok — telemetry is observability; never affects the decision */ }
+      return 'proceed';
+    }
+
+    if (owner === null) return 'proceed'; // released / never-seen → no competing owner
+    if (owner === self) return 'proceed'; // we own it → re-run is correct (today's behavior)
+
+    // owner is a PEER. Reachable → forward; unreachable / indeterminate → withhold.
+    let reachable: boolean;
+    try {
+      reachable = this.deps.isOwnerReachable ? this.deps.isOwnerReachable(owner) : false;
+    } catch {
+      // isOwnerReachable THREW / indeterminate for a PEER-owned record → treat as the
+      // UNREACHABLE-peer branch (withhold), NOT a local re-run: the record NAMES a
+      // peer, so the safe direction is no-double-dispatch (distinct from the
+      // ownerOf-throw case above where we had no owner evidence at all). Measured.
+      try {
+        this.deps.emitRecoveryGateTelemetry?.({
+          kind: 'recovery-gate-reachability-unknown',
+          topicId,
+          decision: 'withhold',
+          reason: 'isOwnerReachable threw / indeterminate for a peer-owned record — withhold (record names a peer)',
+        });
+      } catch { /* @silent-fallback-ok — telemetry is observability; never affects the decision */ }
+      return 'withhold';
+    }
+    return reachable ? 'forward' : 'withhold';
   }
 
   /**
@@ -271,8 +525,15 @@ export class SessionRecovery extends EventEmitter {
    *  @returns `'killed'` on a kill we performed; `'deferred-still-working'`
    *           when the work-check vetoed the kill.
    */
-  private async killForRecovery(sessionName: string): Promise<'killed' | 'deferred-still-working'> {
-    if (this.deps.hasActiveProcesses && this.deps.hasActiveProcesses(sessionName)) {
+  private async killForRecovery(
+    sessionName: string,
+    options: { bypassChildProcessVeto?: boolean } = {},
+  ): Promise<'killed' | 'deferred-still-working'> {
+    if (
+      !options.bypassChildProcessVeto
+      && this.deps.hasActiveProcesses
+      && this.deps.hasActiveProcesses(sessionName)
+    ) {
       console.log(
         `[SessionRecovery] "${sessionName}": P1/P2 cross-check found active child processes — `
           + `deferring recovery (JSONL stall but the process is still producing work)`,
@@ -305,7 +566,7 @@ export class SessionRecovery extends EventEmitter {
     // Kill and respawn (stalls don't need truncation — just resume)
     if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
       return {
-        recovered: false, failureType: 'stall', attemptNumber,
+        recovered: false, failureType: 'stall', attemptNumber, deferred: true,
         message: `Stall recovery deferred for ${sessionName} — work-check found active children; the JSONL "stall" reading is unreliable while the process is producing work`,
       };
     }
@@ -343,7 +604,7 @@ export class SessionRecovery extends EventEmitter {
   private async recoverFromContextExhaustion(
     topicId: number,
     sessionName: string,
-    matchedPattern: string,
+    matchedPattern: string | null,
   ): Promise<RecoveryResult> {
     const key = `context:${sessionName}`;
 
@@ -355,19 +616,103 @@ export class SessionRecovery extends EventEmitter {
       };
     }
 
+    // Context-wall work is measured from the session's transcript, not from
+    // helper-process existence. MCP/browser/SSH children can remain alive at a
+    // hard wall while the model produces nothing.
+    const latch = this.contextWedgedSeen.get(topicId)
+      ?? { firstSeenAt: this.now() };
+    this.contextWedgedSeen.set(topicId, latch);
+    const latchAgeMs = Math.max(0, this.now() - latch.firstSeenAt);
+    const ceilingReached =
+      latchAgeMs >= this.config.contextExhaustionDeferralCeilingMs;
+
+    const currentProbe = this.deps.probeTranscript?.(sessionName);
+    const priorProbe = latch.transcript;
+    if (currentProbe) {
+      latch.transcript = currentProbe;
+      this.saveState();
+    }
+    const growth = currentProbe && priorProbe
+      ? transcriptDelta(priorProbe, currentProbe)
+      : 'unknown';
+
+    // With the production transcript seam, only positive transcript growth
+    // proves work. The first/unresolved observation defers safely, but spends
+    // ZERO recovery attempts. The durable ceiling prevents ambiguity from
+    // becoming an infinite wait. Legacy callers without the seam retain their
+    // old child-process check until they are upgraded.
+    const legacyBusyWithoutProbe =
+      !this.deps.probeTranscript
+      && (this.deps.hasActiveProcesses?.(sessionName) ?? false);
+    if (!ceilingReached && (growth === 'grew' || growth === 'unknown' && (
+      this.deps.probeTranscript !== undefined || legacyBusyWithoutProbe
+    ))) {
+      return {
+        recovered: false,
+        failureType: 'context_exhaustion',
+        deferred: true,
+        message: growth === 'grew'
+          ? `Context-exhaustion recovery deferred for ${sessionName} — its transcript is still growing`
+          : `Context-exhaustion recovery deferred for ${sessionName} — waiting for a second transcript observation`,
+      };
+    }
+
+    // A deferral is not an attempt. Count only after the evidence gate has
+    // authorized an actual compaction/kill recovery action.
     const attemptNumber = this.recordAttempt(key);
 
-    this.emit('recovery:context_exhaustion', { topicId, sessionName, matchedPattern, attemptNumber });
+    this.emit('recovery:context_exhaustion', {
+      topicId,
+      sessionName,
+      matchedPattern,
+      attemptNumber,
+      latchAgeMs,
+      ceilingReached,
+      transcriptGrowth: growth,
+    });
+
+    // ── Rung 1: non-destructive /compact (preserves the conversation) ──
+    // Before killing the session and losing the conversation, try the escalation
+    // the wall itself asks for: press `/compact`. This is gated to a GENUINELY
+    // stuck session (no active child processes — a working session at 100%
+    // context is handled by the kill-defer below, never compacted out from under
+    // its work). If /compact clears the wall the conversation survives; if it
+    // fails (too long to even compact) or times out, we fall through to the
+    // destructive fresh respawn — never worse than the prior behavior.
+    if (this.deps.attemptCompaction) {
+      try {
+        const compaction = await this.deps.attemptCompaction(sessionName);
+        if (compaction.cleared) {
+          this.emit('recovery:context_compacted', { topicId, sessionName, attemptNumber });
+          return {
+            recovered: true,
+            failureType: 'context_exhaustion',
+            attemptNumber,
+            message: `Recovered via /compact — conversation preserved${matchedPattern ? ` (pattern: "${matchedPattern}", attempt ${attemptNumber})` : ` (attempt ${attemptNumber})`}`,
+          };
+        }
+        // compaction.cleared === false → fall through to the destructive respawn.
+      } catch {
+        // @silent-fallback-ok — compaction is best-effort; fall through to respawn.
+      }
+    }
 
     // Record detection moment so we can identify any in-flight agent reply that
     // lands AFTER this point — the dying session may have generated a reply that
     // hasn't been written to topic history yet at respawn time.
     const detectedAt = Date.now();
 
-    // Kill the session — it's stuck at the "conversation too long" prompt
-    if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
+    // ── Rung 2: kill + fresh respawn (conversation lost) ──
+    // Reached only when /compact was unavailable, declined (active children), or
+    // could not clear the wall. The session is stuck at the "conversation too
+    // long" prompt and a fresh start is the only remaining recovery.
+    if ((await this.killForRecovery(sessionName, {
+      // Transcript evidence already made the context-wall decision. A helper
+      // process must not re-veto it here.
+      bypassChildProcessVeto: this.deps.probeTranscript !== undefined || ceilingReached,
+    })) === 'deferred-still-working') {
       return {
-        recovered: false, failureType: 'context_exhaustion', attemptNumber,
+        recovered: false, failureType: 'context_exhaustion', attemptNumber, deferred: true,
         message: `Context-exhaustion recovery deferred for ${sessionName} — work-check found active children`,
       };
     }
@@ -495,7 +840,7 @@ export class SessionRecovery extends EventEmitter {
     // Kill (might already be dead) and respawn
     if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
       return {
-        recovered: false, failureType: 'crash', attemptNumber,
+        recovered: false, failureType: 'crash', attemptNumber, deferred: true,
         message: `Crash recovery deferred for ${sessionName} — work-check found active children (the JSONL "crashed" reading conflicts with a running process)`,
       };
     }
@@ -561,7 +906,7 @@ export class SessionRecovery extends EventEmitter {
     // Kill and respawn
     if ((await this.killForRecovery(sessionName)) === 'deferred-still-working') {
       return {
-        recovered: false, failureType: 'error_loop', attemptNumber,
+        recovered: false, failureType: 'error_loop', attemptNumber, deferred: true,
         message: `Error-loop recovery deferred for ${sessionName} — work-check found active children`,
       };
     }
@@ -639,7 +984,7 @@ export class SessionRecovery extends EventEmitter {
   private shouldAttempt(key: string): boolean {
     const prior = this.recoveryAttempts.get(key);
     if (!prior) return true;
-    if (Date.now() - prior.lastAttempt < this.config.cooldownMs) return false;
+    if (this.now() - prior.lastAttempt < this.config.cooldownMs) return false;
     if (prior.count >= this.config.maxAttempts) return false;
     return true;
   }
@@ -647,7 +992,7 @@ export class SessionRecovery extends EventEmitter {
   private recordAttempt(key: string): number {
     const prior = this.recoveryAttempts.get(key);
     const count = (prior?.count || 0) + 1;
-    this.recoveryAttempts.set(key, { lastAttempt: Date.now(), count });
+    this.recoveryAttempts.set(key, { lastAttempt: this.now(), count });
     this.saveState();
     return count;
   }
@@ -665,6 +1010,27 @@ export class SessionRecovery extends EventEmitter {
             const attempt = value as RecoveryAttempt;
             if (attempt.lastAttempt && attempt.count) {
               this.recoveryAttempts.set(key, attempt);
+            }
+          }
+        }
+        if (data.wedgedSeen && typeof data.wedgedSeen === 'object') {
+          for (const [topic, seen] of Object.entries(data.wedgedSeen)) {
+            const topicId = Number(topic);
+            if (!Number.isInteger(topicId)) continue;
+            if (seen === true) {
+              // Legacy true-only state: keep the latch, start the ceiling clock
+              // now because its historical first-seen time was never recorded.
+              this.contextWedgedSeen.set(topicId, { firstSeenAt: this.now() });
+              continue;
+            }
+            if (seen && typeof seen === 'object') {
+              const row = seen as { firstSeenAt?: unknown; transcript?: unknown };
+              const firstSeenAt = Number(row.firstSeenAt);
+              if (!Number.isFinite(firstSeenAt) || firstSeenAt <= 0) continue;
+              const transcript = isTranscriptProbe(row.transcript)
+                ? row.transcript
+                : undefined;
+              this.contextWedgedSeen.set(topicId, { firstSeenAt, transcript });
             }
           }
         }
@@ -688,15 +1054,26 @@ export class SessionRecovery extends EventEmitter {
       // Only persist entries less than 1 hour old
       const ONE_HOUR = 60 * 60 * 1000;
       for (const [key, entry] of Array.from(this.recoveryAttempts.entries())) {
-        if (Date.now() - entry.lastAttempt < ONE_HOUR) {
+        if (this.now() - entry.lastAttempt < ONE_HOUR) {
           data[key] = entry;
         }
       }
 
-      fs.writeFileSync(this.stateFilePath, JSON.stringify({ attempts: data }, null, 2));
+      const wedgedSeen: Record<string, {
+        firstSeenAt: number;
+        transcript?: TranscriptProbe;
+      }> = {};
+      for (const [topicId, state] of this.contextWedgedSeen) {
+        wedgedSeen[String(topicId)] = state;
+      }
+      fs.writeFileSync(this.stateFilePath, JSON.stringify({ attempts: data, wedgedSeen }, null, 2));
     } catch { // @silent-fallback-ok — state persistence is best-effort; in-memory state still works
       // Can't save — in-memory state still works for this process lifetime
     }
+  }
+
+  private now(): number {
+    return this.deps.now?.() ?? Date.now();
   }
 
   /**
@@ -719,6 +1096,10 @@ export class SessionRecovery extends EventEmitter {
       const pid = this.deps.getPanePid(sessionName);
       if (pid) {
         try {
+          // lint-allow-blocking-scan: targeted `lsof -p <pid>` (one specific process,
+          // not a full enumeration), 5s timeout, runs once during a session's JSONL
+          // recovery — not on a cadence, so it can't starve /health the way the #972
+          // every-tick scans did.
           const output = execFileSync('lsof', ['-p', String(pid), '-Fn'], {
             encoding: 'utf-8',
             timeout: 5000,

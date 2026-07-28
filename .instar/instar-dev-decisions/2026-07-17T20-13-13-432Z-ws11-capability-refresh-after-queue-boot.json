@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-17T20:13:13.432Z",
+  "slug": "ws11-capability-refresh-after-queue-boot",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

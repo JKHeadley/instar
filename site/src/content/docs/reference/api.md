@@ -22,6 +22,7 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | POST | `/sessions/:name/input` | Send text to a session |
 | POST | `/sessions/spawn` | Spawn a new session (rate limited). Body: `name`, `prompt`, `model?`, `jobSlug?` |
 | DELETE | `/sessions/:id` | Kill a session |
+| GET | `/orphaned-work` | Worktrees holding uncommitted work whose owning session died (the `OrphanedWorkSentinel` findings). 503 when the feature is dark, 200 when live |
 
 ## Jobs
 
@@ -88,8 +89,22 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | POST | `/intent/journal` | Record a decision |
 | GET | `/intent/drift` | Detect behavioral drift |
 | GET | `/intent/alignment` | Alignment score |
+| GET | `/goal-realignment` | Bounded dry-run `GoalRealignment` status: priority intake, source completeness, and latest review verdict (development agents only) |
 | GET | `/project-map` | Auto-generated project territory map |
 | POST | `/coherence/check` | Pre-action coherence verification |
+
+## EXO 3.0 Governance
+
+The endpoints behind the [EXO 3.0 Alignment](/features/exo3/) capabilities. See the [Meridian](/features/exo3-case-study-meridian/) and [Ironwood](/features/exo3-case-study-ironwood/) case studies for the controlled proof.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/intent/org/test-action` | Run the refusal + endorsement tests on a proposed action against the org intent |
+| POST | `/intent/tradeoff-resolve` | Resolve a value tradeoff via the org's tradeoff hierarchy |
+| GET | `/passport` | The agent's digital passport (identity, trust level, forbidden actions) |
+| POST | `/passport/verify` | Verify a peer's proposed action against its passport |
+| POST | `/agent-readiness/score` | Score a task or workflow on its coordination-vs-judgment ratio |
+| GET | `/metrics/learning-velocity` | Learning-velocity metric (the EXO 3.0 KPI inversion) |
 
 ## Updates & Dispatches
 
@@ -113,6 +128,8 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/capabilities` | Feature guide and metadata |
+| GET | `/capability-registry` | Read the advisory local capability projection; distinguishes dark, unavailable, unobserved, stale, and classified evidence |
+| GET | `/capability-registry/health` | Read advisory capability-registry observation counts and status measurements |
 | GET | `/events` | Query events (`?limit=50&since=24&type=`) |
 | GET | `/quota` | Quota usage + recommendation |
 | GET | `/agents` | List all agents on this machine |
@@ -213,6 +230,18 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `GET /agents`
 - `POST /agents/:name/restart`
 
+## /approvals
+
+Approval-as-Data (spec Part B / Phase 2): every operator approval recorded as
+durable, signed data — approved-as-is vs approved-with-change (with the why of
+each divergence) vs rejected — and the per-class agreement ratios computed from
+it. Tracks approvals wherever they occur (spec sign-off, chat, other). Read-only
+with respect to behavior; the ratio is a signal, never a gate.
+
+- `POST /approvals` — record an operator decision (mode + divergences MUST be operator-sourced; inconsistent rows 400)
+- `GET /approvals` — list recorded decisions (`?limit` / `?decisionClass` / `?surface`)
+- `GET /approvals/summary` — per-class `{ total, approvedAsIs, ratio, streak, autoApprovalEligible, divergenceCounts }` + a `bySurface` breakdown
+
 ## /apprenticeship
 - `GET /apprenticeship/instances`
 - `GET /apprenticeship/instances/:id`
@@ -227,6 +256,15 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `GET /attention/:id`
 - `PATCH /attention/:id`
 - `POST /attention`
+- `POST /attention/:id/remote-ack` — durable operator-bound ack for a pooled attention item owned by ANOTHER machine (WS4.1 follow-up). Delivers immediately when the owner is reachable, else persists the intent (bound to the authenticated operator) and re-delivers when the owner returns; the owner revalidates at apply time and rejects a stale resolve against a since-escalated HIGH/URGENT item. Ships dark behind `multiMachine.seamlessness.ws41DurableAck`.
+- `GET /attention/_remote-ack/pending` — list still-pending durable remote-acks (observability).
+- `POST /attention/_remote-ack/drain` — manually drain pending durable remote-acks to their owning machines.
+
+## /autonomous
+- `POST /autonomous/register` — server-side start snapshot for an autonomous run (scope-accretion R30): the server mints the runId, snapshots the `scopeAccretion` config + sweep base-root start-SHAs, and clamps `endAt` to `now + maxDurationMs`. One registration per active run (409 while the existing record is active).
+- `POST /autonomous/:topic/run-end` — every exit surface reports here (scope-accretion R44): runs the non-blocking advisory sweep and enumerates any unbuilt accreted work loudly; marks the run record ended.
+- `POST /autonomous/:topic/ratify-deferral` — dashboard-PIN-gated operator ratification of deferred accreted artifacts (`{"artifacts": [...]}` or `{"all": true}`; the response echoes exactly what was ratified).
+- `POST /autonomous/:topic/scope-accretion-override` — dashboard-PIN-gated live mid-run lever (`{"enabled": false, "reason": "…"}`): overrides the registration-time snapshot for the running session; audited.
 
 ## /autonomy
 - `GET /autonomy`
@@ -293,12 +331,34 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `PATCH /config`
 - `POST /config/telemetry`
 
+## /cutover-readiness
+
+Cutover-READINESS (coordination-mandate spec §7 G2.4, decision 1A): everything UP
+TO the cutover door, never the door. The two objective conditions resolve from
+REAL durable state — the persisted import IntegrityReport and the durable
+zero-divergence parity window (with a readiness-layer freshness bound). The flip
+itself is the operator's manual click; there is no fire-cutover route by design.
+
+- `GET /cutover-readiness` — `{ ready, door: "manual-operator-click", integrity, parity, importDryRun }` (read-only)
+- `POST /cutover-readiness/parity-pass` — trigger a server-side live parity check; the request contributes nothing to the result; a failed check records nothing
+- `POST /cutover-readiness/import-dryrun` — trigger a server-side import REHEARSAL (live source fetch → AS-IS import into an in-memory target → integrity gate over what the target reads back); zero durable data writes; persists to a separate dry-run report and never greens the canonical integrity condition
+- `GET /cutover-readiness/import-dryrun` — the last rehearsal's verdict (read-only, informational — not a `ready` input)
+
 ## /context
 - `GET /context`
 - `GET /context/:segmentId`
 - `GET /context/active-job`
 - `GET /context/dispatch`
 - `GET /context/working-memory`
+
+## /decision-quality
+- `GET /decision-quality`
+- `POST /decision-quality/grade-pass`
+
+## /benchmark-divergence
+- `GET /benchmark-divergence`
+- `POST /benchmark-divergence/analyze`
+- `GET /benchmark-divergence/rollup-aggregates`
 
 ## /delivery-queue
 - `GET /delivery-queue`
@@ -467,6 +527,7 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `POST /internal/stop-gate/evaluate`
 - `POST /internal/stop-gate/kill-switch`
 - `POST /internal/stop-gate/mode`
+- `POST /internal/stop-gate/reset-breaker` — clear the authenticated authority breaker after provider repair.
 - `POST /internal/telegram-callback`
 - `POST /internal/telegram-forward`
 
@@ -490,6 +551,21 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `GET /listener/health`
 - `GET /listener/metrics`
 - `POST /listener/restart`
+
+## /mandate
+
+Coordination Mandate (spec: coordination-mandate.md): a deny-by-default authority
+gate for autonomous agent-to-agent actions. The operator's bounded, expiring,
+revocable mandate — issued from the dashboard behind their PIN — is the authorizer,
+never the agent. With no mandate issued, every evaluation denies. Every decision
+(allow AND deny) lands in a hash-chained, tamper-evident audit.
+
+- `POST /mandate/evaluate` — check an intended action `{ action, params, agentFp, mandateId }` → `{ decision, reason }`
+- `GET /mandate` — list mandates (each with live `authorshipValid`)
+- `GET /mandate/:id` — one mandate + verification status
+- `GET /mandate/audit` — the chained audit (`chain.ok:false` = tampering)
+- `POST /mandate/issue` — PIN-GATED (operator only; Bearer alone is refused)
+- `POST /mandate/:id/revoke` — PIN-GATED (the operator kill switch)
 
 ## /memory
 - `GET /memory/entities/by-evidence`
@@ -546,6 +622,24 @@ The sections above describe the most commonly-used endpoints with curl examples 
 
 ## /ping
 - `GET /ping`
+
+## /pool
+- `GET /pool` — the machine pool: router, nicknames, hardware, online status, load, quota state
+- `GET /pool/placement` — which machine owns a topic + the reason (`pinned`/`placed`/`unowned`) + the U4.1 verified pin state (`pinState`: `actuated`/`pending`/`diverged`/`suspended-pending-owner-return`, `pinHeldSince`, `pendingReason`, `pinnedBy`)
+- `POST /pool/transfer` — deterministic topic move to a nickname/machineId (the validated planner)
+- `POST /pool/unpin` — deliberately clear a topic's placement pin; the clear replicates as a tombstone so a stale copy can never re-pin it (U4.1)
+- `GET /pool/pin-quarantine` — the sticky skew-quarantine set (clock-skewed pin records excluded from pin resolution) + fold status (503 when pin replication is dark)
+- `POST /pool/pin-quarantine/readmit` — the deliberate, explicit per-record re-admission of a quarantined pin record (dismissing the alert never re-admits)
+- `GET /pool/queue` — durable inbound-queue counts + hold/flap state (503 while dark)
+- `GET /pool/reconciler` — WS1.3 ownership reconciler status (+ `?topic=N` per-topic explain)
+- `GET /pool/stale-owner-release` — U4.2 stale-owner release telemetry: attempts, would-claims (dry-run), refusals by reason, evidence classes, P19 give-ups, probe-breaker state, open episodes (503 when dark; see [Multi-machine](/features/multi-machine/))
+- `GET /pool/lease-handback` — U4.4 lease hand-back reconciler status: state, hysteresis window, operator-latch visibility, last episode, counters (503 when the mesh is dark)
+- `POST /pool/lease-handback/latch` — write the operator-flip latch marker (the captain-flip playbook's POST step; suppresses automated hand-back — the human always wins)
+- `DELETE /pool/lease-handback/latch` — clear the latch early (PIN-gated: re-enables automation against a human decision, so the dashboard PIN is required)
+- `GET /pool/poll-cache` — the shared per-peer pool-scope poll cache (WS4.4(f))
+- `GET /pool/duplicate-reconciler` — ownership-gated-spawn unified status: duplicate-reconciler posture + substrate readiness, owner-dark notice episodes, spawn-admission counters, breaker state, audit-log locations (503 while dark; see [Ownership-Gated Spawn](/features/ownership-gated-spawn/))
+- `GET /pool/ownership-view?key=<topic>` — THIS machine's own ownership record for a conversation (proxy-free; the reconciler's peer-echo verification read)
+- `GET /judgment-provenance` — redacted judgment-provenance decision rows (`?limit=`, `?sinceHours=`, `?scope=pool` merges peers' redacted rows as clamped untrusted data; full context never leaves the deciding machine)
 
 ## /project-map
 - `GET /project-map`
@@ -615,6 +709,22 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `POST /review/evaluate`
 - `POST /review/test`
 
+## /review-exchange
+
+ReviewExchange (coordination-mandate spec §7 G2.3): one mutual, mandate-gated
+sign-off of a review artifact between the two agents named in a mandate. Both
+sign-offs run through the mandate gate's `sign-code-review` authority; every
+accepted signature carries the audit hash of the gate decision that authorized
+it. Linear lifecycle: proposed → delivered → verdict-recorded → complete (or
+changes-requested, terminal). Deny-by-default inherited: no mandate → 403.
+
+- `POST /review-exchange` — create `{ mandateId, artifact, packageRef, packageSha256, parties:[ownerFp,peerFp] }` (content-addressed)
+- `GET /review-exchange` — list exchanges
+- `GET /review-exchange/:id` — one exchange + signatures with audit hashes
+- `POST /review-exchange/:id/delivered` — record the Threadline delivery evidence
+- `POST /review-exchange/:id/peer-verdict` — the peer's authenticated verdict; `approve` is their sign-off → mandate-gated (deny → 403)
+- `POST /review-exchange/:id/sign` — the owner's countersignature → mandate-gated; completes the exchange
+
 ## /scope-coherence
 - `GET /scope-coherence`
 - `GET /scope-coherence/check`
@@ -632,8 +742,11 @@ The sections above describe the most commonly-used endpoints with curl examples 
 ## /self-knowledge
 - `GET /self-knowledge/health`
 - `GET /self-knowledge/search`
+- `GET /self-knowledge/session-context` — the boot self-knowledge block: vault secret NAMES (never values) + operational facts; `?full=1` bypasses display caps. Dark on the fleet (`enabled ?? developmentAgent`).
 - `GET /self-knowledge/tree`
 - `GET /self-knowledge/validate`
+- `POST /self-knowledge/facts` — append a durable operational fact (auto-stamped with date + machine)
+- `DELETE /self-knowledge/facts` — remove a fact by `{match}` or `{index, expect}`
 
 ## /semantic
 - `DELETE /semantic/forget/:id`
@@ -678,9 +791,15 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `GET /sessions/:name/output`
 - `GET /sessions/tmux`
 - `POST /sessions/:name/input`
+- `POST /sessions/:name/remote-close`
 - `POST /sessions/cleanup-stale`
 - `POST /sessions/create`
 - `POST /sessions/refresh`
+- `GET /sessions/resume-queue`
+- `POST /sessions/resume-queue/:id/cancel`
+- `POST /sessions/resume-queue/:id/requeue`
+- `POST /sessions/resume-queue/drain`
+- `POST /sessions/resume-queue/resume`
 - `POST /sessions/spawn`
 
 ## /shared-state
@@ -784,6 +903,13 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `GET /topic-bindings`
 - `POST /topic-bindings`
 
+## /topic-operator
+Verified per-topic operator binding (Know Your Principal). The operator is established ONLY from the authenticated sender `uid` — a content name can never become the operator. See [Know Your Principal](/concepts/know-your-principal/).
+- `POST /topic-operator` — bind a topic operator from the AUTHENTICATED sender `{ topicId, platform?, uid (required), displayName? }`; a blank uid is refused `400`
+- `GET /topic-operator` — all bound operators (names + uids)
+- `GET /topic-operator/:topicId` — one topic's verified operator (or `null` when unbound)
+- `GET /topic-operator/session-context?topicId=N` — the `<topic-operator>` session-start injection block (`{ present:false }` when unbound)
+
 ## /triage
 - `GET /triage/history`
 - `GET /triage/status`
@@ -816,6 +942,102 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `POST /view/:id/unlock`
 - `PUT /view/:id`
 
+## /subscription-pool
+
+Multi-account subscription registry + per-account quota (the Subscription & Auth
+Standard). The registry stores each account's login *location* (its config home),
+never tokens. These routes are **operator/internal** and ship dark — they do
+nothing until accounts are enrolled, and are not surfaced in `/capabilities`
+until the standard's later phases (scheduler + enrollment wizard) make them
+user-usable.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/subscription-pool` | List enrolled accounts (nickname, provider, framework, config home, status, last quota) |
+| POST | `/subscription-pool` | Add an account. Body: `id`, `nickname`, `provider`, `framework`, `configHome` |
+| GET | `/subscription-pool/:id` | Get one account |
+| PATCH | `/subscription-pool/:id` | Update mutable fields (nickname, framework, configHome, status) |
+| DELETE | `/subscription-pool/:id` | Remove an account |
+| POST | `/subscription-pool/poll` | Poll every account's live quota now (writes each account's `lastQuota`) |
+| GET | `/subscription-pool/:id/quota` | Read an account's latest quota snapshot + measured burn rate |
+| POST | `/subscription-pool/swap` | Resume a session on another eligible account (continuity guarantee — never dies on a quota limit). Body: `sessionName`, `exhaustedAccountId` |
+| GET | `/subscription-pool/proactive-swap` | Pre-limit swap monitor status — `thresholdPct`, `watchPct`, `maxSwapsPerCycle`, `cooldownMs`, `running`, `lastResult`. `200 { enabled:false }` when the monitor is dark. |
+| POST | `/subscription-pool/proactive-swap/check` | Run one proactive pass now (refresh the poll if near the wall, then pre-emptively swap at-pressure sessions). The deterministic "show me it works" lever. |
+| POST | `/subscription-pool/enroll` | Start a mobile-first new-account login. Body: `id`, `label`, `provider`, `framework`, optional `kind`, `configHome`. Returns the pending login (public code/URL + TTL — never a token). |
+| GET | `/subscription-pool/pending-logins` | The "Pending Logins" surface — active logins awaiting approval (code/URL + TTL). |
+| POST | `/subscription-pool/enroll/:id/cancel` | Safely abandon a pending or expired login and best-effort stop its waiting login pane. Completed/already-abandoned logins return idempotently; an in-flight completion returns `409`. |
+| POST | `/subscription-pool/enroll/:id/complete` | Mark a login completed once the operator approved + the account enrolled. |
+| POST | `/subscription-pool/enroll/reissue-expired` | Sweep + auto-reissue every expired login with a fresh code/URL (the background tick calls the same path). |
+| GET | `/subscription-pool/in-use` | Which pooled accounts are currently serving a live session. |
+
+### Account follow-me / account×machine matrix (WS5.2)
+
+Cross-machine account setup from the dashboard's Subscriptions-tab grid. Dark behind `multiMachine.accountFollowMe`. Each machine re-mints its OWN login (no token is copied between machines).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/subscription-pool/matrix/start-cell` | PIN-gated orchestrator: the grid's "Set up" tap. Issues the per-(account, targetMachine) `account-follow-me` mandate, then drives the enroll/start chain (self → loopback; peer → deliver the signed mandate + remote enroll). Body: `accountId`, `machineId`, `pin`. |
+| POST | `/subscription-pool/follow-me/enroll/start` | Mandate-gated: re-mint the login on THIS target machine (Mechanism B). Spawns the waiting `claude auth login` pane + records a pending login. Body: `mandateId`, `accountId`. |
+| POST | `/subscription-pool/follow-me/enroll/:id/submit-code` | Target-local: type the operator's verification code into the waiting login pane, then drive to a real outcome (S7 email-gate complete → add to pool). |
+| POST | `/subscription-pool/follow-me/submit-code` | Fronting relay for the above — the operator's single dashboard hop; self → loopback, peer → forward. Body: `machineId`, `id`, `code`. |
+| POST | `/subscription-pool/follow-me/enroll/:id/cancel` | Target-local: cancel a mis-tapped in-flight cell — abandon the pending login + tear down its login pane (raw `tmux kill-session`). Idempotent on a terminal record (200 `alreadyTerminal`); unknown/malformed id → 404; stands aside (409) while a code is mid-submit. Bearer-only. |
+| POST | `/subscription-pool/follow-me/cancel` | Fronting relay for cancel — dispatches to self/peer by `machineId` (offline peer → 502). The route the dashboard Cancel button calls. Body: `machineId`, `id`. |
+| POST | `/subscription-pool/follow-me/enroll/:id/complete` | Mark a follow-me login completed once the freshly-minted account passes the S7 email-gate. |
+
+The quota-aware scheduler picks accounts reset-date-optimally ("use before reset")
+and guarantees a long-lived session that hits its account's quota resumes on
+another account (via `claude --resume`, which is account-agnostic, so the
+conversation is preserved) rather than dying. There are two automatic swap
+triggers, both dark by default in `.instar/config.json`: the **reactive** swap
+(`subscriptionPool.autoSwapOnRateLimit`) fires AFTER a rate-limit escalation, and
+the **proactive** pre-limit swap (`subscriptionPool.proactiveSwap.enabled`) moves a
+session OFF an account BEFORE it walls, at a lag-aware measured `thresholdPct`
+(default 80 — below the real limit because the polled reading trails real usage).
+The proactive monitor resolves an UNTAGGED session's effective account from the
+default-config login, so the primary interactive session is swap-visible instead
+of wedging at the wall. The `/subscription-pool/swap` route is the manual lever;
+`/subscription-pool/proactive-swap/check` runs one proactive pass on demand.
+
+These routes are backed by three core classes: `SubscriptionPool` (the durable
+account registry — login location only, never tokens), `QuotaPoller` (the
+background poller that measures each account's live burn + reset windows), and
+`QuotaAwareScheduler` (reset-date-optimal account selection + the swap continuity
+guarantee). The swap itself drives `SessionRefresh` with an account-swap option so
+the resumed session launches under the new account's `CLAUDE_CONFIG_DIR`.
+
+The enrollment routes are backed by `PendingLoginStore` (a durable ledger of
+in-flight logins — public code/URL/TTL only, never a token), `EnrollmentWizard`
+(start a login + auto-reissue expired codes on a background sweep), and
+`FrameworkLoginDriver` (spawns the framework's own login under the new account's
+`CLAUDE_CONFIG_DIR` and scrapes the public code/URL). Enrollment ships dark — the
+routes answer `200 { enabled:false }` until the wizard is wired.
+
+Examples:
+
+```bash
+# List accounts and add one (login location only — never tokens)
+curl -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool
+curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool \
+  -d '{"id":"claude-personal","nickname":"personal","provider":"anthropic","framework":"claude-code","configHome":"~/.claude-personal"}'
+
+# Inspect, update, remove a specific account
+curl -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/claude-personal
+curl -X PATCH -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/claude-personal -d '{"nickname":"personal-max"}'
+curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/claude-personal
+
+# Refresh live quota for all accounts, then read one account's snapshot + burn rate
+curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/poll
+curl -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/claude-personal/quota
+
+# Manually swap a session off a quota-exhausted account (continuity preserved)
+curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/swap \
+  -d '{"sessionName":"my-session","exhaustedAccountId":"claude-personal"}'
+
+# Proactive pre-limit swap: check status, then run one pass on demand
+curl -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/proactive-swap
+curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:4040/subscription-pool/proactive-swap/check
+```
+
 ## /views
 - `GET /views`
 
@@ -828,6 +1050,24 @@ The sections above describe the most commonly-used endpoints with curl examples 
 - `GET /whatsapp/status`
 - `POST /whatsapp/send/:jid`
 
+## /permissions
+
+The Slack org permission gate (dark/observe-only by default — these routes are operator/internal, not surfaced in `/capabilities` until the enforce path is enabled in a later phase).
+
+- `GET /permissions/decisions` — recent permission-gate verdicts from the observe ledger (operator review).
+- `GET /permissions/scenario-suite` — the worked-example verdict suite (deploy-allow, junior-deny, ambiguous-clarify, social-engineering-deny, compromised-CEO step-up) with expected vs actual verdicts.
+- `GET /permissions/registrations/pending` — list pending self-registration requests awaiting admin approval.
+- `POST /permissions/registrations/register` — admin registers a Slack user with an org role (`{ slackUserId, displayName, role }`).
+- `POST /permissions/registrations/approve` — approve a pending registration (`{ slackUserId, role }`).
+- `POST /permissions/registrations/deny` — deny/drop a pending registration (`{ slackUserId }`).
+
 ## /whoami
 - `GET /whoami`
 
+## /work-queue
+
+The unified work-intake and prioritization registry (`WorkQueue` — see the Work Intake &
+Prioritization Queue feature page). Development-agent gated; 503 when dark.
+
+- `GET /work-queue` — the current deterministic ranked list of normalized work items.
+- `POST /work-queue/rescore` — recompute the ranking from live sources (pure compute, no durable writes).

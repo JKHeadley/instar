@@ -1,0 +1,9 @@
+# Two CI tripwires, honestly absorbed
+
+When I added the "files follow the conversation" trigger (P2.2b), it sits at the very top of the code that runs when a conversation arrives on a machine — deliberately first, so a moved conversation's files start fetching before anything else happens. Two of our own safety nets noticed, and both were right to.
+
+The first net reads that arrival code like a fixed-size page and checks that the older machinery (the part that resumes the conversation's session) is still written on it. My new trigger pushed that older text past the bottom edge of the page, so the check stopped seeing it — even though nothing was removed. The honest fix was twofold: I shortened my new comment block so it takes less room, and made the test's "page" slightly longer, with a note right there explaining exactly which feature made the longer page necessary. The check still guards what it always guarded.
+
+The second net counts every place in the codebase where an error is caught without being loudly handled, and refuses any increase over a written-down allowance. My transfer machinery added exactly two such catches — one that guards closing a file handle after serving it, one for a file that vanishes between being listed and being read. Neither swallows anything: each carries an in-place justification naming the spec section, and each failure shows up as a counted outcome in the transfer report (a "gone" or a refusal the user can see) instead of disappearing. So the allowance moves up by exactly two, with the reasoning written next to the number — the same ritual every previous change used. The net stays armed: any FUTURE unexplained catch still fails the build.
+
+Nothing about how the agent behaves changed in this commit — the source edit is comment-only; the two test edits keep both nets guarding exactly what they were built to guard.

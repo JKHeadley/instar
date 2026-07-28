@@ -1,0 +1,423 @@
+/**
+ * JsonlFeedbackStore.ts — the DURABLE canonical FeedbackStore for the operated
+ * instance (post-cutover authority under the migration spec's Option B: Echo's
+ * instance keeps its OWN canonical copy; Portal never opens a write door).
+ *
+ * Backing format: newline-delimited JSON, one file per entity family
+ * (`feedback.jsonl`, `clusters.jsonl`, `dispatches.jsonl`) under a caller-supplied
+ * directory. The format is DELIBERATELY the same shape `PersistedShadowImportTarget`
+ * writes (one full row per line, keyed by feedbackId/clusterId), so the proven AS-IS
+ * import artifact seeds this store directly — the cutover import output IS the
+ * canonical store, no translation step (fewer integrity risks at the one-way door).
+ *
+ * Mutation model: append-only log with LAST-WRITE-WINS on load. Every mutation
+ * appends the FULL updated row; on construction all lines are folded into a Map by
+ * id (later lines supersede earlier). Operated files remain append-only: rewriting
+ * an active path would invalidate durable tail cursors. Compaction belongs to the
+ * checksummed immutable-generation handoff protocol.
+ *
+ * JSONL (not SQLite) for the same reason as PersistedShadowImportTarget: dependency-
+ * free, no native module, trivially inspectable, and append durability is a plain
+ * appendFileSync. Volume is fleet feedback — low write rate; the import's measured
+ * 148k-row artifact parses in well under a second.
+ */
+
+import { appendFileSync, mkdirSync, readFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { join } from 'node:path';
+import type { FeedbackItem, Cluster } from '../processor/types.js';
+import type { ReopenDecision } from '../processor/reopen.js';
+import type { DispatchRecord } from '../dispatch/dispatch.js';
+import type { FeedbackStore, FeedbackMetrics } from './FeedbackStore.js';
+import { FeedbackSourceGenerations, type FeedbackSourceGeneration, type FeedbackSourceHandoff } from './FeedbackSourceGenerations.js';
+
+interface LoadResult<T> {
+  rows: Map<string, T>;
+  totalLines: number;
+}
+
+export class JsonlFeedbackStore implements FeedbackStore {
+  private feedbackPath: string;
+  private feedbackGenerationId: string;
+  private readonly sourceGenerations: FeedbackSourceGenerations;
+  private readonly clustersPath: string;
+  private readonly dispatchesPath: string;
+
+  private feedback!: Map<string, FeedbackItem>;
+  private clusters!: Map<string, Cluster>;
+  private dispatches!: Map<string, DispatchRecord>;
+  private counts: FeedbackMetrics = { captured: 0, created: 0, merged: 0, reopened: 0 };
+  private offsets = { feedback: 0, clusters: 0, dispatches: 0 };
+  private sourceLagBytes = 0;
+  private projectionRecords: Map<string, FeedbackItem> | null = null;
+
+  constructor(private readonly dir: string) {
+    mkdirSync(dir, { recursive: true });
+    this.sourceGenerations = new FeedbackSourceGenerations(dir);
+    const current = this.sourceGenerations.current();
+    this.feedbackPath = current.filePath;
+    this.feedbackGenerationId = current.generationId;
+    this.clustersPath = join(dir, 'clusters.jsonl');
+    this.dispatchesPath = join(dir, 'dispatches.jsonl');
+
+    this.loadAll();
+  }
+
+  /**
+   * Re-fold all three on-disk JSONL files into fresh in-memory state — the SAME
+   * load the constructor runs. Use this when another PROCESS may have appended to
+   * the shared store since this instance was built (e.g. the InboxDrainer, a
+   * separate launchd process, appends `unprocessed` rows to `feedback.jsonl`
+   * continuously; without a reload this in-memory Map is frozen at construction
+   * time and the processing pass becomes a permanent no-op over everything
+   * ingested after boot).
+   *
+   * Concurrency: this is a read-only re-fold and appends are atomic single-line
+   * writes (appendFileSync). A reload that races a mid-append at worst skips one
+   * torn trailing line (already handled by loadJsonl's torn-line skip); the next
+   * reload picks up the completed line — identical to the constructor's load path.
+   * The in-memory `counts` (FeedbackMetrics) are session-scoped tallies of THIS
+   * instance's own mutations, not durable rows, so they are intentionally NOT
+   * reset by a reload.
+   */
+  reload(): void {
+    this.loadAll();
+  }
+
+  private loadAll(): void {
+    this.feedback = this.loadAppendOnly<FeedbackItem>(this.feedbackPath, (r) =>
+      pickId(r, 'feedbackId', 'feedback_id', 'id'),
+    );
+    this.clusters = this.loadAppendOnly<Cluster>(this.clustersPath, (r) =>
+      pickId(r, 'clusterId', 'cluster_id', 'id'),
+    );
+    this.dispatches = this.loadAppendOnly<DispatchRecord>(this.dispatchesPath, (r) =>
+      pickId(r, 'dispatchId', 'dispatch_id', 'id'),
+    );
+    this.offsets = {
+      feedback: existsSync(this.feedbackPath) ? statSync(this.feedbackPath).size : 0,
+      clusters: existsSync(this.clustersPath) ? statSync(this.clustersPath).size : 0,
+      dispatches: existsSync(this.dispatchesPath) ? statSync(this.dispatchesPath).size : 0,
+    };
+    this.sourceLagBytes = 0;
+  }
+
+  /**
+   * Fold only complete records appended by another process after our durable
+   * offsets. A torn trailing line is left behind for the next pass. This is the
+   * normal operating path; `reload()` remains an explicit recovery/import tool.
+   */
+  syncExternalAppends(maxRecords = 500): { projected: number; lagBytes: number } {
+    const current = this.sourceGenerations.current();
+    if (current.generationId !== this.feedbackGenerationId) {
+      this.feedbackGenerationId = current.generationId;
+      this.feedbackPath = current.filePath;
+      this.feedback = this.loadAppendOnly<FeedbackItem>(this.feedbackPath, (row) => pickId(row, 'feedbackId', 'feedback_id', 'id'));
+      this.offsets.feedback = existsSync(this.feedbackPath) ? statSync(this.feedbackPath).size : 0;
+    }
+    const bounded = Math.max(0, Math.min(500, Math.trunc(maxRecords)));
+    let remaining = bounded;
+    let projected = 0;
+    const fold = <T extends Record<string, unknown>>(
+      filePath: string, key: keyof typeof this.offsets, rows: Map<string, T>, idOf: (row: Record<string, unknown>) => string,
+    ): void => {
+      if (remaining === 0 || !existsSync(filePath)) return;
+      const size = statSync(filePath).size;
+      const offset = this.offsets[key];
+      if (size < offset) throw new Error(`feedback source truncated before persisted ${key} cursor`);
+      if (size === offset) return;
+      const bytes = Buffer.allocUnsafe(Math.min(size - offset, 4 * 1024 * 1024));
+      const fd = openSync(filePath, 'r');
+      let read = 0;
+      try { read = readSync(fd, bytes, 0, bytes.length, offset); } finally { closeSync(fd); }
+      const slice = bytes.subarray(0, read);
+      let consumed = 0;
+      for (let start = 0; start < slice.length && remaining > 0;) {
+        const newline = slice.indexOf(0x0a, start);
+        if (newline < 0) break;
+        const raw = slice.subarray(start, newline).toString('utf8').trim();
+        consumed = newline + 1;
+        start = newline + 1;
+        if (!raw) continue;
+        let parsed: Record<string, unknown>;
+        try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+        catch { throw new Error(`invalid complete JSONL record after persisted ${key} cursor`); }
+        const id = idOf(parsed);
+        if (!id) throw new Error(`source record after persisted ${key} cursor has no stable id`);
+        rows.set(id, parsed as T);
+        projected++; remaining--;
+      }
+      this.offsets[key] += consumed;
+    };
+    fold(this.feedbackPath, 'feedback', this.feedback, (row) => pickId(row, 'feedbackId', 'feedback_id', 'id'));
+    fold(this.clustersPath, 'clusters', this.clusters, (row) => pickId(row, 'clusterId', 'cluster_id', 'id'));
+    fold(this.dispatchesPath, 'dispatches', this.dispatches, (row) => pickId(row, 'dispatchId', 'dispatch_id', 'id'));
+    this.sourceLagBytes = [
+      [this.feedbackPath, this.offsets.feedback], [this.clustersPath, this.offsets.clusters], [this.dispatchesPath, this.offsets.dispatches],
+    ].reduce((sum, [file, offset]) => sum + (existsSync(file as string) ? Math.max(0, statSync(file as string).size - Number(offset)) : 0), 0);
+    return { projected, lagBytes: this.sourceLagBytes };
+  }
+
+  private loadAppendOnly<T extends Record<string, unknown>>(
+    path: string,
+    idOf: (row: Record<string, unknown>) => string,
+  ): Map<string, T> {
+    return loadJsonl<T>(path, idOf).rows;
+  }
+
+  private appendFeedback(row: FeedbackItem): void {
+    const priorSize = existsSync(this.feedbackPath) ? statSync(this.feedbackPath).size : 0;
+    this.sourceGenerations.append(row as unknown as Record<string, unknown>);
+    const current = this.sourceGenerations.current();
+    if (current.generationId !== this.feedbackGenerationId) {
+      this.feedbackGenerationId = current.generationId;
+      this.feedbackPath = current.filePath;
+      this.offsets.feedback = 0;
+    }
+    if (this.offsets.feedback === priorSize) this.offsets.feedback = statSync(this.feedbackPath).size;
+  }
+
+  private appendCluster(row: Cluster): void {
+    const priorSize = existsSync(this.clustersPath) ? statSync(this.clustersPath).size : 0;
+    appendFileSync(this.clustersPath, JSON.stringify(row) + '\n', 'utf8');
+    if (this.offsets.clusters === priorSize) this.offsets.clusters = statSync(this.clustersPath).size;
+  }
+
+  // ── FeedbackStore ──────────────────────────────────────────────────────────
+
+  getUnprocessedFeedback(): FeedbackItem[] {
+    const authoritativeRows = this.projectionRecords ? [...this.projectionRecords.values()] : [...this.feedback.values()];
+    return authoritativeRows
+      .filter((f) => (f.status ?? 'unprocessed') === 'unprocessed')
+      .sort((a, b) => String(a.receivedAt ?? '').localeCompare(String(b.receivedAt ?? '')))
+      .slice(0, 500);
+  }
+
+  withProjectedFeedbackScope<T>(records: Array<Record<string, unknown>>, operation: () => T): T {
+    const exact = new Map<string, FeedbackItem>();
+    for (const record of records) {
+      const id = pickId(record, 'feedbackId', 'feedback_id', 'id');
+      if (!id) throw new Error('projected feedback record has no stable id');
+      if (exact.has(id)) throw new Error(`projected feedback batch duplicated id ${id}`);
+      exact.set(id, { ...record, feedbackId: id } as FeedbackItem);
+    }
+    this.projectionRecords = exact;
+    try { return operation(); }
+    finally { this.projectionRecords = null; }
+  }
+
+  getActiveClusters(): Cluster[] {
+    return [...this.clusters.values()].filter((c) => c.status !== 'resolved');
+  }
+
+  getCluster(clusterId: string): Cluster | undefined {
+    return this.clusters.get(clusterId);
+  }
+
+  upsertClusterFromItem(clusterId: string, item: FeedbackItem): void {
+    const existing = this.clusters.get(clusterId);
+    if (existing) {
+      existing.reportCount = (existing.reportCount ?? 0) + 1;
+      this.appendCluster(existing);
+    } else {
+      const created: Cluster = {
+        clusterId,
+        title: item.title,
+        description: item.description,
+        type: item.type,
+        reportCount: 1,
+      };
+      this.clusters.set(clusterId, created);
+      this.appendCluster(created);
+      this.counts.created++;
+    }
+  }
+
+  mergeIntoCluster(clusterId: string, _item: FeedbackItem): void {
+    const c = this.clusters.get(clusterId);
+    if (c) {
+      c.reportCount = (c.reportCount ?? 0) + 1;
+      this.appendCluster(c);
+    }
+    this.counts.merged++;
+  }
+
+  applyReopen(clusterId: string, decision: ReopenDecision): void {
+    const c = this.clusters.get(clusterId);
+    if (!c) return;
+    c.status = decision.newStatus;
+    if (decision.bumpRecurrence) c.recurrenceCount = (c.recurrenceCount ?? 0) + 1;
+    const field = decision.annotateField;
+    const prior = (c[field] as string) ? `${c[field]}\n\n` : '';
+    c[field] = prior + decision.note;
+    this.appendCluster(c);
+    this.counts.reopened++;
+  }
+
+  markProcessed(feedbackId: string, clusterId: string): void {
+    const projected = this.projectionRecords?.get(feedbackId);
+    const f = projected ? { ...projected } : this.feedback.get(feedbackId);
+    if (f) {
+      f.status = 'processing';
+      f.clusterId = clusterId;
+      this.feedback.set(feedbackId, f);
+      this.appendFeedback(f);
+    }
+    this.counts.captured++;
+  }
+
+  hasFeedback(feedbackId: string): boolean {
+    return this.feedback.has(feedbackId);
+  }
+
+  addFeedback(item: FeedbackItem): void {
+    const row: FeedbackItem = { status: 'unprocessed', ...item };
+    this.feedback.set(item.feedbackId, row);
+    this.appendFeedback(row);
+  }
+
+  listDispatches(filter?: { since?: string; type?: string }): DispatchRecord[] {
+    return [...this.dispatches.values()]
+      .filter((d) => d.active !== false)
+      .filter((d) => !filter?.since || String(d.createdAt ?? '') >= filter.since)
+      .filter((d) => !filter?.type || d.type === filter.type)
+      .sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')));
+  }
+
+  findDispatchByTitle(title: string): DispatchRecord | undefined {
+    return [...this.dispatches.values()].find((d) => d.title === title);
+  }
+
+  createDispatch(record: DispatchRecord): void {
+    const row: DispatchRecord = { active: true, ...record };
+    this.dispatches.set(record.dispatchId, row);
+    const priorSize = existsSync(this.dispatchesPath) ? statSync(this.dispatchesPath).size : 0;
+    appendFileSync(this.dispatchesPath, JSON.stringify(row) + '\n', 'utf8');
+    if (this.offsets.dispatches === priorSize) this.offsets.dispatches = statSync(this.dispatchesPath).size;
+  }
+
+  metrics(): FeedbackMetrics {
+    return { ...this.counts };
+  }
+
+  /** Read-only size snapshot for the status surface. */
+  sizes(): { feedback: number; clusters: number; dispatches: number } {
+    return { feedback: this.feedback.size, clusters: this.clusters.size, dispatches: this.dispatches.size };
+  }
+
+  lagBytes(): number { return this.sourceLagBytes; }
+  sourceFeedbackPath(): string { return this.sourceGenerations.current().filePath; }
+  sourceFeedbackGeneration(): FeedbackSourceGeneration { return this.sourceGenerations.current(); }
+  sourceFeedbackGenerationPlan(fromGenerationId?: string | null): FeedbackSourceGeneration[] { return this.sourceGenerations.planFrom(fromGenerationId); }
+  compactFeedbackSource(now?: number): FeedbackSourceHandoff | null { return this.sourceGenerations.compact(now); }
+
+  /**
+   * Read-only aggregate snapshot for `GET /feedback-factory/stats`. Pure read —
+   * never mutates. `byStatus` buckets every feedback row by its `status`
+   * (defaulting an absent status to 'unprocessed', mirroring getUnprocessedFeedback).
+   * `lastWriteAt` is the latest content timestamp across all entities
+   * (feedback.receivedAt, cluster.updatedAt/createdAt, dispatch.createdAt) — a
+   * deterministic, content-derived high-water mark, null when the store is empty.
+   */
+  stats(): {
+    total: number;
+    byStatus: Record<string, number>;
+    clusterCount: number;
+    dispatchCount: number;
+    lastWriteAt: string | null;
+  } {
+    const byStatus: Record<string, number> = {};
+    let lastWriteAt: string | null = null;
+    const consider = (ts: unknown): void => {
+      if (typeof ts === 'string' && ts.length > 0 && (lastWriteAt === null || ts > lastWriteAt)) {
+        lastWriteAt = ts;
+      }
+    };
+    for (const f of this.feedback.values()) {
+      const status = (f.status ?? 'unprocessed') as string;
+      byStatus[status] = (byStatus[status] ?? 0) + 1;
+      consider(f.receivedAt);
+    }
+    for (const c of this.clusters.values()) {
+      consider(c.updatedAt);
+      consider(c.createdAt);
+    }
+    for (const d of this.dispatches.values()) {
+      consider(d.createdAt);
+    }
+    return {
+      total: this.feedback.size,
+      byStatus,
+      clusterCount: this.clusters.size,
+      dispatchCount: this.dispatches.size,
+      lastWriteAt,
+    };
+  }
+}
+
+/**
+ * (size, mtimeMs) load cache — skip the synchronous multi-MB read+parse when the
+ * on-disk file is byte-for-byte the one we last folded. `reload()` is called at
+ * the start of every processing pass, and the feedback.jsonl corpus is multiple
+ * MB; re-reading + JSON.parsing the whole file on the event loop when nothing
+ * changed since the last load was a needless freeze (2026-06-22 batch). Mirrors
+ * the JobRunHistory (size, mtime) cache pattern. Keyed per absolute path. The
+ * cached `rows` Map is cloned on serve so a caller's mutations never poison the
+ * cache (and the next genuine change still re-reads from disk).
+ */
+const loadCache = new Map<string, { size: number; mtimeMs: number; rows: Map<string, unknown>; totalLines: number }>();
+
+function loadJsonl<T>(path: string, idOf: (row: Record<string, unknown>) => string): LoadResult<T> {
+  const rows = new Map<string, T>();
+  let totalLines = 0;
+  if (!existsSync(path)) {
+    loadCache.delete(path);
+    return { rows, totalLines };
+  }
+  // (size, mtime) cache: serve a clone of the prior fold when the file is unchanged.
+  let fingerprint: { size: number; mtimeMs: number } | null = null;
+  try {
+    const st = statSync(path);
+    fingerprint = { size: st.size, mtimeMs: st.mtimeMs };
+    const cached = loadCache.get(path);
+    if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
+      return { rows: new Map(cached.rows as Map<string, T>), totalLines: cached.totalLines };
+    }
+  } catch { /* fall through to a full read — never let stat failure skip the load */ }
+  const txt = readFileSync(path, 'utf8');
+  for (const line of txt.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    totalLines++;
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const id = idOf(parsed);
+      if (id) rows.set(id, parsed as T);
+    } catch {
+      // A torn/corrupt line (e.g. crash mid-append) is skipped, never fatal:
+      // every complete later line still loads, and the next mutation re-appends
+      // a full row. Durability beats strictness for an append log.
+    }
+  }
+  // Cache this fold against the fingerprint we read it at, so an unchanged file
+  // is served from memory next time. Store a clone so a caller mutating the
+  // returned Map can never poison the cache.
+  if (fingerprint) {
+    loadCache.set(path, { ...fingerprint, rows: new Map(rows), totalLines });
+  }
+  return { rows, totalLines };
+}
+
+/** Test-only: clear the (size, mtime) load cache between cases. */
+export function __clearFeedbackLoadCacheForTests(): void {
+  loadCache.clear();
+}
+
+/** Resolve a row's primary-key id from the AS-IS field aliases (mirrors importRunner's pickId). */
+function pickId(row: Record<string, unknown>, ...keys: string[]): string {
+  for (const k of keys) {
+    const v = row[k];
+    if (typeof v === 'string' && v.length > 0) return v;
+    if (typeof v === 'number') return String(v);
+  }
+  return '';
+}

@@ -1,0 +1,25 @@
+{
+  "ts": "2026-07-27T17:53:00.518Z",
+  "slug": "bounded-mentor-onboarding-retries",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 441,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The correlation-scoped anti-ping-pong tracker intentionally deleted expired prompts and therefore forgot all retry history. Telegram's bot-to-bot receive blind spot turned that latent reset into roughly twenty-four identical visible sends over twelve hours: each correlation expired normally and the next tick treated identical content as new."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/scheduler/OutstandingPromptTracker.test.ts",
+      "howCaught": "The ratchet proves at most three attempts for one normalized unanswered content key, restart-surviving suppression and escalation, independence for new content, and a bounded 64-key ledger. The production lifecycle test separately drives three transport refusals and requires the fourth identical send to settle at refusal."
+    }
+  },
+  "verdict": "pass"
+}

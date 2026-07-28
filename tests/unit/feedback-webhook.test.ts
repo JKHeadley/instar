@@ -4,15 +4,25 @@ import path from 'node:path';
 
 /**
  * Validates feedback webhook configuration.
- * The webhook URL should point to the Portal production endpoint.
+ * The webhook URL default must resolve through the single canonical constant
+ * (core/canonicalFeedback.ts) — post-Phase-4 that is the operated instance's
+ * canonical front, NOT the legacy Portal endpoint.
  */
 describe('Feedback webhook configuration', () => {
-  it('default webhook URL points to Portal production', () => {
+  it('default webhook URL resolves through the canonical constant (single source)', () => {
     const configSource = fs.readFileSync(
       path.join(process.cwd(), 'src/core/Config.ts'),
       'utf-8'
     );
-    expect(configSource).toContain('https://dawn.bot-me.ai/api/instar/feedback');
+    expect(configSource).toContain('CANONICAL_FEEDBACK_URL');
+    // The literal legacy URL must no longer be inlined anywhere in the loader.
+    expect(configSource).not.toContain('dawn.bot-me.ai/api/instar/feedback');
+
+    const canonicalSource = fs.readFileSync(
+      path.join(process.cwd(), 'src/core/canonicalFeedback.ts'),
+      'utf-8'
+    );
+    expect(canonicalSource).toContain('https://feedback.dawn-tunnel.dev/api/feedback');
   });
 
   it('feedback CLI command uses server endpoint', () => {

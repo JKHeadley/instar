@@ -13,7 +13,7 @@
 #     computed) values. The caller (autonomous-stop-hook) has already resolved
 #     the record + computed elapsed/remaining, so there is NO re-resolution —
 #     the injected clock can never disagree with the hook's expiry verdict.
-#   query <topic> <port> <auth>
+#   query <topic> <port> <auth> [agent-id]
 #     Curls GET /session/clock?topic=<topic> and prints the SESSION CLOCK line
 #     for the first active session (or nothing if none / server unreachable).
 
@@ -42,11 +42,11 @@ case "$MODE" in
     render_line "${1:-}" "${2:-}" "${3:-0}" "${4:-}" "${5:-}"
     ;;
   query)
-    TOPIC="${1:-}"; PORT="${2:-}"; AUTH="${3:-}"
+    TOPIC="${1:-}"; PORT="${2:-}"; AUTH="${3:-}"; AGENT_ID="${4:-${INSTAR_AGENT_ID:-}}"
     [ -z "$PORT" ] && exit 0
     URL="http://localhost:${PORT}/session/clock"
     [ -n "$TOPIC" ] && URL="${URL}?topic=${TOPIC}"
-    RESP=$(curl -s --max-time 3 -H "Authorization: Bearer ${AUTH}" "$URL" 2>/dev/null)
+    RESP=$(curl -s --max-time 3 -H "Authorization: Bearer ${AUTH}" -H "X-Instar-AgentId: ${AGENT_ID}" "$URL" 2>/dev/null)
     [ -z "$RESP" ] && exit 0
     printf '%s' "$RESP" | python3 -c "
 import sys, json

@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "sessionId": "messaging-template-fingerprint",
+  "timestamp": "2026-07-25T03:18:00.000Z",
+  "artifactPath": "upgrades/side-effects/messaging-template-fingerprint.md",
+  "artifactSha256": "f0092d6e48a43fbcb9de7e0a9f460a4f3bf294a23cf9af3a9537eb29b0710a72",
+  "specPath": "docs/specs/ux-first-enforcement-inc1.eli16.md",
+  "coveredFiles": ["src/core/MessagingToneGate.ts", "src/core/JudgmentProvenanceLog.ts", "src/server/routes.ts", "tests/unit/MessagingToneGate.test.ts"],
+  "phase": "complete",
+  "secondPass": "required",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {"verdict": "clear", "cause": null, "causes": [], "degraded": true, "substrateIntroducing": false, "evidence": [], "notes": ["Observe-only gate-adjacent provenance increment; no cache or behavior change."], "specSlug": "messaging-template-fingerprint", "phase": "build-start", "disposition": {"decision": "proceed", "reason": "Dispatch requires measurable template consistency and spend before any skip-on-settled-verdict flip.", "acknowledgedEvidenceIds": [], "recordedAt": "2026-07-25T02:20:00.000Z"}}
+}

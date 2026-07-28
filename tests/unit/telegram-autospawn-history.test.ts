@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { formatLocalTimestamp } from '../../src/utils/localTime.js';
 
 // ─── Extracted Logic Under Test ──────────────────────────────
 
@@ -51,7 +52,7 @@ function buildAutoSpawnContext(
       const sender = m.fromUser
         ? (m.senderName || 'User')
         : 'Agent';
-      const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
+      const ts = formatLocalTimestamp(m.timestamp); // local + tz label — mirrors routes.ts (2026-06-05 time-incoherency fix)
       const histText = (m.text || '').slice(0, 300);
       historyLines.push(`[${ts}] ${sender}: ${histText}`);
     }
@@ -161,7 +162,8 @@ describe('Auto-spawn thread history (routes.ts HTTP forward)', () => {
       ];
 
       const lines = buildAutoSpawnContext(42, history);
-      expect(lines.some(l => l.includes('[14:30:45]'))).toBe(true);
+      // Local-tz rendering (2026-06-05 time-incoherency fix)
+      expect(lines.some(l => l.includes(`[${formatLocalTimestamp('2026-03-01T14:30:45Z')}]`))).toBe(true);
     });
 
     it('handles missing timestamps', () => {

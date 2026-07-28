@@ -21,6 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { BitwardenProvider } from './BitwardenProvider.js';
 import { GlobalSecretStore } from './GlobalSecretStore.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -328,13 +329,27 @@ export class SecretManager {
     }
   }
 
+  /** A failed local-store read/write is REPORTED (spec
+   *  keychain-per-agent-master-key §5) — an undecryptable store must never
+   *  silently look identical to "no secrets stored" (the 2026-06-05 class). */
+  private reportLocalStoreFailure(op: string, err: unknown): void {
+    DegradationReporter.getInstance().report({
+      feature: `SecretManager.${op}`,
+      primary: 'Read/write the local GlobalSecretStore',
+      fallback: 'Operation degrades (null/empty result)',
+      reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
+      impact: 'Local secrets unavailable — possible key mismatch or locked store',
+    });
+  }
+
   private getFromLocal(key: string): string | null {
     try {
       const store = this.localStore || new GlobalSecretStore(this.basePath);
       if (!this.localStore) store.autoInit();
       return store.getSecret(this.agentName, key);
-    } catch {
-      // @silent-fallback-ok — secret not found or provider unavailable — returns undefined
+    } catch (err) {
+      // @silent-fallback-ok — reported via reportLocalStoreFailure (DegradationReporter)
+      this.reportLocalStoreFailure('getFromLocal', err);
       return null;
     }
   }
@@ -344,9 +359,10 @@ export class SecretManager {
       const store = this.localStore || new GlobalSecretStore(this.basePath);
       if (!this.localStore) store.autoInit();
       store.setSecret(this.agentName, key, value);
-    } catch {
-      // @silent-fallback-ok — secret not found or provider unavailable — returns undefined
-      // Local store failed — not critical if primary backend succeeded
+    } catch (err) {
+      // @silent-fallback-ok — reported via reportLocalStoreFailure (DegradationReporter);
+      // not critical if the primary backend succeeded, but never silent
+      this.reportLocalStoreFailure('setToLocal', err);
     }
   }
 
@@ -355,8 +371,9 @@ export class SecretManager {
       const store = this.localStore || new GlobalSecretStore(this.basePath);
       if (!this.localStore) store.autoInit();
       return store.getAgentSecrets(this.agentName);
-    } catch {
-      // @silent-fallback-ok — secret not found or provider unavailable — returns undefined
+    } catch (err) {
+      // @silent-fallback-ok — reported via reportLocalStoreFailure (DegradationReporter)
+      this.reportLocalStoreFailure('getAllFromLocal', err);
       return {};
     }
   }

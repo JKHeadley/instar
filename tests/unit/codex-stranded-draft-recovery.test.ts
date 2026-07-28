@@ -57,6 +57,23 @@ function codexWorkingPane(text: string): string {
   ].join('\n');
 }
 
+// Mirrors a live Gemini CLI idle pane: the input is rendered INSIDE a rounded
+// border and the active input line is "│ * <text>" — there is NO ❯/› prompt char.
+function geminiBoxPane(text: string): string {
+  return [
+    '✦ I have completed the task and reported back. I am awaiting the next task.',
+    ' 2 GEMINI.md files                                              YOLO mode',
+    '╭─────────────────────────────────────────────────────────────╮',
+    `│ * ${text}`,
+    '╰─────────────────────────────────────────────────────────────╯',
+    ' ~/.instar/agents/gemini      no sandbox      gemini-2.5-flash-lite /model',
+  ].join('\n');
+}
+
+// Gemini's EMPTY input box renders the placeholder "Type your message or @path…".
+// A real injected marker never equals it, so an idle empty box is never "stuck".
+const GEMINI_EMPTY_PANE = geminiBoxPane('  Type your message or @path/to/file');
+
 describe('SessionManager.extractInjectionMarker', () => {
   it('returns the first 40 chars of the (left-trimmed) text', () => {
     const text = 'hello there this is a reasonably long user message that exceeds forty chars';
@@ -118,6 +135,55 @@ describe('SessionManager.isMarkerStuckAtPrompt — codex awareness', () => {
   it('does not match when the marker is simply absent from the pane', () => {
     const marker = SessionManager.extractInjectionMarker('some message that was already submitted')!;
     expect(manager.isMarkerStuckAtPrompt(codexDraftPane('a totally different draft now'), marker)).toBe(false);
+  });
+});
+
+describe('SessionManager.isMarkerStuckAtPrompt — Gemini awareness', () => {
+  // Gemini CLI has no ❯/› prompt char — its input sits in a "│ * <text>" box line.
+  // Without recognizing that, a Telegram message injected into a Gemini session
+  // was never detected as stuck, so verifyInjection's Enter-recovery never fired
+  // and forwarded prompts stalled in the input box (the recurring mentee-layer
+  // auto-submit friction). The marker-in-line gate keeps it from false-firing.
+  let tmpDir: string;
+  let manager: SessionManager;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-gemini-draft-'));
+    const state = new StateManager(path.join(tmpDir, 'state'));
+    const config: SessionManagerConfig = {
+      tmuxPath: '/usr/bin/tmux',
+      claudePath: '/usr/local/bin/claude',
+      projectDir: tmpDir,
+      maxSessions: 3,
+      protectedSessions: [],
+      completionPatterns: [],
+    };
+    manager = new SessionManager(config, state);
+  });
+
+  it('matches a marker stuck in the Gemini "│ *" input box', () => {
+    const text = '[telegram:1] [Long message saved to /Users/justin/.instar/agents/gemini/.instar/telegram-inbound/msg-1.txt — read it]';
+    const marker = SessionManager.extractInjectionMarker(text)!;
+    expect(manager.isMarkerStuckAtPrompt(geminiBoxPane(text), marker)).toBe(true);
+  });
+
+  it('does NOT match the empty Gemini box placeholder (placeholder immunity)', () => {
+    const injected = '[telegram:1] [Long message saved to /Users/justin/.instar/agents/gemini/.instar/telegram-inbound/msg-1.txt — read it]';
+    const marker = SessionManager.extractInjectionMarker(injected)!;
+    expect(manager.isMarkerStuckAtPrompt(GEMINI_EMPTY_PANE, marker)).toBe(false);
+  });
+
+  it('still matches Claude `❯` and codex `›` prompts (no regression)', () => {
+    const text = '[telegram:7195] hello there friend about the build today';
+    const marker = SessionManager.extractInjectionMarker(text)!;
+    expect(manager.isMarkerStuckAtPrompt(`${CLAUDE_PROMPT} ${text}`, marker)).toBe(true);
+    expect(manager.isMarkerStuckAtPrompt(`${CODEX_PROMPT} ${text}`, marker)).toBe(true);
+  });
+
+  it('does not false-fire on a "│ *" line that lacks the injected marker', () => {
+    const pane = GEMINI_EMPTY_PANE + '\n│ * an unrelated bulleted output line from the agent';
+    const marker = SessionManager.extractInjectionMarker('[telegram:99] a message that was already submitted and is gone')!;
+    expect(manager.isMarkerStuckAtPrompt(pane, marker)).toBe(false);
   });
 });
 

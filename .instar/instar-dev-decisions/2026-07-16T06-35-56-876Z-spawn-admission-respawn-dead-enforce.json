@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-16T06:35:56.876Z",
+  "slug": "spawn-admission-respawn-dead-enforce",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 41,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

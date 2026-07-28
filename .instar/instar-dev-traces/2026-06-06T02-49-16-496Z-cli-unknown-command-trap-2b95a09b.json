@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "cli-unknown-command-trap",
+  "sessionId": "130f2955-ab78-424d-814e-b3a05fcc06c1",
+  "timestamp": "2026-06-06T02:49:16.496Z",
+  "artifactPath": "upgrades/side-effects/cli-unknown-command-trap.md",
+  "artifactSha256": "25737a7afd873d86aaed59bad9fef11b7d916cb2129bcbced4daba41261385fe",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-06-06T02-26-49-300Z-cli-unknown-command-trap.json",
+    "docs/eli16/cli-unknown-command-trap.eli16.md",
+    "src/cli.ts",
+    "tests/e2e/cli-unknown-command.test.ts",
+    "upgrades/next/cli-unknown-command-trap.md",
+    "upgrades/side-effects/cli-unknown-command-trap.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small parser-boundary fix: rejects unknown top-level commands before the bare-installer default action can run while preserving bare setup and Commander implicit help behavior, with focused e2e coverage for typo and help paths.",
+  "eli16Path": "docs/eli16/cli-unknown-command-trap.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cli-unknown-command-trap.md",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Commander's program-level default action for bare `instar` was allowed to coexist with no explicit top-level unknown guard. The latent bug surfaced when typoed commands and the implicit help command entered setup instead of exiting or printing help."
+  },
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

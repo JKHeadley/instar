@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-03T08:52:56.057Z",
+  "slug": "standby-write-reconciliation",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 1,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "The feature commit (155bcd229) added the GET /write-admission route prefix and the Write Admission migrateClaudeMd section without making the two required conformance classifications (CapabilityIndex prefix classification; feature-delivery-completeness section tracking) — the ratchets caught it in CI shards 1+4."
+  },
+  "verdict": "pass"
+}

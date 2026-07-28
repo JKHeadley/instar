@@ -8,6 +8,7 @@ approved: true
 approved-by: justin
 approved-at: "2026-05-15T20:35:00Z"
 approved-via: "Telegram topic 8615 (uid:7812716706)"
+parent-principle: "Bounded Notification Surface — no feature may flood the user"
 ---
 
 # Token-Burn Detection and Auto-Heal — Spec
@@ -132,7 +133,10 @@ The column is populated on the write side by the `IntelligenceProvider` chokepoi
 
 ### Threshold logic
 
-Two trigger conditions, OR'd:
+Two trigger conditions, OR'd. Both use **fresh-cost tokens**: gross ledger
+tokens minus cache-read tokens. Cache creation remains cost-bearing; warm-cache
+reads remain visible in gross observability but can never increase a key's burn
+share, current rate, baseline, or projected daily burn.
 
 1. **Absolute share**: a single attribution key consumed > 25% of the agent's total token spend in the last 24h.
 2. **Rolling baseline divergence**: the key's last-1h rate is > 2× its trailing-7-day median rate, AND the 1h rate exceeds a floor of 10M tokens/h (avoid alerting on tiny absolute spend even if relatively spiked).
@@ -177,6 +181,23 @@ If `successfullyThrottled === false` (the rate didn't drop materially), the runb
 ### Telegram payloads
 
 All three messages (alert, follow-up after auto-cut, escalation on cut-failure) go through the existing tone-gate authority (`MessagingToneGate`). They are structured templates filled at runbook-time, narrative in tone, and pass ELI16. No backticks, no camelCase config keys — the agent's "interface" rule applies (`feedback_no_cli_recommendations` and `feedback_eli16_default` in Echo's MEMORY.md).
+
+Delivery has a terminal-state invariant. If Telegram reports that the configured
+alert topic is deleted, closed, or otherwise permanently gone, the sender
+durably quarantines that topic and stops attempting it across process restarts.
+The failed alert is rerouted as one stable item through the existing durable
+Attention queue, whose hub can self-heal; later burn messages use that same
+route. A changed configured topic is treated as a new destination and tried
+normally. Network and other ambiguous failures are not classified as terminal
+and are not blindly duplicated, because Telegram may have accepted the message
+before the response was lost.
+
+The terminal record is written before the Attention handoff and temporarily
+retains the original alert. Boot recovery replays that stable notice until the
+Attention store confirms custody, then removes the pending body. If controller
+state cannot be written, the durable Attention notice becomes the restart
+witness. Corrupt terminal state fails the burn subsystem closed rather than
+silently reopening delivery to a possibly dead destination.
 
 ### Universality / opt-in shape
 

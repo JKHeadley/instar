@@ -278,6 +278,264 @@ describe('InputDetector.pattern.sessionFeedbackSurvey', () => {
   });
 });
 
+// ── Gemini CLI safe-default modals (auto-answer) ──────────────────
+
+describe('InputDetector.pattern.geminiSafeDefaultModals', () => {
+  it('detects Gemini loop-detection modal and keeps loop detection enabled', () => {
+    const detector = makeDetector();
+    const output = [
+      'Gemini is working...',
+      '',
+      'A potential loop was detected. Keep loop detection enabled or disable it?',
+      '1. Keep loop detection enabled',
+      '2. Disable loop detection',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.type).toBe('confirmation');
+    expect(prompt!.summary).toMatch(/loop-detection/i);
+    expect(prompt!.autoDismissKey).toBe('1');
+  });
+
+  it('falls back to Enter for the live Gemini loop modal when no numbered option row is visible', () => {
+    const detector = makeDetector();
+    const output = [
+      '╭────────────────────────────────────────────╮',
+      '│ A potential loop was detected              │',
+      '│ Keep loop detection enabled or disable it? │',
+      '╰────────────────────────────────────────────╯',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.autoDismissKey).toBe('Enter');
+  });
+
+  it('detects Gemini workspace-trust modal and chooses the trust option', () => {
+    const detector = makeDetector();
+    const output = [
+      'Gemini CLI needs to know whether this workspace is trusted.',
+      '',
+      'Do you trust this workspace folder?',
+      '1. Yes, trust this workspace',
+      '2. No, keep it untrusted',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.type).toBe('confirmation');
+    expect(prompt!.summary).toMatch(/workspace-trust/i);
+    expect(prompt!.autoDismissKey).toBe('1');
+  });
+
+  it('detects Gemini install-confirm modal and sends the highlighted default', () => {
+    const detector = makeDetector();
+    const output = [
+      'Gemini CLI wants to install an MCP server required by this task.',
+      '',
+      'Do you want to install the MCP server?',
+      '1. Install',
+      '2. Cancel',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.type).toBe('confirmation');
+    expect(prompt!.summary).toMatch(/install-confirm/i);
+    expect(prompt!.autoDismissKey).toBe('Enter');
+    expect(prompt!.autoDismissDisposition).toBe('safe-default');
+  });
+
+  it('detects the npx instar package-runner install-confirm modal and sends Enter', () => {
+    const detector = makeDetector();
+    const output = [
+      'Need to install the following packages:',
+      'instar@1.3.270',
+      'Ok to proceed? (y)',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.type).toBe('confirmation');
+    expect(prompt!.summary).toMatch(/install-confirm/i);
+    expect(prompt!.autoDismissKey).toBe('Enter');
+    expect(prompt!.autoDismissDisposition).toBe('safe-default');
+  });
+
+  it('detects the npx instar package-runner modal in a default pane with blank fill rows', () => {
+    const detector = makeDetector();
+    const promptLines = [
+      'Need to install the following packages:',
+      'instar@1.3.282',
+      'Ok to proceed? (y)',
+    ];
+    const output = `${promptLines.join('\n')}${'\n'.repeat(50)}`;
+
+    const prompt = detectWithDebounce(detector, 'gemini-default-pane', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.summary).toMatch(/npx instar default/i);
+    expect(prompt!.autoDismissKey).toBe('Enter');
+    expect(prompt!.autoDismissDisposition).toBe('safe-default');
+  });
+
+  it('does not re-fire a successfully auto-dismissed prompt while pane content is unchanged', () => {
+    const detector = makeDetector();
+    const output = [
+      'Need to install the following packages:',
+      'instar@1.3.282',
+      'Ok to proceed? (y)',
+    ].join('\n') + '\n'.repeat(50);
+
+    const first = detectWithDebounce(detector, 'gemini-repeat', output);
+    expect(first).not.toBeNull();
+    expect(first!.autoDismissKey).toBe('Enter');
+
+    detector.onAutoDismissSent(first!);
+    detector.onInputSent('gemini-repeat');
+
+    const repeated = detectWithDebounce(detector, 'gemini-repeat', output);
+    expect(repeated).toBeNull();
+  });
+
+  it('re-arms an auto-dismissed prompt after pane content changes', () => {
+    const detector = makeDetector();
+    const output = [
+      'Need to install the following packages:',
+      'instar@1.3.282',
+      'Ok to proceed? (y)',
+    ].join('\n') + '\n'.repeat(50);
+
+    const first = detectWithDebounce(detector, 'gemini-rearm', output);
+    expect(first).not.toBeNull();
+
+    detector.onAutoDismissSent(first!);
+    detector.onInputSent('gemini-rearm');
+    expect(detectWithDebounce(detector, 'gemini-rearm', output)).toBeNull();
+
+    const changedOutput = [
+      'Installing instar package...',
+      'Download complete.',
+      'Gemini is continuing.',
+    ].join('\n');
+    expect(detectWithDebounce(detector, 'gemini-rearm', changedOutput)).toBeNull();
+
+    const rearmed = detectWithDebounce(detector, 'gemini-rearm', output);
+    expect(rearmed).not.toBeNull();
+    expect(rearmed!.autoDismissKey).toBe('Enter');
+  });
+
+  it('does not remember auto-dismiss prompts when send did not succeed', () => {
+    const detector = makeDetector();
+    const output = [
+      'Need to install the following packages:',
+      'instar@1.3.282',
+      'Ok to proceed? (y)',
+    ].join('\n') + '\n'.repeat(50);
+
+    const first = detectWithDebounce(detector, 'gemini-send-failed', output);
+    expect(first).not.toBeNull();
+
+    // Simulate the server path where sendKey returned false: input state may
+    // still be reset, but onAutoDismissSent is deliberately not called.
+    detector.onInputSent('gemini-send-failed');
+
+    const repeated = detectWithDebounce(detector, 'gemini-send-failed', output);
+    expect(repeated).not.toBeNull();
+    expect(repeated!.autoDismissKey).toBe('Enter');
+  });
+
+  it('does NOT auto-answer a generic non-Gemini install question', () => {
+    const detector = makeDetector();
+    const output = [
+      'npm output:',
+      '',
+      'Do you want to install the dependency?',
+      '1. Yes',
+      '2. No',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'shell', output);
+    if (prompt) expect(prompt.autoDismissKey).toBeUndefined();
+  });
+
+  it('does NOT auto-answer arbitrary package-runner install confirmations', () => {
+    const detector = makeDetector();
+    const output = [
+      'Need to install the following packages:',
+      'left-pad@1.3.0',
+      'Ok to proceed? (y)',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    if (prompt) expect(prompt.autoDismissKey).toBeUndefined();
+  });
+
+  it('detects Gemini execution-approval modals and auto-rejects with the reject option', () => {
+    const detector = makeDetector();
+    const output = [
+      "Allow execution of: '# Okay, I will just apply the fix that the mentor likely expects'?",
+      '',
+      '● 1. Allow once',
+      '  2. Allow for this session',
+      '  3. No, suggest changes (esc)',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.type).toBe('confirmation');
+    expect(prompt!.summary).toMatch(/execution-approval/i);
+    expect(prompt!.summary).toMatch(/auto-reject/i);
+    expect(prompt!.autoDismissKey).toBe('3');
+    expect(prompt!.autoDismissDisposition).toBe('safe-reject');
+    expect(prompt!.autoDismissCommand).toContain('# Okay');
+  });
+
+  it('detects Gemini execution-approval modals in a default pane with blank fill rows', () => {
+    const detector = makeDetector();
+    const output = [
+      'Allow execution of:',
+      'echo GEMINI_PROMPT_GATE_REJECT_SMALL_803',
+      '',
+      '1. Allow once',
+      '2. Reject',
+    ].join('\n') + '\n'.repeat(50);
+
+    const prompt = detectWithDebounce(detector, 'gemini-exec-default-pane', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.summary).toMatch(/execution-approval/i);
+    expect(prompt!.autoDismissKey).toBe('2');
+    expect(prompt!.autoDismissDisposition).toBe('safe-reject');
+    expect(prompt!.autoDismissCommand).toBe('echo GEMINI_PROMPT_GATE_REJECT_SMALL_803');
+  });
+
+  it('does NOT auto-approve execution-approval modals even when allow is highlighted', () => {
+    const detector = makeDetector();
+    const output = [
+      "Allow execution of: 'npm test'?",
+      '',
+      '● 1. Allow once',
+      '  2. Allow for this session',
+      '  3. No, suggest changes (esc)',
+      '',
+    ].join('\n');
+
+    const prompt = detectWithDebounce(detector, 'gemini', output);
+    expect(prompt).not.toBeNull();
+    expect(prompt!.autoDismissKey).toBe('3');
+    expect(prompt!.autoDismissDisposition).toBe('safe-reject');
+    expect(prompt!.options?.find(option => /Allow once/i.test(option.label))?.key).toBe('1');
+  });
+});
+
 // ── onInputSent clears LLM relay cooldown ──────────────────────────
 
 describe('InputDetector.onInputSent', () => {

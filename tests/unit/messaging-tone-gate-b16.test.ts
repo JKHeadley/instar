@@ -77,7 +77,10 @@ describe('MessagingToneGate — B16_UNVERIFIED_WALL', () => {
     const gate = new MessagingToneGate(provider);
     await gate.review('Any candidate.', { channel: 'telegram' });
     const prompt = getPrompt();
-    expect(prompt).toMatch(/B14.*B15.*B16/);
+    // Full-id contract (2026-07-02): B16 is citable via its FULL identifier
+    // in the rule lists; the constraint demands the full form.
+    expect(prompt).toMatch(/B16_UNVERIFIED_WALL/);
+    expect(prompt).toMatch(/FULL identifier/);
   });
 
   it('accepts B16 as a valid rule id without fail-opening (the /goal-style unverified wall)', async () => {
@@ -135,8 +138,9 @@ describe('MessagingToneGate — B16_UNVERIFIED_WALL', () => {
     expect(result.pass).toBe(true);
   });
 
-  it('preserves drift detection — an invented rule id still fails open', async () => {
+  it('preserves drift detection — an invented rule id re-prompts then fails CLOSED', async () => {
     // Adding B16 must not widen the gate to accept any rule the LLM invents.
+    // Drift now HOLDS (fail-closed, §Design 6), not fail-open.
     const { provider } = captureProvider({
       pass: false,
       rule: 'B17_NOT_A_REAL_RULE',
@@ -145,8 +149,7 @@ describe('MessagingToneGate — B16_UNVERIFIED_WALL', () => {
     });
     const gate = new MessagingToneGate(provider);
     const result = await gate.review('Whatever.', { channel: 'telegram' });
-    expect(result.pass).toBe(true);
-    expect(result.invalidRule).toBe(true);
-    expect(result.failedOpen).toBe(true);
+    expect(result.pass).toBe(false);
+    expect(result.failedClosed).toBe(true);
   });
 });

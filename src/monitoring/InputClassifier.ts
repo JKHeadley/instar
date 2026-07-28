@@ -232,7 +232,9 @@ export class InputClassifier {
       '- The prompt asks the human a question requiring thought',
       '- File operations outside the project directory',
       '- Destructive operations (delete, remove, overwrite, force)',
-      '- You are unsure',
+      '- You are unsure (unsure means the prompt matches NO bullet above or is ambiguous',
+      '  between them — a relative file path with no ../ traversal is INSIDE the project',
+      '  directory, and matching an APPROVE bullet is never unsure)',
       '',
       `Project directory: ${this.normalizedProjectDir}`,
       '',
@@ -240,6 +242,9 @@ export class InputClassifier {
       `Summary: ${prompt.summary}`,
       `Terminal text (last 5 lines):`,
       prompt.raw,
+      '',
+      'Answer with the single word only — APPROVE or RELAY. No explanation, no',
+      'reasoning, even when uncertain or the operation feels high-stakes.',
     ].join('\n');
 
     try {

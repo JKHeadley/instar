@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "delivery-reliability-recovery-hardening",
+  "sessionId": "b6982ce3-180b-44cb-a89d-531869e095e5",
+  "timestamp": "2026-07-24T16:17:29.139Z",
+  "artifactPath": "upgrades/side-effects/delivery-reliability-recovery-hardening.md",
+  "artifactSha256": "f3b4a5df4066d9a45b0971fba53bea612a68943f67e60e4b2d1379e9b6a88f7e",
+  "specPath": "docs/specs/delivery-reliability-recovery-hardening.md",
+  "coveredFiles": [
+    "docs/specs/delivery-reliability-recovery-hardening.eli16.md",
+    "docs/specs/delivery-reliability-recovery-hardening.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/monitoring/AutonomousLivenessReconciler.ts",
+    "src/monitoring/delivery-failure-sentinel.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/delivery-reliability-recovery-hardening.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Runtime recovery, liveness, and attention acceptance gates; risk floor requires full review.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Queue watchdog, stale-age withholding, liveness debounce, and attention idempotency provide bounded convergence."
+    }
+  }
+}

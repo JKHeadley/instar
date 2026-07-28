@@ -85,6 +85,9 @@ describe('frameworkActivitySignals', () => {
       expect(signal.toolCallOrSpinner.test('Generating response...')).toBe(true);
       // The canonical working status line.
       expect(signal.toolCallOrSpinner.test('• Working (3s • esc to interrupt)')).toBe(true);
+      // Real hour-scale Codex rendering captured from a long-running report.
+      expect(signal.toolCallOrSpinner.test('• Working (10h 19m 44s • esc to interrupt)')).toBe(true);
+      expect(signal.liveActivity.test('• Working (10h 19m 44s • esc to interrupt)')).toBe(true);
       // Casual "working on it" is NOT a Codex render string. Matching it caused
       // idle panes to read as working — the 2026-05-23 stuck-session false positive.
       expect(signal.toolCallOrSpinner.test('working on it')).toBe(false);
@@ -115,7 +118,7 @@ describe('frameworkActivitySignals', () => {
     it('enumerates every supported framework', () => {
       const signals = listActivitySignals();
       const frameworks = signals.map(s => s.framework).sort();
-      expect(frameworks).toEqual(['claude-code', 'codex-cli', 'gemini-cli']);
+      expect(frameworks).toEqual(['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli']);
     });
 
     it('each entry exposes the full signal shape', () => {

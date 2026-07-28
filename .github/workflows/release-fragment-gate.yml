@@ -1,0 +1,87 @@
+# release-fragment-gate (Layer 1) — a release-affecting PR must carry a
+# release-note fragment, enforced SERVER-SIDE at the merge boundary.
+#
+# Why: a HARD pre-push gate already requires the fragment, but it runs in husky
+# LOCALLY — the server-side squash/bot/auto-merge path never runs husky, so a
+# fragment-less change reaches main and the publish SILENTLY skips the release
+# (2026-06-27: PRs #1295-#1297 stranded ~7h). This gate cannot be routed around.
+#
+# Spec: docs/specs/RELEASE-FRAGMENT-GATE-SPEC.md (converged + approved).
+#
+# SECURITY: on: pull_request (NEVER pull_request_target); read-only token; the
+# check module is loaded from the BASE ref (never PR-head), so a PR cannot
+# rewrite the predicate to always-pass or execute its own code in the runner.
+# Untrusted PR title arrives via env, never shell-interpolated.
+#
+# ROLLOUT: ships WARN-ONLY (reports the verdict, never blocks) per spec D2/D3.
+# Flip to blocking + register as a REQUIRED status check on `main` per the D3
+# criterion (>=15 release-relevant instar-repo PRs, zero false-positive FAILs,
+# >=7 days). The verdict line is emitted for the rollout log.
+
+name: release-fragment-gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - main
+
+# Collapse an edit/push storm on a single PR to the latest run.
+concurrency:
+  group: release-fragment-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  release-fragment:
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the BASE ref ONLY (never PR-head / merge ref) so the gate runs
+      # trusted base-repo code, not PR-author-controlled scripts. (Security N1.)
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fetch changed-file list (paginated, never truncated)
+        id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Full pagination via gh api --paginate; emit a compact JSON array of
+          # { path, status }. The data is treated as opaque (jq), never shelled.
+          gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" \
+            --jq '[.[] | {path: .filename, status: .status}]' \
+            | jq -s 'add' > /tmp/pr-files.json
+          echo "count=$(jq 'length' /tmp/pr-files.json)" >> "$GITHUB_OUTPUT"
+      - name: Release-note fragment must be present for a release-relevant PR
+        env:
+          PR_FILES_JSON_PATH: /tmp/pr-files.json
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          # Soak phase: report the verdict, never block. Remove (or set to 0)
+          # to flip to blocking once the D3 criterion is met.
+          WARN_ONLY: '1'
+        run: |
+          # Bootstrap no-op: the checker is loaded from the BASE ref (security:
+          # a PR cannot alter the gate that gates it). The very PR that ADDS or
+          # moves the checker therefore has no checker on base yet — skip
+          # gracefully rather than fail, since the gate cannot apply to the PR
+          # that introduces it. Once merged, base has the script and every later
+          # PR runs the real check.
+          if [ ! -f scripts/check-release-fragment.mjs ]; then
+            echo "::notice::release-fragment-gate: checker not present on the base ref yet (bootstrap PR) — skipping."
+            exit 0
+          fi
+          # Read the (trusted-shape, untrusted-content) file list from disk into
+          # the env the checker expects — never interpolate it into the shell.
+          PR_FILES_JSON="$(cat "$PR_FILES_JSON_PATH")" \
+            node scripts/check-release-fragment.mjs

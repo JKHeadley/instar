@@ -72,6 +72,7 @@ The agent answers, in writing: "Does the change about to be made involve a decis
 
 The agent uses the standard planning patterns from `/build`: state the problem, the proposed fix, the acceptance criteria. Specifically required in the plan:
 
+- **Build location re-grounding:** confirm the change is being built in a FRESH worktree off current `JKHeadley/main`, created with `instar worktree create` (or an equivalent fresh clone when repairing the worktree helper itself), NOT the current working directory / agent-home checkout, which may be on a stale version line. Verify and record `git remote -v` and the `package.json` version before writing any code. If you use a fresh clone instead of `instar worktree create`, immediately set the agent identity in it: `git config user.email "<agent>@instar.local"` and `git config user.name "Instar Agent (<agent>)"`. Otherwise commits fall back to the operator's global git config and get misattributed to the human.
 - The decision points the change touches (if any).
 - What existing detectors or authorities the change interacts with.
 - The rollback path if the change turns out wrong.
@@ -96,7 +97,8 @@ The review must answer each of the following in writing. "No issue identified" i
 4. **Signal vs authority compliance** — does this hold blocking authority with brittle logic, or does it produce a signal that feeds a smart gate? (Required reference: `docs/signal-vs-authority.md`.)
 5. **Interactions** — does it shadow another check, get shadowed by one, double-fire, race with adjacent cleanup?
 6. **External surfaces** — does it change anything visible to other agents, other users, other systems? Does it depend on timing, conversation state, or runtime conditions we can't fully control?
-7. **Rollback cost** — if this turns out wrong in production, what's the back-out? Hot-fix release? Data migration? Agent state repair?
+7. **Multi-machine posture (Cross-Machine Coherence)** — when this agent runs on MORE than one machine, what is this feature's posture: replicated (name the replication path) / proxied-on-read (name the merged read) / machine-local BY DESIGN (with the reason)? A silent single-machine-only assumption is the defect this question exists to catch (~20 features shipped machine-blind before it was added — 2026-06-12 audit, topic 13481). Also: user-facing notices need one-voice gating; durable state must not strand on topic transfer; generated URLs must survive machine boundaries.
+8. **Rollback cost** — if this turns out wrong in production, what's the back-out? Hot-fix release? Data migration? Agent state repair?
 
 ### Phase 4.5 — No-deferrals check (enforced in pre-commit)
 
@@ -172,14 +174,30 @@ If any check fails, the commit is rejected. This is not a warning — it's a blo
 
 The pre-push gate (`scripts/pre-push-gate.js`) re-verifies at push time: any release commit whose upgrade notes claim a fix or feature must have a matching artifact in `upgrades/side-effects/`.
 
+### Phase 7 — Auto-merge on green (EVERY tier — never pause to ask)
+
+When the PR is open and CI goes green, the agent **merges it** — it does NOT pause to ask the operator "ready to merge?" / "want me to merge?". By the time CI is green, the change has already cleared every quality gate this skill enforces: the converged + approved spec (Tier 2) or the staged ELI16 + side-effects artifact (Tier 1), the side-effects review (plus the second-pass review for high-risk changes), the full instar-dev pre-commit + pre-push gates, and the complete CI suite (unit shards + integration + e2e). **Green CI = mergeable. Full stop.** Asking the operator to merge a green PR is redundant ceremony that stalls autonomous delivery — a *Structure-over-Willpower* regression this phase exists to prevent.
+
+Perform the merge with `node scripts/safe-merge.mjs <PR#> --squash --admin`. That wrapper re-imposes the requirement `--admin` removes: it waits for every check to finish, REFUSES if any check is red (and specifically confirms an e2e check ran and passed), and only then merges — so the branch-protection safety is preserved even on a behind / hot branch (no separate `update-branch` + full CI re-run needed). After the merge lands, narrate the ship via `POST /telegram/post-update` (the Agent Updates channel) — never a "ready to merge?" question in the working topic.
+
+The ONLY thing that stops the merge is a genuinely-red check **on this change**: fix it and re-run. An unrelated environmental flake (a different test failing run-to-run, a tmux/server-boot timeout, a CDN 504) is re-run (`gh run rerun --failed` or a fresh push) — never escalated to the operator as a "should I merge?" question. (Source: operator directive 2026-06-09, topic 23178 — "never pause and ask me to merge; we have enough infra in place to ensure it's good to merge by the time it gets there.")
+
 ## Tiered development (tier signal → you decide → audited)
 
 Not every change is the same size or risk, so not every change pays the same process cost. The commit gate (`scripts/instar-dev-precommit.js`) prints a **tier SIGNAL** — a suggested tier from the change's size (LOC + files) and a **risk floor** raised by any safety-invariant, irreversibility, migration/fleet-rollout, or new-capability signal (`scripts/lib/classify-tier.mjs`). The signal **informs**; it never decides. **You DECLARE the tier** in the trace via `write-trace.mjs --tier <1|2|3> --tier-reasoning "<why>"`. This is the constitution's **The Body and the Mind** made executable (`docs/STANDARDS-REGISTRY.md` → The Substrate): the gate (body) informs, the agent (mind) decides, the decision is audited.
 
-- **Tier 1 (small / low-risk):** lighter requirement set — a staged **ELI16** + a staged **side-effects** artifact, no pre-approved converged spec. Declare it with `--tier 1 --eli16-path <path> --side-effects-path <path>` (`--spec` is optional at Tier 1). The PR is the review surface, and **Echo auto-merges a clean Tier-1 on green CI** with operator spot-check.
+- **Tier 1 (small / low-risk):** lighter requirement set — a staged **ELI16** + a staged **side-effects** artifact, no pre-approved converged spec. Declare it with `--tier 1 --eli16-path <path> --side-effects-path <path>` (`--spec` is optional at Tier 1). The PR is the review surface. (Auto-merge-on-green is **not** a Tier-1 privilege — per Phase 7 it applies to EVERY tier; Tier 1 differs only in the lighter pre-merge gate, never in the merge behavior.)
 - **Tier 2+ (everything else):** the full chain above — converged + approved spec, ELI16, side-effects, fresh trace. A **Tier-3 project step** is just a Tier-2 spec; nothing extra is enforced at the gate. **No declared tier → Tier-2** (back-compatible).
 
 **The decision is audited.** Every in-scope commit appends one line to `.instar/instar-dev-decisions.jsonl` (signal, declared tier, risk floor + reasons). When you declare **under** the risk-signaled floor, the gate prints a loud `belowFloor` notice and records `belowFloor:true` — it does **not** block (you hold authority), but the override is now a reviewable record. Per **Close the Loop**, those `belowFloor` rates get reviewed on a cadence so the risk-floor list grows.
+
+## The internal-only release-note lane
+
+For a change with no user-facing surface, a release-note fragment may opt into the internal-only release-note lane by adding `<!-- internal-only -->` near the top of `upgrades/next/<slug>.md`. That marker lets the fragment omit the two user-facing sections: `## What to Tell Your User` and `## Summary of New Capabilities`. It does not waive `## What Changed`, `## Evidence`, side-effects review, ELI16, tests, or trace requirements.
+
+The shared release-note assembler (`scripts/assemble-next-md.mjs`) auto-fills the two omitted user-facing sections with `None — internal change (no user-facing surface).` only when every contributing fragment in the release is marked internal-only. If any fragment is not internal-only, the normal user-facing section requirements still apply.
+
+The lane is objectively gated at push time: `scripts/pre-push-gate.js` rejects an internal-only fragment when the diff includes runtime `src/*.ts` changes. Use the marker for tests, docs, scripts, and other no-runtime-surface work; remove it and write the user-facing sections for shipped runtime behavior.
 
 ## What this skill explicitly does NOT do
 

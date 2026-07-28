@@ -53,6 +53,15 @@ The phases are sequential and independently safe to ship — each one is observa
 
 Conservatively: the detector itself uses negligible tokens (it does no LLM calls). The Telegram alerts cost the same as any other Telegram message (effectively zero). The throttle cost is negative — by definition, it cuts ongoing burn. The build cost is roughly two days of careful work spread over six phases, each shipping as its own PR through the instar-dev gate with full review.
 
+## If the alert topic disappears
+
+A deleted Telegram topic is now a permanent delivery result, not something the
+agent retries forever. The agent remembers that the destination is gone across
+restarts and moves the warning into the existing Attention hub. It retains the
+original warning until that durable queue accepts it. If you repair the setting
+with a new topic, the retained warning and new warnings move to that destination
+normally; even a second deleted replacement cannot overwrite the first warning.
+
 ## What it does NOT do
 
 - It does not block any code path on its own without going through the Remediator's authority gate (signal-vs-authority compliance).

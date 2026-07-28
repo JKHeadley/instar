@@ -22,8 +22,11 @@ describe('Slack context exhaustion recovery wiring', () => {
   const fnStart = source.indexOf('respawnSessionFresh:');
   expect(fnStart).toBeGreaterThan(-1);
 
-  // Get the block from respawnSessionFresh to the next dep function
-  const block = source.slice(fnStart, fnStart + 7000);
+  // Get the block from respawnSessionFresh to the next dep function.
+  // (Window widened 7000 → 9000 when ownership-gated-spawn added the
+  // SpawnAdmission consult + _ladderDryRunConsult to the Slack recovery
+  // path inside this function — the markers below shifted past 7000.)
+  const block = source.slice(fnStart, fnStart + 9000);
 
   it('respawnSessionFresh checks slackProxyChannelMap', () => {
     expect(block).toContain('slackProxyChannelMap.get(topicId)');

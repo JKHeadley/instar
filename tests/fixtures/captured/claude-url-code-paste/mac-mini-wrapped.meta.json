@@ -1,0 +1,18 @@
+{
+  "source": "claude auth login pane (Mac Mini)",
+  "command": "claude auth login",
+  "capturedAt": "2026-06-18T01:32:00Z",
+  "machine": "Mac Mini",
+  "redactions": [
+    {
+      "what": "client_id value",
+      "strategy": "same-length 36 UUID-shape hex+hyphens placeholder"
+    },
+    {
+      "what": "state value",
+      "strategy": "same-length 43 base64url-class placeholder, hyphen position kept"
+    }
+  ],
+  "redactionMethod": "tool-assisted",
+  "note": "the code=t hard-wrap is preserved exactly; structural bytes untidied"
+}

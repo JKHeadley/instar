@@ -17,8 +17,15 @@ import type { MultiMachineConfig } from './types.js';
  * The mesh protocol version this build speaks. A machine below this version
  * is ineligible for the awake lease during a seamless handoff (spec §11
  * partial-migration safety). Bump only on a breaking coordination change.
+ *
+ * v2 (WS1.2, MULTI-MACHINE-SEAMLESSNESS-SPEC): the `drain` mesh verb — an
+ * active-topic transfer now drains the owner's live session through an
+ * authorized, epoch-bound signal. Verb-level skew is additionally handled by
+ * the 501/no-handler degrade (an old owner falls back to today's
+ * idle-closeout-only transfer), so mixed pools keep working; the version
+ * gates only lease eligibility during a handoff window.
  */
-export const SEAMLESSNESS_PROTOCOL_VERSION = 1;
+export const SEAMLESSNESS_PROTOCOL_VERSION = 2;
 
 /** Fully-resolved seamlessness knobs (every field concrete). */
 export interface ResolvedSeamlessnessConfig {
@@ -106,7 +113,19 @@ export function resolveSeamlessnessConfig(mm?: MultiMachineConfig): ResolvedSeam
     splitBrainEscalationCooldownMs: mm?.splitBrainEscalationCooldownMs ?? 5 * 60_000,
     handoffBar: mm?.handoffBar ?? 'near-instant',
     maxProcessingMs: mm?.maxProcessingMs ?? 5 * 60_000,
-    exactlyOnceIngress: mm?.exactlyOnceIngress ?? false,
+    // Exactly-once ingress defaults ON whenever the session pool is actively
+    // routing real traffic ('live-transfer' / 'rebalance'). Running a live
+    // multi-machine pool WITHOUT the ingress dedupe ledger is an incoherent
+    // configuration: a lifeline retry or a post-restart queue replay
+    // re-EXECUTES the user's message (2026-06-05 incident: one "move to
+    // laptop" ran 4×, producing contradictory "Moving"/"rate-limited"
+    // replies). An explicit `exactlyOnceIngress: false` still wins —
+    // operators can opt out; they just no longer get the dark-by-accident
+    // default while the pool is live. Pre-live stages ('dark'/'shadow')
+    // keep the old dark default.
+    exactlyOnceIngress:
+      mm?.exactlyOnceIngress ??
+      (mm?.sessionPool?.stage === 'live-transfer' || mm?.sessionPool?.stage === 'rebalance'),
     protocolVersion: mm?.protocolVersion ?? SEAMLESSNESS_PROTOCOL_VERSION,
   };
 }

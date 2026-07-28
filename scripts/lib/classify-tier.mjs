@@ -92,7 +92,21 @@ const NEW_CAPABILITY_PATTERNS = [
 // object literal). Without this guard the bare `key: value` pattern fires on
 // almost every TS change. We only treat a `key: value` addition as a new config
 // key when the diff also mentions a recognizable config anchor.
-const CONFIG_SURFACE_HINT = /(ConfigDefaults|config\.json|defaultConfig|InstarConfig|\.config\b|configSchema)/;
+// `\.config\b` used to be an alternative here, and it matched a FILENAME REFERENCE rather than a
+// config surface. A script that merely READS `vitest.push.config.ts` matched it; combined with any
+// ordinary object literal (`const out = { slice: 6, runs: 2 }`) it fired "new config key added" and
+// raised that change's risk floor to 2 — for a read-only developer script that adds no config key at
+// all.
+//
+// WHY THAT IS WORTH A FIX RATHER THAN A SHRUG. The floor is what makes a tier declaration mean
+// something, and declaring under it is treated here as a serious, audited act. A floor that fires on
+// a filename teaches authors that below-floor declarations are routine — which is exactly how a real
+// floor gets argued past later. A noisy guard degrades the guard it belongs to.
+//
+// The remaining anchors are all genuine config SURFACES: a config module, the config file itself by
+// name, or a config type. `foo.config.ts` as a mere mention is no longer one of them — a diff that
+// really adds a config key will name one of the others.
+const CONFIG_SURFACE_HINT = /(ConfigDefaults|config\.json|defaultConfig|InstarConfig|configSchema)/;
 
 /**
  * @param {object} input

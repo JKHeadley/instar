@@ -40,6 +40,10 @@ export const FRAMEWORK_INJECTION_PROCESS_NAMES: Record<IntelligenceFramework, re
   'claude-code': ['claude', 'claude.exe'],
   'codex-cli': ['codex'],
   'gemini-cli': ['gemini'],
+  // pi's CLI binary is `pi` (npm @earendil-works/pi-coding-agent). The TUI
+  // runs under node, but `pane_current_command` reports the bin shim name —
+  // same shape as the other CLIs (P0.1 eval, pi 0.78.1).
+  'pi-cli': ['pi'],
 };
 
 /** Union of every framework's interactive process names (deduped). */

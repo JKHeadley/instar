@@ -130,5 +130,6 @@ describe('CapabilityIndex — invariants on the registry itself', () => {
     expect(block.endpoints).toContain('POST /apprenticeship/cycles');
     expect(block.endpoints).toContain('GET /apprenticeship/cycles');
     expect(block.endpoints).toContain('POST /apprenticeship/cycles/:id/close');
+    expect(block.endpoints).toContain('GET /apprenticeship/cycles/integrity');
   });
 });
