@@ -1,0 +1,140 @@
+---
+title: "The promise half of Close the Loop: why it does NOT generalise from the action half"
+slug: "promise-reach-design"
+author: "echo"
+status: "design — not converged, not approved, no code"
+companion: "docs/specs/undated-action-resurfacer.md (the ACTION half, merged as a draft)"
+---
+
+# The promise half of Close the Loop
+
+> **Status: design only.** No code, no convergence tag, no approval. It answers one question —
+> *does the action-half design extend to promises?* — and the answer is **no, for a
+> constitutional reason rather than a technical one.** That answer is the deliverable.
+
+## Why this document exists
+
+Goal B of the 2026-07-28 session was "give Close the Loop a mechanism." Measurement showed the
+mechanism already existed and its reach was 2%, so the deliverable became a design for
+re-surfacing the invisible 98% — merged as `undated-action-resurfacer`, a draft covering
+**actions**.
+
+Re-reading that draft: `commitment|beacon|promise` appears in it **zero times**. It designs the
+action half only. The promise half had a measurement and no design, while Goal B was being
+scored as answered.
+
+## What is measured (2026-07-28 19:30Z, live)
+
+Three mechanisms exist to stop a loop rotting. All three run. All three report success.
+
+| mechanism | population | enrolled | reach |
+|---|---|---|---|
+| `evolution-overdue-check` (actions) | 912 pending | 18 carry `dueBy` | **2.0%** |
+| `PromiseBeacon` (commitments) | 307 pending | 10 have `beaconEnabled` | **3.3%** |
+| dated check-in reconciler | 307 pending | **0** carry `checkInAt` | **0.0%** |
+
+The third is the sharpest: `GET /commitments/check-in-reminder` returns
+`{enabled: true, dryRun: true, datedCount: 0}`. It is enabled, it runs, it reports success, and
+it has **never had a single input**. A mechanism whose entire population is empty is
+indistinguishable, from its own status surface, from one that is working perfectly.
+
+Age of the 307 pending promises:
+
+| bucket | count |
+|---|---|
+| > 30 days | 15 |
+| 8–30 days | 159 |
+| 2–7 days | 106 |
+| < 2 days | 27 |
+
+**174 of 307 (57%) are more than a week old.** The oldest is 52 days: *"I will ship a gated PR:
+bounded backoff on live-tail cross-machine…"*
+
+## The finding: it does not generalise, and the reason is constitutional
+
+The action-half design re-surfaces one forgotten item per run **to the operator's attention
+queue**. Applying that to promises is not merely inadvisable — it is **forbidden by the standard
+this work exists to serve.**
+
+*The Agent Carries the Loop* states:
+
+> **owner:agent** → I drive it to closure; the user is **NEVER** status-pinged (the beacon
+> suppresses my status sends). They hear from me only on a result.
+
+And the population is almost entirely that:
+
+| | count | share |
+|---|---|---|
+| `owner: agent` AND `blockedOn: none` | **287** | **93.5%** |
+| `owner: user` (legitimately theirs) | 3 | 1.0% |
+| `blockedOn: external` (a real wait to monitor) | 12 | 3.9% |
+
+So for **93.5% of the population, surfacing to the operator is the one thing the standard
+prohibits.** These are the agent's own unblocked work. A design that re-surfaces them to Justin
+would convert a follow-through mechanism into exactly the nagging stream the standard forbids —
+and would do it at a volume (287) that the notification ceiling exists to prevent.
+
+**That is why the two halves need different mechanisms, and it is not a technical difference.**
+An action is an advisory self-improvement item; surfacing it to the operator is appropriate. A
+promise with `owner: agent` is work the agent owes and the operator must never be chased about.
+Same word — "re-surface" — opposite correct destination.
+
+## Where an agent-owned promise must re-surface instead
+
+**Into the agent's own working context, not the operator's notification surface.**
+
+The measured basis for that, from this same session: a stored note failed to prevent a repeat
+three times; a re-injected note caught the fourth; a running check went 9/9. And the one
+re-derivation avoided tonight was avoided because the finding lived in a document the agent was
+made to read — not because it was filed.
+
+Applied here, the shape is: a bounded number of the oldest agent-owned unblocked promises are
+injected into session-start context, the same way preferences and operator bindings already are.
+The agent then either drives one to closure or transitions it honestly. The operator sees a
+**result**, which is precisely what the standard promises them.
+
+This document deliberately stops at the shape. Three things must be decided before any of it is
+built, and none of them is decidable from the numbers above:
+
+1. **How many per session, and chosen how.** Oldest-first is the obvious rule and probably wrong
+   — 15 promises over 30 days old would monopolise the slot for a fortnight while the 159 in the
+   8–30 day band aged past them. The action half solved the analogous problem with weighted lanes
+   plus an age override; whether that transfers is a real question, not a copy.
+2. **What a session-start injection costs.** It is prime context, every session, forever. The
+   preferences block earned that by being small and by being *about the operator*. A promise
+   backlog is neither. An honest budget has to be argued, not assumed.
+3. **Whether 287 is a backlog to drain or a signal to fix upstream.** 57% older than a week
+   suggests promises are being *made* faster than any drain could clear them. A resurfacer that
+   never catches up is a treadmill wearing a mechanism's clothes — and the enrolment defect
+   (`beaconEnabled` unset on 291 of 307) may be better fixed at creation than compensated for
+   afterwards.
+
+## What this is NOT
+
+- **Not a proposal to enrol all 291 retroactively.** 287 unblocked promises heartbeating at once
+  is the flood the ceiling exists to prevent, and the beacon's own suppression rules were tuned
+  against a much smaller population.
+- **Not a claim that the beacon is broken.** It is not. It heartbeats exactly the commitments it
+  is told to. The defect is that being told is optional.
+- **Not converged, not approved, no code.** The action half shipped as a draft for the same
+  reason: the design question is worth recording before the build, and the build is worth
+  refusing until the question is answered.
+
+## The generalisation worth keeping
+
+Three mechanisms, three populations, reaches of 2.0%, 3.3% and 0.0%. None broken; all
+near-empty; all reporting success. The common cause is that **enrolment in the loop-closing
+mechanism is an optional field that nothing requires** — a `dueBy` nobody sets, a
+`beaconEnabled` nobody sets, a `checkInAt` nobody has ever set.
+
+That is one defect with three faces, and it is the same shape as the seven-instance class this
+session catalogued elsewhere: **a mechanism whose coverage is far narrower than what its name
+implies, reporting success over the fraction it can see.**
+
+The fix for all three is more likely to be at the **creation** chokepoint — make enrolment a
+decision that must be made rather than a field that may be omitted — than in three separate
+re-surfacing engines. That is a bigger claim than this document can establish, and it is
+recorded as the question the next design should answer first.
+
+<!-- tracked: ACT-1513 -->
+<!-- tracked: ACT-1510 -->
