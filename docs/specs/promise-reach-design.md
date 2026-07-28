@@ -8,9 +8,13 @@ companion: "docs/specs/undated-action-resurfacer.md (the ACTION half, merged as 
 
 # The promise half of Close the Loop
 
-> **Status: design only.** No code, no convergence tag, no approval. It answers one question —
-> *does the action-half design extend to promises?* — and the answer is **no, for a
-> constitutional reason rather than a technical one.** That answer is the deliverable.
+> **Status: design only.** No code, no convergence tag, no approval.
+>
+> It answers two questions. **(1)** *Does the action-half design extend to promises?* No — for a
+> constitutional reason rather than a technical one. **(2)** *Is 287 a backlog to drain?* No — it
+> grows at +314 net per 28 days, so a per-run resurfacer is a treadmill at any plausible rate
+> (Addendum). The second was raised as an open question here and then measured rather than left
+> open; both answers are the deliverable.
 
 ## Why this document exists
 
@@ -103,11 +107,12 @@ built, and none of them is decidable from the numbers above:
 2. **What a session-start injection costs.** It is prime context, every session, forever. The
    preferences block earned that by being small and by being *about the operator*. A promise
    backlog is neither. An honest budget has to be argued, not assumed.
-3. **Whether 287 is a backlog to drain or a signal to fix upstream.** 57% older than a week
-   suggests promises are being *made* faster than any drain could clear them. A resurfacer that
-   never catches up is a treadmill wearing a mechanism's clothes — and the enrolment defect
-   (`beaconEnabled` unset on 291 of 307) may be better fixed at creation than compensated for
-   afterwards.
+3. ~~**Whether 287 is a backlog to drain or a signal to fix upstream.**~~ **ANSWERED — see the
+   Addendum.** Measured after this section was written: promises accrue at **+314 net over 28
+   days** (9.5:1 creation-to-resolution), so no per-run resurfacer at any plausible rate catches
+   up. 287 is a growing pile, not a backlog, and the fix belongs at the creation chokepoint.
+   Left visible with its original wording rather than deleted, because the sequence — asked as
+   open, then measured — is the point.
 
 ## What this is NOT
 
@@ -138,3 +143,75 @@ recorded as the question the next design should answer first.
 
 <!-- tracked: ACT-1513 -->
 <!-- tracked: ACT-1510 -->
+
+---
+
+## Addendum — open question 3 is ANSWERED, and it invalidates the resurfacer shape
+
+Question 3 above asked whether 287 is *a backlog to drain or a signal to fix upstream.*
+Measured rather than left open, because the data was already held.
+
+**Promises, last 28 days:**
+
+| week | created | resolved | net |
+|---|---|---|---|
+| 0–7 days | 145 | 13 | **+132** |
+| 7–14 days | 82 | 11 | +71 |
+| 14–21 days | 50 | 10 | +40 |
+| 21–28 days | 74 | 3 | +71 |
+| **28-day total** | **351** | **37** | **+314** |
+
+Creation outpaces resolution roughly **9.5 : 1**, and the most recent week is the worst.
+
+**Measurement honesty.** `deliveredAt` and `updatedAt` do not exist on these records;
+`resolvedAt` is present on 610 of 698 terminal rows. A first pass fell back to `createdAt`
+when `resolvedAt` was absent, which silently **misdates** a resolution into its creation
+week. Redone using `resolvedAt` only, with the 124 unattributable terminal rows **excluded
+rather than misdated**.
+
+**Robustness bound.** Assume the worst case for this conclusion — that *every one* of the
+124 excluded rows resolved inside the window: resolved becomes 161 against 351 created, so
+the net is still **+190**. The conclusion does not depend on the exclusion.
+
+### What that does to the design
+
+A resurfacer that brings back one promise per run cannot work at any plausible rate:
+
+| rate | per week | vs +132/week accumulation |
+|---|---|---|
+| 4/day | 28 | never catches up |
+| 6/day | 42 | never catches up |
+| 12/day | 84 | never catches up |
+
+**287 is not a backlog. It is a growing pile**, and a per-run resurfacer against it is a
+treadmill — the exact failure the main document warned about as a possibility and can now
+state as measured fact. **The fix belongs at the CREATION chokepoint**: enrolment must be a
+decision made when a promise is recorded, not a field that may be omitted and compensated
+for afterwards.
+
+### And this reaches the ACTION half too
+
+The same measurement on actions, which the merged `undated-action-resurfacer` draft covers:
+
+| | created (28d) | closed | net | worst case* |
+|---|---|---|---|---|
+| **actions** | 1014 | 45 | **+969** | **+416** |
+| promises | 351 | 37 | +314 | +190 |
+
+\* worst case assumes every terminal row lacking a close-date (553 for actions, 124 for
+promises) resolved inside the window. Actions carry far more of that uncertainty — all 553
+cancelled rows lack a close timestamp — so the action figure is the weaker measurement of
+the two and is stated as a range rather than a number.
+
+**Even at its most generous, the action backlog grows by ~+416 in 28 days.** So the merged
+action-half draft is subject to the same arithmetic: one item per run cannot drain a pile
+growing at that rate either.
+
+That does **not** make the action design worthless — re-surfacing guarantees no single item
+sits invisible forever, which was its stated and honest scope ("it does not clear the pile…
+and it isn't meant to"). But the case for the creation chokepoint is now stronger than that
+draft assumed, and this measurement should be weighed before either half is built.
+
+Recorded here rather than as a new action: it answers a question this document asked, and
+filing an eleventh row about a backlog measured at 0.74% closure would be the behaviour the
+measurement is about.
