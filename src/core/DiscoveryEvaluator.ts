@@ -455,6 +455,7 @@ Evaluate: should any of these features be surfaced given the current context? JS
       model: 'fast',         // Haiku-class
       maxTokens: 300,
       temperature: 0,
+      attribution: { component: 'DiscoveryEvaluator' }, // attribution for /metrics/features
     };
 
     // Race against timeout

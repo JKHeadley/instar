@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-25T17:49:57.111Z",
+  "slug": "enrol-topic-intent-extract",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 58,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

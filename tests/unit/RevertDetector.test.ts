@@ -4,8 +4,13 @@
  * FailureLedger with an injected git runner.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { FailureLedger } from '../../src/monitoring/FailureLedger.js';
 import { RevertDetector } from '../../src/monitoring/RevertDetector.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { OpenFailureInput } from '../../src/monitoring/FailureLedger.js';
 
 const F = '\x1f';
@@ -148,5 +153,69 @@ describe('RevertDetector.tick (§3.2 close-or-open + cross-check)', () => {
       git: () => { throw new Error('not a git repo'); }, onError: () => {},
     });
     expect(() => expect(d.tick()).toBe(0)).not.toThrow();
+  });
+
+  // EVO-003 regression: the scan's `git log` argv must never contain a value-form
+  // of the case flag. git rejects `--regexp-ignore-case=false` with
+  // `fatal: unrecognized argument`, which made the whole call throw every tick and
+  // silently no-op'd revert detection fleet-wide. An injected, arg-recording git
+  // proves both the argv shape AND that detection still works once the flag is gone.
+  it('builds a valid `git log` argv with no `=value` case flag (EVO-003 regression)', () => {
+    const calls: string[][] = [];
+    const recordingGit = (args: string[]): string => {
+      calls.push(args);
+      if (args[0] === 'log' && args.some((a) => a.startsWith('--grep'))) {
+        return log([{ hash: 'rev1', subject: 'Revert "feat: x"', body: 'This reverts commit deadbeef1234.' }]);
+      }
+      if (args[0] === 'cat-file') return '';                       // reachable
+      if (args[0] === 'show') return ['src/a.ts'].join('\n');      // intersects
+      if (args[0] === 'log' && args[1] === '-1') return 'a normal commit';
+      return '';
+    };
+    const d = new RevertDetector({
+      ledger, resolveByCommit: () => undefined, cwd: '/tmp',
+      git: recordingGit, onError: () => {},
+    });
+    // Detection still fires after dropping the bad flag (forensic record opened).
+    expect(d.tick()).toBe(1);
+    expect(ledger.list({ source: 'revert' as never })).toHaveLength(1);
+    // The grep scan call must not carry the invalid value-form flag.
+    const logCall = calls.find((a) => a[0] === 'log' && a.some((x) => x.startsWith('--grep')));
+    expect(logCall).toBeDefined();
+    expect(logCall).not.toContain('--regexp-ignore-case=false');
+    expect(logCall!.some((a) => /^--(no-)?regexp-ignore-case=/.test(a))).toBe(false);
+  });
+
+  // EVO-003 regression, end-to-end: drive the detector with its DEFAULT git
+  // runner (SafeGitExecutor) against a REAL temp repo containing a real
+  // `git revert` commit. This is the test that would have caught the original
+  // bug — a malformed argv makes real git exit non-zero and detection silently
+  // returns 0.
+  it('detects a real `git revert` commit using the default git runner (EVO-003 real-git)', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'revert-detector-'));
+    const op = 'tests/unit/RevertDetector.test.ts:setup';
+    try {
+      SafeGitExecutor.execSync(['init'], { cwd: repo, stdio: 'ignore', operation: op });
+      SafeGitExecutor.execSync(['config', 'user.name', 'Revert Test'], { cwd: repo, stdio: 'ignore', operation: op });
+      SafeGitExecutor.execSync(['config', 'user.email', 'revert@example.test'], { cwd: repo, stdio: 'ignore', operation: op });
+      SafeGitExecutor.execSync(['config', 'commit.gpgsign', 'false'], { cwd: repo, stdio: 'ignore', operation: op });
+      fs.writeFileSync(path.join(repo, 'a.txt'), 'original\n');
+      SafeGitExecutor.execSync(['add', 'a.txt'], { cwd: repo, stdio: 'ignore', operation: op });
+      SafeGitExecutor.execSync(['commit', '-m', 'feat: add a'], { cwd: repo, stdio: 'ignore', operation: op });
+      // Revert HEAD → produces a `Revert "feat: add a"` commit whose body carries
+      // `This reverts commit <oid>.` — exactly what the scan greps for.
+      SafeGitExecutor.execSync(['revert', '--no-edit', 'HEAD'], { cwd: repo, stdio: 'ignore', operation: op });
+
+      const d = new RevertDetector({ ledger, resolveByCommit: () => undefined, cwd: repo });
+      expect(d.tick()).toBe(1);
+      const reverts = ledger.list({ source: 'revert' as never });
+      expect(reverts).toHaveLength(1);
+      expect(reverts[0].status).toBe('resolved'); // forensic entry
+    } finally {
+      SafeFsExecutor.safeRmSync(repo, {
+        recursive: true, force: true,
+        operation: 'tests/unit/RevertDetector.test.ts:cleanup',
+      });
+    }
   });
 });

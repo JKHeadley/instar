@@ -28,19 +28,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Codex model used by setup-wizard and secret-setup micro-sessions when
- * the host framework is codex-cli. Codex CLI's bundled default
- * (gpt-5.2-codex) was retired from ChatGPT-subscription accounts on
- * 2026-04-14 and is API-only since. The wizard targets the subscription
- * path by default, so we pin to a model empirically confirmed-working on
- * ChatGPT auth (see src/providers/adapters/openai-codex/models.ts for
- * the full availability matrix).
- *
- * Exported for the tests-suite canary that asserts this constant is
+ * the host framework is codex-cli. Single source of truth:
+ * setup-wizard/model-constants.ts (env-overridable via
+ * INSTAR_WIZARD_CODEX_MODEL — the wizard runs pre-config, so an env var
+ * is its override surface; LLM-ROUTING-REGISTRY.md risk item #5).
+ * Re-exported for the tests-suite canary that asserts this constant is
  * passed to every codex spawn in setup.ts.
  */
-export const WIZARD_CODEX_MODEL = 'gpt-5.3-codex';
+import { WIZARD_CODEX_MODEL } from './setup-wizard/model-constants.js';
+export { WIZARD_CODEX_MODEL };
 
-import { detectClaudePath, detectCodexPath, detectGhPath, checkFrameworkPrerequisite } from '../core/Config.js';
+import { detectClaudePath, detectCodexPath, detectGeminiPath, detectGhPath, checkFrameworkPrerequisite } from '../core/Config.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { allocatePort } from '../core/AgentRegistry.js';
 import type { SecretBackend } from '../core/SecretManager.js';
@@ -133,24 +131,26 @@ async function promptForFramework(
   }
 }
 
-export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' }): Promise<void> {
+export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' }): Promise<void> {
   // Check and install prerequisites (tmux + the chosen framework's CLI)
   console.log();
   const prereqs = await ensurePrerequisites();
 
-  // Detect both binaries first so the framework-choice prompt can offer
+  // Detect framework binaries first so the framework-choice prompt can offer
   // only what's actually installed and surface a single clean install
-  // message if neither is present.
+  // message if none is present.
   const claudePath = detectClaudePath();
   const codexPath = detectCodexPath();
+  const geminiPath = detectGeminiPath();
 
   // Resolve framework. Precedence:
   //   1. Explicit --framework flag from the subcommand parser.
   //   2. Interactive prompt when stdin is a TTY and the flag was omitted —
   //      this is the bareword `npx instar` path so a fresh user gets asked
-  //      which runtime to use.
+  //      which runtime to use. (gemini-cli is selectable via the explicit
+  //      --framework flag; the interactive prompt covers claude/codex for now.)
   //   3. Default 'claude-code' otherwise (non-interactive / piped / CI).
-  const framework: 'claude-code' | 'codex-cli' = opts?.framework
+  const framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' = opts?.framework
     ?? (process.stdin.isTTY
       ? await promptForFramework(claudePath, codexPath)
       : 'claude-code');
@@ -158,6 +158,7 @@ export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' 
     configuredFramework: framework,
     claudePathDetected: claudePath,
     codexPathDetected: codexPath,
+    geminiPathDetected: geminiPath,
   });
   if (!prereq.satisfied) {
     console.log();
@@ -169,7 +170,11 @@ export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' 
   // The binary the wizard will spawn for both the secret-setup micro-session
   // and the main wizard. checkFrameworkPrerequisite has already guaranteed
   // the chosen framework's binary was detected.
-  const binaryPath = framework === 'codex-cli' ? codexPath! : claudePath!;
+  const binaryPath = framework === 'codex-cli'
+    ? codexPath!
+    : framework === 'gemini-cli'
+      ? geminiPath!
+      : claudePath!;
 
   if (!prereqs.allMet) {
     console.log(pc.red('  Some prerequisites are still missing. Please install them and try again.'));
@@ -177,9 +182,11 @@ export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' 
     process.exit(1);
   }
 
-  // Check that the setup-wizard skill exists
+  // Check that the setup-wizard skill exists for the Claude skill-backed path.
+  // Hybrid drivers (codex-cli, gemini-cli) own the wizard in code and must not
+  // depend on the Claude-authored setup skill.
   const skillPath = path.join(findInstarRoot(), '.claude', 'skills', 'setup-wizard', 'SKILL.md');
-  if (!fs.existsSync(skillPath)) {
+  if (framework === 'claude-code' && !fs.existsSync(skillPath)) {
     console.log();
     console.log(pc.red('  Setup wizard skill not found.'));
     console.log(pc.dim(`  Expected: ${skillPath}`));
@@ -191,10 +198,16 @@ export async function runSetup(opts?: { framework?: 'claude-code' | 'codex-cli' 
   console.log();
   console.log(pc.bold('  Welcome to Instar'));
   console.log();
-  const runtimeLabel = framework === 'codex-cli' ? 'Codex CLI' : 'Claude Code';
+  const runtimeLabel = framework === 'codex-cli'
+    ? 'Codex CLI'
+    : framework === 'gemini-cli'
+      ? 'Gemini CLI'
+      : 'Claude Code';
   const sandboxFlag = framework === 'codex-cli'
     ? '--dangerously-bypass-approvals-and-sandbox'
-    : '--dangerously-skip-permissions';
+    : framework === 'gemini-cli'
+      ? '--approval-mode default'
+      : '--dangerously-skip-permissions';
   console.log(pc.yellow(`  Note: Instar runs ${runtimeLabel} with ${sandboxFlag}.`));
   console.log(pc.dim('  This allows your agent to operate autonomously — reading, writing, and'));
   console.log(pc.dim('  executing within your project without per-action approval prompts.'));
@@ -346,18 +359,16 @@ ${agentSummary}
 
   // Wizard dispatch.
   //
-  // For framework === 'codex-cli', use the hybrid wizard: instar owns
-  // the conversation flow via a state machine in src/commands/
-  // setup-wizard/. Per-turn narrative is generated by short `codex exec`
-  // calls; structural prompts and side effects are driven by instar.
-  // This is the structural answer to "Codex doesn't follow the wizard
-  // SKILL.md's conversational contract" — the contract is now enforced
-  // by code, not by prompt text. See:
-  // specs/dev-infrastructure/hybrid-wizard.md.
+  // For codex-cli and gemini-cli, use hybrid drivers: instar owns the
+  // conversation flow via a state machine in src/commands/setup-wizard/.
+  // Per-turn narrative is generated by bounded one-shot model calls;
+  // structural prompts and side effects are driven by instar code. This is
+  // the structural answer to non-Claude runtimes not following the Claude
+  // setup SKILL.md's conversational contract.
   //
-  // For framework === 'claude-code', keep the existing SKILL.md spawn
-  // path: Claude follows the skill reliably and the wizard's content
-  // was authored for it. No reason to break what works.
+  // For framework === 'claude-code', keep the existing SKILL.md spawn path:
+  // Claude follows the skill reliably and the wizard's content was authored
+  // for it.
   if (framework === 'codex-cli') {
     const { runCodexWizard } = await import('./setup-wizard/codex-driver.js');
     await runCodexWizard({
@@ -368,7 +379,18 @@ ${agentSummary}
     return;
   }
 
+  if (framework === 'gemini-cli') {
+    const { runGeminiWizard } = await import('./setup-wizard/gemini-driver.js');
+    await runGeminiWizard({
+      geminiPath: geminiPath!,
+      projectDir,
+      instarRoot,
+    });
+    return;
+  }
+
   const wizardPrompt = `The project to set up is at: ${projectDir}.${gitContext}${detectionContext}${secretContext}`;
+  const wizardSkillPath = path.join(instarRoot, '.claude', 'skills', 'setup-wizard', 'SKILL.md');
   const launchArgs: string[] = [
     '--dangerously-skip-permissions',
     `/setup-wizard ${wizardPrompt}`,
@@ -413,7 +435,7 @@ ${agentSummary}
  */
 async function ensureSecretBackend(
   binaryPath: string,
-  framework: 'claude-code' | 'codex-cli',
+  framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli',
   instarRoot: string,
 ): Promise<string> {
   const backendFile = path.join(os.homedir(), '.instar', 'secrets', 'backend.json');
@@ -455,6 +477,8 @@ async function ensureSecretBackend(
   // point at the skill file content via prose so the wizard reads and
   // executes the same instructions.
   const secretSkillPath = path.join(instarRoot, '.claude', 'skills', 'secret-setup', 'SKILL.md');
+  // Gemini, like Codex, has no slash commands, so it reads the skill file via
+  // prose (the canonical one-shot `-m <model> --approval-mode default -p <prompt>`).
   const secretArgs: string[] = framework === 'codex-cli'
     ? [
         'exec',
@@ -462,7 +486,14 @@ async function ensureSecretBackend(
         '-m', WIZARD_CODEX_MODEL,
         `Read ${secretSkillPath} and follow its instructions to configure a secret backend for this user.`,
       ]
-    : ['--dangerously-skip-permissions', '/secret-setup'];
+    : framework === 'gemini-cli'
+      ? [
+          '-m', 'gemini-2.5-flash',
+          '--approval-mode', 'default',
+          '-p',
+          `Read ${secretSkillPath} and follow its instructions to configure a secret backend for this user.`,
+        ]
+      : ['--dangerously-skip-permissions', '/secret-setup'];
   const child = spawn(binaryPath, secretArgs, {
     cwd: instarRoot,
     stdio: 'inherit',
@@ -744,6 +775,19 @@ export function launchctlLoadAllowed(): boolean {
   return !process.env.VITEST && !process.env.INSTAR_SKIP_LAUNCHCTL_LOAD;
 }
 
+export function macOSAutoStartLoadCommands(
+  label: string,
+  plistPath: string,
+  uid: number,
+): Array<[string, string[]]> {
+  const domain = `gui/${uid}`;
+  return [
+    ['launchctl', ['bootout', domain, plistPath]],
+    ['launchctl', ['enable', `${domain}/${label}`]],
+    ['launchctl', ['bootstrap', domain, plistPath]],
+  ];
+}
+
 export function installAutoStart(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
   const platform = process.platform;
 
@@ -828,6 +872,17 @@ function resolveNodeCandidates(): string[] {
     if (current && fs.existsSync(current)) candidates.add(current);
   } catch { /* not found */ }
 
+  // 1b. Every PATH entry, not only the first `which node` result. The first
+  // result can be this agent's own .instar/bin/node symlink. If that symlink is
+  // being repaired, selecting it as its own target creates a self-loop and
+  // makes the agent unbootable. A later PATH entry commonly contains the real
+  // NVM/asdf/Homebrew binary we need.
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, 'node');
+    if (fs.existsSync(candidate)) candidates.add(candidate);
+  }
+
   // 2. process.execPath — the node that's running THIS process right now
   if (fs.existsSync(process.execPath)) candidates.add(process.execPath);
 
@@ -853,6 +908,12 @@ function resolveNodeCandidates(): string[] {
   } catch { /* brew not installed or node not installed via brew */ }
 
   return [...candidates];
+}
+
+/** Remove the managed symlink itself from the target candidate set. */
+export function excludeManagedNodeSymlink(candidates: string[], symlinkPath: string): string[] {
+  const managed = path.resolve(symlinkPath);
+  return candidates.filter((candidate) => path.resolve(candidate) !== managed);
 }
 
 /**
@@ -966,8 +1027,13 @@ export function ensureStableNodeSymlink(projectDir: string): string {
   const nativeModuleExists = fs.existsSync(nativeModulePath);
 
   // Resolve all available node paths and pick the most durable ABI-compatible one
-  const candidates = resolveNodeCandidates();
-  const durablePath = pickDurableNodePath(candidates, nativeModulePath) ?? findNodePath();
+  const candidates = excludeManagedNodeSymlink(resolveNodeCandidates(), symlinkPath);
+  const fallback = findNodePath();
+  const durablePath = pickDurableNodePath(candidates, nativeModulePath)
+    ?? (path.resolve(fallback) !== path.resolve(symlinkPath) ? fallback : undefined);
+  if (!durablePath) {
+    throw new Error(`No real Node binary found outside managed symlink ${symlinkPath}`);
+  }
 
   // Check if symlink exists and already points to a valid target.
   try {
@@ -1159,7 +1225,11 @@ if [ ! -f "$SHADOW" ]; then
 PKGEOF
     fi
 
-    if "$NODE_BIN" "$NPM_BIN" install --no-audit --no-fund --silent --prefix "$SHADOW_DIR" >&2; then
+    # Native postinstall scripts (e.g. sharp's "sh -c node ...") need node/npm on
+    # PATH; a launchd-spawned boot child may inherit a PATH without them. Prepend the
+    # resolved node dir and set npm scripts-prepend-node-path so lifecycle scripts
+    # resolve node/npm instead of failing with "command not found".
+    if PATH="$(dirname "$NODE_BIN"):$PATH" npm_config_scripts_prepend_node_path=true "$NODE_BIN" "$NPM_BIN" install --no-audit --no-fund --silent --prefix "$SHADOW_DIR" >&2; then
       if [ -f "$SHADOW" ]; then
         echo "[instar-boot] Reinstall succeeded — continuing boot" >&2
       else
@@ -1296,6 +1366,21 @@ function selfHealNodeSymlink() {
       if (p !== currentNode && fs.existsSync(p)) candidates.push(p);
     }
 
+    // FLEET FIX (version-managed node candidates — instar-codey node-25/ABI-141
+    // deadlock): also consider the PATH-resolved node ("which node"). After a
+    // \`brew upgrade\` drifts the well-known node forward (e.g. Node 25 / ABI 141),
+    // a version-managed node (asdf / nvm / volta, which never appears in the
+    // well-known list) is often the ONLY node whose ABI still matches an existing
+    // native module (e.g. an ABI-127 better-sqlite3). Without it as a candidate the
+    // wrapper cannot heal BACK to a loadable node and self-heals FORWARD to the
+    // wrong ABI. "which node" resolves through asdf/nvm shims via PATH, so it picks
+    // up the version-managed node the rest of the system is actually using.
+    try {
+      const cpWhich = require('child_process');
+      const resolved = cpWhich.execFileSync('which', ['node'], { encoding: 'utf-8', timeout: 5000 }).trim();
+      if (resolved && fs.existsSync(resolved) && !candidates.includes(resolved)) candidates.push(resolved);
+    } catch { /* "which" unavailable or no node on PATH — best-effort */ }
+
     // Check if native modules exist — if so, prefer a node with the same major version
     const sqliteNode = path.join(${JSON.stringify(stateDir)}, 'shadow-install', 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node');
     let best = currentNode;
@@ -1395,10 +1480,21 @@ if (!fs.existsSync(SHADOW)) {
         }, null, 2));
       }
 
+      // boot-wrapper install-path self-heal: native postinstall scripts (e.g.
+      // sharp's "sh -c node install/check.js") need node/npm on PATH, but a
+      // launchd-spawned boot child often inherits a PATH without them — so the
+      // reinstall dies with "command not found" and the shadow install never heals.
+      // Prepend the resolved node dir to PATH and set npm scripts-prepend-node-path
+      // so lifecycle scripts resolve node/npm regardless of the inherited PATH.
+      const installEnv = Object.assign({}, process.env, {
+        PATH: path.dirname(nodeBin) + path.delimiter + (process.env.PATH || ''),
+        npm_config_scripts_prepend_node_path: 'true',
+      });
       execFileSync(nodeBin, [npmCli, 'install', '--no-audit', '--no-fund', '--silent'], {
         cwd: SHADOW_DIR,
         stdio: 'inherit',
         timeout: 5 * 60 * 1000,
+        env: installEnv,
       });
 
       if (!fs.existsSync(SHADOW)) {
@@ -1673,6 +1769,23 @@ ${argsXml}
     </dict>
     <key>ThrottleInterval</key>
     <integer>10</integer>
+    <!-- Fork-bomb prevention belt (forkbomb-prevention-simple §D-CAP): an
+         OS-level NumberOfProcesses ceiling under the host-wide spawn-cap
+         semaphore (the PRIMARY control). Generous + conservative (512) — it
+         bounds a non-compliant runaway that bypasses the funnel without
+         affecting normal operation (normal instar runs far fewer subprocesses).
+         This is the host-GLOBAL belt the funnel's per-process honesty can't
+         provide; it never substitutes for the spawn cap, it backstops it. -->
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfProcesses</key>
+        <integer>512</integer>
+    </dict>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfProcesses</key>
+        <integer>512</integer>
+    </dict>
 </dict>
 </plist>`;
 
@@ -1697,12 +1810,17 @@ ${argsXml}
 
     // Load the agent (skipped under test — see launchctlLoadAllowed).
     if (launchctlLoadAllowed()) {
+      const commands = macOSAutoStartLoadCommands(label, plistPath, process.getuid?.() ?? 501);
       try {
         // Unload first if already loaded
-        execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+        execFileSync(commands[0][0], commands[0][1], { stdio: 'ignore' });
       } catch { /* not loaded yet — fine */ }
 
-      execFileSync('launchctl', ['bootstrap', `gui/${process.getuid?.() ?? 501}`, plistPath], { stdio: 'ignore' });
+      // A previously disabled label makes bootstrap fail with the opaque
+      // launchctl "Input/output error" even when the plist is valid. Installing
+      // auto-start is an explicit request to re-enable this exact service.
+      execFileSync(commands[1][0], commands[1][1], { stdio: 'ignore' });
+      execFileSync(commands[2][0], commands[2][1], { stdio: 'ignore' });
     }
 
     // Ensure the user-machine fleet watchdog is installed alongside this agent.

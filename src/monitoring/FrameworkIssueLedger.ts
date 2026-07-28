@@ -25,6 +25,7 @@
  * allowlists on write.
  */
 import Database from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -303,6 +304,8 @@ export class FrameworkIssueLedger {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('busy_timeout = 5000');
+    // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
+    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
     for (const ddl of SCHEMA) {
       try {
         this.db.exec(ddl);
@@ -311,6 +314,15 @@ export class FrameworkIssueLedger {
         // the idempotent-migration case. Swallow only that; rethrow anything else.
         if (!/duplicate column name/i.test((err as Error).message || '')) throw err;
       }
+    }
+    // §13.6: seed none→candidate for generalizable issues that were resolved
+    // before the auto-suggestion existed (idempotent + self-limiting — matches
+    // nothing after the first run). A backfill failure must never block ledger
+    // construction (read-mostly infra); the next boot simply retries.
+    try {
+      this.backfillPlaybookCandidates();
+    } catch {
+      /* non-fatal: ledger remains usable; backfill retries next construction */
     }
   }
 
@@ -364,11 +376,11 @@ export class FrameworkIssueLedger {
             `INSERT INTO framework_issues
                (id, framework, bucket, bucket_primary, title, severity, status, dedup_key,
                 signature, recurrence_count, first_seen_version, last_seen_version,
-                playbook_status, probable_loop, created_at, updated_at)
+                related_spec, playbook_status, probable_loop, created_at, updated_at)
              VALUES (@id, @framework, @bucket, @bucketPrimary, @title, @severity, 'open', @dedupKey,
-                @signature, 0, @observedVersion, @observedVersion, 'none', 0, @ts, @ts)`,
+                @signature, 0, @observedVersion, @observedVersion, @relatedSpec, 'none', 0, @ts, @ts)`,
           )
-          .run({ id: issueId, framework, bucket, bucketPrimary, title, severity, dedupKey, signature, observedVersion, ts });
+          .run({ id: issueId, framework, bucket, bucketPrimary, title, severity, dedupKey, signature, observedVersion, relatedSpec, ts });
         created = true;
         issue = { id: issueId };
       } else {
@@ -379,12 +391,14 @@ export class FrameworkIssueLedger {
             `UPDATE framework_issues
                SET last_seen_version = COALESCE(@observedVersion, last_seen_version),
                    severity = CASE WHEN @newWeight > @oldWeight THEN @severity ELSE severity END,
+                   related_spec = COALESCE(related_spec, @relatedSpec),
                    updated_at = @ts
              WHERE id = @id`,
           )
           .run({
             id: issueId,
             observedVersion,
+            relatedSpec,
             severity,
             newWeight: SEVERITY_WEIGHT[severity],
             oldWeight: SEVERITY_WEIGHT[(issue.severity as IssueSeverity) ?? 'medium'],
@@ -481,7 +495,7 @@ export class FrameworkIssueLedger {
 
       const status = patch.status ? assertEnum(patch.status, ISSUE_STATUSES, 'status') : (cur.status as IssueStatus);
       const bucket = patch.bucket ? assertEnum(patch.bucket, ISSUE_BUCKETS, 'bucket') : (cur.bucket as IssueBucket);
-      const playbookStatus = patch.playbookStatus
+      let playbookStatus = patch.playbookStatus
         ? assertEnum(patch.playbookStatus, PLAYBOOK_STATUSES, 'playbookStatus')
         : (cur.playbook_status as PlaybookStatus);
       const bucketPrimary =
@@ -495,6 +509,24 @@ export class FrameworkIssueLedger {
 
       if (status === 'wont-fix' && !wontFixReason) {
         throw new Error('FrameworkIssueLedger: wont-fix requires a wontFixReason (spec §13.7)');
+      }
+
+      // §13.6 auto-suggest: when a generalizable issue reaches a terminal-resolved
+      // state (fixed | wont-fix) its lesson is fully formed and should feed the
+      // NEXT framework's onboarding playbook — so promote none→candidate in the
+      // same write. Without this the playbook stays permanently empty: lessons are
+      // logged but never surface (every issue sits at 'none', and nothing else
+      // auto-suggests candidates). Only none→candidate is automated here; the
+      // candidate→extracted step still requires a non-Echo attestation via
+      // promotePlaybook(). Never downgrades (acts only on 'none'); skipped when the
+      // caller set playbookStatus explicitly.
+      if (
+        patch.playbookStatus === undefined &&
+        playbookStatus === 'none' &&
+        (status === 'fixed' || status === 'wont-fix') &&
+        GENERALIZABLE_BUCKETS.has(bucket)
+      ) {
+        playbookStatus = 'candidate';
       }
 
       this.db
@@ -557,6 +589,31 @@ export class FrameworkIssueLedger {
     return txn();
   }
 
+  /**
+   * Idempotent backfill of the §13.6 none→candidate auto-suggestion for issues
+   * that were already terminal-resolved (fixed | wont-fix) and generalizable
+   * BEFORE that auto-suggestion existed — their lessons were logged but stuck at
+   * 'none', so the onboarding playbook never surfaced them. Promotes every such
+   * row to 'candidate'; never touches candidate/extracted/superseded rows; never
+   * promotes non-generalizable or non-terminal issues. Self-limiting (the WHERE
+   * clause matches nothing after the first run) so it is safe to call on every
+   * boot — which is how existing ledgers across the fleet pick up the seeding
+   * without a dedicated PostUpdateMigrator entry. Returns the rows promoted.
+   * candidate→extracted still requires a non-Echo attestation (promotePlaybook);
+   * this only seeds candidates.
+   */
+  backfillPlaybookCandidates(): number {
+    const res = this.db
+      .prepare(
+        `UPDATE framework_issues SET playbook_status = 'candidate', updated_at = @ts
+           WHERE playbook_status = 'none'
+             AND status IN ('fixed', 'wont-fix')
+             AND bucket IN ('framework-limitation', 'instar-integration-gap')`,
+      )
+      .run({ ts: this.now() });
+    return res.changes;
+  }
+
   /** Bucket-distribution telemetry (spec §15) — surfaces attribution skew (a
    *  sudden spike in `generic-agent-mistake` is the "blame the mentee" tell). */
   observability(): {
@@ -612,6 +669,16 @@ export class FrameworkIssueLedger {
       | Record<string, unknown>
       | undefined;
     return r ? this.rowToIssue(r) : null;
+  }
+
+  /** Whether ANY framework's issue carries this dedup key. Used by the
+   *  apprenticeship transcript-audit gate to verify a cycle's claimed
+   *  locally-filed findings actually exist in this ledger. */
+  hasDedupKey(dedupKey: string): boolean {
+    const r = this.db
+      .prepare(`SELECT 1 FROM framework_issues WHERE dedup_key = ? LIMIT 1`)
+      .get(dedupKey);
+    return r !== undefined;
   }
 
   listIssues(q: ListIssuesQuery = {}): IssueRow[] {

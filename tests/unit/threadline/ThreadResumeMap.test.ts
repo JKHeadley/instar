@@ -354,7 +354,12 @@ describe('ThreadResumeMap', () => {
     });
 
     it('archives stale active and idle threads before listing', () => {
-      const now = new Date('2026-05-30T09:00:00.000Z');
+      // Anchor timestamps to REAL wall-clock time, not a hardcoded fixture date.
+      // listActive() archives internally via retireInactive(new Date()) (real now),
+      // so a fixed historical `now` makes this a time bomb: once real time advances
+      // past 24h beyond the fixture, the "fresh" entry ages out of the window and
+      // listActive() returns []. Relative-to-now keeps it deterministic forever.
+      const now = new Date();
       const stale = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString();
       const fresh = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
 
@@ -362,7 +367,7 @@ describe('ThreadResumeMap', () => {
       map.save('stale-idle', makeEntry({ state: 'idle', lastAccessedAt: stale, savedAt: stale }));
       map.save('fresh-active', makeEntry({ state: 'active', lastAccessedAt: fresh, savedAt: fresh }));
 
-      expect(map.retireInactive(24 * 60 * 60 * 1000, now)).toBe(2);
+      expect(map.retireInactive(24 * 60 * 60 * 1000)).toBe(2);
       expect(map.listActive().map(t => t.threadId)).toEqual(['fresh-active']);
       expect(map.get('stale-active')?.state).toBe('archived');
       expect(map.get('stale-idle')?.state).toBe('archived');
@@ -591,6 +596,56 @@ describe('ThreadResumeMap', () => {
     it('still RETURNS a pinned non-topic entry without JSONL (pinned exemption unchanged)', () => {
       map2.save('t-pinned', makeEntry({ uuid: 'gone-uuid-22222222222222222222', originTopicId: undefined, pinned: true }));
       expect(map2.get('t-pinned')).not.toBeNull();
+    });
+  });
+
+  describe('live-session inject exemption (Layer 2 warm-inject)', () => {
+    // Stubs tmux liveness deterministically — no real tmux in CI. This is the
+    // production A2A continuity fix: a peer-to-peer follow-up must keep its entry
+    // (so ThreadlineRouter.tryInjectIntoLiveSession can deliver into the running
+    // session) even though the placeholder uuid has no transcript yet.
+    class StubLivenessMap extends ThreadResumeMap {
+      private readonly aliveNames: Set<string>;
+      constructor(stateDir: string, projectDir: string, aliveNames: Set<string>) {
+        super(stateDir, projectDir);
+        this.aliveNames = aliveNames;
+      }
+      protected sessionAlive(sessionName: string): boolean {
+        return this.aliveNames.has(sessionName);
+      }
+    }
+    let temp3: ReturnType<typeof createTempDir>;
+    afterEach(() => { temp3?.cleanup(); cleanupFakeJsonl(); });
+
+    it('RETURNS a non-topic entry without JSONL when its tmux session is ALIVE (live-inject path)', () => {
+      temp3 = createTempDir();
+      const map3 = new StubLivenessMap(temp3.stateDir, temp3.dir, new Set(['warm-sess']));
+      // placeholder uuid (no transcript), no originTopicId — the exact prod cold-spawn case
+      map3.save('t-warm', makeEntry({ uuid: 'placeholder-uuid-aaaaaaaaaaaaaa', originTopicId: undefined, sessionName: 'warm-sess' }));
+      const entry = map3.get('t-warm');
+      expect(entry).not.toBeNull();
+      expect(entry!.sessionName).toBe('warm-sess');
+    });
+
+    it('still NULLS a non-topic entry without JSONL when its session is DEAD (guard intact)', () => {
+      temp3 = createTempDir();
+      const map3 = new StubLivenessMap(temp3.stateDir, temp3.dir, new Set()); // nothing alive
+      map3.save('t-cold', makeEntry({ uuid: 'placeholder-uuid-bbbbbbbbbbbbbb', originTopicId: undefined, sessionName: 'dead-sess' }));
+      expect(map3.get('t-cold')).toBeNull();
+    });
+
+    it('does NOT consult liveness when a real JSONL exists (fast path unchanged)', () => {
+      temp3 = createTempDir();
+      const realUuid = 'real-uuid-cccccccccccccccccccc';
+      createFakeJsonl(realUuid);
+      let livenessCalls = 0;
+      class CountingMap extends ThreadResumeMap {
+        protected sessionAlive(_sessionName: string): boolean { livenessCalls++; return false; }
+      }
+      const map3 = new CountingMap(temp3.stateDir, temp3.dir);
+      map3.save('t-real', makeEntry({ uuid: realUuid, originTopicId: undefined, sessionName: 'whatever' }));
+      expect(map3.get('t-real')).not.toBeNull();
+      expect(livenessCalls).toBe(0);
     });
   });
 });

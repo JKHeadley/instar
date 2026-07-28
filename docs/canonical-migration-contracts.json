@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "contracts": [
+    {
+      "id": "threadline-inbound-canonical-store",
+      "revision": 1,
+      "producers": [
+        "src/threadline/ThreadLog.ts",
+        "src/threadline/recordThreadMessage.ts"
+      ],
+      "consumers": [
+        "src/threadline/ThreadlineReplyValidation.ts",
+        "src/threadline/ThreadlineReapRecovery.ts"
+      ],
+      "validators": [
+        "tests/unit/threadline/ThreadlineReplyValidation.test.ts",
+        "tests/unit/recordThreadMessage.test.ts",
+        "tests/integration/threadline-relay-send-priority.test.ts",
+        "tests/integration/threadline-reap-recovery-wiring.test.ts",
+        "tests/integration/threadline/canonical-history-wiring.test.ts",
+        "tests/e2e/threadline-reap-mid-processing.test.ts"
+      ]
+    }
+  ]
+}

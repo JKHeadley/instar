@@ -1,0 +1,19 @@
+{
+  "ts": "2026-07-16T20:43:00.000Z",
+  "slug": "codex-framework-continuation-history",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "session lifecycle surface: framework handoff blocks registration until bootstrap injection",
+    "cross-framework continuity: changes interactive readiness recognition"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 100,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The continuation payload was constructed correctly, but readiness detection accepted only Claude UI markers. Codex therefore received the payload after a roughly 105-second timeout, allowing a live user message and a synthetic handoff turn to run first without the prior conversation."
+  },
+  "verdict": "pass"
+}

@@ -96,6 +96,7 @@ function createTestEnv(tmpDir: string) {
   let handoffAck: { ack: unknown; from: string } | null = null;
   let handoffYieldFrom: string | null = null;
   let handoffBegin: { manifest: unknown; from: string } | null = null;
+  let leaseToServe: unknown | null = null;
 
   const routes = createMachineRoutes({
     identityManager,
@@ -110,6 +111,7 @@ function createTestEnv(tmpDir: string) {
     onHandoffAck: (ack, from) => { handoffAck = { ack, from }; },
     onHandoffYield: (from) => { handoffYieldFrom = from; },
     onHandoffBegin: (manifest, from) => { handoffBegin = { manifest, from }; },
+    onLeasePullRequest: () => leaseToServe,
   });
 
   const app = express();
@@ -129,6 +131,7 @@ function createTestEnv(tmpDir: string) {
     getHandoffAck: () => handoffAck,
     getHandoffYieldFrom: () => handoffYieldFrom,
     getHandoffBegin: () => handoffBegin,
+    setLeaseToServe: (l: unknown | null) => { leaseToServe = l; },
   };
 }
 
@@ -239,6 +242,56 @@ describe('Machine Routes Integration', () => {
         .post('/api/heartbeat')
         .set('Connection', 'close')
         .send({ holder: env.bId, role: 'awake', timestamp: new Date().toISOString(), expiresAt: new Date(Date.now() + 900_000).toISOString() });
+
+      expect(res.status).toBe(401);
+    });
+  });
+
+  // ── Active PULL (Cross-Machine Coherence) ──────────────────────
+
+  describe('POST /api/lease/pull', () => {
+    it('serves the responder\'s current lease to an authenticated puller (signed empty body)', async () => {
+      const served = {
+        holder: env.aId, epoch: 4,
+        acquiredAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        signature: 'sig', nonce: 11,
+      };
+      env.setLeaseToServe(served);
+      // machine-auth signs SHA256(body); the pull body is {} so the signature is
+      // over the empty object — exactly what HttpLeaseTransport.pullPeer sends.
+      const body = {};
+      const headers = signRequest(env.bId, env.bSigning.privateKey, body, 0);
+      const res = await request(env.app)
+        .post('/api/lease/pull')
+        .set(headers)
+        .set('Connection', 'close')
+        .send(body);
+
+      expect(res.status).toBe(200);
+      expect(res.body.lease.holder).toBe(env.aId);
+      expect(res.body.lease.epoch).toBe(4);
+    });
+
+    it('returns {lease:null} when the responder has no lease', async () => {
+      env.setLeaseToServe(null);
+      const body = {};
+      const headers = signRequest(env.bId, env.bSigning.privateKey, body, 1);
+      const res = await request(env.app)
+        .post('/api/lease/pull')
+        .set(headers)
+        .set('Connection', 'close')
+        .send(body);
+
+      expect(res.status).toBe(200);
+      expect(res.body.lease).toBeNull();
+    });
+
+    it('rejects an unauthenticated pull', async () => {
+      const res = await request(env.app)
+        .post('/api/lease/pull')
+        .set('Connection', 'close')
+        .send({});
 
       expect(res.status).toBe(401);
     });

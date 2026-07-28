@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "sessionId": "cbdc2d51-a6de-446b-8215-773ec12f8e0b",
+  "timestamp": "2026-06-06T20:36:26.921Z",
+  "artifactPath": "upgrades/side-effects/convergence-commitment-regex-boundaries.md",
+  "artifactSha256": "eb3fd71c0a503df969fbd9989cda50ddae252258e3d963c5afd96c9054128dcd",
+  "coveredFiles": [
+    "src/core/ConvergenceChecker.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/templates/scripts/convergence-check.sh",
+    "tests/unit/convergence-check.test.ts",
+    "tests/unit/convergence-checker-commitment-boundary.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Strict-subset regex narrowing of an existing deterministic gate (no new authority) fixing five same-day live false positives; both-sides coverage on the shell template AND the TS checker; BSD-grep portability verified with a 12-string probe before patching.",
+  "eli16Path": "upgrades/next/convergence-commitment-regex-boundaries.md",
+  "sideEffectsPath": "upgrades/side-effects/convergence-commitment-regex-boundaries.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-22T00:58:44.925Z",
+  "slug": "nine-feature-rollout-closure",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 338,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

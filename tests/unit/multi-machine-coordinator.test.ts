@@ -119,6 +119,46 @@ describe('MultiMachineCoordinator', () => {
     });
   });
 
+  // ── Silent-standby lease observe-only (2026-05-31 split-brain fix) ──
+  describe('silent-standby lease observe-only (telegramPolling:false)', () => {
+    function fakeLease() {
+      return {
+        acquireIfEligible: vi.fn(async () => false),
+        renew: vi.fn(async () => true),
+        holdsLease: vi.fn(() => false),
+        currentHolder: vi.fn(() => 'm_primary'),
+        currentEpoch: vi.fn(() => 5),
+      };
+    }
+
+    it('isLeaseObserveOnly is true when telegramPolling is false', () => {
+      const state = new StateManager(tmpDir);
+      const coord = new MultiMachineCoordinator(state, { stateDir: tmpDir, multiMachine: { telegramPolling: false } });
+      expect(coord.isLeaseObserveOnly).toBe(true);
+    });
+
+    it('a silent standby never acquires or renews the lease (initializeLease + tickLease)', async () => {
+      const state = new StateManager(tmpDir);
+      const coord = new MultiMachineCoordinator(state, { stateDir: tmpDir, multiMachine: { telegramPolling: false } });
+      const lc = fakeLease();
+      coord.attachLeaseCoordinator(lc as any);
+      await coord.initializeLease();
+      await (coord as any).tickLease();
+      expect(lc.acquireIfEligible).not.toHaveBeenCalled();
+      expect(lc.renew).not.toHaveBeenCalled();
+    });
+
+    it('a normal (polling) machine DOES acquire the lease', async () => {
+      const state = new StateManager(tmpDir);
+      const coord = new MultiMachineCoordinator(state, { stateDir: tmpDir });
+      const lc = fakeLease();
+      coord.attachLeaseCoordinator(lc as any);
+      expect(coord.isLeaseObserveOnly).toBe(false);
+      await coord.initializeLease();
+      expect(lc.acquireIfEligible).toHaveBeenCalled();
+    });
+  });
+
   // ── Multi-machine: awake startup ───────────────────────────────
 
   describe('startup as awake machine', () => {

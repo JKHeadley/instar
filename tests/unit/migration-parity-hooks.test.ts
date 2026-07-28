@@ -73,6 +73,34 @@ const INSTALL_VS_MIGRATE_KNOWN_GAPS: Record<string, string> = {
     'Deferred-install accepted: free-text-guard hook is migrator-only.',
   'skill-usage-telemetry.sh':
     'Deferred-install accepted: telemetry hook is migrator-only.',
+  'action-claim-followthrough.js':
+    'Deferred-install accepted: action-claim follow-through sentinel hook (#1178) is ' +
+    'dark by default (messaging.actionClaim.enabled, off) and in dev-first soak before ' +
+    'fleet rollout — installed migrator-only for now, like free-text-guard.sh / ' +
+    'skill-usage-telemetry.sh. Follow-up: add to installHooks() at fleet rollout.',
+  'pr-hand-lease-guard.js':
+    'Deferred-install accepted: parallel-hand PR-lease guard (spec parallel-hand-pr-lease) is ' +
+    'dev-gated dark (monitoring.prHandLease, developmentAgent-only) + dryRun-first and in ' +
+    'dev soak before fleet rollout — installed migrator-only for now, like ' +
+    'action-claim-followthrough.js. Fail-open on every uncertainty, so a migrator-only ' +
+    'install never blocks a push on a fresh-init agent. Follow-up: add to installHooks() at fleet rollout.',
+  'doorway-scan-guard.js':
+    'Deferred-install accepted: doorway-scan command-allowlist guard (spec ' +
+    'DOORWAY-MODEL-KNOWLEDGE-REGISTRY §2.7) fires ONLY inside the doorway-scan job session ' +
+    '(env-first INSTAR_JOB_SLUG=doorway-scan), and that job ships enabled:false — so the guard ' +
+    'is inert until the job is enabled (rollout step 4). SCOPE resolution fails OPEN (a missing ' +
+    'file / guard bug never blocks Bash in any other session — a missing hook command is a ' +
+    'non-blocking error, execution continues), exactly like pr-hand-lease-guard.js. Installed ' +
+    'migrator-only for now; a fresh-init agent gets it on first auto-update, well before any ' +
+    'operator enables the dark job. Follow-up: add to installHooks() at fleet rollout.',
+  'working-set-artifact-recorder.js':
+    'Deferred-install accepted: interactive working-set artifact recorder (spec ' +
+    'intelligent-working-set-lazy-sync §F8) is a PostToolUse Write/Edit hook that fires ' +
+    'fire-and-forget + NON-blocking and early-exits fast when the feature is off — dark by ' +
+    'default (coherenceJournal.workingSet.recordInteractive, code-default off). It records ' +
+    'nothing until an operator enables the flag, exactly like action-claim-followthrough.js. ' +
+    'Installed migrator-only for now; a fresh-init agent gets it on first auto-update, well ' +
+    'before any operator enables it. Follow-up: add to installHooks() at fleet rollout.',
 };
 
 /**

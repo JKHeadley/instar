@@ -12,7 +12,14 @@
  *
  * Ships dormant: `mentor.enabled=false` / `mentor.mode='off'` by default (§16).
  */
-import { runMentorTick, type MentorTickResult, type MentorMode } from './MentorOnboardingTick.js';
+import {
+  runMentorTick,
+  type MentorTickResult,
+  type MentorMode,
+  type MentorCycleCapture,
+  type MentorDeliveryOutcome,
+} from './MentorOnboardingTick.js';
+import { llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
 import {
   runAutonomousGuardian,
   type AutonomousGuardianReason,
@@ -57,6 +64,11 @@ export interface MentorConfig {
    *  (codex-rollout parsing keys on framework). NOT necessarily the mentee's
    *  agent-registry name — see menteeAgentName. */
   menteeFramework: string;
+  /** Apprenticeship instance this mentor job serves (e.g. 'codey-to-gemini').
+   *  When set AND an ApprenticeshipCycleStore is wired, each tick records a
+   *  `mentor-mentee-differential` CYCLE (the keystone axis) — not just findings.
+   *  Unset (default) ⇒ no cycle recording (back-compat; the job just observes). */
+  apprenticeshipInstanceId?: string;
   /** The mentee's actual agent-registry name (e.g. 'instar-codey'). Used for
    *  same-machine peer lookup + the a2a marker `to=`/reply-allowlist. Defaults
    *  to `instar-${menteeFramework}` when unset (back-compat), but framework and
@@ -64,6 +76,9 @@ export interface MentorConfig {
    *  name=instar-codey) — that mismatch silently broke same-machine a2a routing
    *  + reply-allowlisting until this field existed. */
   menteeAgentName?: string;
+  /** Machine that currently hosts the mentee agent. Required only when the
+   * mentor and mentee are on different machines; delivery uses signed MeshRpc. */
+  menteeMachineId?: string;
   minIntervalMs: number;
   maxRoundsPerDay: number;
   /** @deprecated dead config — we run on a Claude subscription; replacement is the
@@ -92,6 +107,8 @@ export interface MentorConfig {
    *  deliverA2aMessage, used both in the /a2a/inbox body and the Telegram
    *  fallback), so routing it here moves the entire exchange off the human topic. */
   mentorTopicId?: number;
+  /** Best-effort visible mirror of successful local-inbox mentor delivery. Default on. */
+  visibleEcho?: boolean;
   /**
    * Ordered onboarding backlog the mentor walks the mentee through (capability
    * checks, starter dev tasks). When set, an idle mentee gets the next concrete
@@ -130,6 +147,7 @@ export const DEFAULT_MENTOR_CONFIG: MentorConfig = {
   minIntervalMs: 600_000, // 10 min floor
   maxRoundsPerDay: 24,
   dailySpendCapUsd: 0.5,
+  visibleEcho: true,
   // botToken / menteeBotId / menteeTopicId default undefined → mentor wiring stays
   // dark until they are explicitly configured (per /mentor/bot-setup, future PR).
 };
@@ -137,6 +155,10 @@ export const DEFAULT_MENTOR_CONFIG: MentorConfig = {
 export interface MentorRunnerServices {
   /** Write findings + log the run to the ledger funnel (§19.2). */
   capture: (input: CaptureRunInput) => CaptureRunResult;
+  /** Record a `mentor-mentee-differential` cycle (keystone axis). Optional —
+   *  the host wires it to the ApprenticeshipCycleStore only when
+   *  `apprenticeshipInstanceId` is configured; otherwise undefined ⇒ no-op. */
+  recordCycle?: (input: MentorCycleCapture) => void;
   /** Spawn Stage A with the empty tool grant; return its transcript. */
   spawnStageA: (prompt: string) => Promise<string>;
   /** Stage-B forensics for the framework; return findings. */
@@ -149,10 +171,25 @@ export interface MentorRunnerServices {
   /** Build the conversation surface (Stage A's only input). */
   getSurface: (framework: string) => ConversationSurface;
   /** Persist-only delivery to the mentee (live mode only; never spawns). */
-  deliverToMentee?: (framework: string, message: string) => void;
+  deliverToMentee?: (
+    framework: string,
+    message: string,
+  ) =>
+    | void
+    | boolean
+    | MentorDeliveryOutcome
+    | Promise<void | boolean | MentorDeliveryOutcome>;
   /** Called once when a tick actually RAN (ran=true) — lets the host advance the
    *  min-interval clock and the per-day run counter. */
   onTickRan?: () => void;
+  /** Durable lastResult persistence (optional). `loadLastResult` hydrates the
+   *  runner once at construction; `saveLastResult` is invoked best-effort on
+   *  every lastResult write. Absent ⇒ in-memory only (the old behavior, where
+   *  every server restart wiped the only record of the loop's last outcome —
+   *  on a frequent-release day, restart cadence ≈ tick cadence, so the status
+   *  route read null essentially always). */
+  loadLastResult?: () => (MentorRunResult & { at: number }) | null;
+  saveLastResult?: (r: MentorRunResult & { at: number }) => void;
   now?: () => number;
   // --- Autonomous-fix loop ("just be Echo") services. Only consulted when
   //     mentor.autonomousFix.enabled is true; absent ⇒ the guardian path is
@@ -181,10 +218,25 @@ export class MentorOnboardingRunner {
   constructor(
     private readonly services: MentorRunnerServices,
     private readonly getConfig: () => MentorConfig,
-  ) {}
+  ) {
+    // Hydrate the last outcome from durable state so a server restart doesn't
+    // erase the loop's only observability record. Best-effort: a corrupt or
+    // missing file is just null (in-memory start, the old behavior).
+    try {
+      this.lastResult = services.loadLastResult?.() ?? null;
+    } catch { /* @silent-fallback-ok — hydration is best-effort; null = old behavior */ }
+  }
 
   private inFlight = false;
   private lastResult: (MentorRunResult & { at: number }) | null = null;
+
+  /** Single write funnel for lastResult: assigns + persists best-effort. */
+  private setLastResult(r: MentorRunResult & { at: number }): void {
+    this.lastResult = r;
+    try {
+      this.services.saveLastResult?.(r);
+    } catch { /* @silent-fallback-ok — persistence is best-effort; in-memory value is already set */ }
+  }
 
   status(): {
     enabled: boolean;
@@ -217,18 +269,25 @@ export class MentorOnboardingRunner {
     // the haiku observe-pipeline). So `mode:'off'` does NOT disable it.
     const autonomous = cfg.autonomousFix?.enabled === true;
     if (!cfg.enabled || (cfg.mode === 'off' && !autonomous)) {
-      this.lastResult = { ran: false, reason: 'disabled', at: (this.services.now ?? Date.now)() };
+      this.setLastResult({ ran: false, reason: 'disabled', at: (this.services.now ?? Date.now)() });
       return { accepted: false, reason: 'disabled' };
     }
     if (this.inFlight) return { accepted: false, reason: 'in-flight' };
     this.inFlight = true;
+    // One line per accepted tick — without it the loop is invisible in
+    // server.log (success was fully silent; only failures warned), which made
+    // "is the mentor running at all?" unanswerable from the logs.
+    // eslint-disable-next-line no-console
+    console.log(`[mentor] tick accepted (mode=${cfg.mode}, framework=${cfg.menteeFramework}${autonomous ? ', autonomous-fix' : ''})`);
     void this.tick()
       .then((r) => {
-        this.lastResult = { ...r, at: (this.services.now ?? Date.now)() };
+        this.setLastResult({ ...r, at: (this.services.now ?? Date.now)() });
+        // eslint-disable-next-line no-console
+        console.log(`[mentor] tick result: ran=${r.ran}, reason=${r.reason ?? 'ok'}`);
       })
       .catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
-        this.lastResult = {
+        this.setLastResult({
           ran: false,
           reason: 'stage-a-failed',
           // Surface the real failure so GET /mentor/status.lastResult.error is
@@ -236,7 +295,7 @@ export class MentorOnboardingRunner {
           // only in a console.warn that may never reach the readable logs.
           error: message,
           at: (this.services.now ?? Date.now)(),
-        } as MentorRunResult & { at: number };
+        } as MentorRunResult & { at: number });
         // eslint-disable-next-line no-console
         console.warn('[mentor] tick failed:', message);
       })
@@ -264,9 +323,11 @@ export class MentorOnboardingRunner {
       // Safe window = mentee at rest AND the min-interval floor elapsed (§12 Q3).
       safeWindowOpen: !this.services.isMenteeBusy() && this.services.minIntervalElapsed(),
       budgetOk: this.services.budgetOk(),
+      llmAvailable: llmCircuitAvailable(),
       spawnStageA: this.services.spawnStageA,
       runStageBForensics: () => this.services.runStageBForensics(framework),
       capture: this.services.capture,
+      recordCycle: this.services.recordCycle,
       deliverToMentee: this.services.deliverToMentee,
       now: this.services.now,
     });

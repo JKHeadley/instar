@@ -1,0 +1,29 @@
+{
+    "version": 2,
+    "slug": "apprenticeship-layer-balance",
+    "sessionId": "96c61421-860a-48f9-92b4-26328f5640f1",
+    "timestamp": "2026-06-06T05:01:15.000Z",
+    "artifactPath": "upgrades/side-effects/apprenticeship-layer-balance.md",
+    "artifactSha256": "538a713f39729b00b4a1c30eb32e573d714721efbefaf8d1282045f2028c2491",
+    "coveredFiles": [
+        "src/monitoring/ApprenticeshipCycleStore.ts",
+        "src/server/routes.ts",
+        "src/scaffold/templates.ts",
+        "src/core/PostUpdateMigrator.ts",
+        "tests/unit/apprenticeship-cycle-store.test.ts",
+        "tests/unit/PostUpdateMigrator-layerBalance.test.ts",
+        "tests/integration/apprenticeship-routes.test.ts",
+        "tests/e2e/apprenticeship-lifecycle.test.ts"
+    ],
+    "phase": "complete",
+    "tier": 1,
+    "tierReasoning": "Observe-only read-only computed field on an existing endpoint: one pure function over already-tallied data + an optional param + a query passthrough. No gate, no persistent-state change, no migration of data (only a CLAUDE.md awareness line via the established idempotent pattern). All three test tiers green plus migration-parity tests; both sides of every starvation boundary covered.",
+    "eli16Path": "docs/eli16/apprenticeship-layer-balance.eli16.md",
+    "sideEffectsPath": "upgrades/side-effects/apprenticeship-layer-balance.md",
+    "causalAutopsy": {
+        "origin": "new-code",
+        "notes": "Not a bug fix — a structural self-improvement Justin directed after the 2026-06-06 holistic assessment found the program mentor-heavy/mentee-light (13 echo-to-codey cycles vs 3 codey-to-gemini). The existing roleCoverage knew the keystone axis was under-firing but nothing surfaced it; this makes the imbalance a queryable fact ('Observation Needs Structure' applied to layer balance). Observe-only first, enforcement/cadence deferred to phase-2. | Carried incidental fix: merging current main surfaced a route-completeness ratchet break from #884 (P1 Coherence Journal) — its /coherence/journal catch re-threw non-cursor errors (HTML 500 leak; routes.ts 225 catch/224 instanceof). Bisect: even at 6c2af5a6a, broke at 7afa768f5 (#884). Fixed here to return a JSON 500; rebalances to 225/225. Owned per Zero-Failure Standard (no pre-existing failures)."
+    },
+    "secondPass": "not-required",
+    "reviewerConcurred": null
+}

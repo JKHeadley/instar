@@ -88,7 +88,13 @@ describe('codex model-swap wiring — both spawn paths consume the helper', () =
   it('headless spawn (buildHeadlessLaunch) launches with the resolved model', () => {
     const idx = src.indexOf('buildHeadlessLaunch(headlessFramework');
     expect(idx).toBeGreaterThan(0);
-    const before = src.slice(Math.max(0, idx - 400), idx);
+    // The model is resolved ONCE near the top of spawnSession, then consumed
+    // by either the reroute branch (june15-headless-spawn-reroute: the
+    // interactive lane reuses the SAME launchModel) or this headless builder.
+    // The reroute branch legitimately sits between resolution and this build,
+    // so widen the look-back window past it — the invariant is "resolved
+    // before, passed as launchModel", not literal proximity.
+    const before = src.slice(Math.max(0, idx - 2500), idx);
     expect(before).toContain('this.resolveCodexLaunchModel(headlessFramework');
     // the builder receives the resolved variable, not the raw options.model
     expect(src.slice(idx, idx + 200)).toMatch(/model:\s*launchModel/);
@@ -97,7 +103,14 @@ describe('codex model-swap wiring — both spawn paths consume the helper', () =
   it('interactive spawn (buildInteractiveLaunch) launches with the resolved model', () => {
     const idx = src.indexOf('buildInteractiveLaunch(framework');
     expect(idx).toBeGreaterThan(0);
-    const before = src.slice(Math.max(0, idx - 400), idx);
+    // Same rationale as the headless case above: legitimate code can sit between
+    // resolution and the build — e.g. the subscription account-swap lane seeds a
+    // pool home's onboarding flags here (ensurePinnedHomeInteractiveReady) before
+    // launch, and (WS5.2 Step 8) the §2.10 credentialSource provenance derivation
+    // sits between effectiveAccountId and the build. The invariant is "resolved
+    // before, passed as launchModel", not literal proximity, so use a widened
+    // look-back window (3000 chars — bumped from 2500 for the Step 8 derivation).
+    const before = src.slice(Math.max(0, idx - 3000), idx);
     expect(before).toContain('this.resolveCodexLaunchModel(framework');
     expect(src.slice(idx, idx + 250)).toContain('launchDefaultModel');
   });

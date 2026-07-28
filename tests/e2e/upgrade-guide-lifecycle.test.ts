@@ -127,8 +127,13 @@ describe('Upgrade guide lifecycle E2E', () => {
 
   const pendingPath = () => path.join(stateDir, 'state', 'pending-upgrade-guide.md');
 
-  function writeVersionedGuide(version: string) {
-    fs.writeFileSync(path.join(upgradesDir, `${version}.md`), `# Upgrade Guide — v${version}
+  function writeVersionedGuide(version: string, opts: { announce?: boolean } = {}) {
+    // mature-update-announcements: an opt-in user-facing announcement block.
+    // Default OFF so existing callers stay silent-by-default.
+    const frontmatter = opts.announce
+      ? `---\nuser_announcement:\n  - audience: user\n    maturity: stable\n    headline: Improved search\n    body: you can use it now\n---\n`
+      : '';
+    fs.writeFileSync(path.join(upgradesDir, `${version}.md`), `${frontmatter}# Upgrade Guide — v${version}
 
 ## What Changed
 Version ${version} adds exciting new features including improved search and better memory.
@@ -295,7 +300,10 @@ New stuff.
   // 7. Prompt contains all required elements for agent
   it('notification prompt contains guide content, steps, and concrete details', async () => {
     cleanState();
-    writeVersionedGuide('0.9.86');
+    // A user-facing announcement so the prompt's announce branch fires (the
+    // concrete dashboard/PIN/reply details are injected only when composing a
+    // user message — silent-by-default, mature-update-announcements spec).
+    writeVersionedGuide('0.9.86', { announce: true });
 
     const proc = makeProcessor({ currentVersion: '0.9.86', previousVersion: '0.9.85' });
     proc.process();

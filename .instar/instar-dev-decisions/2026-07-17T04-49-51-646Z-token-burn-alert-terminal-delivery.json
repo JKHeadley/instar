@@ -1,0 +1,28 @@
+{
+  "ts": "2026-07-17T04:49:51.646Z",
+  "slug": "token-burn-alert-terminal-delivery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 291,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The burn runbook treated asynchronous Telegram delivery as fire-and-forget. A permanently deleted configured topic was indistinguishable from a transient failure, so later detector intervals retried it forever and no durable user-visible terminal notice existed."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Terminal topic quarantine bounds primary delivery to one attempt per dead topic under sustained hourly detector pressure; the N and 2N horizons both settle at one."
+    }
+  },
+  "verdict": "pass"
+}

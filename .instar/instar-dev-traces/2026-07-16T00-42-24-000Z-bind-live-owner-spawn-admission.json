@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "sessionId": "telegram-458-tier-1-4",
+  "timestamp": "2026-07-16T00:42:24.000Z",
+  "artifactPath": "upgrades/side-effects/ownership-gated-spawn-increment-1-4.md",
+  "artifactSha256": "f6624c4d73c54482ef88dd03f69051a631fc36ef4b0d8dbd0ded1c01566b7d8a",
+  "specPath": "docs/specs/ownership-gated-spawn-and-judgment-within-floors.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/config/ConfigDefaults.ts",
+    "src/core/SpawnAdmission.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Tier 2: narrow behavior graduation at a multi-machine spawn admission boundary, custody-gated and fleet-dark.",
+  "secondPass": "true",
+  "reviewerConcurred": false,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [1436],
+    "notes": "Increment 1 intentionally shipped the admission seam observe-only; live operator evidence on topic 29723 demonstrated that the verified other-alive row now needs a narrower graduation than the still-blocked owner-dark ladder."
+  },
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "local",
+      "verified": true
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "source": "REAL registered completion-condition text from .instar/autonomous/13481.archive-2026-06-12T2307Z-run-complete.md — mentions docs/specs/ as a DIRECTORY with no concrete file token",
+  "command": "re.search(r'^completion_condition: \"(.*)\"$', …)",
+  "capturedAt": "2026-07-02T08:00:44Z",
+  "machine": "echo laptop (Justin MacBook, darwin 24.6.0)",
+  "redactions": "none",
+  "note": "A bare directory mention is not a path token match — declares nothing."
+}

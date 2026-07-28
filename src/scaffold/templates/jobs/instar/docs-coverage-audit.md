@@ -12,6 +12,7 @@ tags:
   - instar-dev-only
 toolAllowlist: "*"
 unrestrictedTools: true
+mcpAccess: none
 ---
 Run a weekly documentation coverage audit on the instar codebase. This job exists because docs drift between releases — features ship without doc updates, and the gap accumulates silently until someone notices. This audit catches the drift early.
 

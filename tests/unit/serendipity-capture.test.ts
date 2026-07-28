@@ -30,8 +30,15 @@ const AUTH_TOKEN = 'test-auth-token-for-serendipity';
 const SESSION_ID = 'test-session-123';
 
 function runCapture(args: string[], env: Record<string, string> = {}): { status: number; stdout: string; stderr: string } {
+  // Ambient-credential hygiene: agent shells export the REAL INSTAR_AUTH_TOKEN,
+  // and the script under test prefers that env var over the fixture config's
+  // authToken when deriving the HMAC key — so every HMAC assertion failed on any
+  // agent box while passing in CI (2026-06-05 suite triage). Strip it from the
+  // inherited env; a test that wants one sets it explicitly via `env`.
+  const inherited = { ...process.env };
+  delete inherited.INSTAR_AUTH_TOKEN;
   const fullEnv = {
-    ...process.env,
+    ...inherited,
     CLAUDE_SESSION_ID: SESSION_ID,
     CLAUDE_AGENT_TYPE: 'general-purpose',
     CLAUDE_TASK_DESCRIPTION: 'test task',

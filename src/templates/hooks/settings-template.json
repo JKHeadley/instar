@@ -10,6 +10,16 @@
             "timeout": 5000
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/model-tier-reconciler.js",
+            "timeout": 5000
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -118,6 +128,21 @@
             "type": "command",
             "command": "bash .instar/hooks/instar/skill-usage-telemetry.sh",
             "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/model-tier-skill-entry.sh",
+            "timeout": 3000
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/working-set-artifact-recorder.js",
+            "timeout": 5000
           }
         ]
       }
@@ -172,6 +197,26 @@
             "type": "command",
             "command": "node .instar/hooks/instar/scope-coherence-checkpoint.js",
             "timeout": 10000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/action-claim-followthrough.js",
+            "timeout": 6000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/completion-claim-observe.js",
+            "timeout": 6000
           }
         ]
       }

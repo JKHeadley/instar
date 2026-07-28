@@ -17,14 +17,23 @@ import type { MultiMachineConfig } from './types.js';
  * The mesh protocol version this build speaks. A machine below this version
  * is ineligible for the awake lease during a seamless handoff (spec §11
  * partial-migration safety). Bump only on a breaking coordination change.
+ *
+ * v2 (WS1.2, MULTI-MACHINE-SEAMLESSNESS-SPEC): the `drain` mesh verb — an
+ * active-topic transfer now drains the owner's live session through an
+ * authorized, epoch-bound signal. Verb-level skew is additionally handled by
+ * the 501/no-handler degrade (an old owner falls back to today's
+ * idle-closeout-only transfer), so mixed pools keep working; the version
+ * gates only lease eligibility during a handoff window.
  */
-export const SEAMLESSNESS_PROTOCOL_VERSION = 1;
+export const SEAMLESSNESS_PROTOCOL_VERSION = 2;
 
 /** Fully-resolved seamlessness knobs (every field concrete). */
 export interface ResolvedSeamlessnessConfig {
   ingressHeartbeatMs: number;
   registrySyncDebounceMs: number;
   standbyPullIntervalMs: number;
+  /** Cross-Machine Coherence — active lease-PULL cadence over the tunnel. */
+  leasePullIntervalMs: number;
   failoverThresholdMs: number;
   leaseTtlMs: number;
   liveTailTransport: 'tunnel' | 'git';
@@ -88,6 +97,10 @@ export function resolveSeamlessnessConfig(mm?: MultiMachineConfig): ResolvedSeam
     standbyPullIntervalMs:
       mm?.standbyPullIntervalMs ??
       Math.min(Math.floor(failoverThresholdMs / 4), Math.floor(leaseTtlMs / 2)),
+    // Cross-Machine Coherence active lease-pull cadence. Default 5s — matches
+    // MultiMachineCoordinator.DEFAULT_LEASE_PULL_INTERVAL_MS (the coordinator
+    // reads the raw knob; this resolution governs startup validation).
+    leasePullIntervalMs: mm?.leasePullIntervalMs ?? 5_000,
     failoverThresholdMs,
     leaseTtlMs,
     liveTailTransport: mm?.liveTailTransport ?? 'tunnel',
@@ -100,7 +113,19 @@ export function resolveSeamlessnessConfig(mm?: MultiMachineConfig): ResolvedSeam
     splitBrainEscalationCooldownMs: mm?.splitBrainEscalationCooldownMs ?? 5 * 60_000,
     handoffBar: mm?.handoffBar ?? 'near-instant',
     maxProcessingMs: mm?.maxProcessingMs ?? 5 * 60_000,
-    exactlyOnceIngress: mm?.exactlyOnceIngress ?? false,
+    // Exactly-once ingress defaults ON whenever the session pool is actively
+    // routing real traffic ('live-transfer' / 'rebalance'). Running a live
+    // multi-machine pool WITHOUT the ingress dedupe ledger is an incoherent
+    // configuration: a lifeline retry or a post-restart queue replay
+    // re-EXECUTES the user's message (2026-06-05 incident: one "move to
+    // laptop" ran 4×, producing contradictory "Moving"/"rate-limited"
+    // replies). An explicit `exactlyOnceIngress: false` still wins —
+    // operators can opt out; they just no longer get the dark-by-accident
+    // default while the pool is live. Pre-live stages ('dark'/'shadow')
+    // keep the old dark default.
+    exactlyOnceIngress:
+      mm?.exactlyOnceIngress ??
+      (mm?.sessionPool?.stage === 'live-transfer' || mm?.sessionPool?.stage === 'rebalance'),
     protocolVersion: mm?.protocolVersion ?? SEAMLESSNESS_PROTOCOL_VERSION,
   };
 }
@@ -129,6 +154,7 @@ export function validateSeamlessnessInvariants(c: ResolvedSeamlessnessConfig): s
     ['ingressHeartbeatMs', c.ingressHeartbeatMs],
     ['registrySyncDebounceMs', c.registrySyncDebounceMs],
     ['standbyPullIntervalMs', c.standbyPullIntervalMs],
+    ['leasePullIntervalMs', c.leasePullIntervalMs],
     ['failoverThresholdMs', c.failoverThresholdMs],
     ['leaseTtlMs', c.leaseTtlMs],
     ['liveTailMaxStalenessMs', c.liveTailMaxStalenessMs],
@@ -155,6 +181,16 @@ export function validateSeamlessnessInvariants(c: ResolvedSeamlessnessConfig): s
     errors.push(
       `multiMachine.liveTailPushRateMs (${c.liveTailPushRateMs}ms) must be ≤ liveTailMaxStalenessMs ` +
       `(${c.liveTailMaxStalenessMs}ms) so the promised RPO bound is achievable.`,
+    );
+  }
+  // Invariant 4 (Cross-Machine Coherence): a standby must ACTIVELY pull at least
+  // once per lease lifetime, so a takeover or same-epoch contention is observed
+  // within one TTL even on a push-blind (one-way NAT) network where broadcasts
+  // never arrive. A pull cadence ≥ the lease TTL defeats the anti-blinding purpose.
+  if (c.leasePullIntervalMs >= c.leaseTtlMs) {
+    errors.push(
+      `multiMachine.leasePullIntervalMs (${c.leasePullIntervalMs}ms) must be < leaseTtlMs ` +
+      `(${c.leaseTtlMs}ms) so a standby actively pulls a peer's lease at least once per lease lifetime.`,
     );
   }
 

@@ -1,0 +1,20 @@
+{
+  "ts": "2026-07-16T18:45:00.000Z",
+  "slug": "threadline-warm-reap-redrive",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": ["session lifecycle recovery", "agent-to-agent outbound consequence"],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 621,
+  "causalAutopsy": "Warm A2A workers had durable canonical receipt evidence but the shared resume queue rejected them as no-resume-path, leaving quota-reaped in-flight replies stranded.",
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "citation": "tests/e2e/threadline-reap-mid-processing.test.ts",
+    "enforcement": "ratchet",
+    "howCaught": "A quota reap can create at most one stable recovery per thread; exact HMAC-valid message custody, one-owner reply claims, correlated settlement, queue TTL, retry ceiling, resurrection cap, and pressure gates force the controller to converge. The E2E test proves an overlapping original send and redrive cannot both own the reply."
+  },
+  "verdict": "pass"
+}

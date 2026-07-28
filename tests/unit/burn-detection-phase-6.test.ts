@@ -74,6 +74,21 @@ describe('BurnVerifier — verification cycle', () => {
     return { byAttributionKey: () => byKeyRows };
   }
 
+  it('cache reads never inflate the post-throttle burn rate', () => {
+    const verifier = new BurnVerifier({
+      ledger: fakeLedger([
+        { attributionKey: 'Warm::cache', totalTokens: 10_416_666, freshTokens: 416_666, eventCount: 50, firstTs: 0, lastTs: 0 },
+      ]) as any,
+      sendTelegram: (_, m) => messages.push(m),
+      now: () => now,
+      schedule: (cb, delay) => scheduled.push({ cb, delay }),
+    });
+
+    const result = verifier.runVerification('Warm::cache', 50_000_000);
+    expect(result.postThrottleRate).toBeCloseTo(4_999_992);
+    expect(result.successfullyThrottled).toBe(true);
+  });
+
   it('successful throttle: post-rate dropped → caught-and-contained message', () => {
     const verifier = new BurnVerifier({
       ledger: fakeLedger([

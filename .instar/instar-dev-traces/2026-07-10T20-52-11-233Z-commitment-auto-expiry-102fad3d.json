@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "sessionId": "3b6e537d-21c9-4cb7-81f7-9cf9a51be2ef",
+  "timestamp": "2026-07-10T20:52:11.233Z",
+  "artifactPath": "upgrades/side-effects/commitment-auto-expiry.md",
+  "artifactSha256": "ae4106e5ceccda4d613ac039a5e8badfdfb46fed39f3eaefa6ef2a32ba4c9cd9",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/config/ConfigDefaults.ts",
+    "src/core/types.ts",
+    "src/monitoring/CommitmentTracker.ts",
+    "tests/e2e/commitment-auto-expiry-api-lifecycle.test.ts",
+    "tests/integration/commitment-auto-expiry-lifecycle.test.ts",
+    "tests/unit/CommitmentTracker-auto-expiry.test.ts",
+    "upgrades/eli16/commitment-auto-expiry.md",
+    "upgrades/next/commitment-auto-expiry.md",
+    "upgrades/side-effects/commitment-auto-expiry.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small lifecycle cleanup using existing CommitmentTracker ownership/status fields and existing expired terminal state. The only new config key is a dry-run-first rollout dial with conservative defaults; no new external authority, no user-owned mutation, bounded 500-row passes, one aggregate log line, and one coalesced store write per sweep. PR review is the approval surface.",
+  "eli16Path": "upgrades/eli16/commitment-auto-expiry.md",
+  "sideEffectsPath": "upgrades/side-effects/commitment-auto-expiry.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

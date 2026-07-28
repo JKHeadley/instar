@@ -26,6 +26,7 @@ import { SessionManager } from '../../src/core/SessionManager.js';
 import { InputGuard } from '../../src/core/InputGuard.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { getTelegramInboundDir } from '../../src/messaging/shared/telegramInboundFiles.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -786,16 +787,6 @@ describe('Group 9: Full injectTelegramMessage integration', () => {
 
   afterEach(() => {
     cleanupDir(tmpDir);
-    // Clean up temp files
-    const telegramTmpDir = '/tmp/instar-telegram';
-    if (fs.existsSync(telegramTmpDir)) {
-      try {
-        const files = fs.readdirSync(telegramTmpDir).filter(f => f.startsWith('msg-'));
-        for (const f of files) {
-          try { SafeFsExecutor.safeUnlinkSync(path.join(telegramTmpDir, f), { operation: 'tests/e2e/input-guard-e2e.test.ts:796' }); } catch { /* ignore */ }
-        }
-      } catch { /* ignore */ }
-    }
   });
 
   it('short message with matching topic is tagged and injected', () => {
@@ -816,9 +807,10 @@ describe('Group 9: Full injectTelegramMessage integration', () => {
     expect(injections[0]).toContain('Long message saved to');
 
     // Verify the temp file exists and has correct content
-    const match = injections[0].match(/saved to (\/tmp\/instar-telegram\/msg-[^\s]+)/);
+    const match = injections[0].match(/saved to ([^\s]+\/\.instar\/telegram-inbound\/msg-[^\s]+)/);
     expect(match).toBeTruthy();
     if (match) {
+      expect(match[1].startsWith(getTelegramInboundDir(tmpDir))).toBe(true);
       const content = fs.readFileSync(match[1], 'utf-8');
       expect(content).toContain('[telegram:116');
       expect(content).toContain('A'.repeat(600));

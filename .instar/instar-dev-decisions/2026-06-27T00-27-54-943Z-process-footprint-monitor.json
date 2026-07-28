@@ -1,0 +1,25 @@
+{
+  "ts": "2026-06-27T00:27:54.943Z",
+  "slug": "process-footprint-monitor",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 313,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1290
+    ],
+    "notes": "Follow-up to the 2026-06-26 resource-exhaustion kernel panic (os_refcnt overflow) whose disk arm was fixed in #1290. The panic's process/handle arm had NO measurement: the ResourceLedger samples CPU%/RSS but not the per-machine PROCESS COUNT that actually climbed (dominated by idle MCP servers). This adds that missing measurement so the next climb is visible."
+  },
+  "verdict": "pass"
+}

@@ -103,6 +103,31 @@ describe('FrameworkIssueLedger E2E lifecycle (feature is alive)', () => {
     expect(res.body.issues[0].generalizable).toBe(true);
   });
 
+  it('POST /framework-issues/observe is alive — writes an engineering finding through the live route (200, not 503)', async () => {
+    // The durable write path (§5): an agent records a discovered issue directly,
+    // not just what a mentor tick trips over. Proves the route on the production
+    // init path — strictly better than the side-channel writes above.
+    const res = await request(app)
+      .post('/framework-issues/observe')
+      .set(auth())
+      .send({
+        framework: 'codex-cli',
+        bucket: 'instar-integration-gap',
+        severity: 'high',
+        title: 'SessionWatchdog was blind to codex exec --json',
+        dedupKey: 'codex::watchdog::exec-json-blind',
+        evidence: 'PR #574',
+        status: 'fixed',
+        fixedInVersion: '1.3.122',
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.created).toBe(true);
+    expect(res.body.issue.status).toBe('fixed');
+    expect(res.body.issue.fixedInVersion).toBe('1.3.122');
+    const list = await request(app).get('/framework-issues?framework=codex-cli&status=fixed').set(auth());
+    expect(list.body.issues.some((i: { dedupKey: string }) => i.dedupKey === 'codex::watchdog::exec-json-blind')).toBe(true);
+  });
+
   it('requires auth (Bearer token) like every non-/health route', async () => {
     const res = await request(app).get('/framework-issues'); // no auth header
     expect(res.status).toBe(401);

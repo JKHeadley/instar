@@ -149,6 +149,12 @@ export class EscalationResolutionReviewer extends CoherenceReviewer {
       const latencyMs = Date.now() - start;
       this.metrics.totalLatencyMs += latencyMs;
       this.metrics.errorCount++;
+      // ABSTAIN (reviewer-fail-closed-on-abstain §9, CMT-1794): this reviewer
+      // OVERRIDES review(), so it must tag abstains itself — the base-class
+      // tagging does not reach here. An errored call has NO opinion; tag it so
+      // CoherenceGate counts it as an abstain (not a genuine pass). `pass:true`
+      // is an inert placeholder. (escalation-resolution is not in the critical
+      // floor, so this counts toward ALL_ABSTAIN, not a single-critical block.)
       return {
         pass: true,
         severity: 'warn',
@@ -156,6 +162,8 @@ export class EscalationResolutionReviewer extends CoherenceReviewer {
         suggestion: '',
         reviewer: this.name,
         latencyMs,
+        abstained: true,
+        abstainCause: 'provider-error',
       };
     }
   }

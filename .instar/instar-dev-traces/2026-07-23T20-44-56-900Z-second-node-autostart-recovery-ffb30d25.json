@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "slug": "second-node-autostart-recovery",
+  "sessionId": "0c50f55c-9d35-4f2a-9082-c1850bd89ff7",
+  "timestamp": "2026-07-23T20:44:56.900Z",
+  "artifactPath": "upgrades/side-effects/second-node-autostart-recovery.md",
+  "artifactSha256": "b8fa86fac129c0a74df07976eb75249ac00ae0b483799e7e168cba4004b0de7e",
+  "coveredFiles": [
+    "docs/specs/second-node-autostart-recovery.eli16.md",
+    "docs/specs/second-node-autostart-recovery.md",
+    "src/commands/setup.ts",
+    "tests/unit/agent-robustness.test.ts",
+    "tests/unit/launchctl-load-guard.test.ts",
+    "upgrades/next/second-node-autostart-recovery.md",
+    "upgrades/side-effects/second-node-autostart-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small deterministic recovery fix with no new API, data schema, or authority surface; live two-node reproduction and focused launchd tests cover both failure boundaries.",
+  "eli16Path": "docs/specs/second-node-autostart-recovery.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/second-node-autostart-recovery.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    }
+  }
+}

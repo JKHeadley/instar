@@ -1,8 +1,9 @@
 ---
 title: Agent Worktree Convention — ELI16
 companion-spec: AGENT-WORKTREE-CONVENTION-SPEC.md
+parent-principle: Structure beats Willpower
 created: 2026-05-17
-updated: 2026-05-17 (round 2)
+updated: 2026-06-04 (constitutional traceability metadata)
 ---
 
 # Agent Worktree Convention — In Plain English

@@ -50,6 +50,11 @@ describe('resolveSeamlessnessConfig', () => {
     expect(c.leaseTtlMs).toBe(90_000);
   });
 
+  it('leasePullIntervalMs defaults to 5s and honors an explicit override', () => {
+    expect(resolveSeamlessnessConfig(baseMM()).leasePullIntervalMs).toBe(5_000);
+    expect(resolveSeamlessnessConfig(baseMM({ leasePullIntervalMs: 2_000 })).leasePullIntervalMs).toBe(2_000);
+  });
+
   it('explicit overrides win over defaults', () => {
     const c = resolveSeamlessnessConfig(baseMM({ liveTailTransport: 'git', liveTailMaxBytesPerTopic: 1024 }));
     expect(c.liveTailTransport).toBe('git');
@@ -88,6 +93,25 @@ describe('validateSeamlessnessInvariants', () => {
     const errs = validateSeamlessnessInvariants(c);
     expect(errs.some((e) => e.includes('ingressHeartbeatMs'))).toBe(true);
   });
+
+  it('rejects leasePullIntervalMs >= leaseTtlMs (anti-blinding bound)', () => {
+    // leaseTtl default 60_000. A pull cadence at/over the TTL means a standby could
+    // go a whole lease lifetime without actively pulling — defeats the purpose.
+    const c = resolveSeamlessnessConfig(baseMM({ leasePullIntervalMs: 60_000 }));
+    const errs = validateSeamlessnessInvariants(c);
+    expect(errs.some((e) => e.includes('leasePullIntervalMs'))).toBe(true);
+  });
+
+  it('accepts a leasePullIntervalMs just under leaseTtlMs', () => {
+    const c = resolveSeamlessnessConfig(baseMM({ leasePullIntervalMs: 59_999 }));
+    expect(validateSeamlessnessInvariants(c)).toEqual([]);
+  });
+
+  it('rejects a non-positive leasePullIntervalMs', () => {
+    const c = resolveSeamlessnessConfig(baseMM({ leasePullIntervalMs: 0 }));
+    const errs = validateSeamlessnessInvariants(c);
+    expect(errs.some((e) => e.includes('leasePullIntervalMs'))).toBe(true);
+  });
 });
 
 describe('assertSeamlessnessInvariants', () => {
@@ -100,5 +124,30 @@ describe('assertSeamlessnessInvariants', () => {
     expect(() => assertSeamlessnessInvariants(baseMM({ liveTailPushRateMs: 10_000, liveTailMaxStalenessMs: 5_000 }))).toThrow(
       SeamlessnessConfigError,
     );
+  });
+});
+
+// ── exactlyOnceIngress ↔ session-pool stage coupling (2026-06-05) ────────
+// Running a LIVE multi-machine pool without the ingress dedupe ledger is the
+// incoherent configuration that let one "move to laptop" execute 4×. The
+// default now follows the pool stage; an explicit value always wins.
+describe('exactlyOnceIngress default coupling', () => {
+  it('defaults OFF with no multiMachine config at all', () => {
+    expect(resolveSeamlessnessConfig(undefined).exactlyOnceIngress).toBe(false);
+  });
+
+  it('defaults OFF while the pool ships dark/shadow', () => {
+    expect(resolveSeamlessnessConfig({ sessionPool: { stage: 'dark' } } as never).exactlyOnceIngress).toBe(false);
+    expect(resolveSeamlessnessConfig({ sessionPool: { stage: 'shadow' } } as never).exactlyOnceIngress).toBe(false);
+  });
+
+  it('defaults ON once the pool routes real traffic (live-transfer / rebalance)', () => {
+    expect(resolveSeamlessnessConfig({ sessionPool: { stage: 'live-transfer' } } as never).exactlyOnceIngress).toBe(true);
+    expect(resolveSeamlessnessConfig({ sessionPool: { stage: 'rebalance' } } as never).exactlyOnceIngress).toBe(true);
+  });
+
+  it('an explicit value always wins over the stage-derived default', () => {
+    expect(resolveSeamlessnessConfig({ exactlyOnceIngress: false, sessionPool: { stage: 'live-transfer' } } as never).exactlyOnceIngress).toBe(false);
+    expect(resolveSeamlessnessConfig({ exactlyOnceIngress: true, sessionPool: { stage: 'dark' } } as never).exactlyOnceIngress).toBe(true);
   });
 });

@@ -44,9 +44,8 @@ describe('Bootstrap message file threshold (source analysis)', () => {
     expect(SERVER_SRC).toMatch(/Bootstrap message too large/);
   });
 
-  it('uses the same tmp directory as telegram injection', () => {
-    // Both should write to /tmp/instar-telegram (or use the same tmpDir variable)
-    // The bootstrap code references tmpDir which is set to '/tmp/instar-telegram' earlier
+  it('uses the shared Telegram inbound directory as telegram injection', () => {
+    expect(SERVER_SRC).toContain('getTelegramInboundDir(_projectDir)');
     expect(SERVER_SRC).toContain('bootstrapFilepath = path.join(tmpDir');
   });
 });

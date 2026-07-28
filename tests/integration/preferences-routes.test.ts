@@ -129,3 +129,111 @@ describe('GET /preferences/session-context (integration, real createRoutes + aut
     expect(serialized).not.toContain('secret-dedupe-marker');
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// WS2.1 (multi-machine-replicated-store-foundation §7.2 + §15.1) — the FOUNDATION
+// union path. When multiMachine.stateSync.preferences.enabled AND the union reader
+// is wired, /preferences/session-context reads the no-clobber UNION; an OPEN
+// concurrent conflict yields BOTH variants as advisory hints (it NEVER suppresses a
+// usable hint). This is the Tier-2 HTTP proof of the §15.1 reconciliation.
+// ───────────────────────────────────────────────────────────────────────────
+describe('GET /preferences/session-context — WS2.1 foundation union path', () => {
+  let tmpDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'prefs-union-'));
+    stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(stateDir, { recursive: true });
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/preferences-routes.test.ts:WS2.1' });
+  });
+
+  const auth = () => ({ Authorization: `Bearer ${AUTH_TOKEN}` });
+
+  async function unionApp(stateSyncEnabled: boolean, openConflict: boolean): Promise<express.Express> {
+    const { ReplicatedKindRegistry } = await import('../../src/core/ReplicatedRecordEnvelope.js');
+    const { ConflictStore } = await import('../../src/core/ConflictStore.js');
+    const { DroppedOriginRegistry } = await import('../../src/core/RollbackUnmerge.js');
+    const { ReplicatedStoreReader } = await import('../../src/core/ReplicatedStoreReader.js');
+    const { PREF_KIND_REGISTRATION, prefTierOf, prefEntryToOriginRecord } = await import('../../src/core/PreferencesReplicatedStore.js');
+    const { readUnion } = await import('../../src/core/UnionReader.js');
+    void readUnion;
+
+    const registry = new ReplicatedKindRegistry();
+    registry.register(PREF_KIND_REGISTRATION);
+    const dropped = new DroppedOriginRegistry({ stateDir });
+    const conflictStore = new ConflictStore({ stateDir, now: () => new Date() });
+
+    // Synthetic per-origin records: two origins, same dedupeKey.
+    //  - openConflict: B is HLC-max but has NO observed witness of A ⇒ CONCURRENT
+    //    ⇒ HIGH-impact append-both-and-flag (both variants survive).
+    //  - clean chain: A is HLC-max (later recordedAt) AND observed=B.hlc, so A's
+    //    author provably saw B ⇒ A is sequential-after B ⇒ A wins cleanly (no flag).
+    const b = prefEntryToOriginRecord(
+      { learning: 'be terse', provenance: 'correction-loop', dedupeKey: 'k', recordedAt: '2026-06-13T00:00:00.000Z', confidence: 0.7, dedupeCount: 1 },
+      'mB',
+    );
+    const a = prefEntryToOriginRecord(
+      { learning: 'plainer please', provenance: 'correction-loop', dedupeKey: 'k', recordedAt: openConflict ? '2026-06-12T23:00:00.000Z' : '2026-06-13T01:00:00.000Z', confidence: 0.9, dedupeCount: 2 },
+      'mA',
+    );
+    // Clean chain: A (the HLC-max) witness-dominates B.
+    if (!openConflict) a.envelope.observed = b.envelope.hlc;
+    const records = [a, b];
+
+    const reader = new ReplicatedStoreReader({
+      registry,
+      stores: { preferences: { enabled: stateSyncEnabled } },
+      tierOf: prefTierOf,
+      loadOriginRecords: (store, key) => (store === 'preferences' && key === 'k' ? records : []),
+      listRecordKeys: (store) => (store === 'preferences' ? ['k'] : []),
+      droppedOrigins: dropped,
+      conflictStore,
+    });
+
+    const ctx = ctxFor(stateDir, true) as unknown as Record<string, unknown>;
+    (ctx.config as Record<string, unknown>).multiMachine = { stateSync: { preferences: { enabled: stateSyncEnabled } } };
+    ctx.preferencesUnionReader = reader;
+
+    const app = express();
+    app.use(express.json());
+    app.use(authMiddleware(AUTH_TOKEN));
+    app.use('/', createRoutes(ctx as unknown as RouteContext));
+    return app;
+  }
+
+  it('200 + scope:mesh when stateSync.preferences.enabled and the union reader is wired (FEATURE IS ALIVE)', async () => {
+    const app = await unionApp(true, false);
+    const res = await request(app).get('/preferences/session-context').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.scope).toBe('mesh');
+    expect(res.body.present).toBe(true);
+    // A sequential-after B ⇒ the later writer (A) wins cleanly: exactly ONE hint,
+    // and B's superseded variant does NOT appear (clean chain, no conflict flag).
+    expect(res.body.count).toBe(1);
+    expect(res.body.block).toContain('plainer please');
+    expect(res.body.block).not.toContain('be terse');
+  });
+
+  it('an OPEN conflict injects BOTH variants over HTTP (the §15.1 advisory reconciliation, never suppressed)', async () => {
+    const app = await unionApp(true, true);
+    const res = await request(app).get('/preferences/session-context').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.scope).toBe('mesh');
+    expect(res.body.count).toBe(2);
+    expect(res.body.block).toContain('plainer please');
+    expect(res.body.block).toContain('be terse');
+  });
+
+  it('when stateSync.preferences is OFF, the route keeps the legacy own-only path (no scope:mesh from the union)', async () => {
+    // stateSync off → the foundation branch is skipped; with no local prefs the
+    // legacy own-only path returns present:false (byte-identical to before).
+    const app = await unionApp(false, true);
+    const res = await request(app).get('/preferences/session-context').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.scope).toBeUndefined(); // legacy path does not stamp scope:mesh
+    expect(res.body.present).toBe(false);
+  });
+});

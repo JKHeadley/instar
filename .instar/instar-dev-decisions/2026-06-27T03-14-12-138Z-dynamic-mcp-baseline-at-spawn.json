@@ -1,0 +1,16 @@
+{
+  "ts": "2026-06-27T03:14:12.138Z",
+  "slug": "dynamic-mcp-baseline-at-spawn",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 115,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Baseline-at-spawn wiring for the converged dynamic-MCP feature."
+  },
+  "verdict": "pass"
+}

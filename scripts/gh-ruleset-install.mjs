@@ -77,6 +77,7 @@ const branchRuleset = {
         strict_required_status_checks_policy: true,
         required_status_checks: [
           { context: 'worktree-trailer-sig-check / verify' },
+          { context: 'UX impact declaration' },
         ],
       },
     },

@@ -1,0 +1,7 @@
+# UX-first enforcement, in plain English
+
+This specification makes the human experience part of the definition of done for changes that can reach a person. A pull request that changes messaging, routes, dashboard output, or templates must explain who will encounter the change, what they will see on the happy path and when something goes wrong, and what the first contact feels like. The explanation quotes a real string or state from the change so it cannot be an empty promise.
+
+The first enforcement increment adds a small, deterministic lint workflow and three test assertions. The lint checks only the declared user-facing paths, runs from the base revision so the change cannot weaken its own checker, and has a literal off switch that is visible in code review. The assertions keep user words free of internal identifiers and jargon, require an honest next step when an operation fails, and prevent stale queued work from becoming a surprise delivery. They run in a real cross-agent messaging scenario, not in a disconnected fixture.
+
+The second increment extends that foundation with author and pusher scope, a verifier for genuinely mechanical refactors, a per-run exemption report for later review, and a merge-safety decision when the checker itself cannot produce a trustworthy answer. It also corrects the overview naming rule so a spec already ending in `.eli16.md` never receives a second `.eli16` suffix. These checks are intentionally deterministic: semantic quality can be reviewed separately, while uncertainty never silently earns an automatic merge.

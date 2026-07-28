@@ -22,6 +22,26 @@ import type { HandshakeManager, HelloPayload, ConfirmPayload } from './Handshake
 import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import { verify } from './ThreadlineCrypto.js';
 import { IdentityManager } from './client/IdentityManager.js';
+import { recordInboundAck, type InboundAckDeps } from './recordInboundAck.js';
+import { computeFingerprint } from './client/MessageEncryptor.js';
+import { recordThreadMessage } from './recordThreadMessage.js';
+import { honorPeerThreadSync, serveBackfill, type SymmetryDeps } from './threadSymmetry.js';
+import { type ThreadSync } from './threadDigest.js';
+
+/**
+ * Robustness Phase 2 (D-B/D-D) dependencies for the canonical-history surfaces on
+ * the verified E2E relay inbound path: the append funnel, the canonical log, the
+ * conversation store (for symmetry state + participant-scoped backfill auth), and
+ * the bounded Attention surface. Optional — absent in tests / when threadline is
+ * disabled. Structurally the SymmetryDeps the symmetry helpers consume.
+ */
+export type CanonicalHistoryDeps = SymmetryDeps;
+
+/** Express request augmented with the threadlineAuth-verified peer fingerprint (SA1). */
+interface VerifiedRequest extends Request {
+  /** fingerprint = derive(identityPub the signature verified against) — NEVER a name/body claim. */
+  threadlineVerifiedFingerprint?: string;
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -41,6 +61,14 @@ export interface ThreadlineEndpointsConfig {
   version: string;
   /** Agent state directory — used to resolve the canonical routing identity for /threadline/health */
   stateDir: string;
+  /**
+   * Secure A2A Verified Pairing (§3.6): a callback returning the count of
+   * mutual-verified pairings, surfaced on /threadline/health as
+   * `mutualVerifiedCount`. Optional — when absent the field is omitted (legacy
+   * behavior). Threaded in from the route factory where the trust manager lives;
+   * the relay-server router itself has no trust-manager access.
+   */
+  mutualVerifiedCount?: () => number;
 }
 
 // ── Error Codes ──────────────────────────────────────────────────────
@@ -91,6 +119,12 @@ export function createThreadlineRoutes(
   handshakeManager: HandshakeManager,
   threadlineRouter: ThreadlineRouter | null,
   config: ThreadlineEndpointsConfig,
+  // Robustness Phase 1 (D-E / F4): the delivery tracker + thread-owner lookup so
+  // the verified E2E relay inbound path records the implicit ack through the
+  // shared recordInboundAck funnel. Optional — absent in tests that don't need it.
+  inboundAckDeps?: InboundAckDeps,
+  // Robustness Phase 2 (D-B/D-D): the canonical-history funnel + symmetry surfaces.
+  canonicalDeps?: CanonicalHistoryDeps,
 ): Router {
   const router = Router();
   const nonceStore = new ThreadlineNonceStore();
@@ -122,6 +156,11 @@ export function createThreadlineRoutes(
         : handshakeManager.getIdentityPublicKey(),
       fingerprint: routingIdentity?.fingerprint,
       pairedAgents: handshakeManager.listPairedAgents().length,
+      // Secure A2A Verified Pairing (§3.6): count of mutual-verified pairings.
+      // Omitted when no count callback is wired (legacy behavior).
+      ...(config.mutualVerifiedCount
+        ? { mutualVerifiedCount: config.mutualVerifiedCount() }
+        : {}),
       timestamp: new Date().toISOString(),
     });
   });
@@ -357,6 +396,13 @@ export function createThreadlineRoutes(
         ));
         return;
       }
+      // Robustness Phase 2 (SA1): the verified principal is the fingerprint DERIVED
+      // from the Ed25519 identity pubkey the signature verified against — never the
+      // x-threadline-agent NAME header, never a body/envelope `from` field. Every
+      // participant-authorization check (threadSync, backfill) keys on THIS.
+      try {
+        (req as VerifiedRequest).threadlineVerifiedFingerprint = computeFingerprint(Buffer.from(identityPub, 'hex'));
+      } catch { /* @silent-fallback-ok: a malformed pubkey already failed verify() above; leave the principal unset (fails participant checks CLOSED) */ }
     } catch {
       res.status(403).json(makeError(
         ERROR_CODES.TL_AUTH_FAILED,
@@ -410,24 +456,76 @@ export function createThreadlineRoutes(
           createdAt: new Date().toISOString(),
         },
       };
-      const result = await threadlineRouter.handleInboundMessage(envelope);
+      // Accept-boundary (#3 / issue-580): respond the instant the message is
+      // accepted + authenticated, then run the (typically 9-30s) spawn in the
+      // BACKGROUND. The sole senders (MessageRouter cross-machine relay and
+      // AgentBus.httpSend) read only `response.ok` within a ~10s timeout and
+      // fall back to a durable queue on failure — so AWAITING the spawn meant
+      // the sender timed out before we replied, treated delivery as failed, and
+      // retried with a FRESH nonce/id that slipped past the nonce + id dedup,
+      // causing a DUPLICATE spawn/reply. This mirrors the proven co-located fix
+      // (#581, /messages/relay-agent). The reply itself flows back via the
+      // decoupled reply-waiter, not this HTTP response, so no caller's
+      // correctness depends on the synchronous spawn outcome; a genuine
+      // background failure is logged (it cannot 500 a response that already
+      // returned). The former 422-retryable path was already unreachable — the
+      // sender aborts at ~10s, long before the 9-30s spawn produced it.
+      res.json({ accepted: true, async: true, threadId: body.message?.threadId });
 
-      if (result.error) {
-        res.status(422).json(makeError(
-          ERROR_CODES.TL_INTERNAL_ERROR,
-          result.error,
-          true,
-          5,
-        ));
-        return;
-      }
+      // Robustness Phase 1 (D-E / closes F4): record the implicit delivery ack on
+      // the VERIFIED E2E relay inbound path — the path that previously lacked it,
+      // producing the permanent false `stale: true` noise. threadlineAuth has
+      // already validated the relay token + Ed25519 signature for the agent named
+      // in x-threadline-agent, so it is the authenticated sender. Funnelled through
+      // the shared recordInboundAck so the wiring-integrity test can enforce it.
+      try {
+        const verifiedSender = req.headers['x-threadline-agent'] as string | undefined;
+        recordInboundAck(inboundAckDeps ?? {}, {
+          threadId: body.message?.threadId,
+          senderFingerprint: verifiedSender,
+          senderName: verifiedSender ?? null,
+        });
+      } catch { /* @silent-fallback-ok: recording-only — never block inbound routing */ }
 
-      res.json({
-        accepted: true,
-        threadId: result.threadId,
-        spawned: result.spawned,
-        resumed: result.resumed,
-      });
+      // Robustness Phase 2 (D-B): append THIS inbound leg to the canonical log via
+      // the single funnel (the 4th and final message-persisting site — the F4 path).
+      // The verified principal is the DERIVED fingerprint (SA1), never the name.
+      try {
+        const verifiedFp = (req as VerifiedRequest).threadlineVerifiedFingerprint;
+        if (canonicalDeps?.threadMessageRecorder && body.message?.threadId && body.message?.id) {
+          const rtmBody = typeof body.message?.body === 'string'
+            ? body.message.body
+            : String((body.message?.body as Record<string, unknown> | undefined)?.content ?? (body.message?.body as Record<string, unknown> | undefined)?.text ?? '');
+          recordThreadMessage(canonicalDeps.threadMessageRecorder, {
+            threadId: body.message.threadId,
+            messageId: body.message.id,
+            direction: 'inbound',
+            body: rtmBody,
+            createdAt: typeof body.message?.createdAt === 'string' ? body.message.createdAt : new Date().toISOString(),
+            peerFingerprint: verifiedFp,
+            author: verifiedFp ? { agentFingerprint: verifiedFp } : undefined,
+            subject: typeof body.message?.subject === 'string' ? body.message.subject : undefined,
+          });
+        }
+        // Honor a piggybacked peer threadSync (verified-participant, monotonic) and
+        // refresh this thread's advisory symmetry state (D-D, detection is CORE).
+        if (canonicalDeps && body.threadSync && body.message?.threadId && verifiedFp) {
+          void honorPeerThreadSync(canonicalDeps, body.message.threadId, verifiedFp, body.threadSync as ThreadSync).catch(() => { /* advisory only */ });
+        }
+      } catch { /* @silent-fallback-ok: recording-only — never block inbound routing */ }
+
+      void threadlineRouter.handleInboundMessage(envelope)
+        .then((result) => {
+          if (result?.error) {
+            console.warn(
+              `[ThreadlineEndpoints] Background handleInboundMessage reported: ${result.error}`,
+            );
+          }
+        })
+        .catch((err) => {
+          console.error('[ThreadlineEndpoints] Background handleInboundMessage failed:', err);
+        });
+      return;
     } catch (err) {
       console.error('[ThreadlineEndpoints] Message receive error:', err);
       res.status(500).json(makeError(
@@ -439,18 +537,28 @@ export function createThreadlineRoutes(
     }
   });
 
-  // ── Messages: Thread (AUTHENTICATED) ───────────────────────────
-
-  router.get('/threadline/messages/thread/:id', threadlineAuth, (_req: Request, res: Response) => {
-    // Thread retrieval — returns messages in this thread
-    // For now, this returns a placeholder. Full implementation depends on
-    // MessageStore integration which is outside Phase 3 scope.
-    const threadId = _req.params.id;
-    res.json({
-      threadId,
-      messages: [],
-      messageCount: 0,
-    });
+  // ── Convergence backfill (AUTHENTICATED, participant-authorized) ──────
+  //
+  // Robustness Phase 2 (D-D / SA1-SA4): the bounded, terminating, participant-
+  // authorized backfill exchange. The placeholder GET /threadline/messages/thread/:id
+  // that returned a hard `messageCount: 0` (a second F3 hard-zero source) is DELETED —
+  // canonical history is read via GET /threadline/threads/:id (bearer-gated, on the
+  // agent server), never this relay-auth surface.
+  //
+  // CRITICAL authorization (SA1): the responder serves records ONLY for threads where
+  // the DERIVED-verified-fingerprint requester (never a name/body claim) is a recorded
+  // participant, and only contentDigests already in that thread's log. A request for a
+  // non-participant thread returns empty + is counted (closes cross-thread exfiltration).
+  router.post('/threadline/threads/backfill', threadlineAuth, (req: Request, res: Response) => {
+    const verifiedFp = (req as VerifiedRequest).threadlineVerifiedFingerprint;
+    const body = req.body as { threadId?: string; missingDigests?: string[] } | undefined;
+    if (!verifiedFp || !canonicalDeps?.threadLog) {
+      // Fail CLOSED — no verified principal or no canonical log → empty.
+      res.json({ kind: 'thread-backfill-resp', threadId: body?.threadId ?? '', records: [], refused: true });
+      return;
+    }
+    const records = serveBackfill(canonicalDeps, body?.threadId ?? '', verifiedFp, Array.isArray(body?.missingDigests) ? body!.missingDigests! : []);
+    res.json({ kind: 'thread-backfill-resp', threadId: body?.threadId ?? '', records });
   });
 
   // ── Blobs: Fetch (AUTHENTICATED) ──────────────────────────────

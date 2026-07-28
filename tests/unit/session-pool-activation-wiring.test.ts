@@ -25,23 +25,46 @@ describe('Session Pool activation wiring (§L4)', () => {
 
   it('the interception FAILS SAFE — any route error falls back to local dispatch', () => {
     const idx = src.indexOf("_sessionRouter && _sessionPoolStage() !== 'dark'");
-    const block = src.slice(idx, idx + 1200);
+    // Window 6500 (was 5200): the silent-loss-refusal-conservation `rejected`
+    // outcome branch (a first-class refusal short-circuit added before the
+    // isRemotelyHandled check) sits inside this block and pushed the
+    // fail-safe fallback log line further down.
+    const block = src.slice(idx, idx + 6500);
     expect(block).toContain('try {');
     expect(block).toContain('await _sessionRouter.route(');
     expect(block).toContain('falling back to local dispatch');
     // Only a remote-handled outcome short-circuits; everything else falls through.
-    expect(block).toContain("outcome.action === 'forwarded' || outcome.action === 'duplicate'");
+    // (bug #8: remote 'spawned'/'owner-dead-replaced' must short-circuit too — the
+    // decision is the pure isRemotelyHandled() helper, unit-tested in SessionRouter.test.ts.)
+    expect(block).toContain('isRemotelyHandled(outcome, _meshSelfId)');
   });
 
   it('the SessionRouter is constructed with the real registry/ownership/placement + outbound mesh client', () => {
     const idx = src.indexOf('new routerMod.SessionRouter({');
     expect(idx).toBeGreaterThan(0);
-    const block = src.slice(idx, idx + 2000);
-    expect(block).toContain('machineRegistry: () => machinePoolRegistry?.getCapacities()');
+    // Window 5000 (was 4000, 3200, 2000): the coherence-journal emitPlacement
+    // pairing (spec §3.3), the TOPIC-PROFILE-SPEC §5.3 acquire seam, and then
+    // the WS1.1 ownerSupportsForward skew gate (MULTI-MACHINE-SEAMLESSNESS-SPEC)
+    // added lines inside the construction, pushing the later assertions out
+    // (deliverMessage: now sits ~4200 chars in).
+    const block = src.slice(idx, idx + 5000);
+    // The registry dep filters suspect machines from placement candidates
+    // (owner-suspect breaker, P19) with an all-suspect unfiltered fallback —
+    // still sourced from the REAL machinePoolRegistry capacities.
+    expect(block).toContain('machinePoolRegistry?.getCapacities() ?? []');
+    expect(block).toContain('ownerSuspectBreaker.isSuspect(c.machineId)');
     expect(block).toContain('resolveOwnership:');
     expect(block).toContain('casClaimOwnership:');
     expect(block).toContain('deliverMessage:'); // outbound via MeshRpcClient
     expect(src).toContain('new clientMod.MeshRpcClient({');
+  });
+
+  it('the owner-suspect breaker is wired into BOTH halves (mark + responsive) and the aliveness check', () => {
+    const idx = src.indexOf('new routerMod.SessionRouter({');
+    const block = src.slice(idx, idx + 3000);
+    expect(block).toContain('markOwnerSuspect: (m) => ownerSuspectBreaker.markSuspect(m)');
+    expect(block).toContain('onOwnerResponsive: (m) => ownerSuspectBreaker.recordSuccess(m)');
+    expect(block).toContain('!ownerSuspectBreaker.isSuspect(m)');
   });
 
   it('the router is shared via a module-level ref (inbound handler is defined above startServer)', () => {
@@ -49,15 +72,74 @@ describe('Session Pool activation wiring (§L4)', () => {
     expect(src).toContain('_sessionRouter = new routerMod.SessionRouter(');
   });
 
+  it('confirms a self-placement only after the local delivery tail succeeds', () => {
+    expect(src).toContain('let _confirmLocalSessionPoolClaim: ((sessionKey: string) => boolean) | null = null');
+    expect(src).toContain('return confirmLocalPlacementAfterDelivery({');
+    expect(src).toContain('local claim confirmation errored for topic ${topicId}; ownership outcome will be re-read');
+
+    const liveInject = src.indexOf('const injected = sessionManager.injectTelegramMessage(\n          targetSession');
+    const liveConfirm = src.indexOf('if (injected) confirmLocalSessionPoolClaim();', liveInject);
+    expect(liveInject).toBeGreaterThan(0);
+    expect(liveConfirm).toBeGreaterThan(liveInject);
+
+    const coldSpawn = src.indexOf('spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text');
+    const coldThen = src.indexOf('.then((newSessionName) => {', coldSpawn);
+    const coldConfirm = src.indexOf('confirmLocalSessionPoolClaim();', coldThen);
+    const coldCatch = src.indexOf('}).catch((err) => {', coldThen);
+    expect(coldConfirm).toBeGreaterThan(coldThen);
+    expect(coldConfirm).toBeLessThan(coldCatch);
+  });
+
+  it('does not confirm a self-placement when local respawn rejects', () => {
+    for (const callsite of ['telegram-respawn-context-exhausted', 'telegram-respawn-dead']) {
+      const gate = src.indexOf(`admitLocalSpawn('${callsite}')`);
+      const respawn = src.indexOf('respawnSessionForTopic(', gate);
+      const thenConfirm = src.indexOf('.then(() => confirmLocalSessionPoolClaim())', respawn);
+      const reject = src.indexOf('.catch(err => {', respawn);
+      expect(respawn).toBeGreaterThan(gate);
+      expect(thenConfirm).toBeGreaterThan(respawn);
+      expect(thenConfirm).toBeLessThan(reject);
+    }
+  });
+
   it('the owner-side bridge resumes the local session on a forwarded message, gated + fail-safe', () => {
     const idx = src.indexOf('onAccepted: (cmd) => {');
     expect(idx).toBeGreaterThan(0);
-    const block = src.slice(idx, idx + 1500);
-    // Gated on a non-dark stage + only with Telegram present.
-    expect(block).toContain("_sessionPoolStage() === 'dark' || !telegram");
-    // Bridges to the existing local spawn/resume path for the topic.
-    expect(block).toContain('spawnSessionForTopic(sessionManager, tg, sessionName, topicId, text');
+    // Window widened 4200→5000: the working-set move trigger (WORKING-SET-HANDOFF §3.3)
+    // now prefixes the onAccepted body before the stage gate.
+    const block = src.slice(idx, idx + 7500);
+    // Gated on a non-dark stage (early return), then the Telegram arm requires
+    // Telegram present. (WS1.1 split the combined gate so a Slack routing key
+    // branches between the two: dark-gate stays shared, the !telegram gate now
+    // applies only to the numeric/Telegram arm.)
+    expect(block).toContain("_sessionPoolStage() === 'dark'");
+    expect(block).toContain('if (!telegram) return;');
+    // Bridges to the existing local spawn/resume path for the topic (now wrapped in an
+    // async IIFE that first fetches the moved topic's history from the router — bug #2).
+    // The spawn name is a clean topic-derived name, NOT the prefixed getSessionForTopic
+    // value (bug #13 — re-prefixing it spawned a duplicate per follow-up).
+    expect(block).toContain('spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text');
     // Fire-and-forget + fail-safe (the receipt is already durably ACKed before this).
     expect(block).toContain('owner-side resume failed');
+  });
+
+  it('bug #13: a forwarded follow-up to an already-running moved session INJECTS, never re-spawns', () => {
+    const idx = src.indexOf('onAccepted: (cmd) => {');
+    expect(idx).toBeGreaterThan(0);
+    // Window widened 4200→5000: the working-set move trigger (WORKING-SET-HANDOFF §3.3)
+    // now prefixes the onAccepted body before the stage gate.
+    const block = src.slice(idx, idx + 7500);
+    // A live session for the topic short-circuits to injection BEFORE the spawn IIFE.
+    const injectIdx = block.indexOf('sessionManager.isSessionAlive(existing)');
+    const spawnIdx = block.indexOf('spawnSessionForTopic(sessionManager, tg, spawnName');
+    expect(injectIdx).toBeGreaterThan(0);
+    expect(spawnIdx).toBeGreaterThan(injectIdx); // inject decision precedes spawn
+    // Injection uses the Telegram-aware path (adds the [telegram:N …] prefix the moved
+    // session needs to reply) and tracks the injection for stall detection.
+    expect(block).toContain('sessionManager.injectTelegramMessage(existing, topicId, text');
+    expect(block).toContain('tg.trackMessageInjection(topicId, existing, text)');
+    // The spawn name must NOT be the prefixed session name (the double-prefix defect).
+    expect(block).toContain('const spawnName = `topic-${topicId}`');
+    expect(block).not.toContain('const sessionName = tg.getSessionForTopic(topicId)');
   });
 });

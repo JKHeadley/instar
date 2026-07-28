@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-16T01:18:18.221Z",
+  "slug": "unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 46,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1465
+    ],
+    "notes": "Post-#1465 API evidence made credential drift visible to the dashboard, while live Telegram evidence showed the older burn runbook narrated detector ticks instead of throttle state transitions."
+  },
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -59,6 +59,7 @@ describe('instar-dev pre-commit — artifact sha-mismatch error message', () => 
     fs.writeFileSync(
       path.join(sandbox, 'scripts', 'eli16-overview-check.mjs'),
       `import path from 'node:path';\n` +
+      `export const MIN_ELI16_CHARS = 800;\n` +
       `export function checkEli16Overview(specPath) {\n` +
       `  const eli16Path = path.join(path.dirname(specPath), path.basename(specPath, '.md') + '.eli16.md');\n` +
       `  return { ok: true, eli16Path, charCount: 9999, minChars: 1 };\n` +
@@ -68,7 +69,20 @@ describe('instar-dev pre-commit — artifact sha-mismatch error message', () => 
       path.join(sandbox, 'skills', 'instar-dev', 'scripts', 'verify-proposal-derived-runbook.mjs'),
       'export function verifyProposalDerivedRunbooks() { return { ok: true, reason: "ok" }; }\n',
     );
+    // Copy the hook + its new pure tier classifier dependency into the sandbox.
+    fs.mkdirSync(path.join(sandbox, 'scripts', 'lib'), { recursive: true });
+    // Copy the whole scripts/lib dir so all of the hook's pure lib imports
+    // (classify-tier.mjs, convergence-recognition.mjs, …) resolve in the sandbox.
+    fs.cpSync(
+      path.join(path.dirname(HOOK_SCRIPT), 'lib'),
+      path.join(sandbox, 'scripts', 'lib'),
+      { recursive: true },
+    );
     fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
+    // audit-convergence-enforcement §2: the hook now imports these two sibling
+    // scripts — copy them so the sandbox hook resolves its imports.
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'write-audit-convergence.mjs'), path.join(sandbox, 'scripts', 'write-audit-convergence.mjs'));
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'audit-secret-patterns.mjs'), path.join(sandbox, 'scripts', 'audit-secret-patterns.mjs'));
   });
 
   afterEach(() => {

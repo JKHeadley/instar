@@ -29,6 +29,7 @@ function makeDeps(over: Partial<MentorTickDeps> = {}): { deps: MentorTickDeps; c
     surface: { framework: 'codex-cli', threadlineHistory: 'how is it going?' },
     safeWindowOpen: true,
     budgetOk: true,
+    llmAvailable: true,
     spawnStageA: vi.fn(async () => 'Nice progress — ready for the next one?'),
     runStageBForensics: vi.fn(async () => []),
     capture,
@@ -56,6 +57,21 @@ describe('runMentorTick — gate order + structural guarantees', () => {
     expect(deps.spawnStageA).not.toHaveBeenCalled();
     expect(deps.runStageBForensics).not.toHaveBeenCalled();
     expect(captures).toHaveLength(0); // no contact, no capture
+  });
+
+  it('skips the tick when the LLM circuit is open (rate-limited) BEFORE any spend/spawn — does not re-trip the circuit', async () => {
+    const { deps } = makeDeps({ llmAvailable: false, canaryCheck: () => true });
+    const r = await runMentorTick(deps);
+    expect(r.ran).toBe(false);
+    expect(r.reason).toBe('llm-rate-limited');
+    expect(deps.spawnStageA).not.toHaveBeenCalled();
+    expect(deps.runStageBForensics).not.toHaveBeenCalled();
+  });
+
+  it('budget is checked BEFORE the llm-rate-limit gate (order)', async () => {
+    const { deps } = makeDeps({ budgetOk: false, llmAvailable: false, canaryCheck: () => true });
+    const r = await runMentorTick(deps);
+    expect(r.reason).toBe('budget'); // budget wins the tie
   });
 
   it('skips when the safe window is closed (durable-state gate, §12 Q3)', async () => {
@@ -123,6 +139,30 @@ describe('runMentorTick — gate order + structural guarantees', () => {
     expect(deliver).toHaveBeenCalledWith('codex-cli', 'next task: ship the X primitive');
   });
 
+  it('awaits the delivery decision and surfaces a retry-breaker refusal distinctly', async () => {
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const deliver = vi.fn(async () => {
+      await wait;
+      return { delivered: false, reason: 'identical-content-retry-exhausted' as const };
+    });
+    const { deps } = makeDeps({
+      canaryCheck: () => true,
+      mode: 'live',
+      deliverToMentee: deliver,
+    });
+
+    const pending = runMentorTick(deps);
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    release();
+    const r = await pending;
+    expect(r.delivered).toBe(false);
+    expect(r.deliveryReason).toBe('identical-content-retry-exhausted');
+  });
+
   it('does not deliver when there is no deliverToMentee wired (safe default)', async () => {
     const { deps } = makeDeps({ canaryCheck: () => true, mode: 'live', deliverToMentee: undefined });
     const r = await runMentorTick(deps);
@@ -139,5 +179,45 @@ describe('runMentorTick — gate order + structural guarantees', () => {
     expect(r.reason).toBe('stage-a-failed');
     expect(deps.runStageBForensics).not.toHaveBeenCalled();
     expect(captures[0].findings[0].signature).toBe('stage-a-spawn-failed');
+  });
+});
+
+describe('runMentorTick — keystone cycle capture (mentor-mentee-differential)', () => {
+  const finding = (title: string) => ({ title, severity: 'medium', bucket: 'generic-agent-mistake', dedupKey: title, evidence: 'e' } as unknown as import('../../src/monitoring/FrameworkIssueLedger.js').ForensicFinding);
+
+  it('records a differential cycle (transcript = menteeOutput, findings = differential) on a real tick', async () => {
+    const cycles: import('../../src/scheduler/MentorOnboardingTick.js').MentorCycleCapture[] = [];
+    const { deps } = makeDeps({
+      canaryCheck: () => true,
+      spawnStageA: vi.fn(async () => 'the mentee output here'),
+      runStageBForensics: vi.fn(async () => [finding('mentee missed the 0-is-falsy case'), finding('untyped param')]),
+      recordCycle: (c) => cycles.push(c),
+    });
+    const r = await runMentorTick(deps);
+    expect(r.ran).toBe(true);
+    expect(cycles).toHaveLength(1);
+    expect(cycles[0].framework).toBe('codex-cli');
+    expect(cycles[0].menteeOutput).toBe('the mentee output here');
+    expect(cycles[0].differential).toEqual(['mentee missed the 0-is-falsy case', 'untyped param']);
+    expect(cycles[0].task).toContain('codex-cli');
+  });
+
+  it('does NOT record a cycle when the transcript is empty (an empty Stage A is not a cycle)', async () => {
+    const cycles: unknown[] = [];
+    const { deps } = makeDeps({
+      canaryCheck: () => true,
+      spawnStageA: vi.fn(async () => '   '),
+      recordCycle: (c) => cycles.push(c),
+    });
+    const r = await runMentorTick(deps);
+    expect(r.ran).toBe(true);
+    expect(cycles).toHaveLength(0);
+  });
+
+  it('is a safe no-op when recordCycle is not wired (back-compat default)', async () => {
+    const { deps } = makeDeps({ canaryCheck: () => true, spawnStageA: vi.fn(async () => 'output') });
+    // recordCycle undefined → tick still runs cleanly
+    const r = await runMentorTick(deps);
+    expect(r.ran).toBe(true);
   });
 });

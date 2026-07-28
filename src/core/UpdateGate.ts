@@ -47,6 +47,15 @@ export interface UpdateGateConfig {
   finalWarningMinutes?: number;
   /** How often to re-check sessions during deferral, in ms. Default: 5 * 60_000 (5 min) */
   retryIntervalMs?: number;
+  /**
+   * Primary-developer mode. When true, the gate NEVER defers a restart for
+   * active sessions — `canRestart` always returns `{ allowed: true }`. The
+   * agent prioritizes always running the latest version over protecting its
+   * own sessions from a (session-surviving) server restart. Opt-in per agent
+   * via `updates.restartImmediately`; default false leaves the fleet's
+   * session-aware deferral untouched. Spec: docs/specs/restart-immediately-spec.md.
+   */
+  alwaysRestartImmediately?: boolean;
 }
 
 export interface UpdateGateStatus {
@@ -66,6 +75,8 @@ export interface UpdateGateStatus {
   firstWarningSent: boolean;
   /** Whether the final warning (T-5min) has been sent */
   finalWarningSent: boolean;
+  /** Primary-developer mode: restarts are never deferred for active sessions */
+  alwaysRestartImmediately: boolean;
 }
 
 /** Minimal interface for SessionManager — only what we need */
@@ -97,7 +108,19 @@ export class UpdateGate {
       firstWarningMinutes: config?.firstWarningMinutes ?? 30,
       finalWarningMinutes: config?.finalWarningMinutes ?? 5,
       retryIntervalMs: config?.retryIntervalMs ?? 5 * 60_000,
+      alwaysRestartImmediately: config?.alwaysRestartImmediately ?? false,
     };
+  }
+
+  /**
+   * Toggle primary-developer mode at runtime (config may change on disk
+   * without a restart). When enabled, the next `canRestart` allows immediately
+   * and clears any in-flight deferral so a held restart proceeds at once.
+   */
+  setAlwaysRestartImmediately(value: boolean): void {
+    if (this.config.alwaysRestartImmediately === value) return;
+    this.config.alwaysRestartImmediately = value;
+    if (value) this.reset();
   }
 
   /**
@@ -110,6 +133,16 @@ export class UpdateGate {
     sessionManager: SessionManagerLike,
     sessionMonitor?: SessionMonitorLike | null,
   ): GateResult {
+    // Primary-developer mode: never defer for active sessions. A server restart
+    // does NOT kill the agent's tmux sessions (they resume via CONTINUATION) —
+    // this agent simply chooses being-on-latest over avoiding the brief restart
+    // blip. Short-circuit BEFORE listing sessions so the deferral clock never
+    // starts. Default false, so the fleet's session-aware deferral is unchanged.
+    if (this.config.alwaysRestartImmediately) {
+      this.reset();
+      return { allowed: true };
+    }
+
     const sessions = sessionManager.listRunningSessions();
 
     // No sessions → restart immediately
@@ -118,31 +151,8 @@ export class UpdateGate {
       return { allowed: true };
     }
 
-    // Check session health if monitor is available
-    const health = sessionMonitor?.getStatus().sessionHealth ?? [];
-    const healthMap = new Map(health.map(h => [h.sessionName, h]));
-
-    const activeSessions: string[] = [];
-    const unresponsiveSessions: string[] = [];
-    const nonBlockingJobSessions: string[] = [];
-
-    for (const session of sessions) {
-      if (this.isSafeIdleJobSession(session, sessionManager)) {
-        nonBlockingJobSessions.push(session.name);
-        continue;
-      }
-
-      const h = healthMap.get(session.name);
-      if (!h) {
-        // No health data — be conservative, treat as active
-        activeSessions.push(session.name);
-      } else if (h.status === 'healthy') {
-        activeSessions.push(session.name);
-      } else if (h.status === 'unresponsive') {
-        unresponsiveSessions.push(session.name);
-      }
-      // 'idle' and 'dead' sessions don't block
-    }
+    const { activeSessions, unresponsiveSessions, nonBlockingJobSessions } =
+      this.classifyRunningSessions(sessions, sessionManager, sessionMonitor);
 
     // No active sessions → restart (idle/dead/unresponsive don't block)
     if (activeSessions.length === 0) {
@@ -196,6 +206,77 @@ export class UpdateGate {
     };
   }
 
+  /**
+   * Pure, side-effect-free probe: the names of active (healthy, non-job)
+   * sessions that would block a restart right now.
+   *
+   * Unlike {@link canRestart}, this does NOT start or continue the deferral
+   * clock, set warning flags, or call reset() — it is a read-only check for
+   * callers that need "is the box idle?" without perturbing deferral state.
+   * The restart-window gate uses it to skip the window wait when nothing is
+   * active (an idle restart is invisible, so there is nothing for the window
+   * to protect). Returns [] when there are no running sessions.
+   */
+  getBlockingSessions(
+    sessionManager: SessionManagerLike,
+    sessionMonitor?: SessionMonitorLike | null,
+  ): string[] {
+    const sessions = sessionManager.listRunningSessions();
+    if (sessions.length === 0) return [];
+    return this.classifyRunningSessions(sessions, sessionManager, sessionMonitor).activeSessions;
+  }
+
+  /**
+   * Classify running sessions into active (blocking), unresponsive, and
+   * non-blocking idle job sessions. Pure — no instance-state mutation. Shared
+   * by {@link canRestart} (which then does deferral bookkeeping on the result)
+   * and {@link getBlockingSessions} (read-only) so the classification can never
+   * drift between the gating decision and the idle probe.
+   */
+  private classifyRunningSessions(
+    sessions: SessionInfo[],
+    sessionManager: SessionManagerLike,
+    sessionMonitor?: SessionMonitorLike | null,
+  ): { activeSessions: string[]; unresponsiveSessions: string[]; nonBlockingJobSessions: string[] } {
+    // Check session health if monitor is available
+    const health = sessionMonitor?.getStatus().sessionHealth ?? [];
+    const healthMap = new Map(health.map(h => [h.sessionName, h]));
+
+    const activeSessions: string[] = [];
+    const unresponsiveSessions: string[] = [];
+    const nonBlockingJobSessions: string[] = [];
+
+    for (const session of sessions) {
+      if (this.isSafeIdleJobSession(session, sessionManager)) {
+        nonBlockingJobSessions.push(session.name);
+        continue;
+      }
+
+      // Health is keyed by the tmux session name (the slug SessionMonitor
+      // tracks, e.g. "echo-codey-collaboration"), NOT the human-facing display
+      // name (e.g. "Codey Collaboration"). Look up by tmuxSession first, then
+      // fall back to name. Without the tmuxSession key, every interactive
+      // session misses the health map and hits the conservative "treat as
+      // active" default below — which silently turned the idle/dead exclusion
+      // into dead code and meant restart-when-idle (#41) never fired while ANY
+      // session existed (the day-long version-lag root cause).
+      const h =
+        (session.tmuxSession ? healthMap.get(session.tmuxSession) : undefined) ??
+        healthMap.get(session.name);
+      if (!h) {
+        // No health data — be conservative, treat as active
+        activeSessions.push(session.name);
+      } else if (h.status === 'healthy') {
+        activeSessions.push(session.name);
+      } else if (h.status === 'unresponsive') {
+        unresponsiveSessions.push(session.name);
+      }
+      // 'idle' and 'dead' sessions don't block
+    }
+
+    return { activeSessions, unresponsiveSessions, nonBlockingJobSessions };
+  }
+
   private isSafeIdleJobSession(session: SessionInfo, sessionManager: SessionManagerLike): boolean {
     if (!session.jobSlug || !session.tmuxSession || !sessionManager.hasActiveProcesses) {
       return false;
@@ -217,6 +298,7 @@ export class UpdateGate {
       blockingSessions: this.blockingSessions,
       firstWarningSent: this.firstWarningSent,
       finalWarningSent: this.finalWarningSent,
+      alwaysRestartImmediately: this.config.alwaysRestartImmediately,
     };
   }
 
