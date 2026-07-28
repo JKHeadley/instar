@@ -137,3 +137,21 @@ exists. It does not check that the file runs, or contains any assertions, or is 
 In this project 5 test files carry an unconditional skip and 20 more skip conditionally — 29 in total — and every one would still count. (An earlier draft said "forty", which was not a number anyone had measured.) Fixing that is
 rebuilding the grader, which is a different job from delivering the rulebook — so it is not in this
 change, but the report now states its own basis rather than letting the number imply more.
+
+## One more safeguard, added after peer review
+
+The audit checks whether each standard's named guard actually exists on disk. Those names come from
+the rulebook itself — and this change is what makes the rulebook a file that ships with the code and
+gets copied into agent folders.
+
+So a name in that document is now **data that travels**. A name written as `../../../etc/passwd`
+would have sent the check looking outside your project entirely.
+
+The worse half is subtler than "it looked somewhere it shouldn't": if a name like that pointed at a
+file that *happens to exist*, the audit would have counted that standard as **properly enforced** —
+crediting a guard that has nothing to do with your project. A containment slip would have quietly
+become a wrong number in the report.
+
+Now every such name is resolved and checked to be inside your project before anything is read. If it
+isn't, it counts as missing — the same as a guard that was deleted. The check can only ever make the
+enforcement number go *down*, never up, which is the safe direction for a number people trust.

@@ -17,6 +17,7 @@ import {
   probeGuardTree,
   stableView,
   type CoverageReport,
+  containedRefPath,
 } from '../../src/core/StandardsEnforcementAuditor.js';
 
 const REAL_REGISTRY = path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md');
@@ -538,5 +539,50 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
       `These files branch on the integrity basis without going through earnsVerified, so the ` +
         `version-skew and count-mismatch downgrades do not apply to them: ${offenders.join(', ')}`,
     ).toEqual([]);
+  });
+});
+
+
+/**
+ * Containment over registry-supplied refs.
+ *
+ * The refs probed here come from the constitution DOCUMENT, which after this change ships as
+ * a packed asset and is mirrored into agent homes. An escaping ref is two defects at once: a
+ * probe outside the audited tree, and — if the escaped path happens to exist — a standard
+ * graded as ENFORCED against a file with nothing to do with this repository.
+ */
+describe('containedRefPath — registry refs cannot escape projectDir', () => {
+  it('accepts an ordinary ref inside the tree', () => {
+    expect(containedRefPath('/repo', 'src/core/Foo.ts')).toBe(path.resolve('/repo/src/core/Foo.ts'));
+  });
+
+  it('accepts the root itself', () => {
+    expect(containedRefPath('/repo', '.')).toBe(path.resolve('/repo'));
+  });
+
+  it('REFUSES a traversal that climbs out of the tree', () => {
+    expect(containedRefPath('/repo', '../../../etc/passwd')).toBeNull();
+  });
+
+  it('REFUSES an absolute ref pointing elsewhere', () => {
+    expect(containedRefPath('/repo', '/etc/passwd')).toBeNull();
+  });
+
+  /**
+   * The prefix-collision case a naive `startsWith(root)` gets wrong: `/repo-evil` shares a
+   * string prefix with `/repo` and is NOT inside it. This is why the comparison appends a
+   * separator, and this test is what would fail if someone simplified it back.
+   */
+  it('REFUSES a sibling directory that merely shares a name prefix', () => {
+    expect(containedRefPath('/repo', '../repo-evil/x.ts')).toBeNull();
+  });
+
+  /**
+   * A traversal that climbs out and back in IS contained — the resolved path is what matters,
+   * not the presence of `..` in the text. Asserted so a future "reject any ref containing .."
+   * shortcut is recognised as a different, blunter rule rather than an equivalent one.
+   */
+  it('accepts a path that leaves and returns, because resolution is what counts', () => {
+    expect(containedRefPath('/repo', 'src/../src/core/Foo.ts')).toBe(path.resolve('/repo/src/core/Foo.ts'));
   });
 });

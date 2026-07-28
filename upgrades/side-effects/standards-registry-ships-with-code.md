@@ -363,3 +363,53 @@ the same limitation documented for the builtin-manifest check. The **ratchet** i
 and opens a real tarball regardless. Second weakest: the lint is a text matcher and can be evaded by
 constructing the string in pieces; that is why the API boundary (no raw path exported) is the primary
 enforcement and the lint is explicitly the supplemental half.
+
+---
+
+## Addendum — ref containment (peer review, 2026-07-28)
+
+Raised by Codey reviewing the open PR, addressed before merge.
+
+### What changed
+
+`containedRefPath(projectDir, ref)` in `StandardsEnforcementAuditor.ts`, consulted before BOTH
+filesystem probes (the guard verifier and the guard-signal hash).
+
+### Why it is a side effect worth reviewing
+
+The refs probed come from the **constitution document itself** — each standard's "Applied through"
+text. That text is authored, but it is DATA, and this very change makes the document a packed asset
+that ships and is mirrored into agent homes. `path.join(projectDir, ref)` with `../../../etc/passwd`
+probes outside the project.
+
+**Two harms, second worse than first:**
+1. the probe touches a path outside the audited tree;
+2. **an escaping ref that happens to EXIST grades the standard as ENFORCED** — a guard reported as
+   resolving against a file unrelated to this repository. Containment failure becomes a correctness
+   failure in the published `refResolutionRatio`.
+
+### Blast radius
+
+| | |
+|---|---|
+| behaviour change | a ref resolving OUTSIDE `projectDir` now reports `refResolves: false` instead of `true` |
+| who is affected | any registry entry whose "Applied through" ref escapes the project root |
+| in this repo | **none** — all current refs are repo-relative and inside the tree; the full auditor suite is unchanged at 27 passing |
+| direction of change | strictly more conservative: refs can only move from resolving to not-resolving, never the reverse. It can lower a reported ratio, never raise one. |
+| failure mode | resolution error → `null` → treated exactly like a non-resolving ref (the existing dangling-ref signal) |
+
+### Rollback
+
+Delete the two containment guards; the probes revert to the previous `path.join`. No data migration,
+no persisted state, no config surface.
+
+### Evidence
+
+Six unit tests including the prefix-collision case (`/repo-evil` is not inside `/repo`), **proved
+non-vacuous** by injecting a naive `startsWith(root)` and confirming that test fails, then reverting.
+
+### Also in this commit
+
+The spec's backup-semantics sentence, corrected against `PostUpdateMigrator.ts:1439-1441`: the backup
+captures the target at the first update that **actually overwrites**, not at the first update. Doc
+only; no behaviour change.

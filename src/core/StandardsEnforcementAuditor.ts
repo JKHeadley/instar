@@ -467,6 +467,35 @@ function buildSymbolIndex(projectDir: string, wanted: Set<string>): Set<string> 
 }
 
 /** Verify each ref of an article against the prepared lookups. */
+/**
+ * Resolve a registry-supplied ref UNDER `projectDir`, or null if it escapes.
+ *
+ * The refs this auditor probes come from the CONSTITUTION DOCUMENT — each standard's
+ * "Applied through" text. That text is authored, but it is DATA, and after this change the
+ * document also ships as a packed asset and is mirrored into agent homes. A ref of
+ * `../../../etc/passwd` would otherwise make `path.join(projectDir, ref)` probe outside the
+ * project entirely.
+ *
+ * Two harms, and the second matters more:
+ *   1. the probe touches a path outside the tree it is auditing;
+ *   2. **an escaping ref that happens to EXIST grades the standard as ENFORCED** — the audit
+ *      would report a guard resolving against a file unrelated to this repository. A
+ *      containment failure becomes a correctness failure in the published numbers.
+ *
+ * Compared on the RESOLVED, normalized path with a trailing separator, so `/repo-evil` cannot
+ * pass as a child of `/repo`. Null on any resolution error — callers treat that exactly like a
+ * non-resolving ref, which is the conservative direction.
+ */
+export function containedRefPath(projectDir: string, ref: string): string | null {
+  try {
+    const root = path.resolve(projectDir);
+    const full = path.resolve(root, ref);
+    const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+    if (full !== root && !full.startsWith(rootWithSep)) return null;
+    return full;
+  } catch { return null; /* @silent-fallback-ok — unresolvable = not contained = treated as absent */ }
+}
+
 function verifyRefs(
   refs: EnforcementRef[],
   projectDir: string,
@@ -480,8 +509,14 @@ function verifyRefs(
       // guard is NOT resolvable on disk — which IS the correct, complete answer here
       // (verified=false → the standard reads as having a dangling ref, the loud signal
       // this auditor exists to surface). Not a degradation.
-      try { refResolves = fs.existsSync(path.join(projectDir, r.ref)); }
-      catch { refResolves = false; /* @silent-fallback-ok — unresolvable path = a real dangling-ref finding, not a degraded result */ }
+      // Containment FIRST: a ref escaping projectDir is not a resolvable guard for THIS
+      // repo, however real the file it points at may be.
+      const contained = containedRefPath(projectDir, r.ref);
+      if (contained === null) { refResolves = false; }
+      else {
+        try { refResolves = fs.existsSync(contained); }
+        catch { refResolves = false; /* @silent-fallback-ok — unresolvable path = a real dangling-ref finding, not a degraded result */ }
+      }
     } else if (r.kind === 'route') {
       refResolves = routeTable.has(r.ref);
     } else {
@@ -554,8 +589,10 @@ function guardStateSignal(projectDir: string, prior?: CoverageReport | null): st
   if (refs.size === 0) return 'no-file-refs';
   const h = crypto.createHash('sha256');
   for (const ref of [...refs].sort()) {
+    const containedRef = containedRefPath(projectDir, ref);
+    if (containedRef === null) { h.update(`${ref}:absent\n`); continue; }
     try {
-      const st = fs.statSync(path.join(projectDir, ref));
+      const st = fs.statSync(containedRef);
       h.update(`${ref}:${st.size}:${st.mtimeMs}\n`);
     } catch {
       h.update(`${ref}:absent\n`);
