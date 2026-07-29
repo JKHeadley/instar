@@ -28,6 +28,7 @@ import { mergeRegistry } from './mergeRegistry.js';
 import type { MachineRegistry } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -155,15 +156,72 @@ export class GitSyncManager {
    * Requires git >= 2.34 for SSH signing support.
    */
   configureCommitSigning(): void {
-    const keyPath = path.join(this.stateDir, 'machine', 'signing-private.pem');
-    if (!fs.existsSync(keyPath)) {
+    const machineDir = path.join(this.stateDir, 'machine');
+    const canonicalKeyPath = path.join(machineDir, 'signing-key.pem');
+    const legacyKeyPath = path.join(machineDir, 'signing-private.pem');
+    const keyPath = fs.existsSync(canonicalKeyPath)
+      ? canonicalKeyPath
+      : fs.existsSync(legacyKeyPath)
+        ? legacyKeyPath
+        : null;
+    if (!keyPath) {
       throw new Error('Machine signing key not found. Run `instar pair` first.');
     }
 
-    // Git uses SSH-format keys for signing. Our Ed25519 PEM works with git's ssh signing.
-    this.gitConfig('user.signingkey', keyPath);
-    this.gitConfig('gpg.format', 'ssh');
-    this.gitConfig('commit.gpgsign', 'true');
+    // Git's SSH signer requires a loadable private key and a public-key
+    // sibling. The codebase's historical PKCS#8 PEM key is valid for mesh
+    // signatures but is not accepted by every ssh-keygen build. Enabling
+    // commit.gpgsign without proving this exact path makes every later commit
+    // fail, which stops cross-machine sync entirely.
+    const pubPath = `${keyPath}.pub`;
+    const probePath = path.join(machineDir, '.sign-probe');
+    let signingWorks = false;
+    try {
+      if (!fs.existsSync(pubPath)) {
+        const publicKey = withSyncOp(() => execFileSync('ssh-keygen', ['-y', '-f', keyPath], {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }));
+        fs.writeFileSync(pubPath, publicKey, { mode: 0o644 });
+      }
+
+      fs.writeFileSync(probePath, 'instar-sign-probe');
+      withSyncOp(() => execFileSync('ssh-keygen', ['-Y', 'sign', '-n', 'git', '-f', keyPath, probePath], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }));
+      signingWorks = true;
+    } catch {
+      // @silent-fallback-ok — the explicit unsigned configuration below keeps
+      // commits working and reports the degraded signing state.
+      signingWorks = false;
+    } finally {
+      SafeFsExecutor.safeRmSync(probePath, {
+        force: true,
+        operation: 'src/core/GitSync.ts:configureCommitSigning',
+      });
+      SafeFsExecutor.safeRmSync(`${probePath}.sig`, {
+        force: true,
+        operation: 'src/core/GitSync.ts:configureCommitSigning',
+      });
+    }
+
+    if (signingWorks) {
+      this.gitConfig('user.signingkey', keyPath);
+      this.gitConfig('gpg.format', 'ssh');
+      this.gitConfig('commit.gpgsign', 'true');
+      return;
+    }
+
+    // A stale true value is as dangerous as setting one here, so turn signing
+    // off explicitly when the live probe fails.
+    this.gitConfig('commit.gpgsign', 'false');
+    DegradationReporter.getInstance().report({
+      feature: 'GitSync.commitSigning',
+      primary: 'Sign mesh commits with the machine SSH key',
+      fallback: 'Commit unsigned while signature verification remains disabled',
+      reason: 'Why: ssh-keygen could not sign with the machine key',
+      impact: 'Mesh commits are unsigned until signing is repaired; cross-machine sync remains operational',
+    });
   }
 
   /**
@@ -270,6 +328,7 @@ export class GitSyncManager {
         const log = this.gitExec(['log', '--oneline', `${beforeHead}..${afterHead}`]);
         result.commitsPulled = log.trim().split('\n').filter(l => l.trim()).length;
       }
+      await this.resolvePostPullAutostashConflicts(result);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       // Check for merge conflicts
@@ -319,6 +378,7 @@ export class GitSyncManager {
               const log = this.gitExec(['log', '--oneline', `${beforeHead}..${afterHead}`]);
               result.commitsPulled = log.trim().split('\n').filter(l => l.trim()).length;
             }
+            await this.resolvePostPullAutostashConflicts(result);
             console.log(`[GitSync] Auto-resolved untracked file conflict — ${conflictingFiles.length} file(s) backed up, pull succeeded`);
           } else {
             // Couldn't parse files — fall back to degradation report
@@ -368,6 +428,7 @@ export class GitSyncManager {
             const log = this.gitExec(['log', '--oneline', `${beforeHead}..${afterHead}`]);
             result.commitsPulled = log.trim().split('\n').filter(l => l.trim()).length;
           }
+          await this.resolvePostPullAutostashConflicts(result);
           console.log('[GitSync] Auto-resolved stuck rebase — pull succeeded (merge mode)');
         } catch (retryErr) {
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
@@ -394,6 +455,7 @@ export class GitSyncManager {
             const log = this.gitExec(['log', '--oneline', `${beforeHead}..${afterHead}`]);
             result.commitsPulled = log.trim().split('\n').filter(l => l.trim()).length;
           }
+          await this.resolvePostPullAutostashConflicts(result);
           console.log(`[GitSync] Explicit origin/${branch} merge pull succeeded`);
         } catch (retryErr) {
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
@@ -729,6 +791,36 @@ export class GitSyncManager {
     } catch {
       // @silent-fallback-ok — conflict list returns empty
       return [];
+    }
+  }
+
+  /**
+   * Resolve conflicts left behind by a successful `git pull --autostash`.
+   *
+   * Git exits zero after the pull/rebase succeeds even when applying the
+   * autostash leaves unmerged files. Without this postcondition check, those
+   * files bypass the catch-path resolver and can remain full of conflict
+   * markers while sync reports success.
+   */
+  private async resolvePostPullAutostashConflicts(result: SyncResult): Promise<void> {
+    const unmerged = this.detectConflicts();
+    if (unmerged.length === 0) return;
+
+    result.conflicts = Array.from(new Set([...result.conflicts, ...unmerged]));
+    await this.resolveConflicts(result);
+
+    // A failed autostash pop leaves an autostash entry behind. Once every
+    // unmerged file is resolved, its content has already been incorporated;
+    // retaining the stash only risks a later stale re-application.
+    if (this.detectConflicts().length > 0) return;
+    try {
+      const latestStash = this.gitExec(['stash', 'list', '-1']);
+      if (/autostash/i.test(latestStash)) {
+        this.gitExec(['stash', 'drop']);
+      }
+    } catch {
+      // @silent-fallback-ok — the working tree is resolved; a retained stash
+      // is non-blocking and remains visible to the operator.
     }
   }
 

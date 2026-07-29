@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-29T08:02:57.985Z",
+  "slug": "feat-nuke-here",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 1,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -1,4 +1,6 @@
 ---
+parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
+parent-principle-note: "That standard was EARNED FROM topic 13481 — the same live two-machine bring-up this spec covers, where the proof kept failing under real degraded conditions. This spec is the defect list that bring-up produced (upstream push, join config, signing-key name, registry merge, push starvation, force-wakeup lease): each is a way the agent stopped being ONE coherent agent the moment a second machine was real rather than simulated."
 approved: true
 review-convergence: justin-approved-2026-05-27 (Telegram greenlight topic 13481 "I approve the spec. Please enter autonomous mode for the night." + the test-as-self-means-drive-Justins-real-Telegram correction folded into §6/§Track E; conformance pass against the six Instar standards documented in §Conformance below)
 parent-specs:
@@ -24,8 +26,8 @@ tests, migration parity enforced):
 4. **Track D — Mesh git substrate auto-reconcile.** Deterministic merge for lease
    + registry state when two machines auto-commit in parallel.
 5. **Track F — Part 2.1 harness build.** The `instar test-as-self` orchestrator
-   per the already-approved Part 2.1 spec (deferred Playwright sub-step → use
-   Telegram Bot HTTP API instead, see §Track F.5 below).
+   per the already-approved Part 2.1 spec (the Playwright sub-step was replaced by
+   the Telegram Bot HTTP API — see §Track F.5 below for the substitution).
 6. **Track E — Cross-machine seamlessness live test.** Real two-machine bring-up
    using Tracks A–F. Lease handoff, live-tail catch-up, exactly-once redelivery.
 7. **Final step — flip `multiMachine.exactlyOnceIngress` to default-on** once

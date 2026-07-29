@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "slug": "mm-bootstrap-realhw-fixes",
+  "sessionId": "ba7a999f-4826-4245-b021-e025cb0e02f9",
+  "timestamp": "2026-07-29T07:49:34.937Z",
+  "artifactPath": "upgrades/side-effects/mm-bootstrap-realhw-fixes.md",
+  "artifactSha256": "98c1faad761a662d872c1a092a412f0c40db7a7c92b85fddac7a0ba6a274dd68",
+  "coveredFiles": [
+    "docs/specs/MULTI-MACHINE-BOOTSTRAP-ROBUSTNESS-SPEC.eli16.md",
+    "src/core/GitSync.ts",
+    "tests/unit/git-sync-commit-signing.test.ts",
+    "tests/unit/multi-machine-coordinator.test.ts",
+    "upgrades/next/mm-bootstrap-realhw-fixes.md",
+    "upgrades/side-effects/mm-bootstrap-realhw-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Restores already-specified, previously-reviewed GitSync hunks against pre-existing real-git regression tests; adds no new design surface.",
+  "eli16Path": "docs/specs/MULTI-MACHINE-BOOTSTRAP-ROBUSTNESS-SPEC.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mm-bootstrap-realhw-fixes.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    }
+  }
+}

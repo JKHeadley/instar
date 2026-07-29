@@ -2125,6 +2125,7 @@ program
   .option('-d, --dir <path>', 'Directory to clone/join into (default for a git URL: ./<repo-name>)')
   .option('--code <code>', 'Pairing code from `instar pair`')
   .option('--name <name>', 'Display name for this machine')
+  .option('--port <port>', 'Server port for this machine (default: inherited/4040)', (v) => parseInt(v, 10))
   .action(joinMesh);
 
 program

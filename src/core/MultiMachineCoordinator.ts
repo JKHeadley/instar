@@ -1115,6 +1115,12 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   async initializeLease(): Promise<void> {
     if (!this.leaseCoordinator) return;
+      // Prime from the durable medium FIRST so this boot's failover-eligibility check sees the
+      // holder's CURRENT heartbeat — not a stale seed `lastSeen` that a freshly-joined standby
+      // would misread as "holder dead" and use to grab a live holder's lease (verified live on a
+      // two-machine mesh, 2026-05-28). Read-only, so it runs before EVERY branch below: the
+      // observe-only and defer-preferred decisions read the same lease view and benefit equally.
+      this.leaseCoordinator.primeFromDurable();
     if (this.isLeaseObserveOnly) {
       // Silent standby: do NOT acquire — only observe the primary's lease.
       this.reconcileRoleToLease('lease-init-observe-only');
