@@ -1,0 +1,26 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The human-as-detector drift canary now reports a null miss rate before it has
+sampled any messages, instead of presenting an unmeasured detector as having a
+perfect zero-percent miss rate. Sample and mismatch counts remain alongside the
+nullable rate.
+
+## What to Tell Your User
+
+Detector health no longer looks perfect before the detector has measured
+anything; an unmeasured miss rate is now shown as unknown.
+
+## Summary of New Capabilities
+
+- Honest empty-denominator reporting for the human-as-detector drift canary.
+
+## Evidence
+
+- The focused unit test enters the fresh-process state and requires zero samples
+  plus a null miss rate.
+- A measured one-in-three mismatch rate remains numeric.
+- The repository lint and TypeScript checks pass.

@@ -128,8 +128,12 @@ describe('HumanAsDetectorLog — correction-learning Layer-0 extension', () => {
       expect(c.missRate).toBeCloseTo(1 / 3, 5);
     });
 
-    it('miss-rate is 0 with no samples', () => {
-      expect(log.getDriftCanary().missRate).toBe(0);
+    it('reports an unknown miss-rate rather than perfect recall with no samples', () => {
+      const canary = log.getDriftCanary();
+
+      expect(canary.sampled).toBe(0);
+      expect(canary.mismatches).toBe(0);
+      expect(canary.missRate).toBeNull();
     });
   });
 });
