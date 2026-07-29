@@ -67,6 +67,35 @@ function resolveCanonicalHome(): string {
   return process.env.INSTAR_PROJECT_DIR || process.cwd();
 }
 
+/**
+ * The `instar init` invocation that deploys + initializes the throwaway home at
+ * an arbitrary `--dir`. Exported + pure so the decision is unit-testable.
+ *
+ * MUST NOT be `--standalone`: `init --standalone` requires a positional NAME and
+ * routes to `~/.instar/agents/<name>` (ignoring `--dir`) — so the prior
+ * `init --standalone --dir <target>` failed at step 3 unconditionally ("A name is
+ * required for standalone agents"), which is why this harness never passed.
+ * `init --dir <target>` (non-standalone → initExistingProject) honors `--dir`,
+ * allocates a port, and writes `<target>/.instar/config.json` — verified.
+ */
+export function buildInitArgs(target: string): string[] {
+  return ['init', '--dir', target];
+}
+
+/**
+ * Env for spawning/stopping the throwaway's OWN server. Strips the PARENT
+ * session markers so instar's "don't start/stop/restart the server from inside a
+ * managed session" guard doesn't block the throwaway's lifecycle. The spawn (step
+ * 4) AND the teardown's `server stop` BOTH need this — without it on teardown,
+ * `server stop` is refused ("Cannot 'server stop' from inside a session").
+ */
+export function sanitizedSpawnEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...base };
+  delete env.INSTAR_SESSION_ID;
+  delete env.INSTAR_JOB_SLUG;
+  return env;
+}
+
 function nowMs(): number { return Date.now(); }
 
 async function sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
@@ -197,11 +226,11 @@ export async function runTestAsSelf(opts: TestAsSelfOptions): Promise<{ report: 
       return `throwaway home ${ctx.target}`;
     })) return finish(ctx, opts, 2);
 
-    // Step 3 — dist deploy (instar init ships the current dist into the home).
+    // Step 3 — dist deploy (`instar init --dir` initializes the throwaway home).
     if (!await runStep('3. dist-deploy', async () => {
-      execFileSync('node', [ctx.distCli, 'init', '--standalone', '--dir', ctx.target], {
+      execFileSync('node', [ctx.distCli, ...buildInitArgs(ctx.target)], {
         encoding: 'utf-8', timeout: stepDeadlineMs,
-        env: { ...process.env, INSTAR_NONINTERACTIVE: '1' },
+        env: { ...sanitizedSpawnEnv(process.env), INSTAR_NONINTERACTIVE: '1' },
       });
       ctx.port = readPort(ctx.target);
       return `deployed; port ${ctx.port}`;
@@ -209,8 +238,7 @@ export async function runTestAsSelf(opts: TestAsSelfOptions): Promise<{ report: 
 
     // Step 4 — process start (server --no-telegram; lifeline if a bot is set).
     if (!await runStep('4. process-start', async () => {
-      const env = { ...process.env };
-      delete env.INSTAR_SESSION_ID; delete env.INSTAR_JOB_SLUG;
+      const env = sanitizedSpawnEnv(process.env);
       ctx.serverProc = spawn('node', [ctx.distCli, 'server', 'start', '--foreground', '--no-telegram', '--dir', ctx.target],
         { detached: false, stdio: 'ignore', env });
       if (ctx.botToken) {
@@ -314,7 +342,7 @@ function teardown(ctx: RunContext): void {
   try { ctx.serverProc?.kill('SIGTERM'); } catch { /* */ }
   // Best-effort: stop any launchd/lifeline the deploy self-installed, then remove the home.
   try {
-    execFileSync('node', [ctx.distCli, 'server', 'stop', '--dir', ctx.target], { encoding: 'utf-8', timeout: 15_000 });
+    execFileSync('node', [ctx.distCli, 'server', 'stop', '--dir', ctx.target], { encoding: 'utf-8', timeout: 15_000, env: sanitizedSpawnEnv(process.env) });
   } catch { /* may not be running */ }
   // NOTE: the throwaway home removal is intentionally left to the caller / --keep
   // semantics rather than an rm here — SafeFsExecutor is the only sanctioned
