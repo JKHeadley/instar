@@ -92,7 +92,7 @@ export class TreeTraversal {
       misses: this.stats.misses,
       evictions: this.stats.evictions,
       size: this.cache.size,
-      hitRate: total > 0 ? this.stats.hits / total : 0,
+      hitRate: total > 0 ? this.stats.hits / total : null,
     };
   }
 

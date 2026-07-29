@@ -131,6 +131,13 @@ describe('TreeTraversal', () => {
 
   // Gate Test 1.16/1.17: Caching behavior
   describe('caching', () => {
+    it('keeps hit rate unmeasured before the first cache lookup', () => {
+      const stats = traversal.cacheStats();
+      expect(stats.hits).toBe(0);
+      expect(stats.misses).toBe(0);
+      expect(stats.hitRate).toBeNull();
+    });
+
     it('returns cached content on second call', async () => {
       const node: SelfKnowledgeNode = {
         id: 'identity.core',
@@ -166,11 +173,13 @@ describe('TreeTraversal', () => {
       };
 
       await traversal.gather([node], { identity: 0.9 });
+      expect(traversal.cacheStats().hitRate).toBe(0);
       await traversal.gather([node], { identity: 0.9 });
 
       const stats = traversal.cacheStats();
       expect(stats.hits).toBe(1);
       expect(stats.misses).toBe(1);
+      expect(stats.hitRate).toBe(0.5);
     });
 
     it('invalidateTier clears tier-specific entries', async () => {

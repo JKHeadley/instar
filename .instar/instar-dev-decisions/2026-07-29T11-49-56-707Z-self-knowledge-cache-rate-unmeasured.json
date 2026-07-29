@@ -1,0 +1,24 @@
+{
+  "ts": "2026-07-29T11:49:56.707Z",
+  "slug": "self-knowledge-cache-rate-unmeasured",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/knowledge/SelfKnowledgeTree.ts",
+      "src/knowledge/TreeTraversal.ts",
+      "src/knowledge/types.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -377,6 +377,7 @@ Direct and technical. I don't waste words.
 
     expect(result.degraded).toBe(true);
     expect(result.fragments).toHaveLength(0);
+    expect(result.cacheHitRate).toBeNull();
     expect(result.errors.length).toBeGreaterThanOrEqual(1);
   });
 });

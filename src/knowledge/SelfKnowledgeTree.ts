@@ -629,7 +629,7 @@ export class SelfKnowledgeTree {
       synthesis: null,
       budgetUsed: 0,
       elapsedMs: Date.now() - startTime,
-      cacheHitRate: 0,
+      cacheHitRate: null,
       errors: [{ nodeId: '', sourceType: '', error, elapsedMs: 0 }],
     };
   }
