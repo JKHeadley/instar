@@ -120,11 +120,27 @@ describe('computeVerdict — the FD4 precondition-first ladder', () => {
   it('pool-merged orphan share over the bound ⇒ partial + orphanTainted', () => {
     const v = computeVerdict(healthy({ orphanShare: 0.2 }));
     expect(v.verdict).toBe('partial');
+    expect(v.partialReason).toBe('orphan-share-exceeded');
     expect(v.orphanTainted).toBe(true);
   });
 
+  it('unknown orphan rate with otherwise divergent evidence ⇒ partial + orphan-rate-unknown', () => {
+    const v = computeVerdict(healthy({
+      rightN: 0,
+      wrongN: 20,
+      decidedTotal: 0,
+      orphanShare: null,
+    }));
+    expect(v.verdict).toBe('partial');
+    expect(v.verdict).not.toBe('divergent-worse');
+    expect(v.partialReason).toBe('orphan-rate-unknown');
+    expect(v.orphanTainted).toBe(false);
+  });
+
   it('incomplete coverage ⇒ partial (offline machine — re-collected later)', () => {
-    expect(computeVerdict(healthy({ coverageComplete: false })).verdict).toBe('partial');
+    const v = computeVerdict(healthy({ coverageComplete: false }));
+    expect(v.verdict).toBe('partial');
+    expect(v.partialReason).toBe('coverage-incomplete');
   });
 
   it('Q0 drifted hash ⇒ precondition-failed on BOTH sides of the divergence threshold', () => {

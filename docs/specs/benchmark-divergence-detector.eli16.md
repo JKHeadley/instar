@@ -23,6 +23,7 @@ A second review round then went one level deeper — reading the meter's actual 
 
 - **Nothing is deleted before its lesson is kept.** The permanent summary is written when grades are stamped; if analysis ever falls dangerously behind, the shortfall is counted out loud, never silent.
 - **Nothing is missed across machines.** Analysis gathers every machine's summaries at run time. A machine that's offline makes that result "partial" — rechecked later, never guessed. If a result stays partial or data-starved for several cycles in a row, that itself is flagged (a permanent "no conclusion" isn't allowed to hide a real problem).
+- **Unknown is never treated as clean.** If the detector cannot measure the orphan-outcome rate because the denominator is missing, it records a partial result named as "orphan rate unknown." That is different from "too many orphans" and different from "zero orphans," so readers can tell whether the data is dirty or simply unmeasurable.
 - **It only ever observes.** It ships turned off (watch-only rehearsal mode on the development agent), returns "not enabled" unless deliberately switched on, and every finding is marked advisory.
 
 ## What you actually need to decide

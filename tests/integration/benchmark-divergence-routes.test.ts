@@ -111,7 +111,7 @@ function seedGradedDay(day = '2026-07-05', n = 5): void {
 
 /** The frozen FD10 FINDING envelope key set (content-free guarantee). */
 const FINDING_KEY_ALLOWLIST = new Set([
-  'taskId', 'decisionPointId', 'model', 'verdict', 'preconditionReason', 'realGradeRate', 'predictedRate',
+  'taskId', 'decisionPointId', 'model', 'verdict', 'preconditionReason', 'partialReason', 'realGradeRate', 'predictedRate',
   'delta', 'gradedN', 'unknownShare', 'ciHalfWidth', 'benchN', 'benchCiHalfWidth', 'orphanTainted',
   'chronic', 'chronicStreak', 'chronicReason', 'coverage', 'dominantMachineShare', 'unmapped',
   'benchedPromptHash', 'mirrorCapturedAt', 'analysisWindow', 'firstSeenAt', 'lastSeenAt', 'advisory',
