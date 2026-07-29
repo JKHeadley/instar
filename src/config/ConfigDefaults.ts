@@ -745,6 +745,12 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       hysteresisHours: 12,
       staleEpisodeTtlDays: 30,
       fetchTimeoutMs: 30_000,
+      // Evaluator-self-failures (fetch / analyzer / top-level tick) are
+      // HOUSEKEEPING by default — they write to the audit log + server.log
+      // but do not post a per-stage Attention item / Telegram topic. The
+      // user-actionable "release blocked" signal is unaffected. Set true to
+      // surface catastrophic watchdog failures in chat. Sentinel-trio standard.
+      escalateEvalFailures: false,
     },
     // green-pr-automerge-enforcement R7: the background watcher that merges a
     // green, mergeable, non-held PR this agent authored (Phase 7 becomes
