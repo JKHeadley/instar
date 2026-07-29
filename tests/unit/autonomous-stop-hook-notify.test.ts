@@ -143,16 +143,27 @@ describe('Layer A — notify_terminal_stop functional delivery (real extracted f
 describe('Layer A — existing agents receive the notify-enabled hook (migration)', () => {
   let projectDir: string;
 
-  // Old stock hook: carries the fingerprint, lacks the notify_terminal_stop marker.
-  const OLD_HOOK = [
-    '#!/bin/bash',
-    '# Autonomous Mode Stop Hook',
-    '# TOPIC-KEYED OWNERSHIP + MULTI-SESSION (per-topic state)',
-    '# Native /goal delegation',
-    'REGISTRY_FILE=".instar/topic-session-registry.json"',
-    'exit 0',
-    '',
-  ].join('\n');
+  // Immediately-prior stock hook: it already carries terminal notification,
+  // but lacks the STATE_PARSE_LOUD additions. The current migration patches
+  // this exact structure in place rather than replacing a stock-looking file.
+  const priorStateParseHook = (): string => fs.readFileSync(HOOK_PATH, 'utf8')
+    .replace(
+      `# hook-capability: STATE_PARSE_LOUD — a selected state file with missing/malformed
+# frontmatter is a visible hook failure, distinct from the clean no-state exit.
+`,
+      '',
+    )
+    .replace(
+      /# STATE_FILE was selected only after an existence check\.[\s\S]*?if \[\[ "\$FM_DELIMITER_COUNT" -lt 2 \]\]; then\n  state_parse_failure\nfi\n\n/,
+      '',
+    )
+    .replace(
+      `if [[ "$ACTIVE" != "true" ]] && [[ "$ACTIVE" != "false" ]]; then
+  state_parse_failure
+fi
+`,
+      '',
+    );
 
   beforeEach(() => {
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notify-stop-mig-'));
@@ -163,11 +174,12 @@ describe('Layer A — existing agents receive the notify-enabled hook (migration
     rmrf(projectDir);
   });
 
-  it('upgrades a pre-notify stock hook so it gains notify_terminal_stop', () => {
+  it('keeps notify_terminal_stop while surgically upgrading the prior stock hook', () => {
     const dst = path.join(projectDir, HOOK_REL);
     fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.writeFileSync(dst, OLD_HOOK);
-    expect(fs.readFileSync(dst, 'utf8')).not.toContain('notify_terminal_stop');
+    fs.writeFileSync(dst, priorStateParseHook());
+    expect(fs.readFileSync(dst, 'utf8')).toContain('notify_terminal_stop');
+    expect(fs.readFileSync(dst, 'utf8')).not.toContain('STATE_PARSE_LOUD');
 
     const migrator = new PostUpdateMigrator({
       projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: false, projectName: 'test',
@@ -177,6 +189,7 @@ describe('Layer A — existing agents receive the notify-enabled hook (migration
       .migrateAutonomousStopHookTopicKeyed(result);
 
     expect(fs.readFileSync(dst, 'utf8')).toContain('notify_terminal_stop');
+    expect(fs.readFileSync(dst, 'utf8')).toContain('STATE_PARSE_LOUD');
     expect(result.errors).toEqual([]);
   });
 
@@ -198,7 +211,8 @@ describe('Layer A — existing agents receive the notify-enabled hook (migration
     // The bundled hook still contains
     // notify_terminal_stop — asserted above — so that capability is not lost on upgrade.
     const src = fs.readFileSync(path.join(REPO_ROOT, 'src', 'core', 'PostUpdateMigrator.ts'), 'utf8');
-    expect(src).toMatch(/upgrade\(\s*'\.claude\/skills\/autonomous\/hooks\/autonomous-stop-hook\.sh',\s*'DECISION_QUALITY_REALCHECK'/);
+    expect(src).toContain("current.includes('STATE_PARSE_LOUD')");
+    expect(src).toContain('upgradeAutonomousHookStateParse();');
   });
 
   it('restart-resume note is SILENT to the user — audit + stderr only (RESTART_NOTE_SILENT)', () => {
