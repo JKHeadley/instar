@@ -1,5 +1,7 @@
 ---
 title: "Instar Jobs as agent.md"
+parent-principle: "Documentation IS Being"
+parent-principle-note: "The spec's whole thesis is that a job stops being a JSON *record describing* work and becomes a markdown file that IS the job — definition and documentation collapse into one load-bearing artifact. That is this standard applied to the scheduler: for a file-based agent the file is not a record of the self, it is part of the self. The Phase-4 dashboard surface follows directly: operators edit the job by editing that same artifact, with the file remaining the single source of truth."
 slug: "instar-jobs-as-agentmd"
 author: "echo"
 status: "approved"
@@ -141,9 +143,9 @@ The lock-file does not defend against an attacker who has already compromised th
 
 `bodyHash` and `frontmatterHash` in `instar.lock.json` are computed over the result of the same `normalize()` function defined in §Migration script (CRLF → LF, ZWSP/ZWNJ/ZWJ/BOM strip, `trimEnd()` + single trailing `\n`). Release-time signing and runtime verification both apply this normalization before hashing. This prevents benign line-ending changes on `core.autocrlf` checkouts from triggering skip-until-ack. Tests assert that an LF and CRLF version of the same body produce identical hashes.
 
-### Key rotation (deferred)
+### Key rotation (deferred) <!-- tracked: ACT-1552 -->
 
-Key rotation (release-key compromise or scheduled rotation) is deferred to a follow-up spec. The current model is single-key trust anchor: a key change requires re-installing instar. The lock-file schema includes a `keyId` field so a future rotation is non-breaking — the loader will look up the public key in a bundled keystore by `keyId` rather than from a fixed path.
+Key rotation (release-key compromise or scheduled rotation) is deferred to a follow-up spec <!-- tracked: ACT-1552 -->. The current model is single-key trust anchor: a key change requires re-installing instar. The lock-file schema includes a `keyId` field so a future rotation is non-breaking — the loader will look up the public key in a bundled keystore by `keyId` rather than from a fixed path.
 
 ### Loader behavior on lock-file failure
 
@@ -761,7 +763,7 @@ No new block/allow/route gates. Existing gates extended:
 
 ## Open Questions Resolved
 
-The v1 spec deferred seven open questions; v2 and v3 resolved them:
+The v1 spec left seven open questions; v2 and v3 resolved them:
 
 1. **Override-as-fork vs patch-overlay** → Fork. Patches are fragile across updates.
 2. **YAML frontmatter vs sidecar JSON** → YAML, hardened parser, explicit coercion.

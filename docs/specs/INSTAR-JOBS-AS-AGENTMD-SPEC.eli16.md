@@ -54,7 +54,7 @@ Six phases, each its own pull request:
 1. **Phase 1** — loader, scheduler, lock-file infrastructure (runtime consumer + build-time signer)
 2. **Phase 2** — the 14 shipped prompt-type defaults become markdown templates; `installBuiltinJobs()` writes them to agent disk on init and on every update
 3. **Phase 3** — `instar job migrate` CLI ships, operator-initiated
-4. **Phase 4** — Dashboard rewrite (Jobs tab, Issues card, drift digest, unfork action with backup, four-screen unrestricted widening) plus the operator-confirm endpoints that flip the release-cut gate
+4. **Phase 4** — Dashboard rewrite (Jobs tab, Issues card, migration banner, namespace badges, editor with a stale-save guard, override and unfork actions with backup) plus the operator-confirm endpoints that flip the release-cut gate. Two items named here in the original plan are NOT part of the shipped Phase 4: the drift-digest visual surface, which needs the drift classifier populating `significantChanges` in CI before it has anything to show, and the four-screen unrestricted-tools widening flow — no Phase 4 endpoint mutates `unrestrictedTools` or `toolAllowlist`, so widening stays a body edit through Override, where the resolver's existing two-flag guard applies.
 5. **Phase 5** — `PostUpdateMigrator` auto-runs the migration with `--default-action=fork` on every update for any agent that still has a legacy `jobs.json`
 6. **Phase 6** — `execute.type: "prompt"` for instar default jobs is deprecated and removed two releases after Phase 4 lands
 

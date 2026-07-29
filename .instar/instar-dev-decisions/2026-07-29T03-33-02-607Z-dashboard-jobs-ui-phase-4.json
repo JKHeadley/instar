@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-29T03:33:02.607Z",
+  "slug": "dashboard-jobs-ui-phase-4",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 19,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

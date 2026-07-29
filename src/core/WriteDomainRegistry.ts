@@ -253,6 +253,25 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   };
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
+
+  // ── Jobs-as-agent.md mutation surface (dashboard Phase 4) ────────────────
+  // A job DEFINITION is a markdown file under `.instar/jobs/`, which GitSync
+  // treats as content that should sync between machines (GitSync.ts: "should
+  // sync (jobs, identity docs, durable registries)"). The same file is therefore
+  // visible on every machine and two machines editing one job would collide —
+  // cluster-shared, single-writer = lease holder, matching the existing
+  // `saveJobState` op classification.
+  //
+  // NOTE the distinction that makes this non-obvious: `isJobLocal()` /
+  // `runsOnThisMachine` describe which machine EXECUTES a job. That is execution
+  // locality, not definition locality. The definition is shared even when
+  // execution is not, so per-machine execution does NOT make these writes
+  // machine-local.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/save', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/disable', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/enable', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/override', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/unfork', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   const classReviewStory: ConvergenceStory = {
