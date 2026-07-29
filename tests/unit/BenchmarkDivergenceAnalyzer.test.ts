@@ -246,6 +246,26 @@ describe('the pass — verdicts over the pool-merged window', () => {
     expect(f.gradedN).toBe(0);
   });
 
+  it('an unmeasurable orphan denominator with otherwise divergent evidence ⇒ partial / orphan-rate-unknown', async () => {
+    writeMatchingMirror();
+    const rawDb = (ledger as unknown as { db: import('better-sqlite3').Database }).db;
+    rawDb.prepare(
+      `INSERT INTO decision_quality_rollup_by_model
+         (decision_point, model, day, right_n, wrong_n, unknown_n, decided_total, prompt_id, last_write_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(DP_MESSAGING_TONE_GATE, 'claude-opus-4-8', '2026-07-05', 0, 20, 0, 0, 'tone-gate-v1', nowMs);
+    const a = analyzer();
+    const r = await a.analyze('manual');
+    expect(r.byVerdict?.aligned).toBeUndefined();
+    expect(r.byVerdict?.['divergent-worse']).toBeUndefined();
+    expect(r.byVerdict?.partial).toBe(1);
+    const f = ledger.listBenchmarkFindings()[0];
+    expect(f.verdict).toBe('partial');
+    expect(f.partialReason).toBe('orphan-rate-unknown');
+    expect(f.orphanTainted).toBe(0);
+    expect(f.gradedN).toBe(20);
+  });
+
   it('an unmapped production model ⇒ no-benched-baseline (unmapped:true) — never a foreign baseline', async () => {
     writeMatchingMirror();
     seedDecisions('2026-07-05', 30, { model: 'mystery-model-9000' });

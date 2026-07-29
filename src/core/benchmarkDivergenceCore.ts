@@ -35,6 +35,13 @@ export const PRECONDITION_REASONS = [
 ] as const;
 export type PreconditionReason = (typeof PRECONDITION_REASONS)[number];
 
+export const PARTIAL_REASONS = [
+  'coverage-incomplete',
+  'orphan-share-exceeded',
+  'orphan-rate-unknown',
+] as const;
+export type PartialReason = (typeof PARTIAL_REASONS)[number];
+
 /** FD8: the chronic streak RESETS only on an actionable verdict. */
 export const ACTIONABLE_VERDICTS: ReadonlySet<DivergenceVerdict> = new Set([
   'divergent-worse',
@@ -138,8 +145,8 @@ export interface VerdictInput {
   wrongN: number;
   /** ALL recorded decisions in the window (the correlation spine, FD2). */
   decidedTotal: number;
-  /** Pool-merged orphan share for the decision point (FD9). */
-  orphanShare: number;
+  /** Pool-merged orphan share for the decision point; null when the denominator is unmeasurable (FD9). */
+  orphanShare: number | null;
   /** FD8: every known machine reported for the window. */
   coverageComplete: boolean;
   thresholds: {
@@ -153,6 +160,7 @@ export interface VerdictInput {
 export interface VerdictResult {
   verdict: DivergenceVerdict;
   preconditionReason?: PreconditionReason;
+  partialReason?: PartialReason;
   unmapped?: boolean;
   orphanTainted: boolean;
   realGradeRate: number | null;
@@ -179,8 +187,8 @@ export interface VerdictResult {
  *      prompt-drifted-within-window (P20 — the decisions RAN on different prompts);
  *   5. unmapped model → no-benched-baseline (unmapped: true, fail-closed FD5);
  *   6. model not in the mirror's perModel → no-benched-baseline (unmapped: false);
- *   7. coverage incomplete → partial; pool-merged orphan share over bound →
- *      partial + orphanTainted (FD2/FD8);
+ *   7. coverage incomplete → partial; orphan rate unknown → partial;
+ *      pool-merged orphan share over bound → partial + orphanTainted (FD2/FD8);
  *   8. gradedN under floor or unknownShare over bound → insufficient-evidence;
  *   9. the FD3 CI-aware two-sided divergence test → divergent-worse /
  *      divergent-better / aligned.
@@ -243,9 +251,16 @@ export function computeVerdict(input: VerdictInput): VerdictResult {
   }
 
   // 7. Coverage + orphan honesty gates (R2 applies to the honesty gates too).
-  const orphanTainted = input.orphanShare > input.thresholds.maxOrphanShare;
-  if (!input.coverageComplete) return { ...base, verdict: 'partial', orphanTainted };
-  if (orphanTainted) return { ...base, verdict: 'partial', orphanTainted: true };
+  const orphanTainted = input.orphanShare !== null && input.orphanShare > input.thresholds.maxOrphanShare;
+  if (!input.coverageComplete) {
+    return { ...base, verdict: 'partial', partialReason: 'coverage-incomplete', orphanTainted };
+  }
+  if (input.orphanShare === null) {
+    return { ...base, verdict: 'partial', partialReason: 'orphan-rate-unknown' };
+  }
+  if (orphanTainted) {
+    return { ...base, verdict: 'partial', partialReason: 'orphan-share-exceeded', orphanTainted: true };
+  }
 
   // 8. Evidence floors (FD2): settled-grades denominator; the unsettled-stream
   //    gate reads decided_total (ALL decisions), so a point-day with a few
@@ -447,6 +462,7 @@ export interface FindingView {
   model: string;
   verdict: DivergenceVerdict;
   preconditionReason?: PreconditionReason;
+  partialReason?: PartialReason;
   realGradeRate: number | null;
   predictedRate: number | null;
   delta: number | null;
@@ -505,6 +521,10 @@ export function clampPeerFinding(raw: unknown, opts: { todayDay: string; maxAgeD
     typeof r.preconditionReason === 'string' && (PRECONDITION_REASONS as readonly string[]).includes(r.preconditionReason)
       ? (r.preconditionReason as PreconditionReason)
       : undefined;
+  const partialReason =
+    typeof r.partialReason === 'string' && (PARTIAL_REASONS as readonly string[]).includes(r.partialReason)
+      ? (r.partialReason as PartialReason)
+      : undefined;
 
   const win = r.analysisWindow && typeof r.analysisWindow === 'object' ? (r.analysisWindow as Record<string, unknown>) : {};
   const fromDay = typeof win.fromDay === 'string' && isValidAggregateDay(win.fromDay, opts.todayDay, opts.maxAgeDays) ? win.fromDay : '';
@@ -529,6 +549,7 @@ export function clampPeerFinding(raw: unknown, opts: { todayDay: string; maxAgeD
     model,
     verdict,
     ...(preconditionReason !== undefined ? { preconditionReason } : {}),
+    ...(partialReason !== undefined ? { partialReason } : {}),
     realGradeRate: clampNum(r.realGradeRate),
     predictedRate: clampNum(r.predictedRate),
     delta: clampNum(r.delta),

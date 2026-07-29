@@ -1,0 +1,24 @@
+{
+  "ts": "2026-07-29T14:38:03.759Z",
+  "slug": "benchmark-orphan-rate-unknown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 72,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/benchmarkDivergenceCore.ts",
+      "src/monitoring/BenchmarkDivergenceAnalyzer.ts",
+      "src/monitoring/FeatureMetricsLedger.ts"
+    ],
+    "addedLines": 61,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
