@@ -78,6 +78,37 @@ import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillCo
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Exact SHA-256 identities of every canonical autonomous stop-hook revision in
+ * repository history through the predecessor of STATE_PARSE_LOUD. These are a
+ * conservative migration escape hatch for agents that skipped several releases:
+ * exact historical stock bytes may be replaced by the current bundle; any
+ * customization changes the hash and is refused. Keep this list append-only.
+ */
+export const AUTONOMOUS_STOP_HOOK_STOCK_SHA256 = [
+  'af4b8a3666d10f3ea0e351798b045e04b1386aaf53e98eb966e96fade9ef6cbb',
+  'b8fc09c2294a62d74d015094c4e0161418a972d468383ee58601fc4f918f7a0a',
+  'e8b1502ef4b2f18e1e96f04bed3cb8625aefa8c82e9c280832177cdbdb487217',
+  'ed5c1914a3af5993cef5d0cc5da9ec7fff912a7aba0d16066460e96f6193acbe',
+  '92873086e199954f572bbbc46b4d7d9e3f2673dc6a532af7731e56cbadddbe50',
+  'c8a437ab16400b1ad164fc84ec4baec253064fa8f130eacc796bfea260e724f2',
+  '4e95364a4bd00d714bd2fd39895b73664e466c41212c51b4ee462a35d400248a',
+  'fc7532480019bcf87009be9a3df75d3042e9f7ace248e1c2090f901c1db5e2a8',
+  '044e292b8c60b9231c9517c58d6daa99b267874b5f9e80a2ca0ab22497a3554c',
+  '33973ac0dfa974957d65670eb834471729fa3ebdefe04f544671614d3eabce23',
+  '398545c4d6065ac3ef8f85894505167260ea663e8f4fd285a36cce67c35f4f70',
+  '0ee8e791108c44061209ee497bbda385ee654372cbdd50233812770d3cce757d',
+  'b79ba23293be29eb9c12265f482e183f2e82613abf416da6f905a12ee3d99fef',
+  '9dd3fdcef05e1a3e0b33245c7c0cf2f23c8a02d60e595f4b3bc0d3dd3a3b0b0d',
+  '396eccaa3eb44f277f4e8a68a89a1632c00a6a215a7e655a43f7331b99dd025a',
+  '86848a69a2122a9148fbcd68de3327d868ec6d33b81bdad0f6ba08c628c2c7b6',
+  '108a840b315b1b35059e1155671724a16bd4ce3ada7c0f3ca1b95839996fb6a1',
+  'a5e8373c99be1e38b1237f8cbc7a3d492031424b09e2786bf1a72a1097252e8e',
+  '972574c945ee1d43335970fab4512269d3e5e9f9afe92a13f94c99ebffba7391',
+  'ee403db081bc96043556c767b697df47dec89e3e03fe3de359681fb1c1d9aff9',
+  'fbb68b9d14465315653ebe597ec0f62d0846afbc3f59364a0fcc6657eeeddee1',
+] as const;
+
+/**
  * The "Playwright Profile Registry" CLAUDE.md awareness section. SHARED by
  * `generateClaudeMd` (new installs) and `migrateClaudeMd` (existing agents) so the
  * two can never drift (Agent Awareness + Migration Parity). Uses the `${port}`
@@ -3926,13 +3957,112 @@ export class PostUpdateMigrator {
    * these through init — a dedicated migration is the only path (Migration Parity
    * Standard, "updating existing skill content").
    *
-   * Idempotent + conservative per file: re-copy the bundled file only when the
-   * installed copy (a) lacks the current capability MARKER AND (b) still matches
-   * the stock FINGERPRINT. A customized file is left untouched. The marker is the
-   * multi-session signature so v1.2.55 topic-keyed installs (which lack it) still
-   * receive this upgrade.
+   * Idempotent + conservative per file: setup/SKILL migrations retain their
+   * established marker + fingerprint replacement. The stop-hook's latest
+   * state-parse bump is narrower: it patches exact unique recent-version anchors
+   * in place, preserving unrelated/custom bytes. Older canonical stock revisions
+   * are recognized by exact SHA-256; all unknown layouts are refused.
    */
   private migrateAutonomousStopHookTopicKeyed(result: MigrationResult): void {
+    const upgradeAutonomousHookStateParse = (): void => {
+      const relPath = '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
+      const label = 'skills/autonomous/hooks/autonomous-stop-hook.sh (visible corrupt-state refusal instead of silent no-state exit)';
+      try {
+        const deployed = path.join(this.config.projectDir, ...relPath.split('/'));
+        if (!fs.existsSync(deployed)) return; // installAutonomousSkill handles fresh installs
+        const current = fs.readFileSync(deployed, 'utf8');
+        if (current.includes('STATE_PARSE_LOUD')) return; // already current — idempotent
+
+        // This marker bump must not use the generic "contains a stock-looking
+        // header" whole-file replacement below. A customized derivative can
+        // retain that header, and replacing it would silently erase operator
+        // changes. Patch only three exact, unique prior-version anchors and
+        // preserve every unrelated byte. Unknown/ambiguous layouts are left
+        // untouched so a future migration can handle them deliberately.
+        const markerAnchor = `# hook-capability: DECISION_QUALITY_REALCHECK — run_end_call carries the real-check
+# pass|fail|configured:false observation to the existing decision-quality annotator.
+# emit —`;
+        const markerReplacement = `# hook-capability: DECISION_QUALITY_REALCHECK — run_end_call carries the real-check
+# pass|fail|configured:false observation to the existing decision-quality annotator.
+# hook-capability: STATE_PARSE_LOUD — a selected state file with missing/malformed
+# frontmatter is a visible hook failure, distinct from the clean no-state exit.
+# emit —`;
+        const frontmatterAnchor = `FRONTMATTER=$(sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$STATE_FILE")`;
+        const frontmatterReplacement = `# STATE_PARSE_LOUD: STATE_FILE was selected only after an existence check.
+# From this point on, an unreadable control block is corruption, not "no job".
+state_parse_failure() {
+  printf 'ERROR: Autonomous mode: autonomous state exists but its frontmatter is unparseable: %s (expected a fenced block with active: true|false)\\n' "$STATE_FILE" >&2
+  exit 1
+}
+
+FM_DELIMITER_COUNT=$(awk '$0 == "---" { count++ } END { print count + 0 }' "$STATE_FILE" 2>/dev/null)
+FM_DELIMITER_COUNT="\${FM_DELIMITER_COUNT:-0}"
+if [[ "$FM_DELIMITER_COUNT" -lt 2 ]]; then
+  state_parse_failure
+fi
+
+${frontmatterAnchor}`;
+        const activeAnchor = `ACTIVE=$(fm_get active)
+if [[ "$ACTIVE" != "true" ]]; then`;
+        const activeReplacement = `ACTIVE=$(fm_get active)
+if [[ "$ACTIVE" != "true" ]] && [[ "$ACTIVE" != "false" ]]; then
+  state_parse_failure
+fi
+if [[ "$ACTIVE" != "true" ]]; then`;
+
+        const anchors = [
+          [markerAnchor, markerReplacement],
+          [frontmatterAnchor, frontmatterReplacement],
+          [activeAnchor, activeReplacement],
+        ] as const;
+        let next = current;
+        let anchorsMatched = true;
+        for (const [anchor, replacement] of anchors) {
+          const first = next.indexOf(anchor);
+          const last = next.lastIndexOf(anchor);
+          if (first < 0 || first !== last) {
+            anchorsMatched = false;
+            break;
+          }
+          next = `${next.slice(0, first)}${replacement}${next.slice(first + anchor.length)}`;
+        }
+
+        if (!anchorsMatched) {
+          const currentSha256 = crypto.createHash('sha256').update(current).digest('hex');
+          if (!(AUTONOMOUS_STOP_HOOK_STOCK_SHA256 as readonly string[]).includes(currentSha256)) {
+            result.skipped.push(`${relPath}: customized or unknown layout — left untouched (no exact stock hash or unique state-parse anchors)`);
+            return;
+          }
+          const bundled = path.join(__dirname, '..', '..', ...relPath.split('/'));
+          if (!fs.existsSync(bundled)) {
+            result.errors.push(`${relPath} migration: bundled hook is missing`);
+            return;
+          }
+          next = fs.readFileSync(bundled, 'utf8');
+          if (!next.includes('STATE_PARSE_LOUD')) {
+            result.errors.push(`${relPath} migration: bundled hook lacks STATE_PARSE_LOUD`);
+            return;
+          }
+        }
+
+        const tempPath = `${deployed}.state-parse.${process.pid}.${randomUUID()}.tmp`;
+        try {
+          fs.writeFileSync(tempPath, next, { mode: 0o755 });
+          fs.renameSync(tempPath, deployed);
+        } finally {
+          if (fs.existsSync(tempPath)) {
+            SafeFsExecutor.safeRmSync(tempPath, {
+              force: true,
+              operation: 'PostUpdateMigrator:migrateAutonomousStopHookTopicKeyed:temp-cleanup',
+            });
+          }
+        }
+        result.upgraded.push(label);
+      } catch (err) {
+        result.errors.push(`${relPath} migration: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+
     const upgrade = (
       relPath: string, marker: string, fingerprint: string, label: string,
     ): void => {
@@ -4027,12 +4157,14 @@ export class PostUpdateMigrator {
     // Marker bumped `TASK_CONTINUATION` → `DECISION_QUALITY_REALCHECK`: the
     // terminal run-end payload now carries the already-observed real-check
     // disposition into the existing decision-quality annotation chokepoint.
-    upgrade(
-      '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh',
-      'DECISION_QUALITY_REALCHECK',
-      'Autonomous Mode Stop Hook',
-      'skills/autonomous/hooks/autonomous-stop-hook.sh (decision-quality real-check outcome transport at run-end)',
-    );
+    // Marker bumped `DECISION_QUALITY_REALCHECK` → `STATE_PARSE_LOUD`: the hook
+    // now distinguishes a genuinely absent autonomous state file (clean allow)
+    // from a selected file whose fenced frontmatter cannot be parsed (visible
+    // failure). Unlike earlier cumulative hook migrations, this bump is surgical
+    // for anchor-compatible recent revisions so stock-derived customizations survive.
+    // Older canonical stock bytes use the exact historical SHA-256 allowlist;
+    // every unknown layout is refused rather than overwritten.
+    upgradeAutonomousHookStateParse();
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
     // wiring was gated on `claude --version >= 2.1.139`, which is empty for a codex agent, so

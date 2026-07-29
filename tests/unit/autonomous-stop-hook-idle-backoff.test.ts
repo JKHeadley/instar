@@ -262,20 +262,33 @@ describe('IDLE_BACKOFF — safety properties (static)', () => {
 });
 
 describe('IDLE_BACKOFF — existing agents receive the paced hook (migration)', () => {
-  it('upgrades a RESTART_NOTE_SILENT-era stock hook so it gains IDLE_BACKOFF', () => {
+  it('preserves IDLE_BACKOFF while surgically upgrading the immediately prior stock hook', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'backoff-mig-'));
     try {
       fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
       const dst = path.join(projectDir, HOOK_REL);
       fs.mkdirSync(path.dirname(dst), { recursive: true });
-      // Prior-era stock hook: carries the fingerprint + the previous marker, lacks IDLE_BACKOFF.
-      fs.writeFileSync(dst, [
-        '#!/bin/bash',
-        '# Autonomous Mode Stop Hook',
-        '# RESTART_NOTE_SILENT — self-lifecycle narration is housekeeping; default-silent.',
-        'exit 0',
-        '',
-      ].join('\n'));
+      const prior = fs.readFileSync(HOOK_PATH, 'utf8')
+        .replace(
+          `# hook-capability: STATE_PARSE_LOUD — a selected state file with missing/malformed
+# frontmatter is a visible hook failure, distinct from the clean no-state exit.
+`,
+          '',
+        )
+        .replace(
+          /# STATE_FILE was selected only after an existence check\.[\s\S]*?if \[\[ "\$FM_DELIMITER_COUNT" -lt 2 \]\]; then\n  state_parse_failure\nfi\n\n/,
+          '',
+        )
+        .replace(
+          `if [[ "$ACTIVE" != "true" ]] && [[ "$ACTIVE" != "false" ]]; then
+  state_parse_failure
+fi
+`,
+          '',
+        );
+      fs.writeFileSync(dst, prior);
+      expect(prior).toContain('IDLE_BACKOFF');
+      expect(prior).not.toContain('STATE_PARSE_LOUD');
 
       const migrator = new PostUpdateMigrator({
         projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: false, projectName: 'test',
@@ -286,7 +299,8 @@ describe('IDLE_BACKOFF — existing agents receive the paced hook (migration)', 
 
       const upgraded = fs.readFileSync(dst, 'utf8');
       expect(upgraded).toContain('IDLE_BACKOFF');
-      expect(upgraded).toContain('RESTART_NOTE_SILENT'); // prior capability not lost
+      expect(upgraded).toContain('RESTART_NOTE_SILENT'); // older capability not lost
+      expect(upgraded).toContain('STATE_PARSE_LOUD');
       expect(result.errors).toEqual([]);
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true });

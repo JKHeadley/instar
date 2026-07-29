@@ -55,6 +55,8 @@ for _arg in "$@"; do [[ "$_arg" == "--codex" ]] && IS_CODEX=1; done
 # the same trusted Stop boundary when an explicit bounded task ledger is live.
 # hook-capability: DECISION_QUALITY_REALCHECK — run_end_call carries the real-check
 # pass|fail|configured:false observation to the existing decision-quality annotator.
+# hook-capability: STATE_PARSE_LOUD — a selected state file with missing/malformed
+# frontmatter is a visible hook failure, distinct from the clean no-state exit.
 # emit — human-facing approve/status text. In codex mode the Stop hook's STDOUT must be
 # ONLY valid decision-JSON (the `{"decision":"block",...}` case far below) or empty:
 # codex rejects ANY other stdout as "invalid stop hook JSON output" and reports the stop
@@ -221,6 +223,22 @@ if [[ "$IS_CODEX" == "1" ]] && [[ "$CODEX_LOOP_ENABLED" != "1" ]]; then
 fi
 
 # ── Read the selected state file ──────────────────────────────────────
+# STATE_FILE was selected only after an existence check. From this point on,
+# "no parseable state" is corruption, NOT the same outcome as "no autonomous
+# job". The API reader accepts plain key lines anywhere in the document, while
+# this hook intentionally consumes fenced frontmatter. A missing/partial fence
+# must therefore fail visibly instead of turning an active run into exit 0.
+state_parse_failure() {
+  printf 'ERROR: Autonomous mode: autonomous state exists but its frontmatter is unparseable: %s (expected a fenced block with active: true|false)\n' "$STATE_FILE" >&2
+  exit 1
+}
+
+FM_DELIMITER_COUNT=$(awk '$0 == "---" { count++ } END { print count + 0 }' "$STATE_FILE" 2>/dev/null)
+FM_DELIMITER_COUNT="${FM_DELIMITER_COUNT:-0}"
+if [[ "$FM_DELIMITER_COUNT" -lt 2 ]]; then
+  state_parse_failure
+fi
+
 FRONTMATTER=$(sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$STATE_FILE")
 fm_get() {
   local key="$1"
@@ -252,6 +270,9 @@ iso8601_epoch() {
 }
 
 ACTIVE=$(fm_get active)
+if [[ "$ACTIVE" != "true" ]] && [[ "$ACTIVE" != "false" ]]; then
+  state_parse_failure
+fi
 if [[ "$ACTIVE" != "true" ]]; then
   exit 0
 fi

@@ -1,3 +1,4 @@
+// safe-git-allow: reads two immutable historical hook blobs to prove exact-hash migration.
 /**
  * Verifies PostUpdateMigrator upgrades an already-deployed autonomous stop hook
  * to the topic-keyed version on update.
@@ -13,7 +14,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { execFileSync } from 'node:child_process';
+import {
+  AUTONOMOUS_STOP_HOOK_STOCK_SHA256,
+  PostUpdateMigrator,
+} from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
@@ -45,27 +50,12 @@ function deploySkill(projectDir: string, content: string): string {
   return dst;
 }
 
-// A representative OLD (session-UUID-keyed) hook: carries the stock fingerprint
-// but lacks the topic-session-registry marker.
-const OLD_HOOK = `#!/bin/bash
-
+// A stock-looking but unknown hook layout. The old migration treated the
+// human-readable header as proof this was stock and overwrote the whole file.
+// It is deliberately unsafe to do that: customized derivatives retain headers.
+const STOCK_HEADER_UNKNOWN_LAYOUT = `#!/bin/bash
 # Autonomous Mode Stop Hook
-# Prevents session exit when autonomous mode is active.
-
-STATE_FILE=".instar/autonomous-state.local.md"
-STATE_SESSION=$(echo "$FRONTMATTER" | grep '^session_id:')
-if [[ "$STATE_SESSION" != "$HOOK_SESSION" ]]; then
-  exit 0
-fi
-rm "$STATE_FILE"
-`;
-
-// A v1.2.55 topic-keyed hook: has topic-session-registry but NOT the
-// multi-session marker — must still be upgraded.
-const TOPIC_KEYED_V1255_HOOK = `#!/bin/bash
-# Autonomous Mode Stop Hook
-# TOPIC-KEYED OWNERSHIP ...
-REGISTRY_FILE=".instar/topic-session-registry.json"
+# operator customization: do not erase
 exit 0
 `;
 
@@ -120,6 +110,60 @@ function deployHook(projectDir: string, content: string): string {
   return dst;
 }
 
+function priorStateParseHook(): string {
+  const bundled = fs.readFileSync(
+    path.join(process.cwd(), '.claude', 'skills', 'autonomous', 'hooks', 'autonomous-stop-hook.sh'),
+    'utf8',
+  );
+  return bundled
+    .replace(
+      `# hook-capability: STATE_PARSE_LOUD — a selected state file with missing/malformed
+# frontmatter is a visible hook failure, distinct from the clean no-state exit.
+`,
+      '',
+    )
+    .replace(
+      `# STATE_FILE was selected only after an existence check. From this point on,
+# "no parseable state" is corruption, NOT the same outcome as "no autonomous
+# job". The API reader accepts plain key lines anywhere in the document, while
+# this hook intentionally consumes fenced frontmatter. A missing/partial fence
+# must therefore fail visibly instead of turning an active run into exit 0.
+state_parse_failure() {
+  printf 'ERROR: Autonomous mode: autonomous state exists but its frontmatter is unparseable: %s (expected a fenced block with active: true|false)\\n' "$STATE_FILE" >&2
+  exit 1
+}
+
+FM_DELIMITER_COUNT=$(awk '$0 == "---" { count++ } END { print count + 0 }' "$STATE_FILE" 2>/dev/null)
+FM_DELIMITER_COUNT="\${FM_DELIMITER_COUNT:-0}"
+if [[ "$FM_DELIMITER_COUNT" -lt 2 ]]; then
+  state_parse_failure
+fi
+
+`,
+      '',
+    )
+    .replace(
+      `if [[ "$ACTIVE" != "true" ]] && [[ "$ACTIVE" != "false" ]]; then
+  state_parse_failure
+fi
+`,
+      '',
+    );
+}
+
+const HISTORICAL_STOCK_HOOKS = [
+  {
+    label: 'original session-keyed stock hook',
+    commit: 'f74b8086f6bb88b1b2aaa2c17d0ca39f70423fca',
+    sha256: 'fbb68b9d14465315653ebe597ec0f62d0846afbc3f59364a0fcc6657eeeddee1',
+  },
+  {
+    label: 'topic-keyed v1.2.55-era stock hook',
+    commit: 'c7f95344e7d7a43104cc2a37a0ab92bbd97eb78e',
+    sha256: '972574c945ee1d43335970fab4512269d3e5e9f9afe92a13f94c99ebffba7391',
+  },
+] as const;
+
 describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
   let projectDir: string;
 
@@ -135,22 +179,23 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
     });
   });
 
-  it('upgrades an old session-keyed hook to the topic-keyed version', () => {
-    const dst = deployHook(projectDir, OLD_HOOK);
-    expect(fs.readFileSync(dst, 'utf8')).not.toContain('topic-session-registry');
+  it('surgically upgrades the immediately prior stock hook to visible state-parse failure', () => {
+    const dst = deployHook(projectDir, priorStateParseHook());
+    expect(fs.readFileSync(dst, 'utf8')).not.toContain('STATE_PARSE_LOUD');
 
     const result = runMigration(newMigrator(projectDir));
 
     const updated = fs.readFileSync(dst, 'utf8');
-    expect(updated).toContain('topic-session-registry'); // now topic-keyed
-    expect(updated).toContain('TOPIC-KEYED OWNERSHIP');
+    expect(updated).toContain('STATE_PARSE_LOUD');
+    expect(updated).toContain('state_parse_failure');
+    expect(updated).toContain('FM_DELIMITER_COUNT');
     expect((fs.statSync(dst).mode & 0o111)).not.toBe(0); // executable
     expect(result.upgraded.some(u => u.includes('autonomous-stop-hook.sh'))).toBe(true);
     expect(result.errors).toEqual([]);
   });
 
   it('is idempotent — a second run makes no change and reports nothing', () => {
-    deployHook(projectDir, OLD_HOOK);
+    deployHook(projectDir, priorStateParseHook());
     runMigration(newMigrator(projectDir)); // first run upgrades
 
     const dst = path.join(projectDir, HOOK_REL);
@@ -162,7 +207,7 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
     expect(second.errors).toEqual([]);
   });
 
-  it('leaves a customized hook untouched (no stock fingerprint)', () => {
+  it('leaves a customized hook untouched when the exact patch anchors are absent', () => {
     const custom = '#!/bin/bash\n# My heavily customized hook\nexit 0\n';
     const dst = deployHook(projectDir, custom);
 
@@ -173,22 +218,60 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('refuses a customized hook that retains the stock header but lacks exact patch anchors', () => {
+    const dst = deployHook(projectDir, STOCK_HEADER_UNKNOWN_LAYOUT);
+
+    const result = runMigration(newMigrator(projectDir));
+
+    expect(fs.readFileSync(dst, 'utf8')).toBe(STOCK_HEADER_UNKNOWN_LAYOUT);
+    expect(result.skipped.some(s => s.includes('unknown layout'))).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('preserves stock-derived customization while surgically adding the validator', () => {
+    const customLine = '# operator customization: retain this exact line';
+    const priorCustomized = priorStateParseHook().replace(
+      'set -uo pipefail',
+      `${customLine}\nset -uo pipefail`,
+    );
+    const dst = deployHook(projectDir, priorCustomized);
+
+    const result = runMigration(newMigrator(projectDir));
+    const updated = fs.readFileSync(dst, 'utf8');
+
+    expect(updated).toContain(customLine);
+    expect(updated).toContain('STATE_PARSE_LOUD');
+    expect(updated).toContain('state_parse_failure');
+    expect(result.upgraded.some(u => u.includes('autonomous-stop-hook.sh'))).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  for (const historical of HISTORICAL_STOCK_HOOKS) {
+    it(`upgrades the exact ${historical.label} by canonical content hash`, () => {
+      expect(AUTONOMOUS_STOP_HOOK_STOCK_SHA256).toContain(historical.sha256);
+      const oldStock = execFileSync(
+        'git',
+        ['show', `${historical.commit}:.claude/skills/autonomous/hooks/autonomous-stop-hook.sh`],
+        { cwd: process.cwd(), encoding: 'utf8' },
+      );
+      const dst = deployHook(projectDir, oldStock);
+
+      const result = runMigration(newMigrator(projectDir));
+      const updated = fs.readFileSync(dst, 'utf8');
+
+      expect(updated).toContain('STATE_PARSE_LOUD');
+      expect(updated).toContain('state_parse_failure');
+      expect(updated).toContain('MULTI-SESSION (per-topic state)');
+      expect(() => execFileSync('bash', ['-n', dst])).not.toThrow();
+      expect(result.upgraded.some(u => u.includes('autonomous-stop-hook.sh'))).toBe(true);
+      expect(result.errors).toEqual([]);
+    });
+  }
+
   it('is a no-op when no hook is deployed (fresh installs handled by init)', () => {
     const result = runMigration(newMigrator(projectDir));
     expect(fs.existsSync(path.join(projectDir, HOOK_REL))).toBe(false);
     expect(result.upgraded).toEqual([]);
-    expect(result.errors).toEqual([]);
-  });
-
-  it('upgrades a v1.2.55 topic-keyed hook to multi-session (per-topic state)', () => {
-    const dst = deployHook(projectDir, TOPIC_KEYED_V1255_HOOK);
-    expect(fs.readFileSync(dst, 'utf8')).not.toContain('MULTI-SESSION (per-topic state)');
-
-    const result = runMigration(newMigrator(projectDir));
-
-    const updated = fs.readFileSync(dst, 'utf8');
-    expect(updated).toContain('MULTI-SESSION (per-topic state)'); // now multi-session
-    expect(result.upgraded.some(u => u.includes('autonomous-stop-hook.sh'))).toBe(true);
     expect(result.errors).toEqual([]);
   });
 
