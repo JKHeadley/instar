@@ -285,11 +285,11 @@ export class HumanAsDetectorLog {
   }
 
   /** Drift-canary counters (sampled / mismatches / miss-rate). Read-only. */
-  getDriftCanary(): { sampled: number; mismatches: number; missRate: number } {
+  getDriftCanary(): { sampled: number; mismatches: number; missRate: number | null } {
     return {
       sampled: this.driftSampled,
       mismatches: this.driftMismatches,
-      missRate: this.driftSampled > 0 ? this.driftMismatches / this.driftSampled : 0,
+      missRate: this.driftSampled > 0 ? this.driftMismatches / this.driftSampled : null,
     };
   }
 
