@@ -83,6 +83,9 @@ production class. They are restored here:
   signs a probe. Both the current and legacy key filenames are accepted. If
   the probe fails, commits continue unsigned and the degraded state is visible
   instead of every commit failing.
+- The rebased `join` command keeps main's existing directory option and adds
+  only the new port option. Registering the directory option twice prevented
+  every CLI command from starting, not just `join`.
 
 ## What I need from you
 

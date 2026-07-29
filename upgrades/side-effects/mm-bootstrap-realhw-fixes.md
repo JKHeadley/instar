@@ -52,6 +52,8 @@ each with a regression test.
 ## Side effects
 
 - New `--port` option on `instar join`.
+- `instar join --dir` retains main's existing spelling and behavior; the duplicate declaration is
+  removed, with no option or wire-contract change.
 - `instar join` now writes `.instar/config.json` (with a fresh authToken) for the
   joined home if absent; pre-existing configs are untouched (only `--port` may set port).
 - A machine where SSH signing cannot load the key now commits UNSIGNED (was: every
@@ -117,6 +119,10 @@ be already solved. Recording that honestly rather than reasserting superseded wo
   a successful `git pull --autostash` could still leave unmerged files without entering the
   catch-path resolver. Every successful full-sync pull path now checks that postcondition, resolves
   the files, and drops the redundant autostash once clean.
+- **Single `join --dir` registration.** The old branch added a directory option that main had gained
+  independently. Keeping both made Commander reject the command graph at startup, so every CLI
+  invocation failed before dispatch. The rebase keeps main's existing `--dir` definition and adds
+  only the new `--port` option. The built-CLI unknown-command and preflight tests cover startup.
 
 **Superseded by main — dropped, NOT reapplied:**
 - **Signing-key filename-only rewrite.** The old PR renamed one reader to the canonical
@@ -149,3 +155,40 @@ HEAD message says "NOT converged — awaiting design-point decision" and whose f
 `approved: false`. Those are file-disjoint from the code (verified: zero overlap), so they were left
 off this branch rather than dragged through a rebase. They belong in their own PR once that design
 point is decided — a spec that is explicitly awaiting a decision cannot ride in on a bug-fix PR.
+
+## Addendum 4 — side-effects review for the duplicate CLI option correction
+
+**Decision-point inventory.** No judgment or block/allow decision changes. This removes a duplicate
+Commander registration so the existing command graph can be constructed.
+
+1. **Over-block:** No block/allow surface — over-block is not applicable.
+2. **Under-block:** The change corrects the observed duplicate `join --dir` registration only.
+   Other future duplicate option declarations remain detected by built-CLI startup tests rather
+   than by a new static linter.
+3. **Level-of-abstraction fit:** Correct layer. The defect is in command registration, so retaining
+   the already-existing option and removing its duplicate is preferable to catching the exception
+   above Commander or altering command dispatch.
+4. **Signal vs authority compliance:** Per
+   [`docs/signal-vs-authority.md`](../../docs/signal-vs-authority.md), this has no judgment surface
+   and introduces no brittle blocking authority.
+5. **Interactions:** The retained `--dir` option still feeds the same `joinMesh` option field, while
+   `--port` remains independently registered. There is no shared state, retry, race, or double-fire
+   path.
+6. **External surfaces:** All CLI commands start again. `instar join --help` exposes one `--dir` and
+   one `--port`; no API, persistent-state, operator-action, or external-system contract changes.
+   No operator surface is added or modified.
+7. **Multi-machine posture:** Replicated as shipped CLI code through the normal package/update path.
+   It emits no notices, holds no durable state, and generates no URLs.
+8. **Rollback cost:** Pure code change. Reverting reintroduces a deterministic CLI startup crash;
+   no data migration or agent-state repair is involved.
+
+**Judgment-point check:** No static heuristic or competing-signals decision point is added.
+
+**Class-closure declaration:** No prompt, hook, config, skill, standards-text, or self-triggered
+controller defect is changed; the class-closure declaration is not applicable.
+
+**Conclusion:** The one-line correction is strictly subtractive and restores the command shape main
+already intended. The three failure-first built-CLI assertions pass after the change, `join --help`
+shows the expected single directory option plus the new port option, and full lint is green.
+Second-pass review is not required because no sentinel, gate, messaging, dispatch, session-lifecycle,
+or information-flow authority changes.

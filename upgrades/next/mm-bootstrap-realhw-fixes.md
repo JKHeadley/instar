@@ -46,6 +46,6 @@ Regression tests, all green against real git temp repos: `lease-fresh-join-prime
 `git-sync-push-converge`, `git-sync-commit-signing`. Type-check clean. Each defect was first observed
 on the real two-machine mesh on 2026-05-28, then reproduced in a test, then fixed.
 
-On the July rebase: the four superseded/partial items were dropped rather than reapplied, and the
-touched tests pass 21/21 after removing assertions that contradicted main's newer stage-coupled
-exactly-once default.
+On the July rebase: the four superseded/partial items were dropped rather than reapplied; 187 related
+GitSync, lease, coordinator, join, wakeup, and multi-machine unit/e2e tests pass. The built CLI also
+starts cleanly with exactly one `join --dir` option and the new `join --port` option.
