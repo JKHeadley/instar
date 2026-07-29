@@ -245,6 +245,12 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
     );
     expect(entry.verdict).toBe('pass');
     expect(entry.slug).toBe('pass-fixture');
+    expect(entry.scope).toEqual({
+      basis: 'staged-in-scope-additions-plus-deletions',
+      files: [srcRel],
+      addedLines: 1,
+      deletedLines: 0,
+    });
   });
 
   it('binds the decision audit to the newest trace that covers the staged change', async () => {

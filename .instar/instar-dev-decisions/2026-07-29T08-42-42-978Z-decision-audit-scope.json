@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-29T08:42:42.978Z",
+  "slug": "decision-audit-scope",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 15,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/instar-dev-precommit.js"
+    ],
+    "addedLines": 12,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

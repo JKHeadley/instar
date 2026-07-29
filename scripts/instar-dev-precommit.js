@@ -251,14 +251,14 @@ if (bootstrapTrigger) {
 
 let tierSignal = { suggestedTier: 2, sizeTier: 2, riskFloor: 1, reasons: [] };
 let totalChangedLoc = 0;
+let addedLines = 0;
+let deletedLines = 0;
 // Hoisted to module scope (docs/specs/self-action-convergence.md → E3 impl
 // note): addedDiffText is computed in the Step-3.5 block but consumed later by
 // assertSelfActionDeclared at BOTH the enforceTier1 and Tier-2 pass-through call
 // sites. It must outlive the block.
 let addedDiffText = '';
 {
-  let addedLines = 0;
-  let deletedLines = 0;
   try {
     const numstat = execSync(
       `git diff --cached --numstat -- ${inScopeFiles.map((f) => JSON.stringify(f)).join(' ')}`,
@@ -440,6 +440,9 @@ const decisionEntryPath = writeDecisionAudit({
   belowFloor,
   files: inScopeFiles.length,
   loc: totalChangedLoc,
+  scopeFiles: inScopeFiles,
+  addedLines,
+  deletedLines,
   causalAutopsy,
   classClosure: (freshestTrace && typeof freshestTrace.classClosure === 'object' && freshestTrace.classClosure) || null,
 });
@@ -1350,7 +1353,7 @@ function blockCommit(files, reason) {
 // fire, the line just evaporated with the worktree). If the commit is later
 // blocked by the gate, the staged line simply rides the retry commit — both
 // lines describe real gate evaluations.
-function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc, causalAutopsy = null, classClosure = null }) {
+function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc, scopeFiles, addedLines, deletedLines, causalAutopsy = null, classClosure = null }) {
   try {
     fs.mkdirSync(DECISIONS_DIR, { recursive: true });
     const ts = new Date().toISOString();
@@ -1376,6 +1379,12 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
       belowFloor,
       files,
       loc,
+      scope: {
+        basis: 'staged-in-scope-additions-plus-deletions',
+        files: scopeFiles,
+        addedLines,
+        deletedLines,
+      },
       // Causal autopsy (directive 2026-06-05): what caused the issue this
       // commit fixes — prior-pr / environment-shift / new-code / latent /
       // unknown, with linked PRs. null = not declared (advisory in slice 1).
