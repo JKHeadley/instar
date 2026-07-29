@@ -28,8 +28,14 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/jobs` | List jobs + queue |
+| GET | `/jobs` | List jobs + queue (includes `hasUserFork` per job) |
 | POST | `/jobs/:slug/trigger` | Manually trigger a job |
+| POST | `/jobs/:slug/save` | Save a job's frontmatter + body (atomic two-rename commit; `manifestVersion` is an optimistic-concurrency token — a stale save is refused with 409) |
+| POST | `/jobs/:slug/disable` | Disable a job (stamps `disabledAtBodyHash`) |
+| POST | `/jobs/:slug/enable` | Re-enable a disabled job |
+| POST | `/jobs/:slug/override` | Fork an instar default into the user namespace (idempotent) |
+| POST | `/jobs/:slug/unfork` | Archive the user copy to `.unfork-backups/<slug>-<ts>.md`, then restore the instar default |
+| GET | `/jobs/:slug/unfork-backups` | List retained unfork backups for a slug (30 days OR last 10, whichever is more generous) |
 
 ## Relationships
 
@@ -534,6 +540,7 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 ## /jobs
 - `GET /jobs`
 - `GET /jobs/:slug/history`
+- `GET /jobs/:slug/unfork-backups`
 - `GET /jobs/categories`
 - `GET /jobs/category-report/:category`
 - `GET /jobs/events`
@@ -541,9 +548,14 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /jobs/migration-status`
 - `GET /jobs/reconcile`
 - `PATCH /jobs/:slug`
+- `POST /jobs/:slug/disable`
+- `POST /jobs/:slug/enable`
+- `POST /jobs/:slug/override`
 - `POST /jobs/:slug/reset-state`
 - `POST /jobs/:slug/run`
+- `POST /jobs/:slug/save`
 - `POST /jobs/:slug/trigger`
+- `POST /jobs/:slug/unfork`
 - `POST /jobs/migration-abandon`
 - `POST /jobs/migration-confirm`
 
