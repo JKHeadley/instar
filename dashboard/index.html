@@ -3192,7 +3192,7 @@
                 <option value="staged-new">Staged save</option>
                 <option value="case-collision">Case collision</option>
               </select>
-              <button onclick="loadIssuesCard()" style="font-size:11px;padding:2px 6px">↻</button>
+              <button onclick="loadIssuesCard()" title="Refresh the issues list" aria-label="Refresh the issues list" style="font-size:11px;padding:2px 6px">↻</button>
             </div>
           </div>
           <div id="jobsIssuesList"></div>
@@ -9337,7 +9337,7 @@
           <strong>Edit job</strong>
           <span id="jobEditorSlug" style="color:var(--text-dim);margin-left:8px;font-family:monospace;font-size:12px"></span>
         </div>
-        <button onclick="closeJobEditor()" style="background:transparent;border:none;font-size:18px;cursor:pointer">×</button>
+        <button onclick="closeJobEditor()" title="Close the job editor" aria-label="Close the job editor" style="background:transparent;border:none;font-size:18px;cursor:pointer">×</button>
       </div>
       <div style="padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px">
         <label style="display:flex;flex-direction:column;gap:4px;font-size:12px">

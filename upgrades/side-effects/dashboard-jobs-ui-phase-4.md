@@ -104,7 +104,13 @@ construction (Enable). Nothing in this surface deletes anything irreversibly. Da
 reasonable improvement for whoever next touches this file; it is named here as an observation, and
 deliberately NOT given a tracked marker pointing at an unrelated item.
 
-**(4) Does it read in plain language at phone width?** Mostly. Confirmation copy is written in plain
+**(4) Does it read in plain language at phone width?** Mostly — and one concrete accessibility defect
+was found and fixed here. Two icon-only buttons (the Issues-card refresh "↻" and the editor-close "×")
+carried no accessible name, so a screen reader and a hover tooltip both had nothing to announce. Both
+now carry `title` and `aria-label` ("Refresh the issues list", "Close the job editor"). Caught by the
+`dashboard-controls-labeled` ratchet, not by me reading the markup.
+
+Otherwise: mostly. Confirmation copy is written in plain
 words ("reload and lose your changes?"), and the issue classes are rendered as human labels rather
 than enum values. The one place the surface still speaks in system terms is the Issues card's class
 FILTER, whose options carry the reconcile class names (orphan-manifest, shadow-md,
