@@ -62,6 +62,9 @@ builds exactly the slice Codey scoped.
   `hardBlockingSessions`.
 - A pluggable "is this session restart-safe?" check inside the gate (off unless
   wired; the agent wires it to the autonomous-state-file check).
+- The two fail-closed exception paths are explicitly annotated for the current
+  repository safety check. Those annotations are comments only; errors still
+  classify the session as a hard blocker.
 
 ## What you need to decide
 

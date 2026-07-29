@@ -335,6 +335,7 @@ export class AutoUpdater {
       );
       return fs.existsSync(stateFile);
     } catch {
+      // @silent-fallback-ok — restart-safety classification fails closed to a hard blocker.
       return false;
     }
   }

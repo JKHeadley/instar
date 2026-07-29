@@ -13,6 +13,11 @@ Observability-only classification of the restart-deferral blocker set into
 `UpdateGate.getStatus()` → `AutoUpdater.getStatus()` → `GET /updates/status`.
 The restart decision is unchanged.
 
+**2026-07-28 CI refresh:** The two existing fail-closed `catch` paths now carry
+the repository's explicit silent-fallback annotations. This is comment-only:
+the resolver still classifies exceptions as hard blockers, and the state-file
+probe still returns `false` on filesystem errors.
+
 **Files changed (source):**
 - `src/core/UpdateGate.ts`: new optional `restartSafetyResolver?(session)` config
   predicate; `classifyRunningSessions` returns + stores `restartSafeSessions` /

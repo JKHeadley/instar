@@ -310,6 +310,7 @@ export class UpdateGate {
       try {
         safe = this.restartSafetyResolver?.(session) ?? false;
       } catch {
+        // @silent-fallback-ok — a faulty resolver fails closed to a hard blocker.
         // A faulty resolver must never change gating — fail safe to "hard".
         safe = false;
       }
