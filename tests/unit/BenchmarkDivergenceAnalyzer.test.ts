@@ -482,4 +482,11 @@ describe('status surfaces (FD10)', () => {
     const a = analyzer();
     expect(a.summary().missingModelShare).toBeCloseTo(0.5);
   });
+
+  it('keeps missingModelShare unmeasured when the matured window has no decisions', () => {
+    const a = analyzer();
+    const summary = a.summary();
+    expect(summary.byVerdict).toEqual({});
+    expect(summary.missingModelShare).toBeNull();
+  });
 });

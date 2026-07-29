@@ -1,0 +1,25 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The benchmark-divergence summary now returns a null missing-model share when its
+matured analysis window contains no decisions, instead of presenting an
+unmeasured window as a measured zero-percent share.
+
+## What to Tell Your User
+
+An empty benchmark-divergence window no longer looks like every recorded
+decision had valid model attribution.
+
+## Summary of New Capabilities
+
+- Explicit unmeasured state for benchmark missing-model attribution.
+- Numeric missing-model shares remain unchanged once decisions exist.
+
+## Evidence
+
+- The focused suite covers empty and measured matured windows.
+- Restoring the zero fallback makes the empty-window regression fail.
+- Twenty-four focused tests and full repository lint pass.

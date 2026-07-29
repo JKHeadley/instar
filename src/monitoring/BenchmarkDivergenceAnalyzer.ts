@@ -769,7 +769,7 @@ export class BenchmarkDivergenceAnalyzer {
   summary(): {
     byVerdict: Record<string, number>;
     unmappedModels: string[];
-    missingModelShare: number;
+    missingModelShare: number | null;
     unanalyzedLoss: { byMachine: Record<string, number> };
   } {
     const s = this.settings();
@@ -799,7 +799,7 @@ export class BenchmarkDivergenceAnalyzer {
     return {
       byVerdict,
       unmappedModels: Array.from(unmapped).sort(),
-      missingModelShare: total > 0 ? missing / total : 0,
+      missingModelShare: total > 0 ? missing / total : null,
       unanalyzedLoss: { byMachine },
     };
   }
