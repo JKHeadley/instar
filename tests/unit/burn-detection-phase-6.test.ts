@@ -184,4 +184,23 @@ describe('BurnVerifier — verification cycle', () => {
     expect(result.successfullyThrottled).toBe(true);
     expect(messages[0]).toMatch(/Caught and contained/i);
   });
+
+  it('does not claim success when the pre-throttle rate has no measured denominator', () => {
+    const verifier = new BurnVerifier({
+      ledger: fakeLedger([]) as any,
+      sendTelegram: (_, m) => messages.push(m),
+      now: () => now,
+    });
+
+    const result = verifier.runVerification('UnknownBaseline::aa', 0);
+
+    expect(result.preThrottleRate).toBe(0);
+    expect(result.postThrottleRate).toBe(0);
+    expect(result.ratio).toBeNull();
+    expect(result.successfullyThrottled).toBeNull();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatch(/verification was inconclusive/i);
+    expect(messages[0]).toMatch(/no measured baseline/i);
+    expect(messages[0]).not.toMatch(/Caught and contained/i);
+  });
 });

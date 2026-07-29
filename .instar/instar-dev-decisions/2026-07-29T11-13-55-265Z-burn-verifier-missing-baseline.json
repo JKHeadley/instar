@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-29T11:13:55.265Z",
+  "slug": "burn-verifier-missing-baseline",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 34,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/BurnVerifier.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
