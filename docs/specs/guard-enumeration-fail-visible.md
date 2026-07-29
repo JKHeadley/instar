@@ -40,6 +40,27 @@ added for that specific blocker. The swallow survived, so the class recurred wit
 different cause roughly a month later. The second occurrence hid, for an unknown
 duration:
 
+> **Correction to this spec's own history (added 2026-07-29, after the fact).**
+> Occurrence 2 was **not** newly discovered by this work. It was found and reported
+> **28 hours earlier**, on 2026-07-28, with the same diagnosis — the two-layer swallow,
+> the resolver that cannot find the repo, and a seventeen-site sweep — and the finding
+> was filed. Six days before *that*, `ACT-935` ("a check that CANNOT run must not be
+> indistinguishable from one that ran clean") recorded the same class with a different
+> first example. **The author of this spec then rediscovered all of it and wrote it up
+> as new.**
+>
+> This is left in rather than quietly corrected, because it sharpens the argument the
+> spec is making. The defect is not merely that a guard fails silently; it is that a
+> silent failure **produces no durable pressure toward its own fix**. Occurrence 2 was
+> *seen, diagnosed, and filed* — and still shipped unfixed for another day, because
+> nothing about the system made the open finding resurface. A spec that says "this
+> recurred twice" understates it: it recurred twice, was *caught* a third time, and
+> still required a fourth pass to become code.
+>
+> Read that way, `enumerationOk: false` + a log line + a counter are not bookkeeping.
+> They are the minimum machinery by which this defect can ever generate the evidence
+> that gets it fixed.
+
 - 73 worktrees (50 genuinely reclaimable, ~29 GB) reported as nothing to reclaim.
 - One worktree holding **292 uncommitted lines** on `PermissionPromptAutoResolver`
   — an always-on safety floor — reported as no stranded work, idle 20 hours.
