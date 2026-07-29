@@ -1,0 +1,23 @@
+{
+  "ts": "2026-07-29T12:08:21.802Z",
+  "slug": "intent-conflict-rate-unmeasured",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/intent.ts",
+      "src/core/IntentDriftDetector.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

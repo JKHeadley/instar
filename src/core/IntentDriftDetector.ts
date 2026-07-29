@@ -30,8 +30,8 @@ export interface DriftWindow {
   to: string;
   /** Number of decisions in this window */
   decisionCount: number;
-  /** Conflict rate (0-1) */
-  conflictRate: number;
+  /** Conflict rate (0-1), or null when the window has no decisions */
+  conflictRate: number | null;
   /** Top principles used */
   topPrinciples: Array<{ principle: string; count: number }>;
   /** Average numeric confidence, or null when the window cannot be measured completely. */
@@ -254,7 +254,7 @@ export class IntentDriftDetector {
     const decisionCount = entries.length;
 
     const conflictCount = entries.filter(e => e.conflict).length;
-    const conflictRate = decisionCount > 0 ? conflictCount / decisionCount : 0;
+    const conflictRate = decisionCount > 0 ? conflictCount / decisionCount : null;
 
     // Top principles
     const principleCounts: Record<string, number> = {};
@@ -325,7 +325,7 @@ export class IntentDriftDetector {
     const signals: DriftSignal[] = [];
 
     // 1. Conflict spike
-    if (previous.conflictRate > 0) {
+    if (current.conflictRate != null && previous.conflictRate != null && previous.conflictRate > 0) {
       const ratio = current.conflictRate / previous.conflictRate;
       if (ratio > 3) {
         signals.push({
@@ -342,7 +342,7 @@ export class IntentDriftDetector {
           delta: current.conflictRate - previous.conflictRate,
         });
       }
-    } else if (current.conflictRate > 0) {
+    } else if (current.conflictRate != null && previous.conflictRate === 0 && current.conflictRate > 0) {
       // Previous had zero conflicts, current has some — treat as a spike
       signals.push({
         type: 'conflict_spike',

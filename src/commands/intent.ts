@@ -455,7 +455,8 @@ export async function intentDrift(options: IntentDriftOptions): Promise<void> {
   console.log();
 }
 
-function formatPercent(rate: number): string {
+function formatPercent(rate: number | null): string {
+  if (rate == null) return pc.dim('n/a');
   const pct = (rate * 100).toFixed(1) + '%';
   if (rate > 0.1) return pc.red(pct);
   if (rate > 0) return pc.yellow(pct);
