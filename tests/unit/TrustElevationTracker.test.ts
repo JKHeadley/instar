@@ -42,7 +42,10 @@ describe('TrustElevationTracker', () => {
       const stats = tracker.getAcceptanceStats();
       expect(stats.totalDecided).toBe(0);
       expect(stats.approved).toBe(0);
-      expect(stats.acceptanceRate).toBe(0);
+      expect(stats.acceptanceRate).toBeNull();
+      expect(stats.recentAcceptanceRate).toBeNull();
+      expect(tracker.checkEvolutionGovernanceElevation('ai-assisted')).toBeNull();
+      expect(tracker.checkProfileElevation('supervised', [])).toBeNull();
     });
 
     it('loads persisted state', () => {
