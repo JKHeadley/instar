@@ -56,10 +56,10 @@ No. It ships DARK: `multiMachine.stateSync.evolutionActions.enabled` defaults to
 nothing changes at all — a single-machine agent behaves byte-for-byte as before, and no action ever
 crosses a machine boundary. When you DO turn it on, every field is strictly checked on arrival (the
 dates must be real dates, the priority must be one of critical/high/medium/low, the status must be one
-of pending/in_progress/completed/cancelled, free text is length-bounded, and a source field that looks
-like a sneaky file path is dropped) so a peer can't smuggle anything malicious in, and a peer's action
-is always treated as quoted, untrusted reference — never an instruction. The local `ACT-NNN` id is never
-sent across the wire.
+of pending/in_progress/completed/cancelled, free text — including an explicit reason for having no due
+date — is length-bounded, and a source field that looks like a sneaky file path is dropped) so a peer
+can't smuggle anything malicious in, and a peer's action is always treated as quoted, untrusted
+reference — never an instruction. The local `ACT-NNN` id is never sent across the wire.
 
 ## Why does this matter?
 

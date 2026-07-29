@@ -8164,7 +8164,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
     if (!content.includes('**Commitments & Follow-Through**')) {
       const section = `
 **Commitments & Follow-Through** — Durable tracking for any promise you make to the user. When you say "I'll report back when X", "I'll check in after N minutes", or otherwise commit to a future action, register it so the follow-through survives session turnover, restarts, and compaction.
-- Open a one-time follow-up commitment: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments -H 'Content-Type: application/json' -d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID}'\`
+- Open a one-time follow-up commitment: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments -H 'Content-Type: application/json' -d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID,"beaconEnabled":true,"nextUpdateDueAt":"<ISO deadline>"}'\`. Creation refuses unless exactly one follow-through choice is explicit: PromiseBeacon enrollment with a valid deadline, or \`followThroughOptOutReason\` explaining why no future follow-through is needed.
 - List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments\` · \`GET /commitments/:id\`
 - Mark delivered when done: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments/:id/deliver\`
 - The PromiseBeacon fires cadenced heartbeats on open commitments so you actually follow through, and the commitment-check job surfaces overdue ones.
@@ -8232,6 +8232,21 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       content = content.split(staleCommitmentsPayload).join(correctedCommitmentsPayload);
       patched = true;
       result.upgraded.push('CLAUDE.md: fixed commitments guidance payload (agentResponse + one-time-action)');
+    }
+
+    // Follow-through enrollment gate (2026-07-28): prior shipped guidance
+    // created a valid commitment but omitted every resurfacing condition. The
+    // creation route now refuses that third state, so migrate the exact prior
+    // payload to explicit PromiseBeacon enrollment. Customized payloads remain
+    // untouched rather than guessing their scheduling semantics.
+    const bareCommitmentsPayload =
+      `-d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID}'`;
+    const enrolledCommitmentsPayload =
+      `-d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID,"beaconEnabled":true,"nextUpdateDueAt":"<ISO deadline>"}'`;
+    if (content.includes(bareCommitmentsPayload)) {
+      content = content.split(bareCommitmentsPayload).join(enrolledCommitmentsPayload);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: enrolled commitments guidance in PromiseBeacon with a deadline');
     }
 
     // Publishing (Telegraph public pages). Awareness-parity pass: add the

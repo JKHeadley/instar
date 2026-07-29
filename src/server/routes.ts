@@ -14,6 +14,7 @@ import { classifyActionClaim } from '../core/action-claim.js';
 import { sharedG3SoakLedger, decideLeaseGatedSpawn } from '../core/leaseGatedSpawn.js';
 import { getHostSpawnSemaphore, configuredSpawnAcquireMs, configuredSpawnWaitersMax } from '../core/hostSpawnSemaphore.js';
 import { jailValidateRelPath } from '../core/WorkingSetArtifactReplicatedStore.js';
+import { isIso8601 } from '../core/EvolutionActionsReplicatedStore.js';
 import {
   getHostTestRunnerSemaphore,
   classifyRow as classifyTestRunnerRow,
@@ -196,6 +197,14 @@ const execFile = promisify(execFileCb);
  */
 const CONTINUE_CEILING = 2;
 const APPRENTICESHIP_CYCLE_CHANNEL_SET = new Set<string>(APPRENTICESHIP_CYCLE_CHANNELS);
+const FOLLOW_THROUGH_OPT_OUT_REASON_MAX_CHARS = 2_000;
+
+function normalizeFollowThroughOptOutReason(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (normalized.length === 0 || normalized.length > FOLLOW_THROUGH_OPT_OUT_REASON_MAX_CHARS) return null;
+  return normalized;
+}
 
 /**
  * Server-side post-verifier for a continue decision (spec § (b) lines 273-281).
@@ -21910,7 +21919,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Evolution system not configured' });
       return;
     }
-    const { title, description, priority, commitTo, dueBy, source } = req.body;
+    const { title, description, priority, commitTo, dueBy, source, followThroughOptOutReason } = req.body;
     const tags = Array.isArray(req.body.tags) ? req.body.tags.filter((tag: unknown): tag is string => typeof tag === 'string') : [];
     if (!title || typeof title !== 'string' || title.length > 500) {
       res.status(400).json({ error: '"title" must be a string under 500 characters' });
@@ -21918,6 +21927,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (!description || typeof description !== 'string') {
       res.status(400).json({ error: '"description" is required' });
+      return;
+    }
+    const normalizedOptOutReason = normalizeFollowThroughOptOutReason(followThroughOptOutReason);
+    const hasDueBy = dueBy !== undefined;
+    const hasOptOutReason = followThroughOptOutReason !== undefined;
+    if (hasDueBy && !isIso8601(dueBy)) {
+      res.status(400).json({ error: '"dueBy" must be a valid ISO 8601 timestamp' });
+      return;
+    }
+    if (hasOptOutReason && normalizedOptOutReason === null) {
+      res.status(400).json({
+        error: `"followThroughOptOutReason" must be a non-empty string under ${FOLLOW_THROUGH_OPT_OUT_REASON_MAX_CHARS} characters`,
+      });
+      return;
+    }
+    if (hasDueBy === hasOptOutReason) {
+      res.status(400).json({
+        error: 'action creation requires exactly one follow-through choice: a valid "dueBy" or an explicit "followThroughOptOutReason"',
+      });
       return;
     }
     // Standby-write reconciliation §3.4 (I1/I3): the P2-6 route — admission is
@@ -21943,6 +21971,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       : tags;
     const action = ctx.evolution.addAction({
       title, description, priority, commitTo, dueBy, source, tags: stampedTags,
+      ...(normalizedOptOutReason ? { followThroughOptOutReason: normalizedOptOutReason } : {}),
     });
     res.status(201).json({ ...action, classReviewAdmission: { wouldRefuse: admission.wouldRefuse, reason: admission.reason } });
   });
@@ -26845,6 +26874,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             beaconEnabled, cadenceMs, nextUpdateDueAt,
             softDeadlineAt, hardDeadlineAt, sessionEpoch,
             ownerMachineId, externalKey, beaconCreatedBySource,
+            followThroughOptOutReason,
             // C1+C2 "The Agent Carries the Loop" state model (§4.1).
             owner, blockedOn, actionClass, supersededBy,
             correctionId, classReviewRef, origin } = req.body;
@@ -26870,19 +26900,52 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(409).json({ error: 'correction-derived commitment requires a corresponding filled class review', reason: classReviewAdmission.reason });
       return;
     }
-    // Beacon validation: must have topicId and at least one deadline marker.
-    if (beaconEnabled) {
-      if (!topicId) {
-        res.status(400).json({ error: 'beaconEnabled commitments require topicId' });
-        return;
-      }
-      if (!nextUpdateDueAt && !softDeadlineAt && !hardDeadlineAt) {
-        res.status(400).json({
-          error: 'beaconEnabled commitments require at least one of nextUpdateDueAt, softDeadlineAt, hardDeadlineAt',
-        });
+    const deadlineFields = [
+      ['nextUpdateDueAt', nextUpdateDueAt],
+      ['softDeadlineAt', softDeadlineAt],
+      ['hardDeadlineAt', hardDeadlineAt],
+    ] as const;
+    for (const [field, value] of deadlineFields) {
+      if (value !== undefined && value !== null && !isIso8601(value)) {
+        res.status(400).json({ error: `"${field}" must be a valid ISO 8601 timestamp` });
         return;
       }
     }
+    if (beaconEnabled !== undefined && typeof beaconEnabled !== 'boolean') {
+      res.status(400).json({ error: '"beaconEnabled" must be boolean' });
+      return;
+    }
+    const normalizedOptOutReason = normalizeFollowThroughOptOutReason(followThroughOptOutReason);
+    const hasOptOutReason = followThroughOptOutReason !== undefined;
+    if (hasOptOutReason && normalizedOptOutReason === null) {
+      res.status(400).json({
+        error: `"followThroughOptOutReason" must be a non-empty string under ${FOLLOW_THROUGH_OPT_OUT_REASON_MAX_CHARS} characters`,
+      });
+      return;
+    }
+    const hasDeadline = deadlineFields.some(([, value]) => isIso8601(value));
+    const isBeaconEnrolled = beaconEnabled === true && hasDeadline;
+    if (beaconEnabled === true && !topicId) {
+      res.status(400).json({ error: 'beaconEnabled commitments require topicId' });
+      return;
+    }
+    if (beaconEnabled === true && !hasDeadline) {
+      res.status(400).json({
+        error: 'beaconEnabled commitments require at least one of nextUpdateDueAt, softDeadlineAt, hardDeadlineAt',
+      });
+      return;
+    }
+    if (hasDeadline && beaconEnabled !== true) {
+      res.status(400).json({ error: 'commitment deadlines require "beaconEnabled": true' });
+      return;
+    }
+    if (isBeaconEnrolled === hasOptOutReason) {
+      res.status(400).json({
+        error: 'commitment creation requires exactly one follow-through choice: PromiseBeacon enrollment with a valid deadline, or an explicit "followThroughOptOutReason"',
+      });
+      return;
+    }
+    const effectiveBeaconEnabled = hasOptOutReason ? false : beaconEnabled;
 
     // ── durable-conversation-identity §7 bind-time authority (B7/R3-M5/R4-M3) ──
     // A durable-state open on a conversation id is scoped to the session's OWN
@@ -26918,9 +26981,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         type, userRequest, agentResponse, topicId, source,
         configPath, configExpectedValue, behavioralRule,
         expiresAt, verificationMethod, verificationPath,
-        beaconEnabled, cadenceMs, nextUpdateDueAt,
+        beaconEnabled: effectiveBeaconEnabled, cadenceMs, nextUpdateDueAt,
         softDeadlineAt, hardDeadlineAt, sessionEpoch,
         ownerMachineId, externalKey, beaconCreatedBySource,
+        ...(normalizedOptOutReason ? { followThroughOptOutReason: normalizedOptOutReason } : {}),
         owner, blockedOn, actionClass, supersededBy,
         ...(typeof correctionId === 'string' ? { correctionId } : {}),
         ...(classReviewAdmission.classReviewRef ? { classReviewRef: classReviewAdmission.classReviewRef } : {}),

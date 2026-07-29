@@ -154,6 +154,22 @@ describe('Commitment API routes (enabled)', () => {
   // ── POST /commitments ──────────────────────────────────
 
   describe('POST /commitments', () => {
+    it('refuses creation with neither PromiseBeacon enrollment nor an explicit opt-out reason', async () => {
+      const before = tracker.getAll().length;
+      const res = await request(app)
+        .post('/commitments')
+        .send({
+          type: 'one-time-action',
+          userRequest: 'Do not let this disappear',
+          agentResponse: 'I will finish it',
+          topicId: 458,
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('followThroughOptOutReason');
+      expect(tracker.getAll()).toHaveLength(before);
+    });
+
     it('records a config-change commitment', async () => {
       const res = await request(app)
         .post('/commitments')
@@ -164,6 +180,7 @@ describe('Commitment API routes (enabled)', () => {
           configPath: 'sessions.maxSessions',
           configExpectedValue: 5,
           topicId: 100,
+          followThroughOptOutReason: 'Configuration verification is synchronous in this fixture.',
         });
 
       expect(res.status).toBe(201);
@@ -180,6 +197,7 @@ describe('Commitment API routes (enabled)', () => {
           userRequest: 'Never auto-commit code',
           agentResponse: 'Understood, I will never auto-commit',
           behavioralRule: 'Never automatically commit code changes',
+          followThroughOptOutReason: 'This durable behavioral rule has no scheduled completion.',
         });
 
       expect(res.status).toBe(201);
@@ -194,6 +212,9 @@ describe('Commitment API routes (enabled)', () => {
           userRequest: 'Report back when CI is green',
           agentResponse: 'I will report back when CI is green',
           topicId: 458,
+          beaconEnabled: true,
+          nextUpdateDueAt: '2099-01-01T00:00:00.000Z',
+          hardDeadlineAt: null,
         });
 
       expect(res.status).toBe(201);
@@ -206,6 +227,72 @@ describe('Commitment API routes (enabled)', () => {
       expect(res.body.verificationCount).toBe(0);
       expect(res.body.violationCount).toBe(0);
       expect(res.body.source).toBe('agent');
+      expect(res.body.beaconEnabled).toBe(true);
+      expect(res.body.nextUpdateDueAt).toBe('2099-01-01T00:00:00.000Z');
+      expect(res.body.hardDeadlineAt).toBeNull();
+      expect(res.body.followThroughOptOutReason).toBeUndefined();
+    });
+
+    it('persists a normalized explicit opt-out reason without auto-enrolling PromiseBeacon', async () => {
+      const res = await request(app)
+        .post('/commitments')
+        .send({
+          type: 'one-time-action',
+          userRequest: 'Capture a synchronous decision',
+          agentResponse: 'I will finish this by Friday',
+          topicId: 458,
+          followThroughOptOutReason: '  Completed in the same request; no future check is needed.  ',
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.beaconEnabled).toBe(false);
+      expect(res.body.followThroughOptOutReason).toBe('Completed in the same request; no future check is needed.');
+
+      const reloaded = new CommitmentTracker({ stateDir: project.stateDir, liveConfig });
+      expect(reloaded.get(res.body.id)?.followThroughOptOutReason)
+        .toBe('Completed in the same request; no future check is needed.');
+      expect(reloaded.get(res.body.id)?.beaconEnabled).toBe(false);
+      reloaded.stop();
+    });
+
+    it('refuses both enrollment and opt-out, malformed deadlines, and checkInAt-only creation', async () => {
+      const base = {
+        type: 'one-time-action',
+        userRequest: 'Ambiguous follow-through',
+        agentResponse: 'I will handle it',
+        topicId: 458,
+      };
+
+      const both = await request(app).post('/commitments').send({
+        ...base,
+        beaconEnabled: true,
+        nextUpdateDueAt: '2099-01-01T00:00:00.000Z',
+        followThroughOptOutReason: 'No schedule.',
+      });
+      expect(both.status).toBe(400);
+      expect(both.body.error).toContain('exactly one');
+
+      const malformed = await request(app).post('/commitments').send({
+        ...base,
+        beaconEnabled: true,
+        nextUpdateDueAt: 'not-a-date',
+      });
+      expect(malformed.status).toBe(400);
+      expect(malformed.body.error).toContain('ISO 8601');
+
+      const checkInOnly = await request(app).post('/commitments').send({
+        ...base,
+        checkInAt: '2099-01-01T00:00:00.000Z',
+      });
+      expect(checkInOnly.status).toBe(400);
+      expect(checkInOnly.body.error).toContain('followThroughOptOutReason');
+
+      const blankReason = await request(app).post('/commitments').send({
+        ...base,
+        followThroughOptOutReason: '   ',
+      });
+      expect(blankReason.status).toBe(400);
+      expect(blankReason.body.error).toContain('non-empty');
     });
 
     it('rejects missing required fields', async () => {
@@ -255,6 +342,8 @@ describe('Commitment API routes (enabled)', () => {
           userRequest: 'Send the summary',
           agentResponse: 'I will send the summary',
           topicId: 458,
+          beaconEnabled: true,
+          nextUpdateDueAt: '2099-01-01T00:00:00.000Z',
         });
 
       expect(created.status).toBe(201);

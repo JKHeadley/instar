@@ -140,6 +140,7 @@ describe('Promise-Beacon Escalation routes (integration)', () => {
   it('I11: escalation fields are not accepted on POST /commitments', async () => {
     const res = await auth(request(app).post('/commitments').send({
       type: 'one-time-action', userRequest: 'x', agentResponse: 'y', topicId: 1,
+      beaconEnabled: true, nextUpdateDueAt: '2099-01-01T00:00:00.000Z',
       escalationAttempts: 999, revivalMode: 'status-only-until-revalidated', revalidatedAt: '2020-01-01T00:00:00Z',
     }));
     expect(res.status).toBe(201);

@@ -75,6 +75,8 @@ describe('Commitments API lifecycle', () => {
         userRequest: 'Follow up on the release gate',
         agentResponse: 'I will follow up once the release gate is clear',
         topicId: 458,
+        beaconEnabled: true,
+        nextUpdateDueAt: '2099-01-01T00:00:00.000Z',
       })
       .expect(201);
 
@@ -145,6 +147,8 @@ describe('Commitments API lifecycle', () => {
         topicId: 459,
         owner: 'agent',
         blockedOn: 'external',
+        beaconEnabled: true,
+        nextUpdateDueAt: '2099-01-01T00:00:00.000Z',
       })
       .expect(201);
     expect(created.body.owner).toBe('agent');
@@ -180,6 +184,7 @@ describe('Commitments API lifecycle', () => {
         agentResponse: 'awaiting your ok',
         owner: 'user',
         blockedOn: 'user-authorization',
+        followThroughOptOutReason: 'Blocked on an explicit user authorization decision.',
       })
       .expect(400);
   });

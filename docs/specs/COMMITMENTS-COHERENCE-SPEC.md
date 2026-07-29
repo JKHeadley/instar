@@ -202,7 +202,7 @@ discards the replica wholesale and re-pulls from 0.
 **Secret posture on served text (widens P1 — stated, not smuggled):** P1's
 journal deliberately carried "id + status only, not content"; P1.5 ships
 commitment FREE TEXT (`userRequest`, `agentResponse`, `resolution`,
-`escalationDetail`) because the merged read is useless without it. Before
+`escalationDetail`, `followThroughOptOutReason`) because the merged read is useless without it. Before
 serving, the credential-shape scan (the same versioned enum P2 uses) runs
 over each record's free-text fields; a flagged FIELD ships REDACTED
 (`[redacted:<category>]` placeholder + `textRedacted: true` on the record)

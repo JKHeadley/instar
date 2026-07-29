@@ -37,7 +37,13 @@ export const DEFAULT_SYNC_PAGE_BYTES = 256 * 1024;
 export const DEFAULT_REPLICA_STALE_WARN_MS = 10 * 60 * 1000;
 
 /** The free-text fields scanned + redacted per §3.2. */
-const TEXT_FIELDS = ['userRequest', 'agentResponse', 'resolution', 'escalationDetail'] as const;
+const TEXT_FIELDS = [
+  'userRequest',
+  'agentResponse',
+  'resolution',
+  'escalationDetail',
+  'followThroughOptOutReason',
+] as const;
 
 // ── Wire shapes ─────────────────────────────────────────────────────
 
