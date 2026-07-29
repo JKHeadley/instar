@@ -59,6 +59,31 @@ export class WarmSessionPeerConflictError extends Error {
 export class WarmSessionPool {
   private readonly byThread = new Map<string, WarmSessionRecord>();
 
+  /**
+   * The tmux-name marker for a warm-session keep-alive worker (`msg-warm-<ts>`;
+   * an agent prefix may precede it, e.g. `echo-msg-warm-…`). Single source of
+   * truth for both the spawn name and the boot-orphan scan.
+   */
+  static readonly NAME_MARKER = 'msg-warm-';
+
+  /**
+   * Boot-time orphan selection. The pool is in-memory, so on a server restart it
+   * starts EMPTY while warm-session tmux sessions spawned by a PREVIOUS instance
+   * may still be alive — orphaned (no pool record means the TTL reap tick never
+   * sees them; they linger until the idle-session reaper catches them). Given the
+   * running-session list at boot (when the pool is empty), every live warm-named
+   * session is definitionally such an orphan. Returns their tmux names for the
+   * caller to kill. Pure + framework-agnostic (matches on the name marker only,
+   * never a framework-specific process name).
+   */
+  static selectBootOrphanNames(
+    sessions: ReadonlyArray<{ tmuxSession?: string }>,
+  ): string[] {
+    return sessions
+      .map((s) => s.tmuxSession ?? '')
+      .filter((name) => name.includes(WarmSessionPool.NAME_MARKER));
+  }
+
   constructor(
     private readonly config: WarmSessionPoolConfig,
     private readonly now: () => number = () => Date.now(),

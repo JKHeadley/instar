@@ -1,0 +1,21 @@
+{
+  "ts": "2026-07-29T00:53:00.000Z",
+  "slug": "warm-session-boot-orphan-reap",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 51,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      759
+    ],
+    "notes": "The warm-session pool is intentionally in-memory, but boot did not reconcile prior-process tmux workers, leaving them outside the pool's TTL lifecycle after a restart."
+  },
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "Revalidated against current main before landing: the boot-time gap remains live; warm-session unit and E2E tests passed 16/16 on the merged tree, TypeScript passed, and the earlier hosted suite was otherwise green."
+}
