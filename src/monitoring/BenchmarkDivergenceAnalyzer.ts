@@ -35,6 +35,7 @@ import {
   type FindingView,
   type DivergenceVerdict,
   type PreconditionReason,
+  type PartialReason,
 } from '../core/benchmarkDivergenceCore.js';
 import {
   ENROLLED_PAIRS,
@@ -397,6 +398,7 @@ export class BenchmarkDivergenceAnalyzer {
         model: string;
         verdict: DivergenceVerdict;
         preconditionReason?: PreconditionReason;
+        partialReason?: PartialReason;
         unmapped?: boolean;
         orphanTainted: boolean;
         realGradeRate: number | null;
@@ -416,7 +418,7 @@ export class BenchmarkDivergenceAnalyzer {
 
       for (const [decisionPointId, taskId] of Object.entries(ENROLLED_PAIRS)) {
         const decided = decidedByPoint.get(decisionPointId) ?? 0;
-        const orphanShare = decided > 0 ? (orphansByPoint.get(decisionPointId) ?? 0) / decided : 0;
+        const orphanShare = decided > 0 ? (orphansByPoint.get(decisionPointId) ?? 0) / decided : null;
         const registryEntry = PROMPT_TEMPLATE_REGISTRY[taskId];
         const liveHash = liveTemplateHash(taskId);
         const task = mirror.tasks[taskId];
@@ -469,6 +471,7 @@ export class BenchmarkDivergenceAnalyzer {
             model,
             verdict: v.verdict,
             ...(v.preconditionReason !== undefined ? { preconditionReason: v.preconditionReason } : {}),
+            ...(v.partialReason !== undefined ? { partialReason: v.partialReason } : {}),
             ...(v.unmapped !== undefined ? { unmapped: v.unmapped } : {}),
             orphanTainted: v.orphanTainted,
             realGradeRate: v.realGradeRate,
@@ -571,6 +574,7 @@ export class BenchmarkDivergenceAnalyzer {
           model: c.model,
           verdict: c.verdict,
           preconditionReason: c.preconditionReason ?? null,
+          partialReason: c.partialReason ?? null,
           realGradeRate: c.realGradeRate,
           predictedRate: c.predictedRate,
           delta: c.delta,
@@ -741,6 +745,7 @@ export class BenchmarkDivergenceAnalyzer {
       model: row.model,
       verdict: row.verdict,
       preconditionReason: row.preconditionReason ?? undefined,
+      partialReason: row.partialReason ?? undefined,
       realGradeRate: row.realGradeRate,
       predictedRate: row.predictedRate,
       delta: row.delta,

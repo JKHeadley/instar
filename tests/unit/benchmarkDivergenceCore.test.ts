@@ -120,7 +120,20 @@ describe('computeVerdict — the FD4 precondition-first ladder', () => {
   it('pool-merged orphan share over the bound ⇒ partial + orphanTainted', () => {
     const v = computeVerdict(healthy({ orphanShare: 0.2 }));
     expect(v.verdict).toBe('partial');
+    expect(v.partialReason).toBe('orphan-share-over-threshold');
     expect(v.orphanTainted).toBe(true);
+  });
+
+  it('unavailable orphan share is a distinct partial reason before numeric comparison', () => {
+    const v = computeVerdict(healthy({
+      rightN: 20,
+      wrongN: 5,
+      decidedTotal: 0,
+      orphanShare: null,
+    }));
+    expect(v.verdict).toBe('partial');
+    expect(v.partialReason).toBe('orphan-share-unavailable');
+    expect(v.orphanTainted).toBe(false);
   });
 
   it('incomplete coverage ⇒ partial (offline machine — re-collected later)', () => {

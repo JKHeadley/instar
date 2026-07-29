@@ -354,6 +354,20 @@ describe('benchmark_divergence_findings — FD11 latest view + capped history', 
     expect(hist[0].verdict).toBe('divergent-worse');
   });
 
+  it('latest-view persists the partial reason separately from the verdict', () => {
+    const l = newLedger(() => T0);
+    l.upsertBenchmarkFinding(finding({
+      verdict: 'partial',
+      partialReason: 'orphan-share-unavailable',
+      orphanTainted: false,
+    }));
+    expect(l.listBenchmarkFindings()[0]).toMatchObject({
+      verdict: 'partial',
+      partialReason: 'orphan-share-unavailable',
+      orphanTainted: 0,
+    });
+  });
+
   it('history cap prunes oldest EXCEPT the first row per key (the first detection is never evicted)', () => {
     let nowMs = T0;
     const l = newLedger(() => nowMs);

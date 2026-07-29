@@ -413,6 +413,20 @@ describe('R2 pool semantics (FD8/FD9)', () => {
     expect(f.orphanTainted).toBe(1); // holder-local share was 0 — only the pool merge catches it
   });
 
+  it('decided_total zero with enough settled grades surfaces orphan-share-unavailable, not fabricated zero', async () => {
+    writeMatchingMirror();
+    seedDecisions('2026-07-05', 30);
+    const rawDb = (ledger as unknown as { db: import('better-sqlite3').Database }).db;
+    rawDb.prepare(`UPDATE decision_quality_rollup_by_model SET decided_total = 0 WHERE decision_point = ?`)
+      .run(DP_MESSAGING_TONE_GATE);
+
+    await analyzer().analyze('manual');
+    const f = ledger.listBenchmarkFindings()[0];
+    expect(f.verdict).toBe('partial');
+    expect(f.partialReason).toBe('orphan-share-unavailable');
+    expect(f.gradedN).toBe(30);
+  });
+
   it('meter stores are BYTE-IDENTICAL with the detector dark, dryRun, and live (FD7 wiring integrity)', async () => {
     writeMatchingMirror();
     seedDecisions('2026-07-05', 30);

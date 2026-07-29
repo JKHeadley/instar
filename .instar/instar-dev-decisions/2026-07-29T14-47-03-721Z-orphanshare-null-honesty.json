@@ -1,0 +1,24 @@
+{
+  "ts": "2026-07-29T14:47:03.721Z",
+  "slug": "orphanshare-null-honesty",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 64,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/benchmarkDivergenceCore.ts",
+      "src/monitoring/BenchmarkDivergenceAnalyzer.ts",
+      "src/monitoring/FeatureMetricsLedger.ts"
+    ],
+    "addedLines": 57,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

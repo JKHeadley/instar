@@ -603,6 +603,7 @@ const SCHEMA = [
      model                  TEXT NOT NULL,
      verdict                TEXT NOT NULL,
      precondition_reason    TEXT,
+     partial_reason         TEXT,
      real_grade_rate        REAL,
      predicted_rate         REAL,
      delta                  REAL,
@@ -713,6 +714,10 @@ const ADDED_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: 'call_id', ddl: 'ALTER TABLE feature_metrics ADD COLUMN call_id TEXT' },
 ];
 
+const BENCHMARK_FINDING_ADDED_COLUMNS: Array<{ name: string; ddl: string }> = [
+  { name: 'partial_reason', ddl: 'ALTER TABLE benchmark_divergence_findings ADD COLUMN partial_reason TEXT' },
+];
+
 /** Batch ceiling for the retention prune (scal-F4): SQLite-portable bounded DELETE. */
 const PRUNE_BATCH = 5000;
 
@@ -800,6 +805,7 @@ export class FeatureMetricsLedger {
     this.db.pragma('synchronous = NORMAL');
     for (const ddl of SCHEMA) this.db.exec(ddl);
     this.ensureAddedColumns();
+    this.ensureBenchmarkFindingAddedColumns();
     this.migrateLegacyNoopOutcomes();
     // Partial index for the quality join (feature_metrics.verdict_id → correlation
     // id, §5.5). Guarded separately from the SCHEMA loop: verdict_id shipped in the
@@ -896,6 +902,21 @@ export class FeatureMetricsLedger {
       // @silent-fallback-ok: a failed column add leaves the DB on the old shape;
       // record() writes the new field as null and the rollup degrades to []
       // rather than throwing. Observability must never break its own open path.
+    }
+  }
+
+  /** Add post-ship columns to the benchmark findings table, idempotently. */
+  private ensureBenchmarkFindingAddedColumns(): void {
+    try {
+      const existing = new Set(
+        (this.db.prepare(`PRAGMA table_info(benchmark_divergence_findings)`).all() as Array<{ name: string }>).map((c) => c.name),
+      );
+      for (const col of BENCHMARK_FINDING_ADDED_COLUMNS) {
+        if (!existing.has(col.name)) this.db.exec(col.ddl);
+      }
+    } catch {
+      // @silent-fallback-ok: old finding rows remain readable; the analyzer can
+      // re-upsert the advisory row with the new field on a later pass.
     }
   }
 
@@ -2352,6 +2373,7 @@ export class FeatureMetricsLedger {
     model: string;
     verdict: string;
     preconditionReason?: string | null;
+    partialReason?: string | null;
     realGradeRate: number | null;
     predictedRate: number | null;
     delta: number | null;
@@ -2380,17 +2402,18 @@ export class FeatureMetricsLedger {
         this.db
           .prepare(
             `INSERT INTO benchmark_divergence_findings
-               (task_id, decision_point, model, verdict, precondition_reason, real_grade_rate, predicted_rate, delta,
+               (task_id, decision_point, model, verdict, precondition_reason, partial_reason, real_grade_rate, predicted_rate, delta,
                 graded_n, unknown_share, ci_half_width, bench_n, bench_ci_half_width, orphan_tainted, chronic,
                 chronic_streak, chronic_reason, coverage_json, dominant_machine_share, unmapped, benched_prompt_hash,
                 mirror_captured_at, window_from_day, window_to_day, first_seen_at, last_seen_at)
-             VALUES (@taskId, @decisionPointId, @model, @verdict, @preconditionReason, @realGradeRate, @predictedRate,
+             VALUES (@taskId, @decisionPointId, @model, @verdict, @preconditionReason, @partialReason, @realGradeRate, @predictedRate,
                 @delta, @gradedN, @unknownShare, @ciHalfWidth, @benchN, @benchCiHalfWidth, @orphanTainted, @chronic,
                 @chronicStreak, @chronicReason, @coverageJson, @dominantMachineShare, @unmapped, @benchedPromptHash,
                 @mirrorCapturedAt, @windowFromDay, @windowToDay, @ts, @ts)
              ON CONFLICT(task_id, decision_point, model) DO UPDATE SET
                verdict = excluded.verdict,
                precondition_reason = excluded.precondition_reason,
+               partial_reason = excluded.partial_reason,
                real_grade_rate = excluded.real_grade_rate,
                predicted_rate = excluded.predicted_rate,
                delta = excluded.delta,
@@ -2418,6 +2441,7 @@ export class FeatureMetricsLedger {
             model: f.model,
             verdict: f.verdict,
             preconditionReason: f.preconditionReason ?? null,
+            partialReason: f.partialReason ?? null,
             realGradeRate: f.realGradeRate,
             predictedRate: f.predictedRate,
             delta: f.delta,
@@ -2492,7 +2516,7 @@ export class FeatureMetricsLedger {
       return this.db
         .prepare(
           `SELECT task_id AS taskId, decision_point AS decisionPointId, model, verdict,
-                  precondition_reason AS preconditionReason, real_grade_rate AS realGradeRate,
+                  precondition_reason AS preconditionReason, partial_reason AS partialReason, real_grade_rate AS realGradeRate,
                   predicted_rate AS predictedRate, delta, graded_n AS gradedN, unknown_share AS unknownShare,
                   ci_half_width AS ciHalfWidth, bench_n AS benchN, bench_ci_half_width AS benchCiHalfWidth,
                   orphan_tainted AS orphanTainted, chronic, chronic_streak AS chronicStreak,
