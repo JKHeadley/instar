@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "slug": "internal-llm-component-reliability",
+  "sessionId": "ba7a999f-4826-4245-b021-e025cb0e02f9",
+  "timestamp": "2026-07-29T07:18:33.377Z",
+  "artifactPath": "upgrades/side-effects/internal-llm-component-reliability.md",
+  "artifactSha256": "9158289cbb5ed5a5e2971731f0813a8907e4111426bc339c7d79e06a3f2f34b5",
+  "coveredFiles": [
+    "tests/unit/codex-cli-provider-execjson.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Aligns a shutdown-linger regression assertion with the reviewed unclassified outcome contract; production behavior is unchanged.",
+  "eli16Path": "docs/specs/internal-llm-component-reliability.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/internal-llm-component-reliability.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5c281366e0da",
+      "verified": true
+    }
+  }
+}
