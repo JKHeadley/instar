@@ -1,0 +1,23 @@
+{
+  "ts": "2026-07-29T11:22:42.058Z",
+  "slug": "job-history-unmeasured-rates",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/JobRunHistory.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 22,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

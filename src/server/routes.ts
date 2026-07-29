@@ -79,6 +79,7 @@ import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/Autho
 import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/AuthorizationRequestStore.js';
 import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
+import { averageMeasuredJobSuccessRates } from '../scheduler/JobRunHistory.js';
 import type { InstarConfig, JobPriority } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
@@ -13211,9 +13212,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const disabled = jobReports.filter(j => !j.enabled).length;
     const totalRuns = jobReports.reduce((sum, j) => sum + (j.stats?.totalRuns ?? 0), 0);
     const totalFailures = jobReports.reduce((sum, j) => sum + (j.stats?.failures ?? 0), 0);
-    const avgSuccessRate = jobReports.length > 0
-      ? jobReports.reduce((sum, j) => sum + (j.stats?.successRate ?? 100), 0) / jobReports.length
-      : 100;
+    const avgSuccessRate = averageMeasuredJobSuccessRates(
+      jobReports.flatMap((job) => job.stats ? [job.stats] : []),
+    );
 
     res.json({
       category,
@@ -13227,7 +13228,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         disabled,
         totalRuns,
         totalFailures,
-        avgSuccessRate: Math.round(avgSuccessRate * 10) / 10,
+        avgSuccessRate: avgSuccessRate === null ? null : Math.round(avgSuccessRate * 10) / 10,
       },
       jobs: jobReports,
     });

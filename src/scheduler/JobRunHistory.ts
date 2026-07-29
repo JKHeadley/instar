@@ -100,14 +100,27 @@ export interface JobRunStats {
   totalRuns: number;
   successes: number;
   failures: number;
-  successRate: number;
-  avgDurationSeconds: number;
+  /** Percentage of completed runs that succeeded, or null when none completed. */
+  successRate: number | null;
+  /** Average duration of runs with a measured positive duration, or null when absent. */
+  avgDurationSeconds: number | null;
   lastRun?: JobRun;
   longestRun?: { durationSeconds: number; runId: string; startedAt: string };
   /** Runs per day over the stats window */
   runsPerDay: number;
   /** Completed rows that were intentionally condensed to the storage budget. */
   budgetCondensedRuns: number;
+}
+
+/** Average only measured per-job success rates; never turn an unrun job into 0% or 100%. */
+export function averageMeasuredJobSuccessRates(
+  stats: Array<Pick<JobRunStats, 'successRate'>>,
+): number | null {
+  const measured = stats
+    .map((row) => row.successRate)
+    .filter((rate): rate is number => rate !== null);
+  if (measured.length === 0) return null;
+  return measured.reduce((sum, rate) => sum + rate, 0) / measured.length;
 }
 
 /** Monotonic counter to ensure unique runIds even within the same millisecond */
@@ -379,8 +392,8 @@ export class JobRunHistory {
       totalRuns: completed.length,
       successes,
       failures,
-      successRate: completed.length > 0 ? Math.round((successes / completed.length) * 1000) / 10 : 0,
-      avgDurationSeconds: withDuration.length > 0 ? Math.round(totalDuration / withDuration.length) : 0,
+      successRate: completed.length > 0 ? Math.round((successes / completed.length) * 1000) / 10 : null,
+      avgDurationSeconds: withDuration.length > 0 ? Math.round(totalDuration / withDuration.length) : null,
       lastRun: runs[0],
       longestRun,
       runsPerDay,
