@@ -8,13 +8,17 @@
  * Drift signals:
  * - Conflict spike: conflict rate increasing between windows
  * - Confidence drop: average confidence decreasing
+ * - Confidence unmeasurable: invalid stored confidence prevents comparison
  * - Principle shift: top principles changing between windows
  * - Volume change: significant change in decision count
  *
  * Also computes an AlignmentScore (0-100) from journal health metrics.
  */
 
-import { DecisionJournal } from './DecisionJournal.js';
+import {
+  DecisionJournal,
+  classifyDecisionConfidence,
+} from './DecisionJournal.js';
 import type { DecisionJournalEntry } from './types.js';
 
 // ── Interfaces ──────────────────────────────────────────────────────
@@ -30,12 +34,21 @@ export interface DriftWindow {
   conflictRate: number;
   /** Top principles used */
   topPrinciples: Array<{ principle: string; count: number }>;
-  /** Average confidence */
-  avgConfidence: number;
+  /** Average numeric confidence, or null when the window cannot be measured completely. */
+  avgConfidence: number | null;
+  /** Number of entries contributing to avgConfidence. */
+  confidenceSampleSize: number;
+  /** Stored confidence values that violate the numeric 0-1 contract. */
+  invalidConfidenceCount: number;
 }
 
 export interface DriftSignal {
-  type: 'conflict_spike' | 'confidence_drop' | 'principle_shift' | 'volume_change';
+  type:
+    | 'conflict_spike'
+    | 'confidence_drop'
+    | 'confidence_unmeasurable'
+    | 'principle_shift'
+    | 'volume_change';
   severity: 'info' | 'warning' | 'alert';
   description: string;
   /** Quantitative delta */
@@ -86,9 +99,10 @@ export interface AlignmentScore {
    */
   grade: 'A' | 'B' | 'C' | 'D' | 'F' | 'N/A';
   /**
-   * False when `sampleSize` is 0 — i.e. `score`, `grade` and every component
-   * are placeholders, not measurements. Machine consumers must branch on this
-   * (or on `sampleSize`) before treating the score as a verdict.
+   * False when `sampleSize` is 0 OR an input/component is non-finite — i.e.
+   * `score`, `grade` and every component are placeholders, not measurements.
+   * Machine consumers must branch on this before treating the score as a
+   * verdict. `sampleSize > 0` alone does not prove assessability.
    */
   assessable: boolean;
   /** One-line summary */
@@ -141,7 +155,8 @@ export class IntentDriftDetector {
         )
       : null;
 
-    const signals = previous ? this.detectSignals(current, previous) : [];
+    const signals = this.detectConfidenceMeasurementSignals(current, previous);
+    if (previous) signals.push(...this.detectSignals(current, previous));
     const driftScore = this.computeDriftScore(signals);
 
     const summary = this.buildSummary(current, previous, signals, driftScore);
@@ -180,14 +195,40 @@ export class IntentDriftDetector {
     const journalHealth = this.computeJournalHealth(entries, periodDays);
 
     // Weighted average: conflictFreedom(30%) + confidenceLevel(25%) + principleConsistency(25%) + journalHealth(20%)
-    const score = Math.round(
+    const rawScore =
       conflictFreedom * 0.30 +
       confidenceLevel * 0.25 +
       principleConsistency * 0.25 +
-      journalHealth * 0.20
-    );
+      journalHealth * 0.20;
 
+    const score = Math.round(rawScore);
     const grade = this.scoreToGrade(score);
+    if (grade === 'N/A') {
+      const invalidConfidenceCount = entries.filter(
+        entry => classifyDecisionConfidence(
+          (entry as { confidence?: unknown }).confidence,
+        ).status === 'invalid',
+      ).length;
+      const reason = invalidConfidenceCount > 0
+        ? `${invalidConfidenceCount} decision(s) have invalid confidence values`
+        : 'A score component is non-finite';
+      return {
+        // Keep JSON honest. Returning NaN would serialize as null, recreating
+        // the incident under a different grade.
+        score: 0,
+        components: {
+          conflictFreedom: 0,
+          confidenceLevel: 0,
+          principleConsistency: 0,
+          journalHealth: 0,
+        },
+        sampleSize: entries.length,
+        periodDays,
+        grade: 'N/A',
+        assessable: false,
+        summary: `${reason} — alignment cannot be assessed.`,
+      };
+    }
 
     const summary = this.buildAlignmentSummary(score, grade, entries.length, periodDays);
 
@@ -227,12 +268,57 @@ export class IntentDriftDetector {
       .sort((a, b) => b.count - a.count);
 
     // Average confidence (only from entries that have confidence)
-    const confidenceEntries = entries.filter(e => e.confidence !== undefined);
-    const avgConfidence = confidenceEntries.length > 0
-      ? confidenceEntries.reduce((sum, e) => sum + (e.confidence ?? 0), 0) / confidenceEntries.length
-      : 0;
+    const parsedConfidences = entries.map(
+      entry => classifyDecisionConfidence(
+        (entry as { confidence?: unknown }).confidence,
+      ),
+    );
+    const confidenceValues = parsedConfidences
+      .filter(
+        (parsed): parsed is { status: 'valid'; value: number } =>
+          parsed.status === 'valid',
+      )
+      .map(parsed => parsed.value);
+    const invalidConfidenceCount = parsedConfidences.filter(
+      parsed => parsed.status === 'invalid',
+    ).length;
+    const avgConfidence = invalidConfidenceCount === 0 && confidenceValues.length > 0
+      ? confidenceValues.reduce((sum, confidence) => sum + confidence, 0) / confidenceValues.length
+      : null;
 
-    return { from, to, decisionCount, conflictRate, topPrinciples, avgConfidence };
+    return {
+      from,
+      to,
+      decisionCount,
+      conflictRate,
+      topPrinciples,
+      avgConfidence,
+      confidenceSampleSize: confidenceValues.length,
+      invalidConfidenceCount,
+    };
+  }
+
+  private detectConfidenceMeasurementSignals(
+    current: DriftWindow,
+    previous: DriftWindow | null,
+  ): DriftSignal[] {
+    const previousInvalid = previous?.invalidConfidenceCount ?? 0;
+    const invalidCount = current.invalidConfidenceCount + previousInvalid;
+    if (invalidCount === 0) return [];
+
+    const affectedWindows = [
+      current.invalidConfidenceCount > 0 ? 'current' : null,
+      previousInvalid > 0 ? 'previous' : null,
+    ].filter((value): value is string => value !== null).join(' and ');
+
+    return [{
+      type: 'confidence_unmeasurable',
+      severity: 'warning',
+      description:
+        `Confidence drift is unmeasurable: ${invalidCount} invalid confidence ` +
+        `value(s) in the ${affectedWindows} window.`,
+      delta: invalidCount,
+    }];
   }
 
   private detectSignals(current: DriftWindow, previous: DriftWindow): DriftSignal[] {
@@ -267,7 +353,7 @@ export class IntentDriftDetector {
     }
 
     // 2. Confidence drop
-    if (previous.avgConfidence > 0) {
+    if (previous.avgConfidence !== null && current.avgConfidence !== null) {
       const drop = previous.avgConfidence - current.avgConfidence;
       if (drop > 0.25) {
         signals.push({
@@ -386,9 +472,25 @@ export class IntentDriftDetector {
   }
 
   private computeConfidenceLevel(entries: DecisionJournalEntry[]): number {
-    const withConfidence = entries.filter(e => e.confidence !== undefined);
-    if (withConfidence.length === 0) return 50; // neutral default
-    const avg = withConfidence.reduce((sum, e) => sum + (e.confidence ?? 0), 0) / withConfidence.length;
+    const invalidConfidence = entries.some(
+      entry => classifyDecisionConfidence(
+        (entry as { confidence?: unknown }).confidence,
+      ).status === 'invalid',
+    );
+    if (invalidConfidence) return Number.NaN;
+
+    const confidenceValues = entries
+      .map(entry => classifyDecisionConfidence(
+        (entry as { confidence?: unknown }).confidence,
+      ))
+      .filter(
+        (parsed): parsed is { status: 'valid'; value: number } =>
+          parsed.status === 'valid',
+      )
+      .map(parsed => parsed.value);
+    if (confidenceValues.length === 0) return 50; // neutral default
+    const avg = confidenceValues.reduce((sum, confidence) => sum + confidence, 0)
+      / confidenceValues.length;
     return avg * 100;
   }
 
@@ -442,7 +544,8 @@ export class IntentDriftDetector {
     return Math.max(0, Math.round(rate * 600)); // linear scale below 0.05
   }
 
-  private scoreToGrade(score: number): 'A' | 'B' | 'C' | 'D' | 'F' {
+  private scoreToGrade(score: number): AlignmentScore['grade'] {
+    if (!Number.isFinite(score)) return 'N/A';
     if (score >= 85) return 'A';
     if (score >= 70) return 'B';
     if (score >= 55) return 'C';

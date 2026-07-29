@@ -22954,7 +22954,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.post('/intent/journal', async (req, res) => {
     try {
-      const { DecisionJournal, validateDecisionSubmission } = await import(
+      const {
+        DecisionJournal,
+        DecisionJournalValidationError,
+        validateDecisionSubmission,
+      } = await import(
         '../core/DecisionJournal.js'
       );
       const { EvidencePolicyError } = await import('../memory/SemanticMemory.js');
@@ -22970,6 +22974,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           reason: verdict.reason,
           unknownFields: verdict.unknownFields,
           missingFields: verdict.missingFields,
+          invalidFields: verdict.invalidFields,
         });
         return;
       }
@@ -23003,7 +23008,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const entry = journal.log({ sessionId, decision, ...rest }, effectiveEvidence);
         res.status(201).json(entry);
       } catch (err) {
-        if (err instanceof EvidencePolicyError) {
+        if (
+          err instanceof EvidencePolicyError
+          || err instanceof DecisionJournalValidationError
+        ) {
           res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
           return;
         }

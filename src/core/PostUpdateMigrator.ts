@@ -78,6 +78,17 @@ import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillCo
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Agent-facing contract for `POST /intent/journal` confidence.
+ *
+ * Shared by `generateClaudeMd` (new agents) and `migrateClaudeMd` (existing
+ * agents) so an API refusal cannot ship without Migration Parity. The unique
+ * content-sniff marker is `Existing qualitative rows are treated as
+ * unmeasurable and are not rewritten.`.
+ */
+export const DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE =
+  '`confidence` must be a finite number in `[0, 1]`; a numeric string such as `"0.8"` is accepted and stored as a number, while a qualitative label such as `"high"` is refused rather than mapped to a score. Existing qualitative rows are treated as unmeasurable and are not rewritten. Branch on `assessable`: `sampleSize > 0` does not by itself prove an alignment score is assessable.';
+
+/**
  * Exact SHA-256 identities of every canonical autonomous stop-hook revision in
  * repository history through the predecessor of STATE_PARSE_LOUD. These are a
  * conservative migration escape hatch for agents that skipped several releases:
@@ -5598,6 +5609,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added decision-journal principle requirement awareness');
     }
 
+    if (!content.includes('Existing qualitative rows are treated as unmeasurable and are not rewritten.')) {
+      content += `\n- **Decision journal confidence contract:** ${DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE}\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added decision-journal confidence contract awareness');
+    }
+
     if (!content.includes('Alignment score — N/A means not assessed:')) {
       content += '\n- **Alignment score — N/A means not assessed:** `GET /intent/alignment` returns `grade: \'N/A\'` and `assessable: false` when the analysis window held no decisions. Do NOT read that as a failing grade — `score: 0` is a placeholder, not a measurement. Branch on `assessable` (or `sampleSize > 0`) before treating the score as a verdict.\n';
       patched = true;
@@ -9434,6 +9451,11 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // and fall back to recording decisions somewhere nothing reads — which is
       // the exact failure this refusal exists to prevent.
       '**Decision journal — principle is required:',
+      // Confidence is the same framework-agnostic write contract. This separate
+      // addendum marker upgrades shadows that already contain the older
+      // decision-journal paragraph instead of treating that old marker as proof
+      // that they learned the stricter confidence shape.
+      '**Decision journal confidence contract:**',
       '**Alignment score — N/A means not assessed:',
       '**Publishing**',
       '**Private Viewing**',

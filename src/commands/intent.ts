@@ -381,7 +381,7 @@ export async function intentDrift(options: IntentDriftOptions): Promise<void> {
   console.log(pc.bold('  Current Period:'));
   console.log(`    Decisions:      ${pc.cyan(String(analysis.current.decisionCount))}`);
   console.log(`    Conflict Rate:  ${formatPercent(analysis.current.conflictRate)}`);
-  console.log(`    Avg Confidence: ${analysis.current.avgConfidence > 0 ? analysis.current.avgConfidence.toFixed(2) : pc.dim('n/a')}`);
+  console.log(`    Avg Confidence: ${analysis.current.avgConfidence !== null ? analysis.current.avgConfidence.toFixed(2) : pc.dim('n/a')}`);
   if (analysis.current.topPrinciples.length > 0) {
     const top = analysis.current.topPrinciples[0];
     console.log(`    Top Principle:  ${top.principle} (${top.count}x)`);
@@ -393,7 +393,7 @@ export async function intentDrift(options: IntentDriftOptions): Promise<void> {
     console.log(pc.bold('  Previous Period:'));
     console.log(`    Decisions:      ${pc.cyan(String(analysis.previous.decisionCount))}`);
     console.log(`    Conflict Rate:  ${formatPercent(analysis.previous.conflictRate)}`);
-    console.log(`    Avg Confidence: ${analysis.previous.avgConfidence > 0 ? analysis.previous.avgConfidence.toFixed(2) : pc.dim('n/a')}`);
+    console.log(`    Avg Confidence: ${analysis.previous.avgConfidence !== null ? analysis.previous.avgConfidence.toFixed(2) : pc.dim('n/a')}`);
     if (analysis.previous.topPrinciples.length > 0) {
       const top = analysis.previous.topPrinciples[0];
       console.log(`    Top Principle:  ${top.principle} (${top.count}x)`);

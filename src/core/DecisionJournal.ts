@@ -77,13 +77,59 @@ export const DECISION_JOURNAL_WRITABLE_FIELDS = [
 export interface DecisionSubmissionVerdict {
   ok: boolean;
   /** Machine-readable refusal reason; null when accepted. */
-  reason: 'missing-required' | 'unknown-fields' | null;
+  reason: 'missing-required' | 'unknown-fields' | 'invalid-field' | null;
   /** Human-facing explanation naming the offending fields. */
   message: string | null;
   /** Submitted keys that are not recorded by any reader. */
   unknownFields: string[];
   /** Required keys the submission omitted. */
   missingFields: string[];
+  /** Known fields whose runtime value violates the stored contract. */
+  invalidFields: string[];
+}
+
+export type ParsedDecisionConfidence =
+  | { status: 'missing' }
+  | { status: 'valid'; value: number }
+  | { status: 'invalid' };
+
+/**
+ * Parse the boundary representation without inventing meaning. Numeric strings
+ * have one unambiguous numeric value and are normalized; qualitative labels do
+ * not, so they remain invalid rather than being mapped to arbitrary scores.
+ */
+export function classifyDecisionConfidence(value: unknown): ParsedDecisionConfidence {
+  if (value === undefined) return { status: 'missing' };
+
+  const numeric = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && value.trim() !== ''
+      ? Number(value)
+      : Number.NaN;
+
+  return Number.isFinite(numeric) && numeric >= 0 && numeric <= 1
+    ? { status: 'valid', value: numeric }
+    : { status: 'invalid' };
+}
+
+/** Raised by the canonical writer before an invalid confidence reaches disk. */
+export class DecisionJournalValidationError extends Error {
+  readonly field = 'confidence';
+  readonly code = 'invalid-confidence';
+
+  constructor() {
+    super(
+      `Decision confidence must be a finite number in [0, 1]. ` +
+      `Use numeric confidence such as 0.8; qualitative labels such as "high" are not recorded.`,
+    );
+    this.name = 'DecisionJournalValidationError';
+  }
+}
+
+function normalizeDecisionConfidence(value: unknown): number | undefined {
+  const parsed = classifyDecisionConfidence(value);
+  if (parsed.status === 'invalid') throw new DecisionJournalValidationError();
+  return parsed.status === 'valid' ? parsed.value : undefined;
 }
 
 /**
@@ -100,6 +146,9 @@ export interface DecisionSubmissionVerdict {
  *  2. Unknown fields are REFUSED rather than swallowed. Accepting a key no
  *     reader consumes lets a caller believe it recorded something it did
  *     not — the failure this function exists to make impossible.
+ *  3. `confidence`, when present, is a finite number from 0 through 1. The
+ *     scorer performs numeric arithmetic over this field, so accepting a
+ *     qualitative string would poison the aggregate with NaN.
  *
  * Pure: no I/O, no clock, no config. The machine-generated path
  * (DispatchDecisionJournal → journal.log) deliberately does NOT run this —
@@ -117,6 +166,8 @@ export function validateDecisionSubmission(
     const v = (submitted as Record<string, unknown>)[k];
     return typeof v !== 'string' || v.trim() === '';
   });
+  const confidence = classifyDecisionConfidence(submitted.confidence);
+  const invalidFields = confidence.status === 'invalid' ? ['confidence'] : [];
 
   if (missingFields.length > 0) {
     return {
@@ -128,6 +179,7 @@ export function validateDecisionSubmission(
         `recording the choice without the reasoning is what this journal exists to prevent.`,
       unknownFields,
       missingFields: [...missingFields],
+      invalidFields,
     };
   }
 
@@ -143,10 +195,32 @@ export function validateDecisionSubmission(
         `${DECISION_JOURNAL_WRITABLE_FIELDS.join(', ')}.`,
       unknownFields,
       missingFields: [],
+      invalidFields,
     };
   }
 
-  return { ok: true, reason: null, message: null, unknownFields: [], missingFields: [] };
+  if (invalidFields.length > 0) {
+    return {
+      ok: false,
+      reason: 'invalid-field',
+      message:
+        `Invalid field(s): ${invalidFields.join(', ')}. ` +
+        `Decision confidence must be a finite number in [0, 1]. ` +
+        `Use numeric confidence such as 0.8; qualitative labels such as "high" are not recorded.`,
+      unknownFields: [],
+      missingFields: [],
+      invalidFields,
+    };
+  }
+
+  return {
+    ok: true,
+    reason: null,
+    message: null,
+    unknownFields: [],
+    missingFields: [],
+    invalidFields: [],
+  };
 }
 
 export class DecisionJournal {
@@ -232,6 +306,17 @@ export class DecisionJournal {
       );
     }
 
+    // Runtime enforcement belongs at the canonical write boundary, not only
+    // at the HTTP validator. TypeScript types do not protect JavaScript
+    // callers, old integrations, or cast values.
+    const confidence = normalizeDecisionConfidence(
+      (entry as { confidence?: unknown }).confidence,
+    );
+    const normalizedEntry = {
+      ...entry,
+      ...(confidence === undefined ? {} : { confidence }),
+    };
+
     const timestamp = new Date().toISOString();
     let entityId: string | undefined;
 
@@ -243,14 +328,14 @@ export class DecisionJournal {
         entityId = this.semanticMemory.rememberWithEvidence(
           {
             type: 'decision',
-            name: entry.decision.slice(0, 200),
-            content: entry.decision,
-            source: entry.sessionId ? `session:${entry.sessionId}` : 'decision-journal',
-            sourceSession: entry.sessionId,
-            confidence: entry.confidence ?? 0.8,
+            name: normalizedEntry.decision.slice(0, 200),
+            content: normalizedEntry.decision,
+            source: normalizedEntry.sessionId ? `session:${normalizedEntry.sessionId}` : 'decision-journal',
+            sourceSession: normalizedEntry.sessionId,
+            confidence: normalizedEntry.confidence ?? 0.8,
             lastVerified: timestamp,
-            domain: entry.jobSlug,
-            tags: entry.tags ?? [],
+            domain: normalizedEntry.jobSlug,
+            tags: normalizedEntry.tags ?? [],
             privacyScope: this.entityPrivacyScope,
           },
           evidence,
@@ -275,7 +360,7 @@ export class DecisionJournal {
     }
 
     const full: DecisionJournalEntry = {
-      ...entry,
+      ...normalizedEntry,
       timestamp,
       evidence,
       ...(entityId ? { entityId } : {}),

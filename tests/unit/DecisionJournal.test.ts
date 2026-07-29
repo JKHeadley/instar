@@ -92,6 +92,31 @@ describe('DecisionJournal', () => {
       expect(result.timestamp).toBeTruthy();
     });
 
+    it('coerces numeric confidence strings before writing JSONL', () => {
+      const result = journal.log({
+        sessionId: 'sess-confidence',
+        decision: 'Normalize submitted confidence',
+        confidence: '0.8' as unknown as number,
+      }, ev);
+
+      expect(result.confidence).toBe(0.8);
+
+      const content = fs.readFileSync(path.join(stateDir, 'decision-journal.jsonl'), 'utf-8');
+      const parsed = JSON.parse(content.trim());
+      expect(parsed.confidence).toBe(0.8);
+      expect(typeof parsed.confidence).toBe('number');
+    });
+
+    it('refuses confidence labels before writing JSONL', () => {
+      expect(() => journal.log({
+        sessionId: 'sess-confidence',
+        decision: 'Reject confidence label',
+        confidence: 'high' as unknown as number,
+      }, ev)).toThrow(/finite number in \[0, 1\]/);
+
+      expect(fs.existsSync(path.join(stateDir, 'decision-journal.jsonl'))).toBe(false);
+    });
+
     it('appends multiple entries without overwriting', () => {
       journal.log({ sessionId: 's1', decision: 'First decision' }, ev);
       journal.log({ sessionId: 's2', decision: 'Second decision' }, ev);

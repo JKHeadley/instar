@@ -180,6 +180,60 @@ describe('IntentDriftDetector', () => {
       expect(confSignal!.severity).toBe('alert');
     });
 
+    it('REGRESSION: legacy numeric strings remain measurable and still trigger a drop signal', () => {
+      const previousEntries = Array.from({ length: 5 }, (_, i) => ({
+        timestamp: daysAgo(20 + i),
+        decision: `Prev D${i}`,
+        confidence: '0.90' as never,
+        principle: 'safety',
+      }));
+      const currentEntries = Array.from({ length: 5 }, (_, i) => ({
+        timestamp: daysAgo(1 + i),
+        decision: `Curr D${i}`,
+        confidence: '0.50' as never,
+        principle: 'safety',
+      }));
+
+      writeJournal(stateDir, [...previousEntries, ...currentEntries]);
+
+      const result = detector.analyze(14);
+
+      expect(result.previous?.avgConfidence).toBe(0.9);
+      expect(result.current.avgConfidence).toBe(0.5);
+      expect(Number.isFinite(result.current.avgConfidence)).toBe(true);
+      expect(result.signals.find(s => s.type === 'confidence_drop')).toMatchObject({
+        severity: 'alert',
+        delta: -0.4,
+      });
+    });
+
+    it('REGRESSION: qualitative legacy confidence emits an unmeasurable signal, not stable', () => {
+      writeJournal(stateDir, [
+        {
+          timestamp: daysAgo(20),
+          decision: 'Previous legacy decision',
+          confidence: 'high' as never,
+          principle: 'safety',
+        },
+        {
+          timestamp: daysAgo(1),
+          decision: 'Current decision',
+          confidence: 0.5,
+          principle: 'safety',
+        },
+      ]);
+
+      const result = detector.analyze(14);
+
+      expect(result.previous?.avgConfidence).toBeNull();
+      expect(result.previous?.invalidConfidenceCount).toBe(1);
+      expect(result.signals.find(s => s.type === 'confidence_unmeasurable')).toMatchObject({
+        severity: 'warning',
+        delta: 1,
+      });
+      expect(result.summary).not.toMatch(/^Stable:/);
+    });
+
     it('detects principle shift — info when top principle changes', () => {
       const previousEntries = Array.from({ length: 5 }, (_, i) => ({
         timestamp: daysAgo(20 + i),
@@ -378,6 +432,26 @@ describe('IntentDriftDetector', () => {
       expect(score.components.principleConsistency).toBe(0);
       expect(score.components.journalHealth).toBe(0);
       expect(score.summary).toContain('No decisions logged');
+    });
+
+    it('treats a legacy qualitative confidence as poisoned input, not an F', () => {
+      writeJournal(stateDir, [{
+        timestamp: daysAgo(1),
+        decision: 'Legacy decision',
+        principle: 'safety',
+        confidence: 'high' as never,
+        conflict: false,
+      }]);
+
+      const score = detector.alignmentScore(30);
+
+      expect(score.sampleSize).toBe(1);
+      expect(score.assessable).toBe(false);
+      expect(score.grade).toBe('N/A');
+      expect(score.score).toBe(0);
+      expect(score.components.confidenceLevel).toBe(0);
+      expect(score.summary).toMatch(/invalid confidence/i);
+      expect(JSON.stringify(score)).not.toContain('null');
     });
 
     it('handles perfect journal — all high, grade A', () => {

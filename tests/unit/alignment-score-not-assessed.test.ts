@@ -115,7 +115,7 @@ describe('alignmentScore — absence must not render as a bad grade', () => {
     expect(s.sampleSize).toBe(3);
   });
 
-  it('assessable tracks sampleSize exactly — the two can never disagree', () => {
+  it('a finite populated journal is assessable', () => {
     expect(detector.alignmentScore().assessable).toBe(false);
 
     journal.log(
@@ -124,7 +124,53 @@ describe('alignmentScore — absence must not render as a bad grade', () => {
     );
 
     const s = detector.alignmentScore();
-    expect(s.assessable).toBe(s.sampleSize > 0);
+    expect(s.sampleSize).toBeGreaterThan(0);
+    expect(s.assessable).toBe(true);
+  });
+
+  it('REGRESSION: a populated journal with string confidence is not graded F', () => {
+    fs.writeFileSync(
+      path.join(dir, 'decision-journal.jsonl'),
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        sessionId: SESSION,
+        decision: 'legacy poisoned decision',
+        principle: 'Structure > Willpower',
+        confidence: 'high',
+      }) + '\n',
+    );
+
+    const s = detector.alignmentScore();
+
+    expect(s.sampleSize).toBe(1);
+    expect(s.assessable).toBe(false);
+    expect(s.grade).toBe('N/A');
+    expect(s.grade).not.toBe('F');
+    expect(s.score).toBe(0);
+    expect(Number.isFinite(s.score)).toBe(true);
+    expect(s.components.confidenceLevel).toBe(0);
+    expect(Number.isFinite(s.components.confidenceLevel)).toBe(true);
+    expect(s.summary).toMatch(/invalid confidence/i);
+    expect(JSON.stringify(s)).not.toContain('null');
+  });
+
+  it('legacy numeric strings retain their unambiguous numeric meaning', () => {
+    fs.writeFileSync(
+      path.join(dir, 'decision-journal.jsonl'),
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        sessionId: SESSION,
+        decision: 'legacy numeric confidence',
+        principle: 'Structure > Willpower',
+        confidence: '0.8',
+      }) + '\n',
+    );
+
+    const s = detector.alignmentScore();
+
+    expect(s.assessable).toBe(true);
+    expect(s.components.confidenceLevel).toBe(80);
+    expect(s.grade).not.toBe('N/A');
   });
 
   it('components are zero on the empty case, and the caller is told not to read them', () => {
