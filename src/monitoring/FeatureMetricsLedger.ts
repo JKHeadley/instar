@@ -901,11 +901,12 @@ export class FeatureMetricsLedger {
 
   /**
    * Before `unclassified` shipped, every successful LLM call without a verdict
-   * classifier was persisted as `noop`. Those rows cannot prove "did not act",
-   * so conservatively relabel all legacy LLM noops once. This intentionally
-   * sacrifices old classified-noop evidence rather than preserving a fabricated
-   * 0% fire rate. The transaction marker makes the rewrite one-shot: noops
-   * recorded by the new classifier-aware code remain noops on later opens.
+   * classifier was persisted as `noop`. A feature with any historical `fired`
+   * row proves that a classifier was wired, so its noops are genuine and must
+   * remain classified evidence. For features with no such proof, conservatively
+   * relabel legacy LLM noops once rather than preserving a fabricated 0% fire
+   * rate. The transaction marker makes the rewrite one-shot: noops recorded by
+   * the new classifier-aware code remain noops on later opens.
    */
   private migrateLegacyNoopOutcomes(): void {
     const migrationKey = 'outcome-unclassified-v1';
@@ -917,7 +918,13 @@ export class FeatureMetricsLedger {
       this.db.prepare(
         `UPDATE feature_metrics
             SET outcome = 'unclassified'
-          WHERE kind = 'llm' AND outcome = 'noop'`,
+          WHERE kind = 'llm'
+            AND outcome = 'noop'
+            AND feature NOT IN (
+              SELECT feature
+                FROM feature_metrics
+               WHERE kind = 'llm' AND outcome = 'fired'
+            )`,
       ).run();
       this.db.prepare(
         `INSERT INTO feature_metrics_schema_meta (key, value) VALUES (?, ?)`,

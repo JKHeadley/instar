@@ -16,7 +16,7 @@ Instar already counts every internal LLM call, but its health answer looked at b
 
 Each feature rollup now carries its own LLM error rate and the exact real-call denominator. If a feature made no LLM calls, its error rate is `null`, not the perfect-looking value zero. A reliability summary evaluates components independently: at least 20 real LLM calls and a 20% error rate is degraded; 50% is failing. The fleet aggregate never participates in that decision. The same snapshot appears in the feature-metrics response and contributes to the health status, including a third `unavailable` outcome if the metrics query itself cannot run.
 
-The effectiveness metric gets the same honesty rule. A completed LLM call with no verdict classifier is recorded as `unclassified`, not `noop`. Fire rate is computed only from classified `fired` and `noop` calls; when there are none it is `null` with an insufficient-evidence marker. A one-time conservative migration relabels legacy LLM noops as unclassified because the old rows cannot prove whether a classifier ran.
+The effectiveness metric gets the same honesty rule. A completed LLM call with no verdict classifier is recorded as `unclassified`, not `noop`. Fire rate is computed only from classified `fired` and `noop` calls; when there are none it is `null` with an insufficient-evidence marker. A one-time conservative migration relabels legacy LLM noops only for features with no historical fired row; a fired row proves classifier wiring, so those features retain their genuine noop history.
 
 The timeout changes follow the workload rather than applying one number everywhere:
 

@@ -16,8 +16,9 @@ absent. Event-only features report `errorRate: null`. Successful LLM calls with
 no usable verdict classifier are counted as `unclassified`, not `noop`;
 `fireRate` uses only classified fired/noop calls and is null with an
 insufficient-evidence marker when none exist. Legacy LLM noops are
-conservatively relabelled once because their old rows cannot prove whether a
-classifier ran.
+conservatively relabelled once only for features with no historical fired row;
+a fired row proves classifier wiring, so those features retain their genuine
+noop history.
 
 Three known timeout failures are also corrected. Profile-intent classification
 now separates its four-second primary attempt from a 15-second overall fallback

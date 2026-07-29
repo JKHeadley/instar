@@ -101,8 +101,9 @@ competing live signals or decide user intent.
 and `fireRate` are now nullable when their denominators are absent.
 `/health` gains `llmReliability` when the ledger exists and may now correctly
 report `degraded` for a component outage. A one-time local metrics migration
-conservatively changes legacy LLM `noop` rows to `unclassified`; the old
-encoding cannot establish that a verdict classifier ran. Call counts, tokens,
+conservatively changes legacy LLM `noop` rows to `unclassified` only for
+features with no historical `fired` row. A fired row proves classifier wiring,
+so those features retain their genuine noop history. Call counts, tokens,
 latency, and correlation ids are unchanged. No external service call or
 operator-facing action is added.
 

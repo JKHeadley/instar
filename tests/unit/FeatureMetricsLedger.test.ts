@@ -216,6 +216,8 @@ describe('FeatureMetricsLedger', () => {
       kind TEXT NOT NULL, outcome TEXT NOT NULL, tokens_in INTEGER, tokens_out INTEGER,
       latency_ms INTEGER, model TEXT, waited INTEGER NOT NULL DEFAULT 0, wait_ms INTEGER, verdict_id TEXT)`);
     seed.prepare(`INSERT INTO feature_metrics (ts, feature, kind, outcome) VALUES (1, 'Legacy', 'llm', 'noop')`).run();
+    seed.prepare(`INSERT INTO feature_metrics (ts, feature, kind, outcome) VALUES (1, 'ClassifiedHistory', 'llm', 'fired')`).run();
+    seed.prepare(`INSERT INTO feature_metrics (ts, feature, kind, outcome) VALUES (2, 'ClassifiedHistory', 'llm', 'noop')`).run();
     seed.close();
 
     // Opening the ledger must add the column without losing the legacy row.
@@ -233,6 +235,14 @@ describe('FeatureMetricsLedger', () => {
         unclassified: 1,
         fireRate: null,
         fireRateInsufficientEvidence: true,
+      });
+      expect(rows.find(f => f.feature === 'ClassifiedHistory')).toMatchObject({
+        calls: 2,
+        fired: 1,
+        noop: 1,
+        unclassified: 0,
+        fireRate: 0.5,
+        fireRateInsufficientEvidence: false,
       });
       expect(rows.find(f => f.feature === 'New')!.frameworks).toEqual(['codex-cli']);
     } finally {
