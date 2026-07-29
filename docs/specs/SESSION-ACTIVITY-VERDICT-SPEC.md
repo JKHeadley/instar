@@ -1,8 +1,13 @@
 ---
 title: Unified Session-Activity Verdict — one truth about whether a session is working
-status: converged
+parent-principle: "Verify the State, Not Its Symbol"
+parent-principle-note: "The spec's founding fixture is a single log line reading `procs=true, idleAtPrompt=true` — a child process EXISTING (the symbol) accepted as proof the session is WORKING (the state), while the same line carries evidence it is idle. Five components each accept their own proxy and disagree in user-visible ways. One verdict computed from corroborated inputs and consumed everywhere is this standard applied to session activity."
+status: approved
 review-convergence: "codey adversarial review applied (PR #845 comment, 2026-06-05T16:38Z) — architecture approved; staleness/sampling ownership, per-consumer unknown matrix, and reaper guard preservation tightened below per review"
-approved: false
+approved: true
+approved-by: "justin"
+approved-at: "2026-07-29T03:24:00Z"
+approved-via: "Telegram topic 29723 — Justin, 2026-07-29 03:24Z: \"You have my approval for what is waiting on me\", in reply to a review page naming this spec and quiet-settings-overlay as the two items blocked on his approval. Re-verified before asking: the core object (SessionActivityService) is still absent from main and the fragmentation the spec describes still holds — two of the five named consumers were cleaned up by the honest-progress work, and three DIFFERENT components have grown their own activity predicate since, so the count of independent answers is unchanged at five."
 owner: echo
 builder: tbd (echo or codey per slice; echo owns convergence)
 date: 2026-06-05
