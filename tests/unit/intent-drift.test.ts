@@ -134,6 +134,26 @@ describe('intent drift', () => {
     expect(output).toContain('days');
   });
 
+  it('distinguishes measured zero confidence from unavailable confidence', async () => {
+    fs.writeFileSync(
+      path.join(stateDir, 'decision-journal.jsonl'),
+      JSON.stringify({
+        timestamp: daysAgo(1),
+        sessionId: 'zero',
+        decision: 'Measured zero confidence',
+        principle: 'honesty',
+        confidence: 0,
+      }) + '\n',
+    );
+
+    const { intentDrift } = await import('../../src/commands/intent.js');
+    await intentDrift({ dir: tmpDir });
+
+    const output = consoleLogs.join('\n');
+    expect(output).toContain('Avg Confidence: 0.00');
+    expect(output).not.toContain('Avg Confidence: n/a');
+  });
+
   // ── Alignment rendering: the surface where absence was invisible ──────
   //
   // WHY THESE EXIST. `alignmentScore()` returning 'N/A' + assessable:false is

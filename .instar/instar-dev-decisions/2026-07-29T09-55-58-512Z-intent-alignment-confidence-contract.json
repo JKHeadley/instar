@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-29T09:55:58.512Z",
+  "slug": "intent-alignment-confidence-contract",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 232,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

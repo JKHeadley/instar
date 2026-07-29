@@ -83,6 +83,40 @@ describe('validateDecisionSubmission — refuses before recording', () => {
     expect(v.reason).toBeNull();
     expect(v.unknownFields).toEqual([]);
     expect(v.missingFields).toEqual([]);
+    expect(v.invalidFields).toEqual([]);
+  });
+
+  it.each([
+    ['qualitative string', 'high'],
+    ['null', null],
+    ['NaN', Number.NaN],
+    ['positive infinity', Number.POSITIVE_INFINITY],
+    ['below zero', -0.01],
+    ['above one', 1.01],
+  ])('REGRESSION: refuses %s confidence before it reaches the journal', (_label, confidence) => {
+    const v = validateDecisionSubmission({
+      sessionId: SESSION,
+      decision: 'Record a decision',
+      principle: 'Structure > Willpower',
+      confidence,
+    });
+
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('invalid-field');
+    expect(v.invalidFields).toEqual(['confidence']);
+    expect(v.message).toMatch(/finite number in \[0, 1\]/i);
+  });
+
+  it.each([0, 0.5, 1, '0.8'])('accepts numeric confidence boundary %s', confidence => {
+    const v = validateDecisionSubmission({
+      sessionId: SESSION,
+      decision: 'Record a decision',
+      principle: 'Structure > Willpower',
+      confidence,
+    });
+
+    expect(v.ok).toBe(true);
+    expect(v.invalidFields).toEqual([]);
   });
 
   it('a blank or whitespace principle does not satisfy the requirement', () => {
@@ -203,5 +237,20 @@ describe('stats() — an unprincipled journal cannot look like an empty one', ()
       journal.log({ sessionId: SESSION, decision: 'auto-applied' }, evidence()),
     ).not.toThrow();
     expect(journal.stats().count).toBe(1);
+  });
+
+  it('the canonical writer refuses a runtime string even when a caller bypasses TypeScript', () => {
+    expect(() =>
+      journal.log(
+        {
+          sessionId: SESSION,
+          decision: 'invalid confidence',
+          confidence: 'high',
+        } as never,
+        evidence(),
+      ),
+    ).toThrow(/finite number in \[0, 1\]/i);
+
+    expect(journal.stats().count).toBe(0);
   });
 });

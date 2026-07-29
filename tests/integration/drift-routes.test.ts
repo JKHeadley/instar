@@ -164,6 +164,26 @@ describe('Drift & Alignment Routes (integration)', () => {
       expect(res.body.previous).toBeTruthy();
       expect(res.body.previous.decisionCount).toBe(4);
     });
+
+    it('reports legacy qualitative confidence as explicitly unmeasurable', async () => {
+      fs.writeFileSync(
+        path.join(stateDir, 'decision-journal.jsonl'),
+        JSON.stringify({
+          timestamp: daysAgo(1),
+          sessionId: 'legacy',
+          decision: 'Legacy decision',
+          principle: 'safety',
+          confidence: 'medium',
+        }) + '\n',
+      );
+
+      const res = await request(app).get('/intent/drift');
+
+      expect(res.status).toBe(200);
+      expect(res.body.current.avgConfidence).toBeNull();
+      expect(res.body.current.confidenceSampleSize).toBe(0);
+      expect(res.body.current.invalidConfidenceCount).toBe(1);
+    });
   });
 
   // ── GET /intent/alignment ─────────────────────────────────────────
@@ -216,6 +236,31 @@ describe('Drift & Alignment Routes (integration)', () => {
       expect(typeof res.body.components.principleConsistency).toBe('number');
       expect(typeof res.body.components.journalHealth).toBe('number');
       expect(typeof res.body.summary).toBe('string');
+    });
+
+    it('does not serialize poisoned legacy confidence as null or grade it F', async () => {
+      fs.writeFileSync(
+        path.join(stateDir, 'decision-journal.jsonl'),
+        JSON.stringify({
+          timestamp: daysAgo(1),
+          sessionId: 'legacy',
+          decision: 'Legacy decision',
+          principle: 'safety',
+          confidence: 'high',
+          conflict: false,
+        }) + '\n',
+      );
+
+      const res = await request(app).get('/intent/alignment');
+
+      expect(res.status).toBe(200);
+      expect(res.body.sampleSize).toBe(1);
+      expect(res.body.score).toBe(0);
+      expect(res.body.components.confidenceLevel).toBe(0);
+      expect(res.body.grade).toBe('N/A');
+      expect(res.body.assessable).toBe(false);
+      expect(res.body.summary).toMatch(/invalid confidence/i);
+      expect(JSON.stringify(res.body)).not.toContain('null');
     });
   });
 

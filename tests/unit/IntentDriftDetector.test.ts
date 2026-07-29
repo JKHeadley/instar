@@ -380,6 +380,26 @@ describe('IntentDriftDetector', () => {
       expect(score.summary).toContain('No decisions logged');
     });
 
+    it('treats a legacy qualitative confidence as poisoned input, not an F', () => {
+      writeJournal(stateDir, [{
+        timestamp: daysAgo(1),
+        decision: 'Legacy decision',
+        principle: 'safety',
+        confidence: 'high' as never,
+        conflict: false,
+      }]);
+
+      const score = detector.alignmentScore(30);
+
+      expect(score.sampleSize).toBe(1);
+      expect(score.assessable).toBe(false);
+      expect(score.grade).toBe('N/A');
+      expect(score.score).toBe(0);
+      expect(score.components.confidenceLevel).toBe(0);
+      expect(score.summary).toMatch(/invalid confidence/i);
+      expect(JSON.stringify(score)).not.toContain('null');
+    });
+
     it('handles perfect journal — all high, grade A', () => {
       // Daily entries, no conflicts, high confidence, single principle
       const entries = Array.from({ length: 28 }, (_, i) => ({

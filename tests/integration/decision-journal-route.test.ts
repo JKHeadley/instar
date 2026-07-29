@@ -94,6 +94,32 @@ describe('POST /intent/journal (integration — the wiring, not just the validat
     expect(res.body.unknownFields).toEqual(['checkedAgainst', 'reasoning']);
   });
 
+  it('REGRESSION: the ROUTE refuses confidence labels before they reach JSONL', async () => {
+    const res = await post({
+      sessionId: SESSION,
+      decision: 'Record a confidence-bearing decision',
+      principle: 'Contract matches computation',
+      confidence: 'high',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.reason).toBe('invalid-field');
+    expect(res.body.invalidFields).toEqual(['confidence']);
+  });
+
+  it('normalizes numeric confidence strings to stored numbers', async () => {
+    const res = await post({
+      sessionId: SESSION,
+      decision: 'Record a numeric confidence',
+      principle: 'Contract matches computation',
+      confidence: '0.8',
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.confidence).toBe(0.8);
+    expect(typeof res.body.confidence).toBe('number');
+  });
+
   it('REGRESSION: a refused submission writes NOTHING', async () => {
     await post({ sessionId: SESSION, decision: 'no principle here' });
     await post({ sessionId: SESSION, decision: 'x', principle: 'p', bogus: 1 });
