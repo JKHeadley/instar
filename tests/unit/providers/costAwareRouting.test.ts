@@ -235,6 +235,25 @@ describe('CostStateTracker', () => {
       expect(snap.agentSdkCredit!.belowMargin).toBe(true);
     });
 
+    it('keeps a zero remaining balance measurable as fully consumed', async () => {
+      const tracker = new CostStateTracker({
+        readSdkCredit: async () => makeSnapshot(0, 200),
+      });
+      const snap = await tracker.snapshot();
+      expect(snap.agentSdkCredit).not.toBeNull();
+      expect(snap.agentSdkCredit!.remainingUsd).toBe(0);
+      expect(snap.agentSdkCredit!.consumedFraction).toBe(1);
+      expect(snap.agentSdkCredit!.belowMargin).toBe(true);
+    });
+
+    it('returns agentSdkCredit: null when total credit is zero', async () => {
+      const tracker = new CostStateTracker({
+        readSdkCredit: async () => makeSnapshot(0, 0),
+      });
+      const snap = await tracker.snapshot();
+      expect(snap.agentSdkCredit).toBeNull();
+    });
+
     it('returns agentSdkCredit: null when read returns null', async () => {
       const tracker = new CostStateTracker({
         readSdkCredit: async () => null,

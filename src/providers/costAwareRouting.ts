@@ -223,15 +223,19 @@ export class CostStateTracker {
     }
 
     const result: CostStateSnapshot = { capturedAt: new Date().toISOString() };
-    if (snapshot !== null) {
+    if (
+      snapshot !== null
+      && Number.isFinite(snapshot.totalUsd)
+      && snapshot.totalUsd > 0
+      && Number.isFinite(snapshot.remainingUsd)
+    ) {
       const safetyMarginUsd = this.safetyMarginFraction * snapshot.totalUsd;
       result.agentSdkCredit = {
         remainingUsd: snapshot.remainingUsd,
         totalUsd: snapshot.totalUsd,
         safetyMarginUsd,
         belowMargin: snapshot.remainingUsd <= safetyMarginUsd,
-        consumedFraction:
-          snapshot.totalUsd > 0 ? 1 - snapshot.remainingUsd / snapshot.totalUsd : 0,
+        consumedFraction: 1 - snapshot.remainingUsd / snapshot.totalUsd,
       };
     } else {
       result.agentSdkCredit = null;
