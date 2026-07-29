@@ -59,7 +59,7 @@ export interface SelfKnowledgeResult {
   synthesis: string | null;
   budgetUsed: number;
   elapsedMs: number;
-  cacheHitRate: number;
+  cacheHitRate: number | null;
   errors: SourceError[];
   triageMethod?: 'llm' | 'rule-based';
   confidence?: number;                     // Max node confidence (0.0-1.0)
@@ -142,7 +142,7 @@ export interface CacheStats {
   misses: number;
   evictions: number;
   size: number;
-  hitRate: number;
+  hitRate: number | null;
 }
 
 export const CACHE_TTL_MS: Record<CacheTier, number> = {
