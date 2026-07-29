@@ -500,7 +500,7 @@ export class SelfKnowledgeTree {
         valid: false,
         warnings: [],
         errors: [{ nodeId: '', type: 'invalid_schema', message: 'Tree config file not found' }],
-        coverageScore: 0,
+        coverageScore: null,
       };
     }
 
@@ -566,7 +566,7 @@ export class SelfKnowledgeTree {
       }
     }
 
-    const coverageScore = totalNodes > 0 ? validNodes / totalNodes : 0;
+    const coverageScore = totalNodes > 0 ? validNodes / totalNodes : null;
 
     return {
       valid: errors.length === 0,

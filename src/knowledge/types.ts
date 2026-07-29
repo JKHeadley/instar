@@ -188,7 +188,7 @@ export interface ValidationResult {
   valid: boolean;
   warnings: ValidationWarning[];
   errors: ValidationError[];
-  coverageScore: number;
+  coverageScore: number | null;
 }
 
 export interface ValidationWarning {

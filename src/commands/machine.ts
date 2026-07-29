@@ -949,7 +949,9 @@ export async function doctor(options: DoctorOptions): Promise<void> {
 
       const parts = [
         `${totalNodes} nodes`,
-        `${Math.round(validation.coverageScore * 100)}% coverage`,
+        validation.coverageScore === null
+          ? 'coverage n/a'
+          : `${Math.round(validation.coverageScore * 100)}% coverage`,
       ];
       if (health.searchCount > 0) {
         parts.push(health.cacheHitRate === null

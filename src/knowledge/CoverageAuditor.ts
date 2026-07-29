@@ -26,8 +26,8 @@ export interface CoverageGap {
 }
 
 export interface AuditResult {
-  /** Overall content coverage score (0-1) */
-  coverageScore: number;
+  /** Overall content coverage score (0-1), or null when the tree has no nodes. */
+  coverageScore: number | null;
   /** Total nodes in tree */
   totalNodes: number;
   /** Nodes with valid, non-empty sources */
@@ -40,7 +40,7 @@ export interface AuditResult {
 
 export interface HealthSummary {
   totalNodes: number;
-  coverageScore: number;
+  coverageScore: number | null;
   cacheHitRate: number | null;
   avgLatencyMs: number | null;
   errorRate: number | null;
@@ -97,10 +97,11 @@ export class CoverageAuditor {
       }
     }
 
+    const totalNodes = this.countNodes(config);
     return {
       coverageScore: validation.coverageScore,
-      totalNodes: this.countNodes(config),
-      validNodes: Math.round(validation.coverageScore * this.countNodes(config)),
+      totalNodes,
+      validNodes: validation.coverageScore === null ? 0 : Math.round(validation.coverageScore * totalNodes),
       gaps,
       validation,
     };
@@ -145,7 +146,7 @@ export class CoverageAuditor {
     const tracePath = path.join(this.stateDir, 'logs', 'tree-trace.jsonl');
     const defaultSummary: HealthSummary = {
       totalNodes: 0,
-      coverageScore: 0,
+      coverageScore: null,
       cacheHitRate: null,
       avgLatencyMs: null,
       errorRate: null,
@@ -187,7 +188,7 @@ export class CoverageAuditor {
 
       return {
         totalNodes: 0, // Caller fills this from config
-        coverageScore: 0, // Caller fills this from validation
+        coverageScore: null, // Caller fills this from validation
         cacheHitRate: totalCacheOps > 0 ? totalCacheHits / totalCacheOps : null,
         avgLatencyMs: totalLatency / entries.length,
         errorRate: totalErrors / entries.length,
