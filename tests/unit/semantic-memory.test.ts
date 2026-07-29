@@ -479,6 +479,35 @@ describe('SemanticMemory', () => {
   // ─── Confidence Decay ──────────────────────────────────────────
 
   describe('confidence decay', () => {
+    it('keeps confidence statistics unmeasured with no active entities', () => {
+      const report = setup.memory.decayAll();
+      expect(report.entitiesProcessed).toBe(0);
+      expect(report.entitiesExpired).toBe(0);
+      expect(report.minConfidence).toBeNull();
+      expect(report.maxConfidence).toBeNull();
+      expect(report.avgConfidence).toBeNull();
+    });
+
+    it('keeps confidence statistics unmeasured when every processed entity expires', () => {
+      setup.memory.remember({
+        type: 'fact',
+        name: 'Expired fact',
+        content: 'No longer active',
+        confidence: 0.9,
+        lastVerified: new Date().toISOString(),
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+        source: 'test',
+        tags: [],
+      });
+
+      const report = setup.memory.decayAll();
+      expect(report.entitiesProcessed).toBe(1);
+      expect(report.entitiesExpired).toBe(1);
+      expect(report.minConfidence).toBeNull();
+      expect(report.maxConfidence).toBeNull();
+      expect(report.avgConfidence).toBeNull();
+    });
+
     it('reduces confidence of unverified entities', () => {
       const id = setup.memory.remember({
         type: 'fact',
@@ -912,11 +941,11 @@ describe('SemanticMemory', () => {
       expect(stats.dbSizeBytes).toBeGreaterThan(0);
     });
 
-    it('returns zeroes for empty database', () => {
+    it('keeps average confidence unmeasured for an empty database', () => {
       const stats = setup.memory.stats();
       expect(stats.totalEntities).toBe(0);
       expect(stats.totalEdges).toBe(0);
-      expect(stats.avgConfidence).toBe(0);
+      expect(stats.avgConfidence).toBeNull();
     });
   });
 
