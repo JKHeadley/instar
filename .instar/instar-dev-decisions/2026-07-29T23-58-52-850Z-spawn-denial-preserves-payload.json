@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-29T23:58:52.850Z",
+  "slug": "spawn-denial-preserves-payload",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 46,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/SpawnRequestManager.ts"
+    ],
+    "addedLines": 44,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

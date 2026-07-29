@@ -189,6 +189,54 @@ describe('SpawnRequestManager', () => {
       expect(result.approved).toBe(true);
     });
 
+    // ── Payload preservation at the session cap ─────────────────
+    //
+    // A session cap is transient — it clears as running sessions finish, and the
+    // branch sets retryAfterMs itself — so a denial here must not destroy the
+    // payload. This branch used to drop it, like the memory-pressure branch did.
+
+    it('queues the message content when denied at the session limit', async () => {
+      let atLimit = true;
+      config = makeConfig({
+        cooldownMs: 0,
+        maxSessions: 2,
+        getActiveSessions: () => (atLimit ? [makeSession('s1'), makeSession('s2')] : []),
+      });
+      manager = new SpawnRequestManager(config);
+
+      const denied = await manager.evaluate(
+        makeRequest({ priority: 'medium', context: 'queued-at-session-cap' }),
+      );
+      expect(denied.approved).toBe(false);
+      // The verdict is unchanged — this preserves the payload, it does not
+      // weaken the cap.
+      expect(denied.reason).toContain('Session limit reached');
+      expect(denied.retryAfterMs).toBe(60_000);
+      expect(manager.getQueuedCount('agent-a')).toBe(1);
+
+      // A session finishes; the next attempt carries the queued payload.
+      atLimit = false;
+      const approved = await manager.evaluate(
+        makeRequest({ priority: 'medium', context: 'second message' }),
+      );
+      expect(approved.approved).toBe(true);
+      const prompt = (config.spawnSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+      expect(prompt).toContain('queued-at-session-cap');
+      expect(manager.getQueuedCount('agent-a')).toBe(0);
+    });
+
+    it('control — session-limit denial with NO context queues nothing', async () => {
+      config = makeConfig({
+        maxSessions: 2,
+        getActiveSessions: () => [makeSession('s1'), makeSession('s2')],
+      });
+      manager = new SpawnRequestManager(config);
+
+      const result = await manager.evaluate(makeRequest({ priority: 'medium' }));
+      expect(result.approved).toBe(false);
+      expect(manager.getQueuedCount('agent-a')).toBe(0);
+    });
+
     // ── Live cap accessor (codex-instar audit Item 2) ─────────
     //
     // Regression: the manager used to read `maxSessions` from the
@@ -293,6 +341,123 @@ describe('SpawnRequestManager', () => {
       const result = await manager.evaluate(makeRequest());
       expect(result.approved).toBe(true);
     });
+
+    // ── Payload preservation under memory pressure ──────────────
+    //
+    // Memory pressure used to be the ONLY transient-pressure denial that
+    // destroyed the request payload (cooldown and the subscription-quota gate
+    // both queue it). An A2A dispatch arriving in a pressure window was
+    // silently deleted while ThreadlineRouter reported `handled: true` and the
+    // remote sender reported `delivered: true`. Observed live 2026-07-29: one
+    // machine oscillated across the threshold every 30-80s and logged 40 such
+    // denials in a day, each a lost inbound message.
+
+    it('queues the message content under memory-pressure denial (content survives the pressure)', async () => {
+      config = makeConfig({
+        isMemoryPressureHigh: () => true,
+      });
+      manager = new SpawnRequestManager(config);
+
+      const result = await manager.evaluate(
+        makeRequest({ context: 'important peer message' }),
+      );
+
+      expect(result.approved).toBe(false);
+      // The denial verdict itself is unchanged — this fix preserves the
+      // payload, it does not weaken the guard.
+      expect(result.reason).toContain('Memory pressure');
+      expect(result.retryAfterMs).toBe(120_000);
+
+      expect(manager.getStatus().queuedMessages).toEqual([
+        { agent: 'agent-a', count: 1 },
+      ]);
+    });
+
+    it('delivers the queued payload to the next approved spawn once pressure clears', async () => {
+      let underPressure = true;
+      const spawnSession = vi.fn().mockResolvedValue('spawned-session-id');
+      config = makeConfig({
+        cooldownMs: 0, // isolate the pressure gate from the cooldown gate
+        isMemoryPressureHigh: () => underPressure,
+        spawnSession,
+      });
+      manager = new SpawnRequestManager(config);
+
+      const denied = await manager.evaluate(
+        makeRequest({ context: 'queued-under-memory-pressure' }),
+      );
+      expect(denied.approved).toBe(false);
+      expect(spawnSession).not.toHaveBeenCalled();
+
+      underPressure = false;
+      const approved = await manager.evaluate(
+        makeRequest({ context: 'second message' }),
+      );
+
+      expect(approved.approved).toBe(true);
+      expect(spawnSession).toHaveBeenCalledTimes(1);
+      const prompt = spawnSession.mock.calls[0][0] as string;
+      expect(prompt).toContain('queued-under-memory-pressure');
+      expect(prompt).toContain('second message');
+      // Drained, not duplicated.
+      expect(manager.getStatus().queuedMessages).toEqual([]);
+    });
+
+    it('control — memory-pressure denial with NO context queues nothing', async () => {
+      config = makeConfig({
+        isMemoryPressureHigh: () => true,
+      });
+      manager = new SpawnRequestManager(config);
+
+      const result = await manager.evaluate(makeRequest()); // no `context`
+
+      expect(result.approved).toBe(false);
+      expect(result.reason).toContain('Memory pressure');
+      // An empty payload must not create a phantom queue row.
+      expect(manager.getStatus().queuedMessages).toEqual([]);
+    });
+
+    // ── Global-cap refusal must leave a trace ───────────────────
+    //
+    // Every callsite discards `#queueMessage`'s boolean return
+    // (`if (request.context) { #queueMessage(...) }`), so a global-cap refusal
+    // used to be the ONE queue loss with no trace at all — indistinguishable
+    // from a successful enqueue. That is the same silent-loss shape this area is
+    // being fixed for, so the global cap now sets the truncation marker the
+    // per-agent cap already set. Found by second-pass review, 2026-07-29.
+
+    it('marks the agent truncated when the GLOBAL queue cap refuses the payload', async () => {
+      config = makeConfig({
+        cooldownMs: 0,
+        maxGlobalQueued: 2,
+        isMemoryPressureHigh: () => true,
+      });
+      manager = new SpawnRequestManager(config);
+
+      // Fill the global queue to its cap with two other agents' payloads.
+      await manager.evaluate(makeRequest({
+        requester: { agent: 'agent-x', session: 's', machine: 'm' },
+        context: 'first',
+      }));
+      await manager.evaluate(makeRequest({
+        requester: { agent: 'agent-y', session: 's', machine: 'm' },
+        context: 'second',
+      }));
+      expect(manager.getQueuedCount('agent-x')).toBe(1);
+      expect(manager.getQueuedCount('agent-y')).toBe(1);
+      expect(manager.isTruncated('agent-z')).toBe(false); // control: clean before
+
+      // Third agent's payload cannot be admitted — global cap is reached.
+      const refused = await manager.evaluate(makeRequest({
+        requester: { agent: 'agent-z', session: 's', machine: 'm' },
+        context: 'lost-to-global-cap',
+      }));
+
+      expect(refused.approved).toBe(false);
+      expect(manager.getQueuedCount('agent-z')).toBe(0); // genuinely not queued
+      // The loss is now accounted rather than silent.
+      expect(manager.isTruncated('agent-z')).toBe(true);
+    });
   });
 
   // ── Spawn Failure ───────────────────────────────────────────
@@ -320,6 +485,30 @@ describe('SpawnRequestManager', () => {
       const result = await manager.evaluate(makeRequest());
       expect(result.approved).toBe(false);
       expect(result.reason).toContain('unknown error');
+    });
+
+
+    // Control on the queueing fix: a payload rescued from a pressure denial must
+    // be delivered EXACTLY once — drained into the successful spawn's prompt and
+    // NOT left sitting in the queue for the drain loop to send again.
+    it('control — a queued payload is delivered exactly once, not re-queued', async () => {
+      let underPressure = true;
+      const spawnSession = vi.fn().mockResolvedValue('spawned-session-id');
+      config = makeConfig({
+        cooldownMs: 0,
+        isMemoryPressureHigh: () => underPressure,
+        spawnSession,
+      });
+      manager = new SpawnRequestManager(config);
+
+      await manager.evaluate(makeRequest({ context: 'delivered-once' }));
+      underPressure = false;
+      const ok = await manager.evaluate(makeRequest());
+
+      expect(ok.approved).toBe(true);
+      expect(spawnSession.mock.calls[0][0]).toContain('delivered-once');
+      // Drained and delivered — must NOT be sitting in the queue for a re-send.
+      expect(manager.getQueuedCount('agent-a')).toBe(0);
     });
   });
 

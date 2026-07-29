@@ -582,6 +582,12 @@ export class SpawnRequestManager {
       : this.#config.maxSessions;
     if (activeSessions.length >= liveMaxSessions) {
       if (request.priority !== 'critical' && request.priority !== 'high') {
+        // Queue the payload, like every other transient-pressure denial here: a
+        // session cap clears as running sessions finish — this branch sets
+        // retryAfterMs itself — so the content must survive the wait.
+        if (request.context) {
+          this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
+        }
         return {
           approved: false,
           reason: `Session limit reached (${activeSessions.length}/${liveMaxSessions}). Priority ${request.priority} insufficient to override.`,
@@ -590,8 +596,20 @@ export class SpawnRequestManager {
       }
     }
 
-    // Check memory pressure
+    // Check memory pressure. Queue the message (like cooldown and the quota
+    // gate below) rather than dropping it: memory pressure is transient — this
+    // very branch sets retryAfterMs — and the content must survive it. Before
+    // this, memory pressure was the ONLY transient-pressure denial that
+    // destroyed the payload, so an A2A dispatch arriving during a pressure
+    // window was silently deleted while both the caller (`handled: true` from
+    // ThreadlineRouter) and the remote sender (`delivered: true`) recorded
+    // success. Observed live 2026-07-29: 40 such denials on one machine in a
+    // day, oscillating across the threshold every 30-80s, each one a lost
+    // inbound message.
     if (this.#config.isMemoryPressureHigh?.()) {
+      if (request.context) {
+        this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
+      }
       return {
         approved: false,
         reason: 'Memory pressure too high for new session',
@@ -622,6 +640,18 @@ export class SpawnRequestManager {
     // fast-failing spawns still pays the cooldown.
     this.#lastSpawnByAgent.set(agent, this.#nowFn());
 
+    // NOTE (deliberately NOT restoring these on failure — see below): #drainQueue
+    // empties the queue here because the prompt has to carry the payloads, so a
+    // spawn that throws destroys them. That is a real defect, but the obvious fix
+    // — put them back in the catch — is UNSAFE against the real `spawnSession`
+    // implementation: SessionManager.spawnSession creates the live tmux session
+    // WITH the prompt, and only afterwards calls state.saveSession() outside any
+    // try/catch. A throw from that bookkeeping step means the payloads were
+    // already DELIVERED, so re-queueing them would deliver the same instruction
+    // to a second live session. Restoring here would trade a rare lost message
+    // for a rare duplicated one, which is worse — a duplicate can act twice.
+    // The prerequisite is making spawnSession stop reporting failure once the
+    // session is live and holding the prompt. Tracked: CMT-1114.
     try {
       const queuedMessages = this.#drainQueue(agent);
       const prompt = this.#buildSpawnPrompt(request, queuedMessages);
@@ -660,6 +690,9 @@ export class SpawnRequestManager {
     } catch (err) {
       const cause = this.#classifyFailure(err);
       this.#applyFailureAttribution(agent, cause);
+      // Deliberately NOT re-queueing here. A `spawnSession` rejection does not
+      // prove non-delivery (see the note above the try), so putting the payload
+      // back risks delivering the same instruction twice. Tracked: CMT-1114.
       return {
         approved: false,
         reason: `Spawn failed (${cause}): ${err instanceof Error ? err.message : 'unknown error'}`,
@@ -740,7 +773,16 @@ export class SpawnRequestManager {
     const maxGlobal = this.#config.maxGlobalQueued ?? DEFAULT_MAX_GLOBAL_QUEUED;
     let totalQueued = 0;
     for (const q of this.#pendingMessages.values()) totalQueued += q.length;
-    if (totalQueued >= maxGlobal) return false;
+    if (totalQueued >= maxGlobal) {
+      // Mark the agent truncated before refusing. Callers discard this boolean
+      // (all five callsites are `if (request.context) { #queueMessage(...) }`),
+      // so without the marker a global-cap refusal was the one queue loss with
+      // NO trace at all — indistinguishable from a successful enqueue, which is
+      // the same silent-loss shape this whole area is being fixed for. The
+      // per-agent cap below already sets it; this makes the global cap match.
+      this.#truncated.add(agent);
+      return false;
+    }
 
     let queue = this.#pendingMessages.get(agent);
     if (!queue) {
