@@ -210,3 +210,86 @@ argument. The councilor pair remains the only proposed mechanism that would act 
 is formed rather than after it is published, and it remains scoped and unbuilt.
 
 A fourth round should be run by something other than the agent that produced the instances.
+
+---
+
+## Evidence appendix — 2026-07-28 autonomous run (NOT an independent Round 4)
+
+Round 3 closed with: *"A fourth round should be run by something other than the agent that
+produced the instances."* I am that agent. This appendix therefore records **evidence
+against the open class**, and deliberately does **not** claim a round, a convergence
+verdict, or a status change on any thread.
+
+It is appended because Round 3's own reasoning applies: a re-grounding whose only output is
+prose gets re-derived. This run's findings were, until now, only in a run file and Telegram.
+
+### The class reproduced, measured
+
+Round 3's open class is *"the thing existed and was not consulted."* In one ~18-hour run I
+produced **five** instances — each an independent re-derivation of a finding already on
+record:
+
+| # | what I re-derived | already existed as | gap |
+|---|---|---|---|
+| 1–4 | four findings re-reached during the drive | prior actions filed in the same ledger | (recorded in the run file) |
+| 5 | *"a metric must refuse a ratio when its denominator is unverifiable"* — reached from decision-quality telemetry | **ACT-1243** (critical), filed 2026-07-25 with **six** worked instances | 3 days |
+| 6 | *"the spec publisher claims delivered on a failed send"* — reached by hitting it live | **ACT-616** (2026-07-13) **and ACT-1390** (2026-07-27) | **15 days, two prior filings** |
+
+Instance 6 is the sharper one: the defect had been found and written down by **two**
+separate prior investigations before I found it a third time. Dates verified against the
+ledger, not recalled.
+
+### A correction to a conclusion this run nearly published
+
+Mid-run I drafted the reading that ACT-1243 had *"sat unactioned for three days, invisible
+to the overdue-check because it carries no dueBy."* **Checking falsified it.** Both of its
+named instances were fixed the day it was filed — `freshRatio` gained
+`ratioDenom === 0 ? null : …` (#1638) and the conformance route gained `convergedMeans`
+(#1641), both 2026-07-25, both verified live today.
+
+So follow-through was same-day and thorough. **What failed was sweep completeness**: that
+hand-audit corrected six instances and missed a seventh in a subsystem it never reached.
+The miss surfaced three days later only by accident.
+
+That reframes the remedy. A person applying a stated rule by hand achieved 6/7 and **could
+not know which one was missing**. Mechanical enumeration is the only thing that knows what
+it did not look at. Filed as **ACT-1516** with both corpora named (positive: the 9 existing
+null-refusal sites; negative: this run's 7 instances).
+
+### What separated the fixed finding from the rotted one
+
+Both were high-or-critical. Priority did not predict the outcome:
+
+| | ACT-1243 | ACT-616 / ACT-1390 / ACT-1517 |
+|---|---|---|
+| priority | critical | medium → **high** → high |
+| outcome | **fixed same day** (two PRs) | **filed 3×, never fixed** |
+
+The one that got fixed was picked up by whoever filed it, in the same sitting. The one that
+rotted was filed by three separate investigations that each recorded it and moved on. **A
+second filing is not escalation — it is evidence the first did nothing.**
+
+Acted on rather than argued: instance 6 is fixed (PR #1714), not filed a fourth time.
+
+### The shared shape, stated once
+
+Seven defects this run reduce to one sentence: **a check whose passing condition is
+narrower than what it certifies.** A flag reporting "sufficient evidence" over 2,004
+grades of which zero were settled. A test green its whole life because
+`if (!fs.existsSync(cli)) return;` fires on every CI run. A publisher printing "delivered"
+one line below `No such file or directory`.
+
+In **four of the seven**, the correct version of the same logic was already in the same
+file — once eight lines away, once twenty. This is the consultation class expressed at
+code scale rather than ledger scale, which is why it belongs in this ledger.
+
+### Registered, not asserted
+
+ACT-1514 (e2e tests passing by early return) · ACT-1515 (**closed** — fixed in #1713) ·
+ACT-1516 (the lint, with corpora) · ACT-1517 (**fixed** in #1714) · ACT-1518 (the grounding
+hook's trigger is wider than message-sending, which caused a real downstream gate failure
+in this run).
+
+**No convergence claim is made here.** Round 3's precondition — that the class stops
+producing new instances — failed again, in the same auditor, by five. On Round 3's own
+reasoning that is the verdict rather than a reason to soften it.

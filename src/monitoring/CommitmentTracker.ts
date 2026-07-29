@@ -221,6 +221,8 @@ export interface Commitment {
   // ── Promise Beacon (Phase 1 — PROMISE-BEACON-SPEC.md) ──
   /** When set, this commitment is watched by PromiseBeacon. Requires topicId. */
   beaconEnabled?: boolean;
+  /** Explicit reason this commitment was created without a follow-through schedule. */
+  followThroughOptOutReason?: string;
   /** Heartbeat cadence in ms. Server clamps to [60_000, 21_600_000]. */
   cadenceMs?: number;
   /**
@@ -668,6 +670,7 @@ export class CommitmentTracker extends EventEmitter {
     ownerMachineId?: string;
     externalKey?: string;
     beaconCreatedBySource?: 'skill' | 'api-loopback' | 'sentinel' | 'manual';
+    followThroughOptOutReason?: string;
     // C1+C2 "The Agent Carries the Loop" state model (spec §4.1). Optional +
     // additive; default owner='agent', blockedOn='none'.
     owner?: 'agent' | 'user';
@@ -790,6 +793,7 @@ export class CommitmentTracker extends EventEmitter {
       ownerMachineId: input.ownerMachineId ?? this.config.originMachineId,
       externalKey: input.externalKey,
       beaconCreatedBySource: input.beaconCreatedBySource,
+      followThroughOptOutReason: input.followThroughOptOutReason,
       heartbeatCount: 0,
       // P1.5 §3.1: the creator stamp — the composite (originMachineId, id) is
       // THE cross-machine identity (ids are per-machine sequential counters).

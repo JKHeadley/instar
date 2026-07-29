@@ -127,6 +127,69 @@ describe('GET /decision-quality (integration)', () => {
     expect(JSON.stringify(res.body)).not.toMatch(/evidence_note|evidenceNote/);
   });
 
+  it('a 100%-UNKNOWN stream is insufficientEvidence:true — unknown grades are not evidence', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const now = Date.now();
+    // 25 decisions, every one graded `unknown`. 25 > minSampleForRates(20), so a
+    // row-counting flag would call this SUFFICIENT. Nothing here is settled.
+    for (let i = 0; i < 25; i += 1) {
+      const correlationId = `unk-${i}`;
+      ledger.recordDecision({
+        correlationId, decisionPoint: DP_EXTERNAL_HOG_KILL_LEAVE,
+        feature: 'ExternalHogClassifier', ts: now - 1000, model: 'gpt-5.5',
+        framework: 'codex-cli', promptId: 'hog-v1',
+      });
+      ledger.upsertOutcome({
+        correlationId, gradedBy: 'DecisionGrading', ruleId: HOG_SUSTAINED_RIGHT_RULE_ID,
+        rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+        grade: 'unknown', ts: now,
+      });
+    }
+
+    const res = await request(appWith(ctxWith({ ledger, developmentAgent: true })))
+      .get('/decision-quality?sinceHours=24').set('Authorization', `Bearer ${AUTH}`);
+
+    expect(res.status).toBe(200);
+    const point = (res.body.points as Array<any>).find((p) => p.decisionPoint === DP_EXTERNAL_HOG_KILL_LEAVE);
+    expect(point.decisions).toBe(25);
+    expect(point.gradeDistribution.unknown).toBe(25);
+    expect(point.gradeDistribution.right).toBe(0);
+    expect(point.gradeDistribution.wrong).toBe(0);
+
+    // The row count is still published and still 25 — it answers a different question.
+    expect(point.outcomesKnown).toBe(25);
+    // The evidence count is zero, and the flag follows the evidence, not the rows.
+    expect(point.settledGrades).toBe(0);
+    expect(point.unknownShare).toBe(1);
+    expect(point.insufficientEvidence).toBe(true);
+  });
+
+  it('settled grades above the floor DO clear insufficientEvidence (the flag is not stuck true)', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const now = Date.now();
+    for (let i = 0; i < 25; i += 1) {
+      const correlationId = `set-${i}`;
+      ledger.recordDecision({
+        correlationId, decisionPoint: DP_EXTERNAL_HOG_KILL_LEAVE,
+        feature: 'ExternalHogClassifier', ts: now - 1000, model: 'gpt-5.5',
+        framework: 'codex-cli', promptId: 'hog-v1',
+      });
+      ledger.upsertOutcome({
+        correlationId, gradedBy: 'DecisionGrading', ruleId: HOG_SUSTAINED_RIGHT_RULE_ID,
+        rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+        grade: 'right', ts: now,
+      });
+    }
+
+    const res = await request(appWith(ctxWith({ ledger, developmentAgent: true })))
+      .get('/decision-quality?sinceHours=24').set('Authorization', `Bearer ${AUTH}`);
+
+    const point = (res.body.points as Array<any>).find((p) => p.decisionPoint === DP_EXTERNAL_HOG_KILL_LEAVE);
+    expect(point.settledGrades).toBe(25);
+    expect(point.unknownShare).toBe(0);
+    expect(point.insufficientEvidence).toBe(false);
+  });
+
   it('?scope=pool strips a hostile peer row down to the FIELD ALLOWLIST (contextFull + extras removed)', async () => {
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
     vi.stubGlobal('fetch', async () => ({

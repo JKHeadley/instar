@@ -184,6 +184,31 @@ const _captureUse = "capture-pane";`,
     expect(result.exitCode).toBe(0);
   });
 
+  it('does NOT accept a canary-named file from an UNRELATED directory', () => {
+    // The canary fallback used to test `/canary/i.test(basename(f))` against
+    // every staged file without referencing the file under test — so it was a
+    // property of the COMMIT, not a relationship. Staging one canary-named file
+    // anywhere credited every other file in the change. src/ carries 11 such
+    // files, so any broad commit touching one satisfied the canary half of
+    // Rule 3 wholesale. It failed in the QUIET direction, which is why nothing
+    // ever complained.
+    stage(
+      repo,
+      'src/providers/adapters/example/foo.ts',
+      `/**
+ * RULE 3.1 RATIONALE
+ * Criticality: high
+ */
+const _captureUse = "capture-pane";`,
+    );
+    // Canary-named, but for a completely different adapter.
+    stage(repo, 'src/providers/adapters/other/canary/otherCanary.ts', '// canary');
+    const result = runCheck(repo);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('src/providers/adapters/example/foo.ts');
+  });
+
+
   it('blocks when source has the rationale comment but no canary alongside', () => {
     stage(
       repo,

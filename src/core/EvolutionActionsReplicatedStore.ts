@@ -183,6 +183,7 @@ export const EVOLUTION_ACTION_STORE_KNOWN_FIELDS: ReadonlyArray<string> = Object
   'commitTo',
   'createdAt',
   'dueBy',
+  'followThroughOptOutReason',
   'completedAt',
   'resolution',
   'source',
@@ -318,6 +319,11 @@ export const evolutionActionRecordStoreSchema: StoreFieldSchema = {
     if (commitTo !== null && commitTo.length > 0) out.commitTo = commitTo;
     const resolution = raw.resolution !== undefined ? clampFreeText(raw.resolution) : null;
     if (resolution !== null && resolution.length > 0) out.resolution = resolution;
+    const followThroughOptOutReason =
+      raw.followThroughOptOutReason !== undefined ? clampFreeText(raw.followThroughOptOutReason) : null;
+    if (followThroughOptOutReason !== null && followThroughOptOutReason.length > 0) {
+      out.followThroughOptOutReason = followThroughOptOutReason;
+    }
 
     // Optional ISO date fields — present only when a clean ISO date (markup dropped).
     if (isIso8601(raw.dueBy)) out.dueBy = raw.dueBy as string;
@@ -460,6 +466,9 @@ export function buildEvolutionActionRecordData(input: BuildEvolutionActionRecord
   // Optional fields — only when present (the local ACT id is NEVER among them).
   if (record.commitTo) data.commitTo = clampFreeTextEmit(record.commitTo);
   if (record.resolution) data.resolution = clampFreeTextEmit(record.resolution);
+  if (record.followThroughOptOutReason) {
+    data.followThroughOptOutReason = clampFreeTextEmit(record.followThroughOptOutReason);
+  }
   if (typeof record.dueBy === 'string' && record.dueBy.length > 0) data.dueBy = record.dueBy;
   if (typeof record.completedAt === 'string' && record.completedAt.length > 0) data.completedAt = record.completedAt;
   const source = projectSource(record.source);
@@ -602,6 +611,9 @@ export function renderForeignActionContext(view: MergedActionView): string | nul
   if (typeof d.commitTo === 'string' && d.commitTo.length > 0) lines.push(`Committed to: ${sanitize(d.commitTo)}`);
   if (typeof d.createdAt === 'string') lines.push(`Created: ${sanitize(d.createdAt)}`);
   if (typeof d.dueBy === 'string' && d.dueBy.length > 0) lines.push(`Due by: ${sanitize(d.dueBy)}`);
+  if (typeof d.followThroughOptOutReason === 'string' && d.followThroughOptOutReason.length > 0) {
+    lines.push(`Follow-through opt-out: ${sanitize(d.followThroughOptOutReason)}`);
+  }
   if (typeof d.completedAt === 'string' && d.completedAt.length > 0) lines.push(`Completed: ${sanitize(d.completedAt)}`);
   if (Array.isArray(d.tags) && d.tags.length > 0) lines.push(`Tags: ${(d.tags as string[]).map(sanitize).join(', ')}`);
   if (typeof d.resolution === 'string' && d.resolution.length > 0) lines.push(`Resolution: ${sanitize(d.resolution)}`);
@@ -655,6 +667,9 @@ export function evolutionActionToOriginRecord(record: ActionItem, origin: string
   };
   if (record.commitTo) data.commitTo = record.commitTo;
   if (record.resolution) data.resolution = record.resolution;
+  if (record.followThroughOptOutReason) {
+    data.followThroughOptOutReason = record.followThroughOptOutReason;
+  }
   if (typeof record.dueBy === 'string' && record.dueBy.length > 0) data.dueBy = record.dueBy;
   if (typeof record.completedAt === 'string' && record.completedAt.length > 0) data.completedAt = record.completedAt;
   const source = projectSource(record.source);

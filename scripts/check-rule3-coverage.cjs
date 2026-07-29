@@ -212,12 +212,32 @@ function isInRegistry(filepath, registryContent) {
 
 function hasMatchingCanary(stagedFiles, filepath) {
   // A matching canary is any file in the same adapter's canary/ directory,
-  // or a file named *Canary*.ts adjacent to the source file.
+  // or a file named *Canary*.ts ADJACENT to the source file.
+  //
+  // "Adjacent" used to be unimplemented: the second clause tested
+  // `/canary/i.test(path.basename(f))` against every staged file without ever
+  // referencing `filepath`. That made it a property of the COMMIT, not a
+  // relationship — stage one canary-named file anywhere and every other file in
+  // the change was credited with having a canary. src/ carries 11 such files, so
+  // any broad commit touching one satisfied the canary half of Rule 3 wholesale.
+  //
+  // It failed in the QUIET direction (weakening the gate rather than blocking
+  // wrongly), which is why nothing ever complained about it.
+  // TWO canary/ locations, because sources sit at two depths. A source one
+  // level below the adapter root (adapters/X/observability/foo.ts) has its
+  // canary at adapters/X/canary/; a source AT the adapter root
+  // (adapters/X/foo.ts) has it at adapters/X/canary/ too — but that is
+  // `<dir>/canary`, not `<parent>/canary`. The original computed only the
+  // parent form, so the directory clause silently missed the second layout and
+  // the global fallback above was covering for it. Removing the fallback
+  // without fixing this would have turned a too-weak check into a wrong one.
   const dir = path.dirname(filepath);
   const adapterRoot = dir.split('/').slice(0, -1).join('/');
-  const canaryDir = path.join(adapterRoot, 'canary');
+  const canaryDirs = [path.join(dir, 'canary'), path.join(adapterRoot, 'canary')];
   return stagedFiles.some(
-    (f) => f.startsWith(canaryDir + '/') || /canary/i.test(path.basename(f)),
+    (f) =>
+      canaryDirs.some((cd) => f.startsWith(cd + '/')) ||
+      (path.dirname(f) === dir && /canary/i.test(path.basename(f))),
   );
 }
 

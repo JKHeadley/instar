@@ -20,6 +20,10 @@ function runClaudeMdMigration(migrator: PostUpdateMigrator): MigrationResult {
 }
 
 const STALE_PAYLOAD = `-d '{"userRequest":"<what you promised>","type":"follow-up","topicId":TOPIC_ID}'`;
+const BARE_PAYLOAD =
+  `-d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID}'`;
+const ENROLLED_PAYLOAD =
+  `-d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID,"beaconEnabled":true,"nextUpdateDueAt":"<ISO deadline>"}'`;
 
 describe('PostUpdateMigrator — commitments guidance payload migration', () => {
   let projectDir: string;
@@ -64,7 +68,10 @@ describe('PostUpdateMigrator — commitments guidance payload migration', () => 
     expect(result.upgraded.some((u) => u.includes('commitments guidance payload'))).toBe(true);
     expect(afterFirst).toContain('"agentResponse":"<what you said you would do>"');
     expect(afterFirst).toContain('"type":"one-time-action"');
+    expect(afterFirst).toContain('"beaconEnabled":true');
+    expect(afterFirst).toContain('"nextUpdateDueAt":"<ISO deadline>"');
     expect(afterFirst).not.toContain(STALE_PAYLOAD);
+    expect(afterFirst).not.toContain(BARE_PAYLOAD);
 
     const result2 = runClaudeMdMigration(newMigrator());
     const afterSecond = fs.readFileSync(claudeMdPath, 'utf-8');
@@ -73,15 +80,28 @@ describe('PostUpdateMigrator — commitments guidance payload migration', () => 
     expect(result2.upgraded.some((u) => u.includes('commitments guidance payload'))).toBe(false);
   });
 
-  it('leaves customized commitments guidance untouched when the exact stale payload is absent', () => {
-    const shippedPayload =
-      `-d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID}'`;
-    const customizedPayload =
-      `-d '{"userRequest":"<operator wording>","agentResponse":"<agent wording>","type":"one-time-action","topicId":TOPIC_ID,"source":"local-playbook"}'`;
-    const baseline = generateClaudeMd('test', 'TestAgent', 4042, false);
-    expect(baseline).toContain(shippedPayload);
+  it('migrates the previously shipped bare payload to explicit PromiseBeacon enrollment', () => {
+    fs.writeFileSync(claudeMdPath, `# CLAUDE.md
 
-    const customized = baseline.replace(shippedPayload, customizedPayload);
+**Commitments & Follow-Through**
+- Open: \`curl http://localhost:4044/commitments ${BARE_PAYLOAD}\`
+`);
+
+    const result = runClaudeMdMigration(newMigrator());
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+
+    expect(after).toContain(ENROLLED_PAYLOAD);
+    expect(after).not.toContain(BARE_PAYLOAD);
+    expect(result.upgraded.some((u) => u.includes('enrolled commitments guidance'))).toBe(true);
+  });
+
+  it('leaves customized commitments guidance untouched when exact shipped payloads are absent', () => {
+    const customizedPayload =
+      `-d '{"userRequest":"<operator wording>","agentResponse":"<agent wording>","type":"one-time-action","topicId":TOPIC_ID,"source":"local-playbook","beaconEnabled":true,"nextUpdateDueAt":"<local deadline>"}'`;
+    const baseline = generateClaudeMd('test', 'TestAgent', 4042, false);
+    expect(baseline).toContain(ENROLLED_PAYLOAD);
+
+    const customized = baseline.replace(ENROLLED_PAYLOAD, customizedPayload);
     fs.writeFileSync(claudeMdPath, customized);
 
     const unrelatedMigrationResult = runClaudeMdMigration(newMigrator());
@@ -95,5 +115,6 @@ describe('PostUpdateMigrator — commitments guidance payload migration', () => 
     expect(after).toBe(otherwiseCurrentCustomizedDoc);
     expect(result.errors).toEqual([]);
     expect(result.upgraded.some((u) => u.includes('commitments guidance payload'))).toBe(false);
+    expect(result.upgraded.some((u) => u.includes('enrolled commitments guidance'))).toBe(false);
   });
 });

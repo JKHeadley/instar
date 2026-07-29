@@ -234,7 +234,8 @@ describe('/corrections routes (integration)', () => {
     (ctx.config.monitoring as any).correctionClassReview = { dryRun: false };
     const app = appWith(ctx);
     const body = { type: 'one-time-action', userRequest: 'fix it', agentResponse: 'I will fix it',
-      topicId: 7, origin: 'correction', correctionId: rec.id, classReviewRef: rec.dedupeKey };
+      topicId: 7, origin: 'correction', correctionId: rec.id, classReviewRef: rec.dedupeKey,
+      beaconEnabled: true, nextUpdateDueAt: '2099-01-01T00:00:00.000Z' };
     const absent = await request(app).post('/commitments').set(auth()).send(body);
     expect(absent.status).toBe(409); expect(record).not.toHaveBeenCalled();
     store.ensureShell({ dedupeKey: rec.dedupeKey, correctionId: rec.id, origin: 'agent-self' });

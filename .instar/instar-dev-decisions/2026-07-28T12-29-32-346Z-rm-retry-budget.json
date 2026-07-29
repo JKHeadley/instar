@@ -1,0 +1,16 @@
+{
+  "ts": "2026-07-28T12:29:32.346Z",
+  "slug": "rm-retry-budget",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeFsExecutor.ts matches SafeFsExecutor (destructive-fs funnel)"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 21,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

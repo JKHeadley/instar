@@ -24,6 +24,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import { registryMirrorPaths } from './standardsRegistryPath.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { ensureInstarBashPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
 import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion, ensureAgentDataSpotlightExclusion } from './InstarWorktreeManager.js';
@@ -1337,10 +1338,43 @@ export class PostUpdateMigrator {
         prior: priorWriterHashes,
       },
       {
-        label: 'Feature Maturation Path standard',
-        bundled: path.join(bundledRoot, 'docs', 'STANDARDS-REGISTRY.md'),
-        target: path.join(root, 'docs', 'STANDARDS-REGISTRY.md'),
-        prior: new Set(['9b3f2775937598a8c812da3c44042c79bc62202bfc82025821cee96d7c4ee391']),
+        // RESTORED 2026-07-28, repointed and un-gated. The previous entry read
+        // `<bundledRoot>/docs/STANDARDS-REGISTRY.md` — a path present in NO published
+        // install, because `docs/` is not in package.json `files`. It threw on every
+        // fleet run into `result.errors`, where nothing looks. And even given the
+        // file, it gated on ONE hardcoded prior hash (`9b3f2775…`), so every agent
+        // whose copy had drifted — all of them — was classified "customized" and
+        // skipped permanently.
+        //
+        // An intermediate version of this change DELETED the entry outright, on the
+        // reasoning that the machine readers now use the packed asset so no
+        // per-install copy needs maintaining, and that vestigial copies are "left in
+        // place and simply unread." **Review falsified "unread" and it was the
+        // load-bearing word.** The AGENT is the constitution's principal reader, and
+        // every prose pointer shipped to agents — the CLAUDE.md sections this very
+        // migrator writes, plus spec-converge, instar-dev and
+        // iterative-converging-audit, all of which ship in `files` — names
+        // `docs/STANDARDS-REGISTRY.md`. Measured on a live agent while reviewing this
+        // change: 46,606 bytes, **22 articles, dated May 24**, against 81 authored.
+        // Repointing three machine readers while leaving the agent reading a
+        // fourteen-week-old quarter of the rulebook fixes the instrument and not the
+        // thing the instrument exists for.
+        //
+        // So the agent-home copy is now MIRRORED from the packed asset — which, since
+        // this change, genuinely ships. `alwaysOverwrite` is deliberate and follows
+        // the built-in-hooks precedent: shipped content is refreshed on EVERY
+        // migration run, never install-if-missing, because a per-install hash gate on
+        // shipped content is indistinguishable from having no migration at all (the
+        // `hook-event-reporter.js` lesson, and the defect above). The constitution is
+        // instar's artifact, not an operator customization surface; an operator who
+        // wants a local amendment gets it merged upstream, not held as a private fork
+        // that silently stops receiving every other standard.
+        label: 'standards registry (constitution) mirror',
+        // Paths come FROM the resolver module, not from literals here — exactly one
+        // module owns registry location, and a boundary test enforces it.
+        ...registryMirrorPaths(bundledRoot, root),
+        prior: new Set<string>(),
+        alwaysOverwrite: true,
       },
     ];
     const digest = (bytes: Buffer): string => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -1367,6 +1401,11 @@ export class PostUpdateMigrator {
 
     for (const file of files) {
       try {
+        // A mirror entry may name its own refusal (e.g. the target is the AUTHORED
+        // constitution of an instar checkout, where overwriting would revert the
+        // source everything else is generated from). Skipping is RECORDED, never silent.
+        const skip = (file as { skip?: string }).skip;
+        if (skip) { result.skipped.push(`${file.label}: ${skip}`); continue; }
         const target = path.resolve(file.target);
         if (target !== root && !target.startsWith(`${root}${path.sep}`)) throw new Error('target escapes project root');
         const bundled = fs.readFileSync(file.bundled);
@@ -1385,8 +1424,15 @@ export class PostUpdateMigrator {
           result.skipped.push(`${file.label}: already current`);
           continue;
         }
+        // Shipped content (see the constitution-mirror entry) is refreshed
+        // unconditionally. A prior-hash gate over shipped content cannot tell a
+        // customization from ordinary drift, so it classifies every drifted copy as
+        // customized and stops refreshing forever — which is how the constitution
+        // sat at 22 articles on deployed agents for fourteen weeks while the
+        // migration reported itself healthy.
+        const alwaysOverwrite = (file as { alwaysOverwrite?: boolean }).alwaysOverwrite === true;
         const acceptedPrior = new Set([...file.prior, ...(testPriorHashes[file.label] ?? [])]);
-        if (!acceptedPrior.has(currentHash)) {
+        if (!alwaysOverwrite && !acceptedPrior.has(currentHash)) {
           result.skipped.push(`${file.label}: customized (${currentHash.slice(0, 12)}) — left untouched`);
           continue;
         }
@@ -4482,6 +4528,13 @@ export class PostUpdateMigrator {
     }
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'analysis-paralysis-guard.js'), this.getAnalysisParalysisGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/analysis-paralysis-guard.js (act-or-report-blocked checklist)');
+    } catch (err) {
+      result.errors.push(`analysis-paralysis-guard.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'post-action-reflection.js'), this.getPostActionReflectionHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/post-action-reflection.js (evolution awareness)');
     } catch (err) {
@@ -4671,6 +4724,7 @@ export class PostUpdateMigrator {
       'compaction-recovery.sh', 'external-operation-gate.js', 'deferral-detector.js',
       'self-stop-guard.js',
       'slopcheck-guard.js',
+      'analysis-paralysis-guard.js',
       'post-action-reflection.js', 'external-communication-guard.js',
       'scope-coherence-collector.js', 'scope-coherence-checkpoint.js',
       'instructions-loaded-tracker.js', 'subagent-start-tracker.js',
@@ -8110,7 +8164,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
     if (!content.includes('**Commitments & Follow-Through**')) {
       const section = `
 **Commitments & Follow-Through** — Durable tracking for any promise you make to the user. When you say "I'll report back when X", "I'll check in after N minutes", or otherwise commit to a future action, register it so the follow-through survives session turnover, restarts, and compaction.
-- Open a one-time follow-up commitment: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments -H 'Content-Type: application/json' -d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID}'\`
+- Open a one-time follow-up commitment: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments -H 'Content-Type: application/json' -d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID,"beaconEnabled":true,"nextUpdateDueAt":"<ISO deadline>"}'\`. Creation refuses unless exactly one follow-through choice is explicit: PromiseBeacon enrollment with a valid deadline, or \`followThroughOptOutReason\` explaining why no future follow-through is needed.
 - List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments\` · \`GET /commitments/:id\`
 - Mark delivered when done: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments/:id/deliver\`
 - The PromiseBeacon fires cadenced heartbeats on open commitments so you actually follow through, and the commitment-check job surfaces overdue ones.
@@ -8178,6 +8232,21 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       content = content.split(staleCommitmentsPayload).join(correctedCommitmentsPayload);
       patched = true;
       result.upgraded.push('CLAUDE.md: fixed commitments guidance payload (agentResponse + one-time-action)');
+    }
+
+    // Follow-through enrollment gate (2026-07-28): prior shipped guidance
+    // created a valid commitment but omitted every resurfacing condition. The
+    // creation route now refuses that third state, so migrate the exact prior
+    // payload to explicit PromiseBeacon enrollment. Customized payloads remain
+    // untouched rather than guessing their scheduling semantics.
+    const bareCommitmentsPayload =
+      `-d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID}'`;
+    const enrolledCommitmentsPayload =
+      `-d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID,"beaconEnabled":true,"nextUpdateDueAt":"<ISO deadline>"}'`;
+    if (content.includes(bareCommitmentsPayload)) {
+      content = content.split(bareCommitmentsPayload).join(enrolledCommitmentsPayload);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: enrolled commitments guidance in PromiseBeacon with a deadline');
     }
 
     // Publishing (Telegraph public pages). Awareness-parity pass: add the
@@ -11252,7 +11321,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'self-stop-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'session-start': return this.getSessionStartHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
@@ -11261,6 +11330,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       case 'deferral-detector': return this.getDeferralDetectorHook();
       case 'self-stop-guard': return this.getSelfStopGuardHook();
       case 'slopcheck-guard': return this.getSlopcheckGuardHook();
+      case 'analysis-paralysis-guard': return this.getAnalysisParalysisGuardHook();
       case 'post-action-reflection': return this.getPostActionReflectionHook();
       case 'external-communication-guard': return this.getExternalCommunicationGuardHook();
       case 'scope-coherence-collector': return this.getScopeCoherenceCollectorHook();
@@ -13450,6 +13520,107 @@ process.stdin.on('end', () => {
   } catch { /* never block on errors */ }
   process.exit(0);
 })();
+`;
+  }
+
+  private getAnalysisParalysisGuardHook(): string {
+    return `#!/usr/bin/env node
+// Analysis-Paralysis Guard — catches agents stuck in a read-loop without acting.
+// PostToolUse hook. Tracks a sliding window of recent tool calls in a small
+// state file. If READ_ONLY tools (Read/Grep/Glob/WebFetch) fire 5+ times
+// in a row without an ACTION tool (Edit/Write/Bash/NotebookEdit) in between,
+// injects a "act or report blocked" checklist.
+//
+// Borrowed from gsd-executor's prompt — proven to kill a known failure mode
+// where agents spend the whole session researching and never commit.
+//
+// Cherry-picked into Instar's hook layer 2026-05-23 from the GSD-Instar
+// integration spike (docs/specs/topic-intent-layer.md + the spike report).
+// Signal-only — never blocks. Decision: approve + additionalContext.
+
+// NOTE: uses \`await import('node:fs')\` inside the handler rather than a
+// top-level \`require\` — a bare require crashes outright in ESM-mode agents
+// (the hook-event-reporter lesson: an install-if-missing CJS hook left ESM
+// hosts permanently broken). Dynamic import works in both module systems.
+
+const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch']);
+const ACTION_TOOLS = new Set(['Edit', 'Write', 'Bash', 'NotebookEdit']);
+const PARALYSIS_THRESHOLD = 5;
+const STATE_FILE_REL = '.instar/state/analysis-paralysis-state.json';
+
+let data = '';
+process.stdin.on('data', chunk => data += chunk);
+process.stdin.on('end', async () => {
+  try {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const input = JSON.parse(data);
+    const toolName = input.tool_name || '';
+    if (!toolName) process.exit(0);
+
+    // Locate state file. CLAUDE_PROJECT_DIR is set by Claude Code on every hook.
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const stateFile = path.join(projectDir, STATE_FILE_REL);
+    let state = { recent: [] };
+    try {
+      if (fs.existsSync(stateFile)) {
+        state = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+        if (!Array.isArray(state.recent)) state.recent = [];
+      }
+    } catch { state = { recent: [] }; }
+
+    const sessionId = input.session_id || 'default';
+    const now = new Date().toISOString();
+
+    // Action tool → reset the per-session window
+    if (ACTION_TOOLS.has(toolName)) {
+      state.recent = state.recent.filter(e => e.sessionId !== sessionId);
+      try {
+        fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+        fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+      } catch { /* best effort */ }
+      process.exit(0);
+    }
+
+    // Read-only tool → append to the window
+    if (READ_ONLY_TOOLS.has(toolName)) {
+      state.recent.push({ sessionId, tool: toolName, at: now });
+      // Cap total entries across sessions to bound state file size
+      if (state.recent.length > 200) state.recent = state.recent.slice(-200);
+      try {
+        fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+        fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+      } catch { /* best effort */ }
+
+      // Count contiguous read-only entries for THIS session
+      const sessionEntries = state.recent.filter(e => e.sessionId === sessionId);
+      const consecutiveRO = sessionEntries.length;
+
+      if (consecutiveRO >= PARALYSIS_THRESHOLD) {
+        const checklist = [
+          'ANALYSIS-PARALYSIS DETECTED — ' + consecutiveRO + ' consecutive read-only tool calls (' +
+            sessionEntries.slice(-5).map(e => e.tool).join(' → ') + ') without an Edit / Write / Bash.',
+          '',
+          'You have been researching without acting. Two paths from here:',
+          '',
+          '1. ACT — pick the smallest concrete action you can take with what you already know and DO it.',
+          '   The next Edit / Write / Bash resets this counter.',
+          '',
+          '2. REPORT BLOCKED — if you genuinely cannot proceed, state precisely what is missing:',
+          '   - a specific file or value you need access to',
+          '   - a decision only the user can make',
+          '   - an external dependency that has not been provisioned',
+          '',
+          'If neither path is true, you are avoiding the hard part. Pick option 1.',
+        ];
+        process.stdout.write(JSON.stringify({ decision: 'approve', additionalContext: checklist.join('\\n') }));
+        process.exit(0);
+      }
+    }
+    // Other tools (TaskCreate, etc.) — pass through unchanged
+  } catch { /* never block on errors */ }
+  process.exit(0);
+});
 `;
   }
 

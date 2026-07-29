@@ -258,7 +258,8 @@ async function main() {
     const commitRes = await loopback(base, auth, 'POST', '/commitments', {
       userRequest: `Review the auto-seeded stall-class rows (${classes.slice(0, 20).join(', ')}${classes.length > 20 ? ', …' : ''}) and rewrite their pending-mint closePaths to the real refs via an ordinary PR.`,
       agentResponse: 'stall-matrix-live-check filed the idempotent framework-issues for every pending-mint row; the ref rewrite is owed within the job cadence (spec §2.1).',
-      type: 'follow-up',
+      type: 'one-time-action',
+      followThroughOptOutReason: 'Internal maintenance is re-driven by the stall-matrix job cadence; no user-topic PromiseBeacon is appropriate.',
     });
     if (!commitRes.ok) warnings.push(`aggregated mint commitment failed (HTTP ${commitRes.status})`);
   }

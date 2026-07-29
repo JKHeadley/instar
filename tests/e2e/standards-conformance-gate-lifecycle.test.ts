@@ -18,6 +18,7 @@ import express from 'express';
 import type { Server } from 'node:http';
 import request from 'supertest';
 import { createSpecReviewRoutes } from '../../src/server/specReviewRoutes.js';
+import { resolveStandardsRegistryFromPath } from '../../src/core/standardsRegistryPath.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
 
 const REGISTRY_PATH = path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md');
@@ -52,7 +53,8 @@ describe('E2E: standards-conformance gate lifecycle', () => {
     app.use(express.json({ limit: '2mb' }));
     app.use(createSpecReviewRoutes({
       intelligence: stubIntelligence,
-      registryPath: REGISTRY_PATH,
+      // Explicit test injection against a CONTROLLED constitution fixture.
+      registryResolution: resolveStandardsRegistryFromPath(REGISTRY_PATH),
       specsDir: SPECS_DIR,
       stateDir,
     }));

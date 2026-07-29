@@ -44,6 +44,64 @@ describe('migrateFeatureMaturationGate', () => {
     expect(fs.readFileSync(writer)).toEqual(before);
   });
 
+  /**
+   * The constitution mirror, exercised — not grepped.
+   *
+   * This is the change's ONE load-bearing behaviour: a deployed agent's
+   * `docs/STANDARDS-REGISTRY.md` sat at 22 articles dated May 24 while 81 were authored,
+   * because nothing refreshed it. Until this test existed the guarantee was asserted by
+   * `expect(migratorSource).toContain('alwaysOverwrite: true')` — a check that passes on
+   * the string appearing anywhere in the file and would keep passing if the entry were
+   * unreachable, mis-pathed, or deleted from the loop. A grep over source text is not a
+   * test of behaviour; it is a test of spelling.
+   *
+   * The drift here is deliberately the SHAPE of the real failure: a stale copy that is
+   * plausible, non-empty, and not a customization anyone declared.
+   */
+  it('MIRRORS a drifted constitution back to the packed bytes, and is idempotent', () => {
+    const packed = path.join(process.cwd(), 'dist', 'data', 'standards-registry.md');
+    const { root, run } = setup();
+    const target = path.join(root, 'docs', 'STANDARDS-REGISTRY.md');
+
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, '# Standards Registry\n\n### One Stale Article\n\nfrom May.\n');
+
+    expect(run().errors).toEqual([]);
+
+    // Byte equality with what ships — not "contains", not a length check.
+    expect(fs.readFileSync(target)).toEqual(fs.readFileSync(packed));
+
+    // Non-vacuity: the fixture must not have happened to equal the packed bytes already,
+    // or the assertion above proves nothing about the mirror.
+    expect(fs.statSync(packed).size).toBeGreaterThan(1000);
+
+    // Second run rewrites identical bytes and reports nothing upgraded.
+    const second = run();
+    expect(second.errors).toEqual([]);
+    expect(fs.readFileSync(target)).toEqual(fs.readFileSync(packed));
+  });
+
+  /**
+   * The refusal half. `alwaysOverwrite` is destructive by design, so the one place it
+   * must NOT fire is a tree whose `docs/STANDARDS-REGISTRY.md` is the authored original —
+   * an older installed package would otherwise revert it, and the migrator's backup is
+   * written only once, so a second pass destroys that too.
+   */
+  it('REFUSES the mirror in a source tree, leaving the authored constitution untouched', () => {
+    const { root, run } = setup();
+    // Make the fixture a checkout: the markers `holdsAuthoredConstitution` keys on.
+    fs.mkdirSync(path.join(root, 'src', 'core'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'docs', 'specs'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.git'), 'gitdir: /elsewhere\n');
+
+    const target = path.join(root, 'docs', 'STANDARDS-REGISTRY.md');
+    const authored = '### The Authored Original\n\nnot a copy.\n';
+    fs.writeFileSync(target, authored);
+
+    expect(run().errors).toEqual([]);
+    expect(fs.readFileSync(target, 'utf8')).toBe(authored);
+  });
+
   it('leaves an unknown customized target byte-identical', () => {
     const { root, run } = setup();
     const target = path.join(root, 'scripts', 'feature-maturation-plan-gate.mjs');

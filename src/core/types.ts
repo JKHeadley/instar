@@ -1577,6 +1577,8 @@ export interface ActionItem {
   createdAt: string;
   /** When this should be done by (ISO date) */
   dueBy?: string;
+  /** Explicit reason this action was created without a due date. */
+  followThroughOptOutReason?: string;
   /** When completed */
   completedAt?: string;
   /** How it was resolved */

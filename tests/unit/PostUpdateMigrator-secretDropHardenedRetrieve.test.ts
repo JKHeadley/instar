@@ -263,6 +263,8 @@ describe('PostUpdateMigrator — CLAUDE.md Secret Drop rewrite', () => {
     expect(after).toContain('/commitments');
     expect(after).toContain('"agentResponse":"<what you said you would do>"');
     expect(after).toContain('"type":"one-time-action"');
+    expect(after).toContain('"beaconEnabled":true');
+    expect(after).toContain('"nextUpdateDueAt":"<ISO deadline>"');
     expect(after).not.toContain('"type":"follow-up"');
     // The proactive trigger that prevents codey's exact failure mode:
     expect(after).toContain('NEVER improvise the follow-through with a raw');

@@ -33,6 +33,56 @@ import { checkEli16Overview } from '../../../scripts/eli16-overview-check.mjs';
 
 export const API_PORT = Number(process.env.INSTAR_PORT) || 4042;
 
+/** Relay locations, in resolution order (the second is the documented older-install path). */
+const RELAY_RELATIVE_PATHS = ['.instar/scripts/telegram-reply.sh', '.claude/scripts/telegram-reply.sh'];
+
+/**
+ * Locate telegram-reply.sh by walking UP from `startDir`.
+ *
+ * It used to be spawned as the bare relative path `.instar/scripts/telegram-reply.sh`,
+ * which only resolves when cwd IS the agent home. instar-dev work is REQUIRED to happen
+ * in a worktree (docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md), and a worktree has no
+ * `.instar/scripts/`, so every send from one failed with ENOENT. Walking up from a
+ * worktree at `<agent-home>/.worktrees/<slug>` reaches `<agent-home>`, which has it.
+ *
+ * Returns an absolute path, or null when no relay exists above `startDir`.
+ */
+export function resolveRelayScript(startDir = process.cwd(), existsSync = fs.existsSync) {
+  const envHome = process.env.INSTAR_AGENT_HOME;
+  const roots = [];
+  if (envHome) roots.push(path.resolve(envHome));
+  let dir = path.resolve(startDir);
+  for (;;) {
+    roots.push(dir);
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  for (const root of roots) {
+    for (const rel of RELAY_RELATIVE_PATHS) {
+      const candidate = path.join(root, rel);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Did the relay actually deliver?
+ *
+ * The relay prints `Sent <n> chars to topic <id>` on a real send. Requiring that
+ * marker — not merely a zero exit — is deliberate: this script's whole job is
+ * handing the operator something to approve, and it previously printed
+ * "[published] … delivered" straight after an ENOENT, so a dropped approval ask
+ * was indistinguishable from a delivered one. Filed three times in fifteen days
+ * (ACT-616 2026-07-13, ACT-1390 2026-07-27, ACT-1517 2026-07-28) before this fix.
+ */
+export function relayDelivered(result) {
+  if (!result || result.error) return false;
+  if (result.status !== 0) return false;
+  return /Sent\s+\d+\s+chars?\s+to\s+topic/i.test(`${result.stdout || ''}${result.stderr || ''}`);
+}
+
 /** Split a spec file into its frontmatter body and the rest. */
 export function extractFrontmatter(specText) {
   const m = specText.match(/^---\n([\s\S]*?)\n---/);
@@ -144,11 +194,30 @@ async function main() {
       console.error('--send requires --topic <id>');
       process.exit(2);
     }
-    const reply = spawnSync('bash', ['.instar/scripts/telegram-reply.sh', String(args.topic)], {
+    const relay = resolveRelayScript();
+    if (!relay) {
+      console.error(
+        'REFUSING to claim delivery: no telegram-reply.sh found at or above this directory ' +
+        `(looked for ${RELAY_RELATIVE_PATHS.join(' / ')}). The spec was NOT sent.`,
+      );
+      console.error('The composed message follows so the ask is not lost — send it yourself.');
+      console.log(message);
+      process.exit(1);
+    }
+    const reply = spawnSync('bash', [relay, String(args.topic)], {
       input: message, encoding: 'utf8',
     });
     process.stderr.write(reply.stdout || '');
     process.stderr.write(reply.stderr || '');
+    if (!relayDelivered(reply)) {
+      const why = reply.error
+        ? reply.error.message
+        : `relay exited ${reply.status} without a send confirmation`;
+      console.error(`\n[NOT DELIVERED] the spec was NOT sent to topic ${args.topic}: ${why}`);
+      console.error('The composed message follows so the ask is not lost — send it yourself.');
+      console.log(message);
+      process.exit(1);
+    }
     console.error(`\n[published] ELI16 link verified (HTTP 200) and delivered to topic ${args.topic}.`);
   } else {
     // Print the message + the verified link for the caller to send.

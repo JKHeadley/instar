@@ -561,4 +561,34 @@ describe('rawInject sanitizer (S2 paste-escape)', () => {
     }
     expect(sentLiterals.join('')).toContain('hello extra turn');
   });
+
+  it('strips the 8-bit CSI spelling of the paste-end marker too', () => {
+    // CSI has a two-byte 7-bit form (ESC '[') and a single-byte 8-bit form
+    // (0x9B). The original sanitiser required a literal ESC, so the 8-bit
+    // spelling of the SAME control sequence passed straight through — the
+    // comment promised "any EMBEDDED bracketed-paste markers" while the regex
+    // covered one encoding.
+    const { manager } = makeManager({}, tmpDir);
+    const tmux = 'proj-sani-8bit';
+    mockTmuxSessions.add(tmux);
+    sentLiterals.length = 0;
+    const CSI8 = String.fromCharCode(0x9b);
+    const malicious = `hello${CSI8}201~ extra turn`;
+    (manager as unknown as { rawInject: (t: string, text: string) => boolean }).rawInject(tmux, malicious);
+    expect(sentLiterals.length).toBeGreaterThan(0);
+    for (const t of sentLiterals) {
+      expect(t).not.toContain(`${CSI8}201~`);
+    }
+    expect(sentLiterals.join('')).toContain('hello extra turn');
+  });
+
+  it('leaves a benign literal "[201~" alone (no control byte, no forge)', () => {
+    const { manager } = makeManager({}, tmpDir);
+    const tmux = 'proj-sani-benign';
+    mockTmuxSessions.add(tmux);
+    sentLiterals.length = 0;
+    (manager as unknown as { rawInject: (t: string, text: string) => boolean }).rawInject(tmux, 'see [201~ in docs');
+    expect(sentLiterals.join('')).toContain('see [201~ in docs');
+  });
+
 });

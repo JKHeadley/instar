@@ -15,7 +15,8 @@ import type { Request, Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceProvider } from '../core/types.js';
-import { loadStandardsRegistry, parseStandardsRegistry, runRegistryCanary } from '../core/StandardsRegistryParser.js';
+import { loadStandardsRegistry, parseStandardsRegistry, runRegistryCanary, parseStandardsRegistryDetailed } from '../core/StandardsRegistryParser.js';
+import type { RegistryResolution } from '../core/standardsRegistryPath.js';
 import { StandardsConformanceReviewer } from '../core/reviewers/standards-conformance.js';
 import { recordConformanceInvocationAt } from '../core/AutonomousRunStore.js';
 
@@ -82,8 +83,13 @@ export function extractParentPrinciple(md: string): string {
 
 export function createSpecReviewRoutes(deps: {
   intelligence: IntelligenceProvider | null;
-  /** Path to docs/STANDARDS-REGISTRY.md (the constitution). */
-  registryPath: string;
+  /**
+   * The constitution AS RESOLVED by `src/core/standardsRegistryPath.ts` — never a
+   * path this module builds. Taking the resolution (not a string) is the API
+   * boundary that keeps a reader from silently reacquiring the agent-home-snapshot
+   * bug: there is no raw path exported to shortcut.
+   */
+  registryResolution: RegistryResolution;
   /** Directory specs are read from; specPath inputs are resolved within it (no traversal). */
   specsDir: string;
   /** Where to persist conformance metrics. */
@@ -132,9 +138,30 @@ export function createSpecReviewRoutes(deps: {
     // Load + canary the constitution; a drifted/partial registry must not silently
     // produce a misleadingly-clean report.
     let articles;
-    try { articles = loadStandardsRegistry(deps.registryPath); }
-    catch (err) { return res.status(503).json({ error: `constitution unreadable: ${(err as Error).message}` }); }
-    const canary = runRegistryCanary(articles);
+    if (!deps.registryResolution.usable) {
+      return res.status(503).json({
+        error: `constitution unusable: ${deps.registryResolution.reason}`,
+        detail: deps.registryResolution.detail,
+      });
+    }
+    // Parse the bytes the RESOLUTION carries — never re-open `path`.
+    //
+    // This callsite was the widest seam in the change and four reviewers named it
+    // independently: the resolution is built ONCE at server construction
+    // (`AgentServer`), while this handler re-read the file per request. So the
+    // integrity check was a boot-time snapshot and the graded bytes were read hours
+    // later — on the HIGHER-stakes endpoint, the one that grades specs and feeds the
+    // pre-commit gate. The coverage route closed its seam and the spec generalized
+    // the claim to "consumers"; this consumer had a wider seam than the original.
+    //
+    // There is nothing left to throw here (the bytes are in hand), so the former
+    // `catch → 503` is gone rather than kept as decoration.
+    const detailed = parseStandardsRegistryDetailed(deps.registryResolution.markdown);
+    articles = detailed.articles;
+    // Diagnostics are passed so the COMPLETENESS half of the canary actually runs.
+    // Without them `completenessAssessed` is false and the dropped-heading check —
+    // the one that catches a truncated constitution — silently does not happen.
+    const canary = runRegistryCanary(articles, detailed.diagnostics);
 
     const report = await reviewer.review(markdown, articles);
 

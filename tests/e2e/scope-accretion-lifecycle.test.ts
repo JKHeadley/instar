@@ -30,6 +30,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRoutes } from '../../src/server/routes.js';
+import { resolveStandardsRegistryFromPath } from '../../src/core/standardsRegistryPath.js';
 import { createSpecReviewRoutes } from '../../src/server/specReviewRoutes.js';
 import { CompletionEvaluator } from '../../src/core/CompletionEvaluator.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
@@ -120,7 +121,7 @@ beforeAll(async () => {
         return '[]';
       },
     },
-    registryPath: path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md'),
+    registryResolution: resolveStandardsRegistryFromPath(path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md')),
     specsDir: path.join(repo, 'docs', 'specs'),
     stateDir,
   }));

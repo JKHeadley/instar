@@ -14,8 +14,10 @@ import {
   computeCoverage,
   deriveAssessmentConfidence,
   computeInputHash,
+  probeGuardTree,
   stableView,
   type CoverageReport,
+  containedRefPath,
 } from '../../src/core/StandardsEnforcementAuditor.js';
 
 const REAL_REGISTRY = path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md');
@@ -101,7 +103,7 @@ describe('StandardsEnforcementAuditor — verification + classification', () => 
   it('a verified marker + class both resolve to verified guards', () => {
     const report = computeCoverage({ registryPath, projectDir: repo });
     const gate = find(report, 'Gate Standard');
-    const verified = gate.guards.filter((g) => g.verified).map((g) => g.ref);
+    const verified = gate.guards.filter((g) => g.refResolves).map((g) => g.ref);
     expect(verified).toContain('B16_UNVERIFIED_WALL');
     expect(verified).toContain('MessagingToneGate');
     expect(gate.danglingRefs).toEqual([]);
@@ -133,6 +135,27 @@ describe('StandardsEnforcementAuditor — verification + classification', () => 
     // enforced = ratchet+gate+lint = 1+2+1 = 4 of 7
     expect(enforcedRatio).toBeCloseTo(4 / 7, 4);
   });
+
+  /**
+   * `refResolutionRatio` is the same measurement under a name that states what it
+   * measures. `enforcedRatio` is retained for existing readers and deprecated: its name
+   * claims enforcement, while the value is the share of standards whose named reference
+   * RESOLVES on disk.
+   *
+   * Pinned together deliberately. Two fields carrying one number will drift the moment
+   * one of them is computed separately, and the deprecated name is the one that would be
+   * left behind — so a reader on the old field would silently get a different number than
+   * a reader on the new one. Both are asserted on the SAME report, including the
+   * no-denominator case where the honest value is null rather than 0.
+   */
+  it('refResolutionRatio carries the same number as the deprecated enforcedRatio', () => {
+    const report = computeCoverage({ registryPath, projectDir: repo });
+    const { enforcedRatio, refResolutionRatio } = report.summary;
+
+    expect(refResolutionRatio, 'the accurately-named field must be present').not.toBeUndefined();
+    expect(refResolutionRatio).toBeCloseTo(4 / 7, 4);
+    expect(refResolutionRatio, 'the two names must never disagree').toBe(enforcedRatio);
+  });
 });
 
 describe('StandardsEnforcementAuditor — determinism + short-circuit', () => {
@@ -157,6 +180,30 @@ describe('StandardsEnforcementAuditor — determinism + short-circuit', () => {
     const r1 = computeCoverage({ registryPath, projectDir: repo });
     const r2 = computeCoverage({ registryPath, projectDir: repo }, r1);
     expect(r2).toBe(r1); // identity — recompute was skipped
+  });
+
+  /**
+   * The failure this catches: the auditor's LOUDEST signal — "a standard cites a guard
+   * that is gone" — suppressed by its own cache. `repoStructureSignal` probes only
+   * immediate directory listings, so deleting a cited file under any second-level
+   * directory left the key identical and the stale report was served for the process
+   * lifetime, still saying the guard resolves.
+   */
+  it('the short-circuit RE-computes when a RESOLVED guard file disappears', () => {
+    const r1 = computeCoverage({ registryPath, projectDir: repo });
+    const ratchet = r1.standards.find((s) => s.standard === 'Ratchet Standard');
+    expect(ratchet?.enforcementKind).toBe('ratchet');
+    expect(ratchet?.danglingRefs).toEqual([]);
+
+    // Delete the guard the registry names — nested under tests/unit/, exactly the shape
+    // the directory-listing probe cannot see.
+    fs.rmSync(path.join(repo, 'tests/unit/no-silent-llm-fallback.test.ts'));
+
+    const r2 = computeCoverage({ registryPath, projectDir: repo }, r1);
+    expect(r2, 'served a cached report over a deleted guard').not.toBe(r1);
+    const after = r2.standards.find((s) => s.standard === 'Ratchet Standard');
+    expect(after?.danglingRefs).toContain('tests/unit/no-silent-llm-fallback.test.ts');
+    expect(after?.enforcementKind).toBe('documented-only');
   });
 
   it('the short-circuit RE-computes when the registry content changed', () => {
@@ -197,7 +244,7 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
     expect(osq, 'Operator-Surface Quality article').toBeTruthy();
     expect(osq!.enforcementKind).toBe('gate');
     expect(osq!.danglingRefs).toEqual([]); // every named guard resolves
-    expect(osq!.guards.some((g) => g.ref === 'scripts/instar-dev-precommit.js' && g.verified)).toBe(true);
+    expect(osq!.guards.some((g) => g.ref === 'scripts/instar-dev-precommit.js' && g.refResolves)).toBe(true);
   });
 
   it('refuses a ratio when there is nothing to divide by, and carries its denominator', () => {
@@ -235,7 +282,7 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
     // for the FULL registry, and the deprecated boolean is false until one ships.
     expect(full.summary.assessmentConfidence).toBe('unverified');
     expect(full.summary.assessmentTrustworthy).toBe(false);
-    expect(full.summary.confidenceReason).toMatch(/no external expectation/i);
+    expect(full.summary.confidenceReason).toMatch(/no integrity basis was supplied/i);
     expect(full.summary.registry.parsed).toBe(full.summary.total);
     expect(full.summary.registry.articleHeadings).toBe(full.summary.total);
     expect(full.summary.registry.droppedHeadings).toEqual([]);
@@ -283,7 +330,24 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
     expect(report.summary.confidenceReason).toBeTruthy();
   });
 
-  it('deriveAssessmentConfidence: all four verdicts, in both directions', () => {
+  /**
+   * WHY THIS TEST WAS REWRITTEN (ACT-1426) — read before "restoring" the old one.
+   *
+   * The previous version asserted a mismatched expectation produced
+   * `untrustworthy`, and passed. It passed because it FABRICATED the mismatch by
+   * hand: `{ sha256: 'aaa…', observedSha256: 'bbb…' }`. In production those two
+   * values were the same number by construction — the route derived the
+   * expectation from the resolution's own sha, and the resolver only ever returns
+   * a sha past its `meta.sha256 !== observedSha` guard. So the branch the test
+   * covered was unreachable, and `verified` was granted by a comparison that could
+   * not fail.
+   *
+   * That is the lesson worth keeping: a unit test that constructs its own inputs
+   * can cover a branch production can never enter, and the green tick then reads
+   * as evidence the check works. The assertions below are therefore anchored to
+   * the BASIS the resolver reports, which is the thing that actually varies.
+   */
+  it('deriveAssessmentConfidence: every verdict, anchored to the resolver basis', () => {
     const okRegistry = computeCoverage({ registryPath: REAL_REGISTRY, projectDir: process.cwd() }).summary.registry;
 
     // nothing measured
@@ -295,22 +359,230 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
     expect(bad.confidence).toBe('untrustworthy');
     expect(bad.reason).toMatch(/canary objected/i);
 
-    // internal checks pass, NO expectation → unverified (today's only non-failing state)
+    // NO basis at all → unverified
     const un = deriveAssessmentConfidence(81, okRegistry);
     expect(un.confidence).toBe('unverified');
-    expect(un.reason).toMatch(/no external expectation/i);
+    expect(un.reason).toMatch(/no integrity basis was supplied/i);
     expect(un.reason).toMatch(/coherent older copy/i);
 
-    // a MATCHING expectation is the only route to verified
-    expect(deriveAssessmentConfidence(81, okRegistry, {
-      articleCount: 81, sha256: 'aaaaaaaaaaaa0000', observedSha256: 'aaaaaaaaaaaa0000',
-    }).confidence).toBe('verified');
+    // A CALLER-SUPPLIED path can never reach verified — this is the guarantee that
+    // used to depend on the route remembering to withhold a field.
+    const fixture = deriveAssessmentConfidence(81, okRegistry, { basis: 'caller-supplied-path' });
+    expect(fixture.confidence).toBe('unverified');
+    expect(fixture.reason).toMatch(/caller-supplied path/i);
 
-    // a MISMATCHED expectation is untrustworthy, not merely unverified
-    const mism = deriveAssessmentConfidence(22, okRegistry, {
-      articleCount: 81, sha256: 'aaaaaaaaaaaa0000', observedSha256: 'bbbbbbbbbbbb1111',
+    // The packed-meta basis with ALL THREE operands agreeing is the only route to
+    // verified, and the reason states what that basis does and does not establish.
+    const full = {
+      basis: 'packed-meta-match' as const,
+      metaSha256: 'aaaaaaaaaaaa0000aaaaaaaaaaaa0000aaaaaaaaaaaa0000aaaaaaaaaaaa0000',
+      metaArticleCount: 81,
+      observedArticleCount: 81,
+      articleCountMatchesMeta: true,
+      metaPackageVersion: '1.3.991',
+      runningPackageVersion: '1.3.991',
+      packageVersionMatches: true,
+    };
+    const ver = deriveAssessmentConfidence(81, okRegistry, full);
+    expect(ver.confidence).toBe('verified');
+    expect(ver.reason).toMatch(/currency/i);
+    // It must NOT overclaim: not a runtime check against source, not tamper-proof.
+    expect(ver.reason).toMatch(/not a runtime check/i);
+    expect(ver.reason).toMatch(/not tamper-resistant/i);
+
+    // VERSION SKEW — the operand the sha pair structurally cannot see. The generator
+    // writes registry and meta on ADJACENT lines, so they agree forever however old
+    // the asset is; `tsc` alone recompiles the reader without regenerating. Without
+    // this operand, "current reader + arbitrarily old constitution" read as verified.
+    const skew = deriveAssessmentConfidence(81, okRegistry, {
+      ...full, metaPackageVersion: '1.3.900', packageVersionMatches: false,
     });
-    expect(mism.confidence).toBe('untrustworthy');
-    expect(mism.reason).toMatch(/does not match the expectation/i);
+    expect(skew.confidence).toBe('unverified');
+    expect(skew.reason).toMatch(/CROSS-VERSION skew/);
+    // The reason must NOT overclaim: version equality does not prove currency, and
+    // saying it did was the fourth instance of this design's recurring overclaim.
+    expect(skew.reason).toMatch(/does NOT prove the asset is current/);
+    expect(skew.reason).toMatch(/1\.3\.900/);
+
+    // An UNSTAMPED asset (generated before the stamp existed) is an unknown operand,
+    // not a pass. Absence must never read as presence.
+    const unstamped = deriveAssessmentConfidence(81, okRegistry, {
+      ...full, metaPackageVersion: null, packageVersionMatches: null,
+    });
+    expect(unstamped.confidence).toBe('unverified');
+    expect(unstamped.reason).toMatch(/no package-version stamp/i);
+
+    // A COUNT MISMATCH now DOWNGRADES rather than riding along as prose. The earlier
+    // "diagnostic only, never invalidates" rule weighed a harm that does not exist —
+    // the downgrade path is `unverified`, not a 503 — while discarding the only
+    // genuine cross-artifact signal the system has.
+    const drift = deriveAssessmentConfidence(79, okRegistry, {
+      ...full, observedArticleCount: 79, articleCountMatchesMeta: false,
+    });
+    expect(drift.confidence).toBe('unverified');
+    expect(drift.reason).toMatch(/read 79 article headings .* recorded 81/);
+    expect(drift.reason).toMatch(/different builds/i);
+
+    // An UNANALYZABLE guard tree is untrustworthy, not verified — the registry may be
+    // perfectly sound while every enforcement figure describes a missing repository.
+    const noTree = deriveAssessmentConfidence(81, okRegistry, full, {
+      projectDir: '/tmp/not-instar', analyzable: false, markersFound: [],
+    });
+    expect(noTree.confidence).toBe('untrustworthy');
+    expect(noTree.reason).toMatch(/not an analyzable instar source tree/i);
+    expect(noTree.reason).toMatch(/missing repository rather than missing guards/i);
+
+    // AND THE INVERSE, which is the half that was broken. `probeGuardTree` required a
+    // `package.json#name === 'instar'` marker in its first version — so an agent home
+    // (a full `src/` copy with NO package.json, which is the only deployment where this
+    // surface is live) probed as unanalyzable FOREVER, making `untrustworthy` permanent
+    // and `verified` unreachable outside a unit-test run in the checkout. A guard meant
+    // to prevent a false `verified` had made the honest one impossible.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-home-'));
+    try {
+      fs.mkdirSync(path.join(home, 'src', 'server'), { recursive: true });
+      fs.mkdirSync(path.join(home, 'src', 'core'), { recursive: true });
+      fs.writeFileSync(path.join(home, 'src', 'server', 'routes.ts'), "router.get('/x',(q,s)=>{});\n");
+      // Deliberately NO package.json — that is the shape of a real agent home.
+      const probe = probeGuardTree(home);
+      expect(probe.analyzable, 'an agent home with a real src/ tree must be analyzable').toBe(true);
+      expect(probe.markersFound).toEqual(['src/server/routes.ts', 'src/core']);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * RATCHET — the tautology must not come back.
+   *
+   * `deriveAssessmentConfidence` may not perform an equality test between two
+   * values that a single caller derives from one file. The structural expression
+   * of that: its integrity parameter carries NO observed-sha field to compare
+   * against, and the function body contains no sha comparison. Asserted over the
+   * source because the behaviour is an absence, and an absence has no output to
+   * assert on.
+   */
+  it('RATCHET: the confidence verdict performs no self-comparison', () => {
+    const src = fs.readFileSync(
+      path.join(process.cwd(), 'src', 'core', 'StandardsEnforcementAuditor.ts'),
+      'utf-8',
+    );
+    const fnStart = src.indexOf('export function deriveAssessmentConfidence');
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnEnd = src.indexOf('\n}', src.indexOf('{', fnStart));
+    const body = src.slice(fnStart, fnEnd);
+
+    // No re-hash, and no comparison of two shas — the resolver already did the
+    // only comparison there is, and a second one here can only be circular.
+    expect(body).not.toMatch(/createHash/);
+    expect(body).not.toMatch(/observedSha/);
+    expect(body).not.toMatch(/\.sha256\s*!==\s*/);
+    // And the option that fed it is gone from the auditor's contract entirely.
+    expect(src).not.toMatch(/expectation\?:\s*\{/);
+  });
+
+  /**
+   * RATCHET, PART 2 — guard the file the tautology actually LIVED in.
+   *
+   * Review's sharpest observation about my own fix: the ratchet above scans
+   * `deriveAssessmentConfidence`, but the tautology was never there. It was in the
+   * ROUTE, which synthesised `expectation` from `resolution.sha256` and handed it
+   * down. Ratcheting the consumer while leaving the producer unguarded is guarding
+   * the exit the burglar already used.
+   */
+  it('RATCHET: the route hands the resolution through and synthesises no expectation', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src', 'server', 'routes.ts'), 'utf-8');
+    const start = src.indexOf('const conformanceReport');
+    expect(start, 'conformanceReport closure not found — this ratchet is anchored to it').toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("router.get('/conformance/coverage'", start));
+    const code = body.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+
+    // No expectation may be constructed here, under that name or any other: the route
+    // may only PASS THROUGH what the resolver established.
+    expect(code).not.toMatch(/expectation/);
+    expect(code).not.toMatch(/createHash/);
+    expect(code).not.toMatch(/sha256\s*:/);
+
+    // And it must pass the resolver's own fields, not values it derived itself.
+    expect(code).toMatch(/registryMarkdown:\s*resolution\.markdown/);
+    expect(code).toMatch(/integrity:\s*resolution\.integrity/);
+  });
+
+  /**
+   * RATCHET, PART 3 — the verdict rule has exactly ONE home.
+   *
+   * `earnsVerified` lives beside the integrity type. If a consumer starts deciding
+   * `verified` from its own conditionals, the rule silently forks and the downgrades
+   * (version skew, count mismatch) stop applying wherever the fork lives.
+   */
+  it('RATCHET: no consumer decides `verified` for itself', () => {
+    const root = process.cwd();
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (e.name.endsWith('.ts')) {
+          if (full.endsWith('standardsRegistryPath.ts')) continue;
+          const code = fs.readFileSync(full, 'utf-8')
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+          if (/packed-meta-match/.test(code) && !/earnsVerified/.test(code)) {
+            offenders.push(path.relative(root, full));
+          }
+        }
+      }
+    };
+    walk(path.join(root, 'src'));
+    expect(
+      offenders,
+      `These files branch on the integrity basis without going through earnsVerified, so the ` +
+        `version-skew and count-mismatch downgrades do not apply to them: ${offenders.join(', ')}`,
+    ).toEqual([]);
+  });
+});
+
+
+/**
+ * Containment over registry-supplied refs.
+ *
+ * The refs probed here come from the constitution DOCUMENT, which after this change ships as
+ * a packed asset and is mirrored into agent homes. An escaping ref is two defects at once: a
+ * probe outside the audited tree, and — if the escaped path happens to exist — a standard
+ * graded as ENFORCED against a file with nothing to do with this repository.
+ */
+describe('containedRefPath — registry refs cannot escape projectDir', () => {
+  it('accepts an ordinary ref inside the tree', () => {
+    expect(containedRefPath('/repo', 'src/core/Foo.ts')).toBe(path.resolve('/repo/src/core/Foo.ts'));
+  });
+
+  it('accepts the root itself', () => {
+    expect(containedRefPath('/repo', '.')).toBe(path.resolve('/repo'));
+  });
+
+  it('REFUSES a traversal that climbs out of the tree', () => {
+    expect(containedRefPath('/repo', '../../../etc/passwd')).toBeNull();
+  });
+
+  it('REFUSES an absolute ref pointing elsewhere', () => {
+    expect(containedRefPath('/repo', '/etc/passwd')).toBeNull();
+  });
+
+  /**
+   * The prefix-collision case a naive `startsWith(root)` gets wrong: `/repo-evil` shares a
+   * string prefix with `/repo` and is NOT inside it. This is why the comparison appends a
+   * separator, and this test is what would fail if someone simplified it back.
+   */
+  it('REFUSES a sibling directory that merely shares a name prefix', () => {
+    expect(containedRefPath('/repo', '../repo-evil/x.ts')).toBeNull();
+  });
+
+  /**
+   * A traversal that climbs out and back in IS contained — the resolved path is what matters,
+   * not the presence of `..` in the text. Asserted so a future "reject any ref containing .."
+   * shortcut is recognised as a different, blunter rule rather than an equivalent one.
+   */
+  it('accepts a path that leaves and returns, because resolution is what counts', () => {
+    expect(containedRefPath('/repo', 'src/../src/core/Foo.ts')).toBe(path.resolve('/repo/src/core/Foo.ts'));
   });
 });

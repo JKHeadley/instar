@@ -145,6 +145,16 @@
             "timeout": 5000
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/analysis-paralysis-guard.js",
+            "timeout": 3000
+          }
+        ]
       }
     ],
     "SubagentStart": [

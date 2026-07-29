@@ -43,7 +43,35 @@ export interface ExtractedRefs {
  * `src/core/Z.ts`, `.instar/config.json`, a `.sh` hook. The leading char class
  * tolerates a leading `.` (e.g. `.github/...`).
  */
+// NOTE the `..` exclusion. The char class previously permitted it, so a ref like
+// `../../../../etc/hosts.json` was joined onto projectDir and existence-probed, with the
+// boolean echoed back in `danglingRefs` — an existence oracle outside the project,
+// sourced from registry prose. Narrow (authorship is whoever ships a release) but free
+// to close, and it contradicted the resolver module's own "the ONLY place a path is
+// constructed" contract.
 const FILE_RE = /`([a-zA-Z0-9_./-]+\.(?:ts|js|mjs|cjs|md|json|sh))`/g;
+/** Reject any ref that could escape the project root before it is ever joined. */
+export function isContainedRef(ref: string): boolean {
+  // HARDENING OF AN EXPORTED PREDICATE — not the closing of a live hole. Stated that way
+  // because an earlier version of this comment claimed the backslash forms were getting
+  // "through", and measurement says they are not reachable from the only current caller:
+  // `FILE_RE`'s character class is `[a-zA-Z0-9_./-]`, which cannot match `\`, and every
+  // `ENFORCEMENT_PATH_PREFIXES` entry is relative, so a leading `/` already failed the
+  // prefix test. Over the real 81-article constitution — 111 file-shaped candidates — the
+  // branches below change ZERO verdicts. The load-bearing, reachable protection is the
+  // `/`-segment split on the last line.
+  //
+  // They are kept because this function is EXPORTED and is the containment predicate for
+  // any future caller that does not inherit `FILE_RE`'s narrowing — and because a
+  // containment check that is correct only on the platform it happens to run on is the kind
+  // of guard that fails the day the assumption moves. Codey's audit contributed the
+  // backslash/mixed forms and then UNC, which reaches a remote root with no drive letter
+  // and no `..`. Each branch is directly tested against `isContainedRef`.
+  if (ref.startsWith('/')) return false;              // /etc/passwd
+  if (/^[A-Za-z]:[\\/]/.test(ref)) return false;      // C:\Windows, C:/Windows
+  if (/^[\\/]{2}/.test(ref)) return false;            // \\server\share, //server/share
+  return !ref.split(/[\\/]/).includes('..');
+}
 
 /** Backtick-fenced `METHOD /route` tokens (the route table shape). */
 const ROUTE_RE = /`(GET|POST|PUT|DELETE|PATCH)\s+(\/[a-zA-Z0-9/_:-]+)`/g;
@@ -70,6 +98,9 @@ const ENFORCEMENT_PATH_PREFIXES = ['tests/', 'scripts/', 'src/', 'docs/', '.gith
 
 /** True if a path looks like an enforcement artifact (a guard we can verify on disk). */
 function isEnforcementPath(p: string): boolean {
+  // Containment FIRST. A prefix match alone is satisfied by `tests/../../../etc/x.json`,
+  // so the prefix check on its own never bounded anything.
+  if (!isContainedRef(p)) return false;
   return ENFORCEMENT_PATH_PREFIXES.some((pre) => p.startsWith(pre));
 }
 
