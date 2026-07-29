@@ -1,0 +1,23 @@
+{
+  "ts": "2026-07-29T00:59:00.000Z",
+  "slug": "join-dir-flag",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "Multi-machine join destination behavior"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 62,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      661
+    ],
+    "notes": "The git-URL branch reassigned the join target after options.dir was read, so the existing directory option was silently discarded."
+  },
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "Revalidated against current main before landing: Git URL joins still discard --dir; 12 focused tests, TypeScript, and the docs-coverage floor pass after placing the pure helper in src/utils rather than misclassifying it as a CLI command."
+}
