@@ -30,8 +30,8 @@ export interface VerificationResult {
   attributionKey: string;
   preThrottleRate: number;
   postThrottleRate: number;
-  ratio: number;
-  successfullyThrottled: boolean;
+  ratio: number | null;
+  successfullyThrottled: boolean | null;
   verifiedAt: string;
 }
 
@@ -103,8 +103,10 @@ export class BurnVerifier {
     const row = rows.find((r) => r.attributionKey === attributionKey);
     const postThrottleTokens = row ? (row.freshTokens ?? row.totalTokens) : 0;
     const postThrottleRate = postThrottleTokens * (60 * 60 * 1000 / this.sampleWindowMs);
-    const ratio = preThrottleRate > 0 ? postThrottleRate / preThrottleRate : 0;
-    const successfullyThrottled = ratio < this.successRatio;
+    const ratio = Number.isFinite(preThrottleRate) && preThrottleRate > 0 && Number.isFinite(postThrottleRate)
+      ? postThrottleRate / preThrottleRate
+      : null;
+    const successfullyThrottled = ratio === null ? null : ratio < this.successRatio;
 
     const result: VerificationResult = {
       attributionKey,
@@ -120,16 +122,20 @@ export class BurnVerifier {
 
   private fireFollowUp(r: VerificationResult): void {
     const friendlyName = humanize(r.attributionKey);
-    const text = r.successfullyThrottled
-      ? `Caught and contained. ${friendlyName}: before the slowdown it was running at about ` +
-        `${formatRate(r.preThrottleRate)}; now it is running at about ${formatRate(r.postThrottleRate)} ` +
-        `— a ${formatReduction(r.ratio)} drop. The throttle will lift on its own at the configured time, ` +
-        `or you can release it sooner from the original alert.`
-      : `Slowdown did not take effect. I tried to slow ${friendlyName} down, but the rate did ` +
-        `not drop (was ${formatRate(r.preThrottleRate)}, still at ${formatRate(r.postThrottleRate)}). ` +
-        `This usually means one of two things: the attribution is pointing at the wrong code path ` +
-        `and the real offender is elsewhere, or the offending path does not honour the slowdown. ` +
-        `You may need to look at this one manually.`;
+    const text = r.ratio === null || r.successfullyThrottled === null
+      ? `Slowdown verification was inconclusive. I tried to verify ${friendlyName}, but the ` +
+        `before-slowdown rate was unavailable or zero. The current sample is ${formatRate(r.postThrottleRate)}, ` +
+        `but there is no measured baseline for a before-and-after comparison.`
+      : r.successfullyThrottled
+        ? `Caught and contained. ${friendlyName}: before the slowdown it was running at about ` +
+          `${formatRate(r.preThrottleRate)}; now it is running at about ${formatRate(r.postThrottleRate)} ` +
+          `— a ${formatReduction(r.ratio)} drop. The throttle will lift on its own at the configured time, ` +
+          `or you can release it sooner from the original alert.`
+        : `Slowdown did not take effect. I tried to slow ${friendlyName} down, but the rate did ` +
+          `not drop (was ${formatRate(r.preThrottleRate)}, still at ${formatRate(r.postThrottleRate)}). ` +
+          `This usually means one of two things: the attribution is pointing at the wrong code path ` +
+          `and the real offender is elsewhere, or the offending path does not honour the slowdown. ` +
+          `You may need to look at this one manually.`;
     this.fireTelegram(text);
   }
 
