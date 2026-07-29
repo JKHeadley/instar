@@ -5,9 +5,10 @@
 /**
  * Tests for the no-deferrals enforcement added to
  * scripts/instar-dev-precommit.js. The pre-commit hook scans the staged
- * spec for orphan deferral language and blocks the commit unless each
- * instance is linked to a tracked marker or the spec frontmatter waves
- * it through.
+ * spec for orphan deferral language and blocks the commit unless each instance
+ * is linked to a tracked marker. A reference list for the shipped
+ * MigrationPerEntryAction closed enum is distinguished from prose without
+ * hiding Markdown containers that can carry real scope decisions.
  *
  * Spec: docs/specs/auto-updater-lifeline-coordination.md
  */
@@ -242,6 +243,73 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     stageFixture({
       specFrontmatter: 'title: spec\napproved: true\nreview-convergence: tactical\neli16-overview: x.md',
       specBody: 'The runtime instrumentation is deferred for v2.',
+    });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/deferred/i);
+  });
+
+  it('does not treat an inline-code enum value as a deferral', async () => {
+    stageFixture({
+      specFrontmatter: 'title: Enum spec\napproved: true\nreview-convergence: tactical\neli16-overview: fixture.eli16.md',
+      specBody:
+        'Telemetry records one of `migrated`, `deferred-in-flight`, or `failed`. ' +
+        'The implementation of every state ships here.',
+    });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+  });
+
+  it('the reported bare out-of-scope heading already passes because it matches no configured phrase', async () => {
+    stageFixture({
+      specFrontmatter: 'title: Heading spec\napproved: true\nreview-convergence: tactical\neli16-overview: fixture.eli16.md',
+      specBody:
+        'All implementation described by this spec ships here.\n\n' +
+        '## §8 — Out of scope (deliberate)\n\n' +
+        'This section defines the product boundary without parking unfinished work.',
+    });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+  });
+
+  it('still blocks authorial prose beside an ignored inline-code value', async () => {
+    stageFixture({
+      specFrontmatter: 'title: Mixed spec\napproved: true\nreview-convergence: tactical\neli16-overview: fixture.eli16.md',
+      specBody:
+        'The `deferred-in-flight` value is part of telemetry. Runtime wiring is deferred for v2.',
+    });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/deferred/i);
+  });
+
+  it.each([
+    ['heading', '## Runtime is deferred for v2'],
+    ['blockquote callout', '> [!NOTE]\n> Runtime is deferred for v2.'],
+    ['indented list continuation', '- Runtime disposition:\n    deferred for v2'],
+    ['standalone inline-code word', 'Status: `deferred`'],
+    ['escaped literal backticks', 'Status: \\`deferred\\`'],
+    ['lone known enum value', 'Status: `deferred-in-flight`.'],
+    ['unknown multi-segment identifier', 'Disposition: `follow-up-required-now`.'],
+    ['three-backtick fenced value', '```\ndeferred-in-flight\n```'],
+    ['four-backtick fenced value', '````\ndeferred-in-flight\n````'],
+    ['fenced enum list', '```\n`migrated` and `deferred-in-flight`\n```'],
+    ['blockquoted fenced enum list', '> ~~~\n> `migrated` and `deferred-in-flight`\n> ~~~'],
+    ['list-nested fenced enum list', '- ~~~\n  `migrated` and `deferred-in-flight`\n  ~~~'],
+  ])('still blocks a real deferral in a %s', async (_label, specBody) => {
+    stageFixture({
+      specFrontmatter: 'title: Refusal spec\napproved: true\nreview-convergence: tactical\neli16-overview: fixture.eli16.md',
+      specBody,
+    });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/deferred/i);
+  });
+
+  it('does not exempt the same known enum token when it is ordinary prose', async () => {
+    stageFixture({
+      specFrontmatter: 'title: Prose spec\napproved: true\nreview-convergence: tactical\neli16-overview: fixture.eli16.md',
+      specBody: 'Runtime is deferred-in-flight.',
     });
     const result = await runHook(process.env, sandbox);
     expect(result.status).not.toBe(0);
