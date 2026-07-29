@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-29T12:52:15.988Z",
+  "slug": "sdk-credit-zero-total",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 10,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/providers/costAwareRouting.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
