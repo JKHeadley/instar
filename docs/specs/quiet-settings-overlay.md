@@ -2,6 +2,11 @@
 title: "Quiet-Settings Follow the Agent — Replicated Operator-Settings Overlay"
 slug: "quiet-settings-overlay"
 author: "echo"
+status: "approved"
+approved: true
+approved-by: "justin"
+approved-at: "2026-07-29T03:24:00Z"
+approved-via: "Telegram topic 29723 — Justin, 2026-07-29 03:24Z: \"You have my approval for what is waiting on me\", in reply to a review page listing this spec and SESSION-ACTIVITY-VERDICT as the two items blocked on his approval. Direction for this spec was separately approved 2026-07-12 (design-brief decision, topic 29836); this approval covers the CONVERGED spec + its convergence report, which post-dated that decision by one day."
 principal-deferral-approval: "v1 conversational-only confirmation for NON-suppression noise keys — argued exemption per Threat model (suppression-class keys carry the structural server-confirm gate); direction + auto-apply approved by operator 2026-07-12 (design-brief decision, topic 29836)"
 review-convergence: "2026-07-13T08:08:10.931Z"
 review-iterations: 6
