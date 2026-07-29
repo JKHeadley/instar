@@ -29,10 +29,13 @@ existing honest no-verdict state: finite zero placeholders, grade `N/A`,
 poisoned component cannot silently become `F`.
 
 The drift comparison also stops doing arithmetic over invalid values. Its
-average confidence is explicitly `null` when no valid numeric confidence exists,
-and it reports both the valid sample count and invalid-value count. A real
-measured confidence of zero remains zero and is no longer confused with missing
-data.
+average confidence is explicitly `null` when a window cannot be measured
+completely, and it reports both the valid sample count and invalid-value count.
+It also emits an explicit warning when either comparison window contains
+qualitative legacy data, rather than silently reporting that no drift was
+detected. Unambiguous numeric strings remain measurable and can still trigger a
+confidence-drop signal. A real measured confidence of zero remains zero and is
+no longer confused with missing data.
 
 #1660 got the earlier empty-journal case right: an empty journal already returned
 `N/A` and `assessable: false`. This was a separate uncovered path where the

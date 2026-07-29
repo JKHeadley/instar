@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "intent-alignment-confidence-contract",
+  "sessionId": "ba7a999f-4826-4245-b021-e025cb0e02f9",
+  "timestamp": "2026-07-29T09:53:07.957Z",
+  "artifactPath": "upgrades/side-effects/intent-alignment-confidence-contract.md",
+  "artifactSha256": "d9f54e666ae93fe2fc84918bcc0666fc96a4308ccc2d4af6182c02eb17933e41",
+  "coveredFiles": [
+    "src/commands/intent.ts",
+    "src/core/DecisionJournal.ts",
+    "src/core/IntentDriftDetector.ts",
+    "src/server/routes.ts",
+    "tests/integration/decision-journal-route.test.ts",
+    "tests/integration/drift-routes.test.ts",
+    "tests/unit/DecisionJournal.test.ts",
+    "tests/unit/IntentDriftDetector.test.ts",
+    "tests/unit/alignment-score-not-assessed.test.ts",
+    "tests/unit/decision-journal-principle-honesty.test.ts",
+    "tests/unit/intent-drift.test.ts",
+    "upgrades/eli16/intent-alignment-confidence-contract.md",
+    "upgrades/next/intent-alignment-confidence-contract.md",
+    "upgrades/side-effects/intent-alignment-confidence-contract.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Corrective extension of the shipped no-verdict vocabulary and existing journal field contract: no new capability, actuation, state migration, or external integration. Size comes from refusal and route coverage; the open PR remains the explicit review surface.",
+  "eli16Path": "upgrades/eli16/intent-alignment-confidence-contract.md",
+  "sideEffectsPath": "upgrades/side-effects/intent-alignment-confidence-contract.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

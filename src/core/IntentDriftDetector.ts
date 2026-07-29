@@ -8,6 +8,7 @@
  * Drift signals:
  * - Conflict spike: conflict rate increasing between windows
  * - Confidence drop: average confidence decreasing
+ * - Confidence unmeasurable: invalid stored confidence prevents comparison
  * - Principle shift: top principles changing between windows
  * - Volume change: significant change in decision count
  *
@@ -33,7 +34,7 @@ export interface DriftWindow {
   conflictRate: number;
   /** Top principles used */
   topPrinciples: Array<{ principle: string; count: number }>;
-  /** Average numeric confidence, or null when no valid value was observed. */
+  /** Average numeric confidence, or null when the window cannot be measured completely. */
   avgConfidence: number | null;
   /** Number of entries contributing to avgConfidence. */
   confidenceSampleSize: number;
@@ -42,7 +43,12 @@ export interface DriftWindow {
 }
 
 export interface DriftSignal {
-  type: 'conflict_spike' | 'confidence_drop' | 'principle_shift' | 'volume_change';
+  type:
+    | 'conflict_spike'
+    | 'confidence_drop'
+    | 'confidence_unmeasurable'
+    | 'principle_shift'
+    | 'volume_change';
   severity: 'info' | 'warning' | 'alert';
   description: string;
   /** Quantitative delta */
@@ -149,7 +155,8 @@ export class IntentDriftDetector {
         )
       : null;
 
-    const signals = previous ? this.detectSignals(current, previous) : [];
+    const signals = this.detectConfidenceMeasurementSignals(current, previous);
+    if (previous) signals.push(...this.detectSignals(current, previous));
     const driftScore = this.computeDriftScore(signals);
 
     const summary = this.buildSummary(current, previous, signals, driftScore);
@@ -272,12 +279,12 @@ export class IntentDriftDetector {
           parsed.status === 'valid',
       )
       .map(parsed => parsed.value);
-    const avgConfidence = confidenceValues.length > 0
-      ? confidenceValues.reduce((sum, confidence) => sum + confidence, 0) / confidenceValues.length
-      : null;
     const invalidConfidenceCount = parsedConfidences.filter(
       parsed => parsed.status === 'invalid',
     ).length;
+    const avgConfidence = invalidConfidenceCount === 0 && confidenceValues.length > 0
+      ? confidenceValues.reduce((sum, confidence) => sum + confidence, 0) / confidenceValues.length
+      : null;
 
     return {
       from,
@@ -289,6 +296,29 @@ export class IntentDriftDetector {
       confidenceSampleSize: confidenceValues.length,
       invalidConfidenceCount,
     };
+  }
+
+  private detectConfidenceMeasurementSignals(
+    current: DriftWindow,
+    previous: DriftWindow | null,
+  ): DriftSignal[] {
+    const previousInvalid = previous?.invalidConfidenceCount ?? 0;
+    const invalidCount = current.invalidConfidenceCount + previousInvalid;
+    if (invalidCount === 0) return [];
+
+    const affectedWindows = [
+      current.invalidConfidenceCount > 0 ? 'current' : null,
+      previousInvalid > 0 ? 'previous' : null,
+    ].filter((value): value is string => value !== null).join(' and ');
+
+    return [{
+      type: 'confidence_unmeasurable',
+      severity: 'warning',
+      description:
+        `Confidence drift is unmeasurable: ${invalidCount} invalid confidence ` +
+        `value(s) in the ${affectedWindows} window.`,
+      delta: invalidCount,
+    }];
   }
 
   private detectSignals(current: DriftWindow, previous: DriftWindow): DriftSignal[] {

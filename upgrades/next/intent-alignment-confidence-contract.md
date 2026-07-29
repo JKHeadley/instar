@@ -7,15 +7,18 @@ Numeric strings become numbers; qualitative labels, non-finite numbers, and
 values outside zero through one are refused. Existing invalid rows produce an
 explicit unassessable alignment result rather than JSON nulls beside a failing
 grade. Drift averages now carry an honest nullable value and their valid/invalid
-sample counts.
+sample counts, and poisoned windows emit a warning rather than silently
+reporting no drift.
 
 ## Evidence
 
-- 94 focused unit and integration tests pass.
+- 96 focused unit and integration tests pass.
 - TypeScript typecheck and diff validation pass.
 - Removing the non-finite grade floor reproduces the assessed failing verdict.
 - Removing route validation makes the exact refusal contract test fail.
 - Existing qualitative rows are fixture-tested through the real alignment API.
+- Numeric-string legacy rows are proved to participate in confidence-drop
+  detection, while qualitative rows emit an explicit unmeasurable signal.
 
 ## What to Tell Your User
 

@@ -183,6 +183,11 @@ describe('Drift & Alignment Routes (integration)', () => {
       expect(res.body.current.avgConfidence).toBeNull();
       expect(res.body.current.confidenceSampleSize).toBe(0);
       expect(res.body.current.invalidConfidenceCount).toBe(1);
+      expect(res.body.signals).toContainEqual(expect.objectContaining({
+        type: 'confidence_unmeasurable',
+        severity: 'warning',
+      }));
+      expect(res.body.summary).not.toMatch(/^Stable:/);
     });
   });
 

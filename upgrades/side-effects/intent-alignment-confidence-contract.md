@@ -14,7 +14,8 @@ out-of-range values are refused before JSONL or SemanticMemory writes.
 `IntentDriftDetector` treats legacy invalid values as unmeasurable, returns the
 existing `N/A` plus `assessable:false` alignment state, and refuses to turn any
 non-finite score into `F`. Drift windows expose nullable average confidence plus
-valid and invalid sample counts. ACT-1522 owns the broader
+valid and invalid sample counts, and emit a warning instead of silently skipping
+comparison when either window is poisoned. ACT-1522 owns the broader
 declared-contract-versus-computation class; no duplicate action is created.
 
 ## Decision-point inventory
@@ -50,8 +51,10 @@ Existing qualitative confidence rows remain on disk. They are treated as
 unmeasurable rather than migrated because no authoritative numeric mapping for
 `high` or `medium` existed when they were written. Alignment remains
 unassessable while such a row is inside the selected period; the summary names
-the reason. The drift window reports the invalid count and does not use those
-rows in its average.
+the reason. The drift window reports the invalid count, marks its average
+unavailable, and emits `confidence_unmeasurable` rather than returning a stable
+summary. Numeric-string legacy rows remain measurable and participate in the
+ordinary confidence-drop comparison.
 
 Other journal fields retain their current validation contracts. This change
 closes the confidence mismatch tracked by ACT-1522 without claiming that every
@@ -109,7 +112,9 @@ measurement exists, not what a decision means.
 are returned and stored as numbers. `/intent/alignment` returns finite
 placeholders, `grade:"N/A"`, and `assessable:false` for a poisoned period.
 `/intent/drift` widens `avgConfidence` to `number|null` and adds
-`confidenceSampleSize` and `invalidConfidenceCount`.
+`confidenceSampleSize` and `invalidConfidenceCount`; it adds the
+`confidence_unmeasurable` warning signal when invalid stored values prevent a
+complete comparison.
 
 No external service, outbound message, timer, or operator action is added.
 Persistent state is only constrained on future writes; existing files are not
@@ -159,7 +164,7 @@ messaging, session lifecycle, trust, guard, sentinel, or watchdog surface.
 - Mutation proof: removing the non-finite grade floor makes the poisoned
   journal assessable and graded; removing route validation loses the
   `invalid-field` refusal contract.
-- 94 focused unit and integration tests passed; TypeScript typecheck passed.
+- 96 focused unit and integration tests passed; TypeScript typecheck passed.
 
 ## Class-Closure Declaration
 
