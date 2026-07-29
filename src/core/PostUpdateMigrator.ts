@@ -1328,6 +1328,7 @@ export class PostUpdateMigrator {
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
     this.migrateThreeStandardsReviewChecks(result);
+    this.migrateSymbolStateReviewCheck(result);
     this.migrateSpecConvergeAnthropicReviewerDisclosure(result);
     this.migrateCommitmentOwnerBackfill(result);
     this.migratePlaywrightProfilesSeed(result);
@@ -2094,6 +2095,109 @@ export class PostUpdateMigrator {
         }
       } catch (err) {
         result.errors.push(`${f.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  // ── Verify the State, Not Its Symbol review-check (P20,
+  // blindspot-class-symbol-vs-state, ratified 2026-06-24) ──
+  //
+  // The constitutional standard already exists in the registry and lessons
+  // index, but spec-converge had no dedicated reviewer question that required a
+  // spec to name its symbol, claimed state, corroboration, and unmeasurable
+  // result. The bundled SKILL and the prompt actually spawned by the integration
+  // reviewer gain that judgment-bearing question together.
+  //
+  // installBuiltinSkills is intentionally install-if-missing, so existing agents
+  // need a content migration. Mirror the established Standards A/B migration,
+  // with one P20-specific strengthening: do not let the heading marker stand in
+  // for the state of the prompt. The idempotency check requires the complete
+  // clause set before it credits the capability. It also never authorizes a
+  // whole-file replacement from a generic header: each file has one exact,
+  // unique insertion anchor, so unrelated/custom bytes survive byte-for-byte.
+  // Unknown or ambiguous layouts are left untouched. An agent predating the A/B
+  // migration receives today's bundled files from that earlier migration and
+  // therefore already has the complete question by the time this method runs.
+  private migrateSymbolStateReviewCheck(result: MigrationResult): void {
+    const REQUIRED_CLAUSES = [
+      'Verify the State, Not Its Symbol — evidentiary review-check',
+      'For EVERY detector, metric, or gate',
+      '**SYMBOL**',
+      '**STATE**',
+      'independent corroboration',
+      'BIDIRECTIONAL',
+      'unmeasurable',
+      'MATERIAL FINDING',
+    ] as const;
+    const isCompleteQuestion = (content: string): boolean =>
+      REQUIRED_CLAUSES.every((clause) => content.includes(clause));
+    const files: Array<{
+      rel: string[];
+      anchor: string;
+      label: string;
+      expectedQuestionSha256: string;
+    }> = [
+      {
+        rel: ['skills', 'spec-converge', 'SKILL.md'],
+        anchor: '\n- **Decision-Completeness.**',
+        label: 'spec-converge SKILL (Verify State, Not Symbol review-check)',
+        expectedQuestionSha256:
+          '31ed5bb7d724a9c6445076c28751b38d3c1d5bfd4925a9916606e46b9595cbaa',
+      },
+      {
+        rel: ['skills', 'spec-converge', 'templates', 'reviewer-integration.md'],
+        anchor: '\n6. **Backup/restore**',
+        label: 'spec-converge integration reviewer (Verify State, Not Symbol review-check)',
+        expectedQuestionSha256:
+          'b2d2ab5a57376d3b60a65592295b28b35a30777364bbfde3b50999befd30cb7f',
+      },
+    ];
+    for (const file of files) {
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...file.rel);
+        if (!fs.existsSync(installed)) continue;
+        const bundled = path.join(__dirname, '..', '..', ...file.rel);
+        if (!fs.existsSync(bundled)) continue;
+        const bundledContent = fs.readFileSync(bundled, 'utf8');
+        const questionLines = bundledContent
+          .split('\n')
+          .filter((line) => line.includes(REQUIRED_CLAUSES[0]));
+        const questionLine = questionLines[0] ?? '';
+        const questionSha256 = crypto
+          .createHash('sha256')
+          .update(questionLine)
+          .digest('hex');
+        if (
+          questionLines.length !== 1 ||
+          !isCompleteQuestion(questionLine) ||
+          questionSha256 !== file.expectedQuestionSha256
+        ) {
+          result.errors.push(
+            `${file.label}: bundled reviewer question differs from the migration's exact contract`,
+          );
+          continue;
+        }
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(questionLine)) continue;
+        const anchorIndex = current.indexOf(file.anchor);
+        if (
+          anchorIndex < 0 ||
+          anchorIndex !== current.lastIndexOf(file.anchor)
+        ) {
+          result.skipped.push(
+            `${file.label}: customized or unknown layout — left untouched`,
+          );
+          continue;
+        }
+        const next =
+          `${current.slice(0, anchorIndex)}\n${questionLine}` +
+          current.slice(anchorIndex);
+        fs.writeFileSync(installed, next);
+        result.upgraded.push(file.label);
+      } catch (err) {
+        result.errors.push(
+          `${file.label}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
   }

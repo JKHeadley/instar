@@ -1,0 +1,42 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The spec-converge integration reviewer now applies a dedicated “Verify the
+State, Not Its Symbol” question to every detector, metric, and gate introduced
+by a spec. The spec must name the symbol, claimed state, independent
+corroboration, and explicit unmeasurable result; the reviewer contests the
+claim in both false-positive and false-negative directions.
+
+Existing skill installations receive the new prompt through an idempotent
+post-update migration at an exact, unique prompt anchor. It preserves unrelated
+bytes, refuses unknown or ambiguous layouts, and requires the exact bundled
+question line rather than merely a heading or phrase set before declaring the
+capability present. The bundled line is hash-pinned so later edits cannot turn
+this one-time migration into a duplicate insertion.
+
+## What to Tell Your User
+
+When I review a design, I now explicitly challenge whether a string, file,
+count, or rate proves the real condition it claims—and what the design reports
+when that evidence cannot be measured.
+
+## Summary of New Capabilities
+
+- Dedicated state-versus-symbol review question in spec convergence.
+- Bidirectional contest of proxy evidence and explicit unknown-state behavior.
+- Migration parity for existing agents without overwriting customized skills.
+
+## Evidence
+
+- The new prompt-content tests failed against the old bundled skill and
+  reviewer template, then passed after both gained the question.
+- The migration tests start from an installed prompt that already carries the
+  earlier Standards A/B marker and from a partial prompt carrying only the new
+  heading or all other phrases except the SYMBOL declaration, proving neither
+  partial symbol is mistaken for the complete capability.
+- The public post-update migration pipeline installs the new prompt, a second
+  run is a no-op, a stock-derived customization remains byte-preserved around
+  the inserted question, and unknown custom layouts remain unchanged.
