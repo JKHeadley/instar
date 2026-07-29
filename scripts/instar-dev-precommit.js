@@ -34,6 +34,7 @@ import { classifyTier, decideRequirementSet } from './lib/classify-tier.mjs';
 import { recognizeConvergence } from './lib/convergence-recognition.mjs';
 import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality, isAuthorizationSurfaceFile, artifactAddressesAgentProposesApproves, operatorSurfaceRequiresRawInput } from './lib/operator-surface.mjs';
 import { selfActionDeclarationVerdict } from './lib/self-action-detect.mjs';
+import { isKnownInlineCodeEnumReference } from './lib/markdown-code-identifier.mjs';
 import { validateAuditReport, parseFrontmatter } from './write-audit-convergence.mjs';
 import { scanForSecrets } from './audit-secret-patterns.mjs';
 
@@ -843,9 +844,13 @@ if (staged.includes(spec) && !staged.includes(eli16Rel)) {
 // `deferrals-tracked` field). Override via INSTAR_DEV_ALLOW_ORPHAN_DEFERRALS=1
 // (logged for visibility).
 //
-// Detector patterns intentionally conservative — false-positives are cheaper
-// than false-negatives here. The author can either link a tracker or rephrase
-// the sentence to not promise a deferral.
+// Detector patterns intentionally remain conservative over the complete
+// document: headings, callouts, indented text, and standalone inline-code words
+// can all carry real scope decisions. The one structural exclusion is a
+// reference list for the shipped MigrationPerEntryAction CLOSED ENUM. A lone
+// `deferred-in-flight` remains visible; the exemption requires another known
+// enum member on the same line. This validates structured input rather than
+// inferring meaning from Markdown or identifier shape.
 // Patterns: { regex, requireUnnegated } — when requireUnnegated is true,
 // we skip the match if the immediately-preceding chars contain "no ", "non-",
 // "non ", "non", or "un" (so "no deferrals" / "non-deferred" / "undeferred"
@@ -883,6 +888,7 @@ function findOrphanDeferrals(content) {
     let m;
     while ((m = regex.exec(content)) !== null) {
       const start = m.index;
+      if (isKnownInlineCodeEnumReference(content, start, start + m[0].length)) continue;
       if (requireUnnegated) {
         // Look at up to 8 chars immediately before the match. Treat
         // matches preceded by "no ", "non-", "non ", "un" as legitimate

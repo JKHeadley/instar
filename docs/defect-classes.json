@@ -157,6 +157,34 @@
       "evidenceCountAtLastAck": 0,
       "proposalId": null,
       "nearestExistingClass": "prompt-parser-contract-drift — both concern classifier contracts, but this class is about unmatched runtime input inheriting privileged-safe authority rather than rendered prompt output drifting from its parser schema"
+    },
+    {
+      "id": "brittle-keyword-authority",
+      "description": "A keyword, phrase, or regex detector decides natural-language intent or assigns a consequential classification over raw structured text without first distinguishing executable or authorial content from examples, identifiers, quotations, headings, metadata, or other non-assertive context.",
+      "includes": [
+        "a deferral gate treating a proven closed-enum reference as an authorial promise to defer work",
+        "a tool-input guard treating prose in a heredoc, search query, JSON value, or documentation payload as an executed command",
+        "a natural-language classifier granting a literal-match result blocking or allowing authority without a context-rich judge"
+      ],
+      "excludes": [
+        "a keyword detector that emits only a signal for a context-rich authority to judge",
+        "validation of already-structured input against a fixed closed enum",
+        "a deliberately conservative irreversible-action safety floor operating on an executable artifact shape"
+      ],
+      "canonicalExamples": [
+        "2026-07-29: the instar-dev deferral gate blocked an inline-code telemetry enum containing deferred",
+        "ACT-1473: dangerous-command detection matched raw tool-input prose rather than executable intent",
+        "ACT-1519: convergence-check.sh used a regex filter as blocking authority over outbound commands"
+      ],
+      "status": "unconfirmed",
+      "severity": "normal",
+      "closureStandard": "intelligence-infers-keywords-only-guard",
+      "closureStandardEnforcement": null,
+      "instanceCount": 0,
+      "escalatedAt": null,
+      "evidenceCountAtLastAck": 0,
+      "proposalId": null,
+      "nearestExistingClass": "unknown-classification-fail-open — both concern classifier authority, but this class over-classifies known vocabulary in the wrong context while the neighbor permissively defaults unknown input"
     }
   ]
 }

@@ -1,0 +1,25 @@
+# Technical enum values no longer look like unfinished work
+
+## What Changed
+
+The development specification check now recognizes a reference list for a
+shipped, closed telemetry enum instead of reading one member as postponed work.
+Headings, callouts, fenced blocks, lone values, and standalone status words
+remain checked.
+
+## Evidence
+
+- The live telemetry-enum regression now passes without an override.
+- Real scope-decision forms and fenced examples remain blocked.
+- The recognized value list is pinned to the shipped enum declaration.
+- Removing the enum-list distinction makes the regression test fail.
+- Focused tests and the repository typecheck pass.
+
+## What to Tell Your User
+
+Technical state names in specifications no longer trigger an irrelevant
+unfinished-work warning, while real scope decisions are still checked.
+
+## Summary of New Capabilities
+
+- Closed-enum reference recognition in the development specification gate.
