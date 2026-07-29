@@ -58,10 +58,10 @@ export interface EvolutionAcceptanceStats {
   rejected: number;
   /** Number approved without modification */
   approvedUnmodified: number;
-  /** Acceptance rate (0-1) */
-  acceptanceRate: number;
-  /** Rolling window (last N proposals) acceptance rate */
-  recentAcceptanceRate: number;
+  /** Acceptance rate (0-1), or null before any proposal is decided */
+  acceptanceRate: number | null;
+  /** Rolling window (last N proposals) acceptance rate, or null when empty */
+  recentAcceptanceRate: number | null;
   /** Rolling window size */
   recentWindowSize: number;
 }
@@ -179,8 +179,8 @@ export class TrustElevationTracker {
       approved: approved.length,
       rejected: rejected.length,
       approvedUnmodified: approvedUnmodified.length,
-      acceptanceRate: events.length > 0 ? approved.length / events.length : 0,
-      recentAcceptanceRate: recentEvents.length > 0 ? recentApproved.length / recentEvents.length : 0,
+      acceptanceRate: events.length > 0 ? approved.length / events.length : null,
+      recentAcceptanceRate: recentEvents.length > 0 ? recentApproved.length / recentEvents.length : null,
       recentWindowSize: windowSize,
     };
   }
@@ -247,6 +247,7 @@ export class TrustElevationTracker {
     const threshold = this.config.acceptanceRateThreshold ?? 0.85;
 
     if (stats.totalDecided < minProposals) return null;
+    if (stats.recentAcceptanceRate == null) return null;
     if (stats.recentAcceptanceRate < threshold) return null;
 
     // Check if this opportunity already exists and is dismissed
@@ -279,7 +280,9 @@ export class TrustElevationTracker {
     if (currentProfile === 'autonomous') return null;
 
     const stats = this.getAcceptanceStats();
-    const hasGoodAcceptance = stats.totalDecided >= 10 && stats.recentAcceptanceRate >= 0.8;
+    const hasGoodAcceptance = stats.totalDecided >= 10
+      && stats.recentAcceptanceRate != null
+      && stats.recentAcceptanceRate >= 0.8;
     const hasOperationTrust = operationElevations.length >= 2;
 
     if (!hasGoodAcceptance && !hasOperationTrust) return null;
@@ -296,7 +299,7 @@ export class TrustElevationTracker {
     }
 
     const reasons: string[] = [];
-    if (hasGoodAcceptance) {
+    if (hasGoodAcceptance && stats.recentAcceptanceRate != null) {
       reasons.push(`${(stats.recentAcceptanceRate * 100).toFixed(0)}% evolution acceptance rate`);
     }
     if (hasOperationTrust) {

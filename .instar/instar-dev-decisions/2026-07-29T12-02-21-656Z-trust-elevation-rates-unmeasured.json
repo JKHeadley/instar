@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-29T12:02:21.656Z",
+  "slug": "trust-elevation-rates-unmeasured",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 19,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/TrustElevationTracker.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
