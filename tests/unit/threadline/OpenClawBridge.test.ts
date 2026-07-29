@@ -462,6 +462,18 @@ describe('OpenClawBridge', () => {
       expect(result.text).toContain('Interactions:');
     });
 
+    it('names an unmeasured success rate for a profile with no interactions', async () => {
+      const trustManager = new AgentTrustManager({ stateDir: tmpDir });
+      trustManager.setTrustLevel('user-1', 'verified', 'user-granted');
+
+      const { bridge } = createBridge({ trustManager });
+      const action = bridge.getActions().find(a => a.name === 'THREADLINE_STATUS')!;
+      const result = await action.handler(createMockRuntime(), createMockMessage()) as { text: string };
+      expect(result.text).toContain('0 successful, 0 failed');
+      expect(result.text).toContain('success rate unknown');
+      expect(result.text).not.toContain('0.0% success rate');
+    });
+
     it('returns status with compute info when compute meter configured', async () => {
       const computeMeter = new ComputeMeter({ stateDir: tmpDir });
       const { bridge } = createBridge({ computeMeter });

@@ -379,7 +379,10 @@ export class OpenClawBridge {
           statusLines.push(`Trust level: ${profile?.level ?? 'unknown (defaults to untrusted)'}`);
           const stats = bridge.config.trustManager.getInteractionStats(agentIdentity);
           if (stats) {
-            statusLines.push(`Interactions: ${stats.successfulInteractions} successful, ${stats.failedInteractions} failed (${(stats.successRate * 100).toFixed(1)}% success rate)`);
+            const successRate = stats.successRate == null
+              ? 'success rate unknown'
+              : `${(stats.successRate * 100).toFixed(1)}% success rate`;
+            statusLines.push(`Interactions: ${stats.successfulInteractions} successful, ${stats.failedInteractions} failed (${successRate})`);
           }
         }
 
