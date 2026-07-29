@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-29T01:33:18.327Z",
+  "slug": "restart-safe-blocker-classification",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 2,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

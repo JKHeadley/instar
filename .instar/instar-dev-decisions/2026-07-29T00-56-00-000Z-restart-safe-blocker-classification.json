@@ -1,0 +1,23 @@
+{
+  "ts": "2026-07-29T00:56:00.000Z",
+  "slug": "restart-safe-blocker-classification",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "Update-gate and status API behavior"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 146,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      658
+    ],
+    "notes": "The update gate originally had no restart-safety concept; this is the observability-only first step and deliberately does not change restart decisions."
+  },
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "Revalidated against current main before landing: the classification remains absent; 26 focused unit/integration tests passed on the merged tree and TypeScript passed."
+}
