@@ -12,13 +12,15 @@ reporting no drift.
 
 ## Evidence
 
-- 96 focused unit and integration tests pass.
+- 99 focused unit and integration tests pass.
 - TypeScript typecheck and diff validation pass.
 - Removing the non-finite grade floor reproduces the assessed failing verdict.
 - Removing route validation makes the exact refusal contract test fail.
 - Existing qualitative rows are fixture-tested through the real alignment API.
 - Numeric-string legacy rows are proved to participate in confidence-drop
   detection, while qualitative rows emit an explicit unmeasurable signal.
+- Scaffold and update-migrator tests prove the accepted write shape reaches
+  both new and already-deployed agents exactly once.
 
 ## What to Tell Your User
 

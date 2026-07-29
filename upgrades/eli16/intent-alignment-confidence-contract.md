@@ -20,6 +20,10 @@ writer now normalize unambiguous numeric strings such as `"0.8"` to the number
 zero through one before appending anything. This means the JSONL file can no
 longer acquire a confidence value the scorer cannot compute.
 
+This changes what the journal API accepts, not only what its reports display.
+New and already-deployed agents receive the numeric-confidence rule in their
+operating instructions through the scaffold and the update migrator.
+
 Existing qualitative rows are not rewritten. Mapping `high` or `medium` to a
 number after the fact would invent precision the original writer never supplied.
 While one of those rows is inside the scoring window, alignment now reports the

@@ -14,7 +14,7 @@
 // existing-agent migration there) so the two can never drift. Imported as a runtime
 // function call inside generateClaudeMd — no module-init cycle (PostUpdateMigrator
 // never imports templates).
-import { APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION, SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION, MISSING_LOGIN_SESSION_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, ULTRACODE_SPAWN_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, DECISION_QUALITY_CLAUDEMD_SECTION, BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION, AUDIT_CONVERGENCE_CLAUDEMD_SECTION, TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
+import { APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION, SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION, MISSING_LOGIN_SESSION_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, ULTRACODE_SPAWN_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, DECISION_QUALITY_CLAUDEMD_SECTION, BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION, AUDIT_CONVERGENCE_CLAUDEMD_SECTION, TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION, DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE } from '../core/PostUpdateMigrator.js';
 
 export interface AgentIdentity {
   name: string;
@@ -1584,7 +1584,7 @@ Your agent has intent engineering infrastructure for tracking how decisions alig
 
 **When to log a decision:** When you face a genuine tradeoff — speed vs. thoroughness, user request vs. stated boundary, cost vs. quality. Not every action, just the ones where intent guidance matters.
 
-**Decision journal — principle is required:** invented field names are REFUSED (400) too. A decision recorded without naming what guided it preserves THAT you chose and not WHY — the one thing this journal exists to preserve. Writable fields: \`sessionId\`, \`decision\`, \`principle\`, \`topicId\`, \`jobSlug\`, \`alternatives\`, \`confidence\`, \`context\`, \`conflict\`, \`tags\`, \`evidence\`. Anything else is rejected by name rather than stored, because a field no reader consumes makes a submission look recorded without being recorded. Put your reasoning in \`context\` and the guiding intent in \`principle\`:
+**Decision journal — principle is required:** invented field names are REFUSED (400) too. A decision recorded without naming what guided it preserves THAT you chose and not WHY — the one thing this journal exists to preserve. Writable fields: \`sessionId\`, \`decision\`, \`principle\`, \`topicId\`, \`jobSlug\`, \`alternatives\`, \`confidence\`, \`context\`, \`conflict\`, \`tags\`, \`evidence\`. Anything else is rejected by name rather than stored, because a field no reader consumes makes a submission look recorded without being recorded. Put your reasoning in \`context\` and the guiding intent in \`principle\`. ${DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE}
 
 \`\`\`bash
 curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/journal \\
@@ -1594,7 +1594,7 @@ curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/jo
 
 **Reading the stats honestly:** \`principledCount\` / \`unprincipledCount\` sit beside \`count\`. \`topPrinciples: []\` alone cannot tell you whether nobody has decided anything yet or whether many decisions were recorded and not one said why — these two counters are what separates those cases. The machine-generated dispatch path is deliberately exempt; an auto-applied dispatch has no principle to cite and is never blocked.
 
-**Alignment score — N/A means not assessed:** \`GET /intent/alignment\` returns \`grade: 'N/A'\` and \`assessable: false\` when the analysis window held no decisions. Do NOT read that as a failing grade — \`score: 0\` is a placeholder, not a measurement. Branch on \`assessable\` (or \`sampleSize > 0\`) before treating the score as a verdict, and never report an unassessed period to the user as poor alignment.
+**Alignment score — N/A means not assessed:** \`GET /intent/alignment\` returns \`grade: 'N/A'\` and \`assessable: false\` when the analysis window cannot be measured, including an empty journal or invalid stored confidence. Do NOT read that as a failing grade — \`score: 0\` is a placeholder, not a measurement. Branch on \`assessable\`; \`sampleSize > 0\` does not prove assessability, and an unassessed period must never be reported to the user as poor alignment.
 
 ### Playbook — Adaptive Context Engineering
 

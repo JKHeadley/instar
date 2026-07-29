@@ -30,6 +30,9 @@ declared-contract-versus-computation class; no duplicate action is created.
   confidence and exposes the denominator and invalid count.
 - `instar intent drift` rendering — modified — branches on `null`, so measured
   zero renders as `0.00` while an unavailable average renders as `n/a`.
+- `generateClaudeMd` / `PostUpdateMigrator.migrateClaudeMd` — modified — new
+  and existing agents receive the accepted confidence shape and legacy-data
+  semantics before their next journal write.
 
 ## 1. Over-block
 
@@ -117,8 +120,9 @@ placeholders, `grade:"N/A"`, and `assessable:false` for a poisoned period.
 complete comparison.
 
 No external service, outbound message, timer, or operator action is added.
-Persistent state is only constrained on future writes; existing files are not
-mutated.
+Persistent journal state is only constrained on future writes; existing journal
+rows are not mutated. Existing agents' `CLAUDE.md` receives one idempotent
+awareness bullet, while new agents receive the same contract in the scaffold.
 
 ## 6b. Operator-surface quality
 
@@ -164,7 +168,7 @@ messaging, session lifecycle, trust, guard, sentinel, or watchdog surface.
 - Mutation proof: removing the non-finite grade floor makes the poisoned
   journal assessable and graded; removing route validation loses the
   `invalid-field` refusal contract.
-- 96 focused unit and integration tests passed; TypeScript typecheck passed.
+- 99 focused unit and integration tests passed; TypeScript typecheck passed.
 
 ## Class-Closure Declaration
 
