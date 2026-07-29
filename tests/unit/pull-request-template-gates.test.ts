@@ -8,11 +8,16 @@ const templatePath = path.resolve(process.cwd(), '.github/PULL_REQUEST_TEMPLATE.
 
 describe('pull request template gate prompts', () => {
   const template = fs.readFileSync(templatePath, 'utf8');
+  const sectionOpening = (heading: string): string => {
+    const start = template.indexOf(`## ${heading}`);
+    const next = template.indexOf('\n## ', start + 1);
+    return template.slice(start, next === -1 ? undefined : next);
+  };
 
   it('prompts for the required ELI16 section and its minimum content', () => {
-    expect(template).toMatch(/^## ELI16\s*$/m);
-    expect(template).toMatch(/at least 200 characters/i);
-    expect(template).toMatch(/plain-English explanation for a non-expert/i);
+    const eli16 = sectionOpening('ELI16');
+    expect(eli16).toMatch(/^## ELI16\r?\n\r?\n<!-- Gate: write at least 200 characters/);
+    expect(eli16).toMatch(/plain-English explanation for a non-expert/i);
     expect(checkPrDescriptionEli16({ body: template })).toMatchObject({
       ok: false,
       reason: 'eli16-too-short',
@@ -20,9 +25,10 @@ describe('pull request template gate prompts', () => {
   });
 
   it('prompts for the required UX declaration and every gated detail', () => {
-    expect(template).toMatch(/^## UX Impact\s*$/m);
-    expect(template).toMatch(/who sees the change/i);
-    expect(template).toMatch(/user-visible first contact/i);
-    expect(template).toMatch(/quote an exact string from the diff/i);
+    const uxImpact = sectionOpening('UX Impact');
+    expect(uxImpact).toMatch(/^## UX Impact\r?\n\r?\n<!-- Gate for user-facing paths:/);
+    expect(uxImpact).toMatch(/who sees the change/i);
+    expect(uxImpact).toMatch(/user-visible first contact/i);
+    expect(uxImpact).toMatch(/quote an exact string from the diff/i);
   });
 });
