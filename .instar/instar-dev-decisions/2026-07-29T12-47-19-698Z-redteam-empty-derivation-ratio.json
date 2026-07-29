@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-29T12:47:19.698Z",
+  "slug": "redteam-empty-derivation-ratio",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/redteam/ScenarioPack.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
