@@ -43,9 +43,10 @@ Pages occupied by compressor:            500000.
     const freePct = 100 - parseVmStat(critical).pressurePercent;
     expect(freePct).toBeLessThan(5); // genuinely critical → low available
   });
-  it('empty/garbage output does not throw and yields a finite reading', () => {
-    const r = parseVmStat('');
-    expect(Number.isFinite(r.pressurePercent)).toBe(true);
+  it('empty/garbage output is rejected as unparseable', () => {
+    expect(() => parseVmStat('vm_stat returned an unexpected format')).toThrow(
+      'vm_stat output contained no total memory pages',
+    );
   });
 });
 
@@ -89,6 +90,18 @@ describe('readSystemMemoryPressure — platform-aware, never throws', () => {
     });
     expect(Number.isFinite(r.pressurePercent)).toBe(true);
     expect(r.pressurePercent).toBeCloseTo(25, 0); // 4GB rss / 16GB
+  });
+  it('darwin: successful but unparseable vm_stat output uses the RSS fallback', () => {
+    const r = readSystemMemoryPressure({
+      platform: 'darwin',
+      vmStat: () => 'vm_stat returned an unexpected format',
+      memoryUsage: () => ({ rss: 15 * 1024 ** 3 }),
+      totalmem: () => 16 * 1024 ** 3,
+    });
+
+    expect(r.pressurePercent).toBeCloseTo(93.75, 2);
+    expect(r.freeGB).toBeCloseTo(1, 2);
+    expect(r.totalGB).toBe(16);
   });
   it('an unknown platform uses the fallback', () => {
     const r = readSystemMemoryPressure({ platform: 'sunos', memoryUsage: () => ({ rss: 2 * 1024 ** 3 }), totalmem: () => 8 * 1024 ** 3 });

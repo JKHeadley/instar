@@ -1,0 +1,27 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The macOS memory reader now treats a successful `vm_stat` command with no
+parseable total-page counters as a read failure. It uses the existing logged RSS
+fallback instead of publishing zero-percent pressure from an empty denominator.
+
+## What to Tell Your User
+
+Malformed macOS memory output can no longer make a machine look perfectly
+healthy; Instar now says the native reading failed and uses its conservative
+fallback.
+
+## Summary of New Capabilities
+
+- Parse-validity detection for successful macOS memory-stat reads.
+
+## Evidence
+
+- The focused test feeds non-empty but unparseable output and proves the RSS
+  fallback reports 93.75% pressure rather than zero.
+- The existing thrown-reader fallback test remains unchanged and green.
+- Removing the parse-validity check makes both new assertions fail.
+- Fourteen focused tests and the full repository lint pass.

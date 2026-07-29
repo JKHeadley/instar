@@ -52,11 +52,14 @@ export function parseVmStat(output: string): SystemMemoryReading {
   const purgeablePages = parsePages('Pages purgeable');
 
   const totalPages = freePages + activePages + inactivePages + wiredPages + compressorPages;
+  if (totalPages === 0) {
+    throw new Error('vm_stat output contained no total memory pages');
+  }
   const totalGB = (totalPages * pageSize) / (1024 ** 3);
   const availablePages = freePages + inactivePages + purgeablePages;
   const freeGB = (availablePages * pageSize) / (1024 ** 3);
   const usedPages = totalPages - availablePages;
-  const pressurePercent = totalPages > 0 ? (usedPages / totalPages) * 100 : 0;
+  const pressurePercent = (usedPages / totalPages) * 100;
   return { pressurePercent, freeGB, totalGB };
 }
 
