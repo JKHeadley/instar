@@ -142,7 +142,7 @@ export interface InteractionStats {
   messagesResponded: number;
   successfulInteractions: number;
   failedInteractions: number;
-  successRate: number;
+  successRate: number | null;
   streakSinceIncident: number;
   lastInteraction: string | null;
 }
@@ -955,7 +955,7 @@ export class AgentTrustManager {
       messagesResponded: h.messagesResponded,
       successfulInteractions: h.successfulInteractions,
       failedInteractions: h.failedInteractions,
-      successRate: total > 0 ? h.successfulInteractions / total : 0,
+      successRate: total > 0 ? h.successfulInteractions / total : null,
       streakSinceIncident: h.streakSinceIncident,
       lastInteraction: h.lastInteraction || null,
     };

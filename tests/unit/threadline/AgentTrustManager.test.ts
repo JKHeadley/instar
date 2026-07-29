@@ -183,11 +183,13 @@ describe('AgentTrustManager', () => {
       expect(stats.successRate).toBe(0.75);
     });
 
-    it('success rate is 0 when no interactions', () => {
+    it('keeps success rate unmeasured when there are no interactions', () => {
       const mgr = createManager();
       mgr.getOrCreateProfile('agent-a');
       const stats = mgr.getInteractionStats('agent-a')!;
-      expect(stats.successRate).toBe(0);
+      expect(stats.successfulInteractions).toBe(0);
+      expect(stats.failedInteractions).toBe(0);
+      expect(stats.successRate).toBeNull();
     });
   });
 
