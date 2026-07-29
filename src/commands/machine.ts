@@ -19,7 +19,7 @@ import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
 import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
-import { resolveJoinDir } from './joinDir.js';
+import { resolveJoinDir } from '../utils/joinDir.js';
 import { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { HeartbeatManager } from '../core/HeartbeatManager.js';
 import { SecretStore } from '../core/SecretStore.js';

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { resolveJoinDir, isGitCloneUrl } from '../../src/commands/joinDir.js';
+import { resolveJoinDir, isGitCloneUrl } from '../../src/utils/joinDir.js';
 
 describe('resolveJoinDir — honors --dir for git URLs (§1.3 fix)', () => {
   it('git URL + --dir → the resolved --dir (THE FIX: was ignored, forced <cwd>/<repoName>)', () => {

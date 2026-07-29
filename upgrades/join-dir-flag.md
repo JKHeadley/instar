@@ -25,7 +25,7 @@ command. If you do not pass one, joining works exactly as it did before.
 - `instar join <url> --code <code> --dir <path>` — join a mesh into a chosen
   directory (the `-d`/`--dir` option). For a git URL without `--dir`, the join
   still lands in a folder named after the repo, unchanged.
-- `resolveJoinDir(repoUrl, options)` (new pure module `src/commands/joinDir.ts`)
+- `resolveJoinDir(repoUrl, options)` (new pure module `src/utils/joinDir.ts`)
   — the directory-targeting decision, fully unit-tested.
 
 ## Evidence

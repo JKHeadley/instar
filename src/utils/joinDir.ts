@@ -1,7 +1,7 @@
 /**
  * joinDir — pure directory-target resolution for `instar join`.
  *
- * Extracted as its own module (like testAsSelfValidation) so the
+ * Extracted as its own utility module (like testAsSelfValidation) so the
  * directory-targeting DECISION is fully unit-testable without importing the
  * heavy `machine.ts` dependency graph (GitSyncManager, SecretStore, native
  * modules, …).
