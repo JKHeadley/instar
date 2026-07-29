@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
+import { JobRunHistory, averageMeasuredJobSuccessRates } from '../../src/scheduler/JobRunHistory.js';
 import type { JobRun, JobRunReflection } from '../../src/scheduler/JobRunHistory.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
@@ -464,12 +464,23 @@ describe('JobRunHistory unit tests', () => {
       expect(jobY!.totalRuns).toBe(2);
     });
 
-    it('returns zero stats for unknown job', () => {
+    it('returns unmeasured rates for an unknown job', () => {
       const history = new JobRunHistory(stateDir);
       const stats = history.stats('nonexistent');
       expect(stats.totalRuns).toBe(0);
-      expect(stats.successRate).toBe(0);
-      expect(stats.avgDurationSeconds).toBe(0);
+      expect(stats.successRate).toBeNull();
+      expect(stats.avgDurationSeconds).toBeNull();
+    });
+
+    it('excludes unrun jobs from the category success-rate average', () => {
+      expect(averageMeasuredJobSuccessRates([
+        { successRate: 75 },
+        { successRate: null },
+      ])).toBe(75);
+      expect(averageMeasuredJobSuccessRates([
+        { successRate: null },
+        { successRate: null },
+      ])).toBeNull();
     });
   });
 
