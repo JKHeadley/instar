@@ -55,6 +55,7 @@ describe('IntentDriftDetector', () => {
       const result = detector.analyze();
 
       expect(result.current.decisionCount).toBe(0);
+      expect(result.current.conflictRate).toBeNull();
       expect(result.previous).toBeNull();
       expect(result.signals).toEqual([]);
       expect(result.driftScore).toBe(0);
@@ -77,6 +78,25 @@ describe('IntentDriftDetector', () => {
       expect(result.current.topPrinciples[0].principle).toBe('safety');
       expect(result.previous).toBeNull();
       expect(result.signals).toEqual([]);
+    });
+
+    it('does not compare conflicts when the current window has no decisions', () => {
+      writeJournal(stateDir, [
+        {
+          timestamp: daysAgo(20),
+          decision: 'Previous conflict',
+          conflict: true,
+          principle: 'safety',
+          confidence: 0.8,
+        },
+      ]);
+
+      const result = detector.analyze(14);
+      expect(result.current.decisionCount).toBe(0);
+      expect(result.current.conflictRate).toBeNull();
+      expect(result.previous?.decisionCount).toBe(1);
+      expect(result.previous?.conflictRate).toBe(1);
+      expect(result.signals.some(signal => signal.type === 'conflict_spike')).toBe(false);
     });
 
     it('detects conflict spike — warning threshold (>2x)', () => {
