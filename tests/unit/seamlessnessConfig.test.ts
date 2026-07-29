@@ -34,6 +34,12 @@ describe('resolveSeamlessnessConfig', () => {
     expect(c.protocolVersion).toBe(SEAMLESSNESS_PROTOCOL_VERSION);
   });
 
+  // NOTE: this PR originally asserted `exactlyOnceIngress` defaults unconditionally true
+  // (the 2026-05-28 flip). Main has since made the default STAGE-COUPLED — on only when the
+  // session pool is actively routing — after the 2026-06-05 incident, and covers every case
+  // in the 'exactlyOnceIngress default coupling' suite below. The original assertions were
+  // dropped on rebase rather than reasserted: they contradicted the newer, deliberate default.
+
   it('auto-derives standbyPullIntervalMs under BOTH bounds (min of fo/4 and leaseTtl/2)', () => {
     const c = resolveSeamlessnessConfig(baseMM());
     expect(c.failoverThresholdMs).toBe(15 * 60_000);

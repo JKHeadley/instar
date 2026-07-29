@@ -1,0 +1,141 @@
+# Side-Effects — Multi-Machine Bootstrap Real-Hardware Fixes
+
+Spec: `docs/specs/MULTI-MACHINE-BOOTSTRAP-ROBUSTNESS-SPEC.md` (Round 2 — defects found
+driving the live two-machine proof on real hardware, 2026-05-28, topic 13481).
+
+Six distinct bootstrap defects that blocked a clean two-machine bring-up — each
+verified against the live mesh (laptop + Mac mini, Bob untouched) before fixing,
+each with a regression test.
+
+## What changed
+
+1. **No-upstream silent push (`src/core/GitSync.ts`, `src/commands/init.ts`).**
+   `commitAndPush` is now upstream-aware: it splits commit from push and
+   `pushCurrentBranch()` sets `-u origin <branch>` on the first push, surfacing a
+   real push failure via DegradationReporter instead of swallowing it. init's
+   connect-to-existing-repo path also sets `push.autoSetupRemote`/`push.default`.
+
+2. **Join scaffolds no config.json (`src/commands/machine.ts`).** `join` now
+   writes a complete machine-local `config.json` (fresh authToken, port; new
+   `--port` flag) via the pure, tested `buildJoinedConfig()` when the cloned home
+   lacks one — previously the standby booted unauthenticated on bare defaults.
+
+3. **Commit-signing broke every commit (`src/core/GitSync.ts`,
+   `src/commands/machine.ts`, `src/commands/server.ts`).** Unified the machine
+   key filename on the canonical `signing-key.pem` (join now uses
+   `generateIdentity`; readers updated). `configureCommitSigning` now derives the
+   `.pub`, test-signs for real, and enables `commit.gpgsign` ONLY if that works —
+   otherwise it explicitly disables signing (commit verification is a no-op stub,
+   so unsigned is safe; broken signing fails every commit).
+
+4. **Registry conflict-marker corruption (`src/core/GitSync.ts`,
+   `src/core/FileClassifier.ts`).** Two root causes: (a) `classify`/`tryAutoResolve`
+   re-ran `path.relative` on already-relative git paths, mis-classifying
+   `machines/registry.json` as `llm` so the deterministic resolver was effectively
+   dead (now cwd-independent — only relativize absolute paths); (b) a clean-exit
+   `--autostash` pop left unmerged files the catch-block resolver never saw — new
+   `resolvePostPullAutostashConflicts()` runs the deterministic merge post-pull and
+   drops the redundant autostash.
+
+5. **Lease-renewal churn starves standby pushes (`src/core/GitSync.ts`).** Sync's
+   push now uses `commitAndPushWithRebaseRetry()` — on a non-fast-forward rejection
+   it pull-rebases (+ resolves) and re-pushes, bounded, so a standby converges
+   within one sync. Kept entirely out of the lease CAS path (GitLeaseStore).
+
+6. **`wakeup --force` propagation (`src/commands/machine.ts`).** Force-wakeup (and
+   the no-awake path) now claim a real signed +1-epoch lease via
+   `FencedLease.buildAcquisition` (`claimLeaseForSelf()`), persist it with the
+   holder's freshness fields, and best-effort push — so the lease authority (not
+   just the local role, which the server's reconcileRoleToLease would revert)
+   reflects the takeover and reaches the peer.
+
+## Side effects
+
+- New `--port` option on `instar join`.
+- `instar join` now writes `.instar/config.json` (with a fresh authToken) for the
+  joined home if absent; pre-existing configs are untouched (only `--port` may set port).
+- A machine where SSH signing cannot load the key now commits UNSIGNED (was: every
+  commit failed). No verification regression — `verifyPulledCommits` is a no-op.
+- `configureCommitSigning` writes a `<signing-key.pem>.pub` next to the key when signing works.
+- `wakeup --force` now requires the signing key (exits with a clear message if missing).
+
+## Rollback
+
+Revert the PR. No data migration. Existing meshes: the GitSync push/merge changes
+are backward-compatible (relative-path handling is strictly more permissive; the
+autostash/upstream paths only add recovery). config.json scaffolding only writes
+when absent. No `.instar` schema change.
+
+## Migration parity
+
+No agent-installed file template changed (no settings.json/hook/CLAUDE.md/skill
+edits). Changes ship in the instar dist and reach existing agents on update.
+
+## Addendum — exactly-once ingress default-ON (2026-05-28)
+
+`src/core/seamlessnessConfig.ts`: `multiMachine.exactlyOnceIngress` default flipped
+`false → true`, per the spec's "flip once the live test-as-self passes" gate.
+
+**Proof:** a REAL message from the operator's own Telegram (driven via the
+logged-in Playwright profile — update_id 969389534) was forwarded into the live
+two-machine mmtest3 mesh and handled EXACTLY ONCE: first delivery
+`forwarded:true (spawn)`, redelivery `deduped:true`. No false-drop on the
+critical path.
+
+**Safety of default-on:** the dedupeKey is the Telegram `update_id` (unique per
+update), so two DISTINCT messages can never collide — only a genuine same-update
+redelivery is dropped. The gate is FAIL-OPEN (any ledger error falls through to
+normal routing). Opt out with `multiMachine.exactlyOnceIngress: false`.
+
+**Rollback:** set the default back to `?? false` (one line) — fully reversible,
+no data migration.
+
+## Addendum 2 — fresh-join lease-grab fix (bug #7, 2026-05-28)
+
+`src/core/LeaseCoordinator.ts` + `GitLeaseStore.ts` + `MultiMachineCoordinator.ts`:
+a freshly-joined/booted standby evaluated failover-eligibility against a STALE
+seed `lastSeen` for the live holder, presumed it dead, and grabbed its lease
+(found driving the live handoff demo). Fix: `LeaseStore.syncDown()` (pull, no
+write) + `LeaseCoordinator.primeFromDurable()`, called once in
+`initializeLease()` before the first `acquireIfEligible()`, so the boot decision
+sees the holder's CURRENT heartbeat. Split-brain CAS gate untouched; steady-state
+ticks already self-correct — this only closes the boot-time stale-data window.
+Test: `tests/unit/lease-fresh-join-prime.test.ts` (with-vs-without priming).
+Rollback: revert; no data/schema change.
+
+## Addendum 3 — rebase onto current main (2026-07-29): what survived, and what main already fixed
+
+This PR sat 62 days and 2,182 commits behind. Rebasing it was an audit, and most of it turned out to
+be already solved. Recording that honestly rather than reasserting superseded work:
+
+**Superseded by main — dropped, NOT reapplied:**
+- **Signing-key filename.** This PR changed the loader to read the canonical `signing-key.pem`. Main
+  now tries `['signing-key.pem', 'signing-private.pem']` in order, so BOTH the canonical and the
+  legacy propagated layout work. Main's version is a strict superset; took main's.
+- **Upstream-aware push.** This PR added a `push -u origin <branch>` retry for a branch with no
+  upstream. Main already has exactly that, with a fuller comment on why a bare `push` failure is
+  indistinguishable from "nothing to sync". Took main's.
+- **`exactlyOnceIngress` default-ON.** This PR flipped it unconditionally (`?? true`) on the
+  2026-05-28 live proof. Main has since made it STAGE-COUPLED — on only while the session pool is
+  actively routing — after the 2026-06-05 incident where a "move to laptop" ran four times. Main's is
+  newer and better reasoned; took main's, and dropped this PR's now-contradictory test assertions.
+  Main's `exactlyOnceIngress default coupling` suite covers every case the dropped assertions did.
+- **Lease-renewal robustness.** This PR's commit was explicitly labelled "(partial)" — a single
+  `leaseTickTimer`. Main has the complete workstream: a dedicated TTL/2 `leaseRenewTimer`, a
+  `ChurnBreaker` flap circuit-breaker, and a per-process boot id. Reapplying the partial over the
+  complete would have been a regression, so that commit was skipped entirely.
+
+**Genuinely unlanded — kept:**
+- **Bug #7, fresh-join lease grab.** `primeFromDurable()` / `store.syncDown?()` do not exist on main
+  (0 files), and main still performs no priming before `acquireIfEligible()`. A freshly-joined standby
+  therefore still evaluates failover eligibility against a stale seed `lastSeen` and can grab a live
+  holder's lease. Merged additively into main's richer lease-init block: the prime runs BEFORE all
+  three branches (observe-only, defer-preferred, acquire), because it is read-only and the
+  observe/defer decisions read the same lease view.
+- The remaining bootstrap fixes in the base commit, which applied without conflict.
+
+**Scope split.** The branch also carried two commits for `LEASE-SUBSTRATE-ROBUSTNESS-SPEC`, whose own
+HEAD message says "NOT converged — awaiting design-point decision" and whose frontmatter is
+`approved: false`. Those are file-disjoint from the code (verified: zero overlap), so they were left
+off this branch rather than dragged through a rebase. They belong in their own PR once that design
+point is decided — a spec that is explicitly awaiting a decision cannot ride in on a bug-fix PR.

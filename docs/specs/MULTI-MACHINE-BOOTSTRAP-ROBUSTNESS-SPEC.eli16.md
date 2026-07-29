@@ -101,7 +101,12 @@ milestones (each PR merged + the live test result), not per-step.
 The autonomous skill's stop hook unblocks only when:
 - All seven tracks are merged to main with CI green
 - The live test's JSON verdict report shows all 7 procedure steps PASS
-- The exactly-once flag-flip PR is merged
+- The exactly-once ingress default is settled. (Updated 2026-07-29: this originally meant
+  "the flag-flip PR is merged", where the flip made the setting default-ON unconditionally.
+  Main has since made it stage-coupled instead — on only while the session pool is actively
+  routing traffic — after a 2026-06-05 incident where a single "move to laptop" ran four times.
+  That supersedes the unconditional flip, so the criterion is met by main's version, not by
+  landing the original PR.)
 - A summary report is in your Telegram
 - The lessons learned are written to my durable memory so this exact
   bootstrap pain can't recur

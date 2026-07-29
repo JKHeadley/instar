@@ -52,6 +52,16 @@ export interface LeaseStore {
    * CAS instead, so this is a no-op there.
    */
   forceLocalExpiry?(): void;
+  /**
+   * Pull the latest durable state into the local view WITHOUT writing.
+   * Used to prime a freshly-booted/joined machine with fresh data before its
+   * first failover-eligibility decision — otherwise it evaluates
+   * presumedDeadHolders against a STALE seed `lastSeen` (the holder's timestamp
+   * from when the repo was seeded/cloned) and wrongly grabs a live holder's
+   * lease (verified live on a two-machine mesh, 2026-05-28). Optional; a no-op
+   * for stores that always read fresh.
+   */
+  syncDown?(): void;
 }
 
 /** Optional low-latency tunnel transport for the lease. */
@@ -612,6 +622,20 @@ export class LeaseCoordinator {
    * THIS machine holds the lease afterward. Implements the bounded-retry CAS
    * with livelock backoff.
    */
+  /**
+   * Prime the local view from the durable medium (pull, no write). Call this
+   * ONCE at boot before the first acquireIfEligible so a freshly-booted/joined
+   * machine evaluates failover-eligibility against the holder's CURRENT
+   * heartbeat — not a stale seed timestamp it would misread as "holder dead".
+   */
+  primeFromDurable(): void {
+    try {
+      this.d.store.syncDown?.();
+    } catch {
+      // @silent-fallback-ok — best-effort prime; steady-state ticks self-correct.
+    }
+  }
+
   async acquireIfEligible(): Promise<boolean> {
     if (this.suspended) {
       // A suspended holder may resume only by re-acquiring cleanly below.
