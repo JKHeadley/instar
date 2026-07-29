@@ -96,11 +96,14 @@ competing live signals or decide user intent.
 
 ## 6. External surfaces
 
-`/metrics/features` gains `errorRate` fields and a `reliability` object.
+`/metrics/features` gains `errorRate`, `unclassified`, and
+`fireRateInsufficientEvidence` fields plus a `reliability` object. `errorRate`
+and `fireRate` are now nullable when their denominators are absent.
 `/health` gains `llmReliability` when the ledger exists and may now correctly
-report `degraded` for a component outage. Existing fields are unchanged.
-There is no database migration: outcomes already persist in the current table,
-and the new values are derived on read. No external service call or
+report `degraded` for a component outage. A one-time local metrics migration
+conservatively changes legacy LLM `noop` rows to `unclassified`; the old
+encoding cannot establish that a verdict classifier ran. Call counts, tokens,
+latency, and correlation ids are unchanged. No external service call or
 operator-facing action is added.
 
 ---

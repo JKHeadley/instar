@@ -2,7 +2,8 @@
  * FeatureMetricsLedger — per-feature observability for LLM-driven systems.
  *
  * Records, per call, which system (sentinel/gate) invoked the LLM, what it
- * cost (tokens, latency), and what it decided (fired/noop/error/shed), so that
+ * cost (tokens, latency), and what it decided
+ * (fired/noop/unclassified/error/shed), so that
  * every gate's cost and hit-rate becomes a tracked number instead of a guess.
  * 'shed' (circuit-open, no call) is counted separately so `realCalls` reflects
  * only real round-trips. Read-
@@ -37,22 +38,25 @@ export type FeatureMetricKind = 'llm' | 'event';
 /**
  * Outcome of a funnel call:
  *  - 'fired' — the gate acted (blocked/flagged). The fired-vs-noop verdict is
- *    Phase 2; today the funnel never sets this (the caller would).
- *  - 'noop'  — a REAL call completed and the gate took no action.
+ *    supplied by the caller's verdict classifier.
+ *  - 'noop'  — the verdict classifier ran and reported that the gate took no
+ *    action.
+ *  - 'unclassified' — a real call completed but no usable verdict classifier
+ *    ran. This is not evidence that the gate took no action.
  *  - 'error' — a real call failed.
  *  - 'shed'  — the circuit was OPEN so no call ran (no token cost, no network
  *    round-trip). Distinct from 'noop' so `realCalls` (= calls − shed) reflects
  *    only real round-trips; otherwise breaker-shed load (0ms latency) inflates
  *    the call count and reads as completed work.
  */
-export type FeatureMetricOutcome = 'fired' | 'noop' | 'error' | 'shed';
+export type FeatureMetricOutcome = 'fired' | 'noop' | 'unclassified' | 'error' | 'shed';
 
 export interface FeatureMetricRecord {
   /** Source-side component label (IntelligenceOptions.attribution.component). */
   feature: string;
   /** 'llm' for a provider call; 'event' for a programmatic guard invocation. */
   kind?: FeatureMetricKind;
-  /** What happened: fired (acted) vs noop (real call, no action) vs error vs shed (circuit-open, no call). */
+  /** What happened: fired/noop (classified verdict), unclassified, error, or shed (circuit-open, no call). */
   outcome: FeatureMetricOutcome;
   tokensIn?: number;
   tokensOut?: number;
@@ -115,15 +119,19 @@ export interface FeatureRollup {
   models: string[];
   fired: number;
   noop: number;
+  /** Successful real calls with no usable verdict classifier. */
+  unclassified: number;
   errors: number;
   /** Error rows from LLM calls only (event errors excluded). */
   llmErrors: number;
   /** Circuit-open no-calls: the breaker refused the call, nothing ran. */
   shed: number;
-  /** fired / realCalls (0..1) — how often the system acts on a call that actually ran. */
-  fireRate: number;
-  /** llmErrors / realLlmCalls (0..1) — component reliability, never the fleet aggregate. */
-  errorRate: number;
+  /** fired / (fired + noop), or null when no verdicts were classified. */
+  fireRate: number | null;
+  /** True when fireRate has no classified-call denominator. */
+  fireRateInsufficientEvidence: boolean;
+  /** llmErrors / realLlmCalls, or null when no LLM round-trip ran. */
+  errorRate: number | null;
   avgLatencyMs: number;
   p50LatencyMs: number;
   p95LatencyMs: number;
@@ -164,8 +172,9 @@ export function summarizeFeatureReliability(
   features: Array<Pick<FeatureRollup, 'feature' | 'realLlmCalls' | 'llmErrors' | 'errorRate'>>,
 ): FeatureReliabilitySummary {
   const components = features
-    .filter((f) =>
-      f.realLlmCalls >= FEATURE_RELIABILITY_MINIMUM_CALLS
+    .filter((f): f is typeof f & { errorRate: number } =>
+      f.errorRate !== null
+      && f.realLlmCalls >= FEATURE_RELIABILITY_MINIMUM_CALLS
       && f.errorRate >= FEATURE_RELIABILITY_DEGRADED_ERROR_RATE,
     )
     .map((f): FeatureReliabilityComponent => ({
@@ -207,9 +216,10 @@ export interface FeatureModelRollup {
   tokensCached: number;
   fired: number;
   noop: number;
+  unclassified: number;
   errors: number;
   shed: number;
-  /** Success (fired+noop) rows whose tokens_in is non-NULL. */
+  /** Successful (fired+noop+unclassified) rows whose tokens_in is non-NULL. */
   successRowsWithUsage: number;
   /** Error rows whose tokens_in is non-NULL (surfaces error-path recording). */
   errorRowsWithUsage: number;
@@ -226,6 +236,7 @@ export interface ModelRollup {
   tokensCached: number;
   fired: number;
   noop: number;
+  unclassified: number;
   errors: number;
   shed: number;
 }
@@ -417,6 +428,7 @@ export interface FeatureMetricsSummary {
     tokensCached: number;
     fired: number;
     noop: number;
+    unclassified: number;
     errors: number;
     shed: number;
     /** Aggregate model×framework breakdown (token-audit-completeness). */
@@ -476,6 +488,10 @@ const SCHEMA = [
    )`,
   `CREATE INDEX IF NOT EXISTS idx_feature_metrics_ts ON feature_metrics (ts)`,
   `CREATE INDEX IF NOT EXISTS idx_feature_metrics_feature ON feature_metrics (feature, ts)`,
+  `CREATE TABLE IF NOT EXISTS feature_metrics_schema_meta (
+     key   TEXT PRIMARY KEY,
+     value TEXT NOT NULL
+   )`,
   // Layer 2 (routing-control-room-spend): a maintained daily aggregate of IMMUTABLE
   // token sums per UTC day×door×model. Provably untouched by any price/subsidy/credit
   // correction (it holds tokens only — cost is a read-time join). Created idempotently
@@ -784,6 +800,7 @@ export class FeatureMetricsLedger {
     this.db.pragma('synchronous = NORMAL');
     for (const ddl of SCHEMA) this.db.exec(ddl);
     this.ensureAddedColumns();
+    this.migrateLegacyNoopOutcomes();
     // Partial index for the quality join (feature_metrics.verdict_id → correlation
     // id, §5.5). Guarded separately from the SCHEMA loop: verdict_id shipped in the
     // original CREATE (it is NOT in ADDED_COLUMNS), but an index-create failure on
@@ -882,6 +899,32 @@ export class FeatureMetricsLedger {
     }
   }
 
+  /**
+   * Before `unclassified` shipped, every successful LLM call without a verdict
+   * classifier was persisted as `noop`. Those rows cannot prove "did not act",
+   * so conservatively relabel all legacy LLM noops once. This intentionally
+   * sacrifices old classified-noop evidence rather than preserving a fabricated
+   * 0% fire rate. The transaction marker makes the rewrite one-shot: noops
+   * recorded by the new classifier-aware code remain noops on later opens.
+   */
+  private migrateLegacyNoopOutcomes(): void {
+    const migrationKey = 'outcome-unclassified-v1';
+    const alreadyApplied = this.db
+      .prepare(`SELECT 1 FROM feature_metrics_schema_meta WHERE key = ?`)
+      .get(migrationKey);
+    if (alreadyApplied) return;
+    this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE feature_metrics
+            SET outcome = 'unclassified'
+          WHERE kind = 'llm' AND outcome = 'noop'`,
+      ).run();
+      this.db.prepare(
+        `INSERT INTO feature_metrics_schema_meta (key, value) VALUES (?, ?)`,
+      ).run(migrationKey, 'applied');
+    })();
+  }
+
   /** Record a metric row (typically one LLM funnel call). Never throws to callers. */
   record(r: FeatureMetricRecord): void {
     if (this.closed) return;
@@ -961,7 +1004,7 @@ export class FeatureMetricsLedger {
         feature: String(row.feature),
         realLlmCalls,
         llmErrors,
-        errorRate: realLlmCalls > 0 ? llmErrors / realLlmCalls : 0,
+        errorRate: realLlmCalls > 0 ? llmErrors / realLlmCalls : null,
       };
     }));
   }
@@ -994,6 +1037,7 @@ export class FeatureMetricsLedger {
            COALESCE(SUM(tokens_cached), 0)                    AS tokensCached,
            SUM(CASE WHEN outcome='fired' THEN 1 ELSE 0 END)   AS fired,
            SUM(CASE WHEN outcome='noop'  THEN 1 ELSE 0 END)   AS noop,
+           SUM(CASE WHEN outcome='unclassified' THEN 1 ELSE 0 END) AS unclassified,
            SUM(CASE WHEN outcome='error' THEN 1 ELSE 0 END)   AS errors,
            SUM(CASE WHEN kind='llm' AND outcome='error' THEN 1 ELSE 0 END) AS llmErrors,
            SUM(CASE WHEN outcome='shed'  THEN 1 ELSE 0 END)   AS shed,
@@ -1055,15 +1099,18 @@ export class FeatureMetricsLedger {
     return agg.map((a) => {
       const calls = Number(a.calls) || 0;
       const fired = Number(a.fired) || 0;
+      const noop = Number(a.noop) || 0;
+      const classifiedCalls = fired + noop;
       const shed = Number(a.shed) || 0;
       const realCalls = calls - shed;
+      const realLlmCalls = Number(a.realLlmCalls) || 0;
       const lats = latByFeature.get(String(a.feature)) ?? [];
       return {
         feature: String(a.feature),
         calls,
         realCalls,
         llmCalls: Number(a.llmCalls) || 0,
-        realLlmCalls: Number(a.realLlmCalls) || 0,
+        realLlmCalls,
         events: Number(a.events) || 0,
         tokensIn: Number(a.tokensIn) || 0,
         tokensOut: Number(a.tokensOut) || 0,
@@ -1071,14 +1118,16 @@ export class FeatureMetricsLedger {
         frameworks: Array.from(fwByFeature.get(String(a.feature)) ?? []).sort(),
         models: Array.from(modelByFeature.get(String(a.feature)) ?? []).sort(),
         fired,
-        noop: Number(a.noop) || 0,
+        noop,
+        unclassified: Number(a.unclassified) || 0,
         errors: Number(a.errors) || 0,
         llmErrors: Number(a.llmErrors) || 0,
         shed,
-        fireRate: realCalls > 0 ? fired / realCalls : 0,
-        errorRate: (Number(a.realLlmCalls) || 0) > 0
-          ? (Number(a.llmErrors) || 0) / (Number(a.realLlmCalls) || 0)
-          : 0,
+        fireRate: classifiedCalls > 0 ? fired / classifiedCalls : null,
+        fireRateInsufficientEvidence: classifiedCalls === 0,
+        errorRate: realLlmCalls > 0
+          ? (Number(a.llmErrors) || 0) / realLlmCalls
+          : null,
         avgLatencyMs: Math.round(Number(a.avgLatencyMs) || 0),
         p50LatencyMs: percentile(lats, 0.5),
         p95LatencyMs: percentile(lats, 0.95),
@@ -1094,7 +1143,8 @@ export class FeatureMetricsLedger {
    * llm-kind rows only; NULL model/framework render "unknown". ONE composite-
    * key GROUP BY carries the usage-presence counts itself — SQLite
    * COUNT(expr) counts non-NULL, so `COUNT(CASE WHEN outcome IN
-   * ('fired','noop') THEN tokens_in END)` is the success-rows-with-usage
+   * ('fired','noop','unclassified') THEN tokens_in END)` is the
+   * success-rows-with-usage
    * count (a recorded 0 counts as reported; a SUM would let one large row
    * mask N null rows). No latency percentiles on this dimension.
    */
@@ -1114,9 +1164,10 @@ export class FeatureMetricsLedger {
              COALESCE(SUM(tokens_cached), 0)                                   AS tokensCached,
              SUM(CASE WHEN outcome='fired' THEN 1 ELSE 0 END)                  AS fired,
              SUM(CASE WHEN outcome='noop'  THEN 1 ELSE 0 END)                  AS noop,
+             SUM(CASE WHEN outcome='unclassified' THEN 1 ELSE 0 END)           AS unclassified,
              SUM(CASE WHEN outcome='error' THEN 1 ELSE 0 END)                  AS errors,
              SUM(CASE WHEN outcome='shed'  THEN 1 ELSE 0 END)                  AS shed,
-             COUNT(CASE WHEN outcome IN ('fired','noop') THEN tokens_in END)   AS successRowsWithUsage,
+             COUNT(CASE WHEN outcome IN ('fired','noop','unclassified') THEN tokens_in END) AS successRowsWithUsage,
              COUNT(CASE WHEN outcome='error' THEN tokens_in END)               AS errorRowsWithUsage
            FROM feature_metrics
            WHERE ts >= ? AND kind='llm'
@@ -1143,6 +1194,7 @@ export class FeatureMetricsLedger {
         tokensCached: Number(r.tokensCached) || 0,
         fired: Number(r.fired) || 0,
         noop: Number(r.noop) || 0,
+        unclassified: Number(r.unclassified) || 0,
         errors: Number(r.errors) || 0,
         shed,
         successRowsWithUsage: Number(r.successRowsWithUsage) || 0,
@@ -1199,6 +1251,7 @@ export class FeatureMetricsLedger {
           tokensCached: 0,
           fired: 0,
           noop: 0,
+          unclassified: 0,
           errors: 0,
           shed: 0,
         } as ModelRollup);
@@ -1209,6 +1262,7 @@ export class FeatureMetricsLedger {
       acc.tokensCached += row.tokensCached;
       acc.fired += row.fired;
       acc.noop += row.noop;
+      acc.unclassified += row.unclassified;
       acc.errors += row.errors;
       acc.shed += row.shed;
       modelAgg.set(key, acc);
@@ -1232,9 +1286,9 @@ export class FeatureMetricsLedger {
         { successRows: 0, successRowsWithUsage: 0, errorRows: 0, errorRowsWithUsage: 0, excludedRows: 0 };
       const isInteractivePool = fw === 'claude-code' && row.model === 'interactive-pool';
       if (isInteractivePool) {
-        acc.excludedRows += row.fired + row.noop;
+        acc.excludedRows += row.fired + row.noop + row.unclassified;
       } else {
-        acc.successRows += row.fired + row.noop;
+        acc.successRows += row.fired + row.noop + row.unclassified;
         acc.successRowsWithUsage += row.successRowsWithUsage;
       }
       acc.errorRows += row.errors;
@@ -1265,6 +1319,7 @@ export class FeatureMetricsLedger {
         acc.tokensCached += f.tokensCached;
         acc.fired += f.fired;
         acc.noop += f.noop;
+        acc.unclassified += f.unclassified;
         acc.errors += f.errors;
         acc.shed += f.shed;
         return acc;
@@ -1272,7 +1327,7 @@ export class FeatureMetricsLedger {
       {
         calls: 0, realCalls: 0, llmCalls: 0, events: 0,
         tokensIn: 0, tokensOut: 0, tokensCached: 0,
-        fired: 0, noop: 0, errors: 0, shed: 0,
+        fired: 0, noop: 0, unclassified: 0, errors: 0, shed: 0,
       },
     );
 

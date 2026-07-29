@@ -71,6 +71,25 @@ describe('GET /metrics/features (integration)', () => {
     expect(tone.errorRate).toBe(0);
   });
 
+  it('renders absent rate denominators as null instead of ideal values', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    ledger.recordEvent('EventOnlyGuard', 'noop');
+    ledger.record({ feature: 'UnclassifiedLlmGate', outcome: 'unclassified' });
+
+    const res = await request(appWith(ledger)).get('/metrics/features');
+
+    expect(res.status).toBe(200);
+    expect(res.body.features.find((f: any) => f.feature === 'EventOnlyGuard')).toMatchObject({
+      realLlmCalls: 0,
+      errorRate: null,
+    });
+    expect(res.body.features.find((f: any) => f.feature === 'UnclassifiedLlmGate')).toMatchObject({
+      unclassified: 1,
+      fireRate: null,
+      fireRateInsufficientEvidence: true,
+    });
+  });
+
   it('surfaces component-level reliability instead of masking it behind the aggregate', async () => {
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
     for (let i = 0; i < 18; i++) ledger.record({ feature: 'BrokenReflector', outcome: 'error' });

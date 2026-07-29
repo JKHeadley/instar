@@ -89,6 +89,25 @@ describe('FeatureMetricsLedger', () => {
     expect(m.fireRate).toBeCloseTo(1 / 3, 5);
   });
 
+  it('reports unknown rates when the matching denominator is absent', () => {
+    const l = newLedger();
+    l.recordEvent('EventOnlyGuard', 'noop');
+    l.record({ feature: 'UnclassifiedLlmGate', outcome: 'unclassified' });
+
+    const eventOnly = l.byFeature().find(f => f.feature === 'EventOnlyGuard')!;
+    expect(eventOnly.realLlmCalls).toBe(0);
+    expect(eventOnly.errorRate).toBeNull();
+
+    const unclassified = l.byFeature().find(f => f.feature === 'UnclassifiedLlmGate')!;
+    expect(unclassified).toMatchObject({
+      realCalls: 1,
+      unclassified: 1,
+      fireRate: null,
+      fireRateInsufficientEvidence: true,
+      errorRate: 0,
+    });
+  });
+
   it('frameworks/models are empty arrays when never recorded', () => {
     const l = newLedger();
     l.record({ feature: 'Bare', outcome: 'noop' });
@@ -200,14 +219,38 @@ describe('FeatureMetricsLedger', () => {
     seed.close();
 
     // Opening the ledger must add the column without losing the legacy row.
+    // Its old `noop` is ambiguous because the pre-fix funnel used that value
+    // when no verdict classifier existed, so the one-time migration must move
+    // it toward unknown rather than preserve a fabricated 0% fire rate.
     const l = new FeatureMetricsLedger({ dbPath });
     try {
       l.record({ feature: 'New', outcome: 'fired', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+      l.record({ feature: 'NewClassifiedNoop', outcome: 'noop' });
       const rows = l.byFeature();
-      expect(rows.find(f => f.feature === 'Legacy')!.calls).toBe(1);
+      expect(rows.find(f => f.feature === 'Legacy')).toMatchObject({
+        calls: 1,
+        noop: 0,
+        unclassified: 1,
+        fireRate: null,
+        fireRateInsufficientEvidence: true,
+      });
       expect(rows.find(f => f.feature === 'New')!.frameworks).toEqual(['codex-cli']);
     } finally {
       l.close();
+    }
+
+    // The marker makes the migration one-shot: a classified noop written by
+    // the new code must survive later opens as classified evidence.
+    const reopened = new FeatureMetricsLedger({ dbPath });
+    try {
+      expect(reopened.byFeature().find(f => f.feature === 'NewClassifiedNoop')).toMatchObject({
+        noop: 1,
+        unclassified: 0,
+        fireRate: 0,
+        fireRateInsufficientEvidence: false,
+      });
+    } finally {
+      reopened.close();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/FeatureMetricsLedger.test.ts:cleanup' });
     }
   });

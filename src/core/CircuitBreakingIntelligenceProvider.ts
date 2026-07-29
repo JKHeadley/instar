@@ -50,7 +50,7 @@ export interface FeatureMetricsRecorder {
   record(entry: {
     feature: string;
     kind?: 'llm' | 'event';
-    outcome: 'fired' | 'noop' | 'error' | 'shed';
+    outcome: 'fired' | 'noop' | 'unclassified' | 'error' | 'shed';
     latencyMs?: number;
     waited?: boolean;
     waitMs?: number;
@@ -141,8 +141,9 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
    * Record one funnel call to the per-feature metrics ledger (Phase 1b). Pure
    * side-channel: it MUST never throw into the LLM path (observability must not
    * break what it observes — the Close the Loop principle applied to itself).
-   * outcome here is funnel-level: 'noop' = the call completed (the fired-vs-noop
-   * VERDICT is the caller's interpretation → Phase 2); 'error' = it failed;
+   * outcome here separates result completion from verdict interpretation:
+   * 'unclassified' = the call completed without a usable classifier;
+   * 'fired'/'noop' = the classifier reported acted/not-acted; 'error' = failed;
    * 'shed' = the circuit was open so NO call ran (no token cost, no network
    * round-trip). Keeping 'shed' distinct from 'noop' is what makes the metric
    * honest: 'calls' minus 'shed' = real round-trips, so the breaker shedding
@@ -150,7 +151,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
    */
   private recordMetric(
     feature: string,
-    outcome: 'fired' | 'noop' | 'error' | 'shed',
+    outcome: 'fired' | 'noop' | 'unclassified' | 'error' | 'shed',
     latencyMs: number,
     waited: boolean,
     waitMs: number | undefined,
@@ -287,13 +288,13 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
       // `callerRef` inside the provenance context when a provenance row is
       // written; it is dropped for llm rows otherwise). Event-kind rows keep
       // their existing semantic verdictId use untouched.
-      let outcome: 'fired' | 'noop' = 'noop';
+      let outcome: 'fired' | 'noop' | 'unclassified' = 'unclassified';
       if (options?.classifyVerdict) {
         try {
           const v = options.classifyVerdict(result);
-          if (v?.acted) outcome = 'fired';
+          outcome = v?.acted ? 'fired' : 'noop';
         } catch {
-          /* @silent-fallback-ok: a verdict-classification throw falls back to 'noop'; never break the observed path */
+          /* @silent-fallback-ok: a verdict-classification throw stays explicitly unclassified; never break the observed path */
         }
       }
       this.recordMetric(

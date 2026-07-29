@@ -1122,9 +1122,11 @@ export interface IntelligenceOptions {
    * Observable Intelligence standard: let the caller classify whether THIS call
    * led the system to ACT (fired) vs take no action (noop). The funnel calls it
    * on the successful result string and records 'fired' or 'noop' accordingly,
-   * so /metrics/features reports real effectiveness (fireRate = fired/realCalls)
-   * instead of every completed call reading as noop. OPTIONAL: when omitted the
-   * outcome defaults to 'noop' (today's behavior). The callback must be pure and
+   * so /metrics/features reports real effectiveness
+   * (fireRate = fired / (fired + noop))
+   * instead of every completed call reading as noop. OPTIONAL: when omitted (or
+   * when it throws), the outcome is `unclassified`, so the API reports no
+   * fire-rate denominator instead of manufacturing 0%. The callback must be pure and
    * cheap — it runs inside the funnel and is wrapped in try/catch so a throw can
    * never break the observed path (it may be invoked more than once per call —
    * the funnel classifies the metric outcome and the router's settlement seam

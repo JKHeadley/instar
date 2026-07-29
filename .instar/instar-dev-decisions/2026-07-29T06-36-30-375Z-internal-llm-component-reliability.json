@@ -1,0 +1,17 @@
+{
+  "ts": "2026-07-29T06:36:30.375Z",
+  "slug": "internal-llm-component-reliability",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 136,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

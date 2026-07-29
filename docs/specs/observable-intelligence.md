@@ -15,7 +15,7 @@ A system that acts on the user's behalf but cannot show *what it chose to do and
 
 ## What it requires
 
-Every LLM call the system makes on its own behalf is recorded with: component, **resolved provider + model**, outcome (`fired` | `noop` | `error` | `shed`), token cost where the provider surfaces it, latency, timestamp.
+Every LLM call the system makes on its own behalf is recorded with: component, **resolved provider + model**, outcome (`fired` | `noop` | `unclassified` | `error` | `shed`), token cost where the provider surfaces it, latency, timestamp.
 
 ## Architecture (Structure beats Willpower)
 
@@ -24,7 +24,7 @@ Recording is enforced at the **single funnel** — `CircuitBreakingIntelligenceP
 Two additive, optional seams on `IntelligenceOptions`:
 
 - **`onModel({ model, framework })`** — every provider (Claude/Codex/Gemini/Pi/InteractivePool) invokes it once per call, *independently of token usage*, so the providers that surface no tokens are still attributable. The funnel captures it and records `model` + `framework` on the row — including on the error path (a failed call is attributed to its provider too).
-- **`classifyVerdict(result) → { acted, verdictId? }`** — the caller classifies whether *this* call led the system to act. The funnel calls it on the successful result (wrapped in try/catch; defaults to `noop`) and records `fired` vs `noop`, making `fireRate = fired / realCalls` meaningful. Wired into `MessageSentinel` (non-`normal` category) and `CommitmentSentinel` (≥1 genuine commitment detected) as the proof callers; available to all.
+- **`classifyVerdict(result) → { acted, verdictId? }`** — the caller classifies whether *this* call led the system to act. The funnel calls it on the successful result (wrapped in try/catch) and records `fired` vs `noop`. Omitted or throwing classifiers record `unclassified`; `fireRate = fired / (fired + noop)` and is `null` when no verdicts were classified. Wired into `MessageSentinel` (non-`normal` category) and `CommitmentSentinel` (≥1 genuine commitment detected) as the proof callers; available to all.
 
 Both are pure side-channels: a throw in either can never change what `evaluate()` returns or break the observed path.
 
@@ -40,7 +40,7 @@ Both are pure side-channels: a throw in either can never change what `evaluate()
 
 ## Read surfaces
 
-- `GET /metrics/features?sinceHours=N[&feature=X]` — per-feature rollup now including `frameworks[]`, `models[]`, `fired`, `fireRate`, `shed`, token cost, latency p50/p95.
+- `GET /metrics/features?sinceHours=N[&feature=X]` — per-feature rollup now including `frameworks[]`, `models[]`, `fired`, `noop`, `unclassified`, nullable `fireRate`, `fireRateInsufficientEvidence`, `shed`, token cost, latency p50/p95, and nullable component `errorRate`.
 - The **Sentinel Effectiveness** dashboard tab renders this in plain language over a selectable window.
 
 ## Signal, never authority
