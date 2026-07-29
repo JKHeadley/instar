@@ -1,0 +1,25 @@
+{
+  "ts": "2026-07-29T12:42:10.200Z",
+  "slug": "self-knowledge-empty-coverage",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/machine.ts",
+      "src/knowledge/CoverageAuditor.ts",
+      "src/knowledge/SelfKnowledgeTree.ts",
+      "src/knowledge/types.ts"
+    ],
+    "addedLines": 14,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

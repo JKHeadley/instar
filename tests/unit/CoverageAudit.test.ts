@@ -172,6 +172,19 @@ describe('Coverage Audit + Evolution (Phase 4)', () => {
     expect(telegramGap).toBeUndefined();
   });
 
+  it('keeps an empty tree audit unmeasured instead of reporting zero-percent coverage', () => {
+    const tree = createTree();
+    const config = tree.getConfig()!;
+    for (const layer of config.layers) layer.children = [];
+    const validation = { valid: true, warnings: [], errors: [], coverageScore: null };
+    const auditor = new CoverageAuditor(projectDir, stateDir);
+
+    const audit = auditor.audit(config, validation);
+    expect(audit.totalNodes).toBe(0);
+    expect(audit.validNodes).toBe(0);
+    expect(audit.coverageScore).toBeNull();
+  });
+
   // Gate Test 4.3: coverage audit reports content coverage score
   it('4.3: coverage score reflects valid/total ratio', () => {
     const tree = createTree();

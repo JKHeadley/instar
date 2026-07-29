@@ -342,6 +342,17 @@ Direct and technical. I don't waste words.
       expect(result.valid).toBe(true);
       expect(result.coverageScore).toBeGreaterThan(0);
     });
+
+    it('keeps coverage unmeasured when a valid tree contains no nodes', () => {
+      const config = makeConfig();
+      for (const layer of config.layers) layer.children = [];
+      writeTreeConfig(config);
+      const tree = createTree();
+
+      const result = tree.validate();
+      expect(result.valid).toBe(true);
+      expect(result.coverageScore).toBeNull();
+    });
   });
 
   // Grounding (Phase 2 preview)
