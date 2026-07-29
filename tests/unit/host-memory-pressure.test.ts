@@ -70,6 +70,11 @@ Cached:          2500000 kB
     const r = parseProcMeminfo(content);
     expect(100 - r.pressurePercent).toBeCloseTo(25, 0); // (1M+0.5M+2.5M)/16M
   });
+  it('rejects content with no parseable MemTotal', () => {
+    expect(() => parseProcMeminfo('procfs returned an unexpected format')).toThrow(
+      '/proc/meminfo contained no total memory',
+    );
+  });
 });
 
 describe('readSystemMemoryPressure — platform-aware, never throws', () => {
@@ -95,6 +100,18 @@ describe('readSystemMemoryPressure — platform-aware, never throws', () => {
     const r = readSystemMemoryPressure({
       platform: 'darwin',
       vmStat: () => 'vm_stat returned an unexpected format',
+      memoryUsage: () => ({ rss: 15 * 1024 ** 3 }),
+      totalmem: () => 16 * 1024 ** 3,
+    });
+
+    expect(r.pressurePercent).toBeCloseTo(93.75, 2);
+    expect(r.freeGB).toBeCloseTo(1, 2);
+    expect(r.totalGB).toBe(16);
+  });
+  it('linux: successful but unparseable proc-meminfo uses the RSS fallback', () => {
+    const r = readSystemMemoryPressure({
+      platform: 'linux',
+      procMeminfo: () => 'procfs returned an unexpected format',
       memoryUsage: () => ({ rss: 15 * 1024 ** 3 }),
       totalmem: () => 16 * 1024 ** 3,
     });
