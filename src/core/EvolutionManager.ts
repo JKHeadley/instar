@@ -1374,6 +1374,7 @@ export class EvolutionManager {
     priority?: 'critical' | 'high' | 'medium' | 'low';
     commitTo?: string;
     dueBy?: string;
+    followThroughOptOutReason?: string;
     source?: ActionItem['source'];
     tags?: string[];
   }): ActionItem {
@@ -1388,6 +1389,7 @@ export class EvolutionManager {
       commitTo: opts.commitTo,
       createdAt: this.now(),
       dueBy: opts.dueBy,
+      followThroughOptOutReason: opts.followThroughOptOutReason,
       source: opts.source,
       tags: opts.tags,
     };

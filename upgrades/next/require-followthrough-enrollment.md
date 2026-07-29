@@ -1,0 +1,44 @@
+<!-- bump: minor -->
+
+## What Changed
+
+New commitments and evolution actions could previously be created without any
+follow-through condition. The overdue-action checker only sees actions with a
+`dueBy`, and PromiseBeacon only watches enrolled commitments, so the default
+creation path produced durable records that no mechanism would revisit.
+
+Both creation endpoints now require exactly one explicit choice:
+
+- a commitment enrolls in PromiseBeacon with a valid ISO deadline, or stores a
+  non-empty `followThroughOptOutReason`;
+- an evolution action carries a valid ISO `dueBy`, or stores a non-empty
+  `followThroughOptOutReason`.
+
+Supplying neither or both returns HTTP 400 before either store is touched.
+Existing records are unchanged: this release performs no backfill or resurfacing.
+Opt-out reasons are persisted and follow the existing replication, redaction, and
+untrusted-rendering boundaries. Creating either record still sends no new user
+notification.
+
+## What to Tell Your User
+
+Nothing unless an integration creates commitments or evolution actions directly.
+Those callers must now provide a real follow-through deadline/enrollment or an
+explicit reason that no future schedule is needed.
+
+## Summary of New Capabilities
+
+- Bare commitment and action creation is structurally refused.
+- Deliberate unscheduled records remain possible, but the reason is durable and
+  auditable instead of being represented by omission.
+- Agent-owned follow-through remains in agent context; this does not add user
+  reminders or notifications.
+
+## Evidence
+
+- Before the change, one bare request to each endpoint returned HTTP 201 and
+  persisted a record. The same two requests now return HTTP 400, with zero store
+  mutation.
+- Focused route, persistence, replication, redaction, guidance-migration, and lifecycle coverage:
+  225 tests passing across 17 suites.
+- TypeScript typecheck passes with no errors.

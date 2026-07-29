@@ -2,13 +2,15 @@
 title: "The promise half of Close the Loop: why it does NOT generalise from the action half"
 slug: "promise-reach-design"
 author: "echo"
-status: "design — not converged, not approved, no code"
+status: "creation chokepoint approved and implemented; existing-stock design remains unresolved"
 companion: "docs/specs/undated-action-resurfacer.md (the ACTION half, merged as a draft)"
 ---
 
 # The promise half of Close the Loop
 
-> **Status: design only.** No code, no convergence tag, no approval.
+> **Status:** the measured **creation chokepoint** was subsequently approved and implemented:
+> future commitments/actions must carry a follow-through condition or a stored opt-out reason.
+> The separate question of what to do with the existing unenrolled stock remains design-only.
 >
 > It answers two questions. **(1)** *Does the action-half design extend to promises?* No — for a
 > constitutional reason rather than a technical one. **(2)** *Is 287 a backlog to drain?* No — it
@@ -121,9 +123,8 @@ built, and none of them is decidable from the numbers above:
   against a much smaller population.
 - **Not a claim that the beacon is broken.** It is not. It heartbeats exactly the commitments it
   is told to. The defect is that being told is optional.
-- **Not converged, not approved, no code.** The action half shipped as a draft for the same
-  reason: the design question is worth recording before the build, and the build is worth
-  refusing until the question is answered.
+- **Not an approval of the existing-stock resurfacer.** The creation chokepoint is implemented;
+  agent-context injection and one-time backlog triage remain unapproved designs.
 
 ## The generalisation worth keeping
 
@@ -213,6 +214,22 @@ here would be the third design in a document that already has two.
 
 Stated rather than resolved, because the honest position is that this document establishes
 what will NOT work and one thing that will help — and the stock question is genuinely open.
+
+### Implemented boundary — creation flow only (2026-07-28)
+
+The creation chokepoint is now a two-outcome contract, not an optional field:
+
+- `POST /commitments` accepts exactly one of: PromiseBeacon enrollment
+  (`beaconEnabled: true`, a topic, and at least one valid ISO deadline), or a non-empty persisted
+  `followThroughOptOutReason`.
+- `POST /evolution/actions` accepts exactly one of: a valid ISO `dueBy`, or the same explicit
+  persisted opt-out reason.
+- Neither and both are HTTP 400 refusals before store mutation. Opt-out reasons are replicated
+  through the existing redaction and untrusted-render boundaries.
+
+This deliberately changes **flow only**. It performs no backfill, no resurfacing, and no bulk
+enrollment of existing rows. It adds no notification path: agent-owned follow-through remains in
+agent context, and the operator still hears about results rather than the agent's work queue.
 
 ### And this reaches the ACTION half too
 

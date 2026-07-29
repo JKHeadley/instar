@@ -42,7 +42,8 @@ established ALL the machinery; WS2.5 REUSES it, it does not reinvent it.
 
 `ActionItem` (`src/core/types.ts:1309`) — `{ id (ACT-NNN), title, description,
 priority:'critical'|'high'|'medium'|'low', status:'pending'|'in_progress'|'completed'|'cancelled',
-commitTo?, createdAt (ISO), dueBy?, completedAt?, resolution?, source?:{platform?,contentId?,context?},
+commitTo?, createdAt (ISO), dueBy?, followThroughOptOutReason?, completedAt?, resolution?,
+source?:{platform?,contentId?,context?},
 tags? }`. Stored by `EvolutionManager` as `ActionState { actions: ActionItem[], stats }` at
 `state/action-queue.json` via `loadActions()`/`saveActions()`. Mutators: `addAction()` (pushes a
 pending action) and `updateAction(id, {status, resolution})` (mutates status/completedAt). The
@@ -81,8 +82,9 @@ that actually REMOVES an action from the queue.
 1. Register `evolution-action-record` in the DUAL registry — `JournalKind` union + `JOURNAL_KINDS`
    const + `DEFAULT_RETENTION` (rotateKeep > 0) + `ReplicatedKindRegistry.register()` with the strict
    typed schema (discriminated union on `op`; two-sided type-clamp: `createdAt`/`dueBy`/`completedAt`
-   ISO-8601-or-absent, `priority`/`status` enum, `tags[]` string[]; a path-shaped `source` sub-field
-   jailed). The local `id` is DELIBERATELY ABSENT from the store schema.
+   ISO-8601-or-absent, `priority`/`status` enum, `tags[]` string[], and
+   `followThroughOptOutReason` length-clamped free text; a path-shaped `source` sub-field jailed).
+   The local `id` is DELIBERATELY ABSENT from the store schema.
 2. New consumer `src/core/EvolutionActionsReplicatedStore.ts` — `buildEvolutionActionRecordData()`
    disclosure-minimized projection (local ACT id stripped from every emit; 64KB per-entry cap — a
    description can be long; a named `EvolutionActionRecordTooLargeError` over-cap rejection, never
@@ -118,7 +120,8 @@ that actually REMOVES an action from the queue.
    under the 64KB cap.
 4. **type-clamp completeness** — `createdAt`/`dueBy`/`completedAt` ISO-8601-or-absent, `priority`/
    `status` enum, `tags[]` string[] clamped on BOTH emit and apply; a path-shaped `source.contentId`
-   jailed; free-text `description`/`title` length-clamped + sanitized on render.
+   jailed; free-text `description`/`title`/`followThroughOptOutReason` length-clamped + sanitized
+   on render.
 5. **flag-coherence leak** — emission to a non-advertising peer is impossible (the foundation's
    `shouldEmitToPeer` gate; `selfStateSyncReceive` advertises `evolutionActions:true` IFF the store
    is enabled).

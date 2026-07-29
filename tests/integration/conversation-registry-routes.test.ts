@@ -195,7 +195,14 @@ describe('increment-2 route hardening (§5.2 + §7)', () => {
     (ctx as unknown as { conversationBindAuth: unknown }).conversationBindAuth = bindAuth;
     const app = appWith(ctx);
 
-    const body = { type: 'one-time-action', userRequest: 'x', agentResponse: 'y', topicId: -111 };
+    const body = {
+      type: 'one-time-action',
+      userRequest: 'x',
+      agentResponse: 'y',
+      topicId: -111,
+      beaconEnabled: true,
+      nextUpdateDueAt: '2099-01-01T00:00:00.000Z',
+    };
 
     // Missing token → fail-closed.
     const missing = await request(app).post('/commitments').set(auth()).send(body);
@@ -222,7 +229,14 @@ describe('increment-2 route hardening (§5.2 + §7)', () => {
     (ctx as unknown as { conversationBindAuth: unknown }).conversationBindAuth = createConversationBindAuth(stateDir);
     const app = appWith(ctx);
     const res = await request(app).post('/commitments').set(auth())
-      .send({ type: 'one-time-action', userRequest: 'x', agentResponse: 'y', topicId: 12476 });
+      .send({
+        type: 'one-time-action',
+        userRequest: 'x',
+        agentResponse: 'y',
+        topicId: 12476,
+        beaconEnabled: true,
+        nextUpdateDueAt: '2099-01-01T00:00:00.000Z',
+      });
     expect(res.status).toBe(201);
   });
 });

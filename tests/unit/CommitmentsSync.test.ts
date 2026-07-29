@@ -108,6 +108,23 @@ describe('buildCommitmentsSyncPage — paged deltas (§3.2)', () => {
     expect(row.userRequest).toContain('[redacted:'); // field redacted
     expect(row.id).toBe('CMT-007'); // record still replicates — closeability intact
   });
+
+  it('redacts credential-shaped opt-out reasons while preserving the enrollment decision', () => {
+    const records = [fakeCommitment({
+      id: 'CMT-008',
+      lastMutatedSeq: 4,
+      beaconEnabled: false,
+      followThroughOptOutReason: 'Already done; api_key = "abcdef123456789012345"',
+    })];
+    const page = buildCommitmentsSyncPage(
+      { sinceSeq: 0 },
+      { ownMachineId: 'm_a', records, advert: ADVERT },
+    );
+    const row = page.records[0];
+    expect(row.textRedacted).toBe(true);
+    expect(row.followThroughOptOutReason).toContain('[redacted:');
+    expect(row.beaconEnabled).toBe(false);
+  });
 });
 
 describe('CommitmentReplicaStore — receive side (§3.2)', () => {

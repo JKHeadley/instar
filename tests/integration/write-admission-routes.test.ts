@@ -104,19 +104,83 @@ function makeHarness(opts: {
 }
 
 describe('P2-6 family admitted on a standby-that-owns-topics (machine-local — the user-visible fix)', () => {
+  it('refuses an action with neither dueBy nor an explicit opt-out reason before touching the store', async () => {
+    const h = makeHarness({ readOnly: true, live: true, dryRun: false });
+    const res = await request(h.app).post('/evolution/actions').send({
+      title: 'Do not let this disappear',
+      description: 'A bare action is unreachable by the overdue checker.',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('followThroughOptOutReason');
+    expect(fs.existsSync(h.actionQueuePath)).toBe(false);
+    expect(h.evolution.listActions()).toHaveLength(0);
+  });
+
   it('POST /evolution/actions → 201 and the action LANDS in state/evolution/action-queue.json, even read-only + live', async () => {
     const h = makeHarness({ readOnly: true, live: true, dryRun: false });
     const t0 = Date.now();
     const res = await request(h.app).post('/evolution/actions').send({
       title: 'Register the mm-audit findings ledger',
       description: 'The §8 acceptance follow-through write.',
+      dueBy: '2099-01-01T00:00:00.000Z',
     });
     expect(Date.now() - t0).toBeLessThan(2000); // the <2s SLO, live loop
     expect(res.status).toBe(201);
     expect(res.body.id).toBeDefined();
+    expect(res.body.dueBy).toBe('2099-01-01T00:00:00.000Z');
     // The write actually landed (the §1.2 store — action-queue.json, NOT the proposals store).
     expect(fs.existsSync(h.actionQueuePath)).toBe(true);
     expect(h.evolution.listActions().some((a) => a.title === 'Register the mm-audit findings ledger')).toBe(true);
+  });
+
+  it('persists an explicit opt-out reason without creating a user notification', async () => {
+    const h = makeHarness({ readOnly: true, live: true, dryRun: false });
+    const res = await request(h.app).post('/evolution/actions').send({
+      title: 'Document an already-completed correction',
+      description: 'There is no future work for the overdue checker to schedule.',
+      followThroughOptOutReason: '  Completed before this record was created.  ',
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.dueBy).toBeUndefined();
+    expect(res.body.followThroughOptOutReason).toBe('Completed before this record was created.');
+    expect(h.evolution.listActions()[0]?.followThroughOptOutReason)
+      .toBe('Completed before this record was created.');
+    expect(h.capturedCreates).toHaveLength(0);
+
+    const reloaded = new EvolutionManager({ stateDir: h.stateDir });
+    expect(reloaded.listActions()[0]?.followThroughOptOutReason)
+      .toBe('Completed before this record was created.');
+  });
+
+  it('refuses both choices, malformed dueBy, and blank opt-out reasons', async () => {
+    const h = makeHarness({ readOnly: true, live: true, dryRun: false });
+    const base = { title: 'Invalid follow-through', description: 'Must not land.' };
+
+    const both = await request(h.app).post('/evolution/actions').send({
+      ...base,
+      dueBy: '2099-01-01T00:00:00.000Z',
+      followThroughOptOutReason: 'No schedule.',
+    });
+    expect(both.status).toBe(400);
+    expect(both.body.error).toContain('exactly one');
+
+    const malformed = await request(h.app).post('/evolution/actions').send({
+      ...base,
+      dueBy: 'not-a-date',
+    });
+    expect(malformed.status).toBe(400);
+    expect(malformed.body.error).toContain('ISO 8601');
+
+    const blank = await request(h.app).post('/evolution/actions').send({
+      ...base,
+      followThroughOptOutReason: '   ',
+    });
+    expect(blank.status).toBe(400);
+    expect(blank.body.error).toContain('non-empty');
+    expect(fs.existsSync(h.actionQueuePath)).toBe(false);
+    expect(h.evolution.listActions()).toHaveLength(0);
   });
 
   it('POST /attention → 201 on the same simulated standby; the item is created AFTER admission', async () => {
@@ -177,6 +241,7 @@ describe('typed refusal through the real HTTP pipeline (cluster-shared on a non-
     }).expect(409);
     await request(h.app).post('/evolution/actions').send({
       title: 'refused action', description: 'never lands',
+      dueBy: '2099-01-01T00:00:00.000Z',
     }).expect(409);
     expect(h.capturedCreates).toHaveLength(0); // no topic, no item
     expect(fs.existsSync(h.actionQueuePath)).toBe(false); // no store write
@@ -187,6 +252,7 @@ describe('typed refusal through the real HTTP pipeline (cluster-shared on a non-
     const h = makeHarness({ readOnly: false, live: true, dryRun: false, registry: clusterSharedRegistry() });
     await request(h.app).post('/evolution/actions').send({
       title: 'holder write', description: 'admitted on the holder',
+      dueBy: '2099-01-01T00:00:00.000Z',
     }).expect(201);
   });
 
@@ -205,6 +271,7 @@ describe('typed refusal through the real HTTP pipeline (cluster-shared on a non-
     const h = makeHarness({ readOnly: true, omitWriteAdmission: true });
     await request(h.app).post('/evolution/actions').send({
       title: 'dark write', description: 'no admission wiring at all',
+      dueBy: '2099-01-01T00:00:00.000Z',
     }).expect(201);
   });
 });
@@ -216,6 +283,7 @@ describe('admission-layer throw at the route seam (§5/§9.16 per-domain split, 
     (h1.wa as unknown as { evaluate: () => never }).evaluate = () => { throw new Error('guard broke'); };
     await request(h1.app).post('/evolution/actions').send({
       title: 'broken guard, machine-local', description: 'must still deliver',
+      dueBy: '2099-01-01T00:00:00.000Z',
     }).expect(201);
 
     // cluster-shared: same breakage → typed admission-error refusal.
@@ -225,6 +293,7 @@ describe('admission-layer throw at the route seam (§5/§9.16 per-domain split, 
     (h2.wa as unknown as { evaluate: () => never }).evaluate = () => { throw new Error('guard broke'); };
     const res = await request(h2.app).post('/evolution/actions').send({
       title: 'broken guard, cluster-shared', description: 'must fail closed',
+      dueBy: '2099-01-01T00:00:00.000Z',
     });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('admission-error');

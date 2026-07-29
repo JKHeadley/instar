@@ -80,6 +80,8 @@ describe('Commitment auto-expiry API lifecycle', () => {
         userRequest: 'Merge old PR when CI goes green',
         agentResponse: 'I will merge when CI is green',
         topicId: 458,
+        beaconEnabled: true,
+        nextUpdateDueAt: '2099-01-01T00:00:00.000Z',
       })
       .expect(201);
 

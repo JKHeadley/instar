@@ -67,10 +67,14 @@ Three things, all real questions:
 
 ## The honest summary
 
-Nothing was built. What this establishes is that the two problems are not the same problem, and
-that the obvious reuse would have broken a rule that exists for your benefit — a rule I would
-have violated at a volume of 287 while believing I was closing a loop.
+The upstream flow fix has now been built: a new promise or task must either join its follow-through
+mechanism with a real date, or explicitly record why it has no schedule. Leaving both blank is
+refused, and choosing both is refused. That stops new invisible rows being created by omission.
+
+What was deliberately **not** built is a machine that dumps the old promise pile into your
+notifications. The existing stock still needs a separate judgment, and the rule remains that the
+agent's own work comes back to the agent, not to you as status noise.
 
 Three reminders, reaching 2%, 3% and 0%. All working. All nearly empty. The common thread is
-that signing up is a box nobody has to tick — which is probably better fixed where promises are
-made than by building a third machine to chase them.
+that signing up was a box nobody had to tick. New creation now forces that decision where the
+promise or task is made; it does not pretend the existing pile vanished.

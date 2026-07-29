@@ -1835,7 +1835,7 @@ Create a tracked action item. Use this when you promise to do something, identif
 
 1. **Define the action** — What needs to be done? Be specific and actionable.
 2. **Set priority** (critical/high/medium/low)
-3. **Set a due date** if applicable (ISO 8601 format)
+3. **Choose exactly one follow-through condition** — set a \`dueBy\` timestamp (ISO 8601), or provide a non-empty \`followThroughOptOutReason\` explaining why no schedule is appropriate
 4. **Identify who/what you're committing to** (optional)
 5. **Submit**:
 
@@ -1844,6 +1844,9 @@ curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions \\
   -H 'Content-Type: application/json' \\
   -d '{"title":"TITLE","description":"WHAT_TO_DO","priority":"medium","dueBy":"2026-03-01T00:00:00Z","commitTo":"WHO_OR_WHAT","tags":["tag1"]}'
 \`\`\`
+
+Creation refuses a bare action. If the action genuinely needs no future schedule, omit
+\`dueBy\` and send \`"followThroughOptOutReason":"WHY_NO_SCHEDULE_IS_NEEDED"\` instead.
 
 6. **When complete**, mark it done:
 
@@ -3543,7 +3546,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       gate: `curl -sf http://localhost:\${INSTAR_PORT:-${port}}/health >/dev/null 2>&1`,
       execute: {
         type: 'prompt',
-        value: `Scan recent messages for commitments and promises.\n\nAUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"\n\n1. Read your bookmark: cat .instar/state/commitment-detection-bookmark.json 2>/dev/null || echo '{"lastProcessedId": 0}'\n2. Fetch new messages since bookmark from Telegram message log: tail -100 .instar/telegram-messages.jsonl\n3. For each new message, check: does it contain a commitment, promise, or action item? Look for patterns like 'I will', 'let me', 'I\\'ll build', 'we should', 'TODO', 'action item', deadlines, etc.\n4. For each detected commitment, register it: curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"title":"...","source":"commitment-detection","description":"...","dueDate":"..."}'\n5. Update bookmark with the last processed message ID.\n\nOnly process NEW messages since last bookmark. Exit silently if no new commitments found.`,
+        value: `Scan recent messages for commitments and promises.\n\nAUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"\n\n1. Read your bookmark: cat .instar/state/commitment-detection-bookmark.json 2>/dev/null || echo '{"lastProcessedId": 0}'\n2. Fetch new messages since bookmark from Telegram message log: tail -100 .instar/telegram-messages.jsonl\n3. For each new message, check: does it contain a commitment, promise, or action item? Look for patterns like 'I will', 'let me', 'I\\'ll build', 'we should', 'TODO', 'action item', deadlines, etc.\n4. For each detected commitment, register it with EXACTLY ONE follow-through choice: resolve a stated deadline to ISO \`dueBy\`; if the message has no concrete deadline, omit \`dueBy\` and send \`"followThroughOptOutReason":"Source message contained no concrete due time; retained for explicit review."\`. Example: curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/evolution/actions -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"title":"...","source":{"platform":"commitment-detection"},"description":"...","dueBy":"2026-03-01T00:00:00Z"}'\n5. Update bookmark with the last processed message ID.\n\nOnly process NEW messages since last bookmark. Exit silently if no new commitments found.`,
       },
       tags: ['cat:evolution', 'role:worker', 'exec:prompt', 'pair:evolution-overdue-check'],
     },
