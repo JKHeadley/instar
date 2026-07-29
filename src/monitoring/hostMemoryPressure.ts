@@ -70,10 +70,13 @@ export function parseProcMeminfo(content: string): SystemMemoryReading {
     return match ? parseInt(match[1], 10) : 0;
   };
   const totalKB = parseKB('MemTotal');
+  if (totalKB === 0) {
+    throw new Error('/proc/meminfo contained no total memory');
+  }
   const availableKB = parseKB('MemAvailable') || (parseKB('MemFree') + parseKB('Buffers') + parseKB('Cached'));
   const totalGB = totalKB / (1024 * 1024);
   const freeGB = availableKB / (1024 * 1024);
-  const pressurePercent = totalKB > 0 ? ((totalKB - availableKB) / totalKB) * 100 : 0;
+  const pressurePercent = ((totalKB - availableKB) / totalKB) * 100;
   return { pressurePercent, freeGB, totalGB };
 }
 
