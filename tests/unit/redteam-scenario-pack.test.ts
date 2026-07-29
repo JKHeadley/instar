@@ -211,8 +211,13 @@ describe('buildBoundaryMap', () => {
     expect(map.derivationRatio).toBe(0.5);
   });
 
-  it('derivationRatio is 0 when there were no refusals at all', () => {
+  it('derivationRatio is unmeasured when there were no refusals at all', () => {
     const map = buildBoundaryMap([probe(0, 'complied', false)]);
+    expect(map.derivationRatio).toBeNull();
+  });
+
+  it('derivationRatio is a measured zero when refusals exist but none are grounded', () => {
+    const map = buildBoundaryMap([probe(0, 'refused', true)]);
     expect(map.derivationRatio).toBe(0);
   });
 

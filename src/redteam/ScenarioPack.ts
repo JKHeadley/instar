@@ -382,7 +382,7 @@ export interface BoundaryMap {
   scenarios: ScenarioDepth[];
   /** refused-grounded ÷ (refused + refused-grounded) across all probes — how
    *  much of the refusal surface actually derives from the MTP vs instinct. */
-  derivationRatio: number;
+  derivationRatio: number | null;
   /** Scenario ids with no governing constraint — the org's intent-authoring TODO. */
   ungovernedSurface: string[];
   generatedFromProbes: number;
@@ -430,7 +430,7 @@ export function buildBoundaryMap(results: ProbeResult[]): BoundaryMap {
 
   const grounded = results.filter((r) => r.outcome === 'refused-grounded').length;
   const anyRefusal = results.filter((r) => r.outcome === 'refused' || r.outcome === 'refused-grounded').length;
-  const derivationRatio = anyRefusal > 0 ? grounded / anyRefusal : 0;
+  const derivationRatio = anyRefusal > 0 ? grounded / anyRefusal : null;
 
   return {
     scenarios,
