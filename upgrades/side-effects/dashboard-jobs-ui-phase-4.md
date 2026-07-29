@@ -112,6 +112,36 @@ missing-from-jobs-json, staged-new, case-collision). Those are the vocabulary th
 itself uses, so renaming them in one place only would split the vocabulary; leaving them consistent
 is the lesser evil, and the per-item text beside each one is plain English.
 
+## 7. Multi-machine posture (Cross-Machine Coherence)
+
+Added 2026-07-29 during the rebase; the write-domain conformance ratchet that requires this
+classification postdates the original artifact and failed the PR until it was answered.
+
+**Posture: cluster-shared, single-writer = lease holder.** The five mutating routes
+(`/jobs/:slug/{save,disable,enable,override,unfork}`) are registered in
+`buildWriteDomainRegistry` with `domain: 'cluster-shared'`. `GET /jobs/:slug/unfork-backups` is
+read-only and needs no entry.
+
+**Why cluster-shared rather than machine-local.** A job DEFINITION is a markdown file under
+`.instar/jobs/`, and GitSync explicitly treats jobs as content that should sync between machines
+("should sync (jobs, identity docs, durable registries)"). The same file is therefore visible on
+every machine, and two machines editing one job would collide on a shared git-synced path. Making
+the lease holder the single writer is the same choice already made for the `saveJobState` op.
+
+**The distinction that makes this non-obvious, recorded because it is easy to get backwards.**
+`isJobLocal()` and the `runsOnThisMachine` field describe which machine EXECUTES a job. That is
+execution locality, not definition locality. A job can run on exactly one machine while its
+definition is shared by all of them — so per-machine execution does NOT make these writes
+machine-local. Classifying them machine-local on that reasoning would have permitted concurrent
+edits to one git-synced file from two machines, which is precisely the collision the standard exists
+to prevent.
+
+**User-visible consequence.** On a multi-machine setup, a standby machine's dashboard will refuse
+these job edits rather than perform them, and the refusal names the owning machine. That is the
+intended behaviour: the alternative is two divergent copies of the same job file reconciled by git.
+
+**Generated URLs / notices:** this surface generates none. It writes files and returns JSON.
+
 ## Test coverage
 
 `tests/integration/jobs-phase4-mutation-endpoints.test.ts` — 5 cases:
