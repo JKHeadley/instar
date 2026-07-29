@@ -5883,7 +5883,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     let _degradedTmuxRaise:
       | ((ep: import('../monitoring/DegradedTmuxGuard.js').DegradedTmuxEpisode) => void)
       | null = null;
-    const { DegradedTmuxGuard: _DegradedTmuxGuardCtor } = await import('../monitoring/DegradedTmuxGuard.js');
+    const {
+      DegradedTmuxGuard: _DegradedTmuxGuardCtor,
+      computeLoadPerCore: _computeDegradedTmuxLoadPerCore,
+    } = await import('../monitoring/DegradedTmuxGuard.js');
     // Cache the core count ONCE (stable for the process lifetime) — the guard's loadPerCore
     // provider is called on every (non-settle-window) evaluate() i.e. potentially N+ times per
     // monitor tick, and os.cpus() allocates a per-core array each call (a throughput smell on
@@ -5894,7 +5897,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       { ...config.monitoring?.degradedTmuxGuard, enabled: _degradedTmuxEnabled },
       {
         raiseAttention: (ep) => _degradedTmuxRaise?.(ep),
-        loadPerCore: () => (_degradedTmuxCores > 0 ? os.loadavg()[0] / _degradedTmuxCores : 0),
+        loadPerCore: () => _computeDegradedTmuxLoadPerCore(os.loadavg()[0], _degradedTmuxCores),
         now: () => Date.now(),
       },
     );

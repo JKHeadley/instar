@@ -1,0 +1,23 @@
+{
+  "ts": "2026-07-29T12:24:16.611Z",
+  "slug": "tmux-load-denominator",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 34,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/DegradedTmuxGuard.ts"
+    ],
+    "addedLines": 21,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

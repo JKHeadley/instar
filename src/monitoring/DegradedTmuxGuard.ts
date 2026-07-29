@@ -71,10 +71,16 @@ export interface DegradedTmuxGuardConfig {
 export interface DegradedTmuxGuardDeps {
   /** Raise ONE deduped agent-health Attention item for an episode. Wrapped in try/catch by the guard. */
   raiseAttention: (ep: DegradedTmuxEpisode) => void;
-  /** Current `loadavg[0]/cores` ratio (the same signal as SleepWakeDetector.maxLoadRatio). */
-  loadPerCore: () => number;
+  /** Current `loadavg[0]/cores` ratio; null when the denominator is unavailable. */
+  loadPerCore: () => number | null;
   /** Optional injectable clock (tests). Default Date.now. */
   now?: () => number;
+}
+
+/** Convert a load sample to a measured per-core ratio without inventing a zero denominator. */
+export function computeLoadPerCore(loadAverage: number, coreCount: number): number | null {
+  if (!Number.isFinite(loadAverage) || !Number.isFinite(coreCount) || coreCount <= 0) return null;
+  return loadAverage / coreCount;
 }
 
 /** Class defaults — absence of a config value falls back to these (runtime fallback, not config). */
@@ -218,17 +224,15 @@ export class DegradedTmuxGuard extends EventEmitter {
     if (durationMs >= this.slowCallThresholdMs) this.slowCallCount += 1;
   }
 
-  /** Current load ratio, defensively (a throw/non-finite ⇒ 0 = not load-gated). */
-  private currentLoadPerCore(): number {
+  /** Current load ratio, defensively; null means the load gate cannot be evaluated. */
+  private currentLoadPerCore(): number | null {
     try {
       const v = this.deps.loadPerCore();
-      return Number.isFinite(v) && v > 0 ? v : 0;
+      return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
     } catch {
-      // @silent-fallback-ok: a load-probe failure defaults to 0 (= not load-gated) so the
-      // signal-only guard never crashes the detector tick; the worst case is one calm,
-      // deduped agent-health Attention item raised under load that would otherwise have been
-      // gated — never a destructive action (the guard NEVER kills the shared socket).
-      return 0;
+      // @silent-fallback-ok: a load-probe failure makes this cycle unassessable, so it cannot
+      // advance corroboration. The signal-only guard still never throws or kills the socket.
+      return null;
     }
   }
 
@@ -247,7 +251,8 @@ export class DegradedTmuxGuard extends EventEmitter {
 
     // (1) Load gate — a busy host slows tmux for reasons unrelated to a sick socket; the
     // incident machine runs 5+ agents. Do NOT advance corroboration while over the threshold.
-    if (this.currentLoadPerCore() > this.loadGateMaxLoadPerCore) {
+    const loadPerCore = this.currentLoadPerCore();
+    if (loadPerCore === null || loadPerCore > this.loadGateMaxLoadPerCore) {
       return;
     }
 
