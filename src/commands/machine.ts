@@ -952,11 +952,17 @@ export async function doctor(options: DoctorOptions): Promise<void> {
         `${Math.round(validation.coverageScore * 100)}% coverage`,
       ];
       if (health.searchCount > 0) {
-        parts.push(`${Math.round(health.cacheHitRate * 100)}% cache hit`);
-        parts.push(`${Math.round(health.avgLatencyMs)}ms avg`);
-        if (health.errorRate > 0) {
+        parts.push(health.cacheHitRate === null
+          ? 'cache hit n/a'
+          : `${Math.round(health.cacheHitRate * 100)}% cache hit`);
+        if (health.avgLatencyMs !== null) {
+          parts.push(`${Math.round(health.avgLatencyMs)}ms avg`);
+        }
+        if (health.errorRate !== null && health.errorRate > 0) {
           parts.push(`${(health.errorRate * 100).toFixed(1)}% error rate`);
         }
+      } else {
+        parts.push('no search samples');
       }
 
       const hasErrors = validation.errors.length > 0;

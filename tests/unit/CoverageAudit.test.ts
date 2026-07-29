@@ -55,6 +55,34 @@ describe('Coverage Audit + Evolution (Phase 4)', () => {
     fs.writeFileSync(path.join(stateDir, 'logs', 'tree-trace.jsonl'), lines);
   }
 
+  it('reports unmeasured health rates when no trace sample exists', () => {
+    const health = new CoverageAuditor(projectDir, stateDir).healthSummary();
+
+    expect(health.searchCount).toBe(0);
+    expect(health.cacheHitRate).toBeNull();
+    expect(health.avgLatencyMs).toBeNull();
+    expect(health.errorRate).toBeNull();
+  });
+
+  it('keeps cache hit rate unmeasured when searches recorded no cache operations', () => {
+    writeTraceEntries([{
+      timestamp: '2026-03-12T15:00:00Z',
+      query: 'uncached probe',
+      cacheHits: [],
+      cacheMisses: [],
+      errors: [],
+      elapsedMs: 25,
+      degraded: false,
+    }]);
+
+    const health = new CoverageAuditor(projectDir, stateDir).healthSummary();
+
+    expect(health.searchCount).toBe(1);
+    expect(health.cacheHitRate).toBeNull();
+    expect(health.avgLatencyMs).toBe(25);
+    expect(health.errorRate).toBe(0);
+  });
+
   // Gate Test 4.1: doctor reports tree health summary
   it('4.1: health summary includes total nodes, coverage, cache rate, latency, errors', () => {
     const tree = createTree();

@@ -41,9 +41,9 @@ export interface AuditResult {
 export interface HealthSummary {
   totalNodes: number;
   coverageScore: number;
-  cacheHitRate: number;
-  avgLatencyMs: number;
-  errorRate: number;
+  cacheHitRate: number | null;
+  avgLatencyMs: number | null;
+  errorRate: number | null;
   searchCount: number;
   degradedSearches: number;
 }
@@ -146,9 +146,9 @@ export class CoverageAuditor {
     const defaultSummary: HealthSummary = {
       totalNodes: 0,
       coverageScore: 0,
-      cacheHitRate: 0,
-      avgLatencyMs: 0,
-      errorRate: 0,
+      cacheHitRate: null,
+      avgLatencyMs: null,
+      errorRate: null,
       searchCount: 0,
       degradedSearches: 0,
     };
@@ -188,9 +188,9 @@ export class CoverageAuditor {
       return {
         totalNodes: 0, // Caller fills this from config
         coverageScore: 0, // Caller fills this from validation
-        cacheHitRate: totalCacheOps > 0 ? totalCacheHits / totalCacheOps : 0,
-        avgLatencyMs: entries.length > 0 ? totalLatency / entries.length : 0,
-        errorRate: entries.length > 0 ? totalErrors / entries.length : 0,
+        cacheHitRate: totalCacheOps > 0 ? totalCacheHits / totalCacheOps : null,
+        avgLatencyMs: totalLatency / entries.length,
+        errorRate: totalErrors / entries.length,
         searchCount: entries.length,
         degradedSearches: degradedCount,
       };
