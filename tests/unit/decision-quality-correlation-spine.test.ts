@@ -315,7 +315,7 @@ describe('breaker floor — marker consumption + inbound-id discard (§5.1.2)', 
     expect(res).toBe('swap-answer');
     expect(metricRows).toHaveLength(2); // primary error row + swap success row
     expect(metricRows[0].outcome).toBe('error');
-    expect(metricRows[1].outcome).toBe('noop');
+    expect(metricRows[1].outcome).toBe('unclassified');
     expect(metricRows[0].verdictId).toMatch(new RegExp(`^d-${UUID}$`));
     expect(metricRows[1].verdictId).toBe(metricRows[0].verdictId); // ONE decision, ONE id
     expect(settlements).toHaveLength(1);

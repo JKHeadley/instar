@@ -385,7 +385,7 @@ exit 0
     expect(usages).toEqual([{ inputTokens: 120, outputTokens: 8, cachedTokens: 90 }]);
   }, 15000);
 
-  it('records a SUCCESS (noop) row WITH usage through the funnel — not an error', async () => {
+  it('records a SUCCESS (unclassified) row WITH usage through the funnel — not an error', async () => {
     const captured: Array<Record<string, unknown>> = [];
     setFeatureMetricsRecorder({ record: (e) => captured.push(e as Record<string, unknown>) });
     const provider = new CircuitBreakingIntelligenceProvider(
@@ -398,7 +398,7 @@ exit 0
     });
     expect(result).toBe('OK');
     expect(captured.find((r) => r.outcome === 'error')).toBeUndefined();
-    const okRow = captured.find((r) => r.outcome === 'noop');
+    const okRow = captured.find((r) => r.outcome === 'unclassified');
     expect(okRow).toBeDefined();
     expect(okRow!.feature).toBe('TopicIntentExtractor');
     expect(okRow!.framework).toBe('codex-cli');

@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)', () => {
-  it('records a success as outcome=noop with the feature label + latency', async () => {
+  it('records a success without a verdict classifier as outcome=unclassified', async () => {
     setFeatureMetricsRecorder(recorder);
     const inner: IntelligenceProvider = { evaluate: async () => 'ok' };
     const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
@@ -47,7 +47,7 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
 
     expect(res).toBe('ok');
     expect(recorded.length).toBe(1);
-    expect(recorded[0]).toMatchObject({ feature: 'MessagingToneGate', kind: 'llm', outcome: 'noop', waited: false });
+    expect(recorded[0]).toMatchObject({ feature: 'MessagingToneGate', kind: 'llm', outcome: 'unclassified', waited: false });
     expect(typeof recorded[0].latencyMs).toBe('number');
   });
 
@@ -78,7 +78,7 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
     const res = await p.evaluate('x', { attribution: { component: 'CoherenceGate' }, rateLimitWaitMs: 500 } as any);
 
     expect(res).toBe('ok');
-    expect(recorded[0]).toMatchObject({ feature: 'CoherenceGate', outcome: 'noop', waited: true, waitMs: 500 });
+    expect(recorded[0]).toMatchObject({ feature: 'CoherenceGate', outcome: 'unclassified', waited: true, waitMs: 500 });
   });
 
   it('records the circuit-open skip as outcome=shed (no call ran) and throws LlmCircuitOpenError', async () => {
@@ -130,7 +130,10 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
       expect(tone.realCalls).toBe(3);   // calls − shed = honest call count
       expect(tone.llmCalls).toBe(5);
       expect(tone.errors).toBe(1);
-      expect(tone.noop).toBe(2);
+      expect(tone.noop).toBe(0);
+      expect(tone.unclassified).toBe(2);
+      expect(tone.fireRate).toBeNull();
+      expect(tone.fireRateInsufficientEvidence).toBe(true);
     } finally {
       ledger.close();
     }
@@ -148,7 +151,7 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
     };
     const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
     await p.evaluate('x', { attribution: { component: 'ToneGate' } });
-    expect(recorded[0]).toMatchObject({ feature: 'ToneGate', outcome: 'noop', tokensIn: 1234, tokensOut: 56 });
+    expect(recorded[0]).toMatchObject({ feature: 'ToneGate', outcome: 'unclassified', tokensIn: 1234, tokensOut: 56 });
   });
 
   it('composes with (does not clobber) a caller-supplied onUsage', async () => {
@@ -199,7 +202,7 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
     };
     const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
     await p.evaluate('x', { attribution: { component: 'MessageSentinel' } });
-    expect(recorded[0]).toMatchObject({ feature: 'MessageSentinel', outcome: 'noop', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+    expect(recorded[0]).toMatchObject({ feature: 'MessageSentinel', outcome: 'unclassified', model: 'gpt-5.4-mini', framework: 'codex-cli' });
   });
 
   it('composes with (does not clobber) a caller-supplied onModel', async () => {
@@ -269,12 +272,12 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
     expect(recorded[0]).toMatchObject({ outcome: 'noop' });
   });
 
-  it('a throwing classifyVerdict defaults to noop and never breaks the call', async () => {
+  it('a throwing classifyVerdict records unclassified and never breaks the call', async () => {
     setFeatureMetricsRecorder(recorder);
     const inner: IntelligenceProvider = { evaluate: async () => 'ok' };
     const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
     await expect(p.evaluate('x', { classifyVerdict: () => { throw new Error('bad'); } } as any)).resolves.toBe('ok');
-    expect(recorded[0]).toMatchObject({ outcome: 'noop' });
+    expect(recorded[0]).toMatchObject({ outcome: 'unclassified' });
   });
 
   it('surfaces provider/model + fired in the REAL ledger rollup (frameworks/models/fireRate)', async () => {

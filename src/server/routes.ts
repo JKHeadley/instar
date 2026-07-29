@@ -3597,13 +3597,35 @@ export function createRoutes(ctx: RouteContext): Router {
     // lifetime even after recovery (a persistent problem keeps re-reporting, so it stays
     // inside the window). See DegradationReporter.getRecentEvents.
     const degradations = DegradationReporter.getInstance().getRecentEvents();
-    let isDegraded = sessionExhausted || totalFailures >= 5 || degradations.length > 0;
+    let llmReliability:
+      | import('../monitoring/FeatureMetricsLedger.js').FeatureReliabilitySummary
+      | { status: 'unavailable'; components: []; reason: string }
+      | null = null;
+    if (ctx.featureMetricsLedger) {
+      try {
+        llmReliability = ctx.featureMetricsLedger.reliability({ sinceHours: 24 });
+      } catch {
+        // Three-outcome health contract: unavailable telemetry is not rendered
+        // as healthy and not rendered as an empty component list.
+        llmReliability = {
+          status: 'unavailable',
+          components: [],
+          reason: 'feature metrics query failed',
+        };
+      }
+    }
+    let isDegraded =
+      sessionExhausted
+      || totalFailures >= 5
+      || degradations.length > 0
+      || (llmReliability !== null && llmReliability.status !== 'ok');
 
     const base: Record<string, unknown> = {
       status: isDegraded ? 'degraded' : 'ok',
       uptime: uptimeMs,
       uptimeHuman: formatUptime(uptimeMs),
       degradations: degradations.length,
+      ...(llmReliability ? { llmReliability } : {}),
       ...(degradations.length > 0 && {
         degradationSummary: degradations.map(e => DegradationReporter.narrativeFor(e)),
       }),

@@ -27,6 +27,18 @@ function makeInput(opts: Partial<ExtractorInput> & { topicId: number }): Extract
 }
 
 describe('createLlmExtractFn', () => {
+  it('uses the long-observer timeout instead of the provider default wall', async () => {
+    let timeoutMs: number | undefined;
+    const provider: IntelligenceProvider = {
+      async evaluate(_prompt, options) {
+        timeoutMs = options?.timeoutMs;
+        return '[]';
+      },
+    };
+    await createLlmExtractFn(provider)(makeInput({ topicId: 9 }));
+    expect(timeoutMs).toBe(60_000);
+  });
+
   it('returns [] (degrade-safe) when no provider is configured', async () => {
     const out = await createLlmExtractFn(undefined)(makeInput({ topicId: 1 }));
     expect(out).toEqual([]);

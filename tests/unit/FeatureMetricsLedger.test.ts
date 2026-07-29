@@ -40,12 +40,41 @@ describe('FeatureMetricsLedger', () => {
     expect(tone.fired).toBe(1);
     expect(tone.noop).toBe(1);
     expect(tone.fireRate).toBeCloseTo(0.5, 5);
+    expect(tone.errorRate).toBe(0);
     expect(tone.maxLatencyMs).toBe(700);
     expect(tone.avgLatencyMs).toBe(600);
 
     expect(coh.calls).toBe(1);
     expect(coh.tokensIn).toBe(800);
     expect(coh.fireRate).toBe(0); // never fired
+  });
+
+  it('reports per-component error rates with the real-call denominator', () => {
+    const l = newLedger();
+    for (let i = 0; i < 18; i++) l.record({ feature: 'BrokenReflector', outcome: 'error' });
+    for (let i = 0; i < 2; i++) l.record({ feature: 'BrokenReflector', outcome: 'noop' });
+    for (let i = 0; i < 100; i++) l.record({ feature: 'HealthyGate', outcome: 'noop' });
+    for (let i = 0; i < 80; i++) l.record({ feature: 'LoadShedOnly', outcome: 'shed' });
+
+    const s = l.summary();
+    const broken = s.features.find((f) => f.feature === 'BrokenReflector')!;
+    expect(broken).toMatchObject({ realCalls: 20, errors: 18 });
+    expect(broken.errorRate).toBeCloseTo(0.9, 5);
+    expect(s.reliability).toMatchObject({
+      status: 'failing',
+      minimumCalls: 20,
+      degradedErrorRate: 0.2,
+      failingErrorRate: 0.5,
+    });
+    expect(s.reliability.components).toEqual([
+      expect.objectContaining({
+        feature: 'BrokenReflector',
+        errors: 18,
+        realCalls: 20,
+        errorRate: 0.9,
+        status: 'failing',
+      }),
+    ]);
   });
 
   it('records provider/model + framework and surfaces distinct sets per feature (Observable Intelligence)', () => {
@@ -58,6 +87,25 @@ describe('FeatureMetricsLedger', () => {
     expect(m.models.sort()).toEqual(['claude-haiku-4-5', 'gpt-5.4-mini']);
     expect(m.fired).toBe(1);
     expect(m.fireRate).toBeCloseTo(1 / 3, 5);
+  });
+
+  it('reports unknown rates when the matching denominator is absent', () => {
+    const l = newLedger();
+    l.recordEvent('EventOnlyGuard', 'noop');
+    l.record({ feature: 'UnclassifiedLlmGate', outcome: 'unclassified' });
+
+    const eventOnly = l.byFeature().find(f => f.feature === 'EventOnlyGuard')!;
+    expect(eventOnly.realLlmCalls).toBe(0);
+    expect(eventOnly.errorRate).toBeNull();
+
+    const unclassified = l.byFeature().find(f => f.feature === 'UnclassifiedLlmGate')!;
+    expect(unclassified).toMatchObject({
+      realCalls: 1,
+      unclassified: 1,
+      fireRate: null,
+      fireRateInsufficientEvidence: true,
+      errorRate: 0,
+    });
   });
 
   it('frameworks/models are empty arrays when never recorded', () => {
@@ -168,17 +216,51 @@ describe('FeatureMetricsLedger', () => {
       kind TEXT NOT NULL, outcome TEXT NOT NULL, tokens_in INTEGER, tokens_out INTEGER,
       latency_ms INTEGER, model TEXT, waited INTEGER NOT NULL DEFAULT 0, wait_ms INTEGER, verdict_id TEXT)`);
     seed.prepare(`INSERT INTO feature_metrics (ts, feature, kind, outcome) VALUES (1, 'Legacy', 'llm', 'noop')`).run();
+    seed.prepare(`INSERT INTO feature_metrics (ts, feature, kind, outcome) VALUES (1, 'ClassifiedHistory', 'llm', 'fired')`).run();
+    seed.prepare(`INSERT INTO feature_metrics (ts, feature, kind, outcome) VALUES (2, 'ClassifiedHistory', 'llm', 'noop')`).run();
     seed.close();
 
     // Opening the ledger must add the column without losing the legacy row.
+    // Its old `noop` is ambiguous because the pre-fix funnel used that value
+    // when no verdict classifier existed, so the one-time migration must move
+    // it toward unknown rather than preserve a fabricated 0% fire rate.
     const l = new FeatureMetricsLedger({ dbPath });
     try {
       l.record({ feature: 'New', outcome: 'fired', model: 'gpt-5.4-mini', framework: 'codex-cli' });
+      l.record({ feature: 'NewClassifiedNoop', outcome: 'noop' });
       const rows = l.byFeature();
-      expect(rows.find(f => f.feature === 'Legacy')!.calls).toBe(1);
+      expect(rows.find(f => f.feature === 'Legacy')).toMatchObject({
+        calls: 1,
+        noop: 0,
+        unclassified: 1,
+        fireRate: null,
+        fireRateInsufficientEvidence: true,
+      });
+      expect(rows.find(f => f.feature === 'ClassifiedHistory')).toMatchObject({
+        calls: 2,
+        fired: 1,
+        noop: 1,
+        unclassified: 0,
+        fireRate: 0.5,
+        fireRateInsufficientEvidence: false,
+      });
       expect(rows.find(f => f.feature === 'New')!.frameworks).toEqual(['codex-cli']);
     } finally {
       l.close();
+    }
+
+    // The marker makes the migration one-shot: a classified noop written by
+    // the new code must survive later opens as classified evidence.
+    const reopened = new FeatureMetricsLedger({ dbPath });
+    try {
+      expect(reopened.byFeature().find(f => f.feature === 'NewClassifiedNoop')).toMatchObject({
+        noop: 1,
+        unclassified: 0,
+        fireRate: 0,
+        fireRateInsufficientEvidence: false,
+      });
+    } finally {
+      reopened.close();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/FeatureMetricsLedger.test.ts:cleanup' });
     }
   });

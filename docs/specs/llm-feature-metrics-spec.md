@@ -27,7 +27,11 @@ Every LLM-driven system flows through one chokepoint: the shared `IntelligencePr
 Per LLM call (recorded at the funnel):
 - **feature** — the calling system's id (from `IntelligenceOptions.label` / a required `feature` tag; calls without one are bucketed `unlabeled` and flagged so every caller gets tagged).
 - **Cost** — input/output tokens (when the provider reports them), wall latency.
-- **Outcome** — the verdict class the caller maps its result to: `fired` (blocked/flagged/acted) vs `noop` (allow/no-change) vs `error`. → **hit-rate**.
+- **Outcome** — the verdict class the caller maps its result to: `fired`
+  (blocked/flagged/acted), `noop` (classifier ran and reported allow/no-change),
+  `unclassified` (real call completed without a usable classifier), `error`, or
+  `shed` (no call ran). Fire rate is `fired / (fired + noop)` and is `null`
+  when that classified denominator is zero. → **hit-rate without invented evidence**.
 - **Context** — model, circuit state at call time, and (post-#638) whether the call **waited** for a rate-limit window + wait duration + wait outcome (so #638's bounded-wait is measured too).
 
 Programmatic guards (no LLM — dangerous-command, prompt-guard, free-text guard): a lighter `recordEvent(feature, outcome)` (invocation + verdict counts, no token cost). Volume + hit-rate still tell us whether the guard earns its place.

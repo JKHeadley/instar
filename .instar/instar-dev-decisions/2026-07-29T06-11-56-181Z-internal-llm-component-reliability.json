@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-29T06:11:56.181Z",
+  "slug": "internal-llm-component-reliability",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 158,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
