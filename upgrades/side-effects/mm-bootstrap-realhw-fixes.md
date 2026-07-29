@@ -108,10 +108,20 @@ Rollback: revert; no data/schema change.
 This PR sat 62 days and 2,182 commits behind. Rebasing it was an audit, and most of it turned out to
 be already solved. Recording that honestly rather than reasserting superseded work:
 
+**Restored after the rebased regression tests proved the production hunks were absent:**
+- **Commit-signing viability.** Main retained canonical + legacy key-name compatibility in
+  `MachineIdentity`, but `GitSync.configureCommitSigning` still read only the legacy filename and
+  enabled signing without proving that `ssh-keygen` could use the key. The canonical/legacy lookup,
+  public-key derivation, real sign probe, and explicit unsigned fallback are present here.
+- **Clean-exit autostash conflict recovery.** Main retained the deterministic registry merger, but
+  a successful `git pull --autostash` could still leave unmerged files without entering the
+  catch-path resolver. Every successful full-sync pull path now checks that postcondition, resolves
+  the files, and drops the redundant autostash once clean.
+
 **Superseded by main — dropped, NOT reapplied:**
-- **Signing-key filename.** This PR changed the loader to read the canonical `signing-key.pem`. Main
-  now tries `['signing-key.pem', 'signing-private.pem']` in order, so BOTH the canonical and the
-  legacy propagated layout work. Main's version is a strict superset; took main's.
+- **Signing-key filename-only rewrite.** The old PR renamed one reader to the canonical
+  `signing-key.pem`. The restored implementation instead retains both canonical and legacy lookup;
+  the single-name rewrite remains dropped.
 - **Upstream-aware push.** This PR added a `push -u origin <branch>` retry for a branch with no
   upstream. Main already has exactly that, with a fuller comment on why a bare `push` failure is
   indistinguishable from "nothing to sync". Took main's.

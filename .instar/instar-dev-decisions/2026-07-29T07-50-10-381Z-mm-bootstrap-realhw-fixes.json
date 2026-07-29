@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-29T07:50:10.381Z",
+  "slug": "mm-bootstrap-realhw-fixes",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 104,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

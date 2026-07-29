@@ -70,6 +70,20 @@ in one overnight run.
 - The exactly-once delivery flag goes from default-off to default-on
   for everyone (Final).
 
+## July rebase correction
+
+When this work was rebased onto current main, its tests showed that two
+GitSync protections had been described but were no longer wired into the
+production class. They are restored here:
+
+- A successful pull now checks whether applying its temporary stash left
+  conflicts behind. If it did, the deterministic registry merger runs before
+  sync can report success.
+- Commit signing is enabled only after the actual machine key successfully
+  signs a probe. Both the current and legacy key filenames are accepted. If
+  the probe fails, commits continue unsigned and the degraded state is visible
+  instead of every commit failing.
+
 ## What I need from you
 
 - Approval of this spec as a single autonomous run.

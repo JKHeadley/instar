@@ -18,9 +18,11 @@ mis-classified by a cwd-relative path bug, so the deterministic merge never ran)
 `wakeup --force` claims and propagates a real signed +1-epoch lease rather than only flipping the
 local role, which the server used to revert.
 
-Three fixes from the original set are NOT here because main solved them first, in better form: the
-upstream-aware push, the signing-key filename, and the exactly-once-ingress default. Reapplying them
-would have replaced main's versions with older ones. See the side-effects addendum for each.
+Three filename/default-level rewrites from the original set are NOT here because main solved them
+first, in better form: the upstream-aware push, the signing-key filename-only change, and the
+exactly-once-ingress default. The GitSync signing viability probe is present: it retains main's
+canonical + legacy lookup and enables signing only after a real sign succeeds. See the side-effects
+addendum for each.
 
 ## Summary of New Capabilities
 

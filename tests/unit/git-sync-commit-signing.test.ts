@@ -108,6 +108,18 @@ describe('GitSync.configureCommitSigning — commits never break (signing regres
     expect(['G', 'U', 'E', 'N']).toContain(verify); // signed (G/U) — never an error that aborts commit
   });
 
+  it('retains legacy signing-private.pem compatibility', () => {
+    const keyPath = path.join(work, '.instar', 'machine', 'signing-private.pem');
+    sshKeygen(['-t', 'ed25519', '-N', '', '-C', 'mesh-legacy', '-f', keyPath]);
+
+    const mgr = manager();
+    mgr.configureCommitSigning();
+
+    expect(git(work, ['config', '--get', 'user.signingkey'])).toBe(keyPath);
+    expect(git(work, ['config', '--get', 'commit.gpgsign'])).toBe('true');
+    expect(commitSucceeds(mgr)).toBe(true);
+  });
+
   it('missing signing key throws (operator must pair first)', () => {
     const mgr = manager();
     expect(() => mgr.configureCommitSigning()).toThrow(/signing key not found/i);

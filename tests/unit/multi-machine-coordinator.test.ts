@@ -123,6 +123,7 @@ describe('MultiMachineCoordinator', () => {
   describe('silent-standby lease observe-only (telegramPolling:false)', () => {
     function fakeLease() {
       return {
+        primeFromDurable: vi.fn(() => true),
         acquireIfEligible: vi.fn(async () => false),
         renew: vi.fn(async () => true),
         holdsLease: vi.fn(() => false),
@@ -144,6 +145,7 @@ describe('MultiMachineCoordinator', () => {
       coord.attachLeaseCoordinator(lc as any);
       await coord.initializeLease();
       await (coord as any).tickLease();
+      expect(lc.primeFromDurable).toHaveBeenCalledOnce();
       expect(lc.acquireIfEligible).not.toHaveBeenCalled();
       expect(lc.renew).not.toHaveBeenCalled();
     });
@@ -155,6 +157,7 @@ describe('MultiMachineCoordinator', () => {
       coord.attachLeaseCoordinator(lc as any);
       expect(coord.isLeaseObserveOnly).toBe(false);
       await coord.initializeLease();
+      expect(lc.primeFromDurable).toHaveBeenCalledOnce();
       expect(lc.acquireIfEligible).toHaveBeenCalled();
     });
   });
