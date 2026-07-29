@@ -371,13 +371,13 @@ describe('DispatchDecisionJournal', () => {
   // ── stats() ───────────────────────────────────────────────────────
 
   describe('stats()', () => {
-    it('returns zero stats for empty journal', () => {
+    it('returns null acceptance rate for empty journal', () => {
       const stats = journal.stats();
       expect(stats.total).toBe(0);
       expect(stats.byDecision).toEqual({});
       expect(stats.byDispatchType).toEqual({});
       expect(stats.byEvaluationMethod).toEqual({});
-      expect(stats.acceptanceRate).toBe(0);
+      expect(stats.acceptanceRate).toBeNull();
       expect(stats.earliest).toBeNull();
       expect(stats.latest).toBeNull();
     });

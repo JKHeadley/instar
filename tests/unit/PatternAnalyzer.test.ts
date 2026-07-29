@@ -79,7 +79,7 @@ describe('PatternAnalyzer', () => {
       expect(report.runsAnalyzed).toBe(0);
       expect(report.patterns).toEqual([]);
       expect(report.summary.uniqueSteps).toBe(0);
-      expect(report.summary.successRate).toBe(0);
+      expect(report.summary.successRate).toBeNull();
       expect(report.summary.durationTrend).toBe('insufficient-data');
     });
 

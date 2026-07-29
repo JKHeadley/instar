@@ -1,0 +1,14 @@
+{
+  "ts": "2026-07-29T08:36:35.686Z",
+  "slug": "honest-empty-denominator-rates",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 18,
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
