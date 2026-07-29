@@ -17309,14 +17309,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         contentClass: entry.contentClass,
         decisions,
         outcomesKnown,
-        outcomesKnownRatio: decisions > 0 ? outcomesKnown / decisions : 0,
+        outcomesKnownRatio: decisions > 0 ? outcomesKnown / decisions : null,
         /**
          * Settled (right|wrong) grades — the only ones that can support a rate.
          * `selfReportShare` below already divides by this same quantity.
          */
         settledGrades,
         /** Share of graded rows that are unsettled. 1.0 means nothing is known. */
-        unknownShare: outcomesKnown > 0 ? unknown / outcomesKnown : 0,
+        unknownShare: outcomesKnown > 0 ? unknown / outcomesKnown : null,
         // Below the minimum SETTLED-grade count an aggregate rate is not
         // actionable (§5.5 codex r5). Measured 2026-07-28: this counted
         // `unknown` toward the sample, so messaging-tone-gate (2075 decisions,
@@ -17345,7 +17345,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // much of it is self-report without having to know `byStrength`
           // exists. `selfReportOnly` is the loud case: every graded outcome
           // here is the interested party's word.
-          selfReportShare: right + wrong > 0 ? selfReportGraded / (right + wrong) : 0,
+          selfReportShare: right + wrong > 0 ? selfReportGraded / (right + wrong) : null,
           selfReportOnly: right + wrong > 0 && selfReportGraded === right + wrong,
         },
         // Strength FIRST (default aggregate) — proof-like and heuristic grades are never conflated.

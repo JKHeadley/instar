@@ -116,6 +116,9 @@ describe('GET /decision-quality (integration)', () => {
     expect(point).toBeTruthy();
     expect(point.decisions).toBe(1);
     expect(point.gradeDistribution.right).toBe(1);
+    expect(point.outcomesKnownRatio).toBe(1);
+    expect(point.unknownShare).toBe(0);
+    expect(point.gradeDistribution.selfReportShare).toBe(0);
     // Strength-first aggregate is present and segments proof-like vs heuristic.
     expect(point.byStrength['negative-evidence'].right).toBe(1);
     expect(point.byRule[HOG_SUSTAINED_RIGHT_RULE_ID].right).toBe(1);
@@ -125,6 +128,23 @@ describe('GET /decision-quality (integration)', () => {
     expect(res.body.rejections).toEqual({ enumInvalid: 0, rungMismatch: 0, ownerMismatch: 0, unknownDecisionPoint: 0 });
     // evidence_note is NEVER served by this route.
     expect(JSON.stringify(res.body)).not.toMatch(/evidence_note|evidenceNote/);
+  });
+
+  it('keeps empty per-point ratios unmeasured while preserving their denominators', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const res = await request(appWith(ctxWith({ ledger, developmentAgent: true })))
+      .get('/decision-quality?sinceHours=24').set('Authorization', `Bearer ${AUTH}`);
+
+    expect(res.status).toBe(200);
+    const point = (res.body.points as Array<any>).find((p) => p.decisionPoint === DP_MESSAGING_TONE_GATE);
+    expect(point).toBeTruthy();
+    expect(point.decisions).toBe(0);
+    expect(point.outcomesKnown).toBe(0);
+    expect(point.settledGrades).toBe(0);
+    expect(point.outcomesKnownRatio).toBeNull();
+    expect(point.unknownShare).toBeNull();
+    expect(point.gradeDistribution.selfReportShare).toBeNull();
+    expect(point.insufficientEvidence).toBe(true);
   });
 
   it('a 100%-UNKNOWN stream is insufficientEvidence:true — unknown grades are not evidence', async () => {
@@ -161,6 +181,7 @@ describe('GET /decision-quality (integration)', () => {
     // The evidence count is zero, and the flag follows the evidence, not the rows.
     expect(point.settledGrades).toBe(0);
     expect(point.unknownShare).toBe(1);
+    expect(point.gradeDistribution.selfReportShare).toBeNull();
     expect(point.insufficientEvidence).toBe(true);
   });
 
