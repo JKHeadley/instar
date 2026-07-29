@@ -286,6 +286,10 @@ export function createLlmExtractFn(
         model: 'fast',
         temperature: 0,
         maxTokens: 600,
+        // This background observer routinely carries a message, rolling
+        // summary, and existing refs. Give the primary attempt the long-call
+        // budget rather than inheriting the provider's 30s wall.
+        timeoutMs: 60_000,
         attribution: { component: 'TopicIntentExtractor' },
         // LLM-Decision Quality Meter §5.1.4/§5.6 enrollment. Observability ONLY:
         // the settlement seam consumes this block and records on its own path —

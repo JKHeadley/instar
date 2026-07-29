@@ -102,6 +102,8 @@ export interface FeatureRollup {
   /** Real round-trips only (calls − shed) — the honest call count. */
   realCalls: number;
   llmCalls: number;
+  /** LLM round-trips only (llmCalls − LLM shed rows). */
+  realLlmCalls: number;
   events: number;
   tokensIn: number;
   tokensOut: number;
@@ -114,10 +116,14 @@ export interface FeatureRollup {
   fired: number;
   noop: number;
   errors: number;
+  /** Error rows from LLM calls only (event errors excluded). */
+  llmErrors: number;
   /** Circuit-open no-calls: the breaker refused the call, nothing ran. */
   shed: number;
   /** fired / realCalls (0..1) — how often the system acts on a call that actually ran. */
   fireRate: number;
+  /** llmErrors / realLlmCalls (0..1) — component reliability, never the fleet aggregate. */
+  errorRate: number;
   avgLatencyMs: number;
   p50LatencyMs: number;
   p95LatencyMs: number;
@@ -126,6 +132,61 @@ export interface FeatureRollup {
   avgWaitMs: number;
   /** This feature's slice of the feature×model partition (summary() only). */
   byModel?: FeatureModelRollup[];
+}
+
+export type FeatureReliabilityStatus = 'ok' | 'degraded' | 'failing';
+
+export interface FeatureReliabilityComponent {
+  feature: string;
+  errors: number;
+  realCalls: number;
+  errorRate: number;
+  status: Exclude<FeatureReliabilityStatus, 'ok'>;
+}
+
+export interface FeatureReliabilitySummary {
+  status: FeatureReliabilityStatus;
+  minimumCalls: number;
+  degradedErrorRate: number;
+  failingErrorRate: number;
+  components: FeatureReliabilityComponent[];
+}
+
+export const FEATURE_RELIABILITY_MINIMUM_CALLS = 20;
+export const FEATURE_RELIABILITY_DEGRADED_ERROR_RATE = 0.2;
+export const FEATURE_RELIABILITY_FAILING_ERROR_RATE = 0.5;
+
+/**
+ * Component-level reliability snapshot. The aggregate is deliberately not an
+ * input: a high-volume healthy feature must never dilute a broken component.
+ */
+export function summarizeFeatureReliability(
+  features: Array<Pick<FeatureRollup, 'feature' | 'realLlmCalls' | 'llmErrors' | 'errorRate'>>,
+): FeatureReliabilitySummary {
+  const components = features
+    .filter((f) =>
+      f.realLlmCalls >= FEATURE_RELIABILITY_MINIMUM_CALLS
+      && f.errorRate >= FEATURE_RELIABILITY_DEGRADED_ERROR_RATE,
+    )
+    .map((f): FeatureReliabilityComponent => ({
+      feature: f.feature,
+      errors: f.llmErrors,
+      realCalls: f.realLlmCalls,
+      errorRate: f.errorRate,
+      status: f.errorRate >= FEATURE_RELIABILITY_FAILING_ERROR_RATE ? 'failing' : 'degraded',
+    }))
+    .sort((a, b) => b.errorRate - a.errorRate || b.realCalls - a.realCalls || a.feature.localeCompare(b.feature));
+  return {
+    status: components.some((c) => c.status === 'failing')
+      ? 'failing'
+      : components.length > 0
+        ? 'degraded'
+        : 'ok',
+    minimumCalls: FEATURE_RELIABILITY_MINIMUM_CALLS,
+    degradedErrorRate: FEATURE_RELIABILITY_DEGRADED_ERROR_RATE,
+    failingErrorRate: FEATURE_RELIABILITY_FAILING_ERROR_RATE,
+    components,
+  };
 }
 
 /**
@@ -345,6 +406,7 @@ export interface UsageCoverageRow {
 
 export interface FeatureMetricsSummary {
   sinceMs: number;
+  reliability: FeatureReliabilitySummary;
   totals: {
     calls: number;
     realCalls: number;
@@ -876,6 +938,34 @@ export class FeatureMetricsLedger {
     return opts.sinceHours && opts.sinceHours > 0 ? this.now() - opts.sinceHours * 3_600_000 : 0;
   }
 
+  /**
+   * Cheap component reliability snapshot for hot health reads. One grouped,
+   * index-bounded query only: no latency-row materialization, model partition,
+   * or token rollup work from summary().
+   */
+  reliability(opts: { sinceHours?: number } = {}): FeatureReliabilitySummary {
+    const sinceMs = this.sinceMsFrom(opts);
+    const rows = this.db.prepare(
+      `SELECT
+         feature,
+         SUM(CASE WHEN kind='llm' AND outcome!='shed' THEN 1 ELSE 0 END) AS realLlmCalls,
+         SUM(CASE WHEN kind='llm' AND outcome='error' THEN 1 ELSE 0 END) AS llmErrors
+       FROM feature_metrics
+       WHERE ts >= ? AND kind='llm'
+       GROUP BY feature`,
+    ).all(sinceMs) as Array<{ feature: string; realLlmCalls: number; llmErrors: number }>;
+    return summarizeFeatureReliability(rows.map((row) => {
+      const realLlmCalls = Number(row.realLlmCalls) || 0;
+      const llmErrors = Number(row.llmErrors) || 0;
+      return {
+        feature: String(row.feature),
+        realLlmCalls,
+        llmErrors,
+        errorRate: realLlmCalls > 0 ? llmErrors / realLlmCalls : 0,
+      };
+    }));
+  }
+
   /** Per-feature rollup over the lookback window (default: all time). */
   byFeature(opts: { sinceHours?: number } = {}): FeatureRollup[] {
     return this.byFeatureCore(this.sinceMsFrom(opts), { includeProviderScan: true });
@@ -897,6 +987,7 @@ export class FeatureMetricsLedger {
            feature,
            COUNT(*)                                           AS calls,
            SUM(CASE WHEN kind='llm'   THEN 1 ELSE 0 END)      AS llmCalls,
+           SUM(CASE WHEN kind='llm' AND outcome!='shed' THEN 1 ELSE 0 END) AS realLlmCalls,
            SUM(CASE WHEN kind='event' THEN 1 ELSE 0 END)      AS events,
            COALESCE(SUM(tokens_in), 0)                        AS tokensIn,
            COALESCE(SUM(tokens_out), 0)                       AS tokensOut,
@@ -904,6 +995,7 @@ export class FeatureMetricsLedger {
            SUM(CASE WHEN outcome='fired' THEN 1 ELSE 0 END)   AS fired,
            SUM(CASE WHEN outcome='noop'  THEN 1 ELSE 0 END)   AS noop,
            SUM(CASE WHEN outcome='error' THEN 1 ELSE 0 END)   AS errors,
+           SUM(CASE WHEN kind='llm' AND outcome='error' THEN 1 ELSE 0 END) AS llmErrors,
            SUM(CASE WHEN outcome='shed'  THEN 1 ELSE 0 END)   AS shed,
            SUM(waited)                                        AS waitedCalls,
            COALESCE(AVG(CASE WHEN waited=1 THEN wait_ms END), 0) AS avgWaitMs,
@@ -971,6 +1063,7 @@ export class FeatureMetricsLedger {
         calls,
         realCalls,
         llmCalls: Number(a.llmCalls) || 0,
+        realLlmCalls: Number(a.realLlmCalls) || 0,
         events: Number(a.events) || 0,
         tokensIn: Number(a.tokensIn) || 0,
         tokensOut: Number(a.tokensOut) || 0,
@@ -980,8 +1073,12 @@ export class FeatureMetricsLedger {
         fired,
         noop: Number(a.noop) || 0,
         errors: Number(a.errors) || 0,
+        llmErrors: Number(a.llmErrors) || 0,
         shed,
         fireRate: realCalls > 0 ? fired / realCalls : 0,
+        errorRate: (Number(a.realLlmCalls) || 0) > 0
+          ? (Number(a.llmErrors) || 0) / (Number(a.realLlmCalls) || 0)
+          : 0,
         avgLatencyMs: Math.round(Number(a.avgLatencyMs) || 0),
         p50LatencyMs: percentile(lats, 0.5),
         p95LatencyMs: percentile(lats, 0.95),
@@ -1190,6 +1287,7 @@ export class FeatureMetricsLedger {
 
     return {
       sinceMs,
+      reliability: summarizeFeatureReliability(features),
       totals: { ...totals, byModel, usageCoverage, unlabeledTokenShare, unlabeledCallShare },
       features,
     };

@@ -205,6 +205,24 @@ describe('ProfileIntentClassifier — decision + fail-open contract', () => {
     expect(r.source).toBe('fail-open');
   });
 
+  it('separates the primary attempt timeout from the end-to-end fallback budget', async () => {
+    let seenTimeout: number | undefined;
+    const provider: IntelligenceProvider = {
+      evaluate: async (_prompt, options) => {
+        seenTimeout = options?.timeoutMs;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return verdict({ isChange: true, intent: 'framework', value: 'codex-cli', confidence: 0.99 });
+      },
+    };
+    const r = await classifyProfileIntent(base({
+      intelligence: provider,
+      timeoutMs: 50,
+      attemptTimeoutMs: 10,
+    }));
+    expect(seenTimeout).toBe(10);
+    expect(r).toMatchObject({ isChange: true, value: 'codex-cli' });
+  });
+
   it('GUARDRAIL (enum): model emits an out-of-enum framework value → pass-through (value-not-in-enum)', async () => {
     const r = await classifyProfileIntent(base({
       text: 'use codex here',

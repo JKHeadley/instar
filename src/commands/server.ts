@@ -850,7 +850,7 @@ let _sharedIntelligence: import('../core/types.js').IntelligenceProvider | null 
 let _profileIntentEnabled = false;
 let _profileIntentDryRun = true;
 let _profileIntentMinConfidence = 0.85;
-let _profileIntentTimeoutMs = 4000;
+let _profileIntentTimeoutMs = 15_000;
 let _profileIntentContextTurns = 6;
 let _profileIntentModelTier: 'fast' | 'balanced' | 'capable' = 'fast';
 let _profileIntentStateDir = '';
@@ -6138,7 +6138,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         );
         _profileIntentDryRun = _intentCfg?.dryRun ?? true;
         _profileIntentMinConfidence = _intentCfg?.minConfidence ?? 0.85;
-        _profileIntentTimeoutMs = _intentCfg?.timeoutMs ?? 4000;
+        // Overall classifier budget. The classifier keeps the primary attempt
+        // at 4s by default, leaving the remainder for the router's configured
+        // failure-swap instead of cutting the whole chain off at attempt one.
+        _profileIntentTimeoutMs = _intentCfg?.timeoutMs ?? 15_000;
         _profileIntentContextTurns = _intentCfg?.contextWindowTurns ?? 6;
         _profileIntentModelTier = _intentCfg?.modelTier ?? 'fast';
         _profileIntentStateDir = config.stateDir;

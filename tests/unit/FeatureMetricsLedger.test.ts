@@ -40,12 +40,41 @@ describe('FeatureMetricsLedger', () => {
     expect(tone.fired).toBe(1);
     expect(tone.noop).toBe(1);
     expect(tone.fireRate).toBeCloseTo(0.5, 5);
+    expect(tone.errorRate).toBe(0);
     expect(tone.maxLatencyMs).toBe(700);
     expect(tone.avgLatencyMs).toBe(600);
 
     expect(coh.calls).toBe(1);
     expect(coh.tokensIn).toBe(800);
     expect(coh.fireRate).toBe(0); // never fired
+  });
+
+  it('reports per-component error rates with the real-call denominator', () => {
+    const l = newLedger();
+    for (let i = 0; i < 18; i++) l.record({ feature: 'BrokenReflector', outcome: 'error' });
+    for (let i = 0; i < 2; i++) l.record({ feature: 'BrokenReflector', outcome: 'noop' });
+    for (let i = 0; i < 100; i++) l.record({ feature: 'HealthyGate', outcome: 'noop' });
+    for (let i = 0; i < 80; i++) l.record({ feature: 'LoadShedOnly', outcome: 'shed' });
+
+    const s = l.summary();
+    const broken = s.features.find((f) => f.feature === 'BrokenReflector')!;
+    expect(broken).toMatchObject({ realCalls: 20, errors: 18 });
+    expect(broken.errorRate).toBeCloseTo(0.9, 5);
+    expect(s.reliability).toMatchObject({
+      status: 'failing',
+      minimumCalls: 20,
+      degradedErrorRate: 0.2,
+      failingErrorRate: 0.5,
+    });
+    expect(s.reliability.components).toEqual([
+      expect.objectContaining({
+        feature: 'BrokenReflector',
+        errors: 18,
+        realCalls: 20,
+        errorRate: 0.9,
+        status: 'failing',
+      }),
+    ]);
   });
 
   it('records provider/model + framework and surfaces distinct sets per feature (Observable Intelligence)', () => {

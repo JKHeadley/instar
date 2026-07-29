@@ -126,6 +126,18 @@ describe('ClaimClauseArbiter', () => {
       .toMatchObject({ isActionClaim: true, claim: { normalizedClaimVerb: 'deploy' } });
   });
 
+  it('gives the long reflector a full attempt and does not nest it in the router deferrable queue', async () => {
+    let seen: any;
+    const provider = { evaluate: vi.fn().mockImplementation(async (_prompt: string, options: any) => {
+      seen = options;
+      return JSON.stringify({ clauses: [] });
+    }) } as any;
+    await new ClaimClauseArbiter({ intelligence: provider }).arbitrate('I checked the result', evidence);
+    expect(seen.timeoutMs).toBe(60_000);
+    expect(seen.attribution).toMatchObject({ component: 'completion-claim-verify' });
+    expect(seen.attribution.deferrable).not.toBe(true);
+  });
+
   it('admits the general projection only from the Claude framework door', async () => {
     const message = 'Capacity is four lanes.';
     const general = { schemaVersion: 1, claims: [{

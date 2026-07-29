@@ -80,8 +80,14 @@ export interface ProfileIntentInput {
   conversationContext?: ConversationTurn[];
   /** Shared IntelligenceProvider (fast tier). Null/undefined → fail-open. */
   intelligence: IntelligenceProvider | null | undefined;
-  /** Per-call timeout (ms). Default 4000. */
+  /** End-to-end classifier timeout (ms), including provider swaps. Default 15000. */
   timeoutMs?: number;
+  /**
+   * Primary provider-attempt timeout (ms). Default 4000 and clamped to the
+   * overall timeout. Keeping this separate leaves time for the router's
+   * configured failure-swap instead of racing the whole chain at attempt one.
+   */
+  attemptTimeoutMs?: number;
   /** Minimum confidence for a positive change. Default 0.85. */
   minConfidence?: number;
   /** Max recent turns to include as context. Default 6. */
@@ -107,6 +113,7 @@ export interface ProfileIntentResult {
 }
 
 const DEFAULT_TIMEOUT_MS = 4000;
+const DEFAULT_OVERALL_TIMEOUT_MS = 15_000;
 const DEFAULT_MIN_CONFIDENCE = 0.85;
 const DEFAULT_MAX_CONTEXT_TURNS = 6;
 const DEFAULT_MAX_CONTEXT_CHARS = 400;
@@ -401,7 +408,11 @@ export async function classifyProfileIntent(
   input: ProfileIntentInput,
 ): Promise<ProfileIntentResult> {
   const minConfidence = input.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
-  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = input.timeoutMs ?? DEFAULT_OVERALL_TIMEOUT_MS;
+  const attemptTimeoutMs = Math.min(
+    timeoutMs,
+    input.attemptTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+  );
   const maxTurns = input.maxContextTurns ?? DEFAULT_MAX_CONTEXT_TURNS;
   const maxChars = input.maxContextCharsPerTurn ?? DEFAULT_MAX_CONTEXT_CHARS;
   const context = Array.isArray(input.conversationContext) ? input.conversationContext : [];
@@ -429,7 +440,7 @@ export async function classifyProfileIntent(
         model: input.modelTier ?? 'fast',
         temperature: 0,
         maxTokens: 200,
-        timeoutMs,
+        timeoutMs: attemptTimeoutMs,
         // gating:true → the IntelligenceRouter SWAPS to the failure-swap
         // frameworks (each circuit-checked) before the error propagates, so a
         // single provider blip does not force a pass-through. Only if EVERY

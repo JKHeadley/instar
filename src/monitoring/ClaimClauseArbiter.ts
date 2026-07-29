@@ -54,10 +54,14 @@ export class ClaimClauseArbiter {
       let resolvedModel: { framework?: string; model: string } | undefined;
       let usage: { inputTokens: number; outputTokens: number } | undefined;
       const raw = await this.opts.intelligence.evaluate(buildClaimArbiterPrompt(clauses, evidence, message), {
-        model: 'fast', temperature: 0, maxTokens: 1_800, timeoutMs: 30_000,
+        model: 'fast', temperature: 0, maxTokens: 1_800, timeoutMs: 60_000,
         onModel: (info) => { resolvedModel = { model: info.model, ...(info.framework ? { framework: info.framework } : {}) }; },
         onUsage: (info) => { usage = { inputTokens: info.inputTokens, outputTokens: info.outputTokens }; },
-        attribution: { component: 'completion-claim-verify', deferrable: true, injectionExposed: true },
+        // The verifier already runs behind its bounded admission + metering
+        // queues. Marking this deferrable made IntelligenceRouter enqueue the
+        // same call again after swap failure (and sent it through the 5s
+        // deferrable swap tail), producing a nested queue rejection.
+        attribution: { component: 'completion-claim-verify', injectionExposed: true },
         provenance: {
           decisionPoint: DP_COMPLETION_CLAIM_VERIFY,
           context: buildCompletionClaimDecisionContext({ message, clauses, evidence }),

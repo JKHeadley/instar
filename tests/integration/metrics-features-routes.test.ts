@@ -23,7 +23,10 @@ let ledger: FeatureMetricsLedger | null = null;
 function ctxWith(metricsLedger: FeatureMetricsLedger | null, verifier?: CompletionClaimVerifier): RouteContext {
   return {
     config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any } as any,
-    sessionManager: { listRunningSessions: () => [] } as any,
+    sessionManager: {
+      listRunningSessions: () => [],
+      getCachedRunningSessions: () => ({ count: 0, sessions: [] }),
+    } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,
     updateChecker: null, autoUpdater: null, autoDispatcher: null, quotaTracker: null,
@@ -65,6 +68,70 @@ describe('GET /metrics/features (integration)', () => {
     expect(tone.calls).toBe(2);
     expect(tone.tokensIn).toBe(210);
     expect(tone.fireRate).toBeCloseTo(0.5, 5);
+    expect(tone.errorRate).toBe(0);
+  });
+
+  it('surfaces component-level reliability instead of masking it behind the aggregate', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    for (let i = 0; i < 18; i++) ledger.record({ feature: 'BrokenReflector', outcome: 'error' });
+    for (let i = 0; i < 2; i++) ledger.record({ feature: 'BrokenReflector', outcome: 'noop' });
+    for (let i = 0; i < 280; i++) ledger.record({ feature: 'HealthyGate', outcome: 'noop' });
+
+    const res = await request(appWith(ledger)).get('/metrics/features');
+
+    expect(res.status).toBe(200);
+    expect(res.body.totals.errors / res.body.totals.realCalls).toBeLessThan(0.1);
+    expect(res.body.reliability.status).toBe('failing');
+    expect(res.body.reliability.components).toEqual([
+      expect.objectContaining({
+        feature: 'BrokenReflector',
+        errors: 18,
+        realCalls: 20,
+        errorRate: 0.9,
+        status: 'failing',
+      }),
+    ]);
+  });
+
+  it('marks /health degraded with the failing component and denominator', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    for (let i = 0; i < 15; i++) ledger.record({ feature: 'ProfileIntentClassifier', outcome: 'error' });
+    for (let i = 0; i < 5; i++) ledger.record({ feature: 'ProfileIntentClassifier', outcome: 'noop' });
+    for (let i = 0; i < 300; i++) ledger.record({ feature: 'HealthyGate', outcome: 'noop' });
+    const fullSummary = vi.spyOn(ledger, 'summary');
+
+    const res = await request(appWith(ledger)).get('/health');
+
+    expect(res.status).toBe(200);
+    expect(fullSummary).not.toHaveBeenCalled(); // hot health read uses the one-query reliability path
+    expect(res.body.status).toBe('degraded');
+    expect(res.body.llmReliability).toMatchObject({
+      status: 'failing',
+      components: [
+        {
+          feature: 'ProfileIntentClassifier',
+          errors: 15,
+          realCalls: 20,
+          errorRate: 0.75,
+          status: 'failing',
+        },
+      ],
+    });
+  });
+
+  it('renders reliability enumeration failure as unavailable, never healthy or empty', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    ledger.close();
+
+    const res = await request(appWith(ledger)).get('/health');
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('degraded');
+    expect(res.body.llmReliability).toEqual({
+      status: 'unavailable',
+      components: [],
+      reason: 'feature metrics query failed',
+    });
   });
 
   it('surfaces provider/model + fired through the route (Observable Intelligence)', async () => {
