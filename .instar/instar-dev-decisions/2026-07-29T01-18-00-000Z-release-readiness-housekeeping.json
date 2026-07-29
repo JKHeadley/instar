@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-07-29T01:18:00.000Z",
+  "slug": "release-readiness-housekeeping",
+  "riskFloor": 2,
+  "decision": "retain-and-merge",
+  "scope": "demote release-readiness evaluator self-failures to audit-only housekeeping by default while preserving actionable release-blocked alerts",
+  "evidence": {
+    "relevance": "current main still posts an Attention item for every evaluator-stage failure",
+    "mergeability": "the pull request merges cleanly into current main",
+    "tests": "the pull request's focused, unit, integration, end-to-end, type, and build checks passed",
+    "standards": "the behavior matches the sentinel-trio no-topic-clutter standard and retains an explicit escalation opt-in"
+  }
+}
