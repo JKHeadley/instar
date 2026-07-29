@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+// Import the real authority so a changed gate contract breaks this test instead of letting a copied regex drift.
 import { checkPrDescriptionEli16 } from '../../scripts/eli16-pr-description-check.mjs';
 
 const templatePath = path.resolve(process.cwd(), '.github/PULL_REQUEST_TEMPLATE.md');
