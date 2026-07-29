@@ -208,7 +208,9 @@ function printPatternReport(report: PatternReport, showProposals?: boolean): voi
   const parts: string[] = [
     `${report.summary.uniqueSteps} unique steps`,
     `${report.summary.definedSteps} defined`,
-    `${Math.round(report.summary.successRate * 100)}% success`,
+    report.summary.successRate != null
+      ? `${Math.round(report.summary.successRate * 100)}% success`
+      : 'success unavailable',
   ];
   if (report.summary.avgDurationMinutes != null) {
     parts.push(`avg ${report.summary.avgDurationMinutes}min`);

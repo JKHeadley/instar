@@ -27,8 +27,8 @@ export interface DispatchDecisionStats {
   byDispatchType: Record<string, number>;
   /** Breakdown by evaluation method */
   byEvaluationMethod: Record<string, number>;
-  /** Acceptance rate (accept / total) */
-  acceptanceRate: number;
+  /** Acceptance rate (accept / total), or null when there are no decisions */
+  acceptanceRate: number | null;
   /** ISO timestamp of earliest entry */
   earliest: string | null;
   /** ISO timestamp of latest entry */
@@ -152,7 +152,7 @@ export class DispatchDecisionJournal {
         byDecision: {},
         byDispatchType: {},
         byEvaluationMethod: {},
-        acceptanceRate: 0,
+        acceptanceRate: null,
         earliest: null,
         latest: null,
       };
@@ -177,7 +177,7 @@ export class DispatchDecisionJournal {
       byDecision,
       byDispatchType,
       byEvaluationMethod,
-      acceptanceRate: entries.length > 0 ? acceptCount / entries.length : 0,
+      acceptanceRate: acceptCount / entries.length,
       earliest: sorted[0].timestamp,
       latest: sorted[sorted.length - 1].timestamp,
     };

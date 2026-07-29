@@ -71,8 +71,8 @@ export interface PatternReport {
     avgDurationMinutes: number | null;
     /** Duration trend: 'increasing', 'decreasing', 'stable', 'insufficient-data' */
     durationTrend: 'increasing' | 'decreasing' | 'stable' | 'insufficient-data';
-    /** Overall success rate */
-    successRate: number;
+    /** Overall success rate, or null when there are no runs */
+    successRate: number | null;
   };
   /** ISO timestamp when this analysis was generated */
   analyzedAt: string;
@@ -198,7 +198,7 @@ export class PatternAnalyzer {
         durationTrend: this.computeDurationTrend(records),
         successRate: totalRuns > 0
           ? Math.round((records.filter(r => r.outcome === 'success').length / totalRuns) * 100) / 100
-          : 0,
+          : null,
       },
       analyzedAt: new Date().toISOString(),
     };
