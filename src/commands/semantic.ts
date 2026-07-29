@@ -154,7 +154,7 @@ export async function semanticStats(opts: SemanticOptions): Promise<void> {
     console.log(pc.bold('\n  Semantic Memory\n'));
     console.log(`  Entities:     ${stats.totalEntities}`);
     console.log(`  Edges:        ${stats.totalEdges}`);
-    console.log(`  Avg conf:     ${(stats.avgConfidence * 100).toFixed(1)}%`);
+    console.log(`  Avg conf:     ${stats.avgConfidence == null ? pc.dim('n/a') : `${(stats.avgConfidence * 100).toFixed(1)}%`}`);
     console.log(`  Stale:        ${stats.staleCount > 0 ? pc.yellow(String(stats.staleCount)) : pc.dim('0')}`);
     console.log(`  DB size:      ${formatBytes(stats.dbSizeBytes)}`);
 
@@ -210,9 +210,11 @@ export async function semanticDecay(opts: SemanticOptions): Promise<void> {
     console.log(`  Processed:  ${report.entitiesProcessed}`);
     console.log(`  Decayed:    ${report.entitiesDecayed}`);
     console.log(`  Expired:    ${report.entitiesExpired}`);
-    if (report.entitiesProcessed > 0) {
+    if (report.avgConfidence != null && report.minConfidence != null && report.maxConfidence != null) {
       console.log(`  Confidence: ${(report.minConfidence * 100).toFixed(1)}% - ${(report.maxConfidence * 100).toFixed(1)}%`);
       console.log(`  Average:    ${(report.avgConfidence * 100).toFixed(1)}%`);
+    } else if (report.entitiesProcessed > 0) {
+      console.log(`  Confidence: ${pc.dim('n/a (no active entities)')}`);
     }
     console.log();
   } catch (err) {

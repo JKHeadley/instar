@@ -1895,9 +1895,9 @@ export class SemanticMemory {
       entitiesProcessed: rows.length,
       entitiesDecayed: decayed,
       entitiesExpired: expired,
-      minConfidence: activeCount > 0 ? minConf : 0,
-      maxConfidence: activeCount > 0 ? maxConf : 0,
-      avgConfidence: activeCount > 0 ? sumConf / activeCount : 0,
+      minConfidence: activeCount > 0 ? minConf : null,
+      maxConfidence: activeCount > 0 ? maxConf : null,
+      avgConfidence: activeCount > 0 ? sumConf / activeCount : null,
     };
   }
 
@@ -2319,7 +2319,7 @@ export class SemanticMemory {
 
     // Avg confidence
     const avgRow = db.prepare('SELECT AVG(confidence) as avg FROM entities').get() as { avg: number | null };
-    const avgConfidence = avgRow.avg ?? 0;
+    const avgConfidence = avgRow.avg;
 
     // Stale count
     const staleCount = (db.prepare('SELECT COUNT(*) as cnt FROM entities WHERE confidence < ?').get(this.config.staleThreshold) as { cnt: number }).cnt;
@@ -2345,7 +2345,7 @@ export class SemanticMemory {
       totalEntities: entityCount,
       totalEdges: edgeCount,
       entityCountsByType: entityCountsByType as Record<EntityType, number>,
-      avgConfidence: Math.round(avgConfidence * 100) / 100, // Round to 2 decimal places
+      avgConfidence: avgConfidence == null ? null : Math.round(avgConfidence * 100) / 100, // Round to 2 decimal places
       staleCount,
       dbSizeBytes,
       vectorSearchAvailable: this._vectorAvailable,

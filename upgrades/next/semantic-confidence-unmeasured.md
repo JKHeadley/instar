@@ -1,0 +1,26 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Semantic-memory statistics now return a null average confidence for an empty
+store. Confidence-decay reports also return null minimum, maximum, and average
+values when no active entities remain, including after every processed entity
+expires. CLI output renders those states as unavailable.
+
+## What to Tell Your User
+
+An empty semantic-memory store no longer looks like its knowledge has a measured
+zero-percent confidence.
+
+## Summary of New Capabilities
+
+- Explicit unmeasured confidence statistics for empty memory.
+- Honest decay reporting when a run leaves no active entities.
+
+## Evidence
+
+- Tests cover empty stores, all-expired runs, and measured confidence.
+- Restoring the zero fallbacks produces three direct failures.
+- Fifty-one focused tests and full repository lint pass.

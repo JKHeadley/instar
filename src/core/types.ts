@@ -7566,9 +7566,9 @@ export interface DecayReport {
   entitiesProcessed: number;
   entitiesDecayed: number;
   entitiesExpired: number;
-  minConfidence: number;
-  maxConfidence: number;
-  avgConfidence: number;
+  minConfidence: number | null;
+  maxConfidence: number | null;
+  avgConfidence: number | null;
 }
 
 /**
@@ -7588,7 +7588,7 @@ export interface SemanticMemoryStats {
   totalEntities: number;
   totalEdges: number;
   entityCountsByType: Record<EntityType, number>;
-  avgConfidence: number;
+  avgConfidence: number | null;
   staleCount: number;
   dbSizeBytes: number;
   /** Whether vector search (sqlite-vec) is active */
