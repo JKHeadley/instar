@@ -1584,7 +1584,7 @@ Your agent has intent engineering infrastructure for tracking how decisions alig
 
 **When to log a decision:** When you face a genuine tradeoff — speed vs. thoroughness, user request vs. stated boundary, cost vs. quality. Not every action, just the ones where intent guidance matters.
 
-**Decision journal — principle is required:** invented field names are REFUSED (400) too. A decision recorded without naming what guided it preserves THAT you chose and not WHY — the one thing this journal exists to preserve. Writable fields: \`sessionId\`, \`decision\`, \`principle\`, \`topicId\`, \`jobSlug\`, \`alternatives\`, \`confidence\`, \`context\`, \`conflict\`, \`tags\`, \`evidence\`. Anything else is rejected by name rather than stored, because a field no reader consumes makes a submission look recorded without being recorded. Put your reasoning in \`context\` and the guiding intent in \`principle\`. ${DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE}
+**Decision journal — principle is required:** invented field names are REFUSED (400) too. A decision recorded without naming what guided it preserves THAT you chose and not WHY — the one thing this journal exists to preserve. Writable fields: \`sessionId\`, \`decision\`, \`principle\`, \`topicId\`, \`jobSlug\`, \`alternatives\`, \`confidence\`, \`context\`, \`conflict\`, \`tags\`, \`evidence\`. Anything else is rejected by name rather than stored, because a field no reader consumes makes a submission look recorded without being recorded. Put your reasoning in \`context\` and the guiding intent in \`principle\`. **Decision journal confidence contract:** ${DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE}
 
 \`\`\`bash
 curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/intent/journal \\

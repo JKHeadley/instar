@@ -9451,6 +9451,11 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // and fall back to recording decisions somewhere nothing reads — which is
       // the exact failure this refusal exists to prevent.
       '**Decision journal — principle is required:',
+      // Confidence is the same framework-agnostic write contract. This separate
+      // addendum marker upgrades shadows that already contain the older
+      // decision-journal paragraph instead of treating that old marker as proof
+      // that they learned the stricter confidence shape.
+      '**Decision journal confidence contract:**',
       '**Alignment score — N/A means not assessed:',
       '**Publishing**',
       '**Private Viewing**',

@@ -4,7 +4,7 @@
   "sessionId": "ba7a999f-4826-4245-b021-e025cb0e02f9",
   "timestamp": "2026-07-29T09:53:07.957Z",
   "artifactPath": "upgrades/side-effects/intent-alignment-confidence-contract.md",
-  "artifactSha256": "402c1e07f33e205c07dea914a3e12c6ecc2ba3529cfde8237f858dfc02e5c35b",
+  "artifactSha256": "1ae189ace53e63dc311d48f0f8ccf345364f27cae775dc39711c262590d34c64",
   "coveredFiles": [
     "src/commands/intent.ts",
     "src/core/DecisionJournal.ts",
@@ -19,6 +19,7 @@
     "tests/unit/PostUpdateMigrator-decisionConfidenceAwareness.test.ts",
     "tests/unit/alignment-score-not-assessed.test.ts",
     "tests/unit/decision-journal-principle-honesty.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
     "tests/unit/intent-drift.test.ts",
     "upgrades/eli16/intent-alignment-confidence-contract.md",
     "upgrades/next/intent-alignment-confidence-contract.md",

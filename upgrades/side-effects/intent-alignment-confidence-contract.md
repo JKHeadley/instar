@@ -33,6 +33,9 @@ declared-contract-versus-computation class; no duplicate action is created.
 - `generateClaudeMd` / `PostUpdateMigrator.migrateClaudeMd` — modified — new
   and existing agents receive the accepted confidence shape and legacy-data
   semantics before their next journal write.
+- `PostUpdateMigrator.migrateFrameworkShadowCapabilities` — modified — an
+  independent marker upgrades Codex/Gemini shadows that already carry the older
+  decision-journal paragraph.
 
 ## 1. Over-block
 
@@ -123,6 +126,8 @@ No external service, outbound message, timer, or operator action is added.
 Persistent journal state is only constrained on future writes; existing journal
 rows are not mutated. Existing agents' `CLAUDE.md` receives one idempotent
 awareness bullet, while new agents receive the same contract in the scaffold.
+Existing non-Claude shadows receive the same labeled addendum, including when
+their older journal marker would otherwise make the migration appear complete.
 
 ## 6b. Operator-surface quality
 
@@ -165,10 +170,13 @@ messaging, session lifecycle, trust, guard, sentinel, or watchdog surface.
 - `tests/unit/IntentDriftDetector.test.ts`
 - `tests/integration/decision-journal-route.test.ts`
 - `tests/integration/drift-routes.test.ts`
+- `tests/unit/PostUpdateMigrator-decisionConfidenceAwareness.test.ts`
+- `tests/unit/feature-delivery-completeness.test.ts`
 - Mutation proof: removing the non-finite grade floor makes the poisoned
   journal assessable and graded; removing route validation loses the
   `invalid-field` refusal contract.
-- 99 focused unit and integration tests passed; TypeScript typecheck passed.
+- 99 focused unit and integration tests passed; the 141-test migration-parity
+  and feature-delivery guard passes; TypeScript typecheck passed.
 
 ## Class-Closure Declaration
 

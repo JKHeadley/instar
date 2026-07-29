@@ -22,7 +22,11 @@ longer acquire a confidence value the scorer cannot compute.
 
 This changes what the journal API accepts, not only what its reports display.
 New and already-deployed agents receive the numeric-confidence rule in their
-operating instructions through the scaffold and the update migrator.
+operating instructions through the scaffold and the update migrator. Existing
+Codex and Gemini instruction shadows receive the same addendum even when they
+already contain the older decision-journal paragraph; the new confidence label
+is its own migration marker rather than mistaking old awareness for current
+awareness.
 
 Existing qualitative rows are not rewritten. Mapping `high` or `medium` to a
 number after the fact would invent precision the original writer never supplied.

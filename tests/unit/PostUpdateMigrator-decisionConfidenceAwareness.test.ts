@@ -29,6 +29,14 @@ function migrateClaudeMd(projectDir: string): MigrationResult {
   return result;
 }
 
+function migrateFrameworkShadows(projectDir: string): MigrationResult {
+  const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+  (newMigrator(projectDir) as unknown as {
+    migrateFrameworkShadowCapabilities(r: MigrationResult): void;
+  }).migrateFrameworkShadowCapabilities(result);
+  return result;
+}
+
 describe('decision-journal confidence awareness migration parity', () => {
   let projectDir: string;
   let claudeMdPath: string;
@@ -103,5 +111,26 @@ describe('decision-journal confidence awareness migration parity', () => {
     expect(
       freshAfterMigration.split(DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE).length - 1,
     ).toBe(1);
+  });
+
+  it('upgrades a non-Claude shadow that already has the older journal guidance', () => {
+    fs.writeFileSync(
+      claudeMdPath,
+      '# CLAUDE.md\n\n' +
+        '- **Decision journal — principle is required:** existing guidance.\n',
+    );
+    fs.writeFileSync(
+      path.join(projectDir, 'AGENTS.md'),
+      '# AGENTS.md\n\n' +
+        '- **Decision journal — principle is required:** existing guidance.\n',
+    );
+
+    migrateClaudeMd(projectDir);
+    const result = migrateFrameworkShadows(projectDir);
+    const agents = fs.readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf8');
+
+    expect(result.errors).toEqual([]);
+    expect(agents).toContain('**Decision journal confidence contract:**');
+    expect(agents).toContain(DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE);
   });
 });
