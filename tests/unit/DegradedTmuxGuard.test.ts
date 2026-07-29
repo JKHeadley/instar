@@ -14,7 +14,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { DegradedTmuxGuard, type DegradedTmuxEpisode } from '../../src/monitoring/DegradedTmuxGuard.js';
+import {
+  computeLoadPerCore,
+  DegradedTmuxGuard,
+  type DegradedTmuxEpisode,
+} from '../../src/monitoring/DegradedTmuxGuard.js';
 
 function makeClock(start = 1_000_000): { now: () => number; advance: (ms: number) => void } {
   let t = start;
@@ -24,7 +28,7 @@ function makeClock(start = 1_000_000): { now: () => number; advance: (ms: number
 /** A harness: capture raised episodes + drive a controllable load + clock. */
 function makeGuard(
   cfg: Partial<ConstructorParameters<typeof DegradedTmuxGuard>[0]> = {},
-  load = 0,
+  load: number | null = 0,
 ) {
   const clock = makeClock();
   const raised: DegradedTmuxEpisode[] = [];
@@ -47,7 +51,7 @@ function makeGuard(
       now: clock.now,
     },
   );
-  return { guard, raised, clock, setLoad: (v: number) => { loadVal = v; } };
+  return { guard, raised, clock, setLoad: (v: number | null) => { loadVal = v; } };
 }
 
 describe('DegradedTmuxGuard', () => {
@@ -121,6 +125,11 @@ describe('DegradedTmuxGuard', () => {
   });
 
   describe('load gate', () => {
+    it('keeps a real zero-load sample distinct from an unavailable core denominator', () => {
+      expect(computeLoadPerCore(0, 8)).toBe(0);
+      expect(computeLoadPerCore(4, 0)).toBeNull();
+    });
+
     it('high host load suppresses corroboration (busy-box clause)', () => {
       const { guard, raised, setLoad } = makeGuard({ episodeCorroborationCycles: 3 }, 2.0);
       setLoad(2.0); // over the 1.5 per-core threshold
@@ -136,6 +145,30 @@ describe('DegradedTmuxGuard', () => {
       guard.observeTmuxCall(12_000, 'success');
       guard.observeTmuxCall(12_000, 'success');
       expect(raised).toHaveLength(1);
+    });
+
+    it('unknown host load cannot advance corroboration or raise an episode', () => {
+      const { guard, raised } = makeGuard(
+        { episodeCorroborationCycles: 3 },
+        computeLoadPerCore(4, 0),
+      );
+      for (let i = 0; i < 6; i++) guard.observeTmuxCall(12_000, 'success');
+      expect(raised).toHaveLength(0);
+      expect(guard.snapshot().consecutiveSlowCycles).toBe(0);
+    });
+
+    it('a throwing load provider cannot advance corroboration or raise an episode', () => {
+      const guard = new DegradedTmuxGuard(
+        { enabled: true, episodeCorroborationCycles: 1, slowCallThresholdMs: 1, settleWindowMs: 0 },
+        {
+          raiseAttention: () => { throw new Error('must not be reached'); },
+          loadPerCore: () => { throw new Error('load unavailable'); },
+        },
+      );
+
+      guard.observeTmuxCall(12_000, 'success');
+      expect(guard.snapshot().episodesRaised).toBe(0);
+      expect(guard.snapshot().consecutiveSlowCycles).toBe(0);
     });
   });
 
