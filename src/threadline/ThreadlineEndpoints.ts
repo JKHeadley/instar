@@ -69,6 +69,95 @@ export interface ThreadlineEndpointsConfig {
    * the relay-server router itself has no trust-manager access.
    */
   mutualVerifiedCount?: () => number;
+  /**
+   * Live relay connection state for `/threadline/health`.
+   *
+   * Returns null when NO relay client exists in this process — relay disabled, or
+   * the standalone listener daemon owns the connection. Null therefore means "not
+   * applicable here", NOT "down", and must never be reported as a fault.
+   *
+   * Two inputs are needed and neither is sufficient alone. `connectionState` gives
+   * the live up/down but cannot distinguish a drop that WILL retry from a
+   * `displaced` one whose reconnect is disarmed for the life of the process —
+   * and that distinction is the whole point, because the terminal case never
+   * self-heals. `lastEvent.terminal` supplies it. Optional: when absent the
+   * handler reports `not-configured` and the legacy response shape is preserved.
+   */
+  relayStatus?: () => {
+    connectionState: string;
+    lastEvent: { event: string; ts: string; terminal: boolean } | null;
+  } | null;
+}
+
+/** What `/threadline/health` reports about the relay. Code-defined, never peer text. */
+export type RelayHealthState =
+  | 'connected'
+  | 'disconnected'
+  | 'displaced'
+  | 'never-connected'
+  | 'not-configured';
+
+/**
+ * Map live relay state onto the health response. Extracted as a pure function so
+ * the decision boundary is testable without standing up an HTTP server.
+ *
+ * `recoverable` is the field a reader actually acts on: a `disconnected` relay
+ * self-heals via the client's backoff, whereas a `displaced` one has reconnect
+ * disarmed for the life of the process and needs a restart. Reporting both as
+ * merely "down" would understate a permanent outage as a transient blip.
+ *
+ * NOTE what is deliberately NOT reported: the relay's raw `reason` string.
+ * `/threadline/health` is UNAUTHENTICATED, and that string is peer-influenced
+ * text. Only a code-defined state, a boolean, and an ISO timestamp cross this
+ * boundary. The full reason stays in the durable log and the server console,
+ * which are already the place the operator reads for detail.
+ */
+export function resolveRelayHealth(
+  relayStatus: ThreadlineEndpointsConfig['relayStatus'],
+): {
+  status: 'ok' | 'degraded' | 'error';
+  report: { state: RelayHealthState; recoverable: boolean; since?: string };
+} {
+  let live: ReturnType<NonNullable<ThreadlineEndpointsConfig['relayStatus']>> = null;
+  try {
+    live = relayStatus?.() ?? null;
+  } catch {
+    // A throwing status probe must not take down the health route. Fall through
+    // to not-configured rather than 500 — the endpoint peers use for discovery
+    // has to keep answering.
+    live = null;
+  }
+
+  // No relay client in this process: relay disabled, or the listener daemon owns
+  // it. Not a fault, and the legacy 'ok' is correct here.
+  if (!live) return { status: 'ok', report: { state: 'not-configured', recoverable: true } };
+
+  // Connected is checked FIRST so a live connection can never be reported as down
+  // by a stale loss event — the safe direction is refusing to cry wolf.
+  if (live.connectionState === 'connected') {
+    return { status: 'ok', report: { state: 'connected', recoverable: true } };
+  }
+
+  const last = live.lastEvent;
+  if (last?.terminal === true) {
+    // Terminal: another connection claimed this identity. Reconnect is disarmed
+    // permanently; only a process restart recovers it.
+    return {
+      status: 'error',
+      report: { state: 'displaced', recoverable: false, since: last.ts },
+    };
+  }
+
+  if (!last) {
+    // Never connected and never dropped: still coming up, or the first connect
+    // failed. Distinct from a drop, because "not yet" is not "broken".
+    return { status: 'degraded', report: { state: 'never-connected', recoverable: true } };
+  }
+
+  return {
+    status: 'degraded',
+    report: { state: 'disconnected', recoverable: true, since: last.ts },
+  };
 }
 
 // ── Error Codes ──────────────────────────────────────────────────────
@@ -146,8 +235,20 @@ export function createThreadlineRoutes(
     // (none on disk, or canonical identity.json is locked-encrypted), fall back
     // to the handshake-layer key and omit the fingerprint — never fabricate one.
     const routingIdentity = new IdentityManager(config.stateDir).get();
+    // Relay state. Until 2026-07-30 `status` was the LITERAL 'ok' and this handler
+    // never consulted the relay at all, so it reported healthy for 6h45m while the
+    // relay was displaced and the agent could neither send nor receive — 131
+    // messages queued behind a route that said everything was fine. Every input
+    // needed was already in-process; nothing asked for it.
+    const relay = resolveRelayHealth(config.relayStatus);
     res.json({
-      status: 'ok',
+      // `status` now reflects the relay. Deliberately still HTTP 200 with
+      // protocol/identityPub/fingerprint unchanged: AgentDiscovery.verifyAgent
+      // gates on response.ok + identityPub + protocol and NEVER on this field, so
+      // a degraded relay must not make a peer drop us from its registry. Verified
+      // against every in-repo consumer — none branches on health.status.
+      status: relay.status,
+      relay: relay.report,
       protocol: 'threadline',
       version: config.version,
       agent: config.localAgent,
