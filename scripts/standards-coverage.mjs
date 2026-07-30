@@ -57,11 +57,18 @@ const numEnv = (env, def) => {
   return v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : def;
 };
 const FLOORS = {
-  // Starts at 0 ("starts loose", the docs-coverage rationale) — the script's first
-  // job is to PREVENT regression (a new unguarded standard / a removed guard file)
-  // while the existing gap closes. Ratchet this upward (a visible PR diff) as the
-  // documented-only set shrinks.
-  enforcedRatio: numEnv('STANDARDS_ENFORCED_RATIO_FLOOR', 0),
+  // Started at 0 ("starts loose", the docs-coverage rationale) while the gap closed.
+  // Ratcheted to 0.64 on 2026-07-30: the documented-only set shrank 34 -> 24 that day
+  // (ten standards whose guards already existed gained resolvable citations). THIS
+  // script measures 0.6543; note the library (StandardsEnforcementAuditor, which the
+  // /conformance route serves) measures 0.6585 over 82 standards where this parser
+  // counts 81 — a known one-article discrepancy between two implementations of the
+  // same measure, recorded rather than averaged away. The floor is set against THIS
+  // script's number, since this script is what CI runs, with roughly one standard of
+  // headroom so a single unguarded addition surfaces as a real signal rather than
+  // tripping the build on rounding. It cannot fail a build that does not regress.
+  // Ratchet upward again (a visible PR diff) as the documented-only set shrinks.
+  enforcedRatio: numEnv('STANDARDS_ENFORCED_RATIO_FLOOR', 0.64),
   // Zero tolerance: a standard must NEVER cite a guard that doesn't exist.
   danglingCeiling: numEnv('STANDARDS_DANGLING_CEILING', 0),
 };
