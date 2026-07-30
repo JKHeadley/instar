@@ -586,7 +586,7 @@ that reset-safe posture must be explicit and tested rather than assumed.
 
 ### No Deferrals
 **Rule.** Ship complete features and fixes. A deferral requires a same-PR tracked commitment with active follow-through — never an orphaned "later" note.
-**In practice.** "Tactical now + the rest later" without owned follow-through is how regressions recur. Default to comprehensive.
+**In practice.** "Tactical now + the rest later" without owned follow-through is how regressions recur. Default to comprehensive. Enforced by the orphan-deferral step in `scripts/instar-dev-precommit.js`: a spec carrying deferral language must track each instance with an explicit marker or a frontmatter field, and the commit is refused otherwise (the override is an env var and is logged).
 **Earned from.** A PR that deferred "lifeline auto-restart on server upgrade" — and that exact gap produced a regression two days later.
 **Traces to the goal.** Coherence over time means today's shortcut doesn't become next week's outage.
 
