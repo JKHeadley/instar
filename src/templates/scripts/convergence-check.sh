@@ -39,7 +39,7 @@ if echo "$CONTENT" | grep -qiE "(^|[^a-zA-Z])i.ll (make sure|ensure|guarantee|al
 fi
 
 # 3. SETTLING — Accepting empty results without digging deeper
-if echo "$CONTENT" | grep -qiE "(no (data|results|information) (available|found|exists)|nothing (to report|happened|was found)|there (is|are) no|could(n.t| not) find (any|the)|appears to be empty|no (relevant|matching|applicable))"; then
+if echo "$CONTENT" | grep -qiE "(no (data|results|information) (available|found|exists)|nothing (to report|happened|was found)|there (is|are) no([^a-zA-Z]|$)|could(n.t| not) find (any|the)|appears to be empty|no (relevant|matching|applicable))"; then
   ISSUES+=("SETTLING: You're reporting nothing found. Did you check multiple sources? Could the data source be stale or the search terms wrong? Empty results deserve investigation, not acceptance.")
   ISSUE_COUNT=$((ISSUE_COUNT + 1))
 fi

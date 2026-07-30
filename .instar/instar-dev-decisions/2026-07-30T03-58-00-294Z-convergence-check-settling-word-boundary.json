@@ -1,0 +1,27 @@
+{
+  "ts": "2026-07-30T03:58:00.294Z",
+  "slug": "convergence-check-settling-word-boundary",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ConvergenceChecker.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/templates/scripts/convergence-check.sh"
+    ],
+    "addedLines": 3,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
