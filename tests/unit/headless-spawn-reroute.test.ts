@@ -76,6 +76,7 @@ vi.mock('node:child_process', () => {
 
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import type { SessionManagerConfig } from '../../src/core/types.js';
 
 /** Helper: the newest captured new-session argv. */
@@ -168,6 +169,42 @@ describe('headless-spawn reroute', () => {
     // headless tmux block does NOT set the wide interactive pane geometry.
     expect(argv).not.toContain('200');
     expect(argv).not.toContain('50');
+  });
+
+  it('delivery truth: post-launch session bookkeeping failure does not report the delivered prompt as failed', async () => {
+    const { manager, state } = makeManager({ framework: 'claude-code' }, tmpDir);
+    const saveSpy = vi.spyOn(state, 'saveSession')
+      .mockImplementationOnce(() => { throw new Error('simulated session-state write failure'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const reportSpy = vi.spyOn(DegradationReporter.getInstance(), 'report')
+      .mockImplementation(() => {});
+
+    try {
+      const session = await manager.spawnSession({
+        name: 'job-bookkeeping-fail',
+        prompt: 'deliver this exactly once',
+      });
+
+      expect(newSessionArgvs).toHaveLength(1);
+      expect(launchArgvFrom(lastNewSessionArgv(), CLAUDE)).toContain('deliver this exactly once');
+      expect(mockTmuxSessions.has(session.tmuxSession)).toBe(true);
+      expect(saveSpy).toHaveBeenCalledWith(expect.objectContaining({
+        id: session.id,
+        tmuxSession: session.tmuxSession,
+        status: 'running',
+      }));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(
+        `Session "${session.tmuxSession}" is live and the prompt was delivered`,
+      ));
+      expect(reportSpy).toHaveBeenCalledWith(expect.objectContaining({
+        feature: 'SessionManager.spawnSession.persistDeliveredSession',
+        reason: expect.stringContaining(`"${session.tmuxSession}" (${session.id})`),
+        impact: expect.stringContaining('outside normal monitoring and automatic reaping'),
+      }));
+    } finally {
+      reportSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 
   // ── V2: force + claude-code → interactive lane, no -p ──
