@@ -417,7 +417,7 @@ The Root says *enforce behavior in structure, not willpower.* This family is **w
 
 ### Migration Parity
 **Rule.** Any change to agent-installed files (hooks, config defaults, CLAUDE.md template, built-in skills) must reach *existing* agents through the update path — not only new agents via `init`.
-**In practice.** Hook-template changes get a `migrateSettings()` patch (the migration surface is `src/core/PostUpdateMigrator.ts`); config defaults get existence-checked additions; built-in hooks are *always overwritten* on migration; every migration is idempotent.
+**In practice.** Hook-template changes get a `migrateSettings()` patch (the migration surface is `src/core/PostUpdateMigrator.ts`; the binding gate is `tests/integration/migration-guarantee.test.ts`, which runs eight committed pre-migration agent shapes through both code paths and asserts zero job loss and zero schedule drift, and which `scripts/protect-migration-guarantee.js` refuses to let a commit delete); config defaults get existence-checked additions; built-in hooks are *always overwritten* on migration; every migration is idempotent.
 **Earned from.** The zombie-cleanup-kills-active-sessions bug (deployed agents ran stale config that killed live sessions) and the hook-event-reporter ESM bug (install-if-missing left ESM-host agents stuck on a broken CJS hook). A feature that only works for new agents is a broken feature.
 **Traces to the goal.** Agents evolve *in place*. Evolution that doesn't reach the already-deployed self isn't evolution.
 
