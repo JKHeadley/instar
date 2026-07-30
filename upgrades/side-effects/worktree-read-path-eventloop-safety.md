@@ -99,11 +99,6 @@ The honest statement is therefore: this change alters execution strategy and, in
 places, RESTORES a fail-closed property the code did not actually have. It adds no new
 authority.
 
-The structural decision that IS about authority: signals are `Awaitable<T>` and
-`evaluate()` awaits them, so the reap timer and the read route share ONE classifier. A
-separate async-only route path was rejected precisely because the classification
-authorising an irreversible delete must not drift from the one displayed.
-
 The one structural decision that *is* about authority: signals are `Awaitable<T>` and
 `evaluate()` awaits them, so the reap timer and the read route share **one**
 classifier. A separate async-only route path would have been simpler and was
@@ -121,11 +116,21 @@ not be able to drift from the one displayed for observability.
   fixture. The factory now derives the async reader from an injected sync one. This is
   the highest-value finding in this review: an existing green test that had quietly
   stopped testing anything.
-- **Single-flight vs the reap timer.** They share `evaluate()` but not the
-  single-flight latch (`pendingSnapshot` guards `snapshot()` only; `reap()` keeps its
-  own `running` flag). A snapshot and a reap pass can therefore run concurrently, as
-  before. Both are read-only up to the reclaim step, and the reclaim step is
-  unchanged and still race-guarded.
+- **Single-flight vs the reap timer — READ §4 FIRST.** They share `evaluate()` but not
+  the single-flight latch (`pendingSnapshot` guards `snapshot()` only; `reap()` keeps
+  its own `running` flag), so a snapshot and a reap pass can run concurrently.
+  **Correction to an earlier version of this bullet, which said the reclaim step was
+  "unchanged and still race-guarded":** that was reassurance, and it was wrong. The
+  reclaim guard's BEHAVIOUR changed (§4 finding 1) — it read awaitable signals in
+  boolean context, which made two of its three re-checks vacuous. It is fixed and
+  pinned by tests, but a reviewer checking concurrency safety must not read this bullet
+  as "nothing changed here".
+  A second, genuinely new interleaving: `snapshot()` now yields between gates while
+  `reap()` can call the blocking `removeWorktree`. An in-flight `isClean` against a path
+  the reaper just removed rejects → KEEP → the route can report a *deleted* worktree as
+  `keep / uncommitted-changes`. Harmless for delete-safety (it errs toward keeping) but
+  it IS a verdict produced by the execution change, so the blanket "no verdict changed"
+  claim does not survive here either. <!-- tracked: topic 37155 -->
 - **No double-fire, no shadowing.** No new timer, listener or scheduled work.
 - **`withSyncOp` marker REMOVED from this path.** It previously wrapped the `gh`
   call so a blocking spawn would not read as a stuck event loop to the watchdogs —
@@ -146,9 +151,21 @@ not be able to drift from the one displayed for observability.
   preserves shipped behaviour, so no `migrateConfig` entry is required.
 - **No timing or conversation-state dependence**; no user-visible messaging; no
   dashboard surface change.
-- **Agent Awareness:** no CLAUDE.md template change proposed. The route, its purpose
-  and its triggers are already documented; nothing an agent should newly *do* was
-  added — this is a correctness fix behind an existing documented surface.
+- **Agent Awareness — CORRECTED after independent review.** An earlier version said no
+  CLAUDE.md template change was needed. That was right about the ROUTE and wrong about
+  the KNOB, and it contradicted §8: §8 rates rollback LOW *because* `snapshotConcurrency`
+  exists, while §6 left that key undocumented on every agent-facing surface. A lever
+  nothing surfaces is not a lever anyone finds under pressure — the two sections could
+  not both stand.
+  Resolved in favour of documenting it: `snapshotConcurrency` is declared in the config
+  type alongside its siblings, and a `PostUpdateMigrator` CLAUDE.md addendum bullet
+  carries it to already-deployed agents (the same treatment `initialPassDelayMs` and
+  `githubMergeCheck` received — both inline-defaulted and behaviour-preserving-when-
+  absent, and both still got a bullet, for exactly this reason). Tuning the fan-out
+  when that route is slow IS something an agent should newly do.
+  No `migrateConfig` entry is required: the key is inline-defaulted, so its absence
+  yields the shipped behaviour and writing `4` into every agent's config would freeze
+  today's default.
 
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
@@ -176,7 +193,10 @@ armed.
 
 ## 8. Rollback cost
 
-**Low.** `snapshotConcurrency: 1` serialises the fan-out with no code change. A full
+**Low, and the lever is now discoverable** (it was not when this section was first
+written — see §6). `snapshotConcurrency: 1` serialises the fan-out with no code change,
+on BOTH routes: the sentinel's width was a hardcoded 4 until review caught it, and it
+now reads the same key. A full
 back-out is a revert of five source files. No migration, no persisted state, no
 config default that must be unwound, no agent-state repair, and no data to fix — the
 change is confined to execution strategy. The test migrations revert with it.
@@ -239,10 +259,41 @@ base ref pinning the whole agent to "unmerged", detached fan-out workers after a
 rejection, a NaN concurrency silently producing an empty answer, and a rollback lever
 that reached only one of the two routes.
 
-**Independent second-pass review (Phase 5): OUTSTANDING.** Required because this change
-touches a reaper. Owned by the peer agent (topic 37155), who accepted it. Deliberately
-NOT self-signed. **This artifact is incomplete until that concurrence is recorded
-here.**
+**Independent second-pass review (Phase 5): COMPLETE — CONCUR, with three findings, none
+blocking.** Performed by the peer agent from a different machine (topic 37155, posted on
+PR #1757). Not self-signed.
+
+The reviewer independently verified two load-bearing claims against source rather than
+accepting them, and both held: that `SafeGitExecutor.readStream` genuinely pre-exists
+carrying the same destructive-verb and destructive-shape denials (so leaving the safety
+checkpoint untouched is sound rather than convenient), and that the false exemption was
+real and shipped — the comment asserting "ships dark + dry-run + reviewed" sat on a guard
+that is armed on this machine.
+
+Its three findings, all now fixed in this artifact:
+1. **§6 and §8 contradicted each other.** §8 rated rollback LOW *because*
+   `snapshotConcurrency` exists, while §6 proposed no agent-facing documentation for it —
+   so the entire rollback lever was an undocumented config key. "A lever nothing surfaces
+   is not a lever anyone finds under pressure." Resolved by documenting it (config type +
+   a `PostUpdateMigrator` CLAUDE.md addendum), not by weakening §8. Acting on this also
+   exposed that the two routes read *different* keys, so the "one lever, both routes"
+   claim was false until the sentinel was wired to inherit the reaper's.
+2. **§4 carried the same paragraph twice, reworded** — a corrected paragraph added
+   without removing the one it replaced. Worse in the authority section than elsewhere,
+   because a reader cannot tell whether it describes one decision or two. Duplicate
+   removed.
+3. **§5 read as reassurance where §4 read as caveat.** §5 said the reclaim step was
+   "unchanged and still race-guarded" while §4 said its behaviour changed. §5 is where a
+   reviewer checks concurrency safety, so it now carries the correction and points at §4.
+
+The reviewer deliberately did NOT re-run the adversarial pass on the central claim or the
+foundation question, on the grounds that duplicating passes the author had already
+directed produces agreement rather than independence. That is recorded as a scope choice,
+not an omission.
+
+**Convergence is still owed a genuinely quiet round; this review does not substitute for
+one.** The round that produced these fixes contained many design-class findings, and the
+rule is two consecutive rounds without them. The convergence tag is NOT written.
 
 **The lesson worth carrying out of this review** (recorded because it generalises): every
 one of the critical findings had the same shape — an interface was widened to allow
