@@ -2617,7 +2617,31 @@ rm()  { "${shimRunner}" rm  "$@"; }
       completionMode: 'exit',
     };
 
-    this.state.saveSession(session);
+    try {
+      this.state.saveSession(session);
+    } catch (err) {
+      // The headless launch argv already carried the prompt into a successfully
+      // created tmux session. A persistence failure here is therefore
+      // post-delivery bookkeeping, not a spawn failure. Rejecting would invite
+      // the caller to redrive the same payload into a second live session.
+      const reason = err instanceof Error ? err.message : String(err);
+      const identifiedReason =
+        `Session "${tmuxSession}" (${sessionId}) state persistence failed: ${reason}`;
+      console.error(
+        `[SessionManager] Session "${tmuxSession}" is live and the prompt was delivered, ` +
+        `but session bookkeeping failed: ${reason}`,
+      );
+      DegradationReporter.getInstance().report({
+        feature: 'SessionManager.spawnSession.persistDeliveredSession',
+        primary: 'Persist the already-delivered headless session record',
+        fallback: 'Return the live session without converting delivery into a false spawn failure',
+        reason: identifiedReason,
+        impact:
+          `The caller will not duplicate the delivered prompt, but untracked tmux session ` +
+          `"${tmuxSession}" (${sessionId}) is outside normal monitoring and automatic reaping ` +
+          `and may survive restart until manually cleaned up`,
+      });
+    }
     return session;
   }
 
