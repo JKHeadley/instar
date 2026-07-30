@@ -143,7 +143,12 @@ not be able to drift from the one displayed for observability.
   `keep / uncommitted-changes`. Harmless for delete-safety (it errs toward keeping) but
   it IS a verdict produced by the execution change, so the blanket "no verdict changed"
   claim does not survive here either. <!-- tracked: topic 37155 -->
-- **No double-fire, no shadowing.** No new timer, listener or scheduled work.
+- **No double-fire, no shadowing.** No new timer and no new scheduled work. There IS
+  one new listener — a permanent constructor-level `error` listener on the reaper,
+  added in round four because emitting `error` with none was killing the process. It
+  RECORDS to a bounded ring rather than swallowing, and a consumer attaching its own
+  listener still receives everything. An earlier version of this line said "no new
+  listener" and survived the change that added one.
 - **`withSyncOp` marker REMOVED from this path.** It previously wrapped the `gh`
   call so a blocking spawn would not read as a stuck event loop to the watchdogs —
   i.e. it made this freeze *invisible* rather than absent. With the spawn now async
@@ -153,9 +158,22 @@ not be able to drift from the one displayed for observability.
 
 ## 6. External surfaces
 
-- **Route contract.** Both handlers are async. Response bodies are byte-identical;
-  status codes gain a last-resort `500` so a rejected promise can never become an
-  unhandled rejection that takes the server down. `503`-when-unwired is unchanged.
+- **Route contract.** Both handlers are async, and status codes gain a last-resort
+  `500` so a rejected promise can never become an unhandled rejection that takes the
+  server down. `503`-when-unwired is unchanged.
+
+  **Response bodies are NO LONGER byte-identical** — corrected in round five, which
+  found that sentence still standing. The reaper's read gained `enumerationFailed`
+  and `recentErrors`; the sentinel's gained `undeterminedCount` and
+  `enumerationFailed`. All are ADDITIVE and no consumer asserts whole-body equality
+  (checked: no schema, no contract test, no snapshot test), so nothing breaks — but
+  "byte-identical" was this artifact's only claim about the external contract, and it
+  was wrong. `recentErrors` carries error MESSAGES; every command on this path is
+  local (`worktree list`, `status`, `rev-parse`, `cherry`, `worktree remove`), so no
+  remote URL and therefore no embedded-credential class exists. Git's
+  `worktree remove` stderr can name files INSIDE a worktree whose absolute path is
+  already in the same Bearer-authed body — an incremental widening, stated rather
+  than scrubbed.
 - **Latency profile changes shape.** A bounded fan-out (default 4) is wall-clock
   slower than an unbounded one would be, but the route was never fast — and the whole
   server is no longer hostage to it. `snapshotConcurrency: 1` is the gentlest setting.
@@ -208,12 +226,17 @@ armed.
 **Low, and the lever is now discoverable** (it was not when this section was first
 written — see §6). `snapshotConcurrency: 1` serialises the fan-out with no code change,
 on BOTH routes: the sentinel's width was a hardcoded 4 until review caught it, and it
-now reads the same key. A full
-back-out is a revert of the touched source files (the two monitoring modules, the git
-funnel, types, the construction site, the update migration and the route), plus
-removing the new lint from the lint chain. No migration, no persisted state, no
-config default that must be unwound, no agent-state repair, and no data to fix — the
-change is confined to execution strategy. The test migrations revert with it.
+now reads the same key. A full back-out is NOT a plain revert, and this paragraph previously said it was —
+making it the FOURTH disagreeing description across three documents. **The
+authoritative list is the four numbered steps in the spec's Rollback section**, and
+it is deliberately not restated here so the two cannot drift apart again. Its
+load-bearing points: the new lint must come out of THREE places in `package.json`
+plus the `REQUIRED_LINTS` ratchet, or the documented back-out leaves the suite RED;
+the frozen chokepoint baseline key must be re-ADDED, against that file's
+may-only-shrink contract; and the note this change writes into already-deployed
+agents STAYS, because a source revert cannot un-write it — so "no migration, no
+persisted state" was false, as §6 of this same artifact already said. The unrelated
+test fixes kept green under the Zero-Failure Standard should NOT be reverted with it.
 
 ---
 

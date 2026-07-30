@@ -216,8 +216,8 @@ blocking shape, so they get the identical protections:
 | Property | `/worktrees/agent-reaper` | `/orphaned-work` |
 | --- | --- | --- |
 | async handler + last-resort 500 | yes | yes |
-| non-blocking git reads | yes (shared deps) | yes (shared deps — it builds on the reaper's) |
-| non-blocking `lsof` / `gh` | yes | yes (same shared deps) |
+| non-blocking git reads | yes | yes (same factory, separate instance — see below) |
+| non-blocking `lsof` / `gh` | yes | yes (same CODE, separate instance — see below) |
 | bounded fan-out | yes (`snapshotConcurrency`) | yes (bounded, not `Promise.all`) |
 | base ref memoized per pass | yes | **separate deps INSTANCE — see below** |
 | single-flight in-flight sharing | yes | yes |
@@ -253,7 +253,10 @@ the expensive part and incomplete for the stampede part.
 Round two found a hole underneath the single-flight design. Every marker that says
 "a pass is already running" — the two memo in-flight slots, the base-ref slot,
 `pendingSnapshot`, and the reaper's own `running` flag — is cleared in a `finally`
-block. **A `finally` never runs on a promise that never settles.** So one
+block. (Round five moved `running` specifically: it now clears from the LATCH arm
+rather than the caller's, for the overlap reason below — so the caller path has no
+`finally` at all. The hazard argument is unchanged: a `finally` that never runs is
+still the problem.) **A `finally` never runs on a promise that never settles.** So one
 non-settling read would not merely be slow: it would pin those markers for the life
 of the process, and every later caller would join a promise that never resolves.
 The background reaper would stop running passes altogether — a guard that looks
@@ -281,7 +284,8 @@ Three ceilings, at the three layers where the hazard is reachable:
 **A deliberate asymmetry between the two pass surfaces.** An abandoned `reap`
 returns an EMPTY result; an abandoned `snapshot` REJECTS (the route renders it as a
 500). They differ because an empty result means different things: an empty pass
-simply does nothing, the safe direction, whereas an empty snapshot would ASSERT
+REPORTS nothing — while the abandoned pass may still complete its own deletions, so
+    "does nothing" was too strong and is retracted below — whereas an empty snapshot would ASSERT
 "nothing reclaimable" on the read surface that reports what the deleter sees — a
 fabricated answer, the same class as the NaN-concurrency hole this branch already
 closed.
@@ -295,7 +299,7 @@ re-validating, and keeps calling `removeWorktree` — irreversible deletes — w
 `reap()` has already returned `{reaped: []}`. So the abandoned pass does not "do
 nothing"; it does work the caller has been told did not happen, which is the same
 fabricated-answer class this section rejects for `snapshot`. And because the
-`finally` releases the single-pass latch, a second pass can start while the first
+`finally` released the single-pass latch (pre-round-five), a second pass could start while the first
 is still deleting, so N overlapping passes can delete up to N × `maxReapsPerPass` —
 the aggregate blast-radius bound is weaker than the config key's name promises.
 
@@ -305,11 +309,32 @@ something that should have been kept. The weakening is to the RATE bound, not to
 correctness. Stated this way rather than the reassuring way, because the reassuring
 way was false.
 
-**Not fixed here, deliberately.** Bounding the number of live passes (rather than
-the work within one) is a change to the reaper's control loop, not to its read path.
-It belongs with the outstanding work to register this component as a self-triggered
-destructive controller, where the per-pass-versus-per-loop distinction is the whole
-point — tracked with that item rather than smuggled in here.
+**FIXED in round five — the round-four deferral was wrong.** Round four recorded the
+above honestly and deferred the fix to the separate destructive-controller work. Two
+independent reviewers (round-four scalability, round-five external) said deferring is
+weak *precisely because this component deletes*, and they were right: an honest
+record of a delete-rate hole is still a delete-rate hole.
+
+The external reviewer also supplied the design the deferral was hiding behind — that
+freeing the caller and holding the bound looked like the same act, and they are not.
+They are now two clocks:
+
+- **Caller clock** (`PASS_DEADLINE_MS`, 10 min) frees the REQUEST. The caller gets an
+  honest empty pass and moves on, exactly as before.
+- **Controller clock** — the latch is released when the underlying work actually
+  SETTLES, however long that takes. While an abandoned pass is still alive, a second
+  `reap()` takes the already-running short-circuit and does nothing, so two passes
+  can never delete at once and `maxReapsPerPass` is a real rate bound again.
+- `LATCH_CEILING_MS` (60 min) is a last-resort backstop so a pass that NEVER settles
+  cannot hold the latch for the process lifetime — without it, fixing the overlap
+  would reintroduce the wedge the caller clock was added to break.
+
+Pinned by a test that drives a real overlap: with the round-three single-clock
+behaviour restored, the second pass reaps a worktree while the first is still alive;
+with the fix, it reaps nothing, and a CONTROL confirms back-to-back healthy passes
+still work. The residue that remains is honest and unchanged: an abandoned pass is
+still not *cancelled*, so it may still complete its own deletions — but it can no
+longer be joined by a second pass doing the same.
 <!-- tracked: topic 37155 -->
 
 ### The pass ceiling is not the cliff an operator meets first
@@ -327,7 +352,7 @@ its full subprocess cost for an answer nobody receives.
 Arithmetic for the scale this spec itself calls supported-if-slow: at ~200ms per
 worktree and `snapshotConcurrency: 4`, 500 worktrees is ~25s — inside the 30s budget
 with 17% margin, and `git cherry` cost is O(commits ahead), not constant, so a repo
-with long-lived branches crosses it easily. **500 worktrees is already a 408 regime**,
+with long-lived branches crosses it easily. **500 worktrees is therefore a 408 regime in practice rather than in principle**,
 and the failure mode this spec documents for that regime is the wrong one.
 
 Not fixed here: adding a route-timeout override is a server-config change with
@@ -348,10 +373,19 @@ therefore `(W + 1)` per instance — at the default `snapshotConcurrency: 4`, **
 concurrent children**, of which up to **two are simultaneous full-system process
 scans**. At the documented rollback lever (`1`) it is 4; at a hand-set 16 it is 34.
 
-**And that bound is per un-settled pass, not absolute.** Nothing bounds the NUMBER
-of live passes, so under a persistent wedge each ceiling expiry can leave another
-abandoned pass alive: `live children ≈ (W + 1) × k`, with `k` unbounded. The honest
-statement is "10 per un-settled pass, and passes are unbounded" — not "10".
+**And that bound is per un-settled pass — for the surfaces that still allow more than
+one.** Round five bounded live REAP passes to one (the latch is held until the work
+settles; `LATCH_CEILING_MS` is the 60-minute backstop, not a per-expiry release), so
+the reaper's background path is now genuinely capped. `snapshot()` on both classes,
+and the sentinel's `scan()`, are still single-clock: their in-flight markers release
+at the caller ceiling, so under a persistent wedge each expiry can leave another
+abandoned pass alive — `live children ≈ (W + 1) × k`, with `k` unbounded there.
+
+So the honest statement is now per-surface rather than global, and an earlier version
+of this paragraph said "passes are unbounded" flatly after round five had already
+bounded one of them. Applying the latch fix to the remaining surfaces is the obvious
+next step and is NOT done here — named rather than implied.
+<!-- tracked: topic 37155 -->
 
 **These subprocesses ride no host-wide cap.** The spec cites the 2026-06-20
 fork-bomb and the host-wide spawn cap as the reason `mapBounded` exists, which
@@ -411,14 +445,22 @@ table below, because the two contradicting each other is how the false claim sur
   untouched. Widening the signals to awaitable left it reading them synchronously,
   which made the in-use check refuse every delete and the negated checks vacuous.
   See the table entry for the full account.
-- In **three** places this work **restores** a fail-closed property the shipped code
-  did not actually have: the process scan's failure direction; the output bound; and
-  the lock/marker existence gates, whose documented fail-closed catch was
-  unreachable. (An earlier version said "two" while describing the third elsewhere
-  in this same document.)
+- In **two** places this work restores a fail-closed property the SHIPPED code did
+  not have: the process scan's failure direction, and the lock/marker existence
+  gates whose documented fail-closed catch was unreachable.
+
+  The count has now been wrong in both directions, which is worth recording rather
+  than quietly settling on the right number. It first said "two" while describing a
+  third case elsewhere; round four "corrected" it to three; round five showed the
+  third element was never a shipped defect at all — the output bound was dropped by
+  this branch's own earlier draft and then restored, so it is a self-inflicted
+  regression repaired, not a latent hazard found. A correction can be more precise
+  and less true, and this one advertised its own precision in a parenthetical.
 - Round three adds a wall-clock ceiling, which introduces a new outcome that did
-  not exist before: an abandoned pass. `reap` degrades to an empty pass (does
-  nothing — safe); `snapshot` REJECTS rather than reporting an empty list, because
+  not exist before: an abandoned pass. `reap` degrades to an empty REPORT
+  (the abandoned pass is not cancelled and may still complete its own deletions —
+  what it can no longer do is be joined by a second pass); `snapshot` REJECTS rather
+  than reporting an empty list, because
   an empty list on the surface that reports what the deleter sees would assert
   "nothing reclaimable".
 
@@ -565,10 +607,13 @@ reverting anything.
 **A full back-out is NOT just reverting the source files, and three earlier
 descriptions of it disagreed with each other in three different ways.** It is:
 
-1. The touched source files: the two monitoring modules, the git funnel, types, the
-   construction site, the update migration and the route.
-2. **The new lint, removed from BOTH places** — the chain in `package.json` AND its
-   entry in the `REQUIRED_LINTS` ratchet. Removing it from only the chain leaves the
+1. The touched source files: FOUR under `src/monitoring/` (the reaper, the sentinel,
+   and both git-signal modules), the git funnel, types, the construction site, the
+   update migration and the route. ("The two monitoring modules" undercounted.)
+2. **The new lint, removed from FOUR places** — the `lint` chain in `package.json`,
+   the two `lint:no-unawaited-awaitable*` scripts beside it, AND its entry in the
+   `REQUIRED_LINTS` ratchet. ("BOTH places" was itself wrong: a back-out following it
+   leaves two npm scripts invoking a deleted file.) Removing it from only the chain leaves the
    ratchet asserting a lint that no longer runs, so the documented back-out would
    leave the test suite RED. Also delete the script and its allowlist entry in the
    destructive-op lint.
@@ -580,6 +625,11 @@ descriptions of it disagreed with each other in three different ways.** It is:
    every agent on update; a source revert cannot un-write it. So "nothing is stored"
    was false — deployed agents would retain documentation for a config key that no
    longer exists.
+
+5. **The unrelated test fixes STAY.** The gemini auth-skip helper and the expiring
+   throughput fixture were repaired under the Zero-Failure Standard and have nothing
+   to do with this change; reverting them re-reds the suite for reasons the back-out
+   is not trying to undo.
 
 No config DEFAULT changes and there is no data to repair; the runtime change is
 confined to execution strategy.
@@ -608,8 +658,12 @@ in a Tier-3 delete-path change is a review cost whether or not it is benign:
 
 ## Decision points touched
 
-This change touches decision points **only in how they execute**, never in what they
-decide. Each is classified below.
+This change touches most decision points only in how they EXECUTE — but not all, and
+an earlier version of this sentence said "never in what they decide" while the table
+directly below it contains a row stating the opposite. See the Signal-vs-authority
+section for the full account: the reclaim race guard's behaviour changed, two gates
+gained a fail-closed property the shipped code lacked, and the abandoned-pass
+disposition is an outcome that did not previously exist. Each is classified below.
 
 | Decision point | Classification | Justification |
 | --- | --- | --- |
@@ -658,6 +712,33 @@ Every decision this build required is settled here; none is parked on the user.
    have detected the remainder, and "the read path does not block" would have been
    *nearly* true. Both are converted.
 7. **Tier 3 declared** above the gate's signalled floor of 2.
+
+### Decisions taken after round three (this list was stale until round five)
+
+The seven items above were the round-three set, under a heading claiming the list is
+complete. Four rounds have since taken decisions that belong in it:
+
+8. **Two clocks for a pass, not one** (round five). The caller is freed at
+   `PASS_DEADLINE_MS`; the latch is held until the work SETTLES, with
+   `LATCH_CEILING_MS` (60 min) as a last-resort backstop. Chosen over the
+   single-clock version, which let a second pass start while an abandoned one was
+   still deleting.
+9. **Record, don't swallow, and don't crash** (round four). The reaper carries a
+   constructor-level `error` listener writing to a bounded ring surfaced on the read
+   route. Chosen over a silent default listener (which trades a crash for an
+   invisible failure) and over leaving it (which killed the process).
+10. **Honest flags where rejecting is impossible; reject where an empty answer would
+    lie.** An abandoned SNAPSHOT rejects; an abandoned REAP reports empty; an
+    ENUMERATION failure sets `enumerationFailed` on both read surfaces rather than
+    rendering a fabricated zero.
+11. **The failure audit carries the underlying tool's own reason** (a bounded stderr
+    slice), not just an exit code — on a path whose result gates a delete.
+12. **The sentinel inherits `agentWorktreeReaper.snapshotConcurrency`** unless it
+    declares its own, so the documented rollback lever covers both routes.
+13. **No route-timeout override, and no threaded cancellation.** Both are real
+    decisions with consequences named elsewhere in this spec (an operator meets a
+    408 before the pass ceiling; an abandoned pass completes its own work). Recorded
+    here so the completeness claim above is true rather than aspirational.
 
 ## Open questions
 

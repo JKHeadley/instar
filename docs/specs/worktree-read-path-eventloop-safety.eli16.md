@@ -130,7 +130,11 @@ time limit, for a reason worth explaining below.
   while something it started keeps the line open. So every step now has its own time
   limit and gives up honestly rather than hanging.
 - **Giving up says so.** When a check is abandoned this way, the automatic cleanup
-  simply does nothing that round — safe. But the status page **refuses to answer**
+  REPORTS that it did nothing that round. Being precise, because an earlier version
+  of this line was not: the abandoned job is not actually stopped, so it may still
+  finish its own deletions. What it can no longer do — since the latest round — is
+  be joined by a SECOND cleanup running at the same time, which is what made the
+  "how much may be deleted at once" limit stop meaning anything. But the status page **refuses to answer**
   rather than showing an empty list, because an empty list would read as "nothing to
   clean up here", which is a made-up answer on the page that reports what the
   deleting helper sees.
