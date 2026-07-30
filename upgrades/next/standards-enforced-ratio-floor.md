@@ -1,0 +1,40 @@
+## What Changed
+
+The CI standards-coverage check now enforces a floor on the **enforced-ratio**, not only on dangling guard
+references. `FLOORS.enforcedRatio` moves from `0` to `0.64` in `scripts/standards-coverage.mjs`.
+
+Previously the ratio was computed and printed on every build with a floor of `0`, so a regression from the
+current level all the way back to the original one would still have passed. The dangling ceiling already had
+teeth at zero; the ratio did not.
+
+This is the maintenance action the script's own comment asks for — *"Ratchet this upward (a visible PR diff)
+as the documented-only set shrinks"* — taken after the documented-only set shrank from 34 standards to 24.
+
+## Evidence
+
+- The repository measures **0.6543** against the new **0.64** floor, so no build that does not regress can
+  fail. Verified by running `node scripts/standards-coverage.mjs --check` → exit 0.
+- Verified the ratchet **bites** rather than only passes: `STANDARDS_ENFORCED_RATIO_FLOOR=0.99` → exit 1,
+  `STANDARDS_ENFORCED_RATIO_FLOOR=0.64` → exit 0.
+- `tests/unit/standards-coverage-ratchet.test.ts` already covers the floor-regression and dangling-ceiling
+  failure paths and reads the committed constant, so it exercises this value rather than a copy.
+- Noted while choosing the value: this script measures **0.6543 over 81 standards** where
+  `StandardsEnforcementAuditor` measures **0.6585 over 82**, over the same registry file. The floor is set
+  against this script's number because this script is what CI runs; the discrepancy is recorded in the code
+  comment rather than averaged away.
+
+## What to Tell Your User
+
+Nothing — this is a CI-only maintenance change with no runtime, route, config or agent-visible surface. A
+deployed agent never executes this script.
+
+The one case where it becomes visible is a future pull request that adds a constitutional standard without a
+resolvable guard citation, or removes a guard file a standard cites: that build now fails with a message
+naming both the floor and the measured ratio. That failure is the intended signal.
+
+Rolling it back needs no code change: an environment setting that already exists can put the floor back to
+zero in the build configuration.
+
+## Summary of New Capabilities
+
+No new capability. An existing gate stops being toothless on one of the two measures it already reports.
