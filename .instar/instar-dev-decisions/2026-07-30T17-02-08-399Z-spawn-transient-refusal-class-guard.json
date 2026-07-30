@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-30T17:02:08.399Z",
+  "slug": "spawn-transient-refusal-class-guard",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 344,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/SpawnRequestManager.ts"
+    ],
+    "addedLines": 249,
+    "deletedLines": 95
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

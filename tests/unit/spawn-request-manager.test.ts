@@ -487,6 +487,196 @@ describe('SpawnRequestManager', () => {
       expect(result.reason).toContain('unknown error');
     });
 
+    it('preserves refused-payload ordering and original TTL after a true pre-delivery spawn failure', async () => {
+      let underPressure = true;
+      let now = 1_000_000;
+      let rejectLaunch: ((reason?: unknown) => void) | undefined;
+      const spawnSession = vi.fn()
+        .mockImplementationOnce(() => new Promise<string>((_resolve, reject) => {
+          rejectLaunch = reject;
+        }))
+        .mockResolvedValueOnce('spawned-session-id');
+      config = makeConfig({
+        cooldownMs: 1_000,
+        isMemoryPressureHigh: () => underPressure,
+        spawnSession,
+        nowFn: () => now,
+      });
+      manager = new SpawnRequestManager(config);
+
+      const initiallyRefused = await manager.evaluate(
+        makeRequest({ context: 'older payload already waiting' }),
+      );
+      expect(initiallyRefused.approved).toBe(false);
+      expect(manager.getQueuedCount('agent-a')).toBe(1);
+
+      underPressure = false;
+      now += 100;
+      const failedSpawnPromise = manager.evaluate(
+        makeRequest({ context: 'current payload refused by failed spawn' }),
+      );
+      expect(rejectLaunch).toBeTypeOf('function');
+
+      // This arrives while the launch is in flight. The pre-existing backlog
+      // must remain reserved rather than temporarily freeing queue capacity.
+      now += 100;
+      const concurrent = await manager.evaluate(
+        makeRequest({ context: 'payload arriving during launch' }),
+      );
+      expect(concurrent.approved).toBe(false);
+      expect(manager.getQueuedCount('agent-a')).toBe(2);
+
+      rejectLaunch!(new Error('tmux launch failed before delivery'));
+      const failedSpawn = await failedSpawnPromise;
+      expect(failedSpawn.approved).toBe(false);
+      expect(failedSpawn.retryAfterMs).toBe(30_000);
+      expect(manager.getQueuedCount('agent-a')).toBe(3);
+
+      now += 1_100;
+      const recovered = await manager.evaluate(makeRequest());
+      expect(recovered.approved).toBe(true);
+      expect(spawnSession).toHaveBeenCalledTimes(2);
+      const recoveredPrompt = spawnSession.mock.calls[1][0] as string;
+      const olderAt = recoveredPrompt.indexOf('older payload already waiting');
+      const currentAt = recoveredPrompt.indexOf('current payload refused by failed spawn');
+      const concurrentAt = recoveredPrompt.indexOf('payload arriving during launch');
+      expect(olderAt).toBeGreaterThanOrEqual(0);
+      expect(currentAt).toBeGreaterThan(olderAt);
+      expect(concurrentAt).toBeGreaterThan(currentAt);
+      expect(manager.getQueuedCount('agent-a')).toBe(0);
+
+      // The reservation's TTL starts when launch starts, not when its failure
+      // is eventually reported. A later message is still live in this narrow
+      // window, while the failed launch's current payload has expired.
+      let ttlNow = 2_000_000;
+      let rejectTtlLaunch: ((reason?: unknown) => void) | undefined;
+      const ttlSpawn = vi.fn()
+        .mockImplementationOnce(() => new Promise<string>((_resolve, reject) => {
+          rejectTtlLaunch = reject;
+        }))
+        .mockResolvedValueOnce('ttl-recovery');
+      const ttlManager = new SpawnRequestManager(makeConfig({
+        cooldownMs: 0,
+        nowFn: () => ttlNow,
+        spawnSession: ttlSpawn,
+      }));
+      const ttlLaunchStartedAt = ttlNow;
+      const ttlFailure = ttlManager.evaluate(
+        makeRequest({ context: 'failed launch payload with original age' }),
+      );
+      ttlNow += 100;
+      await ttlManager.evaluate(
+        makeRequest({ context: 'later payload still inside ttl' }),
+      );
+      ttlNow += 100;
+      rejectTtlLaunch!(new Error('failed before delivery'));
+      expect((await ttlFailure).approved).toBe(false);
+
+      ttlNow = ttlLaunchStartedAt + SpawnRequestManager.QUEUE_MAX_AGE_MS + 1;
+      expect((await ttlManager.evaluate(makeRequest())).approved).toBe(true);
+      const ttlPrompt = ttlSpawn.mock.calls[1][0] as string;
+      expect(ttlPrompt).not.toContain('failed launch payload with original age');
+      expect(ttlPrompt).toContain('later payload still inside ttl');
+    });
+
+    it('serializes same-agent launches so an overlapping success cannot deliver one backlog twice', async () => {
+      let underPressure = true;
+      let resolveFirstLaunch: ((sessionId: string) => void) | undefined;
+      const spawnSession = vi.fn()
+        .mockImplementationOnce(() => new Promise<string>((resolve) => {
+          resolveFirstLaunch = resolve;
+        }))
+        .mockResolvedValue('later-session');
+      const mgr = new SpawnRequestManager(makeConfig({
+        cooldownMs: 0,
+        isMemoryPressureHigh: () => underPressure,
+        spawnSession,
+      }));
+
+      await mgr.evaluate(makeRequest({ context: 'single backlog payload' }));
+      expect(mgr.getQueuedCount('agent-a')).toBe(1);
+
+      underPressure = false;
+      const firstLaunch = mgr.evaluate(makeRequest());
+      expect(resolveFirstLaunch).toBeTypeOf('function');
+
+      const overlapping = await mgr.evaluate(
+        makeRequest({ context: 'arrived during first launch' }),
+      );
+      expect(overlapping.approved).toBe(false);
+      expect(overlapping.reason).toContain('already in flight');
+      expect(spawnSession).toHaveBeenCalledTimes(1);
+
+      resolveFirstLaunch!('first-session');
+      expect((await firstLaunch).approved).toBe(true);
+      expect(spawnSession.mock.calls[0][0]).toContain('single backlog payload');
+      expect(mgr.getQueuedCount('agent-a')).toBe(1);
+
+      const later = await mgr.evaluate(makeRequest());
+      expect(later.approved).toBe(true);
+      expect(spawnSession).toHaveBeenCalledTimes(2);
+      expect(spawnSession.mock.calls[1][0]).toContain('arrived during first launch');
+      expect(spawnSession.mock.calls[1][0]).not.toContain('single backlog payload');
+      expect(mgr.getQueuedCount('agent-a')).toBe(0);
+    });
+
+    it('keeps the earlier failed-launch payload when a later overlap fills the global queue', async () => {
+      let rejectLaunch: ((reason?: unknown) => void) | undefined;
+      const spawnSession = vi.fn()
+        .mockImplementationOnce(() => new Promise<string>((_resolve, reject) => {
+          rejectLaunch = reject;
+        }))
+        .mockResolvedValueOnce('recovered-session');
+      const mgr = new SpawnRequestManager(makeConfig({
+        cooldownMs: 0,
+        maxGlobalQueued: 1,
+        spawnSession,
+      }));
+
+      const failedLaunch = mgr.evaluate(
+        makeRequest({ context: 'earlier payload reserved by launch' }),
+      );
+      expect(rejectLaunch).toBeTypeOf('function');
+
+      const overlap = await mgr.evaluate(
+        makeRequest({ context: 'later payload filling final queue slot' }),
+      );
+      expect(overlap.approved).toBe(false);
+      expect(mgr.getQueuedCount('agent-a')).toBe(1);
+
+      rejectLaunch!(new Error('failed before delivery'));
+      expect((await failedLaunch).approved).toBe(false);
+      expect(mgr.getQueuedCount('agent-a')).toBe(1);
+
+      expect((await mgr.evaluate(makeRequest())).approved).toBe(true);
+      const recoveredPrompt = spawnSession.mock.calls[1][0] as string;
+      expect(recoveredPrompt).toContain('earlier payload reserved by launch');
+      expect(recoveredPrompt).not.toContain('later payload filling final queue slot');
+    });
+
+    it('treats a zero degraded queue cap as a bounded one-slot floor instead of looping', async () => {
+      const spawnSession = vi.fn().mockRejectedValue(new Error('provider unavailable'));
+      const mgr = new SpawnRequestManager(makeConfig({
+        cooldownMs: 0,
+        degradedMaxQueuedPerAgent: 0,
+        spawnSession,
+      }));
+
+      // Five no-context failures trip degraded admission without touching the
+      // queue, so the unfixed zero-cap implementation fails safely at the next
+      // assertion instead of entering its synchronous infinite loop.
+      for (let i = 0; i < 5; i++) {
+        const result = await mgr.evaluate(makeRequest());
+        expect(result.approved).toBe(false);
+      }
+      expect(mgr.isInfraDegraded('agent-a')).toBe(true);
+      expect(mgr.effectiveMaxQueuedPerAgent('agent-a')).toBe(1);
+
+      const refused = await mgr.evaluate(makeRequest({ context: 'bounded payload' }));
+      expect(refused.approved).toBe(false);
+      expect(mgr.getQueuedCount('agent-a')).toBe(1);
+    });
+
 
     // Control on the queueing fix: a payload rescued from a pressure denial must
     // be delivered EXACTLY once — drained into the successful spawn's prompt and
