@@ -5,6 +5,8 @@ author: echo
 machine: Laptop (mac.lan)
 severity: high
 status: open
+tracked-by: ACT-1225
+follow-through-due: 2026-08-06
 kind: finding
 relates:
   - "docs/specs/agent-worktree-reaper.md"
@@ -100,21 +102,47 @@ none occurred in the preceding seven weeks.
 
 ## Recommendation
 
-1. **Add a listener and a durable record before anything else.** Every `reaped` event
-   should append to an audit file with the worktree path, branch, head SHA, the verdict
-   reasons that authorised it, and the timestamp. This is small, and until it exists
-   every future question of this kind has the same non-answer.
+1. **Register a listener for `reaped` AND `error`, with a durable record.** Every
+   `reaped` event should append to an audit file with the worktree path, branch, head
+   SHA, the verdict reasons that authorised it, and the timestamp. Until it exists every
+   future question of this kind has the same non-answer.
+
+   **`error` is not a documentation gap — it is a live crash path.** The reaper extends
+   `EventEmitter` and emits `'error'` on both the listing-failure and removal-failure
+   paths, and **Node throws when `'error'` is emitted with zero listeners**. Both emit
+   sites are on the timer path invoked as `void this.reap()`, so on an armed machine a
+   `git worktree remove` failure becomes an unhandled promise rejection. An earlier
+   version of this recommendation scoped the listener work to `reaped` alone and missed
+   this. Worth noting the irony: the event-loop change added a last-resort `catch` to the
+   route handlers for exactly this failure class while the timer path kept it.
 2. **Treat the record as a precondition for arming, not a nice-to-have.** A guard that
    performs irreversible actions should not be armable without one. That is the
    *Structure beats Willpower* form of this finding: the record should not depend on
    whoever wires it remembering to.
-3. **Register the reaper as a self-triggered destructive controller.** It is absent from
-   the self-action registry despite firing on a timer and deleting on a heuristic. Its
-   `maxReapsPerPass` cap bounds one pass, never the loop — the exact distinction the
-   *Capacity Safety — No Unbounded Self-Action* standard draws. Today produced three
+3. **Drive the EXISTING lint out of report-only — do not ask anyone to remember.** An
+   earlier version of this recommendation said the reaper "should be registered" as a
+   self-triggered destructive controller, which is the willpower-shaped remedy this
+   document's own thesis rejects. The loop-closer is already built and already pointed at
+   the right file: `scripts/lint-no-unregistered-self-action.js` reports
+   `src/monitoring/AgentWorktreeReaper.ts` as an unregistered self-action controller
+   today — one of **21** — and exits 0 because it is report-only, gated on
+   `prGate.classClosure.dryRun: false`. The remediation is the flip and the backlog, not
+   a reminder. The reaper's `maxReapsPerPass` cap bounds one pass, never the loop — the
+   exact distinction the *Capacity Safety — No Unbounded Self-Action* standard draws. Today produced three
    independent arguments for this: the heuristic delete with a per-pass-only cap; seven
    weeks armed on one machine while the guard manifest classified it differently on
    another; and no instrumentation and no deletion record at all.
+
+## Cadence — how this finding avoids being its own subject
+
+Registered as **ACT-1225**, due 2026-08-06, so it re-surfaces rather than resting in a
+directory nothing reads.
+
+This is not bookkeeping. An earlier version of this document was filed `status: open` in a
+new directory with no consumer, no tracker id and no re-surfacing cadence — which the
+*Close the Loop* standard names exactly: *untracked = abandoned*. A high-severity finding
+about **an irreversible action with no mechanism behind the claim** was itself a claim
+with no mechanism behind it. Caught in review, not by the author.
 
 ## Scope note
 
