@@ -164,11 +164,22 @@ exactly one explanation — the guard is asking the wrong directory. (On a norma
 `projectDir` *is* the repository, which is why this went unnoticed; it diverges only where
 the agent home contains its own checkout.)
 
-**A second fact worth stating, since it bounds what any fix can achieve:** 16 of the 38
-directories are git-registered worktrees. The other 22 are not, so even a correctly-pointed
-reaper would not consider them — its contract is merged+clean+unused *worktrees*. The disk
-figure and the reclaimable figure are different problems, and conflating them would be its
-own false claim.
+**A second fact, and it makes the fix harder than "point at the right repo":** the agent home
+contains **two** instar checkouts, and they share one `.worktrees` directory —
+`.dev/instar` owns 20 of the worktrees and `.build/instar` owns 15. Across both, 36 of the 38
+directories are live registered worktrees; only 3 are unregistered by either (~1.5 GB).
+
+So the reaper's model — one repository, enumerated once — does not match the layout it is
+deployed into. Pointing it at either checkout alone would still leave it blind to roughly
+half the tree, while *reporting a confident number* for the half it can see. That is a
+subtler instance of the same defect: not a visible failure, but a partial enumeration
+presented as complete.
+
+*(This correction is itself worth recording: the first pass of this analysis queried one
+checkout, found 22 directories missing from its list, and labelled them orphans. They were
+live worktrees of the other repository. An absence measured against one source was read as a
+fact about the world — the same error class this spec exists to remove, committed while
+documenting it.)*
 
 **The part that is the whole argument:** from the outside, *I cannot tell which failure this
 is.* `reclaimable: 0` is consistent with "there is genuinely nothing to reclaim" and with
