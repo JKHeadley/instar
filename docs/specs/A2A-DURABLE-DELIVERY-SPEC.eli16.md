@@ -53,3 +53,21 @@ no message text is ever logged. Nothing about routing changes — it just stops 
 gate from failing in silence, so the next test from Dawn will say in plain words
 whether the gate rejected her (and exactly why) or her message never arrived at
 all. That answer points straight at the real fix.
+
+## Honest immediate receipts (added 2026-07-30)
+
+The durable tracker above is later proof, but the immediate send result also
+needed to stop overstating what happened. The sender now gets two separate
+facts: **accepted** means the next layer retained responsibility, while
+**delivered** means a live handler actually processed the message or a reply
+proved processing. A fast receiver acknowledgement can therefore be accepted
+without pretending the agent already saw it; a temporary refusal is accepted
+only when that exact payload really entered the retry queue. Relay submission,
+duplicate suppression, errors, and unqueued refusals do not fabricate either
+fact.
+
+The production recovery path and content deduplication were hardened alongside
+the new wording: an honestly refused message cannot be handed to the router
+twice, and a rejected first admission cannot poison a legitimate retry. These
+behaviors are pinned through the real server/router/MCP wiring, not only through
+injected test doubles.

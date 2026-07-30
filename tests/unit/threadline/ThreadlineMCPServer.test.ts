@@ -490,6 +490,7 @@ describe('ThreadlineMCPServer', () => {
         });
 
         const data = JSON.parse((result.content as any)[0].text);
+        expect(data.accepted).toBe(true);
         expect(data.delivered).toBe(true);
         expect(data.threadId).toBe('thread-new-123');
         expect(data.reply).toBe('Hello back!');
@@ -548,7 +549,8 @@ describe('ThreadlineMCPServer', () => {
           }),
         );
         const data = JSON.parse((result.content as any)[0].text);
-        expect(data.delivered).toBe(true);
+        expect(data.accepted).toBe(true);
+        expect(data.delivered).toBe(false);
         expect(data.reply).toBeUndefined();
         expect(data.note).toBeUndefined();
       } finally {
@@ -575,8 +577,36 @@ describe('ThreadlineMCPServer', () => {
         });
 
         const data = JSON.parse((result.content as any)[0].text);
-        expect(data.delivered).toBe(true);
+        expect(data.accepted).toBe(true);
+        expect(data.delivered).toBe(false);
         expect(data.reply).toBeUndefined();
+      } finally {
+        await close();
+      }
+    });
+
+    it('does not infer acceptance from a legacy success response with an error outcome', async () => {
+      (deps.sendMessage as any).mockResolvedValue({
+        success: true,
+        threadId: 'thread-legacy-error',
+        messageId: '',
+        deliveryOutcome: 'error: Spawn denied: memory pressure',
+      });
+
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({
+          name: 'threadline_send',
+          arguments: {
+            agentId: 'remote-agent',
+            message: 'Legacy refusal',
+          },
+        });
+
+        const data = JSON.parse((result.content as any)[0].text);
+        expect(data.accepted).toBe(false);
+        expect(data.delivered).toBe(false);
+        expect(data.outcome).toContain('Spawn denied');
       } finally {
         await close();
       }
@@ -602,7 +632,8 @@ describe('ThreadlineMCPServer', () => {
         });
 
         const data = JSON.parse((result.content as any)[0].text);
-        expect(data.delivered).toBe(true);
+        expect(data.accepted).toBe(true);
+        expect(data.delivered).toBe(false);
         expect(data.reply).toBeNull();
         expect(data.note).toContain('No reply received');
       } finally {

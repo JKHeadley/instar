@@ -141,7 +141,9 @@ export interface SendMessageResult {
   deliveryOutcome?: string;
   /** How the message was delivered (local, relay) */
   deliveryPath?: string;
-  /** Whether the content was actually delivered (false when withheld by the negotiator lease). */
+  /** Whether a receiver or relay accepted responsibility for the content. */
+  accepted?: boolean;
+  /** Whether processing is proven, rather than merely transport-accepted. */
   delivered?: boolean;
   /** True when the single-negotiator lease withheld this content send (G1 holding). */
   held?: boolean;
@@ -653,17 +655,17 @@ export class ThreadlineMCPServer {
           // process. Single hook for both local-delivery and relay-delivery
           // outbound paths. (See server/routes.ts /threadline/relay-send.)
 
+          const accepted = result.accepted
+            ?? (!result.held && !result.deliveryOutcome?.startsWith('error'));
+          // A reply is direct evidence that the peer processed this message.
+          // Without a reply or an explicit receipt, success means only that the
+          // transport accepted responsibility — never silently promote it to
+          // delivery.
+          const delivered = result.delivered ?? Boolean(result.reply);
           const response: Record<string, unknown> = {
-            // `delivered` reflects whether the recipient actually accepted
-            // the message. It's true unless the recipient reported an
-            // error outcome. When no outcome info is available we default
-            // to true (success path) — result.success is already checked above.
-            // The single-negotiator lease can explicitly set delivered:false when
-            // it WITHHELD this non-owner content send (G1 holding) — honor it.
-            delivered: result.delivered !== undefined
-              ? result.delivered
-              : !(result.deliveryOutcome?.startsWith('error')),
-            outcome: result.deliveryOutcome ?? 'accepted',
+            accepted,
+            delivered,
+            outcome: result.deliveryOutcome ?? (delivered ? 'delivered' : 'accepted'),
             deliveryPath: result.deliveryPath,
             threadId: result.threadId,
             messageId: result.messageId,

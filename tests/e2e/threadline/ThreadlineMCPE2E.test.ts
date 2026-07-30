@@ -374,7 +374,8 @@ describe('ThreadlineMCP E2E', () => {
         arguments: { agentId: 'flaky', message: 'Try 2' },
       });
       const d2 = JSON.parse((r2.content as any)[0].text);
-      expect(d2.delivered).toBe(true);
+      expect(d2.accepted).toBe(true);
+      expect(d2.delivered).toBe(false);
     });
 
     it('handles tool call with missing thread gracefully', async () => {

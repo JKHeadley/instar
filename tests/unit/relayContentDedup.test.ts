@@ -26,6 +26,13 @@ describe('RelayContentDedup', () => {
     expect(d.shouldProcess('codey', 'thread-1', 'fix the bug')).toBe(false);
   });
 
+  it('forgets a reservation that failed admission so an identical retry can proceed', () => {
+    const d = new RelayContentDedup({ now: () => 1000 });
+    expect(d.shouldProcess('codey', 'thread-1', 'fix the bug')).toBe(true);
+    d.forget('codey', 'thread-1', 'fix the bug');
+    expect(d.shouldProcess('codey', 'thread-1', 'fix the bug')).toBe(true);
+  });
+
   it('processes again once the window has elapsed (plausibly a real re-send)', () => {
     const clock = mkClock();
     const d = new RelayContentDedup({ ttlMs: 60_000, now: clock.now });

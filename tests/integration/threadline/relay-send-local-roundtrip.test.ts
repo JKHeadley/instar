@@ -46,7 +46,12 @@ describe('Threadline send — full-stack local delivery round-trip', () => {
     targetApp.get('/threadline/health', (_req, res) => res.json({ ok: true }));
     targetApp.post('/messages/relay-agent', (req, res) => {
       capturedEnvelopes.push(req.body);
-      res.json({ ok: true, threadline: { handled: true, spawned: true, sessionName: 'thread-x', gateDecision: 'allow' } });
+      res.json({
+        ok: true,
+        accepted: true,
+        delivered: false,
+        threadline: { accepted: true, delivered: false, async: true },
+      });
     });
     await new Promise<void>((resolve) => {
       fakeTarget = targetApp.listen(0, '127.0.0.1', () => {
@@ -99,7 +104,7 @@ describe('Threadline send — full-stack local delivery round-trip', () => {
     SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'relay-send-local-roundtrip:cleanup' });
   });
 
-  it('delivers locally and maps deliveryPath="local" success back through the helper', async () => {
+  it('maps the real local accept boundary without claiming asynchronous processing is delivered', async () => {
     const result = await sendMessageViaHttp(
       { targetAgent: TARGET, message: 'roundtrip hello', waitForReply: false, timeoutSeconds: 120 },
       port,
@@ -107,6 +112,9 @@ describe('Threadline send — full-stack local delivery round-trip', () => {
     );
 
     expect(result.success).toBe(true);
+    expect(result.accepted).toBe(true);
+    expect(result.delivered).toBe(false);
+    expect(result.deliveryOutcome).toBe('accepted for async processing');
     expect(result.deliveryPath).toBe('local');
     expect(result.messageId).toBeTruthy();
     expect(result.threadId).toBeTruthy();

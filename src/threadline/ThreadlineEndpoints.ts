@@ -571,7 +571,12 @@ export function createThreadlineRoutes(
       // background failure is logged (it cannot 500 a response that already
       // returned). The former 422-retryable path was already unreachable — the
       // sender aborts at ~10s, long before the 9-30s spawn produced it.
-      res.json({ accepted: true, async: true, threadId: body.message?.threadId });
+      res.json({
+        accepted: true,
+        delivered: false,
+        async: true,
+        threadId: body.message?.threadId,
+      });
 
       // Robustness Phase 1 (D-E / closes F4): record the implicit delivery ack on
       // the VERIFIED E2E relay inbound path — the path that previously lacked it,

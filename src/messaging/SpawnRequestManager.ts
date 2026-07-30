@@ -115,6 +115,12 @@ export interface SpawnResult {
   tmuxSession?: string;
   reason?: string;
   retryAfterMs?: number;
+  /**
+   * For a refused spawn, whether the current payload was admitted to the
+   * bounded retry queue. False means the caller must not describe the payload
+   * as accepted merely because the refusal is retryable.
+   */
+  queued?: boolean;
 }
 
 /**
@@ -589,15 +595,17 @@ export class SpawnRequestManager {
     reservedPayload?: QueuedSpawnMessage,
   ): PreservedTransientRefusal {
     const agent = request.requester.agent;
+    let queued = false;
     if (reservedPayload) {
-      this.#admitQueuedMessage(agent, reservedPayload);
+      queued = this.#admitQueuedMessage(agent, reservedPayload);
     } else if (request.context) {
-      this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
+      queued = this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
     }
     return {
       approved: false,
       reason,
       retryAfterMs,
+      queued,
     } as PreservedTransientRefusal;
   }
 
