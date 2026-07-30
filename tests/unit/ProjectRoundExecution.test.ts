@@ -333,3 +333,125 @@ describe('ProjectRoundExecution.runRound', () => {
     expect(exclude).toContain('.worktrees/');
   });
 });
+
+/**
+ * A child that cannot START is a different fact from a child that started and
+ * failed, and the round record must not render them the same.
+ *
+ * `child_process.spawn` reports a failure to start by emitting `'error'`, NOT
+ * `'exit'`. Before this change nothing listened for it, so:
+ *   - the unhandled `'error'` became a process-level uncaught exception, which
+ *     `uncaughtExceptionPolicy` correctly crashes on (it cannot know an unknown
+ *     exception is safe to swallow) — taking the whole agent server down; and
+ *   - `'exit'` never fires, so a waiter listening only for `'exit'` waits for an
+ *     event that cannot arrive.
+ *
+ * These tests use a genuinely nonexistent binary, so the ENOENT is REAL rather
+ * than mocked — the same failure the server hit twice on 2026-07-30.
+ *
+ * DISCRIMINATION: tests 1-3 were run against the pre-change source and FAIL
+ * there. Test 4 is a CONTROL — it passes on both revisions and is included to
+ * prove the ordinary exit path is untouched, not as evidence for this change.
+ */
+describe('ProjectRoundExecution.runRound — child that cannot start', () => {
+  let stateDir: string;
+  let targetRepo: string;
+  let tracker: InitiativeTracker;
+
+  beforeEach(() => {
+    stateDir = makeStateDir();
+    targetRepo = makeGitRepo();
+    tracker = new InitiativeTracker(stateDir);
+  });
+  afterEach(() => {
+    try { SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/ProjectRoundExecution.test.ts:state' }); } catch { /* ignore */ }
+    try { SafeFsExecutor.safeRmSync(targetRepo, { recursive: true, force: true, operation: 'tests/unit/ProjectRoundExecution.test.ts:repo' }); } catch { /* ignore */ }
+  });
+
+  const MISSING_BINARY = '/nonexistent/instar-test-definitely-not-a-real-binary';
+
+  it('DISCRIMINATING: an unstartable child resolves as a failed round instead of crashing the process', async () => {
+    await newProject(tracker, 'p-nospawn', ['i1'], targetRepo);
+    const r = await runRound(
+      {
+        tracker,
+        projectId: 'p-nospawn',
+        roundIndex: 0,
+        targetRepoPath: targetRepo,
+        spawnCommand: MISSING_BINARY,
+        spawnArgs: [],
+        pollIntervalMs: 50,
+        sigtermGraceMs: 100,
+        verifyMergedItems: async (ids) => notLanded(ids),
+      },
+      { stateDir }
+    );
+    expect(r.outcome).toBe('failed');
+  });
+
+  it('DISCRIMINATING: the reason NAMES the start failure rather than reporting exhausted attempts', async () => {
+    await newProject(tracker, 'p-reason', ['i1'], targetRepo);
+    const r = await runRound(
+      {
+        tracker,
+        projectId: 'p-reason',
+        roundIndex: 0,
+        targetRepoPath: targetRepo,
+        spawnCommand: MISSING_BINARY,
+        spawnArgs: [],
+        pollIntervalMs: 50,
+        sigtermGraceMs: 100,
+        verifyMergedItems: async (ids) => notLanded(ids),
+      },
+      { stateDir }
+    );
+    // The honest cause, not a proxy for it.
+    expect(r.reason).toMatch(/could not start/i);
+    expect(r.reason).toMatch(/ENOENT/);
+    // "attempts exhausted" would be a TRUE-sounding but WRONG reason: the
+    // problem is not that retries ran out, it is that the binary is not there.
+    expect(r.reason).not.toMatch(/attempts exhausted/i);
+  });
+
+  it('DISCRIMINATING: a start failure does not burn the resume-attempt budget', async () => {
+    await newProject(tracker, 'p-noresume', ['i1'], targetRepo);
+    const r = await runRound(
+      {
+        tracker,
+        projectId: 'p-noresume',
+        roundIndex: 0,
+        targetRepoPath: targetRepo,
+        spawnCommand: MISSING_BINARY,
+        spawnArgs: [],
+        pollIntervalMs: 50,
+        sigtermGraceMs: 100,
+        verifyMergedItems: async (ids) => notLanded(ids),
+      },
+      { stateDir }
+    );
+    // Relaunching a binary that does not exist cannot succeed, so spending the
+    // budget on it only delays the honest answer and mislabels the cause.
+    expect(r.resumeAttempts).toBe(0);
+  });
+
+  it('CONTROL (passes on both revisions): an ordinary non-zero exit still exhausts resumes and reports that', async () => {
+    await newProject(tracker, 'p-control-exit', ['i1'], targetRepo);
+    const r = await runRound(
+      {
+        tracker,
+        projectId: 'p-control-exit',
+        roundIndex: 0,
+        targetRepoPath: targetRepo,
+        spawnCommand: 'bash',
+        spawnArgs: ['-c', 'exit 3'],
+        pollIntervalMs: 50,
+        sigtermGraceMs: 100,
+        verifyMergedItems: async (ids) => notLanded(ids),
+      },
+      { stateDir }
+    );
+    expect(r.outcome).toBe('failed');
+    expect(r.reason).toMatch(/attempts exhausted/i);
+    expect(r.resumeAttempts).toBeGreaterThan(0);
+  });
+});

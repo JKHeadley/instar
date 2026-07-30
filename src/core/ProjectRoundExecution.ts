@@ -39,6 +39,7 @@ import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import type { Initiative, InitiativeTracker, RoundStatus } from './InitiativeTracker.js';
 import { ProjectRoundLock } from './ProjectRoundLock.js';
 import { ProjectRoundWorktrees } from './ProjectRoundWorktrees.js';
+import { detectClaudePath } from './Config.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 
@@ -317,6 +318,23 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
         break;
       }
 
+      // The child never started. Record it as a round failure that NAMES the
+      // cause, and do NOT spend a resume attempt: a binary that cannot be
+      // resolved or executed will not resolve on a retry, so relaunching would
+      // burn the attempt budget and report the wrong reason ("attempts
+      // exhausted") for a condition that is not about attempts at all.
+      // "Could not start" and "started and failed" are different facts and the
+      // round record must not render them the same.
+      if (exit.kind === 'spawn-failed') {
+        outcome = 'failed';
+        // Node's spawn errors already name the binary ("spawn claude ENOENT"),
+        // so the message alone is enough to diagnose without plumbing the
+        // resolved path — which would risk leaking an absolute home path.
+        reason = `could not start the autonomous child: ${exit.spawnError ?? 'unknown spawn error'}`;
+        unmergedItemIds = [...lastItemIds];
+        break;
+      }
+
       // Natural exit.
       if (exit.kind === 'exited' && exit.code === 0) {
         // Step 6: verify per-item artifacts.
@@ -436,13 +454,44 @@ async function recordOutcome(
 }
 
 interface ExitResult {
-  kind: 'exited' | 'set-changed' | 'halted';
+  kind: 'exited' | 'set-changed' | 'halted' | 'spawn-failed';
   code?: number | null;
   signal?: NodeJS.Signals | null;
+  /** Sanitized reason, present only when kind === 'spawn-failed'. */
+  spawnError?: string;
 }
 
+/**
+ * Spawn errors captured at the spawn site.
+ *
+ * `child_process.spawn` reports a failure to START (ENOENT, EACCES) by
+ * emitting `'error'` — NOT by emitting `'exit'`. Two consequences, and the
+ * second is the one that bites:
+ *
+ *   1. An unhandled `'error'` becomes a process-level uncaught exception.
+ *      `uncaughtExceptionPolicy` crashes by default on anything it does not
+ *      recognise — correctly, since an unknown exception is not safe to
+ *      swallow. So an unstartable child took the WHOLE agent server down.
+ *   2. Even with the crash averted, `'exit'` never fires, so a waiter that
+ *      listens only for `'exit'` waits forever for an event that cannot come.
+ *
+ * Capturing here — at the spawn site, in the same tick as the spawn — means
+ * the "a spawn failure never crashes the process" property does not depend on
+ * any caller remembering to attach a listener. The waiter separately consumes
+ * the error to turn it into a recorded round failure.
+ */
+const spawnFailures = new WeakMap<ChildProcess, Error>();
+
 function spawnAutonomousChild(input: RunRoundInput, itemIds: string[]): ChildProcess {
-  const cmd = input.spawnCommand ?? 'claude';
+  // Resolve the binary rather than trusting the server's PATH. The server runs
+  // under launchd, whose PATH routinely excludes the nvm/asdf/npm-global bin dir
+  // that actually holds `claude` — so a bare 'claude' resolves in the operator's
+  // terminal and ENOENTs in the server. `detectFrameworkBinary` already scans
+  // exactly those locations (its own comment records the 2026-05-31 session-spawn
+  // crash from this same cause); this callsite simply was not using it.
+  // Falls back to the bare name so a host where detection legitimately finds
+  // nothing behaves as before rather than failing earlier than it used to.
+  const cmd = input.spawnCommand ?? detectClaudePath() ?? 'claude';
   const args = input.spawnArgs ?? ['--skill', 'autonomous'];
   const workdir =
     input.initialWorkdir ??
@@ -465,6 +514,13 @@ function spawnAutonomousChild(input: RunRoundInput, itemIds: string[]): ChildPro
       INSTAR_ROUND_ITEM_IDS: JSON.stringify(itemIds),
       INSTAR_STOP_CONDITION: 'all-items-merged-on-main',
     },
+  });
+  // Attach IMMEDIATELY — see spawnFailures above. Without a listener a failure
+  // to START is an unhandled 'error' event, which is a process-level uncaught
+  // exception, which kills the agent server. This listener exists so that
+  // property holds no matter what the caller does with the returned child.
+  child.on('error', (err: Error) => {
+    spawnFailures.set(child, err);
   });
   return child;
 }
@@ -490,9 +546,34 @@ async function waitForExitOrPollChange(
     });
   });
 
+  // A child that never STARTED emits 'error' and never emits 'exit', so the
+  // loop below would otherwise wait forever for an event that cannot arrive.
+  // Check the spawn-site capture first (the error may already have fired before
+  // this function attached anything), then listen for a later one.
+  // An error that ALREADY fired (captured at the spawn site) is answered before
+  // any waiting at all — read into its own local so the check below is not
+  // narrowed by this one.
+  const alreadyFailed = spawnFailures.get(child);
+  if (alreadyFailed) {
+    return { kind: 'spawn-failed', spawnError: alreadyFailed.message };
+  }
+  // Holder object rather than a bare `let`: the assignment happens inside a
+  // callback, which TypeScript's control-flow analysis cannot see.
+  const failure: { err?: Error } = {};
+  const spawnFailurePromise = new Promise<void>((resolve) => {
+    child.once('error', (err: Error) => {
+      failure.err = err;
+      resolve();
+    });
+  });
+
   while (!exited) {
-    // Wait either pollIntervalMs OR exit, whichever comes first.
-    await Promise.race([exitPromise, sleep(pollIntervalMs)]);
+    // Wait for exit, a spawn failure, OR the poll interval — whichever is first.
+    await Promise.race([exitPromise, spawnFailurePromise, sleep(pollIntervalMs)]);
+    const failedToStart = failure.err;
+    if (failedToStart) {
+      return { kind: 'spawn-failed', spawnError: failedToStart.message };
+    }
     if (exited) break;
 
     // Halt check.
