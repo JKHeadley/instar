@@ -368,7 +368,7 @@ The Root says *enforce behavior in structure, not willpower.* This family is **w
 
 ### Zero-Failure
 **Rule.** The test suite is green at all times. There is no such thing as a "pre-existing failure."
-**In practice.** If you see a failure, you own it — regardless of who caused it. Enforced structurally: Husky pre-push hook, CI branch protection, session-level test-health gate.
+**In practice.** If you see a failure, you own it — regardless of who caused it. Enforced structurally: the Husky pre-push suite gate (`scripts/pre-push-smoke.mjs`, which runs the affected tier and exits with Vitest's status, so a red suite blocks the push), CI branch protection, and a session-level test-health gate.
 **Earned from.** The classic responsibility gap — every developer assuming "someone else broke that," so failures accumulate unowned. The standard closes the gap by assigning ownership to whoever sees it.
 **Traces to the goal.** Coherence includes a coherent codebase; drift in the test suite is drift in the foundation.
 
