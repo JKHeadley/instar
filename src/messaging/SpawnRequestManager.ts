@@ -263,6 +263,34 @@ export interface SpawnRequestManagerConfig {
   maxGlobalQueued?: number;
 }
 
+interface QueuedSpawnMessage {
+  context: string;
+  threadId?: string;
+  receivedAt: number;
+  envelopeHash: string;
+  drainAttempts: number;
+  /** Monotonic arrival order, including payloads reserved during an in-flight spawn. */
+  sequence: number;
+}
+
+declare const TRANSIENT_REFUSAL_PRESERVED: unique symbol;
+
+/**
+ * A retryable refusal that can only be constructed by the preservation
+ * funnel. The private brand makes a new retryable return branch fail
+ * type-checking unless it first passes through `#refuseTransiently`.
+ */
+type PreservedTransientRefusal = SpawnResult & {
+  approved: false;
+  retryAfterMs: number;
+  readonly [TRANSIENT_REFUSAL_PRESERVED]: true;
+};
+
+type GuardedSpawnResult =
+  | (SpawnResult & { approved: true })
+  | (SpawnResult & { approved: false; retryAfterMs?: undefined })
+  | PreservedTransientRefusal;
+
 // ── Constants ───────────────────────────────────────────────────
 
 const DEFAULT_COOLDOWN_MS = 30_000; // 30 seconds (reduced from 5 min to allow multi-message agents)
@@ -359,13 +387,13 @@ export class SpawnRequestManager {
    *   process this entry. Bumped before each drain; reset on success.
    *   Used by DRR's age-boost.
    */
-  readonly #pendingMessages = new Map<string, {
-    context: string;
-    threadId?: string;
-    receivedAt: number;
-    envelopeHash: string;
-    drainAttempts: number;
-  }[]>();
+  readonly #pendingMessages = new Map<string, QueuedSpawnMessage[]>();
+
+  /** Serialize launch attempts per agent so one backlog cannot be delivered twice. */
+  readonly #spawnInflightByAgent = new Set<string>();
+
+  /** Arrival order shared by queued and in-flight-reserved payloads. */
+  #nextQueueSequence = 0;
 
   /** Max queued messages per agent before oldest are dropped */
   static readonly MAX_QUEUED_PER_AGENT = 10;
@@ -525,7 +553,13 @@ export class SpawnRequestManager {
   /** Effective per-agent queue cap, accounting for soft-limiter degradation. */
   effectiveMaxQueuedPerAgent(agent: string): number {
     if (this.isInfraDegraded(agent)) {
-      return this.#config.degradedMaxQueuedPerAgent ?? DEGRADED_MAX_QUEUED_PER_AGENT_DEFAULT;
+      // A zero cap makes `while (queue.length >= cap)` non-terminating. Keep
+      // degraded admission bounded but live, even for a stale constructor
+      // config written before updateConfig began rejecting zero.
+      return Math.max(
+        1,
+        this.#config.degradedMaxQueuedPerAgent ?? DEGRADED_MAX_QUEUED_PER_AGENT_DEFAULT,
+      );
     }
     return SpawnRequestManager.MAX_QUEUED_PER_AGENT;
   }
@@ -536,6 +570,37 @@ export class SpawnRequestManager {
     this.#penaltyUntil.delete(agent);
   }
 
+  /**
+   * The single construction path for a retryable refusal.
+   *
+   * `retryAfterMs` means "not now", so returning it without first preserving
+   * the refused payload is a data-loss bug. Keeping construction here makes
+   * that postcondition class-wide: the structural guard test rejects any
+   * retryable-result object created elsewhere in this class.
+   *
+   * Queued backlog is not handled here: evaluate snapshots it without removal
+   * and commits that exact snapshot only after spawnSession reports delivery.
+   * A rejection therefore leaves the backlog's age and ordering untouched.
+   */
+  #refuseTransiently(
+    request: SpawnRequest,
+    reason: string,
+    retryAfterMs: number,
+    reservedPayload?: QueuedSpawnMessage,
+  ): PreservedTransientRefusal {
+    const agent = request.requester.agent;
+    if (reservedPayload) {
+      this.#admitQueuedMessage(agent, reservedPayload);
+    } else if (request.context) {
+      this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
+    }
+    return {
+      approved: false,
+      reason,
+      retryAfterMs,
+    } as PreservedTransientRefusal;
+  }
+
   // ── Public API ──────────────────────────────────────────────
 
   /**
@@ -543,6 +608,17 @@ export class SpawnRequestManager {
    * Returns the result with approval status and session info if spawned.
    */
   async evaluate(request: SpawnRequest): Promise<SpawnResult> {
+    return this.#evaluateGuarded(request);
+  }
+
+  /**
+   * Typed implementation boundary for the class-level preservation invariant.
+   *
+   * A retryable result cannot satisfy this return type unless it came from
+   * `#refuseTransiently`, whose private brand certifies use of the preservation
+   * funnel.
+   */
+  async #evaluateGuarded(request: SpawnRequest): Promise<GuardedSpawnResult> {
     const agent = request.requester.agent;
 
     // §4.3: payload byte-size cap. Refuse oversized envelopes at admission so
@@ -562,14 +638,11 @@ export class SpawnRequestManager {
     // §4.2: single-source cooldown check (covers cooldown AND penalty).
     const remainingMs = this.cooldownRemainingMs(agent);
     if (remainingMs > 0) {
-      if (request.context) {
-        this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
-      }
-      return {
-        approved: false,
-        reason: `Cooldown: ${Math.ceil(remainingMs / 1000)}s remaining before next spawn for ${agent}`,
-        retryAfterMs: remainingMs,
-      };
+      return this.#refuseTransiently(
+        request,
+        `Cooldown: ${Math.ceil(remainingMs / 1000)}s remaining before next spawn for ${agent}`,
+        remainingMs,
+      );
     }
 
     // Check session limits — prefer the live accessor over the constructor
@@ -582,39 +655,22 @@ export class SpawnRequestManager {
       : this.#config.maxSessions;
     if (activeSessions.length >= liveMaxSessions) {
       if (request.priority !== 'critical' && request.priority !== 'high') {
-        // Queue the payload, like every other transient-pressure denial here: a
-        // session cap clears as running sessions finish — this branch sets
-        // retryAfterMs itself — so the content must survive the wait.
-        if (request.context) {
-          this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
-        }
-        return {
-          approved: false,
-          reason: `Session limit reached (${activeSessions.length}/${liveMaxSessions}). Priority ${request.priority} insufficient to override.`,
-          retryAfterMs: 60_000,
-        };
+        return this.#refuseTransiently(
+          request,
+          `Session limit reached (${activeSessions.length}/${liveMaxSessions}). Priority ${request.priority} insufficient to override.`,
+          60_000,
+        );
       }
     }
 
-    // Check memory pressure. Queue the message (like cooldown and the quota
-    // gate below) rather than dropping it: memory pressure is transient — this
-    // very branch sets retryAfterMs — and the content must survive it. Before
-    // this, memory pressure was the ONLY transient-pressure denial that
-    // destroyed the payload, so an A2A dispatch arriving during a pressure
-    // window was silently deleted while both the caller (`handled: true` from
-    // ThreadlineRouter) and the remote sender (`delivered: true`) recorded
-    // success. Observed live 2026-07-29: 40 such denials on one machine in a
-    // day, oscillating across the threshold every 30-80s, each one a lost
-    // inbound message.
+    // Check memory pressure. The refusal funnel preserves the payload while
+    // the transient pressure condition clears.
     if (this.#config.isMemoryPressureHigh?.()) {
-      if (request.context) {
-        this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
-      }
-      return {
-        approved: false,
-        reason: 'Memory pressure too high for new session',
-        retryAfterMs: 120_000,
-      };
+      return this.#refuseTransiently(
+        request,
+        'Memory pressure too high for new session',
+        120_000,
+      );
     }
 
     // Subscription-quota gate (S1) — only wired when the subscription-path
@@ -624,37 +680,43 @@ export class SpawnRequestManager {
     if (this.#config.shouldSpawnSession) {
       const quota = this.#config.shouldSpawnSession(request.priority);
       if (!quota.allowed) {
-        if (request.context) {
-          this.#queueMessage(agent, request.context, request.pendingMessages?.[0]);
-        }
-        return {
-          approved: false,
-          reason: `Subscription quota gate: ${quota.reason}`,
-          retryAfterMs: 120_000,
-        };
+        return this.#refuseTransiently(
+          request,
+          `Subscription quota gate: ${quota.reason}`,
+          120_000,
+        );
       }
     }
+
+    // Cooldown can legitimately be configured to zero, so it cannot serve as
+    // the concurrency lock. Serialize per agent explicitly: otherwise two
+    // overlapping launches can snapshot and deliver the same backlog.
+    if (this.#spawnInflightByAgent.has(agent)) {
+      return this.#refuseTransiently(
+        request,
+        `Spawn already in flight for ${agent}`,
+        1_000,
+      );
+    }
+
+    // Stamp the current payload before the first await, but do not enqueue it
+    // yet: it is already present in the launch prompt. If launch fails, the
+    // exact reserved object is inserted by sequence, preserving both its
+    // original TTL and its position ahead of later concurrent arrivals.
+    const currentReservation = request.context
+      ? this.#makeQueuedMessage(request.context, request.pendingMessages?.[0])
+      : undefined;
+    this.#spawnInflightByAgent.add(agent);
 
     // §4.2: failure-suppressive reservation. Stamp `lastSpawnByAgent` BEFORE
     // the async spawn, and do NOT roll back on failure. A peer that triggers
     // fast-failing spawns still pays the cooldown.
     this.#lastSpawnByAgent.set(agent, this.#nowFn());
 
-    // NOTE (deliberately NOT restoring these on failure — see below): #drainQueue
-    // empties the queue here because the prompt has to carry the payloads, so a
-    // spawn that throws destroys them. That is a real defect, but the obvious fix
-    // — put them back in the catch — is UNSAFE against the real `spawnSession`
-    // implementation: SessionManager.spawnSession creates the live tmux session
-    // WITH the prompt, and only afterwards calls state.saveSession() outside any
-    // try/catch. A throw from that bookkeeping step means the payloads were
-    // already DELIVERED, so re-queueing them would deliver the same instruction
-    // to a second live session. Restoring here would trade a rare lost message
-    // for a rare duplicated one, which is worse — a duplicate can act twice.
-    // The prerequisite is making spawnSession stop reporting failure once the
-    // session is live and holding the prompt. Tracked: CMT-1114.
+    let queuedSnapshot: QueuedSpawnMessage[] = [];
     try {
-      const queuedMessages = this.#drainQueue(agent);
-      const prompt = this.#buildSpawnPrompt(request, queuedMessages);
+      queuedSnapshot = this.#snapshotQueue(agent);
+      const prompt = this.#buildSpawnPrompt(request, queuedSnapshot);
       const spawned = await this.#config.spawnSession(prompt, {
         model: request.suggestedModel,
         maxDurationMinutes: request.suggestedMaxDuration,
@@ -669,6 +731,10 @@ export class SpawnRequestManager {
         // Undefined on every non-warm spawn → headless behavior unchanged.
         interactive: request.interactive,
       });
+      // spawnSession's contract is now delivery-truthful: resolution means the
+      // prompt reached a live session. Remove only the entries in this prompt;
+      // messages arriving while spawnSession was in flight remain queued.
+      this.#commitQueueSnapshot(agent, queuedSnapshot);
       // Accept both the legacy bare-id return and the {sessionId, tmuxSession}
       // object form. The tmuxSession (when provided) is forwarded so callers
       // (spawnNewThread) persist the REAL tmux name as the resume entry's
@@ -690,14 +756,14 @@ export class SpawnRequestManager {
     } catch (err) {
       const cause = this.#classifyFailure(err);
       this.#applyFailureAttribution(agent, cause);
-      // Deliberately NOT re-queueing here. A `spawnSession` rejection does not
-      // prove non-delivery (see the note above the try), so putting the payload
-      // back risks delivering the same instruction twice. Tracked: CMT-1114.
-      return {
-        approved: false,
-        reason: `Spawn failed (${cause}): ${err instanceof Error ? err.message : 'unknown error'}`,
-        retryAfterMs: 30_000,
-      };
+      return this.#refuseTransiently(
+        request,
+        `Spawn failed (${cause}): ${err instanceof Error ? err.message : 'unknown error'}`,
+        30_000,
+        currentReservation,
+      );
+    } finally {
+      this.#spawnInflightByAgent.delete(agent);
     }
   }
 
@@ -768,18 +834,64 @@ export class SpawnRequestManager {
    * global cap. (Per-agent truncation still queues the new entry.)
    */
   #queueMessage(agent: string, context: string, threadId?: string): boolean {
+    return this.#admitQueuedMessage(agent, this.#makeQueuedMessage(context, threadId));
+  }
+
+  /**
+   * Construct queue metadata at message arrival rather than eventual
+   * admission. In-flight payloads use this to retain their original TTL and
+   * order if the launch fails after later messages have arrived.
+   */
+  #makeQueuedMessage(context: string, threadId?: string): QueuedSpawnMessage {
+    return {
+      context,
+      threadId,
+      receivedAt: this.#nowFn(),
+      envelopeHash: computeEnvelopeHash({ context, threadId }),
+      drainAttempts: 0,
+      sequence: this.#nextQueueSequence++,
+    };
+  }
+
+  /** Admit a fully stamped payload while preserving monotonic arrival order. */
+  #admitQueuedMessage(agent: string, message: QueuedSpawnMessage): boolean {
     // §4.3 global cap: refuse new enqueues when total queued is at the
     // global limit. Computed before any local mutation.
     const maxGlobal = this.#config.maxGlobalQueued ?? DEFAULT_MAX_GLOBAL_QUEUED;
     let totalQueued = 0;
     for (const q of this.#pendingMessages.values()) totalQueued += q.length;
     if (totalQueued >= maxGlobal) {
-      // Mark the agent truncated before refusing. Callers discard this boolean
-      // (all five callsites are `if (request.context) { #queueMessage(...) }`),
-      // so without the marker a global-cap refusal was the one queue loss with
-      // NO trace at all — indistinguishable from a successful enqueue, which is
-      // the same silent-loss shape this whole area is being fixed for. The
-      // per-agent cap below already sets it; this makes the global cap match.
+      // A launch payload is stamped before its await and may be admitted only
+      // after a later in-flight refusal has filled the final slot. Preserve the
+      // bounded queue's chronological policy: an earlier reserved payload
+      // displaces the globally newest later arrival; an actually newer payload
+      // remains refused as before.
+      let newest: { agent: string; entry: QueuedSpawnMessage } | undefined;
+      for (const [queuedAgent, queued] of this.#pendingMessages) {
+        for (const entry of queued) {
+          if (!newest || entry.sequence > newest.entry.sequence) {
+            newest = { agent: queuedAgent, entry };
+          }
+        }
+      }
+      if (newest && message.sequence < newest.entry.sequence) {
+        const newestQueue = this.#pendingMessages.get(newest.agent);
+        const newestIndex = newestQueue?.indexOf(newest.entry) ?? -1;
+        if (newestQueue && newestIndex >= 0) {
+          newestQueue.splice(newestIndex, 1);
+          if (newestQueue.length === 0) {
+            this.#pendingMessages.delete(newest.agent);
+          }
+          this.#truncated.add(newest.agent);
+          totalQueued--;
+        }
+      }
+    }
+    if (totalQueued >= maxGlobal) {
+      // Mark the agent truncated before refusing. The preservation funnel does
+      // not surface this internal boolean, so without the marker a global-cap
+      // refusal would leave no trace. The per-agent cap below already sets it;
+      // this makes the global cap match.
       this.#truncated.add(agent);
       return false;
     }
@@ -792,6 +904,7 @@ export class SpawnRequestManager {
 
     const now = this.#nowFn();
     const maxAge = SpawnRequestManager.QUEUE_MAX_AGE_MS;
+    queue.sort((a, b) => a.sequence - b.sequence);
     while (queue.length > 0 && now - queue[0].receivedAt > maxAge) {
       queue.shift();
     }
@@ -799,6 +912,12 @@ export class SpawnRequestManager {
     // §4.2 infra soft limiter + §4.3 truncation marker.
     // Per-agent cap (degraded if soft-limited). Drop oldest on overflow.
     const cap = this.effectiveMaxQueuedPerAgent(agent);
+    if (cap <= 0) {
+      // Defensive backstop for future cap sources; effective config currently
+      // floors degraded admission at one.
+      this.#truncated.add(agent);
+      return false;
+    }
     let truncatedAny = false;
     while (queue.length >= cap) {
       queue.shift();
@@ -806,13 +925,8 @@ export class SpawnRequestManager {
     }
     if (truncatedAny) this.#truncated.add(agent);
 
-    queue.push({
-      context,
-      threadId,
-      receivedAt: now,
-      envelopeHash: computeEnvelopeHash({ context, threadId }),
-      drainAttempts: 0,
-    });
+    queue.push(message);
+    queue.sort((a, b) => a.sequence - b.sequence);
     return true;
   }
 
@@ -821,8 +935,14 @@ export class SpawnRequestManager {
     return this.#truncated.has(agent);
   }
 
-  /** Drain all queued messages for an agent */
-  #drainQueue(agent: string): { context: string; threadId?: string }[] {
+  /**
+   * Snapshot the currently valid queue without removing it.
+   *
+   * The snapshot stays reserved while spawnSession is in flight. This prevents
+   * another sender from consuming the temporarily freed global capacity and
+   * preserves each entry's original TTL/order if launch fails.
+   */
+  #snapshotQueue(agent: string): QueuedSpawnMessage[] {
     const queue = this.#pendingMessages.get(agent);
     if (!queue || queue.length === 0) {
       this.#truncated.delete(agent); // empty queue can't claim "truncated"
@@ -832,9 +952,38 @@ export class SpawnRequestManager {
     const now = this.#nowFn();
     const maxAge = SpawnRequestManager.QUEUE_MAX_AGE_MS;
     const valid = queue.filter(m => now - m.receivedAt < maxAge);
-    this.#pendingMessages.delete(agent);
-    this.#truncated.delete(agent); // §4.3: drain clears the marker
-    return valid;
+    if (valid.length === 0) {
+      this.#pendingMessages.delete(agent);
+      this.#truncated.delete(agent);
+      return [];
+    }
+    if (valid.length !== queue.length) {
+      this.#pendingMessages.set(agent, valid);
+    }
+    return [...valid];
+  }
+
+  /**
+   * Commit exactly the queue entries included in a delivered prompt.
+   *
+   * Object identity is deliberate: entries appended while spawnSession awaited
+   * may carry identical content/hash but represent separate inbound messages.
+   */
+  #commitQueueSnapshot(
+    agent: string,
+    delivered: QueuedSpawnMessage[],
+  ): void {
+    if (delivered.length === 0) return;
+    const queue = this.#pendingMessages.get(agent);
+    if (!queue || queue.length === 0) return;
+    const deliveredEntries = new Set(delivered);
+    const remaining = queue.filter((entry) => !deliveredEntries.has(entry));
+    if (remaining.length === 0) {
+      this.#pendingMessages.delete(agent);
+      this.#truncated.delete(agent);
+      return;
+    }
+    this.#pendingMessages.set(agent, remaining);
   }
 
   /** Get count of queued messages for an agent (for monitoring) */
@@ -1043,7 +1192,10 @@ export class SpawnRequestManager {
       maxDrainsPerTick: this.#config.maxDrainsPerTick ?? DRAIN_MAX_PER_TICK_DEFAULT,
       maxEnvelopeBytes: this.#config.maxEnvelopeBytes ?? DEFAULT_MAX_ENVELOPE_BYTES,
       maxGlobalQueued: this.#config.maxGlobalQueued ?? DEFAULT_MAX_GLOBAL_QUEUED,
-      degradedMaxQueuedPerAgent: this.#config.degradedMaxQueuedPerAgent ?? DEGRADED_MAX_QUEUED_PER_AGENT_DEFAULT,
+      degradedMaxQueuedPerAgent: Math.max(
+        1,
+        this.#config.degradedMaxQueuedPerAgent ?? DEGRADED_MAX_QUEUED_PER_AGENT_DEFAULT,
+      ),
       drainTickMs: this.getDrainTickMs(),
     };
   }
@@ -1072,7 +1224,7 @@ export class SpawnRequestManager {
       ['maxDrainsPerTick', v => v >= 1 && Number.isFinite(v) && Number.isInteger(v)],
       ['maxEnvelopeBytes', v => v >= 1 && Number.isFinite(v) && Number.isInteger(v)],
       ['maxGlobalQueued', v => v >= 0 && Number.isFinite(v) && Number.isInteger(v)],
-      ['degradedMaxQueuedPerAgent', v => v >= 0 && Number.isFinite(v) && Number.isInteger(v)],
+      ['degradedMaxQueuedPerAgent', v => v >= 1 && Number.isFinite(v) && Number.isInteger(v)],
     ];
     for (const [k, ok] of validators) {
       const v = patch[k];
@@ -1105,5 +1257,7 @@ export class SpawnRequestManager {
     this.#drainAttempts.clear();
     this.#infraFailureWindow.clear();
     this.#truncated.clear();
+    this.#spawnInflightByAgent.clear();
+    this.#nextQueueSequence = 0;
   }
 }
