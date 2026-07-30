@@ -283,6 +283,24 @@ carrying the same destructive-verb and destructive-shape denials, and that the f
 exemption was real and shipped — the comment asserting "ships dark + dry-run + reviewed" sat on a guard
 that is armed on this machine.
 
+**The reviewer's follow-up question, answered with the measurement rather than a
+recollection.** They asked whether the existing `SafeGitExecutor` suite ran
+UNCHANGED against the de-duplicated read preamble — the point being that if any of
+it needed editing, that is the most important line in the change.
+
+It ran unchanged. The diff against the branch base is **110 insertions and zero
+deletions or modifications**: the 31 pre-existing tests (execSync source-tree
+guard, readSync classification and bypass, readStream refusal and timeout) are
+byte-identical, and the 5 additions are the new `readAsync` block. All 36 pass.
+
+That is the evidence that extracting `prepareReadOnlySpawn` preserved the admission
+decision rather than merely appearing to: the tests that pin destructive-verb
+refusal, destructive-shape refusal, the `-C <dir>` target extraction, the
+source-tree guard and the sourceTreeReadOk bypass were not touched and did not need
+to be. Had any required editing, the refactor would have changed what the funnel
+ADMITS, not just where the code lives — which is the one outcome that would make
+this change unsafe.
+
 **Scope limit on that review, stated because it is a gate item.** It was performed
 against the branch as it stood before round three. Its verification that the safety
 checkpoint was left untouched no longer describes the current code: round three adds
