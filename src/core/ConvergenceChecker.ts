@@ -61,7 +61,7 @@ const CHECKS: Check[] = [
   },
   {
     category: 'settling',
-    pattern: /(no (data|results|information) (available|found|exists)|nothing (to report|happened|was found)|there (is|are) no|could(n.t| not) find (any|the)|appears to be empty|no (relevant|matching|applicable))/i,
+    pattern: /(no (data|results|information) (available|found|exists)|nothing (to report|happened|was found)|there (is|are) no([^a-zA-Z]|$)|could(n.t| not) find (any|the)|appears to be empty|no (relevant|matching|applicable))/i,
     detail: 'Reports nothing found without investigating multiple sources.',
   },
   {
