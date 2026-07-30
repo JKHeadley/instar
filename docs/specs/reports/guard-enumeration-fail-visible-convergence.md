@@ -108,3 +108,141 @@ that is swallowed; it is not a claim that the gap is closed.
 94 tests green across 7 files (unit, integration, e2e). Every new failure-path test was
 verified to **fail** against the pre-change tree by reverting the source and re-running
 — including the two that pin the `emit('error')` crash regression.
+
+---
+
+# Convergence run 2 — after building the fix for run 1's open finding
+
+**Outcome: NOT CONVERGED AGAIN. The 10-round cap was reached a second time. No tag was
+written, and none should be.**
+
+Run 1 (above) ended at the cap with one open finding: no durable, alertable signal, with
+the proposed home being `GET /guards` reading `errored` for a guard whose enumeration is
+failing. **That finding has since been built** — as the new effective state `on-blind`
+rather than `errored`, a deliberate divergence recorded in the spec and in the test file's
+header (`errored` means *the status could not be READ*; a blind guard is perfectly readable
+and is reporting a true fact about itself, so collapsing them would reproduce this spec's
+own defect one layer up).
+
+Run 2 re-ran the full loop against the spec carrying that work. It hit the cap on a
+**different** unresolved finding.
+
+| | |
+|---|---|
+| Rounds run | 10 of 10 (cap) |
+| Criterion | two consecutive rounds with zero DESIGN-class findings |
+| Best achieved | **one** clean round (round 4), never two consecutively |
+| Final verdict | **SERIOUS ISSUES** — finding 1 explicitly approval-blocking |
+| External families | **one** (`codex-cli` / gpt-5.5); gemini not authenticated |
+
+| Round | Verdict | DESIGN? | The finding that mattered |
+|---|---|---|---|
+| 1 | — | yes | "durable, restart-surviving home" overclaimed |
+| 2 | — | yes | two surfaces read different sources and can contradict |
+| 3 | — | yes | the spec's own *title* overclaims |
+| 4 | MINOR | **no** | timeout premise falsified; contract precision only |
+| 5 | MINOR | yes | live route blocks the **event loop**, not "more subprocesses" |
+| 6 | SERIOUS | yes | persistence contradiction — **repeat of round 1** |
+| 7 | MINOR | yes | declining the fleet audit was process compliance, not risk management |
+| 8 | SERIOUS | yes | persistence contradiction **again**; spec steers polling at the hazardous route |
+| 9 | MINOR | yes | the normative section deferred to the prose, defeating itself |
+| 10 | SERIOUS | yes | availability hazard is **approval-blocking** |
+
+## Run 2's open finding — the one a decider needs
+
+**`GET /worktrees/agent-reaper` enumerates synchronously in a non-async handler**
+(`snapshot()` → `listWorktrees()` → `SafeGitExecutor.readSync` → `execFileSync`, bounded at
+30s), so a hung `git worktree list` stalls **the whole Node event loop** — every route,
+timer, lease heartbeat, mesh probe — for up to 30s per call.
+
+Why it is approval-relevant rather than merely pre-existing:
+
+1. **This spec makes the route more attractive to poll** by adding the fields that make it
+   worth trusting.
+2. **The mitigation currently shipped is prose.** The spec tells readers to poll `/guards`
+   instead — which round-9 review correctly named as a violation of this project's own
+   *Structure > Willpower* standard. A written instruction is a wish, not a guardrail.
+3. **Raised in five separate rounds** (4, 5, 7, 8, 10), escalating each time. It is the
+   most-repeated finding of the run.
+
+Tracked as **`CMT-1123`** (availability), deliberately separate from `CMT-1103` (alerting),
+both verified as real records. **Tracking is not closure and is not presented as such.**
+
+### Run 2's second unresolved finding
+
+In the reaper's **shipped dry-run default**, a restart erases the blind state entirely:
+`lastEnumerationOk` and `lastPassAt` reset and `on-dry-run` outranks everything, so the row
+is indistinguishable from a healthy guard until the next pass. The failure *history*
+persists; the live *signal* does not. The feature's main posture signal has a blind spot in
+the exact configuration it ships in. Found by a test that failed for the right reason.
+
+### Correction to run 1's record
+
+Run 1's report states the counters are "process-local counters that reset on restart."
+**That is wrong** and the same error survived three rounds of run 2 before being pinned
+field by field: `enumerationFailures` and `lastEnumerationFailureAt` **are** persisted and
+reloaded; `lastEnumerationOk`, `lastEnumerationError` and `lastPassAt` are not. The
+authoritative table is in the spec's persistence-model section. Run 1's text is left intact
+as a historical record with this correction attached.
+
+## Limits — read before weighing the verdict
+
+Same reduced-assurance shape as run 1, and it must not be glossed:
+
+- **One external family.** `--detect-only` reported only `codex-cli`; gemini is not
+  authenticated. Every round is one model's opinion, not the family-diverse pass intended.
+- **The six internal reviewers were again self-applied** — this session prohibits spawning
+  subagents. The security / scalability / adversarial / integration / decision-completeness /
+  lessons-aware passes were performed by the same mind that wrote the spec: the circular
+  self-review the skill explicitly warns against.
+- **The DESIGN/PRECISION calls are therefore also mine.** Where a call was close it was
+  counted as DESIGN — the conservative direction, since the author's bias that produced the
+  overclaims could equally produce lenient classifications.
+
+## The pattern — the most useful output of run 2
+
+Nine of ten rounds found something real, and the **repeats** are the signal. The persistence
+claim was found wrong three times (rounds 1, 6, 8), each time in a *different paragraph*:
+round 6 added a correct authoritative table but left two contradicting sentences standing
+elsewhere, and round 8 found one of them.
+
+The lesson generalises: **in a long spec, adding a correct section does not remove an
+incorrect one.** Contradictions are eliminated by deleting or explicitly subordinating
+duplicates, not by out-arguing them in new prose. Rounds 7–10 kept returning to the same
+structural complaint — ~900 lines of design, rationale, review history and doctrine
+interleaved — and that entanglement is precisely what let one defect survive three rounds of
+review aimed at it.
+
+Two further instances of the same shape, both self-inflicted: the round-4 acceptance table,
+written *to fix* overclaiming, was found overclaiming in round 6; and the round-7 normative
+section, written *to fix* the entanglement, undercut itself in round 9 by declaring the prose
+authoritative over itself. Naming the bias at the top of the document did not prevent
+reproducing it two rounds later — which is the strongest available argument that this needed a
+structural fix rather than another careful paragraph.
+
+## Options for the decider
+
+1. **Land `CMT-1123` first, then re-run convergence.** Removes the blocking finding at its
+   root. Highest confidence, most work — it needs its own spec and review.
+2. **Change this spec's contract now** — make `/guards`/last-pass the supported read and
+   demote the live routes to an explicit, concurrency-limited probe. Smaller, but it is new
+   design introduced at the review cap, so it would need its own rounds.
+3. **Approve with the hazard accepted and tracked**, on the reasoning that the blocking is
+   byte-for-byte pre-existing and this change alters only what the route *reports*. Cheapest;
+   accepts a documented availability risk on the operator's judgment.
+
+**Recommendation: option 1.** The hazard is real, five rounds kept returning to it, and the
+shipped mitigation is exactly the written-instruction guardrail this project's constitution
+rejects. Option 3 is defensible on scope grounds and is legitimately the operator's call — it
+is a risk acceptance, not a technical resolution, and should be recorded as one.
+
+## Implementation state
+
+`tsc --noEmit` clean; 92 tests green across the two affected unit files, with Tier-1 and
+Tier-3 coverage for `on-blind` (including the restart-behaviour test and five explicitly
+labelled CONTROL tests that pass on both revisions and are *not* counted as evidence).
+Nothing is committed — correctly, since the gate requires a tag neither run has earned.
+
+*Written at the cap with the tag deliberately unstamped. Relabelling design findings as
+precision would have produced a converged spec and a false record; the gate has now caught
+two runs' worth of genuine defects and is worth more intact than satisfied.*
