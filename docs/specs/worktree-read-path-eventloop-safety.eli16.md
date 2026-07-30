@@ -94,9 +94,18 @@ time limit, for a reason worth explaining below.
 
 ## The safeguards, in plain terms
 
-- **Nothing about the decisions changed.** Which leftovers are safe to clean up, and
-  which are kept, is exactly as before. Two tests exist purely to prove that, and
-  they are labelled honestly as *not* being proof the freezing is fixed.
+- **Some decisions DID change, and earlier versions of this page said otherwise.**
+  This is the correction that matters most, because this is the page written for
+  the person approving the work. The gate ORDER is unchanged, and two tests pin
+  that. But in four places the answer itself changed, every one of them toward
+  keeping rather than deleting: the last check before a deletion was silently
+  broken and now works; a failed scan for "is anything using this?" used to mean
+  "nothing is" and now means "keep"; an unreadable lock file used to read as absent
+  and now reads as present; and a job abandoned on a time limit is a new outcome
+  that did not exist before. The technical documents retracted the "nothing
+  changed" claim this morning and this page kept asserting it — a reviewer caught
+  that, and it is the fourth time on this change that a correction landed in the
+  technical write-up and missed the one a human actually reads.
 - **When in doubt, keep.** If any check fails or times out, the answer is "cannot
   tell", which always means keep the copy. A half-finished answer is thrown away
   rather than treated as a success — because a half-answer could look like "this is
@@ -108,8 +117,10 @@ time limit, for a reason worth explaining below.
 - **Not a cache.** Sharing only happens between requests arriving at the same
   moment; nothing is stored. The page still tells you what is true right now,
   which was a firm requirement.
-- **Nothing can get stuck forever.** This one came out of the same review and is
-  less obvious than it sounds. The "several people share one answer" trick works by
+- **Nothing can get stuck forever — now on BOTH status pages.** This one came out
+  of the same review and is less obvious than it sounds. (The time limits were
+  originally added to only one of the two pages while the paperwork claimed both;
+  every reviewer in the next round caught it, and the second page has them now.) The "several people share one answer" trick works by
   putting up a sign saying *a job is already running*, and taking the sign down when
   the job finishes. If a job never finishes at all, the sign never comes down — and
   then everyone who asks afterwards waits forever, and the automatic cleanup helper
@@ -155,15 +166,20 @@ Whether to approve this so it can be committed.
 Things worth weighing:
 
 - **Risk of doing it:** it changes how a helper that *deletes things* reads
-  version-control state. That is why it is filed at the highest care level, even
-  though the automated check thought a lower one was warranted. No decision logic
-  changed, and all three layers of the test suite pass.
+  version-control state, and it now also adds a piece to the safety checkpoint all
+  version-control commands pass through. That is why it is filed at the highest
+  care level, even though the automated check thought a lower one was warranted.
+  The decision RULES are unchanged; four of the answers changed, all of them toward
+  keeping rather than deleting (see above). All three layers of the test suite pass.
 - **Risk of not doing it:** every visit to either status page freezes the agent for
   several seconds, including its heartbeat to your other machine. The status page is
   about to be given a *more* important role, so it will be visited more.
-- **Backing it out:** one setting makes the checks run strictly one at a time, and a
-  full reversal is just undoing the code. Nothing is stored, nothing is migrated,
-  and there is no data to repair.
+- **Backing it out:** one setting makes the checks run strictly one at a time. A
+  full reversal is undoing the code AND three things that are easy to forget: the
+  new automatic check has to come out of the check list in two places or the test
+  suite goes red; a frozen tracking file has to be put back; and a short note this
+  change adds to already-updated agents stays behind, because a code reversal
+  cannot un-write it. Nothing else is stored and there is no data to repair.
 - **One thing that is now caught automatically.** Two mistakes on this branch came
   from the same slip — asking a question the new way but reading the answer the old
   way, which quietly always gives the same reply no matter what is true. An

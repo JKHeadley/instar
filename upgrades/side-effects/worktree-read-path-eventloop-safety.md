@@ -301,6 +301,40 @@ to be. Had any required editing, the refactor would have changed what the funnel
 ADMITS, not just where the code lives — which is the one outcome that would make
 this change unsafe.
 
+**Round four: NOT converged, and the reason is worth stating precisely.** Six
+internal reviewers plus the external pass produced roughly forty findings, about a
+dozen design-class. The severe ones were all introduced by round three's own fixes:
+
+1. **The pass ceiling could terminate the process.** It reports through an event
+   channel with no listener in production — verified across the source tree AND the
+   deployed build. In this runtime that throws, the drivers do not await, and the
+   unhandled rejection meets a fatal policy. A fix for a hung guard became a crashed
+   server. Closed by recording errors on a bounded ring surfaced on the read route,
+   so the emission is structurally safe AND observable rather than swallowed.
+2. **The sibling route had none of the ceilings** while the parity table claimed
+   identical protections — and had no row for the ceiling, so the one dimension
+   where parity failed was the one it did not mention. All five internal reviewers
+   found it. Closed.
+3. **The new lint was keyed on a type-alias SPELLING**, so the sibling module —
+   widened by this same change using an inline union — was skipped entirely.
+   Re-keyed on the shape; verified by reintroducing the defect there.
+4. **Two of the seven round-three fixes were pinned by nothing**, while this
+   artifact's discrimination section said "each fix reverted and re-run". Both now
+   have tests verified to fail when the fix is removed.
+5. **The stated reason for deleting a round-three test was wrong.** It was recorded
+   as un-reproducible under the test runner; the adversarial reviewer rebuilt it and
+   showed it reproduces exactly. The real defect was its own loose assertion. That
+   misdiagnosis had been written in as durable methodology, which would have told
+   the next person that writable coverage could not be written.
+
+A process failure of the author's also belongs here: the code-executing reviewer ran
+concurrently with five read-only ones on one tree, and three of them reported the
+tree mutating under them. Separately, a shell working-directory change made for an
+unrelated purpose silently rescoped a sequence of recovery commands onto a different
+checkout — no work was lost, but ten files in that checkout were overwritten and had
+to be restored. Both are the same shape as the defects under review: a measurement
+taken through a changed environment, attributed to the thing being measured.
+
 **Scope limit on that review, stated because it is a gate item.** It was performed
 against the branch as it stood before round three. Its verification that the safety
 checkpoint was left untouched no longer describes the current code: round three adds

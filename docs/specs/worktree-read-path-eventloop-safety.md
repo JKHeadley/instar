@@ -146,7 +146,16 @@ Four parts, each load-bearing:
    ~150 concurrent git subprocesses on a 48-worktree agent — a different hazard, in
    the direction of the 2026-06-20 fork-bomb. The bound keeps both civil.
 
-3. **Base ref resolved once per pass**, memoized — removing defect (2) above.
+3. **Base ref resolved once per pass WHEN ONE RESOLVES**, memoized — removing defect
+   (2) above. The qualifier is load-bearing and was missing until round four: a
+   `null` result is deliberately NOT cached (a transient failure would otherwise pin
+   every worktree to "unmerged" for the full TTL), and single-flight only coalesces
+   CONCURRENT callers. So on a repo where none of the candidate names resolves — a
+   default branch called something else, or any non-instar checkout — resolution
+   repeats, bounded below by roughly one per fan-out batch and above by one per
+   worktree: exactly the un-memoized defect this item claims to remove. The claim is
+   true on the repos this ships against and false in general, so it is stated with
+   its condition rather than flatly.
 
 4. **Single-flight**, not a cache. Precisely: **no settled result is ever reused —
    a caller may join an already-running pass.** Nothing is retained after a pass
@@ -210,9 +219,30 @@ blocking shape, so they get the identical protections:
 | non-blocking git reads | yes (shared deps) | yes (shared deps — it builds on the reaper's) |
 | non-blocking `lsof` / `gh` | yes | yes (same shared deps) |
 | bounded fan-out | yes (`snapshotConcurrency`) | yes (bounded, not `Promise.all`) |
-| base ref memoized per pass | yes | inherited (same deps instance) |
+| base ref memoized per pass | yes | **separate deps INSTANCE — see below** |
 | single-flight in-flight sharing | yes | yes |
-| tests | unit + integration + e2e | unit + integration + e2e |
+| **wall-clock pass ceiling** | yes | **yes (added round four — it was MISSING)** |
+| tests | unit + integration + e2e | unit + integration + e2e (the Tier-2 event-loop measurement covers the reaper route only) |
+
+**Two corrections to this table, both found in round four, both of which it was
+built to prevent.**
+
+**It had no wall-clock row.** Round three added the ceilings to the reaper and not
+to the sentinel, and the table — which exists to demonstrate parity — simply had no
+row for the one dimension where parity failed. All five internal reviewers found it
+independently. The sentinel's `pendingSnapshot` and `running` clear in `finally`
+blocks over equally-injectable deps, so the identical wedge applied; and the
+consequence there was WORSE, because `snapshot()` never rejected, so the route's
+last-resort `catch` never fired and the request would hang with no response at all
+while every later caller joined the same dead promise. Fixed, with tests that
+time out when either ceiling is removed.
+
+**"Same deps instance" was false.** `makeOrphanedWorkSentinelDeps` constructs its
+OWN `makeAgentWorktreeReaperDeps`, separate from the server's. They share the
+FACTORY, not the instance — so the memo closures are separate and the full-system
+process scan, which this spec itself calls the most expensive call on the path, can
+run TWICE rather than once when both routes are exercised inside the memo window.
+That error is what made the composed-concurrency number in the next section wrong.
 
 The sentinel's single-flight was added specifically in response to this finding; the
 first draft gave it bounded fan-out but not in-flight sharing, so parity was real for
@@ -256,11 +286,80 @@ simply does nothing, the safe direction, whereas an empty snapshot would ASSERT
 fabricated answer, the same class as the NaN-concurrency hole this branch already
 closed.
 
-**Honest limit.** An abandoned pass cannot be cancelled, so it may still be alive
-and could overlap the next one. That is accepted: every delete re-validates against
-live state immediately before acting, so an overlap can only produce FEWER reaps,
-whereas staying wedged forever produces a reaper that never runs again.
+**Honest limit — restated in round four, because the earlier version was wrong on
+two counts.** It read: "an empty pass simply does nothing, the safe direction …
+an overlap can only produce FEWER reaps."
+
+Neither holds. An abandoned pass is NOT cancelled: it keeps iterating, keeps
+re-validating, and keeps calling `removeWorktree` — irreversible deletes — while
+`reap()` has already returned `{reaped: []}`. So the abandoned pass does not "do
+nothing"; it does work the caller has been told did not happen, which is the same
+fabricated-answer class this section rejects for `snapshot`. And because the
+`finally` releases the single-pass latch, a second pass can start while the first
+is still deleting, so N overlapping passes can delete up to N × `maxReapsPerPass` —
+the aggregate blast-radius bound is weaker than the config key's name promises.
+
+What IS still true, and is the reason the asymmetry stands: every INDIVIDUAL delete
+re-validates against live state immediately before acting, so no overlap can delete
+something that should have been kept. The weakening is to the RATE bound, not to
+correctness. Stated this way rather than the reassuring way, because the reassuring
+way was false.
+
+**Not fixed here, deliberately.** Bounding the number of live passes (rather than
+the work within one) is a change to the reaper's control loop, not to its read path.
+It belongs with the outstanding work to register this component as a self-triggered
+destructive controller, where the per-pass-versus-per-loop distinction is the whole
+point — tracked with that item rather than smuggled in here.
 <!-- tracked: topic 37155 -->
+
+### The pass ceiling is not the cliff an operator meets first
+
+`PASS_DEADLINE_MS` is 10 minutes; the server's request-timeout middleware defaults
+to **30 seconds** and neither of these routes carries an override. So in shipped
+configuration a pass exceeding ~30s returns the client a **408**, not the 500 this
+spec's asymmetry argument describes — the abandoned-snapshot-rejects-with-500 path
+is observable only if that timeout is raised above the ceiling.
+
+Worse, the middleware sends the 408 but does not abort the handler, and no
+cancellation is threaded (a deliberate choice, below), so the pass runs on and pays
+its full subprocess cost for an answer nobody receives.
+
+Arithmetic for the scale this spec itself calls supported-if-slow: at ~200ms per
+worktree and `snapshotConcurrency: 4`, 500 worktrees is ~25s — inside the 30s budget
+with 17% margin, and `git cherry` cost is O(commits ahead), not constant, so a repo
+with long-lived branches crosses it easily. **500 worktrees is already a 408 regime**,
+and the failure mode this spec documents for that regime is the wrong one.
+
+Not fixed here: adding a route-timeout override is a server-config change with
+consequences beyond this path. Named so the next reader is not misled about which
+mechanism they will actually meet.
+<!-- tracked: topic 37155 -->
+
+### The composed concurrency ceiling, stated
+
+A round-two finding asked for this and round three did not deliver it. Four surfaces
+can be in flight at once, not the three originally framed — both read routes, the
+reaper's background timer, AND the sentinel's background timer (which is live on a
+development agent, the exact class where the freeze was measured).
+
+Because the two routes hold SEPARATE deps instances (see the parity-table
+correction), their memo latches do not cross. Peak concurrent child processes is
+therefore `(W + 1)` per instance — at the default `snapshotConcurrency: 4`, **10
+concurrent children**, of which up to **two are simultaneous full-system process
+scans**. At the documented rollback lever (`1`) it is 4; at a hand-set 16 it is 34.
+
+**And that bound is per un-settled pass, not absolute.** Nothing bounds the NUMBER
+of live passes, so under a persistent wedge each ceiling expiry can leave another
+abandoned pass alive: `live children ≈ (W + 1) × k`, with `k` unbounded. The honest
+statement is "10 per un-settled pass, and passes are unbounded" — not "10".
+
+**These subprocesses ride no host-wide cap.** The spec cites the 2026-06-20
+fork-bomb and the host-wide spawn cap as the reason `mapBounded` exists, which
+invites the inference that this path is covered by it. It is not: that semaphore
+funnels LLM spawns (`claude -p` / `codex exec`) only. `snapshotConcurrency` is a
+PER-PROCESS bound, so N co-resident agents multiply it. Borrowing the authority of a
+control this path sits outside is precisely the false-exemption shape this change
+exists to remove, so it is disclosed rather than implied.
 
 ### Request cancellation — deliberate, not overlooked
 
@@ -312,8 +411,11 @@ table below, because the two contradicting each other is how the false claim sur
   untouched. Widening the signals to awaitable left it reading them synchronously,
   which made the in-use check refuse every delete and the negated checks vacuous.
   See the table entry for the full account.
-- In two places this work **restores** a fail-closed property the shipped code did
-  not actually have (the process scan's failure direction; the output bound).
+- In **three** places this work **restores** a fail-closed property the shipped code
+  did not actually have: the process scan's failure direction; the output bound; and
+  the lock/marker existence gates, whose documented fail-closed catch was
+  unreachable. (An earlier version said "two" while describing the third elsewhere
+  in this same document.)
 - Round three adds a wall-clock ceiling, which introduces a new outcome that did
   not exist before: an abandoned pass. `reap` degrades to an empty pass (does
   nothing — safe); `snapshot` REJECTS rather than reporting an empty list, because
@@ -388,16 +490,31 @@ Every test was run against **unfixed** source first.
   tests time out instead of passing, while the CONTROL still passes. The lint:
   the historical defect reintroduced verbatim into `AgentWorktreeReaper`, and it
   fires on both lines.
-- **One round-three test did NOT discriminate and was removed rather than kept.**
-  The first attempt to prove the `readAsync` wall-clock bound used a fake git whose
-  grandchild holds stdout open. That reproduces the non-settling wedge under plain
-  node but NOT under the test runner, where `close` still fires — so it passed with
-  the deadline reverted and was evidence of nothing. Worse, its assertion accepted
-  two different rejection reasons, which is what let it look green. It is replaced
-  by an explicitly-labelled CONTROL, and the discriminating coverage lives where the
-  hazard is reachable and deterministic: injected never-settling signals at the memo
-  and pass layers. Recorded because "I verified it discriminates" was claimed for
-  this fix before it was true.
+- **A round-three test did not discriminate, was deleted, and the stated reason for
+  deleting it was WRONG — corrected in round four.** The first attempt to prove the
+  `readAsync` wall-clock bound used a fake git whose grandchild holds stdout open.
+  It was removed on the recorded grounds that the wedge "does not reproduce under
+  the test runner, where `close` still fires". The adversarial reviewer rebuilt that
+  exact shape and showed it settles at `timeout + grace` — i.e. the deadline firing,
+  proving `close` did NOT fire. The wedge reproduces perfectly well under the runner.
+  The real defect was the deleted test's own LOOSE assertion, which accepted either
+  rejection reason and therefore passed on both branches.
+
+  This matters more than a wrong test. A loose-assertion problem was misdiagnosed as
+  an environment problem, and the misdiagnosis was written into this spec as durable
+  methodology — where it would have told the next person that coverage which is
+  demonstrably writable cannot be written. The test is restored with an assertion
+  naming ONLY the deadline, and the sibling CONTROL's disjunction was tightened for
+  the same reason.
+
+- **Round three claimed "each fix reverted and re-run" while enumerating only three
+  of seven — and the two it omitted were exactly the two that were pinned by
+  nothing.** The `readAsync` deadline and the memo deadlines could both be reverted
+  with the entire suite green. Both now have discriminating tests (the restored
+  grandchild test, and an injected never-settling memo callee), verified by
+  reverting each and watching them time out. Recorded rather than quietly fixed,
+  because the sentence "each fix reverted" appeared in the very section whose
+  purpose is to stop unverified pinning claims.
 
 ### A fourth round-two finding, closed in round three: the unreachable fail-closed catch
 
@@ -443,11 +560,51 @@ argument that naming a failure mode does not protect you from it; only a check d
 ## Rollback
 
 `snapshotConcurrency: 1` makes the fan-out fully serial (slowest, gentlest) without
-reverting anything. A full back-out is a revert of the touched source files (the two
-monitoring modules, the git funnel, types, the construction site, the update
-migration and the route); no
-migration, no persisted state, no config default change, and no data to repair —
-the change is confined to execution strategy.
+reverting anything.
+
+**A full back-out is NOT just reverting the source files, and three earlier
+descriptions of it disagreed with each other in three different ways.** It is:
+
+1. The touched source files: the two monitoring modules, the git funnel, types, the
+   construction site, the update migration and the route.
+2. **The new lint, removed from BOTH places** — the chain in `package.json` AND its
+   entry in the `REQUIRED_LINTS` ratchet. Removing it from only the chain leaves the
+   ratchet asserting a lint that no longer runs, so the documented back-out would
+   leave the test suite RED. Also delete the script and its allowlist entry in the
+   destructive-op lint.
+3. **The chokepoint baseline key must be RE-ADDED**, because reverting the source
+   reintroduces the blocking process scan it recorded. That file's own contract says
+   it may only shrink, so this is the one step that needs a deliberate exception
+   rather than a mechanical revert.
+4. **The note already written to deployed agents STAYS.** The migration writes it to
+   every agent on update; a source revert cannot un-write it. So "nothing is stored"
+   was false — deployed agents would retain documentation for a config key that no
+   longer exists.
+
+No config DEFAULT changes and there is no data to repair; the runtime change is
+confined to execution strategy.
+
+### Files in this change that are NOT about event-loop safety
+
+Named because three reviewers flagged them as undocumented, and an unexplained file
+in a Tier-3 delete-path change is a review cost whether or not it is benign:
+
+- **`tests/helpers/gemini-usable.ts` and the two gemini live-CLI suites.** Those
+  suites gated on "is the binary installed" while the account on this machine cannot
+  authenticate, so they admitted a run that could never succeed and failed for a
+  reason unrelated to any code. They now distinguish not-installed from
+  cannot-authenticate and skip LOUDLY on the second. Included because the
+  Zero-Failure Standard makes a red suite this change's problem regardless of cause
+  — and because it is the same presence-standing-in-for-usability defect this change
+  is about. It changes what a green run MEANS on an unauthenticated machine, which
+  is why it is disclosed rather than left as a quiet test edit.
+- **`tests/e2e/throughput-series-live.test.ts`.** A fixture with hardcoded dates that
+  sat inside a 7-day window when written and fell out of it on 2026-07-30. Made
+  relative. Wholly unrelated; fixed under the same standard.
+- **`scripts/sync-subprocess-chokepoint-baseline.json`.** One legitimate removal (the
+  now-async process scan). The file was regenerated rather than edited, which
+  re-encoded two unrelated characters and dropped the trailing newline — churn in a
+  frozen artifact, flagged by two reviewers.
 
 ## Decision points touched
 
