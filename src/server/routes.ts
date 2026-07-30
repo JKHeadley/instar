@@ -987,6 +987,9 @@ export interface RouteContext {
   topicLinkageHandler: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler | null;
   handshakeManager: HandshakeManager | null;
   threadlineRelayClient: import('../threadline/client/ThreadlineClient.js').ThreadlineClient | null;
+  /** Relay connection-LOSS reader. Null when no relay client exists in this
+   *  process (relay disabled, or the listener daemon owns it). */
+  getLastRelayEvent?: (() => import('../threadline/relayConnectionObserver.js').RelayConnectionEvent | null) | null;
   listenerManager: import('../threadline/ListenerSessionManager.js').ListenerSessionManager | null;
   /** Durable A2A delivery lifecycle + peer-health (A2A-DURABLE-DELIVERY-SPEC.md).
    *  Recording-only — never gates a send. Null only if SQLite open failed. */
@@ -30666,6 +30669,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const tm = ctx.unifiedTrust?.trustManager;
           if (!tm) return 0;
           return tm.listProfiles().filter((p) => p.pairingState === 'mutual-verified').length;
+        },
+        // Relay state for /threadline/health. Both inputs are needed: the client's
+        // live connectionState for up/down, and the last LOSS event for whether a
+        // drop is terminal (`displaced` disarms reconnect for the process lifetime
+        // and needs a restart) or self-healing. Returns null when no relay client
+        // exists here — relay disabled, or the listener daemon owns the connection
+        // — which the handler reports as not-configured, never as a fault.
+        relayStatus: () => {
+          const rc = ctx.threadlineRelayClient;
+          if (!rc) return null;
+          return {
+            connectionState: rc.connectionState,
+            lastEvent: ctx.getLastRelayEvent?.() ?? null,
+          };
         },
       },
       // Robustness Phase 1 (D-E / F4): wire the ack funnel so the verified E2E
