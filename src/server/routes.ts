@@ -29862,6 +29862,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       await ctx.messageRouter.acknowledge(messageId, sessionId);
       res.json({ ok: true });
     } catch (err) {
+      // @silent-fallback-ok: the acknowledgement fails closed as HTTP 500;
+      // no degraded/default execution continues after this catch.
       res.status(500).json({ error: err instanceof Error ? err.message : 'Ack failed' });
     }
   });
@@ -29871,6 +29873,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Messaging not available' });
       return;
     }
+    let dedupReservation: {
+      senderAgent: string;
+      threadId: string;
+      content: string;
+    } | null = null;
     try {
       // Verify bearer token — the sender must present our agent's token
       const authHeader = req.headers.authorization;
@@ -29903,13 +29910,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               : '');
         if (dThread && dText && !relayContentDedup.shouldProcess(dSender, dThread, dText)) {
           console.log(`[relay-agent] Deduped retried message from ${dSender} (thread: ${dThread.slice(0, 8)}, id: ${envelope.message?.id ?? 'none'}) — identical content within window`);
-          res.json({ ok: true, deduped: true });
+          res.json({
+            ok: true,
+            deduped: true,
+            accepted: false,
+            delivered: false,
+            deliveryOutcome: 'duplicate suppressed; prior attempt state unknown',
+            threadline: { accepted: false, delivered: false, async: false },
+          });
           return;
+        }
+        if (dThread && dText) {
+          dedupReservation = {
+            senderAgent: dSender,
+            threadId: dThread,
+            content: dText,
+          };
         }
       }
 
       const accepted = await ctx.messageRouter.relay(envelope, 'agent');
       if (accepted) {
+        // MessageRouter has now admitted the envelope to its inbox. Keep the
+        // dedup record and clear only the rollback handle.
+        dedupReservation = null;
         const senderAgent = envelope.message?.from?.agent;
         console.log(`[relay-agent] Accepted message from ${senderAgent ?? 'unknown'} (thread: ${envelope.message?.threadId ?? 'none'}, id: ${envelope.message?.id ?? 'none'})`);
 
@@ -30035,7 +30059,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               });
               if (decision.suppress) {
                 console.log(`[relay-agent] warrants-reply gate suppressed reply (${decision.verdict.signal}) from ${senderAgentName} thread ${gThreadId.slice(0, 8)}`);
-                res.json({ ok: true, threadline: { handled: true, threadId: gThreadId, spawned: false, suppressed: true, signal: decision.verdict.signal } });
+                res.json({
+                  ok: true,
+                  accepted: true,
+                  delivered: true,
+                  threadline: {
+                    handled: true,
+                    accepted: true,
+                    delivered: true,
+                    threadId: gThreadId,
+                    spawned: false,
+                    suppressed: true,
+                    signal: decision.verdict.signal,
+                  },
+                });
                 return;
               }
               // CMT-509 §2: warranted + parentless (no bound topic) → surface to
@@ -30072,7 +30109,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // The actual reply still flows back via the reply-waiter mechanism
         // (resolved above), decoupled from this HTTP response.
         if (ctx.threadlineRouter) {
-          res.json({ ok: true, accepted: true, threadline: { accepted: true, async: true } });
+          res.json({
+            ok: true,
+            accepted: true,
+            delivered: false,
+            threadline: { accepted: true, delivered: false, async: true },
+          });
           // Process asynchronously — the response is already sent.
           // handleInboundMessage is NOT dropped: it runs to completion in the
           // background; its outcome is logged (never surfaced to the closed
@@ -30095,14 +30137,41 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             })
             .catch((err) => {
               console.error('[routes] ThreadlineRouter async handling error:', err);
+              DegradationReporter.getInstance().report({
+                feature: 'routes.relayAgentAsyncHandling',
+                primary: 'Process an accepted agent relay message through ThreadlineRouter',
+                fallback: 'Keep the already-recorded inbox admission for recovery and surface the processing failure',
+                reason: `Async Threadline handling failed: ${err instanceof Error ? err.message : String(err)}`,
+                impact: 'The sender received acceptance, but this attempt did not reach a live agent session.',
+              });
             });
           return;
         }
-        res.json({ ok: true });
+        res.json({
+          ok: true,
+          accepted: true,
+          delivered: false,
+          threadline: { accepted: true, delivered: false, async: false },
+        });
       } else {
+        if (dedupReservation) {
+          relayContentDedup.forget(
+            dedupReservation.senderAgent,
+            dedupReservation.threadId,
+            dedupReservation.content,
+          );
+          dedupReservation = null;
+        }
         res.status(409).json({ error: 'Relay rejected (loop or duplicate)' });
       }
     } catch (err) {
+      if (dedupReservation) {
+        relayContentDedup.forget(
+          dedupReservation.senderAgent,
+          dedupReservation.threadId,
+          dedupReservation.content,
+        );
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : 'Relay failed' });
     }
   });
@@ -31335,6 +31404,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         res.json({
           success: true,
+          accepted: false,
           threadId: effectiveThreadId,
           messageId: '',
           delivered: false,
@@ -31536,19 +31606,38 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                 });
 
                 if (localResp.ok) {
-                  let localRespBody: { ok?: boolean; threadline?: {
-                    handled?: boolean; spawned?: boolean; resumed?: boolean; injected?: boolean;
-                    threadId?: string; sessionName?: string; error?: string; gateDecision?: string;
-                  } } = {};
+                  let localRespBody: {
+                    ok?: boolean;
+                    accepted?: boolean;
+                    delivered?: boolean;
+                    deduped?: boolean;
+                    threadline?: {
+                      accepted?: boolean; delivered?: boolean; async?: boolean;
+                      handled?: boolean; spawned?: boolean; resumed?: boolean; injected?: boolean;
+                      suppressed?: boolean; threadId?: string; sessionName?: string;
+                      error?: string; gateDecision?: string;
+                    };
+                  } = {};
                   try { localRespBody = await localResp.json() as typeof localRespBody; } catch { /* no body */ }
                   const tl = localRespBody.threadline;
-                  const outcome = tl?.injected ? 'injected into live session'
+                  const delivered = localRespBody.delivered
+                    ?? tl?.delivered
+                    ?? Boolean(tl?.injected || tl?.spawned || tl?.resumed || tl?.suppressed);
+                  const accepted = localRespBody.accepted
+                    ?? tl?.accepted
+                    ?? localRespBody.deduped
+                    ?? (delivered || (tl?.handled === true && !tl?.error));
+                  const outcome = localRespBody.deduped ? 'duplicate suppressed; prior attempt state unknown'
+                    : tl?.injected ? 'injected into live session'
                     : tl?.spawned ? 'spawned new session'
                     : tl?.resumed ? 'resumed existing thread'
+                    : tl?.suppressed ? 'processed; no reply warranted'
                     : tl?.gateDecision === 'queue-for-approval' ? 'queued for approval'
                     : tl?.error ? `error: ${tl.error}`
                     : tl?.handled === false ? 'queued (no live session)'
-                    : 'accepted';
+                    : accepted && tl?.async ? 'accepted for async processing'
+                    : accepted ? 'accepted'
+                    : 'refused';
                   console.log(`[relay-send] Local delivery to ${localTarget.name}:${localTarget.port} (thread: ${effectiveThreadId}) — ${outcome}`);
 
                   // Persist our OWN outbound leg into the thread history so
@@ -31619,18 +31708,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                     });
                   } catch (err) {
                     // @silent-fallback-ok: recording-only — A2A delivery tracking must never
-                    // break the send (the message was already delivered above). Logged.
+                    // break the send (the message was already admitted/submitted above). Logged.
                     console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
                   }
                   if (waitForReply) {
                     const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds);
                     res.json({
                       success: true,
+                      accepted,
+                      delivered: reply !== null ? true : delivered,
                       messageId: msgId,
                       threadId: effectiveThreadId,
                       resolvedAgent: localTarget.name,
                       deliveryPath: 'local',
-                      deliveryOutcome: outcome,
+                      deliveryOutcome: reply !== null ? 'reply received' : outcome,
                       threadline: tl,
                       reply,
                       topicLinkageStamped: resolvedOriginTopicId !== undefined,
@@ -31638,6 +31729,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   } else {
                     res.json({
                       success: true,
+                      accepted,
+                      delivered,
                       messageId: msgId,
                       threadId: effectiveThreadId,
                       resolvedAgent: localTarget.name,
@@ -31734,7 +31827,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           if (typeof inReplyTo === 'string') ctx.listenerManager.retainReplyClaimFailure(inReplyTo, replyClaimOwner);
         }
       }
-      // Robustness Phase 2 (D-B): append the relay-delivered outbound leg to the
+      // Robustness Phase 2 (D-B): append the relay-submitted outbound leg to the
       // canonical log through the funnel. The wire createdAt is stamped inside the
       // relay client, so this end's createdAt is best-effort (symmetry on the relay
       // path degrades to unverified, advisory-only); F3 holds unconditionally — the
@@ -31783,27 +31876,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
       } catch (err) {
         // @silent-fallback-ok: recording-only — A2A delivery tracking must never break
-        // the send (the message was already delivered above). Logged.
+        // the send (the message was already submitted above). Logged.
         console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
       }
       if (waitForReply) {
         const reply = await waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds);
         res.json({
           success: true,
+          accepted: reply !== null,
+          delivered: reply !== null,
           messageId: relayMsgId,
           threadId: effectiveRelayThreadId,
           resolvedAgent: resolvedId,
           deliveryPath: 'relay',
+          deliveryOutcome: reply !== null ? 'reply received' : 'submitted to relay; acceptance unconfirmed',
           reply,
           topicLinkageStamped: resolvedOriginTopicId !== undefined,
         });
       } else {
         res.json({
           success: true,
+          accepted: false,
+          delivered: false,
           messageId: relayMsgId,
           threadId: effectiveRelayThreadId,
           resolvedAgent: resolvedId,
           deliveryPath: 'relay',
+          deliveryOutcome: 'submitted to relay; acceptance unconfirmed',
           topicLinkageStamped: resolvedOriginTopicId !== undefined,
         });
       }

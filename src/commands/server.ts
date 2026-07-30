@@ -16919,8 +16919,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           let result = await threadlineRouter.handleInboundMessage(envelope, relayContext);
 
-          // Fallback for threadId-less messages
-          if (!result.handled && !msg.threadId) {
+          // Fallback only when a threadless message could not be associated
+          // with any thread. A refusal can be unhandled while still carrying
+          // the router-resolved threadId; retrying that payload would hand the
+          // same refused message to the router twice.
+          if (!result.handled && !result.threadId && !msg.threadId) {
             (envelope.message as { threadId?: string }).threadId = getSyntheticThreadId(senderFingerprint);
             result = await threadlineRouter.handleInboundMessage(envelope, relayContext);
           }

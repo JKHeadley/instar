@@ -417,7 +417,12 @@ describe('ThreadlineEndpoints', () => {
 
       // Accepted immediately, async flagged, no spawn-outcome fields.
       expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({ accepted: true, async: true, threadId: 't-1' });
+      expect(res.body).toMatchObject({
+        accepted: true,
+        delivered: false,
+        async: true,
+        threadId: 't-1',
+      });
       expect(res.body.spawned).toBeUndefined();
       expect(res.body.resumed).toBeUndefined();
       // The handler STARTED but the response did NOT await it (still pending).

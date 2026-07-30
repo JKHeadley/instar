@@ -94,6 +94,8 @@ describe('/messages/relay-agent — content-hash dedup (duplicate-reply fix)', (
 
     handleInboundMessage = vi.fn(async (): Promise<ThreadlineHandleResult> => ({
       handled: true,
+      accepted: true,
+      delivered: true,
       spawned: true,
       threadId: 'thread-abc',
       sessionName: 'session-xyz',
@@ -189,8 +191,51 @@ describe('/messages/relay-agent — content-hash dedup (duplicate-reply fix)', (
     const r2 = await post(envelope({ id: `retry-${crypto.randomUUID()}`, threadId, body }));
     expect(r2.status).toBe(200);
     expect(r2.body.deduped).toBe(true);
+    expect(r2.body.accepted).toBe(false);
+    expect(r2.body.delivered).toBe(false);
+    expect(r2.body.threadline).toEqual({
+      accepted: false,
+      delivered: false,
+      async: false,
+    });
 
     // The receiver must have been handed the message exactly ONCE.
+    expect(handleInboundMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the content reservation when relay admission rejects so a retry can be accepted', async () => {
+    handleInboundMessage.mockClear();
+    const threadId = crypto.randomUUID();
+    const body = 'retry after the first admission failed';
+    const relay = vi.spyOn(messageRouter, 'relay');
+    relay.mockResolvedValueOnce(false);
+
+    const rejected = await post(envelope({ id: `reject-${crypto.randomUUID()}`, threadId, body }));
+    expect(rejected.status).toBe(409);
+
+    relay.mockRestore();
+    const retry = await post(envelope({ id: `retry-${crypto.randomUUID()}`, threadId, body }));
+    expect(retry.status).toBe(200);
+    expect(retry.body.deduped).toBeUndefined();
+    expect(retry.body.accepted).toBe(true);
+    expect(handleInboundMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the content reservation when relay admission throws so a retry can be accepted', async () => {
+    handleInboundMessage.mockClear();
+    const threadId = crypto.randomUUID();
+    const body = 'retry after the first admission threw';
+    const relay = vi.spyOn(messageRouter, 'relay');
+    relay.mockRejectedValueOnce(new Error('inbox unavailable'));
+
+    const rejected = await post(envelope({ id: `throw-${crypto.randomUUID()}`, threadId, body }));
+    expect(rejected.status).toBe(500);
+
+    relay.mockRestore();
+    const retry = await post(envelope({ id: `retry-${crypto.randomUUID()}`, threadId, body }));
+    expect(retry.status).toBe(200);
+    expect(retry.body.deduped).toBeUndefined();
+    expect(retry.body.accepted).toBe(true);
     expect(handleInboundMessage).toHaveBeenCalledTimes(1);
   });
 

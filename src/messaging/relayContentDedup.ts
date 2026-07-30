@@ -77,6 +77,15 @@ export class RelayContentDedup {
     return true;
   }
 
+  /**
+   * Release a fresh-key reservation when downstream inbox admission fails.
+   * Otherwise the rejected attempt would poison an identical valid retry for
+   * the full dedup window.
+   */
+  forget(senderAgent: string, threadId: string, content: string): void {
+    this.seen.delete(RelayContentDedup.keyFor(senderAgent, threadId, content));
+  }
+
   /** Number of retained keys (test/observability aid). */
   size(): number {
     return this.seen.size;

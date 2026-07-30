@@ -79,7 +79,9 @@ describe('sendMessageViaHttp — honest error surfacing', () => {
         messageId: 'msg-1',
         threadId: 'thread-1',
         deliveryPath: 'relay',
-        deliveryOutcome: 'spawned new session',
+        deliveryOutcome: 'reply received',
+        accepted: true,
+        delivered: true,
         reply: 'hi back',
         replyFrom: 'dawn',
       }),
@@ -91,10 +93,33 @@ describe('sendMessageViaHttp — honest error surfacing', () => {
     expect(result.messageId).toBe('msg-1');
     expect(result.threadId).toBe('thread-1');
     expect(result.deliveryPath).toBe('relay');
-    expect(result.deliveryOutcome).toBe('spawned new session');
+    expect(result.deliveryOutcome).toBe('reply received');
+    expect(result.accepted).toBe(true);
+    expect(result.delivered).toBe(true);
     expect(result.reply).toBe('hi back');
     expect(result.replyFrom).toBe('dawn');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an accepted-but-not-delivered receipt instead of upgrading it to delivery', async () => {
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse(200, {
+        success: true,
+        messageId: 'msg-accepted',
+        threadId: 'thread-accepted',
+        deliveryPath: 'local',
+        deliveryOutcome: 'accepted for async processing',
+        accepted: true,
+        delivered: false,
+      }),
+    );
+
+    const result = await sendMessageViaHttp(baseParams(), PORT, TOKEN);
+
+    expect(result.success).toBe(true);
+    expect(result.accepted).toBe(true);
+    expect(result.delivered).toBe(false);
+    expect(result.deliveryOutcome).toBe('accepted for async processing');
   });
 
   it('surfaces a 404 agent-not-found error without an envelope fallback', async () => {

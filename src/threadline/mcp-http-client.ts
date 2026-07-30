@@ -82,6 +82,7 @@ export async function sendMessageViaHttp(
       error?: string;
       deliveryOutcome?: string;
       deliveryPath?: string;
+      accepted?: boolean;
       delivered?: boolean;
       held?: boolean;
       note?: string;
@@ -104,6 +105,7 @@ export async function sendMessageViaHttp(
         replyFrom: parsed.replyFrom,
         deliveryOutcome: parsed.deliveryOutcome,
         deliveryPath: parsed.deliveryPath,
+        accepted: parsed.accepted,
         // Negotiator lease (Robustness Phase 1): surface withheld/held + the
         // holding note + the commitment-class advisory back to the session.
         delivered: parsed.delivered,

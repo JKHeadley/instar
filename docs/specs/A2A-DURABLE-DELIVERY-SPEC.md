@@ -18,10 +18,12 @@ commitment: CMT-1143
 
 ## Problem
 
-Agent-to-agent (Threadline + file-relay) messaging is **fire-and-forget at every
-hop**. A `threadline_send` that returns `delivered:true / accepted` means only
-that the TRANSPORT accepted the bytes — it says nothing about whether the peer
-ever PROCESSED the message. And there is no record on the SENDER side that "this
+Agent-to-agent (Threadline + file-relay) messaging was **fire-and-forget at every
+hop**. Older `threadline_send` results collapsed local submission, transport
+acceptance, and peer processing into `delivered:true`; current results separate
+`accepted` from proven `delivered`, and an unacknowledged relay submission is
+neither. There is still no immediate guarantee that the peer processed the
+message. And there is no record on the SENDER side that "this
 message is still waiting for the peer to acknowledge it," so a peer going dark is
 invisible until a human notices the silence.
 
@@ -30,8 +32,8 @@ paths:
 1. **Dawn→Echo over Threadline**: not landing (zero relay-accept entries). An
    addressing/discovery gap on the sender's side; the sender gets no signal the
    message was lost.
-2. **Echo→Dawn over Threadline**: `delivered:true/accepted` ≠ read — a kickoff
-   was accepted by the relay but Dawn never saw it.
+2. **Echo→Dawn over Threadline**: the historical `delivered:true/accepted` result
+   did not mean read — a kickoff was submitted to the relay but Dawn never saw it.
 3. **Dawn→Echo over the file relay**: lands but rots — a check-in sat 10h unread
    because nothing on the receiving side watched the channel.
 

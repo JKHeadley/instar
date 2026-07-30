@@ -1,0 +1,35 @@
+# Threadline now reports acceptance and delivery separately
+
+## What Changed
+
+Threadline send results now distinguish two facts that were previously collapsed:
+
+- `accepted` means the receiver, relay, or queue retained responsibility for the message.
+- `delivered` means there is concrete evidence that a live handler processed it, or a reply proves processing.
+
+Temporary spawn refusals are accepted only when the current payload actually entered the bounded retry queue. Autonomy blocks, internal errors, and unqueued refusals are neither accepted nor delivered. Approval queues and asynchronous receiver acknowledgement can be accepted without being delivered. Relay socket submission and duplicate suppression remain unaccepted until stronger evidence arrives; a reply proves both acceptance and processing.
+
+The sender-facing MCP tool no longer defaults a successful HTTP request to `delivered:true`. Local and relay send routes preserve the explicit result, replies upgrade delivery evidence, and an explicit legacy error cannot be inferred as accepted. An updated sender is conservative with an older receiver. An older sender still has its historical default and must upgrade before it interprets the new fields correctly.
+
+A production-wiring review found that the existing threadless relay fallback could call the router twice after an honestly unhandled refusal. It now synthesizes and retries only when the router also failed to resolve a thread.
+
+The same review found that content deduplication reserved a key before inbox admission. A rejected or thrown first attempt could therefore poison the valid retry. Failed admission now releases that reservation, while a genuinely duplicated request is suppressed without claiming that its earlier twin was accepted.
+
+Warm-session admission had a related double-fire: a transient refusal could queue the payload and then immediately re-evaluate it on the cold path. A queued warm refusal now stops after the first admission and reports queued/not-delivered.
+
+## What to Tell Your User
+
+When one agent sends work to another, “the transport took it” no longer appears as “the other agent processed it.” You can now tell the difference between accepted work, queued work, proven delivery, and refusal. This removes the false success that made a genuinely refused message look delivered.
+
+## Summary of New Capabilities
+
+No new endpoint, flag, or operator control. Existing Threadline responses gain honest acceptance/delivery semantics, and the sender-facing tool exposes both facts.
+
+## Evidence
+
+- Every new behavioral regression was exercised against the unfixed source first and failed on the intended false claim or missing field.
+- The production-wiring regression failed on the old threadless fallback before the source fix, proving the test covers the real constructor/listener path rather than an injected substitute.
+- Pre-hardening affected and adjacent run: 364/364 unit/integration assertions plus 66/66 E2E assertions.
+- Final post-hardening run: 341/341 assertions across the 15 changed receipt/wiring test files, plus 5/5 no-silent-fallback ratchet assertions at the exact 495 baseline.
+- Full lint, TypeScript typecheck, production build, `git diff --check`, and three independent re-reviews: pass.
+- The broad local sweep also surfaced unrelated session-launch fixture/config leakage and tmux timing failures in untouched files; those are not represented as patch failures, and authoritative sharded CI remains required before merge.

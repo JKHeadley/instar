@@ -29,6 +29,8 @@ import { MessageRouter } from '../../src/messaging/MessageRouter.js';
 import { SessionSummarySentinel } from '../../src/messaging/SessionSummarySentinel.js';
 import { SpawnRequestManager } from '../../src/messaging/SpawnRequestManager.js';
 import { generateAgentToken, deleteAgentToken } from '../../src/messaging/AgentTokenManager.js';
+import { ConversationStore } from '../../src/threadline/ConversationStore.js';
+import { WarrantsReplyGate } from '../../src/threadline/WarrantsReplyGate.js';
 import { createTempProject, createMockSessionManager } from '../helpers/setup.js';
 import type { TempProject, MockSessionManager } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -109,7 +111,14 @@ describe('/messages/relay-agent — accept-boundary response (duplicate-reply ro
         await new Promise<void>((r) => { releaseHandler = r; });
       }
       handlerOrder.push('router-end');
-      return { handled: true, spawned: true, threadId: 'thread-abc', sessionName: 'session-xyz' };
+      return {
+        handled: true,
+        accepted: true,
+        delivered: true,
+        spawned: true,
+        threadId: 'thread-abc',
+        sessionName: 'session-xyz',
+      };
     });
 
     const fakeRouter = { handleInboundMessage } as any;
@@ -131,6 +140,8 @@ describe('/messages/relay-agent — accept-boundary response (duplicate-reply ro
         cooldownMs: 1000,
       }),
       threadlineRouter: fakeRouter,
+      conversationStore: new ConversationStore(project.stateDir),
+      warrantsReplyGate: new WarrantsReplyGate(),
     });
 
     await server.start();
@@ -181,7 +192,12 @@ describe('/messages/relay-agent — accept-boundary response (duplicate-reply ro
 
     expect(res.body.ok).toBe(true);
     expect(res.body.accepted).toBe(true);
-    expect(res.body.threadline).toEqual({ accepted: true, async: true });
+    expect(res.body.delivered).toBe(false);
+    expect(res.body.threadline).toEqual({
+      accepted: true,
+      delivered: false,
+      async: true,
+    });
     // The synchronous spawn result is intentionally NOT in the response.
     expect(res.body.threadline.spawned).toBeUndefined();
     expect(res.body.threadline.sessionName).toBeUndefined();
@@ -225,6 +241,68 @@ describe('/messages/relay-agent — accept-boundary response (duplicate-reply ro
     expect(res.body.ok).toBe(true);
     expect(res.body.accepted).toBe(true);
     // The rejection is logged async; it cannot 500 a response that already returned.
+  });
+
+  it('reports durable inbox acceptance explicitly when no Threadline router is wired', async () => {
+    const routeCtx = (server as any).routeContext as { threadlineRouter: unknown };
+    const router = routeCtx.threadlineRouter;
+    routeCtx.threadlineRouter = null;
+    try {
+      const res = await request(app)
+        .post('/messages/relay-agent')
+        .set('Authorization', `Bearer ${relayAgentToken}`)
+        .send(validEnvelope())
+        .expect(200);
+
+      expect(res.body).toMatchObject({
+        ok: true,
+        accepted: true,
+        delivered: false,
+        threadline: { accepted: true, delivered: false, async: false },
+      });
+    } finally {
+      routeCtx.threadlineRouter = router;
+    }
+  });
+
+  it('reports warrants-reply suppression as conclusively processed', async () => {
+    handlerOrder.length = 0;
+    releaseHandler = null;
+    const threadId = crypto.randomUUID();
+    const first = validEnvelope();
+    first.message.threadId = threadId;
+    first.message.body = 'thanks for the update';
+    await request(app)
+      .post('/messages/relay-agent')
+      .set('Authorization', `Bearer ${relayAgentToken}`)
+      .send(first)
+      .expect(200);
+    await vi.waitFor(() => expect(releaseHandler).not.toBeNull());
+    releaseHandler!();
+    await vi.waitFor(() => expect(handlerOrder).toContain('router-end'));
+
+    handleInboundMessage.mockClear();
+    const second = validEnvelope();
+    second.message.threadId = threadId;
+    second.message.body = 'got it, thank you';
+    const res = await request(app)
+      .post('/messages/relay-agent')
+      .set('Authorization', `Bearer ${relayAgentToken}`)
+      .send(second)
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      ok: true,
+      accepted: true,
+      delivered: true,
+      threadline: {
+        handled: true,
+        accepted: true,
+        delivered: true,
+        suppressed: true,
+      },
+    });
+    expect(handleInboundMessage).not.toHaveBeenCalled();
   });
 
   // ── PR-3: waiters re-keyed by threadId (resolved BEFORE the response — unchanged) ──

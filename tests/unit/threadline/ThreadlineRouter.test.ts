@@ -602,6 +602,7 @@ describe('ThreadlineRouter', () => {
         approved: false,
         reason: 'Session limit reached',
         retryAfterMs: 60_000,
+        queued: true,
       } as SpawnResult);
 
       const threadId = crypto.randomUUID();
@@ -609,7 +610,10 @@ describe('ThreadlineRouter', () => {
 
       const result = await router.handleInboundMessage(envelope);
 
-      expect(result.handled).toBe(true);
+      expect(result.handled).toBe(false);
+      expect(result.accepted).toBe(true);
+      expect(result.delivered).toBe(false);
+      expect(result.queued).toBe(true);
       expect(result.error).toContain('Session limit reached');
       expect(result.spawned).toBeUndefined();
       expect(result.resumed).toBeUndefined();
@@ -652,7 +656,9 @@ describe('ThreadlineRouter', () => {
 
       const result = await router.handleInboundMessage(envelope);
 
-      expect(result.handled).toBe(true);
+      expect(result.handled).toBe(false);
+      expect(result.accepted).toBe(false);
+      expect(result.delivered).toBe(false);
       expect(result.error).toContain('Spawn system crashed');
     });
   });

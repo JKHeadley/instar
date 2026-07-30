@@ -104,8 +104,25 @@ export interface RelayMessageContext {
 
 /** Result of handling an inbound threaded message */
 export interface ThreadlineHandleResult {
-  /** Whether this message was handled as a threadline message */
+  /**
+   * Whether a Threadline delivery handler took responsibility for the message.
+   * A spawn refusal or internal error is false even though the envelope was
+   * recognized as Threadline traffic.
+   */
   handled: boolean;
+  /**
+   * Whether this layer retained responsibility for eventual processing.
+   * Optional for source compatibility with result fixtures from older Instar
+   * versions; ThreadlineRouter itself always returns it.
+   */
+  accepted?: boolean;
+  /**
+   * Whether the message reached a live handler or was conclusively processed.
+   * Optional for source compatibility; ThreadlineRouter itself always returns it.
+   */
+  delivered?: boolean;
+  /** Whether accepted work is waiting in a retry or approval queue. */
+  queued?: boolean;
   /** The thread ID (existing or newly created) */
   threadId?: string;
   /** Whether a new session was spawned (vs. resumed) */
@@ -125,6 +142,11 @@ export interface ThreadlineHandleResult {
   /** Approval ID (if message was queued for approval) */
   approvalId?: string;
 }
+
+type CompleteThreadlineHandleResult = ThreadlineHandleResult & {
+  accepted: boolean;
+  delivered: boolean;
+};
 
 // ── Constants ───────────────────────────────────────────────────
 
@@ -519,12 +541,12 @@ export class ThreadlineRouter {
        */
       inboundSenderFingerprint?: string;
     },
-  ): Promise<ThreadlineHandleResult> {
+  ): Promise<CompleteThreadlineHandleResult> {
     const { message } = envelope;
 
     // Only handle messages from other agents (not self-delivery)
     if (message.from.agent === this.config.localAgent) {
-      return { handled: false };
+      return { handled: false, accepted: false, delivered: false };
     }
 
     // First-contact: if the sender didn't provide a threadId, try to reuse
@@ -580,7 +602,9 @@ export class ThreadlineRouter {
     // Prevent concurrent spawns for the same thread
     if (this.pendingSpawns.has(threadId)) {
       return {
-        handled: true,
+        handled: false,
+        accepted: false,
+        delivered: false,
         threadId,
         error: 'Spawn already in progress for this thread',
       };
@@ -596,7 +620,9 @@ export class ThreadlineRouter {
         switch (gateResult.decision) {
           case 'block':
             return {
-              handled: true,
+              handled: false,
+              accepted: false,
+              delivered: false,
               threadId,
               gateDecision: 'block',
               error: `Blocked by autonomy gate: ${gateResult.reason}`,
@@ -605,6 +631,9 @@ export class ThreadlineRouter {
           case 'queue-for-approval':
             return {
               handled: true,
+              accepted: true,
+              delivered: false,
+              queued: true,
               threadId,
               gateDecision: 'queue-for-approval',
               approvalId: gateResult.approvalId,
@@ -639,10 +668,14 @@ export class ThreadlineRouter {
             },
           });
           if (outcome.kind === 'routed') {
+            const delivered = outcome.deliveryMode === 'live-inject';
             return {
               handled: true,
+              accepted: true,
+              delivered,
+              queued: delivered ? undefined : true,
               threadId,
-              injected: outcome.deliveryMode === 'live-inject',
+              injected: delivered,
               resumed: outcome.deliveryMode === 'resume-pending',
             };
           }
@@ -681,7 +714,9 @@ export class ThreadlineRouter {
     } catch (err) {
       console.error(`[ThreadlineRouter] Error handling inbound message for thread ${threadId}:`, err);
       return {
-        handled: true,
+        handled: false,
+        accepted: false,
+        delivered: false,
         threadId,
         error: err instanceof Error ? err.message : 'Unknown error',
       };
@@ -786,7 +821,7 @@ export class ThreadlineRouter {
     entry: ThreadResumeEntry,
     envelope: MessageEnvelope,
     relayContext?: RelayMessageContext,
-  ): Promise<ThreadlineHandleResult> {
+  ): Promise<CompleteThreadlineHandleResult> {
     const { message } = envelope;
 
     // Threadline A2A continuity: this thread already has a claude-code
@@ -830,7 +865,10 @@ export class ThreadlineRouter {
       );
 
       return {
-        handled: true,
+        handled: false,
+        accepted: spawnResult.queued === true,
+        delivered: false,
+        queued: spawnResult.queued === true,
         threadId,
         error: `Spawn denied: ${spawnResult.reason}`,
       };
@@ -847,6 +885,8 @@ export class ThreadlineRouter {
 
     return {
       handled: true,
+      accepted: true,
+      delivered: true,
       threadId,
       resumed: true,
       sessionName: spawnResult.tmuxSession || entry.sessionName,
@@ -859,7 +899,7 @@ export class ThreadlineRouter {
     threadId: string,
     envelope: MessageEnvelope,
     relayContext?: RelayMessageContext,
-  ): Promise<ThreadlineHandleResult> {
+  ): Promise<CompleteThreadlineHandleResult> {
     const { message } = envelope;
 
     // Build history context (may be empty for brand new threads)
@@ -913,7 +953,10 @@ export class ThreadlineRouter {
       );
 
       return {
-        handled: true,
+        handled: false,
+        accepted: spawnResult.queued === true,
+        delivered: false,
+        queued: spawnResult.queued === true,
         threadId,
         error: `Spawn denied: ${spawnResult.reason}`,
       };
@@ -949,6 +992,8 @@ export class ThreadlineRouter {
 
     return {
       handled: true,
+      accepted: true,
+      delivered: true,
       threadId,
       spawned: true,
       sessionName: newEntry.sessionName,
@@ -974,7 +1019,7 @@ export class ThreadlineRouter {
     threadId: string,
     envelope: MessageEnvelope,
     relayContext: RelayMessageContext,
-  ): Promise<ThreadlineHandleResult | null> {
+  ): Promise<CompleteThreadlineHandleResult | null> {
     if (!this.warmSessionPool) return null;
     const { message } = envelope;
 
@@ -1033,8 +1078,29 @@ export class ThreadlineRouter {
     }
 
     if (!spawnResult.approved) {
-      // Don't escalate here; just fall back to the cold-spawn path which has its
-      // own denial handling. (Avoids double-counting denials.)
+      // A transient refusal may already have retained THIS payload in the
+      // shared retry queue. Do not evaluate the cold path and enqueue it a
+      // second time. Unqueued warm failures can still use the proven cold
+      // fallback (for example, a warm-only conflict or permanent refusal).
+      if (spawnResult.queued === true) {
+        this.spawnManager.handleDenial(
+          {
+            requester: message.from,
+            target: { agent: this.config.localAgent, machine: this.config.localMachine },
+            reason: `Warm thread ${threadId}`,
+            priority: message.priority === 'critical' ? 'critical' : 'medium',
+          },
+          spawnResult,
+        );
+        return {
+          handled: false,
+          accepted: true,
+          delivered: false,
+          queued: true,
+          threadId,
+          error: `Spawn denied: ${spawnResult.reason}`,
+        };
+      }
       console.log(`[ThreadlineRouter] Warm spawn not approved for thread ${threadId}: ${spawnResult.reason}. Falling back to cold-spawn.`);
       return null;
     }
@@ -1091,6 +1157,8 @@ export class ThreadlineRouter {
     console.log(`[ThreadlineRouter] Warm (keep-alive) session ${sessionName} admitted for thread ${threadId} (peer ${peerId.slice(0, 16)})`);
     return {
       handled: true,
+      accepted: true,
+      delivered: true,
       threadId,
       spawned: true,
       sessionName,
@@ -1110,7 +1178,7 @@ export class ThreadlineRouter {
     entry: ThreadResumeEntry,
     envelope: MessageEnvelope,
     relayContext?: RelayMessageContext,
-  ): Promise<ThreadlineHandleResult | null> {
+  ): Promise<CompleteThreadlineHandleResult | null> {
     if (!this.messageDelivery) return null;
     if (!entry.sessionName) return null;
 
@@ -1146,6 +1214,8 @@ export class ThreadlineRouter {
       console.log(`[ThreadlineRouter] Injected message into live session ${entry.sessionName} for thread ${threadId}`);
       return {
         handled: true,
+        accepted: true,
+        delivered: true,
         threadId,
         injected: true,
         sessionName: entry.sessionName,

@@ -367,6 +367,7 @@ describe('SpawnRequestManager', () => {
       // payload, it does not weaken the guard.
       expect(result.reason).toContain('Memory pressure');
       expect(result.retryAfterMs).toBe(120_000);
+      expect(result.queued).toBe(true);
 
       expect(manager.getStatus().queuedMessages).toEqual([
         { agent: 'agent-a', count: 1 },
@@ -413,6 +414,7 @@ describe('SpawnRequestManager', () => {
 
       expect(result.approved).toBe(false);
       expect(result.reason).toContain('Memory pressure');
+      expect(result.queued).toBe(false);
       // An empty payload must not create a phantom queue row.
       expect(manager.getStatus().queuedMessages).toEqual([]);
     });
@@ -454,6 +456,7 @@ describe('SpawnRequestManager', () => {
       }));
 
       expect(refused.approved).toBe(false);
+      expect(refused.queued).toBe(false);
       expect(manager.getQueuedCount('agent-z')).toBe(0); // genuinely not queued
       // The loss is now accounted rather than silent.
       expect(manager.isTruncated('agent-z')).toBe(true);
