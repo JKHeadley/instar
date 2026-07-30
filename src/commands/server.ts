@@ -16030,14 +16030,59 @@ export async function startServer(options: StartOptions): Promise<void> {
               reason: `Peer "${event.agent}" tripped the infra-failure soft limiter (${event.failureCount} non-attributable failures in 10min)`,
               impact: 'Peer\'s queue depth is capped; older messages are dropped. No blame attribution.',
             });
+          } else if (event.kind === 'spawn-drain-attention-failed') {
+            reporter.report({
+              feature: 'Threadline.SpawnDrainAttention',
+              primary: `Create Attention marker "${event.attentionId}" for peer "${event.agent}"`,
+              fallback: `Keep the drain target latched and retry the Attention write (attempt ${event.attempt})`,
+              reason: `Attention write failed: ${event.error}`,
+              impact: 'Queued work remains held and visible in spawn-manager status; the operator-facing marker is delayed.',
+            });
           }
         } catch (err) {
           console.warn(`[spawn-manager] degradation reporter failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       },
+      onDrainGiveUp: async (event) => {
+        if (!telegram) {
+          throw new Error('Telegram Attention adapter is unavailable');
+        }
+        await telegram.createOrReopenAgentHealthAttentionItem({
+          id: event.attentionId,
+          title: `Spawn drain gave up for ${event.agent}`,
+          summary: `${event.refusalCount} consecutive drain re-attempts were refused; ${event.queuedMessagesHeld} queued message(s) are held.`,
+          description:
+            `The Threadline spawn drain latched queued messages from "${event.agent}" after repeated refusals. ` +
+            `Target: ${event.targetKey}. Refusal signature: ${event.refusalSignature}. ` +
+            `Last refusal: ${event.reason}. Refusal window: ${new Date(event.firstRefusedAt).toISOString()} to ${new Date(event.lastRefusedAt).toISOString()}. ` +
+            `The queued work is held until the refusal condition clears and the re-arm cooldown passes; the spawn guard threshold is unchanged.`,
+          category: 'agent-health',
+          priority: 'HIGH',
+          lane: 'agent-health',
+          healthKey: `spawn-drain-refusal:${event.targetKey}`,
+          sourceContext: `spawn-drain-refusal:${event.targetKey}`,
+        });
+      },
+      isDrainRefusalCleared: (marker) => {
+        // Only memory pressure has an authoritative live clear signal here.
+        // Other refusal classes still receive time hysteresis, then retry
+        // through the unchanged admission gate rather than remaining latched
+        // forever on a condition this layer cannot inspect.
+        if (!/memory pressure/i.test(marker.refusalSignature)) return true;
+        const state = memoryMonitor?.getState();
+        return !state || state.state === 'normal';
+      },
+      onDrainRearm: (event) => {
+        console.log(
+          `[spawn-manager] drain give-up latch re-armed for ${event.agent} ` +
+          `(target=${event.targetKey}, signature="${event.refusalSignature}", quiet=${event.rearmCooldownMs}ms)`,
+        );
+      },
       // §4.4: optional knobs from config.
       cooldownMs: spawnConfig?.cooldownMs,
       maxDrainsPerTick: spawnConfig?.maxDrainsPerTick,
+      drainRefusalGiveUpThreshold: spawnConfig?.drainRefusalGiveUpThreshold,
+      drainGiveUpRearmCooldownMs: spawnConfig?.drainGiveUpRearmCooldownMs,
       maxEnvelopeBytes: spawnConfig?.maxEnvelopeBytes,
       maxGlobalQueued: spawnConfig?.maxGlobalQueued,
       degradedMaxQueuedPerAgent: spawnConfig?.degradedMaxQueuedPerAgent,
@@ -16061,8 +16106,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (!result.approved) {
             console.log(`[spawn-manager] drain re-attempt for ${agent} not approved: ${result.reason}`);
           }
+          return result;
         } catch (err) {
-          console.warn(`[spawn-manager] drain re-attempt for ${agent} threw: ${err instanceof Error ? err.message : String(err)}`);
+          const reason = err instanceof Error ? err.message : String(err);
+          console.warn(`[spawn-manager] drain re-attempt for ${agent} threw: ${reason}`);
+          return { approved: false, reason: `Drain callback threw: ${reason}`, retryAfterMs: 30_000 };
         }
       },
     });

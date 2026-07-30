@@ -15,7 +15,14 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { SpawnRequestManager, computeEnvelopeHash, type SpawnRequest, type SpawnRequestManagerConfig } from '../../src/messaging/SpawnRequestManager.js';
+import {
+  SpawnRequestManager,
+  computeEnvelopeHash,
+  type SpawnDrainGiveUpEvent,
+  type SpawnDegradationEvent,
+  type SpawnRequest,
+  type SpawnRequestManagerConfig,
+} from '../../src/messaging/SpawnRequestManager.js';
 import type { Session } from '../../src/core/types.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -1137,6 +1144,447 @@ describe('SpawnRequestManager', () => {
       const drained = await mgr.runTick();
       expect(drained).toBe(3);
       expect(calls).toBe(3); // all callbacks invoked despite one failure
+    });
+
+    it('latches after repeated drain refusals and emits exactly one deduped attention event', async () => {
+      const attention: SpawnDrainGiveUpEvent[] = [];
+      const mgr = new SpawnRequestManager(makeDrainConfig({
+        cooldownMs: 0,
+        drainRefusalGiveUpThreshold: 3,
+        drainGiveUpRearmCooldownMs: 10_000,
+        isMemoryPressureHigh: () => true,
+        onDrainGiveUp: (event) => {
+          attention.push(event);
+        },
+        onDrainReady: async (agent: string) => {
+          drainCalls.push(agent);
+          return {
+            approved: false,
+            reason: 'Memory pressure too high for new session',
+            retryAfterMs: 120_000,
+          };
+        },
+      }));
+
+      await mgr.evaluate(makeRequest({
+        requester: { agent: 'echo', session: 'seed', machine: 'laptop' },
+        context: 'queued while memory pressure is high',
+      }));
+      await mgr.evaluate(makeRequest({
+        requester: { agent: 'echo', session: 'queued', machine: 'laptop' },
+        context: 'second queued message',
+      }));
+      expect(mgr.getQueuedCount('echo')).toBe(2);
+
+      fakeNow += 1;
+      expect(await mgr.runTick()).toBe(1);
+      fakeNow += 1;
+      expect(await mgr.runTick()).toBe(1);
+      expect(attention).toHaveLength(0);
+
+      fakeNow += 1;
+      expect(await mgr.runTick()).toBe(1);
+      expect(attention).toHaveLength(1);
+      expect(attention[0]).toMatchObject({
+        agent: 'echo',
+        targetKey: 'echo',
+        refusalSignature: 'Memory pressure too high for new session',
+        reason: 'Memory pressure too high for new session',
+        refusalCount: 3,
+        queuedMessagesHeld: 2,
+        attentionId: 'spawn-drain-refusal-giveup:echo',
+      });
+      expect(mgr.getQueuedCount('echo')).toBe(2);
+      expect(mgr.getStatus().drainGiveUps).toHaveLength(1);
+
+      fakeNow += 1;
+      expect(await mgr.runTick()).toBe(0);
+      expect(attention).toHaveLength(1);
+      expect(drainCalls).toEqual(['echo', 'echo', 'echo']);
+    });
+
+    it('keeps different drain targets independent when one target gives up', async () => {
+      const attention: SpawnDrainGiveUpEvent[] = [];
+      const mgr = new SpawnRequestManager(makeDrainConfig({
+        cooldownMs: 0,
+        drainRefusalGiveUpThreshold: 2,
+        drainGiveUpRearmCooldownMs: 10_000,
+        isMemoryPressureHigh: () => true,
+        onDrainGiveUp: (event) => attention.push(event),
+        onDrainReady: async (agent: string) => {
+          drainCalls.push(agent);
+          return { approved: false, reason: 'Memory pressure too high for new session' };
+        },
+      }));
+
+      await mgr.evaluate(makeRequest({ requester: { agent: 'echo', session: 'seed', machine: 'm' }, context: 'echo-1' }));
+      await mgr.evaluate(makeRequest({ requester: { agent: 'codey-mini', session: 'seed', machine: 'm' }, context: 'mini-1' }));
+
+      fakeNow += 1;
+      await mgr.runTick();
+      fakeNow += 1;
+      await mgr.runTick();
+
+      expect(attention.map(e => e.agent).sort()).toEqual(['codey-mini', 'echo']);
+      expect(new Set(attention.map(e => e.attentionId)).size).toBe(2);
+      expect(mgr.getQueuedCount('echo')).toBe(1);
+      expect(mgr.getQueuedCount('codey-mini')).toBe(1);
+    });
+
+    it('collapses same-target refusal reason drift into one latched episode', async () => {
+      const attention: SpawnDrainGiveUpEvent[] = [];
+      const reasons = [
+        'Memory pressure too high for new session',
+        'Memory pressure too high for new session (swap 23983MB)',
+        'Memory pressure too high for new session (swap 23984MB)',
+      ];
+      const mgr = new SpawnRequestManager(makeDrainConfig({
+        cooldownMs: 0,
+        drainRefusalGiveUpThreshold: 3,
+        drainGiveUpRearmCooldownMs: 10_000,
+        isMemoryPressureHigh: () => true,
+        onDrainGiveUp: (event) => attention.push(event),
+        onDrainReady: async (agent: string) => {
+          drainCalls.push(agent);
+          return { approved: false, reason: reasons[Math.min(drainCalls.length - 1, reasons.length - 1)] };
+        },
+      }));
+
+      await mgr.evaluate(makeRequest({ requester: { agent: 'echo', session: 'seed', machine: 'm' }, context: 'echo-1' }));
+
+      for (let i = 0; i < 3; i++) {
+        fakeNow += 1;
+        await mgr.runTick();
+      }
+      fakeNow += 1;
+      await mgr.runTick();
+
+      expect(attention).toHaveLength(1);
+      expect(attention[0]).toMatchObject({
+        agent: 'echo',
+        refusalCount: 3,
+        attentionId: 'spawn-drain-refusal-giveup:echo',
+      });
+      expect(attention[0].refusalSignature).toContain('swap 23984MB');
+      expect(drainCalls).toEqual(['echo', 'echo', 'echo']);
+    });
+
+    it('re-arms only after cooldown and the clear predicate agree', async () => {
+      const attention: SpawnDrainGiveUpEvent[] = [];
+      const rearmed: unknown[] = [];
+      let clear = false;
+      const mgr = new SpawnRequestManager(makeDrainConfig({
+        cooldownMs: 0,
+        drainRefusalGiveUpThreshold: 2,
+        drainGiveUpRearmCooldownMs: 5_000,
+        isMemoryPressureHigh: () => true,
+        isDrainRefusalCleared: () => clear,
+        onDrainGiveUp: (event) => attention.push(event),
+        onDrainRearm: (event) => rearmed.push(event),
+        onDrainReady: async (agent: string) => {
+          drainCalls.push(agent);
+          return drainCalls.length <= 2
+            ? { approved: false, reason: 'Memory pressure too high for new session' }
+            : { approved: true };
+        },
+      }));
+
+      await mgr.evaluate(makeRequest({ requester: { agent: 'echo', session: 'seed', machine: 'm' }, context: 'echo-1' }));
+      fakeNow += 1;
+      await mgr.runTick();
+      fakeNow += 1;
+      await mgr.runTick();
+      expect(attention).toHaveLength(1);
+
+      fakeNow += 4_999;
+      expect(await mgr.runTick()).toBe(0);
+      expect(drainCalls).toHaveLength(2);
+      expect(rearmed).toHaveLength(0);
+
+      fakeNow += 2;
+      expect(await mgr.runTick()).toBe(0);
+      expect(drainCalls).toHaveLength(2);
+      expect(rearmed).toHaveLength(0);
+
+      clear = true;
+      expect(await mgr.runTick()).toBe(1);
+      expect(drainCalls).toEqual(['echo', 'echo', 'echo']);
+      expect(rearmed).toHaveLength(1);
+      expect(mgr.getStatus().drainGiveUps).toHaveLength(0);
+    });
+
+    it('refreshes held queue age under the default give-up re-arm window', async () => {
+      let underPressure = true;
+      const spawnSession = vi.fn().mockResolvedValue('spawned-session-id');
+      let mgr: SpawnRequestManager;
+      mgr = new SpawnRequestManager(makeConfig({
+        cooldownMs: 0,
+        drainRefusalGiveUpThreshold: 3,
+        nowFn: () => fakeNow,
+        spawnSession,
+        isMemoryPressureHigh: () => underPressure,
+        isDrainRefusalCleared: () => !underPressure,
+        onDrainReady: async (agent: string) => {
+          drainCalls.push(agent);
+          return mgr.evaluate({
+            requester: { agent, session: 'drain', machine: 'drain' },
+            target: { agent: 'local', machine: 'local' },
+            reason: `Drain re-attempt for ${agent}`,
+            priority: 'medium',
+            triggeredBy: 'spawn-request-drain',
+          });
+        },
+      }));
+      expect(mgr.getRuntimeConfig().drainGiveUpRearmCooldownMs)
+        .toBeLessThan(SpawnRequestManager.QUEUE_MAX_AGE_MS);
+
+      await mgr.evaluate(makeRequest({
+        requester: { agent: 'echo', session: 'seed', machine: 'laptop' },
+        context: 'held payload must survive rearm',
+      }));
+      expect(mgr.getQueuedCount('echo')).toBe(1);
+
+      await mgr.runTick();
+      fakeNow += 1;
+      await mgr.runTick();
+      fakeNow += 1;
+      await mgr.runTick();
+      expect(mgr.getStatus().drainGiveUps).toHaveLength(1);
+
+      fakeNow += SpawnRequestManager.QUEUE_MAX_AGE_MS + 1;
+      underPressure = false;
+      const rearmed = await mgr.runTick();
+
+      expect(rearmed).toBe(1);
+      expect(spawnSession).toHaveBeenCalledTimes(1);
+      expect(spawnSession.mock.calls[0][0]).toContain('held payload must survive rearm');
+      expect(mgr.getQueuedCount('echo')).toBe(0);
+    });
+
+    it('does not TTL-prune held backlog when a new payload arrives while give-up is latched', async () => {
+      let underPressure = true;
+      const spawnSession = vi.fn().mockResolvedValue('spawned-session-id');
+      let mgr: SpawnRequestManager;
+      mgr = new SpawnRequestManager(makeConfig({
+        cooldownMs: 0,
+        drainRefusalGiveUpThreshold: 1,
+        drainGiveUpRearmCooldownMs: 30_000,
+        nowFn: () => fakeNow,
+        spawnSession,
+        isMemoryPressureHigh: () => underPressure,
+        isDrainRefusalCleared: () => !underPressure,
+        onDrainReady: async (agent: string) => mgr.evaluate({
+          requester: { agent, session: 'drain', machine: 'drain' },
+          target: { agent: 'local', machine: 'local' },
+          reason: `Drain re-attempt for ${agent}`,
+          priority: 'medium',
+          triggeredBy: 'spawn-request-drain',
+        }),
+      }));
+
+      await mgr.evaluate(makeRequest({
+        requester: { agent: 'echo', session: 'seed', machine: 'laptop' },
+        context: 'old held payload',
+      }));
+      await mgr.runTick();
+      expect(mgr.getStatus().drainGiveUps).toHaveLength(1);
+
+      fakeNow += SpawnRequestManager.QUEUE_MAX_AGE_MS + 1;
+      await mgr.evaluate(makeRequest({
+        requester: { agent: 'echo', session: 'new', machine: 'laptop' },
+        context: 'new payload during latch',
+      }));
+      expect(mgr.getQueuedCount('echo')).toBe(2);
+
+      underPressure = false;
+      await mgr.runTick();
+      expect(spawnSession).toHaveBeenCalledOnce();
+      const prompt = spawnSession.mock.calls[0][0] as string;
+      expect(prompt).toContain('old held payload');
+      expect(prompt).toContain('new payload during latch');
+      expect(mgr.getQueuedCount('echo')).toBe(0);
+    });
+
+    it('reports and retries a failed give-up attention write while keeping the target latched', async () => {
+      const degradation: SpawnDegradationEvent[] = [];
+      const onDrainGiveUp = vi.fn()
+        .mockRejectedValueOnce(new Error('attention store unavailable'))
+        .mockResolvedValueOnce(undefined);
+      const mgr = new SpawnRequestManager(makeDrainConfig({
+        cooldownMs: 0,
+        drainRefusalGiveUpThreshold: 1,
+        drainGiveUpRearmCooldownMs: 60_000,
+        isMemoryPressureHigh: () => true,
+        onDegradation: (event) => degradation.push(event),
+        onDrainGiveUp,
+        onDrainReady: async () => ({
+          approved: false,
+          reason: 'Memory pressure too high for new session',
+        }),
+      }));
+
+      await mgr.evaluate(makeRequest({
+        requester: { agent: 'echo', session: 'seed', machine: 'laptop' },
+        context: 'held while attention is unavailable',
+      }));
+      await mgr.runTick();
+
+      expect(onDrainGiveUp).toHaveBeenCalledOnce();
+      expect(degradation).toContainEqual(expect.objectContaining({
+        kind: 'spawn-drain-attention-failed',
+        agent: 'echo',
+        attempt: 1,
+        attentionId: 'spawn-drain-refusal-giveup:echo',
+      }));
+      expect(mgr.getStatus().drainGiveUps[0]).toMatchObject({
+        attentionDelivered: false,
+        attentionAttempts: 1,
+        attentionError: 'attention store unavailable',
+      });
+
+      fakeNow += 30_000;
+      expect(await mgr.runTick()).toBe(0);
+      expect(onDrainGiveUp).toHaveBeenCalledTimes(2);
+      expect(mgr.getStatus().drainGiveUps[0]).toMatchObject({
+        attentionDelivered: true,
+        attentionAttempts: 2,
+      });
+    });
+
+    it('clears a drain give-up latch after a successful inline spawn without dropping held queued work', async () => {
+      const attention: SpawnDrainGiveUpEvent[] = [];
+      const rearmed: unknown[] = [];
+      let pressureHigh = true;
+      const spawnSession = vi.fn().mockResolvedValue('spawned-session-id');
+      let mgr: SpawnRequestManager;
+      mgr = new SpawnRequestManager(makeDrainConfig({
+        cooldownMs: 0,
+        drainRefusalGiveUpThreshold: 2,
+        drainGiveUpRearmCooldownMs: 60_000,
+        spawnSession,
+        isMemoryPressureHigh: () => pressureHigh,
+        onDrainGiveUp: (event) => attention.push(event),
+        onDrainRearm: (event) => rearmed.push(event),
+        onDrainReady: async (agent: string) => {
+          drainCalls.push(agent);
+          return mgr.evaluate(makeRequest({
+            requester: { agent, session: 'drain', machine: 'm' },
+            context: undefined,
+            triggeredBy: 'spawn-request-drain',
+          }));
+        },
+      }));
+
+      await mgr.evaluate(makeRequest({ requester: { agent: 'echo', session: 'seed', machine: 'm' }, context: 'echo-1' }));
+      fakeNow += 1;
+      await mgr.runTick();
+      fakeNow += 1;
+      await mgr.runTick();
+      expect(attention).toHaveLength(1);
+      expect(mgr.getStatus().drainGiveUps).toHaveLength(1);
+
+      fakeNow += SpawnRequestManager.QUEUE_MAX_AGE_MS + 1;
+      pressureHigh = false;
+      const result = await mgr.evaluate(makeRequest({ requester: { agent: 'echo', session: 'inline', machine: 'm' }, context: 'new inline message' }));
+
+      expect(result.approved).toBe(true);
+      expect(mgr.getQueuedCount('echo')).toBe(1);
+      expect(rearmed).toHaveLength(1);
+      expect(mgr.getStatus().drainGiveUps).toHaveLength(0);
+      expect(spawnSession).toHaveBeenCalledOnce();
+      const prompt = spawnSession.mock.calls[0][0] as string;
+      expect(prompt).toContain('new inline message');
+      expect(prompt).not.toContain('echo-1');
+
+      await mgr.runTick();
+      expect(spawnSession).toHaveBeenCalledTimes(2);
+      const drainPrompt = spawnSession.mock.calls[1][0] as string;
+      expect(drainPrompt).toContain('echo-1');
+      expect(mgr.getQueuedCount('echo')).toBe(0);
+    });
+
+    it('starts a fresh refusal threshold after a latched target re-arms', async () => {
+      const attention: SpawnDrainGiveUpEvent[] = [];
+      let phase: 'deny' | 'approve' = 'deny';
+      const mgr = new SpawnRequestManager(makeDrainConfig({
+        cooldownMs: 0,
+        drainRefusalGiveUpThreshold: 2,
+        drainGiveUpRearmCooldownMs: 5_000,
+        isMemoryPressureHigh: () => true,
+        isDrainRefusalCleared: () => true,
+        onDrainGiveUp: (event) => attention.push(event),
+        onDrainReady: async (agent: string) => {
+          drainCalls.push(agent);
+          return phase === 'deny'
+            ? { approved: false, reason: 'Memory pressure too high for new session' }
+            : { approved: true };
+        },
+      }));
+
+      await mgr.evaluate(makeRequest({ requester: { agent: 'echo', session: 'seed', machine: 'm' }, context: 'echo-1' }));
+      fakeNow += 1;
+      await mgr.runTick();
+      fakeNow += 1;
+      await mgr.runTick();
+      expect(attention).toHaveLength(1);
+
+      phase = 'approve';
+      fakeNow += 5_001;
+      await mgr.runTick();
+      expect(mgr.getStatus().drainGiveUps).toHaveLength(0);
+
+      phase = 'deny';
+      await mgr.evaluate(makeRequest({ requester: { agent: 'echo', session: 'fresh', machine: 'm' }, context: 'echo-2' }));
+      fakeNow += 1;
+      await mgr.runTick();
+      expect(attention).toHaveLength(1);
+
+      fakeNow += 1;
+      await mgr.runTick();
+      expect(attention).toHaveLength(2);
+      expect(attention[1].attentionId).toBe(attention[0].attentionId);
+    });
+
+    it('does not refresh stale held queue entries before an inline spawn failure proves delivery', async () => {
+      const { SpawnFailureError } = await import('../../src/messaging/SpawnRequestManager.js');
+      const attention: SpawnDrainGiveUpEvent[] = [];
+      let memoryHigh = false;
+      const spawnSession = vi.fn()
+        .mockResolvedValueOnce('seed-session')
+        .mockRejectedValueOnce(new SpawnFailureError('provider failed before delivery', 'provider-5xx'))
+        .mockResolvedValueOnce('recovery-session');
+      const mgr = new SpawnRequestManager(makeDrainConfig({
+        cooldownMs: 0,
+        drainRefusalGiveUpThreshold: 1,
+        drainGiveUpRearmCooldownMs: 5_000,
+        spawnSession,
+        isMemoryPressureHigh: () => memoryHigh,
+        onDrainGiveUp: (event) => attention.push(event),
+        onDrainReady: async () => ({ approved: false, reason: 'Memory pressure too high for new session' }),
+      }));
+
+      await mgr.evaluate(makeRequest({ requester: { agent: 'echo', session: 'seed', machine: 'm' }, context: 'seed' }));
+      memoryHigh = true;
+      await mgr.evaluate(makeRequest({ requester: { agent: 'echo', session: 'held', machine: 'm' }, context: 'held-message' }));
+      await mgr.runTick();
+      expect(attention).toHaveLength(1);
+      expect(mgr.getQueuedCount('echo')).toBe(1);
+
+      memoryHigh = false;
+      fakeNow += SpawnRequestManager.QUEUE_MAX_AGE_MS + 1;
+      const failed = await mgr.evaluate(makeRequest({
+        requester: { agent: 'echo', session: 'inline-fail', machine: 'm' },
+        context: 'inline-trigger',
+      }));
+      expect(failed.approved).toBe(false);
+
+      const recovered = await mgr.evaluate(makeRequest({
+        requester: { agent: 'echo', session: 'inline-success', machine: 'm' },
+        context: 'recovery-trigger',
+      }));
+      expect(recovered.approved).toBe(true);
+      const recoveryPrompt = spawnSession.mock.calls[2][0] as string;
+      expect(recoveryPrompt).not.toContain('held-message');
     });
 
     it('infra-failure soft limiter triggers after 5 infra failures within window', async () => {

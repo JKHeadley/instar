@@ -1,0 +1,33 @@
+{
+  "ts": "2026-07-31T07:47:31.658Z",
+  "slug": "spawn-drain-refusal-giveup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 465,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/types.ts",
+      "src/messaging/SpawnRequestManager.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 454,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/spawn-request-manager.test.ts",
+      "howCaught": "The regression drives sustained denied drain verdicts to the configured threshold, proves the target settles into a no-spawn latch, and proves visibility retries remain bounded to one attempt per 30 seconds without reactivating the drain loop."
+    }
+  },
+  "verdict": "pass"
+}
