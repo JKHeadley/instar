@@ -1,0 +1,27 @@
+# Dependency build-script allowlist (pnpm >= 11).
+#
+# pnpm 11 refuses to run a dependency's install/postinstall script unless it is
+# explicitly allowed here, and exits non-zero (ERR_PNPM_IGNORED_BUILDS) while any
+# are unresolved — so a fresh checkout could not `pnpm install` at all until this
+# file existed. CI installs with `npm ci`, which runs every one of these scripts
+# with no gate, so the `true` entries below are PARITY with what already executes
+# today, not an expansion of it.
+#
+# true  = the script produces a working install (native binding compiled, or a
+#         platform binary downloaded). Omitting it breaks the package at runtime.
+# false = an engine check or a printed notice; nothing needed at runtime.
+allowBuilds:
+  # Native bindings / downloaded platform binaries — required.
+  better-sqlite3: true    # install: prebuild-install || node-gyp rebuild
+  bufferutil: true        # install: node-gyp-build (ws performance)
+  cloudflared: true       # postinstall: downloads the cloudflared binary
+  cpu-features: true      # install: node-gyp (ssh2 optional dep)
+  esbuild: true           # postinstall: installs the esbuild platform binary
+  onnxruntime-node: true  # postinstall: installs the native ONNX runtime
+  sharp: true             # install: node install/check.js || build
+  ssh2: true              # install: node install.js
+  utf-8-validate: true    # install: node-gyp-build (ws performance)
+  # No runtime artifact — declined deliberately.
+  baileys: false          # preinstall: engine-requirements check only
+  es5-ext: false          # postinstall: prints a notice
+  protobufjs: false       # postinstall: no artifact needed by this project
