@@ -1,0 +1,24 @@
+{
+  "ts": "2026-07-30T01:45:32.486Z",
+  "slug": "claim-arbiter-general-gating",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 140,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/ClaimClauseArbiter.ts",
+      "src/monitoring/CompletionClaimVerifier.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 131,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

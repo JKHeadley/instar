@@ -103,7 +103,7 @@ import { RevertDetector } from '../monitoring/RevertDetector.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { ClassReviewStore } from '../monitoring/ClassReviewStore.js';
 import { CorrectionClassReview } from '../monitoring/CorrectionClassReview.js';
-import { CompletionClaimVerifier } from '../monitoring/CompletionClaimVerifier.js';
+import { CompletionClaimVerifier, buildCompletionClaimFrameworkResolver } from '../monitoring/CompletionClaimVerifier.js';
 import { ClaimObservationHousekeeper, ClaimObservationRecorder } from '../monitoring/ClaimObservation.js';
 import { ClaimObservationAdmissionQueue } from '../monitoring/ClaimObservationAdmissionQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
@@ -2597,6 +2597,10 @@ export class AgentServer {
           maxQueuedPerTopic: cfg.maxQueuedPerTopic, maxConcurrent: cfg.maxConcurrent, queueTtlMs: cfg.queueTtlMs });
         this.completionClaimVerifier = new CompletionClaimVerifier({
           intelligence: claimIntelligence,
+          // Resolve against the REAL router, not `claimIntelligence` — that is a metering
+          // wrapper with no routing surface, so resolving from it would silently disable the
+          // general-envelope gate in production while unit tests still passed.
+          resolveFramework: buildCompletionClaimFrameworkResolver(options.intelligence),
           stateDir: options.config.stateDir,
           enabled: true,
           dryRun: cfg.dryRun !== false,

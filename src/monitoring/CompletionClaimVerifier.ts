@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import type { IntelligenceProvider } from '../core/types.js';
 import { scrubSecrets } from './scrubSecrets.js';
 import type { EvidenceActionKind, TurnEvidence } from './TurnEvidence.js';
-import { ClaimClauseArbiter, type ClaimClauseArbitration } from './ClaimClauseArbiter.js';
+import { ClaimClauseArbiter, CLAIM_ARBITER_COMPONENT, type ClaimClauseArbitration } from './ClaimClauseArbiter.js';
 import { ClaimObservationAdmissionQueue } from './ClaimObservationAdmissionQueue.js';
 import {
   applyClaimCriticalityFloor, assessClaim, extractionGapSignals, prepareClaimObservation,
@@ -33,6 +33,18 @@ export interface CompletionClaimVerifierOptions {
   maxQueuedPerTopic?: number;
   maxConcurrent?: number;
   queueTtlMs?: number;
+  /**
+   * Explicit pre-call framework resolver, supplied by the construction site that holds the
+   * REAL router.
+   *
+   * WHY THIS IS NOT OPTIONAL IN PRACTICE: `intelligence` here is NOT the router. AgentServer
+   * wraps the router in an anonymous `{ evaluate }` object so the call rides the metered LLM
+   * queue, and that wrapper exposes no routing surface. Duck-typing `intelligence` therefore
+   * finds nothing in production and the gate silently degrades to "always ask for general" —
+   * the fix would be inert while every unit test that injects a router directly still passed.
+   * The construction site passes this explicitly so the resolver sees the router itself.
+   */
+  resolveFramework?: () => string | undefined;
   arbiter?: ClaimClauseArbiter;
   generalObservation?: boolean;
   recorder?: ClaimObservationRecorder;
@@ -74,6 +86,38 @@ export interface CompletionClaimStats {
 const GENERAL_VERDICTS: ClaimAssessment['verdict'][] = ['supported', 'refuted', 'unverifiable'];
 const CLAIM_CRITICALITIES: ClaimCriticality[] = ['low', 'medium', 'high', 'irreversible-precondition'];
 
+/**
+ * Build the pre-call framework resolver for the claim arbiter, if the injected provider
+ * can answer routing questions.
+ *
+ * The shared provider is an `IntelligenceRouter` when per-component framework routing is
+ * wired, and a plain provider otherwise. Only the router exposes `for(component)`. Rather
+ * than import the router concretely (a monitoring→core cycle, and the verifier is
+ * constructed with a bare provider in most tests), this duck-types the one method it needs
+ * and returns `undefined` when it is absent — which the arbiter treats as "ask for
+ * `general`", i.e. exactly the pre-existing behavior.
+ *
+ * Every failure mode here — no router, throwing router, non-string framework — resolves to
+ * `undefined` rather than to a guess. Suppressing `general` on a wrong guess would silently
+ * disable a shipped (if dark) extractor, so the safe direction is to keep paying for it.
+ */
+export function buildCompletionClaimFrameworkResolver(
+  intelligence: IntelligenceProvider | null | undefined,
+): (() => string | undefined) | undefined {
+  const candidate = intelligence as unknown as { for?: unknown } | null | undefined;
+  if (!candidate || typeof candidate.for !== 'function') return undefined;
+  const routerFor = (candidate.for as (component: string) => { framework?: unknown } | null | undefined)
+    .bind(candidate);
+  return () => {
+    try {
+      const framework = routerFor(CLAIM_ARBITER_COMPONENT)?.framework;
+      return typeof framework === 'string' && framework.length > 0 ? framework : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
 export class CompletionClaimVerifier {
   private readonly arbiter: ClaimClauseArbiter;
   private readonly admissionQueue: ClaimObservationAdmissionQueue;
@@ -81,7 +125,12 @@ export class CompletionClaimVerifier {
   private counters: CompletionClaimStats;
 
   constructor(private readonly opts: CompletionClaimVerifierOptions) {
-    this.arbiter = opts.arbiter ?? new ClaimClauseArbiter({ intelligence: opts.intelligence });
+    this.arbiter = opts.arbiter ?? new ClaimClauseArbiter({
+      intelligence: opts.intelligence,
+      // Explicit resolver wins; the duck-typed fallback covers callers that pass a real
+      // router straight through. Both may be absent, which keeps the old behavior.
+      resolveFramework: opts.resolveFramework ?? buildCompletionClaimFrameworkResolver(opts.intelligence),
+    });
     this.admissionQueue = opts.admissionQueue ?? new ClaimObservationAdmissionQueue({ maxQueued: opts.maxQueued,
       maxQueuedPerTopic: opts.maxQueuedPerTopic, maxConcurrent: opts.maxConcurrent, queueTtlMs: opts.queueTtlMs });
     this.admissionQueue.setWorker((item) => this.processQueuedObservation(item.message, item.evidence, item.onArbitrated, item.context));
