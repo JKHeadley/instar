@@ -133,7 +133,7 @@ Run 2 re-ran the full loop against the spec carrying that work. It hit the cap o
 | Criterion | two consecutive rounds with zero DESIGN-class findings |
 | Best achieved | **one** clean round (round 4), never two consecutively |
 | Final verdict | **SERIOUS ISSUES** — finding 1 explicitly approval-blocking |
-| External families | **one** (`codex-cli` / gpt-5.5); gemini not authenticated |
+| External families | **one** (`codex-cli` / gpt-5.5); gemini **not installed on this machine** |
 
 | Round | Verdict | DESIGN? | The finding that mattered |
 |---|---|---|---|
@@ -189,8 +189,19 @@ as a historical record with this correction attached.
 
 Same reduced-assurance shape as run 1, and it must not be glossed:
 
-- **One external family.** `--detect-only` reported only `codex-cli`; gemini is not
-  authenticated. Every round is one model's opinion, not the family-diverse pass intended.
+- **One external family, and the earlier wording here understated it.** This section previously
+  said gemini was "not authenticated", which reads as one login away. Measured 2026-07-30 on this
+  machine: `command -v gemini` finds no binary, `~/.gemini` does not exist, and neither OAuth creds
+  path is present — gemini is **not installed at all**, so `--detect-only` returns exactly one
+  framework. Every round here is one model's opinion, not the family-diverse pass intended.
+  Closing it needs an install *and* an operator-held Google login, not a login alone.
+- **Fleet-level, and worse than this run:** the other machine in this fleet *does* have gemini
+  installed and authenticated, and its gemini pass **times out on every round** (observed across
+  four consecutive rounds of an unrelated spec as well as this one). So the second family fails by
+  absence here and by timeout there: **no machine in this fleet has yet produced a genuine
+  two-family convergence.** Recorded because "cross-model reviewed" must not carry weight neither
+  machine has earned — and because the skill's aggregate flag goes clean when a single family
+  succeeds, which would hide exactly this.
 - **The six internal reviewers were again self-applied** — this session prohibits spawning
   subagents. The security / scalability / adversarial / integration / decision-completeness /
   lessons-aware passes were performed by the same mind that wrote the spec: the circular
