@@ -743,12 +743,43 @@ list` does not slow that one request — it **stalls the entire Node event loop 
 seconds**.
 
 **And the enumeration is only the first of the blocking calls.** `snapshot()` runs
-`evaluate()` over every worktree returned, and `evaluate()` shells out up to three more times
-per worktree — `isInUse` (`lsof`, 15s bound), `isClean` (`git status --porcelain`), and
-`isMerged` (`git cherry`). One request against N worktrees therefore performs **1 + up to 3N
-synchronous subprocess spawns**, each individually bounded but all on the event loop. On this
-agent's 38 worktrees that is up to ~115 blocking spawns per request. **No hang is required
-for this to hurt** — the happy path alone is seconds of event-loop block, every request.
+`evaluate()` over every worktree returned, and `evaluate()` shells out again per worktree —
+`isInUse` (`lsof`, 15s bound), `isClean` (`git status --porcelain`), and `isMerged`
+(`git cherry`). **No hang is required for this to hurt** — the happy path alone is seconds of
+event-loop block, every request.
+
+**Corrected fan-out arithmetic (2026-07-30).** An earlier draft of this section claimed
+`1 + up to 3N` spawns, "~115 on this agent's 38 worktrees". That figure was wrong in both
+directions. It is corrected here rather than quietly swapped, because the error was mine and
+the shape of it matters:
+
+- `isInUse` is **memoized for 10s**, so the process listing costs **one** spawn per request,
+  not N. The `3N` term was too high.
+- `isMerged` **re-resolves the default branch from scratch for every worktree**, with no
+  memoization, walking up to four candidate names and probing each two ways. Where the first
+  candidate resolves this is one extra spawn per worktree; on an agent lacking that remote it
+  is up to five before one succeeds. Real per-worktree cost is therefore closer to **seven**
+  on a fleet agent — *higher* than the claimed worst case. The multiplier was in the wrong
+  place, not merely mis-sized.
+
+**Measured on a live server, not reasoned about** (independently reproduced by a second
+session of this agent running on the Laptop, 48 worktrees). Idle health check ≈ **17 ms**.
+While a single request to this route was in flight, that same health check took **10.6 s**,
+and the route itself 10.9 s — a ~620× degradation of every unrelated route, timer and
+heartbeat, from **one** request, with nothing pathological required. `/orphaned-work` has the
+identical shape and measured **3.7 s**. The gates short-circuit cheapest-first and 34 of those
+48 worktrees stopped early at the dirty check, so **10.6 s is the cheap case**: a tidier agent
+whose worktrees are mostly clean pays the full merged comparison on all of them.
+
+**The code's own exemption for this is false.** A comment on that path permits the blocking
+scan on the grounds that the reaper "ships off and in dry-run" and so "is not on any live
+agent's hot path." That reasoning only ever covered the background timer — the read route is
+constructed unconditionally and runs the full pass whether or not reaping is armed. The
+posture it assumes also no longer holds: `GET /guards?scope=pool` reports this manifest key as
+`on-dry-run` on the Mac Mini but `on-unverified` on the Laptop, i.e. an agent where the guard
+is **armed**. The exemption is a documented safety claim that was never re-checked after the
+config diverged, which is why the hazard is in scope for this spec's record rather than merely
+tracked out of it.
 
 This materially enlarges `CMT-1123`. Converting the single enumeration to async would leave
 the bulk of the blocking in place; the real fix is an execution-model change across the whole
