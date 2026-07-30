@@ -60,10 +60,22 @@ Named honestly; none is a regression, all pre-exist:
 
 ## 3. Level-of-abstraction fit
 
-Right layer, and deliberately not lower. The obvious alternative — extend
-`SafeGitExecutor` with a new async primitive — was **avoided** once `readStream` was
-found to already exist there with identical guard semantics. So the safety
-checkpoint is untouched and this change sits entirely in its consumers.
+Right layer — and round three moved it DOWN one, deliberately, against my earlier
+answer here. This section previously said extending `SafeGitExecutor` with a new
+async primitive was **avoided** because `readStream` already existed "with identical
+guard semantics". The guard semantics were identical; the AUDIT semantics were not.
+`readStream` hands back a live child, so the funnel records `allowed` at spawn and
+never sees how the read ended — a failed read that gates an irreversible delete was
+recorded as allowed with no failure row, while the blocking path records
+`denied: subprocess-error`.
+
+So the change now DOES add a primitive to the safety checkpoint: `readAsync`, the
+async twin of `readSync`, with the classification/guard/env preamble extracted and
+shared by all three read entry points so they cannot drift. That is a larger
+footprint in the funnel than this section originally claimed, and it is the reason
+the declared risk tier is right. The alternative was keeping a spec claim that was
+false on the delete path, in the same branch that filed a finding about an armed
+deleter leaving no record of what it deleted.
 
 Not higher either: an Express-level timeout or a worker thread would mask the
 symptom while leaving a synchronous fan-out inside a status handler. The cartographer
@@ -197,7 +209,9 @@ armed.
 written — see §6). `snapshotConcurrency: 1` serialises the fan-out with no code change,
 on BOTH routes: the sentinel's width was a hardcoded 4 until review caught it, and it
 now reads the same key. A full
-back-out is a revert of five source files. No migration, no persisted state, no
+back-out is a revert of the touched source files (the two monitoring modules, the git
+funnel, types, the construction site, the update migration and the route), plus
+removing the new lint from the lint chain. No migration, no persisted state, no
 config default that must be unwound, no agent-state repair, and no data to fix — the
 change is confined to execution strategy. The test migrations revert with it.
 
@@ -265,10 +279,16 @@ PR #1757). Not self-signed.
 
 The reviewer independently verified two load-bearing claims against source rather than
 accepting them, and both held: that `SafeGitExecutor.readStream` genuinely pre-exists
-carrying the same destructive-verb and destructive-shape denials (so leaving the safety
-checkpoint untouched is sound rather than convenient), and that the false exemption was
-real and shipped — the comment asserting "ships dark + dry-run + reviewed" sat on a guard
+carrying the same destructive-verb and destructive-shape denials, and that the false
+exemption was real and shipped — the comment asserting "ships dark + dry-run + reviewed" sat on a guard
 that is armed on this machine.
+
+**Scope limit on that review, stated because it is a gate item.** It was performed
+against the branch as it stood before round three. Its verification that the safety
+checkpoint was left untouched no longer describes the current code: round three adds
+`readAsync` to `SafeGitExecutor`. The reviewer's three findings are fixed and its
+concurrence stands for what it read; it is NOT a review of the funnel change, and
+nothing here should be read as though it were.
 
 Its three findings, all now fixed in this artifact:
 1. **§6 and §8 contradicted each other.** §8 rated rollback LOW *because*

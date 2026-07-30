@@ -107,19 +107,39 @@ request's ten seconds. Necessary at best, nowhere near sufficient.
 
 Four parts, each load-bearing:
 
-1. **`defaultReadGitAsync`** — a non-blocking read built on
-   `SafeGitExecutor.readStream`, which **already** applies the identical verb
-   classification, destructive-shape refusal, SourceTreeGuard checks, environment
-   scrubbing and audit-trail emission as `readSync`. **No new privilege and no new
-   bypass is added to the git funnel**; only the moment the calling thread is
-   released changes. Precedent: `src/core/cartographerDetect.ts` consumes the same
-   primitive for the same reason (fix instar#1069).
+1. **`SafeGitExecutor.readAsync`** — a non-blocking whole-output read, added to
+   the git funnel as the async twin of `readSync`. It applies the identical verb
+   classification, destructive-shape refusal, SourceTreeGuard checks and
+   environment scrubbing, via a preamble now **shared by all three read entry
+   points** rather than hand-copied into each. **No new privilege and no new
+   bypass**; only the moment the calling thread is released changes.
+
+   **This replaced an earlier design that consumed `readStream` with caller-side
+   accumulation, and the correction matters.** Round two found that `readStream`
+   hands back a live child and returns, so the funnel emits its `allowed` row at
+   SPAWN time and never learns how the read ENDED. A failed read — the kind that
+   gates an irreversible delete — was recorded as `allowed` with **no failure
+   row**, while `readSync` records `denied: subprocess-error`. An earlier version
+   of this spec claimed the two paths audit identically. That claim was false, and
+   it was false on the delete path, in the same branch that filed a finding titled
+   "an armed deleter has run with no record of what it deleted". Moving
+   accumulation inside the funnel is what makes the parity real.
+
+   **Emission contract, stated exactly rather than claimed as identity.** A
+   refusal or guard failure emits the same single `denied` row as `readSync` and
+   throws before any spawn. A completed read emits exactly ONE terminal row:
+   `allowed` on a clean exit, `denied: subprocess-error: …` on every failure
+   shape. No spawn-time row is emitted, so a caller sees one row per read — the
+   same shape as `readSync`, though the reason strings name `readAsync`.
 
    It resolves **only on a clean exit**. Partial stdout is discarded on every
-   failure shape — non-zero exit, spawn error, or the executor's own SIGKILL
-   timeout — so a truncated read can never be mistaken for a successful one. Every
-   caller treats a rejection as "cannot determine", which routes to KEEP. The
-   deletion-safe direction is preserved bit for bit.
+   failure shape — non-zero exit, spawn error, oversized output, torn-down pipe,
+   or either timeout — so a truncated read can never be mistaken for a successful
+   one. Every caller treats a rejection as "cannot determine", which routes to
+   KEEP. The deletion-safe direction is preserved bit for bit.
+
+   `readStream` is unchanged and remains the right primitive for a genuinely
+   incremental consumer (`src/core/cartographerDetect.ts`, fix instar#1069).
 
 2. **Bounded fan-out (`mapBounded`, `snapshotConcurrency`, default 4).** Freeing
    the loop without bounding the work would replace one freeze with a burst of
@@ -198,6 +218,50 @@ The sentinel's single-flight was added specifically in response to this finding;
 first draft gave it bounded fan-out but not in-flight sharing, so parity was real for
 the expensive part and incomplete for the stampede part.
 
+### Wall-clock bounds — why every await on this path has a ceiling
+
+Round two found a hole underneath the single-flight design. Every marker that says
+"a pass is already running" — the two memo in-flight slots, the base-ref slot,
+`pendingSnapshot`, and the reaper's own `running` flag — is cleared in a `finally`
+block. **A `finally` never runs on a promise that never settles.** So one
+non-settling read would not merely be slow: it would pin those markers for the life
+of the process, and every later caller would join a promise that never resolves.
+The background reaper would stop running passes altogether — a guard that looks
+healthy and simply never finds anything, which is the exact failure shape the reaper
+exists to prevent.
+
+A subprocess timeout is **not** sufficient to rule this out. It kills the child, but
+`close` fires only once every stdio pipe is closed, so a git that spawned a helper
+holding stdout can leave the promise pending after the kill. (Verified: reproducible
+under plain node.)
+
+Three ceilings, at the three layers where the hazard is reachable:
+
+- **`readAsync`** enforces the child's `timeout` AND an independent timer on the
+  promise (`timeout + 5s`). The child-level kill stays the preferred exit — it
+  produces the precise exit-code message — and the timer only fires when that
+  mechanism failed to settle at all.
+- **Each single-flight memo** wraps its callee in a 60s ceiling. This is not
+  redundant with the above: `cwdRoots`, `mergedPrMap` and the base-ref reader are all
+  **injectable**, so the bound inside the read primitive does not cover a wiring
+  that supplies its own.
+- **Each pass** (`reap`, `snapshot`) carries a 10-minute ceiling, for the same
+  reason one layer up: every `deps.*` signal is injected.
+
+**A deliberate asymmetry between the two pass surfaces.** An abandoned `reap`
+returns an EMPTY result; an abandoned `snapshot` REJECTS (the route renders it as a
+500). They differ because an empty result means different things: an empty pass
+simply does nothing, the safe direction, whereas an empty snapshot would ASSERT
+"nothing reclaimable" on the read surface that reports what the deleter sees — a
+fabricated answer, the same class as the NaN-concurrency hole this branch already
+closed.
+
+**Honest limit.** An abandoned pass cannot be cancelled, so it may still be alive
+and could overlap the next one. That is accepted: every delete re-validates against
+live state immediately before acting, so an overlap can only produce FEWER reaps,
+whereas staying wedged forever produces a reaper that never runs again.
+<!-- tracked: topic 37155 -->
+
 ### Request cancellation — deliberate, not overlooked
 
 An abandoned HTTP client does **not** cancel an in-flight pass. This is a conscious
@@ -235,15 +299,35 @@ problem, and conflating them would have widened this change substantially.
 
 ## Signal vs authority
 
-This change holds **no** decision authority. It does not alter a single verdict:
-the gates, their order, their fail-closed directions and the reclaim race guard are
-untouched. It changes *when the calling thread is released* and *how many reads run
-at once*. The two CONTROL tests exist to pin exactly that — verdicts before and
-after are identical.
+This change holds **no** decision authority: it adds no gate, removes none, and
+reorders none. What it changes is *when the calling thread is released* and *how
+many reads run at once*.
 
-The one behavioural surface is the route contract: both handlers are now async and
-carry a last-resort `catch` so a rejected promise becomes a 500 rather than an
-unhandled rejection that could take the server down.
+**But "it does not alter a single verdict" is NOT true, and an earlier version of
+this section said it was.** Correcting it here rather than only in the decision-point
+table below, because the two contradicting each other is how the false claim survived:
+
+- The **reclaim race guard** — the TOCTOU re-check immediately before an
+  irreversible delete — was changed by this work and was wrongly listed as
+  untouched. Widening the signals to awaitable left it reading them synchronously,
+  which made the in-use check refuse every delete and the negated checks vacuous.
+  See the table entry for the full account.
+- In two places this work **restores** a fail-closed property the shipped code did
+  not actually have (the process scan's failure direction; the output bound).
+- Round three adds a wall-clock ceiling, which introduces a new outcome that did
+  not exist before: an abandoned pass. `reap` degrades to an empty pass (does
+  nothing — safe); `snapshot` REJECTS rather than reporting an empty list, because
+  an empty list on the surface that reports what the deleter sees would assert
+  "nothing reclaimable".
+
+That reads worse than the original claim and it is the accurate version. The two
+CONTROL tests pin what genuinely did not change: the gate ORDER and their verdicts
+on unambiguous inputs.
+
+Route contract: both handlers are async and carry a last-resort `catch`, so a
+rejected promise becomes a 500 rather than an unhandled rejection that could take
+the server down. With the ceiling, that 500 is now reachable in a new way — a
+wedged pass — and it is the honest surface for "I could not answer".
 
 ## Test plan
 
@@ -255,6 +339,25 @@ replaces, multi-line porcelain intact, **rejects** on non-zero exit, **rejects
 rather than resolving empty** on an invalid path (resolving `''` would read as
 clean/merged and could authorise a delete). Plus `mapBounded`: order preservation,
 concurrency never exceeded, empty input, limit clamping.
+
+**Tier 1 — unit** (`tests/unit/SafeGitExecutor.test.ts`, `readAsync` block): the
+funnel's own contract — clean read, refusal audited identically to `readSync`
+before any spawn, **a failed read audited as `denied: subprocess-error`** (the row
+`readStream` structurally could not emit), and an oversized read rejecting rather
+than truncating.
+
+**Tier 1 — unit** (`tests/unit/agent-worktree-git-wiring-nonblocking.test.ts`):
+production wiring makes **zero** blocking reads, for BOTH routes, with no reader
+injected — the construction production actually uses.
+
+**Tier 1 — unit** (`tests/unit/agent-worktree-reaper.test.ts`, wall-clock block):
+the pass and in-flight markers self-clear when an injected signal never settles,
+and the abandoned pass emits an error rather than failing silently.
+
+**Tier 1 — unit** (`tests/unit/lint-no-unawaited-awaitable-test.test.ts`): the lint
+that pins the un-awaited-`Awaitable` class fires on both halves of the historical
+defect, stays clean on every awaited form and on the optional-dep false positive,
+and honours its escape hatch.
 
 **Tier 2 — integration** (`tests/integration/agent-worktree-reaper-eventloop.test.ts`):
 sampled event-loop drift across a real fan-out over 12 real worktrees, wired
@@ -280,11 +383,69 @@ Every test was run against **unfixed** source first.
 - Tests that pass either way are labelled **CONTROL** in the file, with a comment
   stating they pin the classification contract and are **not** evidence the hazard
   is gone. They are not counted as proof.
+- **Round three, each fix reverted and re-run.** The audit-parity fix: reverted,
+  its test fails. The pass and in-flight ceilings: reverted, all three of their
+  tests time out instead of passing, while the CONTROL still passes. The lint:
+  the historical defect reintroduced verbatim into `AgentWorktreeReaper`, and it
+  fires on both lines.
+- **One round-three test did NOT discriminate and was removed rather than kept.**
+  The first attempt to prove the `readAsync` wall-clock bound used a fake git whose
+  grandchild holds stdout open. That reproduces the non-settling wedge under plain
+  node but NOT under the test runner, where `close` still fires — so it passed with
+  the deadline reverted and was evidence of nothing. Worse, its assertion accepted
+  two different rejection reasons, which is what let it look green. It is replaced
+  by an explicitly-labelled CONTROL, and the discriminating coverage lives where the
+  hazard is reachable and deterministic: injected never-settling signals at the memo
+  and pass layers. Recorded because "I verified it discriminates" was claimed for
+  this fix before it was true.
+
+### A fourth round-two finding, closed in round three: the unreachable fail-closed catch
+
+Three gates — the two lock checks and the build-marker check — wrapped
+`fs.existsSync` in a `try/catch` documented as fail-closed. **That catch is
+unreachable.** `existsSync` swallows every error internally and returns `false`, so
+a lock file that EXISTS but cannot be read (EACCES, IO error) was reported as
+ABSENT — "no in-flight work here" — which CLEARS a delete gate. The fail-closed
+comment described a branch that could never run.
+
+This is the same defect class as the false exemption comment that started this whole
+change: a safety property asserted in prose that the code does not implement. Two
+instances of that class in one file is the reason the spec now treats a prose safety
+claim as a defect until a test pins it.
+
+Replaced by `existsFailClosed`, built on `statSync`, which throws and therefore
+allows the distinction: `ENOENT` is a genuine absence; anything else is "cannot
+tell" and answers PRESENT — the KEEP direction for every caller. Pinned by two tests
+that fail against `existsSync` and two CONTROLs that pin that fail-closed did not
+become always-closed (which would disable the reaper rather than protect it).
+<!-- tracked: topic 37155 -->
+
+### Defect classes now pinned by a lint — and the one that is not
+
+Two classes recurred on this branch after being named in writing, which is the
+argument that naming a failure mode does not protect you from it; only a check does.
+
+- **An `Awaitable<T>` signal tested as a boolean without `await`** — now pinned by
+  `scripts/lint-no-unawaited-awaitable-test.js`, wired into `npm run lint`. The
+  type system cannot catch it (a promise in a boolean test is legal TypeScript) and
+  no existing test could (every fake was synchronous, so the async shape production
+  uses never appeared). Verified against the historical defect reintroduced verbatim.
+  Deliberately narrow — same-file declarations, direct call syntax — because a lint
+  that is mostly false positives gets disabled, which protects nothing.
+- **A shared signal widened without auditing its other consumers** — NOT pinned, and
+  I do not have a lint for it. This is the polarity regression: a third state was
+  added to a signal read by two consumers with OPPOSITE polarity, and only one was
+  updated. A lint would have to know which consumers exist and what each one's safe
+  direction is, which is semantic rather than syntactic. It is recorded in
+  `docs/findings/2026-07-30-shared-signal-opposite-polarity.md` and remains a
+  convention, not a guarantee. Stated plainly rather than implied closed.
 
 ## Rollback
 
 `snapshotConcurrency: 1` makes the fan-out fully serial (slowest, gentlest) without
-reverting anything. A full back-out is a revert of the five source files; no
+reverting anything. A full back-out is a revert of the touched source files (the two
+monitoring modules, the git funnel, types, the construction site, the update
+migration and the route); no
 migration, no persisted state, no config default change, and no data to repair —
 the change is confined to execution strategy.
 
@@ -316,9 +477,16 @@ Every decision this build required is settled here; none is parked on the user.
    in-flight sharing. Chosen over a cache (cannot fix the first request, and breaks
    the parent spec's freshness rule) and over a concurrency bound alone (does
    nothing about a single request's ten seconds).
-2. **No new funnel primitive.** Build on the existing `readStream` rather than
-   adding an async read to `SafeGitExecutor`, because it already carries identical
-   guard and audit semantics.
+2. **A new funnel primitive after all — `SafeGitExecutor.readAsync`.** REVERSED in
+   round three, and the reversal is the honest record rather than a tidy one. The
+   original decision was to build on `readStream` and add nothing to the funnel,
+   "because it already carries identical guard and audit semantics". The guard half
+   was true; the AUDIT half was not. `readStream` returns a live child, so the
+   funnel emits `allowed` at spawn and never learns the outcome — a failed read
+   gating a delete was audited as allowed with no failure row. Rather than restate
+   the spec's parity claim as a caveat, the accumulation moved INTO the funnel so
+   the parity is real. The classification, guard and env-scrubbing preamble is now
+   shared by all three read entry points, so they cannot drift apart.
 3. **One classification path**, via `Awaitable<T>`, rather than a second async-only
    route path — so delete-authorising classification cannot drift from displayed
    classification.
