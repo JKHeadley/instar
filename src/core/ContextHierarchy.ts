@@ -53,6 +53,93 @@ export interface ContextDispatchTable {
   reason: string;
 }
 
+export type DeclaredIdentityDirectoryCheck =
+  | {
+      status: 'not-declared';
+      identityPath: string;
+    }
+  | {
+      status: 'valid';
+      identityPath: string;
+      declaredDirectory: string;
+    }
+  | {
+      status: 'invalid';
+      identityPath: string;
+      declaredDirectory: string;
+      reason: string;
+    };
+
+/**
+ * Validate the project directory persisted in the agent's generated identity.
+ *
+ * Identity segments are additive: once written, initialize() intentionally does
+ * not overwrite operator customizations. That also means a moved agent can keep
+ * a stale absolute path indefinitely. Check the persisted claim against the live
+ * filesystem and the project directory that boot actually resolved.
+ */
+export function checkDeclaredIdentityDirectory(
+  stateDir: string,
+  projectDir: string,
+): DeclaredIdentityDirectoryCheck {
+  const identityPath = path.join(stateDir, 'context', 'identity.md');
+  let content: string;
+
+  try {
+    content = fs.readFileSync(identityPath, 'utf-8');
+  } catch {
+    return { status: 'not-declared', identityPath };
+  }
+
+  const match = content.match(/^- \*\*Directory\*\*:\s*(.+?)\s*$/m);
+  if (!match) return { status: 'not-declared', identityPath };
+
+  const declaredDirectory = match[1].replace(/^`(.+)`$/, '$1');
+  if (!path.isAbsolute(declaredDirectory)) {
+    return {
+      status: 'invalid',
+      identityPath,
+      declaredDirectory,
+      reason: 'the declared directory is not an absolute path',
+    };
+  }
+
+  try {
+    const declaredStat = fs.statSync(declaredDirectory);
+    if (!declaredStat.isDirectory()) {
+      return {
+        status: 'invalid',
+        identityPath,
+        declaredDirectory,
+        reason: 'the declared path is not a directory',
+      };
+    }
+
+    const declaredReal = fs.realpathSync(declaredDirectory);
+    const projectReal = fs.realpathSync(projectDir);
+    if (declaredReal !== projectReal) {
+      return {
+        status: 'invalid',
+        identityPath,
+        declaredDirectory,
+        reason: `the declared directory resolves to ${declaredReal}, but boot resolved this agent to ${projectReal}`,
+      };
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return {
+      status: 'invalid',
+      identityPath,
+      declaredDirectory,
+      reason: code === 'ENOENT'
+        ? 'the declared directory does not exist'
+        : `the declared directory cannot be resolved (${code ?? 'unknown filesystem error'})`,
+    };
+  }
+
+  return { status: 'valid', identityPath, declaredDirectory };
+}
+
 /** The canonical list of context segments every agent should have. */
 const DEFAULT_SEGMENTS: ContextSegment[] = [
   {
