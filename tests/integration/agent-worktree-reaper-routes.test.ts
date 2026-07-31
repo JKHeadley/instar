@@ -27,7 +27,7 @@ function ctxWith(stateDir: string, reaper: AgentWorktreeReaper | null): RouteCon
 
 function reaperDeps(worktrees: WorktreeInfo[]): AgentWorktreeReaperDeps {
   return {
-    listWorktrees: () => worktrees,
+    listWorktrees: () => ({ ok: true as const, worktrees }),
     isClean: () => true,
     isMerged: () => true,
     isInUse: () => false,
@@ -74,5 +74,28 @@ describe('GET /worktrees/agent-reaper (integration)', () => {
     expect(res.body.worktrees[0].path).toBe('/wt/old');
     expect(res.body.worktrees[0].verdict).toBe('reap-eligible');
     expect(res.body.reclaimable).toBe(1);
+    // A healthy pass must still say so explicitly — otherwise a reader cannot
+    // tell a real count from a count produced while enumeration was broken.
+    expect(res.body.enumerationOk).toBe(true);
+    expect(res.body.enumerationError).toBeNull();
+  });
+
+  /**
+   * The reader-facing half of the fail-visible contract. The route is the surface
+   * an operator (or agent) actually consults, so this is where "I could not look"
+   * must be distinguishable from "I looked and found nothing". Reported twice in
+   * production as `reclaimable: 0` over a broken git call — once via SourceTreeGuard,
+   * once (2026-07-29) via a configured repo path naming a nonexistent directory.
+   */
+  it('reports reclaimable:null + enumerationOk:false over HTTP when enumeration fails', async () => {
+    const reaper = new AgentWorktreeReaper(
+      { ...reaperDeps([]), listWorktrees: () => ({ ok: false as const, error: "fatal: cannot change to '/nope'" }) },
+      { enabled: true, dryRun: true },
+    );
+    const res = await request(appWith(reaper)).get('/worktrees/agent-reaper');
+    expect(res.status).toBe(200); // still must not crash the route
+    expect(res.body.reclaimable).toBeNull(); // NOT 0 — the whole point
+    expect(res.body.enumerationOk).toBe(false);
+    expect(res.body.enumerationError).toMatch(/cannot change to/);
   });
 });

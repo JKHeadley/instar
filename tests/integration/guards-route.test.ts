@@ -147,6 +147,35 @@ describe('GET /guards (integration)', () => {
     expect(res.body.summary.loadBearingUninspectableKeys).toContain(key);
   });
 
+  it('surfaces a fresh guard with an unknown verdict as on-blind with closed runtime detail', async () => {
+    fs.writeFileSync(
+      path.join(stateDir, 'config.json'),
+      JSON.stringify({ monitoring: { agentWorktreeReaper: { enabled: true, dryRun: false } } }),
+    );
+    const registry = new GuardRegistry();
+    registry.register('monitoring.agentWorktreeReaper.enabled', () => ({
+      enabled: true,
+      dryRun: false,
+      lastTickAt: Date.now() - 1_000,
+      verdictUnknown: true,
+      verdictUnknownReason: 'git worktree enumeration failed',
+    }));
+
+    const res = await request(appWith(ctxFor({ guardRegistry: registry as never })))
+      .get('/guards')
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    const row = res.body.guards.find((guard: { key: string }) =>
+      guard.key === 'monitoring.agentWorktreeReaper.enabled');
+    expect(row.effective).toBe('on-blind');
+    expect(row.runtime).toMatchObject({
+      verdictUnknown: true,
+      verdictUnknownReason: 'git worktree enumeration failed',
+    });
+    expect(res.body.summary.onBlind).toBe(1);
+  });
+
   it('config-read failure → top-level 500 error, never an empty-truthful inventory', async () => {
     fs.writeFileSync(path.join(stateDir, 'config.json'), '{corrupt');
     const res = await request(appWith(ctxFor())).get('/guards').set(auth());

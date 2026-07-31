@@ -4,8 +4,15 @@ slug: "guard-enumeration-fail-visible"
 author: "echo"
 parent-principle: "Verify the State, Not Its Symbol"
 eli16-overview: "guard-enumeration-fail-visible.eli16.md"
-status: "draft"
-approved: false
+status: "converged"
+review-convergence: "2026-07-31T20:34:00.000Z"
+review-iterations: 10
+review-completed-at: "2026-07-31T20:34:00.000Z"
+review-report: "docs/specs/reports/guard-enumeration-fail-visible-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5 (rounds 1, 2, 4, 8, 9); final operator disposition recorded 2026-07-31"
+approved: true
+approved-by: "Justin (Telegram topic 1, 2026-07-31)"
+approval-note: "Implementation directive after PR #1748 merged. Fresh implementation review reconciled the handed-off patch with this document's final normative contract before approval."
 ---
 
 # Guard Enumeration Fail-Distinguishable
@@ -13,6 +20,20 @@ approved: false
 *(slug and filename remain `guard-enumeration-fail-visible` — see the overclaim note below.
 The title carries the accurate word so every downstream reference that quotes it inherits the
 correction rather than the aspiration.)*
+
+## Approval and implementation boundary (2026-07-31)
+
+PR #1748 merged this document as a review record while deliberately leaving the runtime
+gate open. Justin's later implementation directive is the approval event recorded above.
+Before treating it as approval, the implementation review compared the handed-off patch to
+the final normative contract and found that the patch predated the `on-blind` posture,
+GuardRegistry registration, restart-safe failure history, and failed-pass tick semantics.
+Those gaps are part of the approved implementation and are pinned by tests.
+
+This approval remains deliberately narrow. It does not claim unprompted alerting or exported
+metrics (`CMT-1103`), and it does not claim that the synchronous live diagnostic routes are
+availability-safe (`CMT-1123`). Both remain follow-up acceptance criteria, exactly as the
+normative contract states.
 
 ## The normative contract, in one screen
 

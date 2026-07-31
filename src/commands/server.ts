@@ -18792,18 +18792,26 @@ export async function startServer(options: StartOptions): Promise<void> {
     // disabled. Observability at GET /worktrees/agent-reaper.
     const { AgentWorktreeReaper } = await import('../monitoring/AgentWorktreeReaper.js');
     const { makeAgentWorktreeReaperDeps } = await import('../monitoring/agentWorktreeGit.js');
+    const { WorktreeEnumerationFailureStore } = await import('../monitoring/WorktreeEnumerationFailureStore.js');
     const _agentWorktreesDir = path.join(path.dirname(config.stateDir), '.worktrees');
+    const _worktreeEnumerationFailureStore = new WorktreeEnumerationFailureStore(
+      path.join(config.stateDir, 'state', 'worktree-enumeration-failures.json'),
+    );
     const agentWorktreeReaper = new AgentWorktreeReaper(
-      makeAgentWorktreeReaperDeps({
-        instarRepo: config.projectDir,
-        worktreesDir: _agentWorktreesDir,
-        // Multi-commit squash-merge detection via GitHub merged-PR state (default
-        // on; fail-safe to cherry-only). Off only if explicitly disabled in config.
-        githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
-      }),
+      {
+        ...makeAgentWorktreeReaperDeps({
+          instarRepo: config.projectDir,
+          worktreesDir: _agentWorktreesDir,
+          // Multi-commit squash-merge detection via GitHub merged-PR state (default
+          // on; fail-safe to cherry-only). Off only if explicitly disabled in config.
+          githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
+        }),
+        failureHistory: _worktreeEnumerationFailureStore.forGuard('agent-worktree-reaper'),
+      },
       config.monitoring?.agentWorktreeReaper,
     );
     agentWorktreeReaper.start();
+    guardRegistry.register('monitoring.agentWorktreeReaper.enabled', () => agentWorktreeReaper.guardStatus());
     if (config.monitoring?.agentWorktreeReaper?.enabled) {
       console.log(pc.green(
         config.monitoring.agentWorktreeReaper.dryRun === false
@@ -19014,12 +19022,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { OrphanedWorkSentinel } = await import('../monitoring/OrphanedWorkSentinel.js');
       const { makeOrphanedWorkSentinelDeps } = await import('../monitoring/orphanedWorkGit.js');
       orphanedWorkSentinel = new OrphanedWorkSentinel(
-        makeOrphanedWorkSentinelDeps({
-          instarRepo: config.projectDir,
-          worktreesDir: _agentWorktreesDir,
-          stateDir: path.join(config.stateDir, 'state'),
-          raiseAttention: telegram
-            ? (event) => {
+        {
+          ...makeOrphanedWorkSentinelDeps({
+            instarRepo: config.projectDir,
+            worktreesDir: _agentWorktreesDir,
+            stateDir: path.join(config.stateDir, 'state'),
+            raiseAttention: telegram
+              ? (event) => {
                 const slug = event.path.split('/').filter(Boolean).pop() ?? 'worktree';
                 void telegram.createAttentionItem({
                   id: `orphaned-work:${slug}:${event.workSig}`,
@@ -19035,12 +19044,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                   sourceContext: `orphaned-work:${slug}`,
                 });
               }
-            : () => {},
-          now: () => Date.now(),
-        }),
+              : () => {},
+            now: () => Date.now(),
+          }),
+          failureHistory: _worktreeEnumerationFailureStore.forGuard('orphaned-work-sentinel'),
+        },
         { ...config.monitoring?.orphanedWorkSentinel, enabled: _orphanedWorkEnabled },
       );
       orphanedWorkSentinel.start();
+      guardRegistry.register('monitoring.orphanedWorkSentinel.enabled', () => orphanedWorkSentinel!.guardStatus());
       if (_orphanedWorkEnabled) {
         console.log(pc.green('  OrphanedWorkSentinel enabled (silent-uncommitted-death backstop — signal-only)'));
       }

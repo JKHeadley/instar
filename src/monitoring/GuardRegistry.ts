@@ -24,6 +24,10 @@ export interface GuardRuntimeStatus {
   lastTickAt?: number;
   jobCount?: number;
   pausedJobCount?: number;
+  /** The most recent completed pass ran but could not produce a verdict. */
+  verdictUnknown?: boolean;
+  /** Bounded operator-facing reason, meaningful only with verdictUnknown:true. */
+  verdictUnknownReason?: string;
 }
 
 export type GuardRuntimeGetter = () => GuardRuntimeStatus;

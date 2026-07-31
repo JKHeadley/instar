@@ -27,6 +27,11 @@
  */
 
 import { EventEmitter } from 'node:events';
+import {
+  type WorktreeEnumeration,
+  type WorktreeEnumerationFailureHistoryPort,
+  summarizeEnumerationError,
+} from './worktreeEnumeration.js';
 
 export interface AgentWorktreeReaperConfig {
   enabled: boolean;
@@ -92,8 +97,21 @@ export interface WorktreeEvaluation {
  * Production wiring supplies git-backed implementations via SafeGitExecutor.
  */
 export interface AgentWorktreeReaperDeps {
-  /** Worktrees under the agent's `.worktrees/` (excludes the main checkout). */
-  listWorktrees: () => WorktreeInfo[];
+  /**
+   * Worktrees under the agent's `.worktrees/` (excludes the main checkout).
+   *
+   * Returns a THREE-STATE result, not a bare array. The states are
+   * success-nonempty, success-empty, and failure — and the whole point of this
+   * type is that a caller cannot reach the worktrees without first passing
+   * through `ok`. A bare array (or a throw, which is the same thing with the
+   * failure state left implicit) let "could not look" and "looked, found nothing"
+   * collapse into one value; that collapse reported a clean bill of health over a
+   * broken guard twice in production.
+   *
+   * This is deliberately structural rather than documented: the compiler, not a
+   * convention, is what stops the next caller from forgetting.
+   */
+  listWorktrees: () => WorktreeEnumeration<WorktreeInfo>;
   /** True when the worktree has NO uncommitted or untracked changes. */
   isClean: (path: string) => boolean;
   /** True when the branch's content is already in the default branch. */
@@ -113,18 +131,41 @@ export interface AgentWorktreeReaperDeps {
   hasActiveBuildMarker?: (path: string) => boolean;
   /** Remove the worktree (git worktree remove). Only called when killsEnabled. */
   removeWorktree: (path: string) => void;
+  /** Passive trace for an enumeration failure. Retention follows the deployment log. */
+  warn?: (line: string) => void;
+  /** Restart-surviving failure count/time. Current blind state is never restored. */
+  failureHistory?: WorktreeEnumerationFailureHistoryPort;
   now?: () => number;
 }
+
+// The enumeration contract lives in its own module so the sentinel does not have
+// to import its diagnostics from the reaper. Re-exported for existing consumers.
+export { type WorktreeEnumeration, MAX_ENUMERATION_ERROR_CHARS, summarizeEnumerationError } from './worktreeEnumeration.js';
 
 export class AgentWorktreeReaper extends EventEmitter {
   private readonly cfg: AgentWorktreeReaperConfig;
   private readonly deps: AgentWorktreeReaperDeps;
   private readonly now: () => number;
+  private readonly warn: (line: string) => void;
   private timer?: NodeJS.Timeout;
   private initialTimer?: NodeJS.Timeout;
   private running = false;
   private lastPassAt = 0;
   private reapedLastPass = 0;
+  /**
+   * Metric (Observability standard): how many background REAP PASSES have failed
+   * to enumerate in the retained history, and when the most recent one was.
+   * Incremented ONLY by `reap()` — never by `snapshot()`, which runs per route hit
+   * and would otherwise make this a measure of polling frequency. Without a count, the
+   * only evidence a guard is blind is a log line someone has to be reading at the
+   * right moment — and the defect this whole change addresses went unnoticed for
+   * an unknown duration precisely because nothing counted it.
+   */
+  private enumerationFailures = 0;
+  private lastEnumerationFailureAt: number | null = null;
+  /** Current-process outcome of the last completed background pass. */
+  private lastEnumerationOk: boolean | null = null;
+  private lastEnumerationError: string | null = null;
   /** Per-path consecutive removal-failure counts (breaker). Keyed by worktree path;
    *  cleared on a successful removal of that path. Process-lifetime (resets on restart). */
   private reclaimFailures = new Map<string, number>();
@@ -136,6 +177,18 @@ export class AgentWorktreeReaper extends EventEmitter {
     this.deps = deps;
     this.cfg = { ...DEFAULT_AGENT_WORKTREE_REAPER_CONFIG, ...(cfg ?? {}) };
     this.now = deps.now ?? (() => Date.now());
+    this.warn = deps.warn ?? ((line) => console.warn(line));
+    try {
+      const history = deps.failureHistory?.load();
+      if (history) {
+        this.enumerationFailures = history.enumerationFailures;
+        this.lastEnumerationFailureAt = history.lastEnumerationFailureAt;
+      }
+    } catch (err) {
+      // @silent-fallback-ok — not silent: the guard remains live and the failed
+      // historical load is surfaced. Current-pass honesty does not depend on it.
+      this.warn(`[agent-worktree-reaper] enumeration failure history load FAILED: ${summarizeEnumerationError(err)}`);
+    }
   }
 
   start(): void {
@@ -187,9 +240,26 @@ export class AgentWorktreeReaper extends EventEmitter {
     const reaped: string[] = [];
     const evaluations: WorktreeEvaluation[] = [];
     try {
-      let worktrees: WorktreeInfo[];
-      try { worktrees = this.deps.listWorktrees(); }
-      catch (err) { this.emit('error', err); return { ts: this.now(), evaluations: [], reaped: [], dryRun: !this.killsEnabled }; }
+      // The `ok` narrowing is mandatory — `worktrees` is unreachable without it.
+      const enumeration = this.deps.listWorktrees();
+      if (!enumeration.ok) {
+        // NOT `emit('error')`. Node's EventEmitter special-cases the 'error' event:
+        // emitting it with NO listener THROWS. Nothing subscribes to this reaper in
+        // production, and reap()'s body has only a `finally` — so an 'error' emit
+        // here would escape as an unhandled rejection from the interval callback,
+        // and it would do so precisely in the enumeration-failure case this change
+        // exists to handle. A named, non-special event reports the same fact and
+        // cannot crash a caller who is not listening.
+        const failedAt = this.now();
+        this.lastPassAt = failedAt;
+        this.lastEnumerationOk = false;
+        this.lastEnumerationError = enumeration.error;
+        this.recordEnumerationFailure(failedAt);
+        this.emit('enumeration-failed', { error: enumeration.error });
+        this.warn(`[agent-worktree-reaper] enumeration FAILED — reclaimable is UNKNOWN, not zero: ${enumeration.error}`);
+        return { ts: failedAt, evaluations: [], reaped: [], dryRun: !this.killsEnabled };
+      }
+      const worktrees: WorktreeInfo[] = enumeration.worktrees;
 
       for (const info of worktrees) {
         let evaln: WorktreeEvaluation;
@@ -239,12 +309,48 @@ export class AgentWorktreeReaper extends EventEmitter {
         }
       }
       this.lastPassAt = this.now();
+      this.lastEnumerationOk = true;
+      this.lastEnumerationError = null;
       this.reapedLastPass = reaped.length;
       this.emit('pass', { evaluations, reaped });
     } finally {
       this.running = false;
     }
     return { ts: this.now(), evaluations, reaped, dryRun: !this.killsEnabled };
+  }
+
+  private recordEnumerationFailure(at: number): void {
+    this.enumerationFailures = Math.min(Number.MAX_SAFE_INTEGER, this.enumerationFailures + 1);
+    this.lastEnumerationFailureAt = at;
+    try {
+      const persisted = this.deps.failureHistory?.recordFailure(at);
+      if (persisted) {
+        this.enumerationFailures = persisted.enumerationFailures;
+        this.lastEnumerationFailureAt = persisted.lastEnumerationFailureAt;
+      }
+    } catch (err) {
+      // @silent-fallback-ok — not silent: retain the in-memory history and make
+      // persistence degradation visible without disabling the safety guard.
+      this.warn(`[agent-worktree-reaper] enumeration failure history persist FAILED: ${summarizeEnumerationError(err)}`);
+    }
+  }
+
+  /** Cheap, in-memory posture read for GuardRegistry (`GET /guards`). */
+  guardStatus(): {
+    enabled: boolean;
+    dryRun: boolean;
+    lastTickAt: number;
+    verdictUnknown?: true;
+    verdictUnknownReason?: string;
+  } {
+    return {
+      enabled: this.cfg.enabled,
+      dryRun: this.cfg.dryRun,
+      lastTickAt: this.lastPassAt,
+      ...(this.lastEnumerationOk === false
+        ? { verdictUnknown: true as const, verdictUnknownReason: this.lastEnumerationError ?? 'worktree enumeration failed' }
+        : {}),
+    };
   }
 
   /**
@@ -295,20 +401,63 @@ export class AgentWorktreeReaper extends EventEmitter {
     }
   }
 
-  /** Observability snapshot for GET /worktrees/agent-reaper (no side effects). */
+  /**
+   * Observability snapshot for GET /worktrees/agent-reaper (no side effects).
+   *
+   * FAIL-VISIBLE, not fail-silent. When enumeration throws we still do not crash
+   * the route — but we MUST NOT report the failure as `reclaimable: 0`, because
+   * "the check could not run" and "there is nothing to reclaim" are the same
+   * bytes to a reader and opposite facts. That collapse is what let a
+   * mis-wired repo path sit behind a clean bill of health while real worktrees
+   * accumulated (2026-07-29: the reaper reported `reclaimable: 0` against 73
+   * worktrees because `git -C <path> worktree list` was failing outright).
+   *
+   * `enumerationOk: false` + `reclaimable: null` is the honest shape: the
+   * numbers are UNKNOWN, not zero. Callers that want a number must decide what
+   * an unknown means for them rather than inheriting a fabricated zero.
+   *
+   * This mirrors `isClean`'s existing fail-closed contract in agentWorktreeGit:
+   * a signal that cannot be determined must never resolve to the permissive
+   * answer.
+   */
   snapshot(): {
     enabled: boolean; dryRun: boolean; lastPassAt: number; reapedLastPass: number;
     initialPassPending: boolean;
     worktrees: WorktreeEvaluation[];
-    reclaimable: number;
+    reclaimable: number | null;
+    enumerationOk: boolean;
+    enumerationError: string | null;
+    enumerationFailures: number;
+    lastEnumerationFailureAt: number | null;
   } {
     let worktrees: WorktreeEvaluation[] = [];
+    let enumerationOk = true;
+    let enumerationError: string | null = null;
+    // The three-state result makes the failure branch unskippable: there is no way
+    // to read `.worktrees` without having answered `ok` first. A defensive try/catch
+    // remains only for a dep that throws in violation of its contract — the route
+    // must never 500 — but it is a backstop, not the mechanism.
     try {
-      worktrees = this.deps.listWorktrees().map((info) => {
-        try { return this.evaluate(info); }
-        catch { return { path: info.path, branch: info.branch, verdict: 'keep' as Verdict, reason: 'eval-error' }; }
-      });
-    } catch { /* listing failed — report empty, never crash the route */ }
+      const enumeration = this.deps.listWorktrees();
+      if (enumeration.ok) {
+        worktrees = enumeration.worktrees.map((info) => {
+          try { return this.evaluate(info); }
+          catch { return { path: info.path, branch: info.branch, verdict: 'keep' as Verdict, reason: 'eval-error' }; }
+        });
+      } else {
+        enumerationOk = false;
+        enumerationError = enumeration.error;
+      }
+    } catch (err) {
+      // Deliberately does NOT increment enumerationFailures. snapshot() runs on
+      // every route hit, so counting here would make the metric a function of how
+      // often someone polls rather than of how often the guard actually went
+      // blind. `enumerationOk` already reports the CURRENT state; the counter
+      // measures background PASSES.
+      enumerationOk = false;
+      enumerationError = summarizeEnumerationError(err);
+      worktrees = [];
+    }
     return {
       enabled: this.cfg.enabled,
       dryRun: this.cfg.dryRun,
@@ -316,7 +465,11 @@ export class AgentWorktreeReaper extends EventEmitter {
       reapedLastPass: this.reapedLastPass,
       initialPassPending: this.initialTimer !== undefined,
       worktrees,
-      reclaimable: worktrees.filter((w) => w.verdict === 'reap-eligible').length,
+      reclaimable: enumerationOk ? worktrees.filter((w) => w.verdict === 'reap-eligible').length : null,
+      enumerationOk,
+      enumerationError,
+      enumerationFailures: this.enumerationFailures,
+      lastEnumerationFailureAt: this.lastEnumerationFailureAt,
     };
   }
 }

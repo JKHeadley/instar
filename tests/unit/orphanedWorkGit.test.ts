@@ -50,7 +50,10 @@ describe('makeOrphanedWorkSentinelDeps — real git', () => {
   }
 
   it('lists the worktree under .worktrees/ (excludes the main checkout)', () => {
-    const list = deps().listWorktrees();
+    const enumeration = deps().listWorktrees();
+    expect(enumeration.ok).toBe(true);
+    if (!enumeration.ok) throw new Error('enumeration failed: ' + enumeration.error);
+    const list = enumeration.worktrees;
     expect(list.map((w) => path.basename(w.path))).toContain('feature');
     expect(list.some((w) => path.basename(w.path) === 'repo')).toBe(false);
   });

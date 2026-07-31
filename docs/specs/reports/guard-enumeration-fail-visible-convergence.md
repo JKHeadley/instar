@@ -1,5 +1,22 @@
 # Convergence Report — Guard Enumeration Fail-Visible
 
+## Final disposition — converged for the narrowed contract (2026-07-31)
+
+The historical runs below remain unchanged because they accurately record two capped,
+non-converged reviews. The later operator directive to implement after PR #1748 merged is
+the missing disposition those runs explicitly requested. It accepts the two tracked
+follow-ups as out of this increment: unprompted alerting/exported metrics (`CMT-1103`) and
+event-loop-safe live diagnostic reads (`CMT-1123`). Neither is represented as delivered.
+
+A fresh implementation audit then compared the handed-off patch to the final normative
+contract. It found four stale gaps — no `on-blind` guard posture, no runtime registration,
+no restart-safe failure history, and no completed-tick update on enumeration failure. The
+implementation closes all four and pins the two real lifecycle routes, posture precedence,
+heartbeat projection, and restart semantics. With the formerly open design choice resolved
+by the operator and the implementation reconciled to the final contract, this report's final
+disposition is **CONVERGED for that narrow contract**. The earlier non-converged verdicts are
+history, not silently rewritten evidence.
+
 ## ⚠ Convergence verdict: NOT CONVERGED (hit the 10-round cap)
 
 **No convergence tag was written, and none should be.** One finding persisted across

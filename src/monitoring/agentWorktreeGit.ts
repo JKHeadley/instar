@@ -14,6 +14,7 @@ import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import { classifyPorcelain } from '../core/worktreeDirtyCheck.js';
 import type { AgentWorktreeReaperDeps, WorktreeInfo } from './AgentWorktreeReaper.js';
+import { type WorktreeEnumeration, summarizeEnumerationError } from './worktreeEnumeration.js';
 
 /**
  * Reaper-specific residue denylist (spec: worktree-reaper-untracked-blindspot).
@@ -215,10 +216,26 @@ export function makeAgentWorktreeReaperDeps(opts: {
   };
 
   return {
-    listWorktrees: (): WorktreeInfo[] => {
+    listWorktrees: (): WorktreeEnumeration<WorktreeInfo> => {
       let porcelain: string;
+      // REPORT the failure as a state, do not swallow it. `catch { return [] }`
+      // here made an enumeration FAILURE indistinguishable from "this agent has no
+      // worktrees", so a mis-wired `repo` produced a permanent clean bill of health
+      // (2026-07-29: `reclaimable: 0` reported against 73 real worktrees because
+      // `git -C <repo>` was failing outright).
+      //
+      // Returning `{ ok: false }` rather than throwing is the structural half: a
+      // caller cannot reach the list without narrowing on `ok`, so "forgot to
+      // handle failure" is a compile error instead of a silent zero.
       try { porcelain = readGit(['-C', repo, 'worktree', 'list', '--porcelain'], repo); }
-      catch { return []; }
+      catch (err) {
+        return {
+          ok: false,
+          error: summarizeEnumerationError(
+            new Error(`worktree enumeration failed for repo "${repo}": ${err instanceof Error ? err.message : String(err)}`),
+          ),
+        };
+      }
       const out: WorktreeInfo[] = [];
       let cur: Partial<WorktreeInfo> = {};
       for (const line of porcelain.split('\n')) {
@@ -240,7 +257,7 @@ export function makeAgentWorktreeReaperDeps(opts: {
       if (cur.path && within(cur.path)) {
         out.push({ path: cur.path, branch: cur.branch ?? null, headSha: cur.headSha ?? '' });
       }
-      return out;
+      return { ok: true, worktrees: out };
     },
 
     isClean: (p: string): boolean => {
