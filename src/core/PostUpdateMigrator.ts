@@ -11839,8 +11839,8 @@ echo ""
 
 # On compaction, delegate to the dedicated recovery hook
 if [ "\$EVENT" = "compact" ]; then
-  if [ -x "$INSTAR_DIR/hooks/compaction-recovery.sh" ]; then
-    exec bash "$INSTAR_DIR/hooks/compaction-recovery.sh"
+  if [ -x "$INSTAR_DIR/hooks/instar/compaction-recovery.sh" ]; then
+    exec bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh"
   fi
 fi
 

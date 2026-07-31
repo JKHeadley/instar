@@ -185,6 +185,32 @@
       "evidenceCountAtLastAck": 0,
       "proposalId": null,
       "nearestExistingClass": "unknown-classification-fail-open — both concern classifier authority, but this class over-classifies known vocabulary in the wrong context while the neighbor permissively defaults unknown input"
+    },
+    {
+      "id": "generated-artifact-path-contract-drift",
+      "description": "Two agent-authored generated artifacts that must compose name different canonical filesystem locations for the same installed dependency, so each artifact is locally valid while the end-to-end runtime path is unreachable.",
+      "includes": [
+        "an installer writes a generated hook or helper at one path while a generated caller checks or executes a different path",
+        "two templates independently spell a shared generated-artifact location and drift without an integration assertion",
+        "an always-overwrite migration consistently installs both sides of a broken path contract"
+      ],
+      "excludes": [
+        "a runtime file missing because an otherwise-correct installation was interrupted or manually deleted",
+        "a user-customized path that is intentionally resolved through configuration",
+        "an ordinary product-code call to a nonexistent module that is already caught by the compiler or linker"
+      ],
+      "canonicalExamples": [
+        "Issue #1798: PostUpdateMigrator installed compaction-recovery.sh under hooks/instar while the generated session-start hook checked and executed hooks/compaction-recovery.sh"
+      ],
+      "status": "unconfirmed",
+      "severity": "critical",
+      "closureStandard": null,
+      "closureStandardEnforcement": null,
+      "instanceCount": 0,
+      "escalatedAt": null,
+      "evidenceCountAtLastAck": 0,
+      "proposalId": null,
+      "nearestExistingClass": "prompt-parser-contract-drift — both are producer/consumer contract drift in agent-authored text, but this class concerns generated filesystem reachability rather than an LLM prompt's output schema"
     }
   ]
 }
