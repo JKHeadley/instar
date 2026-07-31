@@ -195,13 +195,13 @@ Same reduced-assurance shape as run 1, and it must not be glossed:
   path is present — gemini is **not installed at all**, so `--detect-only` returns exactly one
   framework. Every round here is one model's opinion, not the family-diverse pass intended.
   Closing it needs an install *and* an operator-held Google login, not a login alone.
-- **Fleet-level, and worse than this run:** the other machine in this fleet *does* have gemini
-  installed and authenticated, and its gemini pass **times out on every round** (observed across
-  four consecutive rounds of an unrelated spec as well as this one). So the second family fails by
-  absence here and by timeout there: **no machine in this fleet has yet produced a genuine
-  two-family convergence.** Recorded because "cross-model reviewed" must not carry weight neither
-  machine has earned — and because the skill's aggregate flag goes clean when a single family
-  succeeds, which would hide exactly this.
+- **Fleet-level:** the other machine in this fleet has gemini installed but **not operationally
+  authenticated**: the binary loads cached credentials, then refuses because the account needs a
+  cloud project configured. Measured there on 2026-07-30, it fails in about four seconds rather
+  than timing out. So the second family fails by absence here and by configuration there: **no
+  machine in this fleet has yet produced a genuine two-family convergence.** Recorded because
+  "cross-model reviewed" must not carry weight neither machine has earned — and because the
+  skill's aggregate flag goes clean when a single family succeeds, which would hide exactly this.
 - **The six internal reviewers were again self-applied** — this session prohibits spawning
   subagents. The security / scalability / adversarial / integration / decision-completeness /
   lessons-aware passes were performed by the same mind that wrote the spec: the circular
