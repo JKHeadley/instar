@@ -1,0 +1,29 @@
+{
+  "ts": "2026-07-31T17:54:56.000Z",
+  "slug": "job-manifest-body-drift-warning",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "scheduler execution lifecycle: src/scheduler/JobScheduler.ts adds a live pre-trigger diagnostic",
+    "job prompt authority: src/scheduler/AgentMdJobLoader.ts reads the current on-disk body hash"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 96,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/AgentMdJobLoader.ts",
+      "src/scheduler/JobScheduler.ts"
+    ],
+    "addedLines": 95,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Agentmd prompt bodies are intentionally cached at scheduler startup, but no runtime check compared that cached authority with the named on-disk file. Run records continued to report the live resolvedPath while serving the stale cached prompt, making non-delivery indistinguishable from agent noncompliance until restart."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
