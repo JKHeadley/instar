@@ -21,22 +21,11 @@
   },
   "causalAutopsy": null,
   "classClosure": {
-    "defectClass": "novel",
+    "defectClass": "generated-artifact-path-contract-drift",
     "closure": "gap",
     "gapItem": "ACT-245",
-    "component": "PostUpdateMigrator.getSessionStartHook",
-    "novelClass": {
-      "nearestExistingClass": "prompt-parser-contract-drift — both are producer/consumer contract drift in agent-authored text, but generated-artifact-path-contract-drift concerns filesystem reachability rather than prompt-output schemas",
-      "includes": [
-        "an installer writes a generated hook or helper at one path while a generated caller checks or executes a different path",
-        "two templates independently spell a shared generated-artifact location and drift without an integration assertion"
-      ],
-      "excludes": [
-        "a runtime file missing because an otherwise-correct installation was interrupted or manually deleted",
-        "a user-customized path intentionally resolved through configuration"
-      ],
-      "severity": "critical"
-    }
+    "prNumber": 1799,
+    "component": "PostUpdateMigrator.getSessionStartHook"
   },
   "verdict": "pass"
 }
