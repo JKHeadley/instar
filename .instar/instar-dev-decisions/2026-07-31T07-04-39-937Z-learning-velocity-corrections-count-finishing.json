@@ -1,0 +1,23 @@
+{
+  "ts": "2026-07-31T07:04:39.937Z",
+  "slug": "learning-velocity-corrections-count-finishing",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 72,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/LearningVelocityScorer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 65,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
