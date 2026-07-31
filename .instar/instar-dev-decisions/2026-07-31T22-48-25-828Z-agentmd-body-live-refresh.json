@@ -1,0 +1,35 @@
+{
+  "ts": "2026-07-31T22:48:25.828Z",
+  "slug": "agentmd-body-live-refresh",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 49,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/AgentMdJobLoader.ts",
+      "src/scheduler/JobRunHistory.ts",
+      "src/scheduler/JobScheduler.ts"
+    ],
+    "addedLines": 30,
+    "deletedLines": 19
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1804
+    ],
+    "notes": "PR #1804 made disk/body-hash drift visible but deliberately left execution on the boot-cached body, so a known edit continued to be inert until restart."
+  },
+  "classClosure": {
+    "defectClass": "generated-artifact-path-contract-drift",
+    "closure": "tests/unit/scheduler/JobScheduler.body-drift.test.ts",
+    "reason": "The consumer-seam test proves every validated edit reaches the next prompt and every invalid edit retains the last validated prompt.",
+    "component": "JobScheduler"
+  },
+  "verdict": "pass"
+}

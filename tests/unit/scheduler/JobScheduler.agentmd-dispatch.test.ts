@@ -222,7 +222,7 @@ describe('JobScheduler agentmd dispatch (Phase 1b)', () => {
       await expect(async () => {
         // Directly invoke buildPrompt via a small reflection to surface the throw.
         (scheduler as unknown as { buildPrompt: (j: JobDefinition) => string }).buildPrompt(job);
-      }).rejects.toThrow(/no cached body/);
+      }).rejects.toThrow(/no validated body/);
     } finally {
       consoleSpy.mockRestore();
     }

@@ -22,7 +22,7 @@ import { ExecutionJournal } from '../core/ExecutionJournal.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import { JobReflector } from '../core/JobReflector.js';
 import { loadJobs } from './JobLoader.js';
-import { readAgentMdBodyHash } from './AgentMdJobLoader.js';
+import { readAgentMdBody } from './AgentMdJobLoader.js';
 import { hashBody } from './AgentMdLockFile.js';
 import { JobRunHistory } from './JobRunHistory.js';
 import { SkipLedger } from './SkipLedger.js';
@@ -373,7 +373,8 @@ export class JobScheduler {
     // Phase 1b: agentmd entries now flow through the dispatch path
     // alongside legacy entries. The Phase 1a defensive filter on
     // execute.type === 'agentmd' has been removed; buildPrompt's
-    // 'agentmd' case returns the cached body, and spawnJobSession
+    // 'agentmd' case returns the last validated body (refreshed from disk at
+    // each trigger boundary), and spawnJobSession
     // threads the per-job tool allowlist into the spawn call.
     const enabledJobs = this.jobs.filter(j => j.enabled);
 
@@ -498,7 +499,7 @@ export class JobScheduler {
       throw new Error(`Unknown job: ${slug}`);
     }
 
-    this.warnIfAgentMdBodyChanged(job);
+    this.refreshAgentMdBodyIfChanged(job);
 
     if (this.paused) {
       this.skipLedger.recordSkip(slug, 'paused');
@@ -968,11 +969,11 @@ export class JobScheduler {
   }
 
   /**
-   * Signal edits that cannot affect this process because agentmd bodies are
-   * intentionally cached at scheduler start. The warning is deduped by the
-   * observed disk state, while execution continues with the cached body.
+   * Re-read a validated agentmd body at the trigger boundary. Valid edits take
+   * effect on the run being triggered; unreadable or invalid edits fail safe
+   * to the last validated body and emit a warning deduped by disk state.
    */
-  private warnIfAgentMdBodyChanged(job: JobDefinition): void {
+  private refreshAgentMdBodyIfChanged(job: JobDefinition): void {
     if (
       job.execute.type !== 'agentmd' ||
       typeof job.body !== 'string' ||
@@ -981,14 +982,14 @@ export class JobScheduler {
       return;
     }
 
-    const disk = readAgentMdBodyHash(job.resolvedPath);
+    const disk = readAgentMdBody(job.resolvedPath);
     if (!disk.ok) {
       const fingerprint = `unreadable:${disk.reason}`;
       if (this.bodyDriftWarnings.get(job.slug) === fingerprint) return;
       this.bodyDriftWarnings.set(job.slug, fingerprint);
       console.warn(
         `[scheduler] Job "${job.slug}" body cannot be checked on disk (${disk.reason}); ` +
-        `continuing to use the body cached at scheduler start. Restart the server after repairing the file.`,
+        'continuing to use the last validated body until the file is repaired.',
       );
       return;
     }
@@ -999,11 +1000,11 @@ export class JobScheduler {
       return;
     }
 
-    if (this.bodyDriftWarnings.get(job.slug) === disk.bodyHash) return;
-    this.bodyDriftWarnings.set(job.slug, disk.bodyHash);
-    console.warn(
+    job.body = disk.body;
+    this.bodyDriftWarnings.delete(job.slug);
+    console.log(
       `[scheduler] Job "${job.slug}" body changed on disk after scheduler start; ` +
-      `continuing to use the cached body. Restart the server to apply the edit.`,
+      'reloaded the validated body for this run.',
     );
   }
 
@@ -1304,14 +1305,14 @@ export class JobScheduler {
         base = `Run this script: ${job.execute.value}${job.execute.args ? ' ' + job.execute.args : ''}`;
         break;
       case 'agentmd':
-        // Phase 1b dispatch: the cached markdown body IS the prompt. The
+        // Phase 1b dispatch: the last validated markdown body IS the prompt. The
         // loader (AgentMdJobLoader.loadAgentMdBody) guarantees `body` is
         // populated for any agentmd JobDefinition that survives validation;
         // if it is somehow missing here, surface that loud and refuse to
         // spawn an empty prompt rather than fail silently.
         if (typeof job.body !== 'string') {
           throw new Error(
-            `JobScheduler.buildPrompt: agentmd job "${job.slug}" has no cached body. ` +
+            `JobScheduler.buildPrompt: agentmd job "${job.slug}" has no validated body. ` +
             `This indicates a loader-hydration bug (see AgentMdJobLoader.isAgentMdJobHydrated). ` +
             `See docs/specs/INSTAR-JOBS-AS-AGENTMD-SPEC.md.`,
           );

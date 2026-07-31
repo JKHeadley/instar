@@ -16,7 +16,7 @@ function agentMd(body: string): string {
   ].join('\n');
 }
 
-describe('JobScheduler agentmd body drift warning', () => {
+describe('JobScheduler agentmd body live refresh', () => {
   let project: TempProject;
   let sessionManager: MockSessionManager;
   let scheduler: JobScheduler;
@@ -48,7 +48,7 @@ describe('JobScheduler agentmd body drift warning', () => {
     scheduler = new JobScheduler({
       jobsFile: path.join(project.stateDir, 'jobs.json'),
       enabled: true,
-      maxParallelJobs: 2,
+      maxParallelJobs: 5,
       quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 },
       startupGraceMs: 60_000,
     }, sessionManager as any, project.state, project.stateDir);
@@ -61,24 +61,28 @@ describe('JobScheduler agentmd body drift warning', () => {
     vi.restoreAllMocks();
   });
 
-  it('warns once per changed disk body while continuing with the cached prompt', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('reloads each validated disk edit for the run being triggered', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const reloadLogs = () => log.mock.calls.filter((call) =>
+      String(call[0] ?? '').includes('reloaded the validated body'),
+    );
     fs.writeFileSync(bodyPath, agentMd('First on-disk edit.\n'));
 
     await expect(scheduler.triggerJob('body-drift-probe', 'test')).resolves.toBe('triggered');
 
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toContain('changed on disk after scheduler start');
-    expect(warn.mock.calls[0][0]).toContain('Restart the server to apply the edit');
-    expect(sessionManager._lastSpawnArgs?.prompt).toContain('Original cached instruction.');
-    expect(sessionManager._lastSpawnArgs?.prompt).not.toContain('First on-disk edit.');
+    expect(reloadLogs()).toHaveLength(1);
+    expect(reloadLogs()[0]?.[0]).toContain('changed on disk after scheduler start');
+    expect(sessionManager._lastSpawnArgs?.prompt).toContain('First on-disk edit.');
+    expect(sessionManager._lastSpawnArgs?.prompt).not.toContain('Original cached instruction.');
 
     await scheduler.triggerJob('body-drift-probe', 'test-again');
-    expect(warn).toHaveBeenCalledTimes(1);
+    expect(reloadLogs()).toHaveLength(1);
 
     fs.writeFileSync(bodyPath, agentMd('Second on-disk edit.\n'));
     await scheduler.triggerJob('body-drift-probe', 'test-after-second-edit');
-    expect(warn).toHaveBeenCalledTimes(2);
+    expect(reloadLogs()).toHaveLength(2);
+    const hydratedJobs = (scheduler as unknown as { jobs: Array<{ body?: string }> }).jobs;
+    expect(hydratedJobs[0]?.body).toContain('Second on-disk edit.');
   });
 
   it('warns without blocking when the body file becomes unreadable', async () => {
@@ -91,7 +95,19 @@ describe('JobScheduler agentmd body drift warning', () => {
 
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0]).toContain('body cannot be checked on disk');
-    expect(warn.mock.calls[0][0]).toContain('continuing to use the body cached');
+    expect(warn.mock.calls[0][0]).toContain('continuing to use the last validated body');
     expect(sessionManager._lastSpawnArgs?.prompt).toContain('Original cached instruction.');
+  });
+
+  it('retains the last validated body when an edit breaks frontmatter boundaries', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fs.writeFileSync(bodyPath, 'not valid agentmd anymore\nReplacement instruction.\n');
+
+    await expect(scheduler.triggerJob('body-drift-probe', 'test')).resolves.toBe('triggered');
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('valid frontmatter boundaries');
+    expect(sessionManager._lastSpawnArgs?.prompt).toContain('Original cached instruction.');
+    expect(sessionManager._lastSpawnArgs?.prompt).not.toContain('Replacement instruction.');
   });
 });
