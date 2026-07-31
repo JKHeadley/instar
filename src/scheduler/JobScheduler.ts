@@ -22,6 +22,8 @@ import { ExecutionJournal } from '../core/ExecutionJournal.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import { JobReflector } from '../core/JobReflector.js';
 import { loadJobs } from './JobLoader.js';
+import { readAgentMdBodyHash } from './AgentMdJobLoader.js';
+import { hashBody } from './AgentMdLockFile.js';
 import { JobRunHistory } from './JobRunHistory.js';
 import { SkipLedger } from './SkipLedger.js';
 import { classifySessionDeath } from '../monitoring/QuotaExhaustionDetector.js';
@@ -78,6 +80,9 @@ export class JobScheduler {
   private queue: QueuedJob[] = [];
   private running = false;
   private paused = false;
+
+  /** Last on-disk drift fingerprint warned for each agentmd job. */
+  private bodyDriftWarnings: Map<string, string> = new Map();
 
   /** Map session names to run IDs for completion tracking */
   private activeRunIds: Map<string, string> = new Map();
@@ -474,6 +479,7 @@ export class JobScheduler {
       if (state.timer) clearTimeout(state.timer);
     }
     this.retryState.clear();
+    this.bodyDriftWarnings.clear();
     this.running = false;
 
     this.state.appendEvent({
@@ -491,6 +497,8 @@ export class JobScheduler {
     if (!job) {
       throw new Error(`Unknown job: ${slug}`);
     }
+
+    this.warnIfAgentMdBodyChanged(job);
 
     if (this.paused) {
       this.skipLedger.recordSkip(slug, 'paused');
@@ -957,6 +965,46 @@ export class JobScheduler {
     }
 
     return result;
+  }
+
+  /**
+   * Signal edits that cannot affect this process because agentmd bodies are
+   * intentionally cached at scheduler start. The warning is deduped by the
+   * observed disk state, while execution continues with the cached body.
+   */
+  private warnIfAgentMdBodyChanged(job: JobDefinition): void {
+    if (
+      job.execute.type !== 'agentmd' ||
+      typeof job.body !== 'string' ||
+      typeof job.resolvedPath !== 'string'
+    ) {
+      return;
+    }
+
+    const disk = readAgentMdBodyHash(job.resolvedPath);
+    if (!disk.ok) {
+      const fingerprint = `unreadable:${disk.reason}`;
+      if (this.bodyDriftWarnings.get(job.slug) === fingerprint) return;
+      this.bodyDriftWarnings.set(job.slug, fingerprint);
+      console.warn(
+        `[scheduler] Job "${job.slug}" body cannot be checked on disk (${disk.reason}); ` +
+        `continuing to use the body cached at scheduler start. Restart the server after repairing the file.`,
+      );
+      return;
+    }
+
+    const cachedHash = hashBody(job.body);
+    if (disk.bodyHash === cachedHash) {
+      this.bodyDriftWarnings.delete(job.slug);
+      return;
+    }
+
+    if (this.bodyDriftWarnings.get(job.slug) === disk.bodyHash) return;
+    this.bodyDriftWarnings.set(job.slug, disk.bodyHash);
+    console.warn(
+      `[scheduler] Job "${job.slug}" body changed on disk after scheduler start; ` +
+      `continuing to use the cached body. Restart the server to apply the edit.`,
+    );
   }
 
   private enqueue(slug: string, reason: string): void {

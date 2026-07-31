@@ -51,6 +51,7 @@ const READ_CONCURRENCY = 32;
 /** Spec §6: hard size caps to bound parser cost + adversarial payloads. */
 const MAX_FRONTMATTER_BYTES = 16 * 1024;
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_TOTAL_BYTES = MAX_FRONTMATTER_BYTES + MAX_BODY_BYTES + 1024;
 
 /** Spec §6: closed-set frontmatter key whitelist. Unknown keys → per-entry
  *  skip. Adding to this set is a deliberate change, never silent.
@@ -688,7 +689,6 @@ function loadAgentMdBody(
   // Size check on the raw file. Body cap = 64 KB; frontmatter cap = 16 KB.
   // We bound the total read to (16 + 64 + small framing) KB so an
   // adversarial 10 MB file cannot blow memory before parse.
-  const MAX_TOTAL_BYTES = MAX_FRONTMATTER_BYTES + MAX_BODY_BYTES + 1024;
   const stat = fs.statSync(resolved);
   if (stat.size > MAX_TOTAL_BYTES) {
     return {
@@ -1055,6 +1055,52 @@ function splitFrontmatter(text: string): { frontmatterText: string; body: string
   // rest may now be "" or start with "\n<body>".
   const body = rest.startsWith('\n') ? rest.slice(1) : rest;
   return { frontmatterText, body };
+}
+
+/**
+ * Read the current body hash for an already-resolved agentmd file.
+ *
+ * This is intentionally narrower than {@link loadAgentMdJobs}: runtime drift
+ * detection only needs to know whether the prompt body changed after boot. It
+ * reuses the loader's frontmatter split and body hash normalization without
+ * reparsing YAML, rebuilding manifests, or changing the cached JobDefinition.
+ */
+export function readAgentMdBodyHash(
+  resolvedPath: string,
+): { ok: true; bodyHash: string } | { ok: false; reason: string } {
+  try {
+    const stat = fs.lstatSync(resolvedPath);
+    if (stat.isSymbolicLink()) {
+      return { ok: false, reason: 'path became a symbolic link' };
+    }
+    if (!stat.isFile()) {
+      return { ok: false, reason: 'path is not a regular file' };
+    }
+    if (stat.size > MAX_TOTAL_BYTES) {
+      return {
+        ok: false,
+        reason: `file is ${stat.size} bytes — exceeds total cap of ${MAX_TOTAL_BYTES} bytes`,
+      };
+    }
+
+    const split = splitFrontmatter(fs.readFileSync(resolvedPath, 'utf-8'));
+    if (!split) {
+      return { ok: false, reason: 'file no longer has valid frontmatter boundaries' };
+    }
+    if (Buffer.byteLength(split.body, 'utf-8') > MAX_BODY_BYTES) {
+      return {
+        ok: false,
+        reason: `body exceeds cap of ${MAX_BODY_BYTES} bytes`,
+      };
+    }
+
+    return { ok: true, bodyHash: hashBody(split.body) };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 // ── Manifest → JobDefinition ───────────────────────────────────────────────

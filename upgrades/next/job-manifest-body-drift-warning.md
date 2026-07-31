@@ -1,0 +1,26 @@
+# Job manifest body drift warning
+
+## What Changed
+
+The scheduler now detects when an agentmd job body changes on disk after the
+body was cached at startup. At the next trigger it emits a deduplicated warning
+that a restart is required, while continuing to run the cached body. This keeps
+the load-once design explicit instead of silently making prompt edits inert.
+
+## What to Tell Your User
+
+If recurring job instructions are edited while Instar is running, the next
+trigger now warns that a restart is required and that the cached instructions
+will still be used for that run.
+
+## Summary of New Capabilities
+
+- Detects agentmd prompt-body drift at trigger time.
+- Deduplicates warnings until the on-disk body changes again.
+- Keeps the load-once execution model and never blocks a job on drift.
+
+## Evidence
+
+- Scheduler tests prove the warning is deduplicated while the cached prompt is
+  still dispatched.
+- Tests prove an unreadable body file warns without blocking execution.
