@@ -1,0 +1,33 @@
+{
+  "ts": "2026-07-31T22:24:57.394Z",
+  "slug": "session-dispatch-complete",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The producer grew beyond an undocumented twenty-line consumer cap; generator and deployed hook contract were never tested together."
+  },
+  "classClosure": {
+    "defectClass": "generated-artifact-path-contract-drift",
+    "closure": "tests/unit/PostUpdateMigrator-dispatchCompleteness.test.ts",
+    "reason": "The regression test enumerates both deployed hook generators and refuses any reintroduced twenty-line cap on DISPATCH.md.",
+    "component": "PostUpdateMigrator"
+  },
+  "verdict": "pass"
+}

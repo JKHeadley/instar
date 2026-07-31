@@ -12286,7 +12286,7 @@ except: pass
     if [ -f "\$DISPATCH_FILE" ]; then
       echo ""
       echo "--- CONTEXT DISPATCH (when X arises, read Y) ---"
-      cat "\$DISPATCH_FILE" | head -20
+      cat "\$DISPATCH_FILE"
       echo "--- END CONTEXT DISPATCH ---"
     fi
   else
@@ -13168,7 +13168,7 @@ except: pass
     if [ -f "\$DISPATCH_FILE" ]; then
       echo ""
       echo "--- CONTEXT DISPATCH (when X arises, read Y) ---"
-      cat "\$DISPATCH_FILE" | head -20
+      cat "\$DISPATCH_FILE"
       echo "--- END CONTEXT DISPATCH ---"
     fi
   else
