@@ -262,6 +262,7 @@ import { ReflectionMetrics } from '../monitoring/ReflectionMetrics.js';
 import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
 import { readReaperAudit } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
 import type { FeedbackManager } from '../core/FeedbackManager.js';
 import type { DispatchManager } from '../core/DispatchManager.js';
@@ -14449,6 +14450,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ? metadata.toneAdvisoryAck.slice(0, 64)
         : undefined;
     const metadataJobSlug = typeof metadata?.jobSlug === 'string' ? metadata.jobSlug.slice(0, 128) : '';
+    // A relay hop carries the origin machine's structural classification. For
+    // a local call, derive it at this send seam: ordinary replies are agent
+    // prose; health/automated/proxy/system traffic is automation. Never infer
+    // from the message text. `user` is invalid on this outbound-only route.
+    const carriedProvenance = coerceMessageProvenance(metadata?.provenance);
+    const provenance: Exclude<MessageProvenance, 'user'> =
+      carriedProvenance === 'agent' || carriedProvenance === 'automation'
+        ? carriedProvenance
+        : !isProxy && !isSystemTemplate && (messageKind === undefined || messageKind === 'reply')
+          ? 'agent'
+          : 'automation';
 
     // ── Observability breadcrumbs (§2.1 — visibility on the named dodge
     // classes; sovereignty over the send is accepted, nothing is gated). ──
@@ -14562,6 +14574,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // delivered (the false-success-under-load class).
       const sendResult = await ctx.telegram.sendToTopic(topicId, text, {
         skipStallClear: isProxy,
+        provenance,
         // Relay-hop forwarding (§2.5): when this standby relays through the
         // lease holder, the kind metadata must survive the hop so the
         // HOLDER's gate/audit see accurate context. Direct sends ignore it.

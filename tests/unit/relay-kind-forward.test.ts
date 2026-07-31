@@ -52,4 +52,15 @@ describe('relayOutbound — kind metadata survives the hop', () => {
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body).toEqual({ text: 'plain reply' });
   });
+
+  it('carries structural provenance independently of message kind', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, messageId: 4 }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    await relayOutbound(12476, 'direct adapter alert', { provenance: 'automation' }, deps(fetchImpl));
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.metadata).toEqual({ provenance: 'automation' });
+  });
 });

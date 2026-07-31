@@ -23,6 +23,8 @@
  * unit-testable without real network or wall-clock.
  */
 
+import type { MessageProvenance } from '../messaging/shared/MessageProvenance.js';
+
 export interface RelayResult {
   messageId: number;
   topicId: number;
@@ -87,7 +89,7 @@ export interface RelayDeps {
 export async function relayOutbound(
   topicId: number,
   text: string,
-  opts: { silent?: boolean; kindMetadata?: Record<string, unknown> } | undefined,
+  opts: { silent?: boolean; kindMetadata?: Record<string, unknown>; provenance?: Exclude<MessageProvenance, 'user'> } | undefined,
   deps: RelayDeps,
 ): Promise<RelayResult | RelayRefusal | null> {
   const log = deps.log ?? (() => {});
@@ -115,7 +117,9 @@ export async function relayOutbound(
       body: JSON.stringify({
         text,
         ...(opts?.silent ? { silent: true } : {}),
-        ...(opts?.kindMetadata ? { metadata: opts.kindMetadata } : {}),
+        ...(opts?.kindMetadata || opts?.provenance
+          ? { metadata: { ...opts?.kindMetadata, ...(opts?.provenance ? { provenance: opts.provenance } : {}) } }
+          : {}),
       }),
       signal: ac.signal,
     });
