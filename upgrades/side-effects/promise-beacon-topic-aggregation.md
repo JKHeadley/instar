@@ -43,3 +43,7 @@ The existing speaker election and ProxyCoordinator still run before heartbeat qu
 ## Test tier
 
 Tier 1 is sufficient: there is no route, schema, or production-only dependency injection seam. The unit harness uses real CommitmentTracker persistence plus the production PromiseBeacon class and delivery callback. Existing PromiseBeacon unit/integration suites remain the broader regression surface. No ratchet baseline is changed.
+
+## CI follow-up review
+
+The full matrix found two repository-contract omissions outside the focused suite. The existing-agent awareness addendum is now explicitly classified as a content-sniff for the already-tracked Honest progress section, so feature-delivery completeness can distinguish it from a new standalone capability. Adding the fleet-on `aggregateByTopic` default also shifted the three later Cartographer dark-gate source rows by one line; the hand-audited path map was updated only for those three verified rows. This is source-location bookkeeping, not a ceiling/floor change, and no ratchet baseline was raised. The two exact CI tests pass together after the correction.
