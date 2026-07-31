@@ -1,0 +1,35 @@
+{
+  "ts": "2026-07-31T04:44:11.415Z",
+  "slug": "correction-promotion-clustering",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 734,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/correction-promotion-corpus-replay.mjs",
+      "src/config/ConfigDefaults.ts",
+      "src/core/types.ts",
+      "src/monitoring/CorrectionAnalyzer.ts",
+      "src/monitoring/CorrectionLedger.ts",
+      "src/monitoring/CorrectionLoopDriver.ts",
+      "src/scaffold/templates.ts",
+      "src/scaffold/templates/jobs/instar/correction-analyzer.md",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 609,
+    "deletedLines": 125
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This changes evidence grouping and lifecycle bookkeeping inside an existing weekly and maxRoutesPerTick-bounded controller; it adds no self-trigger, cadence, retry loop, notifier, spawn, restart, or other autonomous emit.",
+    "component": "CorrectionLoopDriver"
+  },
+  "verdict": "pass"
+}

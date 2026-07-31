@@ -28,6 +28,7 @@
  */
 import type { CorrectionLedger, CorrectionRecord } from './CorrectionLedger.js';
 import type { CorrectionAnalyzer, GateVerdict } from './CorrectionAnalyzer.js';
+import crypto from 'node:crypto';
 
 /**
  * Deterministic policy-keyword filter (spec §3.6, NEW-A / P2). A learning that
@@ -129,6 +130,12 @@ function normalizeFeedbackResult(r: boolean | FeedbackPostResult): FeedbackPostR
   return typeof r === 'boolean' ? { posted: r } : r;
 }
 
+/** Stable lifecycle identity for one routed analyzer-time cluster. */
+export function correctionRouteClusterId(verdict: GateVerdict): string {
+  const identity = `${verdict.record.kind}\0${[...verdict.clusterDedupeKeys].sort().join('\0')}`;
+  return `corr-cluster:${crypto.createHash('sha256').update(identity).digest('hex')}`;
+}
+
 export interface RouteResult {
   routed: CorrectionRecord[];
   toFeedback: number;
@@ -164,8 +171,9 @@ export class CorrectionLoopDriver {
    *   user-preference + policy-keyword-match → Attention (human disposes)
    *   infra-gap (autoFeedback ON)            → feedbackLoopbackPost()
    *   infra-gap (autoFeedback OFF, default)  → tracked Action + draft Initiative (propose-only)
-   * Then open a verify window + move the record to acted-on. Idempotent: an
-   * insight already past `open` is skipped by the analyzer's status:'open' filter.
+   * Before invoking the external route, atomically open one durable cluster
+   * verify window + move every member to acted-on. Idempotent: an insight
+   * already past `open` is skipped by the analyzer's status:'open' filter.
    *
    * Bounded per run (spec §10 Slice-2):
    *  - PER-TICK CEILING (NEW-5): at most `maxRoutesPerTick` records route per run.
@@ -200,39 +208,69 @@ export class CorrectionLoopDriver {
         continue;
       }
 
-      let routedVia: string | null = null;
+      const routedVia = rec.kind === 'user-preference'
+        ? (matchesPolicyRelaxation(rec.learning) ? 'attention' : 'recordPreference')
+        : 'feedback';
+      const windowDays = rec.kind === 'user-preference'
+        ? (this.deps.verifyWindowDaysPreference ?? 7)
+        : (this.deps.verifyWindowDaysInfraGap ?? 14);
+      const start = new Date(this.now()).toISOString();
+      const end = new Date(this.now() + windowDays * 86400_000).toISOString();
+      const routeClusterId = correctionRouteClusterId(verdict);
 
-      if (rec.kind === 'user-preference') {
-        if (matchesPolicyRelaxation(rec.learning)) {
-          // P2: a policy-relaxation learning NEVER auto-records — route to a human.
-          const ok = await this.deps.attentionRoute({
-            id: `correction-policy:${rec.dedupeKey.slice(0, 40)}`,
-            title: 'Learned preference needs your approval (policy-relaxation)',
-            summary: rec.scrubbedSummary,
-            priority: 'medium',
-          });
-          routedVia = 'attention';
-          if (ok) result.toAttention++;
-        } else {
-          this.deps.recordPreference({
-            learning: rec.learning,
-            dedupeKey: rec.dedupeKey,
-            confidence: rec.llmConfidence,
-          });
-          routedVia = 'recordPreference';
-          result.toPreferences++;
-          // Parallel /learn proposal is queued as a tracked Action (documentation,
-          // not the closing link). Bounded — no proposal minted.
-          this.deps.addAction({
-            title: `Durable-memory candidate: ${rec.scrubbedSummary}`,
-            description: `The correction loop recorded this as a preference (${rec.dedupeKey}). Consider converting to a durable feedback_* memory entry. This is documentation only — the preferences write already closed the loop.`,
-            priority: 'low',
-            source: 'correction-preference-loop',
-            tags: ['correction-learning', 'preference'],
-          });
-        }
-      } else if (rec.kind === 'infra-gap') {
-        if (this.deps.autoFeedback) {
+      // Durably retire the WHOLE cluster before any external side effect. The
+      // transition is all-or-none and OCC-guarded; a stale sibling prevents the
+      // side effect, so a conflict can never leave paraphrases able to reroute.
+      const transition = this.ledger.updateCluster(
+        verdict.clusterRecords.map((member) => ({ id: member.id, version: member.version })),
+        {
+          status: 'acted-on',
+          routedVia,
+          verifyWindowStart: start,
+          verifyWindowEnd: end,
+          routeClusterId,
+        },
+      );
+      if (!transition.ok) {
+        this.deps.audit?.({
+          decision: transition.conflict ? 'cluster-transition-conflict' : 'cluster-transition-failed',
+          dedupeKey: rec.dedupeKey,
+          detail: transition.conflict ? 'no side effect attempted' : transition.reason,
+        });
+        continue;
+      }
+      const transitionedRepresentative =
+        transition.records.find((member) => member.id === rec.id) ?? transition.records[0];
+
+      try {
+        if (rec.kind === 'user-preference') {
+          if (routedVia === 'attention') {
+            // P2: a policy-relaxation learning NEVER auto-records — route to a human.
+            const ok = await this.deps.attentionRoute({
+              id: `correction-policy:${rec.dedupeKey.slice(0, 40)}`,
+              title: 'Learned preference needs your approval (policy-relaxation)',
+              summary: rec.scrubbedSummary,
+              priority: 'medium',
+            });
+            if (ok) result.toAttention++;
+          } else {
+            this.deps.recordPreference({
+              learning: rec.learning,
+              dedupeKey: rec.dedupeKey,
+              confidence: rec.llmConfidence,
+            });
+            result.toPreferences++;
+            // Parallel /learn proposal is queued as a tracked Action (documentation,
+            // not the closing link). Bounded — no proposal minted.
+            this.deps.addAction({
+              title: `Durable-memory candidate: ${rec.scrubbedSummary}`,
+              description: `The correction loop recorded this as a preference (${rec.dedupeKey}). Consider converting to a durable feedback_* memory entry. This is documentation only — the preferences write already closed the loop.`,
+              priority: 'low',
+              source: 'correction-preference-loop',
+              tags: ['correction-learning', 'preference'],
+            });
+          }
+        } else if (this.deps.autoFeedback) {
           // Serialize the batch: delay before every POST after the first so a
           // converged batch can't trip the route's 10/min IP limit.
           if (feedbackPostsThisTick > 0) await this.sleep(this.deps.feedbackPostDelayMs ?? 0);
@@ -246,14 +284,29 @@ export class CorrectionLoopDriver {
           feedbackPostsThisTick++;
           const fb = normalizeFeedbackResult(raw);
           if (fb.rateLimited) {
-            // 429 — carry THIS record (and the rest) to the next run; do NOT
-            // mark it acted-on (so the analyzer re-routes it). Stop the batch.
+            // A 429 has no external effect. Atomically release the reservation
+            // back to open so the analyzer can retry on the next run.
+            const release = this.ledger.updateCluster(
+              transition.records.map((member) => ({ id: member.id, version: member.version })),
+              {
+                status: 'open',
+                routedVia: undefined,
+                verifyWindowStart: undefined,
+                verifyWindowEnd: undefined,
+                routeClusterId: undefined,
+              },
+            );
             result.rateLimited = true;
             result.overflow++;
-            this.deps.audit?.({ decision: 'feedback-429-carry', dedupeKey: rec.dedupeKey });
+            this.deps.audit?.({
+              decision: release.ok ? 'feedback-429-carry' : 'feedback-429-release-failed',
+              dedupeKey: rec.dedupeKey,
+              detail: release.ok
+                ? 'cluster released to open'
+                : (release.conflict ? 'cluster changed after reservation' : release.reason),
+            });
             continue;
           }
-          routedVia = 'feedback';
           if (fb.posted) result.toFeedback++;
         } else {
           // Propose-only default: a tracked Action + a draft Initiative; the
@@ -274,28 +327,28 @@ export class CorrectionLoopDriver {
             needsUser: true,
             needsUserReason: 'Recurring infra-gap correction; human approval required before fleet-wide feedback.',
           });
-          routedVia = 'feedback';
         }
-      }
-
-      if (!routedVia) continue;
-
-      // Open the verify window + move to acted-on.
-      const windowDays = rec.kind === 'user-preference'
-        ? (this.deps.verifyWindowDaysPreference ?? 7)
-        : (this.deps.verifyWindowDaysInfraGap ?? 14);
-      const start = new Date(this.now()).toISOString();
-      const end = new Date(this.now() + windowDays * 86400_000).toISOString();
-      const res = this.ledger.update(
-        rec.id,
-        { status: 'acted-on', routedVia, verifyWindowStart: start, verifyWindowEnd: end },
-        rec.version,
-      );
-      if (res.ok) {
-        result.routed.push(res.record);
+      } catch (err) {
+        // At-most-once safety wins over an automatic retry: the durable cluster
+        // transition remains acted-on, and verification will make a missing
+        // preference inconclusive. Retrying after an ambiguous partial effect
+        // could duplicate a feedback/action/attention item.
+        this.deps.audit?.({
+          decision: 'route-effect-failed-no-retry',
+          dedupeKey: rec.dedupeKey,
+          detail: err instanceof Error ? err.message : String(err),
+        });
         routedThisTick++;
-        this.deps.audit?.({ decision: `routed:${routedVia}`, dedupeKey: rec.dedupeKey });
+        continue;
       }
+
+      result.routed.push(transitionedRepresentative);
+      routedThisTick++;
+      this.deps.audit?.({
+        decision: `routed:${routedVia}`,
+        dedupeKey: rec.dedupeKey,
+        detail: `${transition.records.length} cluster member(s)`,
+      });
     }
 
     if (result.overflow > 0) {
@@ -309,17 +362,17 @@ export class CorrectionLoopDriver {
   }
 
   /**
-   * VERIFY step (spec §3.7): for each `acted-on` record whose window has elapsed,
-   * decide the outcome keyed on the SAME dedupeKey. The infra-gap path mirrors the
-   * preference path's recurrence-after watcher with the path-appropriate window
-   * and verdict (spec §10 Slice-2 infra-gap closed-loop verify):
-   *   - recurrence-after on the SAME dedupeKey → reopen (capped at maxReopens →
-   *     inconclusive). Keying on dedupeKey (not the coarse kind) prevents a
-   *     false-reopen from an unrelated learning in the same regex bucket. Applies
-   *     to BOTH kinds; infra-gap uses verifyWindowDaysInfraGap (default 14).
-   *   - PREFERENCE silence ≠ effective. `verified` only when (a) the dedupeKey did
-   *     not recur in the window AND (b) the loop-written preference entry is still
-   *     present (not human-deleted as wrong). Otherwise inconclusive.
+   * VERIFY step (spec §3.7): for each elapsed acted-on or reopened cluster,
+   * decide one outcome across every durable member. Reopening starts a fresh
+   * window so an old occurrence cannot consume another reopen. The infra-gap
+   * path mirrors the preference path's recurrence-after watcher with the
+   * path-appropriate window and verdict:
+   *   - recurrence-after on ANY durable member key → reopen the whole cluster
+   *     (capped at maxReopens → inconclusive). This observes paraphrases routed
+   *     together without broadening to unrelated records of the same kind.
+   *   - PREFERENCE silence ≠ effective. `verified` only when (a) no cluster key
+   *     recurred in the window AND (b) the representative preference entry is
+   *     still present (not human-deleted as wrong). Otherwise inconclusive.
    *   - INFRA-GAP silence → `inconclusive`, NOT `verified`. Unlike a preference
    *     (where silence + persisted application closes the loop locally), the
    *     infra-gap fix is cross-org — Dawn ships it through Rising Tide. The agent
@@ -330,14 +383,31 @@ export class CorrectionLoopDriver {
   runVerification(): VerifyResult {
     const evaluated: CorrectionRecord[] = [];
     const maxReopens = this.deps.maxReopens ?? 2;
-    for (const rec of this.ledger.list({ status: 'acted-on', limit: 1000 })) {
+    const groups = new Map<string, CorrectionRecord[]>();
+    const watchable = [
+      ...this.ledger.list({ status: 'acted-on', limit: 1000 }),
+      ...this.ledger.list({ status: 'reopened', limit: 1000 }),
+    ];
+    for (const record of watchable) {
+      const groupId = record.routeClusterId ?? `legacy-singleton:${record.id}`;
+      const group = groups.get(groupId) ?? [];
+      group.push(record);
+      groups.set(groupId, group);
+    }
+
+    for (const clusterRecords of groups.values()) {
+      clusterRecords.sort((a, b) =>
+        a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+      const rec = clusterRecords[0];
       if (!rec.verifyWindowEnd || this.now() < Date.parse(rec.verifyWindowEnd)) continue;
       if (!rec.verifyWindowStart) continue;
 
-      // Did the dedupeKey recur within the verify window? A recurrence shows up
-      // as occurrences logged after the window opened.
+      // Did any durable member key recur within the verify window?
       const windowStartMs = Date.parse(rec.verifyWindowStart);
-      const recurred = this.recurredSince(rec.dedupeKey, windowStartMs);
+      const recurred = this.recurredSince(
+        clusterRecords.map((member) => member.dedupeKey),
+        windowStartMs,
+      );
 
       let next: Parameters<CorrectionLedger['update']>[1];
       let auditReason: string;
@@ -349,8 +419,14 @@ export class CorrectionLoopDriver {
           const windowDays = rec.kind === 'user-preference'
             ? (this.deps.verifyWindowDaysPreference ?? 7)
             : (this.deps.verifyWindowDaysInfraGap ?? 14);
+          const start = new Date(this.now()).toISOString();
           const end = new Date(this.now() + windowDays * 86400_000).toISOString();
-          next = { status: 'reopened', reopenCount: rec.reopenCount + 1, verifyWindowEnd: end };
+          next = {
+            status: 'reopened',
+            reopenCount: rec.reopenCount + 1,
+            verifyWindowStart: start,
+            verifyWindowEnd: end,
+          };
           auditReason = `recurred — reopened (${rec.reopenCount + 1}/${maxReopens}), watching ${windowDays}d more`;
         }
       } else if (rec.kind === 'user-preference') {
@@ -370,23 +446,38 @@ export class CorrectionLoopDriver {
         auditReason = 'infra-gap: no recurrence, fix is cross-org (Dawn) — inconclusive, not verified';
       }
 
-      const res = this.ledger.update(rec.id, next, rec.version);
+      const res = this.ledger.updateCluster(
+        clusterRecords.map((member) => ({ id: member.id, version: member.version })),
+        next,
+      );
       if (res.ok) {
-        evaluated.push(res.record);
-        this.deps.audit?.({ decision: `verify:${next.status}`, dedupeKey: rec.dedupeKey, detail: auditReason });
+        evaluated.push(...res.records);
+        this.deps.audit?.({
+          decision: `verify:${next.status}`,
+          dedupeKey: rec.dedupeKey,
+          detail: `${auditReason}; ${clusterRecords.length} cluster member(s)`,
+        });
+      } else {
+        this.deps.audit?.({
+          decision: res.conflict ? 'verify-cluster-conflict' : 'verify-cluster-failed',
+          dedupeKey: rec.dedupeKey,
+          detail: res.conflict ? 'no cluster member changed' : res.reason,
+        });
       }
     }
     return { evaluated };
   }
 
-  /** Whether the dedupeKey logged any occurrence at/after a timestamp (recurrence). */
-  private recurredSince(dedupeKey: string, sinceMs: number): boolean {
+  /** Whether any durable cluster key logged an occurrence at/after a timestamp. */
+  private recurredSince(dedupeKeys: readonly string[], sinceMs: number): boolean {
     // The ledger only exposes day-bucketed distinct counts + the record's own
     // detectedAt. A recurrence advances the record's detected_at (the upsert sets
     // detected_at = excluded.detected_at), so a recurrence-after-window-open is
     // detectable as the record's current detectedAt being >= window start.
-    const rec = this.ledger.getByDedupeKey(dedupeKey);
-    if (!rec) return false;
-    return Date.parse(rec.detectedAt) >= sinceMs && rec.occurrenceCount > 1;
+    return dedupeKeys.some((dedupeKey) => {
+      const rec = this.ledger.getByDedupeKey(dedupeKey);
+      if (!rec) return false;
+      return Date.parse(rec.detectedAt) >= sinceMs && rec.occurrenceCount > 1;
+    });
   }
 }

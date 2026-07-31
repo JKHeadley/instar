@@ -85,7 +85,7 @@ describe('Correction-learning wiring integrity (Slice 1b)', () => {
       const ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
       try {
         for (let i = 0; i < 4; i++) {
-          ledger.record({ kind: 'user-preference', learning: 'lead with action', scrubbedSummary: 's', deterministicWeight: 3, topicId: (i % 2) + 1, detectedAt: `2026-05-0${(i % 2) + 1}T10:00:00Z` });
+          ledger.record({ kind: 'user-preference', learning: 'lead with action', scrubbedSummary: 's', deterministicWeight: 3, topicId: 1, sessionId: `session-${(i % 2) + 1}`, detectedAt: `2026-05-0${(i % 2) + 1}T10:00:00Z` });
         }
         const recordPreference = vi.fn();
         const addAction = vi.fn(() => ({ id: 'a' }));

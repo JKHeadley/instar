@@ -24104,7 +24104,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         minSupport: cl?.minSupport ?? 4,
         minDistinctDaysInfraGap: cl?.minDistinctDaysInfraGap ?? 3,
         minDistinctDaysPreference: cl?.minDistinctDaysPreference ?? 2,
-        minDistinctTopicsPreference: cl?.minDistinctTopicsPreference ?? 2,
+        minDistinctSessionsPreference: cl?.minDistinctSessionsPreference ?? 2,
       });
 
       const prefs = new PreferencesManager(ctx.config.stateDir);
