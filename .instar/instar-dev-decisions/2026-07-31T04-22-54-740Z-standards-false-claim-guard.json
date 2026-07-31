@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-31T04:22:54.740Z",
+  "slug": "standards-false-claim-guard",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 93,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/standards-coverage.mjs"
+    ],
+    "addedLines": 88,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

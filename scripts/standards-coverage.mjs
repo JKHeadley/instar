@@ -16,6 +16,9 @@
  *   - danglingCount = refs a standard names that are NOT on disk — fails the build if
  *     ABOVE ZERO (a guard file removed while a standard still cites it: a broken
  *     guarantee, the loudest signal).
+ *   - falseClaimCount = standards that name NO guard while their own prose asserts
+ *     running machinery ("a scheduled audit walks the list daily") — a false
+ *     all-clear in the constitution, read by humans as protection that exists.
  *
  * Self-contained (no dist import) so it runs in CI without a build step — it
  * re-implements the same deterministic parse → extract → verify the auditor does.
@@ -29,6 +32,10 @@
  *   STANDARDS_ENFORCED_RATIO_FLOOR  — min enforced ratio 0..1 (default 0 — starts
  *                                     loose, ratcheted up as gaps close)
  *   STANDARDS_DANGLING_CEILING      — max dangling refs (default 0 — zero tolerance)
+ *   STANDARDS_FALSE_CLAIM_CEILING   — max standards asserting an unnamed guard
+ *                                     (default 1 — the measured 2026-07-31 count;
+ *                                     ratchet to 0 once Cross-Store Coherence is
+ *                                     resolved)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -71,6 +78,14 @@ const FLOORS = {
   enforcedRatio: numEnv('STANDARDS_ENFORCED_RATIO_FLOOR', 0.64),
   // Zero tolerance: a standard must NEVER cite a guard that doesn't exist.
   danglingCeiling: numEnv('STANDARDS_DANGLING_CEILING', 0),
+  // A gap that ASSERTS running machinery is a false all-clear, not an honest gap.
+  // Set to the measured count on 2026-07-31 (1 — Cross-Store Coherence) rather than
+  // 0, following the enforced-ratio precedent of "starts loose": a new check must
+  // not fail a build for a pre-existing condition it just became able to see. It
+  // already does the load-bearing job at 1 — a NEW standard that claims machinery
+  // without naming it fails immediately. RATCHET TO 0 once Cross-Store Coherence
+  // either gets its audit built or has the claim amended out of its prose.
+  falseClaimCeiling: numEnv('STANDARDS_FALSE_CLAIM_CEILING', 1),
 };
 
 // ── Deterministic parse → extract → verify (mirrors the auditor, self-contained) ──
@@ -121,6 +136,57 @@ function extractRefs(a) {
   for (const m of text.matchAll(MARKER_RE)) markers.push(m[1]);
   for (const m of text.matchAll(SYMBOL_RE)) markers.push(m[1].split('.')[0]);
   return { files: dedupe(files).sort(), routes: dedupe(routes).sort(), markers: dedupe(markers).sort() };
+}
+
+/**
+ * ── FALSE-CLAIM DETECTION ────────────────────────────────────────────────────
+ * A standard that says "this is how we behave" and names no guard is an HONEST
+ * gap. A standard that says "a scheduled audit walks the list daily" is making a
+ * claim of FACT — and if it names no resolvable guard, that claim is a false
+ * all-clear sitting in the constitution, read by humans as protection that exists.
+ *
+ * Earned 2026-07-31: of the 24 documented-only standards, exactly three asserted
+ * running machinery. Two were true and merely unnamed (now cited). The third —
+ * Cross-Store Coherence — claims "A scheduled coherence audit walks the list on
+ * every machine daily". No such audit exists; of its three enumerated invariants
+ * one has a per-message delivery-time fail-safe and two have no checker at all.
+ * It is the standard earned from two identity stores contradicting each other for
+ * 19 days with no tripwire — the reactive shield shipped, the tripwire did not.
+ *
+ * PRECISION OVER RECALL, deliberately, and it is structural rather than a matter
+ * of tuning: this runs ONLY over standards already classified `documented-only`.
+ * A standard that asserts machinery AND names a resolvable guard is never
+ * examined, so the only way to be flagged is to claim a mechanism and cite
+ * nothing. Patterns are assertions of a specific mechanism running, never
+ * prescriptions ("must refuse", "should block"), which is what the negative
+ * lookbehind excludes.
+ */
+const CLAIM_PATTERNS = [
+  /\ba scheduled\s+[a-z-]*\s*(?:audit|job|check|sweep|pass)\b/i,
+  /\bwalks the list\b/i,
+  /\b(?:checked|runs|fires|re-?runs)\s+on a cadence\b/i,
+  /\bfails the build\b/i,
+  /\benforcement is\b/i,
+  /\bis enforced by\b/i,
+  /\bon every machine\s+daily\b/i,
+  /\bdaily\b[^.]{0,40}\baudit\b/i,
+];
+// Prescriptive framing near a match means the standard is stating a requirement,
+// not asserting an existing mechanism. "must be checked on a cadence" is a rule;
+// "a scheduled audit walks the list" is a claim.
+const PRESCRIPTIVE_NEAR = /\b(?:must|should|shall|needs? to|ought to|is required to)\b[^.]{0,60}$/i;
+
+function detectEnforcementClaims(a) {
+  const text = `${a.rule ?? ''}\n${a.inPractice ?? ''}\n${a.appliedThrough ?? ''}`;
+  const hits = [];
+  for (const re of CLAIM_PATTERNS) {
+    const m = re.exec(text);
+    if (!m) continue;
+    const before = text.slice(Math.max(0, m.index - 60), m.index);
+    if (PRESCRIPTIVE_NEAR.test(before)) continue;
+    hits.push(m[0].trim());
+  }
+  return dedupe(hits).sort();
 }
 
 const KIND_RANK = { ratchet: 4, gate: 3, lint: 2, 'spec-only': 1 };
@@ -189,7 +255,8 @@ function compute() {
       generatedAt: new Date().toISOString(),
       registryFound: false,
       total: 0, byKind: { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 },
-      enforcedRatio: 1, gaps: [], danglingCount: 0, danglingByStandard: [],
+      enforcedRatio: 1, gaps: [], falseClaimCount: 0, falseClaims: [],
+      danglingCount: 0, danglingByStandard: [],
     };
   }
 
@@ -202,6 +269,7 @@ function compute() {
 
   const byKind = { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 };
   const gaps = [];
+  const falseClaims = [];
   const danglingByStandard = [];
   let danglingCount = 0;
 
@@ -224,7 +292,12 @@ function compute() {
     for (const g of guards) { if (best === null || KIND_RANK[g] > KIND_RANK[best]) best = g; }
     const kind = best ?? 'documented-only';
     byKind[kind] += 1;
-    if (kind === 'documented-only') gaps.push(a.name);
+    if (kind === 'documented-only') {
+      gaps.push(a.name);
+      // A gap that ASSERTS running machinery is a false claim, not an honest gap.
+      const claims = detectEnforcementClaims(a);
+      if (claims.length > 0) falseClaims.push({ standard: a.name, claims });
+    }
     if (dangling.length > 0) { danglingByStandard.push({ standard: a.name, refs: dangling.sort() }); danglingCount += dangling.length; }
   }
 
@@ -234,7 +307,9 @@ function compute() {
   return {
     generatedAt: new Date().toISOString(),
     registryFound: true,
-    total, byKind, enforcedRatio, gaps, danglingCount, danglingByStandard,
+    total, byKind, enforcedRatio, gaps,
+    falseClaimCount: falseClaims.length, falseClaims,
+    danglingCount, danglingByStandard,
   };
 }
 
@@ -258,8 +333,12 @@ function main() {
     console.error(`[standards-coverage] registry=${report.registryFound} total=${report.total} ` +
       `enforced-ratio=${report.enforcedRatio} (ratchet ${report.byKind.ratchet} / gate ${report.byKind.gate} / ` +
       `lint ${report.byKind.lint} / spec-only ${report.byKind['spec-only']} / gap ${report.byKind['documented-only']}) ` +
+      `false-claims=${report.falseClaimCount} ` +
       `dangling=${report.danglingCount}`);
-    console.error(`[standards-coverage] floors: enforced-ratio>=${FLOORS.enforcedRatio} dangling<=${FLOORS.danglingCeiling}`);
+    console.error(`[standards-coverage] floors: enforced-ratio>=${FLOORS.enforcedRatio} dangling<=${FLOORS.danglingCeiling} false-claims<=${FLOORS.falseClaimCeiling}`);
+    for (const fc of report.falseClaims) {
+      console.error(`[standards-coverage] FALSE CLAIM — "${fc.standard}" asserts running machinery (${fc.claims.map((c) => `"${c}"`).join(', ')}) but names no resolvable guard.`);
+    }
   }
 
   if (CHECK) {
@@ -273,10 +352,14 @@ function main() {
           ? ` — ${report.danglingByStandard.map((d) => `${d.standard}: [${d.refs.join(', ')}]`).join('; ')}`
           : ''));
     }
+    if (report.falseClaimCount > FLOORS.falseClaimCeiling) {
+      failures.push(`false claims ${report.falseClaimCount} > ceiling ${FLOORS.falseClaimCeiling}` +
+        ` — ${report.falseClaims.map((f) => `${f.standard}: asserts [${f.claims.join(', ')}] but names no resolvable guard`).join('; ')}`);
+    }
     if (failures.length > 0) {
       process.stderr.write('\n❌ standards-coverage check failed:\n');
       for (const f of failures) process.stderr.write(`  - ${f}\n`);
-      process.stderr.write('\nFix: build a guard for an unguarded standard (raise the ratio), or repair the dangling reference (the cited guard file was renamed/removed).\n');
+      process.stderr.write('\nFix: build a guard for an unguarded standard (raise the ratio), repair the dangling reference (the cited guard file was renamed/removed), or resolve a false claim — a standard whose prose asserts running machinery must either NAME the guard that runs it, or stop claiming it.\n');
       process.exit(1);
     }
     if (!QUIET) console.error('✅ standards-coverage check passed.');
