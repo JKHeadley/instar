@@ -14733,6 +14733,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const ahEnabled = resolveDevAgentGate(ahRawCfg.enabled, config);
             if (ahEnabled && telegram) {
               const { AutonomousProgressHeartbeat } = await import('../monitoring/AutonomousProgressHeartbeat.js');
+              const { AutonomousHeartbeatRunStateStore } = await import('../monitoring/AutonomousHeartbeatRunStateStore.js');
               const {
                 activeAutonomousJobs,
                 autonomousRunRemainingForTopic,
@@ -14742,6 +14743,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               // Own ParallelActivityIndex (focus source) — fetched ONCE per tick
               // and indexed by topic inside the deps closure.
               const ahActivityIndex = new AHParallelActivityIndex({ stateDir: config.stateDir });
+              const ahRunStateStore = new AutonomousHeartbeatRunStateStore(
+                path.join(config.stateDir, 'state', 'autonomous-heartbeat.json'),
+              );
               const localTelegram2 = telegram;
               const autonomousHeartbeat = new AutonomousProgressHeartbeat(
                 {
@@ -14790,6 +14794,26 @@ export async function startServer(options: StartOptions): Promise<void> {
                     };
                   })(),
                   proxyCoordinator,
+                  runStateStore: ahRunStateStore,
+                  // The spec's rollback/tuning contract is tick-live. The old
+                  // constructor-only snapshot meant an operator edit to the
+                  // silence threshold was invisible until server restart.
+                  getConfig: () => {
+                    // Read only this non-secret block. Calling loadConfig here
+                    // would re-run binary discovery + secret merge every minute.
+                    const disk = JSON.parse(
+                      fs.readFileSync(path.join(config.stateDir, 'config.json'), 'utf8'),
+                    ) as { monitoring?: { autonomousHeartbeat?: typeof ahRawCfg } };
+                    const live = disk.monitoring?.autonomousHeartbeat ?? {};
+                    return {
+                      enabled: resolveDevAgentGate(live.enabled, config),
+                      dryRun: live.dryRun !== false,
+                      silenceThresholdMinutes: live.silenceThresholdMinutes,
+                      tickIntervalMs: live.tickIntervalMs,
+                      maxHeartbeatsPerRun: live.maxHeartbeatsPerRun,
+                      recentOutputChangeWindowMs: live.recentOutputChangeWindowMs,
+                    };
+                  },
                   sendMessage: async (topicId, text, metadata) => {
                     const url = `http://localhost:${config.port}/telegram/reply/${topicId}`;
                     const response = await fetch(url, {

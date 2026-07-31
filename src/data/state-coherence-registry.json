@@ -256,6 +256,25 @@
       "grandfathered": false
     },
     {
+      "category": "autonomous-heartbeat-throttle",
+      "description": "Machine-local durable per-run AutonomousProgressHeartbeat count and backoff anchor. The stable autonomous run id prevents server restarts on one machine from reopening the cap; cross-machine coordination remains the heartbeat spec's explicitly deferred substrate.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/autonomous-heartbeat.json",
+        "autonomous-heartbeat.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "resolution",
+        "boundedByResolution": true,
+        "maxOpenItems": 1000,
+        "note": "Inactive run records age out after 7 days; the 1000-record and 1 MiB bounds fail closed rather than evicting a possibly-live run budget."
+      }
+    },
+    {
       "category": "codex-task-continuation",
       "description": "Machine-local bounded ordinary-work continuation ledgers, generation-ordered operator-stop tombstones, and privacy-clamped decision audit. Session ownership is local by design and never replicated.",
       "scope": "machine-local",

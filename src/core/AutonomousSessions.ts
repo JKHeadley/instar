@@ -147,6 +147,8 @@ export interface AutonomousRunMarkers {
   moveSuspended: boolean;
   /** started_at parsed to epoch ms, or null when absent/unparseable. */
   startedAtMs: number | null;
+  /** Stable run identity shared with the autonomous-run journal scanner. */
+  runId: string | null;
 }
 
 export function readAutonomousRunMarkers(
@@ -171,6 +173,9 @@ export function readAutonomousRunMarkers(
     movedTo: movedTo && movedTo.length > 0 ? movedTo : null,
     moveSuspended: /^move_suspended_at:/m.test(content),
     startedAtMs: Number.isFinite(startedMs) ? startedMs : null,
+    runId: startedAt && Number.isFinite(startedMs)
+      ? autonomousRunId(startedAt, String(topic))
+      : null,
   };
 }
 
