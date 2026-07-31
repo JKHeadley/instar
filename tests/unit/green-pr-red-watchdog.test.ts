@@ -223,11 +223,14 @@ describe('redPrWatchdogPass — orchestrator', () => {
     expect(h.state.redPrRaised?.[1399]).toBeUndefined();
   });
 
-  it('(f) a PR NOT authored by me (out of namespace) is skipped even if stuck red', async () => {
+  it('(f) an out-of-namespace PR is skipped by the red watchdog while the namespace mismatch stays visible', async () => {
     const h = harness([redPr({ headRefName: 'dawn/other' })]);
     await new GreenPrAutoMerger(h.deps, cfg).tick();
-    expect(h.attentionCalls).toHaveLength(0);
+    expect(h.attentionCalls).toHaveLength(1);
+    expect(h.attentionCalls[0].some((line) => /branch-namespace-mismatch/.test(line))).toBe(true);
+    expect(h.attentionCalls[0].some((line) => /PR #1399 red/.test(line))).toBe(false);
     expect(h.state.redPrRaised?.[1399]).toBeUndefined();
+    expect(h.audits.some((audit) => audit.event === 'red-pr-stuck')).toBe(false);
   });
 
   it('clears the raise memory when the PR recovers (goes green)', async () => {

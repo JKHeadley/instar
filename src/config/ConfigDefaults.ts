@@ -768,6 +768,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       breakerCooldownMin: 60,
       mergeTimeoutMs: 1_500_000,
       mergeKillGraceMs: 60_000,
+      // Explicit branch prefix owned by the watcher. Empty preserves the
+      // historical projectName fallback; development agents should set this
+      // to the prefix their worktree workflow actually creates.
+      agentNamespace: '',
       expectedGhLogin: '',
       identityRecheckTicks: 6,
       holdReleaseTicks: 2,

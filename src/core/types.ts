@@ -6766,6 +6766,8 @@ export interface MonitoringConfig {
     breakerCooldownMin?: number;
     mergeTimeoutMs?: number;
     mergeKillGraceMs?: number;
+    /** Branch prefix owned by this watcher (for example "agent"). Defaults to projectName for compatibility. */
+    agentNamespace?: string;
     /** The agent's verified gh login (R4 identity contract). Unset → inert. */
     expectedGhLogin?: string;
     identityRecheckTicks?: number;

@@ -19492,7 +19492,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         const wiring = await import('../monitoring/greenPrAutomergeWiring.js');
         if (wiring.isAnalyzableGreenPrRepo(repoPath, safeMergePath)) {
           const gpMachineId = coordinator.identity?.machineId ?? `m_host_${os.hostname()}`;
-          const agentNamespace = config.projectName || 'agent';
+          const agentNamespace = wiring.resolveGreenPrAgentNamespace(
+            gpCfg.agentNamespace,
+            config.projectName,
+          );
           const wiringOpts = {
             repoPath, safeMergePath, stateDir: config.stateDir, machineId: gpMachineId,
             repo: 'JKHeadley/instar', agentNamespace,
@@ -19534,12 +19537,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             // (the class deep-merges its defaults — enabled:true, redThresholdMs:2h).
             redPrWatchdog: (gpCfg as { redPrWatchdog?: { enabled?: boolean; redThresholdMs?: number } }).redPrWatchdog,
           } as never);
-          if (greenPrAutoMerger.invariantOk) {
+          if (greenPrAutoMerger.invariantOk && greenPrAutoMerger.configurationOk) {
             guardLatchStore.markPoolArmed(); // R7: this pool is deliberately armed
             greenPrAutoMerger.start();
             console.log(pc.green('  GreenPrAutoMerger enabled (auto-merges green self-authored PRs — Phase 7 machinery)'));
-          } else {
+          } else if (!greenPrAutoMerger.invariantOk) {
             console.log(pc.red(`  GreenPrAutoMerger NOT started — timeout invariant violated: ${greenPrAutoMerger.invariantReason}`));
+          } else {
+            console.log(pc.red(`  GreenPrAutoMerger NOT started — configuration invalid: ${greenPrAutoMerger.configurationIssues.join(', ')}`));
           }
         } else {
           console.log(pc.dim('  GreenPrAutoMerge enabled in config but no analyzable instar repo + safe-merge found — staying inert'));

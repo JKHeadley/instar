@@ -12355,6 +12355,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // red-pr-watchdog: the stuck-red memory + config (answers "why did I get a
     // red-PR alert?"). NON-OPTIONAL — an EMPTY ARRAY when nothing is stuck red.
     const wd = ctx.greenPrAutoMerger.redPrWatchdogView();
+    const configuration = ctx.greenPrAutoMerger.configurationView();
     res.json({
       lastTickAt: state.lastTickAt ?? null,
       lastSuccessfulListAt: state.lastSuccessfulListAt ?? null,
@@ -12366,6 +12367,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       stuckRed: wd.stuckRed,
       redPrWatchdog: wd.config,
       snapshot: state.snapshot,
+      namespaceMismatch: state.namespaceMismatch ?? null,
+      configuration,
       gate: latch,
       invariantOk: ctx.greenPrAutoMerger.invariantOk,
     });
