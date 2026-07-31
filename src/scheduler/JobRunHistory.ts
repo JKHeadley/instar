@@ -75,7 +75,7 @@ export interface JobRun {
   origin?: 'instar' | 'user' | 'legacy';
   /** Absolute path the agentmd body was resolved from; null for non-agentmd. */
   resolvedPath?: string | null;
-  /** SHA-256 of the cached body. null for non-agentmd. */
+  /** SHA-256 of the body validated for this run. null for non-agentmd. */
   bodyHash?: string | null;
   /** SHA-256 of the canonicalized frontmatter object. null for non-agentmd. */
   frontmatterHash?: string | null;

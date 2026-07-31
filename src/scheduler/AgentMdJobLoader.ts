@@ -1065,9 +1065,9 @@ function splitFrontmatter(text: string): { frontmatterText: string; body: string
  * reuses the loader's frontmatter split and body hash normalization without
  * reparsing YAML, rebuilding manifests, or changing the cached JobDefinition.
  */
-export function readAgentMdBodyHash(
+export function readAgentMdBody(
   resolvedPath: string,
-): { ok: true; bodyHash: string } | { ok: false; reason: string } {
+): { ok: true; body: string; bodyHash: string } | { ok: false; reason: string } {
   try {
     const stat = fs.lstatSync(resolvedPath);
     if (stat.isSymbolicLink()) {
@@ -1094,13 +1094,23 @@ export function readAgentMdBodyHash(
       };
     }
 
-    return { ok: true, bodyHash: hashBody(split.body) };
+    return { ok: true, body: split.body, bodyHash: hashBody(split.body) };
   } catch (err) {
     return {
       ok: false,
       reason: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+/** Backwards-compatible hash-only probe for observability consumers. */
+export function readAgentMdBodyHash(
+  resolvedPath: string,
+): { ok: true; bodyHash: string } | { ok: false; reason: string } {
+  const result = readAgentMdBody(resolvedPath);
+  return result.ok
+    ? { ok: true, bodyHash: result.bodyHash }
+    : result;
 }
 
 // ── Manifest → JobDefinition ───────────────────────────────────────────────

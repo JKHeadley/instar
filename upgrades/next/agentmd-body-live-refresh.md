@@ -1,0 +1,24 @@
+<!-- bump: patch -->
+
+## What Changed
+
+AgentMD job bodies are now revalidated and refreshed at each trigger boundary.
+Valid edits affect the triggering run without a server restart; invalid edits
+retain the last validated instructions.
+
+## What to Tell Your User
+
+- **Live job instruction edits**: "When I update a job's markdown instructions, the next run uses them without restarting the server."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|---|---|
+| Apply a job-body edit to the next run | Save a valid AgentMD markdown body; the scheduler refreshes it automatically |
+| Fail safely on broken edits | Repair the file after the scheduler warns; the last validated body remains active meanwhile |
+
+## Evidence
+
+Ninety-three focused scheduler and loader tests cover live first and subsequent
+edits, unchanged bodies, missing files, malformed frontmatter, prompt dispatch,
+run-history hashing, and loader validation.
