@@ -1,0 +1,33 @@
+{
+  "ts": "2026-07-30T12:39:36.116Z",
+  "slug": "spawn-drain-refusal-giveup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 346,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/types.ts",
+      "src/messaging/SpawnRequestManager.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 338,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/spawn-request-manager.test.ts",
+      "howCaught": "SpawnRequestManager drain-loop tests cover target-scoped latching, independent targets, reason-drift collapse, re-arm hysteresis, default TTL-boundary queue preservation, and inline recovery after held payloads would otherwise expire."
+    }
+  },
+  "verdict": "pass"
+}

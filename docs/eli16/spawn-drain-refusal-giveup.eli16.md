@@ -1,0 +1,11 @@
+# Spawn Drain Refusal Give-Up — ELI16
+
+When one agent receives Threadline work and cannot start a new session, the refusal can be correct. A machine that is low on memory or deep into swap should not start more expensive sessions just to appear responsive. The bug was that the retry loop had no endpoint and no visible operator signal. One drain target could be refused thousands of times while the agent stopped producing work, and the only way to notice was to read a terminal pane.
+
+This change keeps the admission refusal intact. It does not loosen the memory threshold, session cap, or quota gate. Instead, the spawn request manager counts denied drain attempts per target. After a configurable threshold, it gives up on that target for a bounded cooldown, keeps the queued work held, and emits exactly one stable Attention item for that target. Further ticks do not keep spawning more notices or burning the same failed action. If the target genuinely recovers and later gives up again, the same durable item is refreshed and reopened so recurrence stays visible without creating a permanent pile of episode-keyed health items.
+
+The latch can re-arm only after the cooldown, and server wiring can require the refusal condition to clear first. For memory-pressure refusals, that means the memory monitor must report normal before the drain target can start trying again. The default re-arm interval is below the queued-message TTL, and the manager refreshes held queue timestamps when a latch re-arms so a message does not silently expire right at the recovery boundary.
+
+The important user-facing effect is simple: persistent spawn refusal becomes visible and bounded. Operators get one agent-health Attention item naming the drain target and refusal reason. Agents avoid an endless retry loop under real resource pressure. Held work is retried when the target re-arms or when a successful inline spawn proves the target is healthy again.
+
+The main remaining limit is durability. The held queue is still in process memory, so a server restart can lose pending drain messages. This fix closes the silent infinite retry defect; it does not turn the queue into a durable store or reinterpret whether a lower-level `spawnSession` throw happened before or after prompt delivery.

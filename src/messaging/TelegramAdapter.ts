@@ -4067,6 +4067,48 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Create the first Agent-Health item for an entity, or refresh and visibly
+   * reopen the same durable item when the condition returns after recovery.
+   *
+   * `createAttentionItem` intentionally dedupes on id and returns the existing
+   * row unchanged. That is right for retries inside one episode but would hide
+   * a later episode. Giving every episode a new id has the opposite failure:
+   * the Attention store grows forever for one persistent entity. This method
+   * keeps one target-stable row and makes recurrence explicit in the lane.
+   */
+  async createOrReopenAgentHealthAttentionItem(
+    item: Omit<AttentionItem, 'createdAt' | 'updatedAt' | 'status' | 'topicId'>,
+  ): Promise<AttentionItem> {
+    if (item.lane !== 'agent-health') {
+      throw new Error('createOrReopenAgentHealthAttentionItem requires lane=agent-health');
+    }
+
+    const existing = this.attentionItems.get(item.id);
+    if (!existing) return this.createAttentionItem(item);
+
+    Object.assign(existing, item, {
+      status: 'OPEN' as const,
+      updatedAt: new Date().toISOString(),
+    });
+    this.saveAttentionItems();
+
+    const topicId = await this.ensureAgentHealthLaneTopic();
+    if (topicId === null) {
+      throw new Error('Agent Health lane is unavailable');
+    }
+    const line = [
+      `<b>${this.escapeHtml(item.title)}</b>`,
+      this.escapeHtml(String(item.summary ?? '').slice(0, 400)),
+      '<i>This condition returned after recovery; the existing item was reopened.</i>',
+    ].join('\n');
+    await this.sendToTopic(topicId, line, { formatMode: 'html' });
+    existing.coalesced = true;
+    existing.topicId = topicId;
+    this.saveAttentionItems();
+    return existing;
+  }
+
+  /**
    * Build a calm, named, actionable self-health notice. Resolves a session's
    * topic id to its HUMAN topic name (never emits a bare `topic-<n>`), and ends
    * with a plain-language next step the user can just reply to. Used by the

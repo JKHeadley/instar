@@ -295,6 +295,40 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(itemPost!._formatMode).toBe('html');
   });
 
+  it('refreshes and visibly reopens one target-stable Agent-Health item across episodes', async () => {
+    makeAdapter({ getAttentionHubTopicId: () => 782 });
+    const rec = installApiStub(adapter);
+    const base = {
+      id: 'spawn-drain-refusal-giveup:echo',
+      healthKey: 'spawn-drain-refusal:echo',
+      lane: 'agent-health' as const,
+      title: 'Spawn drain gave up for echo',
+      summary: 'first refusal episode',
+      description: 'first episode',
+      category: 'agent-health',
+      priority: 'HIGH' as const,
+      sourceContext: 'spawn-drain-refusal:echo',
+    };
+
+    const first = await adapter.createOrReopenAgentHealthAttentionItem(base);
+    await adapter.updateAttentionStatus(base.id, 'DONE');
+    const reopened = await adapter.createOrReopenAgentHealthAttentionItem({
+      ...base,
+      summary: 'second refusal episode',
+      description: 'second episode',
+    });
+
+    expect(adapter.getAttentionItems()).toHaveLength(1);
+    expect(reopened).toBe(first);
+    expect(reopened.status).toBe('OPEN');
+    expect(reopened.summary).toBe('second refusal episode');
+    expect(reopened.description).toBe('second episode');
+    expect(rec.forumTopicsCreated).toBe(1);
+    const sends = rec.messagesByThread.get(reopened.topicId!) ?? [];
+    expect(sends.some(text => text.includes('second refusal episode'))).toBe(true);
+    expect(sends.some(text => text.includes('returned after recovery'))).toBe(true);
+  });
+
   it("LEGACY 'per-item' mode preserves the pre-flip behavior: own topic, registered maps, /done closes it", async () => {
     makeAdapter({ attentionRouting: { mode: 'per-item' } });
     const rec = installApiStub(adapter);

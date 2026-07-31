@@ -154,7 +154,56 @@ export type SpawnFailureCause =
  */
 export type SpawnDegradationEvent =
   | { kind: 'spawn-penalty-tripped'; agent: string; consecutiveFailures: number; penaltyMs: number; at: number }
-  | { kind: 'spawn-infra-degraded'; agent: string; failureCount: number; degradationMs: number; at: number };
+  | { kind: 'spawn-infra-degraded'; agent: string; failureCount: number; degradationMs: number; at: number }
+  | {
+      kind: 'spawn-drain-attention-failed';
+      agent: string;
+      attentionId: string;
+      attempt: number;
+      error: string;
+      at: number;
+    };
+
+export interface SpawnDrainGiveUpEvent {
+  agent: string;
+  targetKey: string;
+  refusalSignature: string;
+  reason: string;
+  refusalCount: number;
+  queuedMessagesHeld: number;
+  firstRefusedAt: number;
+  lastRefusedAt: number;
+  at: number;
+  attentionId: string;
+}
+
+export interface SpawnDrainRearmEvent {
+  agent: string;
+  targetKey: string;
+  refusalSignature: string;
+  attentionId: string;
+  latchedAt: number;
+  lastRefusedAt: number;
+  rearmedAt: number;
+  rearmCooldownMs: number;
+}
+
+export interface SpawnDrainRefusalSnapshot {
+  agent: string;
+  targetKey: string;
+  refusalSignature: string;
+  count: number;
+  firstRefusedAt: number;
+  lastRefusedAt: number;
+  latchedAt: number;
+  attentionId: string;
+  attentionDelivered: boolean;
+  attentionAttempts: number;
+  lastAttentionAttemptAt: number;
+  attentionError?: string;
+}
+
+export type SpawnDrainReadyResult = void | Pick<SpawnResult, 'approved' | 'reason' | 'retryAfterMs'>;
 
 /** Error class callers throw from inside `spawnSession` to tag attributable failures. */
 export class SpawnFailureError extends Error {
@@ -248,9 +297,37 @@ export interface SpawnRequestManagerConfig {
    * `evaluate`. Optional: if unset, the drain loop is a no-op and queued
    * messages only drain on the next inline `evaluate` call (legacy behavior).
    */
-  onDrainReady?: (agent: string) => Promise<void>;
+  onDrainReady?: (agent: string) => Promise<SpawnDrainReadyResult>;
   /** §4.2: max drains per tick. Default 8. */
   maxDrainsPerTick?: number;
+  /**
+   * Max denied drain re-attempts for one agent before the manager holds that
+   * agent's queued payloads and emits one give-up event. Default: maxRetries
+   * (or 3). This bounds a correct-but-persistent refusal such as memory
+   * pressure so the drain loop cannot spin silently forever.
+   */
+  drainRefusalGiveUpThreshold?: number;
+  /**
+   * Called once when one drain target crosses the bounded-refusal threshold.
+   * Server wiring maps this to a stable Attention id; manager-level tracking
+   * still dedupes the event so a repeating tick cannot flood callers.
+   */
+  onDrainGiveUp?: (event: SpawnDrainGiveUpEvent) => void | Promise<void>;
+  /**
+   * Minimum quiet-clear interval before a give-up latch can re-arm. The timer
+   * is measured from the last denied drain result, not just from the first
+   * attention item, so near-threshold memory pressure cannot flap the latch.
+   * Default: 8 minutes, below queued-message TTL.
+   */
+  drainGiveUpRearmCooldownMs?: number;
+  /**
+   * Optional clear predicate for a latched refusal target. Re-arm requires the
+   * cooldown above AND this predicate returning true. Server wiring uses this
+   * for memory-pressure denials so a near-threshold host does not flap.
+   */
+  isDrainRefusalCleared?: (marker: SpawnDrainRefusalSnapshot) => boolean;
+  /** Called when a previously latched drain target has genuinely re-armed. */
+  onDrainRearm?: (event: SpawnDrainRearmEvent) => void | Promise<void>;
   /** §4.2: max queued messages per agent while in degraded admission. Default 1. */
   degradedMaxQueuedPerAgent?: number;
   /**
@@ -344,6 +421,8 @@ const DRAIN_MAX_PER_TICK_DEFAULT = 8;
 const DRR_QUANTUM = 1;
 const DRR_COST = 1;
 const DRR_AGE_BOOST_MULTIPLIER = 1.5;
+const DEFAULT_DRAIN_GIVE_UP_REARM_COOLDOWN_MS = 8 * 60_000;
+const DRAIN_GIVE_UP_ATTENTION_RETRY_MS = 30_000;
 
 const SPAWN_PROMPT_TEMPLATE = `You were spawned by an inter-agent message request.
 
@@ -412,6 +491,26 @@ export class SpawnRequestManager {
 
   /** §4.2: drain-attempt counter per agent. Reset on successful drain. */
   readonly #drainAttempts = new Map<string, number>();
+
+  /** Count denied drain re-attempts per agent so one target cannot spin forever. */
+  readonly #drainRefusals = new Map<string, {
+    count: number;
+    firstRefusedAt: number;
+    lastReason: string;
+  }>();
+
+  /** Stable per-target give-up latch. Re-armed only after hysteresis clears. */
+  readonly #drainGiveUpLatches = new Map<string, {
+    attentionId: string;
+    refusalSignature: string;
+    latchedAt: number;
+    lastRefusedAt: number;
+    attentionEvent: SpawnDrainGiveUpEvent;
+    attentionDelivered: boolean;
+    attentionAttempts: number;
+    lastAttentionAttemptAt: number;
+    attentionError?: string;
+  }>();
 
   /** §4.2: shared drain-tick timer. null when not started. */
   #drainTimer: ReturnType<typeof setInterval> | null = null;
@@ -609,6 +708,227 @@ export class SpawnRequestManager {
     } as PreservedTransientRefusal;
   }
 
+  #drainGiveUpThreshold(): number {
+    const configured = this.#config.drainRefusalGiveUpThreshold ?? this.#config.maxRetries ?? DEFAULT_MAX_RETRIES;
+    if (!Number.isFinite(configured)) return DEFAULT_MAX_RETRIES;
+    return Math.max(1, Math.floor(configured));
+  }
+
+  #drainGiveUpRearmCooldownMs(): number {
+    const configured = this.#config.drainGiveUpRearmCooldownMs ?? DEFAULT_DRAIN_GIVE_UP_REARM_COOLDOWN_MS;
+    if (!Number.isFinite(configured)) return DEFAULT_DRAIN_GIVE_UP_REARM_COOLDOWN_MS;
+    return Math.max(0, Math.floor(configured));
+  }
+
+  #drainTargetKey(agent: string): string {
+    return agent.replace(/[^a-zA-Z0-9._:-]/g, '_').slice(0, 80) || 'unknown';
+  }
+
+  #drainGiveUpAttentionId(targetKey: string): string {
+    // One durable item per target. Server wiring explicitly refreshes/reopens
+    // this item for later episodes, avoiding both silent recurrence and a
+    // permanent pile of date/episode-keyed health items.
+    return `spawn-drain-refusal-giveup:${targetKey}`;
+  }
+
+  #drainRefusalSignature(reason: string | undefined): string {
+    const raw = (reason ?? 'unknown').trim().replace(/\s+/g, ' ');
+    return raw.slice(0, 240) || 'unknown';
+  }
+
+  #refreshHeldQueueForRearm(agent: string, now: number): void {
+    const queue = this.#pendingMessages.get(agent);
+    if (!queue) return;
+    for (const entry of queue) {
+      entry.receivedAt = now;
+    }
+  }
+
+  async #maybeRearmDrainGiveUp(agent: string): Promise<void> {
+    const targetKey = this.#drainTargetKey(agent);
+    const latch = this.#drainGiveUpLatches.get(targetKey);
+    if (!latch) return;
+
+    const now = this.#nowFn();
+    const rearmCooldownMs = this.#drainGiveUpRearmCooldownMs();
+    if (now - latch.lastRefusedAt < rearmCooldownMs) return;
+
+    const refusal = this.#drainRefusals.get(agent);
+    const snapshot: SpawnDrainRefusalSnapshot = {
+      agent,
+      targetKey,
+      refusalSignature: latch.refusalSignature,
+      count: refusal?.count ?? 0,
+      firstRefusedAt: refusal?.firstRefusedAt ?? latch.latchedAt,
+      lastRefusedAt: latch.lastRefusedAt,
+      latchedAt: latch.latchedAt,
+      attentionId: latch.attentionId,
+      attentionDelivered: latch.attentionDelivered,
+      attentionAttempts: latch.attentionAttempts,
+      lastAttentionAttemptAt: latch.lastAttentionAttemptAt,
+      attentionError: latch.attentionError,
+    };
+    if (this.#config.isDrainRefusalCleared && !this.#config.isDrainRefusalCleared(snapshot)) return;
+
+    this.#refreshHeldQueueForRearm(agent, now);
+    this.#drainGiveUpLatches.delete(targetKey);
+    this.#clearDrainRefusal(agent);
+    try {
+      await this.#config.onDrainRearm?.({
+        agent,
+        targetKey,
+        refusalSignature: latch.refusalSignature,
+        attentionId: latch.attentionId,
+        latchedAt: latch.latchedAt,
+        lastRefusedAt: latch.lastRefusedAt,
+        rearmedAt: now,
+        rearmCooldownMs,
+      });
+    } catch {
+      // Observability failure must never keep the target latched forever.
+    }
+  }
+
+  async #forceRearmDrainGiveUp(agent: string): Promise<void> {
+    const targetKey = this.#drainTargetKey(agent);
+    const latch = this.#drainGiveUpLatches.get(targetKey);
+    if (!latch) return;
+
+    const now = this.#nowFn();
+    this.#refreshHeldQueueForRearm(agent, now);
+    this.#drainGiveUpLatches.delete(targetKey);
+    this.#clearDrainRefusal(agent);
+    try {
+      await this.#config.onDrainRearm?.({
+        agent,
+        targetKey,
+        refusalSignature: latch.refusalSignature,
+        attentionId: latch.attentionId,
+        latchedAt: latch.latchedAt,
+        lastRefusedAt: latch.lastRefusedAt,
+        rearmedAt: now,
+        rearmCooldownMs: 0,
+      });
+    } catch {
+      // Observability failure must never keep a proven-successful target latched.
+    }
+  }
+
+  #isDrainGiveUpLatched(agent: string): boolean {
+    return this.#drainGiveUpLatches.has(this.#drainTargetKey(agent));
+  }
+
+  async #deliverDrainGiveUpAttention(
+    latch: {
+      attentionId: string;
+      attentionEvent: SpawnDrainGiveUpEvent;
+      attentionDelivered: boolean;
+      attentionAttempts: number;
+      lastAttentionAttemptAt: number;
+      attentionError?: string;
+    },
+  ): Promise<void> {
+    if (latch.attentionDelivered) return;
+    const onDrainGiveUp = this.#config.onDrainGiveUp;
+    if (!onDrainGiveUp) {
+      latch.attentionDelivered = true;
+      return;
+    }
+
+    const at = this.#nowFn();
+    latch.attentionAttempts++;
+    latch.lastAttentionAttemptAt = at;
+    try {
+      await onDrainGiveUp(latch.attentionEvent);
+      latch.attentionDelivered = true;
+      latch.attentionError = undefined;
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      latch.attentionError = error;
+      try {
+        this.#config.onDegradation?.({
+          kind: 'spawn-drain-attention-failed',
+          agent: latch.attentionEvent.agent,
+          attentionId: latch.attentionId,
+          attempt: latch.attentionAttempts,
+          error,
+          at,
+        });
+      } catch {
+        // A secondary observability-sink failure cannot make queue admission
+        // or the bounded retry state depend on the reporter itself.
+      }
+    }
+  }
+
+  async #maybeRetryDrainGiveUpAttention(agent: string): Promise<void> {
+    const latch = this.#drainGiveUpLatches.get(this.#drainTargetKey(agent));
+    if (!latch || latch.attentionDelivered) return;
+    if (this.#nowFn() - latch.lastAttentionAttemptAt < DRAIN_GIVE_UP_ATTENTION_RETRY_MS) return;
+    await this.#deliverDrainGiveUpAttention(latch);
+  }
+
+  #isDeniedDrainResult(result: SpawnDrainReadyResult): result is Pick<SpawnResult, 'approved' | 'reason' | 'retryAfterMs'> {
+    return typeof result === 'object' && result !== null && result.approved === false;
+  }
+
+  async #recordDrainRefusal(agent: string, reason: string | undefined): Promise<void> {
+    const now = this.#nowFn();
+    const targetKey = this.#drainTargetKey(agent);
+    const refusalSignature = this.#drainRefusalSignature(reason);
+    const attentionId = this.#drainGiveUpAttentionId(targetKey);
+    const prior = this.#drainRefusals.get(agent);
+    const firstRefusedAt = prior?.firstRefusedAt ?? now;
+    const next = {
+      count: (prior?.count ?? 0) + 1,
+      firstRefusedAt,
+      lastReason: refusalSignature,
+    };
+    this.#drainRefusals.set(agent, next);
+
+    if (next.count < this.#drainGiveUpThreshold()) return;
+
+    this.#drrDeficit.delete(agent);
+    this.#drainAttempts.delete(agent);
+
+    const existingLatch = this.#drainGiveUpLatches.get(targetKey);
+    if (existingLatch) {
+      existingLatch.refusalSignature = refusalSignature;
+      existingLatch.lastRefusedAt = now;
+      return;
+    }
+
+    const attentionEvent: SpawnDrainGiveUpEvent = {
+      agent,
+      targetKey,
+      refusalSignature,
+      reason: next.lastReason,
+      refusalCount: next.count,
+      queuedMessagesHeld: this.getQueuedCount(agent),
+      firstRefusedAt: next.firstRefusedAt,
+      lastRefusedAt: now,
+      at: now,
+      attentionId,
+    };
+    const latch = {
+      attentionId,
+      refusalSignature,
+      latchedAt: now,
+      lastRefusedAt: now,
+      attentionEvent,
+      attentionDelivered: false,
+      attentionAttempts: 0,
+      lastAttentionAttemptAt: 0,
+      attentionError: undefined,
+    };
+    this.#drainGiveUpLatches.set(targetKey, latch);
+    await this.#deliverDrainGiveUpAttention(latch);
+  }
+
+  #clearDrainRefusal(agent: string): void {
+    this.#drainRefusals.delete(agent);
+  }
+
   // ── Public API ──────────────────────────────────────────────
 
   /**
@@ -723,7 +1043,10 @@ export class SpawnRequestManager {
 
     let queuedSnapshot: QueuedSpawnMessage[] = [];
     try {
-      queuedSnapshot = this.#snapshotQueue(agent);
+      // A latched target may still prove healthy through a new inline spawn.
+      // Keep the held backlog out of that probe; on success, force-rearm refreshes
+      // it and a later drain delivers it through the preservation funnel.
+      queuedSnapshot = this.#isDrainGiveUpLatched(agent) ? [] : this.#snapshotQueue(agent);
       const prompt = this.#buildSpawnPrompt(request, queuedSnapshot);
       const spawned = await this.#config.spawnSession(prompt, {
         model: request.suggestedModel,
@@ -752,6 +1075,7 @@ export class SpawnRequestManager {
 
       // Success — clear penalty state and pending retries.
       this.#clearFailureAttribution(agent);
+      await this.#forceRearmDrainGiveUp(agent);
       const retryKey = this.#getRetryKey(request);
       this.#pendingRetries.delete(retryKey);
 
@@ -876,6 +1200,10 @@ export class SpawnRequestManager {
       // remains refused as before.
       let newest: { agent: string; entry: QueuedSpawnMessage } | undefined;
       for (const [queuedAgent, queued] of this.#pendingMessages) {
+        // A give-up latch explicitly promises to hold its backlog until
+        // re-arm. Global chronological displacement may only consider work
+        // that is not protected by that promise.
+        if (this.#isDrainGiveUpLatched(queuedAgent)) continue;
         for (const entry of queued) {
           if (!newest || entry.sequence > newest.entry.sequence) {
             newest = { agent: queuedAgent, entry };
@@ -912,9 +1240,12 @@ export class SpawnRequestManager {
 
     const now = this.#nowFn();
     const maxAge = SpawnRequestManager.QUEUE_MAX_AGE_MS;
+    const heldByGiveUpLatch = this.#isDrainGiveUpLatched(agent);
     queue.sort((a, b) => a.sequence - b.sequence);
-    while (queue.length > 0 && now - queue[0].receivedAt > maxAge) {
-      queue.shift();
+    if (!heldByGiveUpLatch) {
+      while (queue.length > 0 && now - queue[0].receivedAt > maxAge) {
+        queue.shift();
+      }
     }
 
     // §4.2 infra soft limiter + §4.3 truncation marker.
@@ -923,6 +1254,12 @@ export class SpawnRequestManager {
     if (cap <= 0) {
       // Defensive backstop for future cap sources; effective config currently
       // floors degraded admission at one.
+      this.#truncated.add(agent);
+      return false;
+    }
+    if (heldByGiveUpLatch && queue.length >= cap) {
+      // Existing latched work is protected. Reject the new arrival instead
+      // of silently evicting a payload the give-up marker says is held.
       this.#truncated.add(agent);
       return false;
     }
@@ -1010,6 +1347,7 @@ export class SpawnRequestManager {
     pendingRetries: number;
     queuedMessages: Array<{ agent: string; count: number }>;
     penalties: Array<{ agent: string; untilMs: number; consecutiveFailures: number }>;
+    drainGiveUps: Array<SpawnDrainRefusalSnapshot & { rearmRemainingMs: number }>;
   } {
     const cooldowns: Array<{ agent: string; remainingMs: number }> = [];
     for (const agent of this.#lastSpawnByAgent.keys()) {
@@ -1038,11 +1376,33 @@ export class SpawnRequestManager {
       }
     }
 
+    const drainGiveUps: Array<SpawnDrainRefusalSnapshot & { rearmRemainingMs: number }> = [];
+    for (const [targetKey, latch] of this.#drainGiveUpLatches) {
+      const agent = [...this.#pendingMessages.keys()].find(a => this.#drainTargetKey(a) === targetKey) ?? targetKey;
+      const refusal = this.#drainRefusals.get(agent);
+      drainGiveUps.push({
+        agent,
+        targetKey,
+        refusalSignature: latch.refusalSignature,
+        count: refusal?.count ?? 0,
+        firstRefusedAt: refusal?.firstRefusedAt ?? latch.latchedAt,
+        lastRefusedAt: latch.lastRefusedAt,
+        latchedAt: latch.latchedAt,
+        attentionId: latch.attentionId,
+        attentionDelivered: latch.attentionDelivered,
+        attentionAttempts: latch.attentionAttempts,
+        lastAttentionAttemptAt: latch.lastAttentionAttemptAt,
+        attentionError: latch.attentionError,
+        rearmRemainingMs: Math.max(this.#drainGiveUpRearmCooldownMs() - (now - latch.lastRefusedAt), 0),
+      });
+    }
+
     return {
       cooldowns,
       pendingRetries: this.#pendingRetries.size,
       queuedMessages,
       penalties,
+      drainGiveUps,
     };
   }
 
@@ -1123,6 +1483,11 @@ export class SpawnRequestManager {
       const readyAgents: string[] = [];
       for (const [agent, queue] of this.#pendingMessages) {
         if (queue.length === 0) continue;
+        if (this.#isDrainGiveUpLatched(agent)) {
+          await this.#maybeRetryDrainGiveUpAttention(agent);
+          await this.#maybeRearmDrainGiveUp(agent);
+          if (this.#isDrainGiveUpLatched(agent)) continue;
+        }
         if (this.cooldownRemainingMs(agent) <= tickGraceMs) {
           readyAgents.push(agent);
         }
@@ -1159,10 +1524,18 @@ export class SpawnRequestManager {
 
       // Fire callbacks concurrently; one callback failure does not abort the batch.
       const results = await Promise.allSettled(
-        selected.map(agent => onDrainReady(agent).then(() => {
-          // Successful drain → reset attempt counter so next tick doesn't apply age-boost.
+        selected.map(async agent => {
+          const result = await onDrainReady(agent);
+          if (this.#isDeniedDrainResult(result)) {
+            await this.#recordDrainRefusal(agent, result.reason);
+            return;
+          }
+          // Successful drain → reset attempt/refusal counters so next tick
+          // doesn't apply age-boost or inherit a stale denial streak.
           this.#drainAttempts.delete(agent);
-        })),
+          this.#clearDrainRefusal(agent);
+          await this.#maybeRearmDrainGiveUp(agent);
+        }),
       );
       // Log but don't throw on individual callback failures.
       for (let i = 0; i < results.length; i++) {
@@ -1193,6 +1566,8 @@ export class SpawnRequestManager {
     maxEnvelopeBytes: number;
     maxGlobalQueued: number;
     degradedMaxQueuedPerAgent: number;
+    drainRefusalGiveUpThreshold: number;
+    drainGiveUpRearmCooldownMs: number;
     drainTickMs: number;
   } {
     return {
@@ -1204,6 +1579,8 @@ export class SpawnRequestManager {
         1,
         this.#config.degradedMaxQueuedPerAgent ?? DEGRADED_MAX_QUEUED_PER_AGENT_DEFAULT,
       ),
+      drainRefusalGiveUpThreshold: this.#drainGiveUpThreshold(),
+      drainGiveUpRearmCooldownMs: this.#drainGiveUpRearmCooldownMs(),
       drainTickMs: this.getDrainTickMs(),
     };
   }
@@ -1226,6 +1603,8 @@ export class SpawnRequestManager {
     maxEnvelopeBytes?: number;
     maxGlobalQueued?: number;
     degradedMaxQueuedPerAgent?: number;
+    drainRefusalGiveUpThreshold?: number;
+    drainGiveUpRearmCooldownMs?: number;
   }): { applied: true; tickIntervalChanged: boolean } | { applied: false; reason: string } {
     const validators: Array<[keyof typeof patch, (v: number) => boolean]> = [
       ['cooldownMs', v => v >= 0 && Number.isFinite(v)],
@@ -1233,6 +1612,8 @@ export class SpawnRequestManager {
       ['maxEnvelopeBytes', v => v >= 1 && Number.isFinite(v) && Number.isInteger(v)],
       ['maxGlobalQueued', v => v >= 0 && Number.isFinite(v) && Number.isInteger(v)],
       ['degradedMaxQueuedPerAgent', v => v >= 1 && Number.isFinite(v) && Number.isInteger(v)],
+      ['drainRefusalGiveUpThreshold', v => v >= 1 && Number.isFinite(v) && Number.isInteger(v)],
+      ['drainGiveUpRearmCooldownMs', v => v >= 0 && Number.isFinite(v) && Number.isInteger(v)],
     ];
     for (const [k, ok] of validators) {
       const v = patch[k];
@@ -1250,6 +1631,12 @@ export class SpawnRequestManager {
     if (patch.degradedMaxQueuedPerAgent !== undefined) {
       this.#config.degradedMaxQueuedPerAgent = patch.degradedMaxQueuedPerAgent;
     }
+    if (patch.drainRefusalGiveUpThreshold !== undefined) {
+      this.#config.drainRefusalGiveUpThreshold = patch.drainRefusalGiveUpThreshold;
+    }
+    if (patch.drainGiveUpRearmCooldownMs !== undefined) {
+      this.#config.drainGiveUpRearmCooldownMs = patch.drainGiveUpRearmCooldownMs;
+    }
     const newTickMs = this.getDrainTickMs();
     return { applied: true, tickIntervalChanged: oldTickMs !== newTickMs };
   }
@@ -1263,6 +1650,8 @@ export class SpawnRequestManager {
     this.#consecutiveSpawnFailures.clear();
     this.#drrDeficit.clear();
     this.#drainAttempts.clear();
+    this.#drainRefusals.clear();
+    this.#drainGiveUpLatches.clear();
     this.#infraFailureWindow.clear();
     this.#truncated.clear();
     this.#spawnInflightByAgent.clear();

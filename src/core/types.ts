@@ -5116,6 +5116,10 @@ export interface ThreadlineSpawnConfig {
   cooldownMs?: number;
   /** Max drains per tick. Default: 8. */
   maxDrainsPerTick?: number;
+  /** Max denied drain attempts per agent before give-up. Default: maxRetries or 3. */
+  drainRefusalGiveUpThreshold?: number;
+  /** Quiet-clear interval before a drain give-up latch can re-arm. Default: 480000 (8m). */
+  drainGiveUpRearmCooldownMs?: number;
   /** Max envelope context size in UTF-8 bytes. Default: 262144 (256 KiB). */
   maxEnvelopeBytes?: number;
   /** Max queued messages across ALL agents. Default: 1000. */

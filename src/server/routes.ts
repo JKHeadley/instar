@@ -30530,7 +30530,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   /**
    * §4.4 commit 3: update runtime-tunable spawn-manager fields atomically.
    * Body: any subset of { cooldownMs, maxDrainsPerTick, maxEnvelopeBytes,
-   * maxGlobalQueued, degradedMaxQueuedPerAgent }.
+   * maxGlobalQueued, degradedMaxQueuedPerAgent, drainRefusalGiveUpThreshold,
+   * drainGiveUpRearmCooldownMs }.
    *
    * Note: changing cooldownMs updates gate logic immediately, but the drain
    * tick interval is fixed at start(). The response indicates whether a
@@ -30545,7 +30546,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
     // Reject unknown fields to avoid silent typos.
-    const allowed = new Set(['cooldownMs', 'maxDrainsPerTick', 'maxEnvelopeBytes', 'maxGlobalQueued', 'degradedMaxQueuedPerAgent']);
+    const allowed = new Set(['cooldownMs', 'maxDrainsPerTick', 'maxEnvelopeBytes', 'maxGlobalQueued', 'degradedMaxQueuedPerAgent', 'drainRefusalGiveUpThreshold', 'drainGiveUpRearmCooldownMs']);
     const unknownKeys = Object.keys(body).filter(k => !allowed.has(k));
     if (unknownKeys.length > 0) {
       res.status(400).json({ error: `Unknown fields: ${unknownKeys.join(', ')}` });

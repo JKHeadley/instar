@@ -1,0 +1,25 @@
+{
+  "ts": "2026-07-31T07:47:01.367Z",
+  "slug": "spawn-drain-refusal-giveup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 465,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/types.ts",
+      "src/messaging/SpawnRequestManager.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 454,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
