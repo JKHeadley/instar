@@ -1,0 +1,23 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Remediator startup now restores its bounded audit tail and compares recent
+durable intents with audit evidence. Missing evidence is surfaced during boot.
+
+## What to Tell Your User
+
+- **Restart-safe remediation evidence**: "After a restart, I now check that recent remediation intents have matching audit records instead of leaving the journals unread."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|---|---|
+| Detect an intent-to-audit persistence gap | Automatic whenever live remediation bootstraps |
+| Inspect reconciliation proof | Read the bootstrap reconciliation counts and boot warning |
+
+## Evidence
+
+Twenty-three focused tests cover audit-tail hydration and bounds, matching and
+missing intent evidence, real bootstrap reachability, corrupt intent rows, and
+existing token/watermark enforcement.

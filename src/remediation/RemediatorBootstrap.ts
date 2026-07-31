@@ -50,6 +50,10 @@ import { MachineLock } from './MachineLock.js';
 import { IntentJournal } from './IntentJournal.js';
 import { AuditWriter } from './audit/AuditWriter.js';
 import {
+  reconcileIntentAudit,
+  type IntentAuditReconciliation,
+} from './IntentAuditReconciler.js';
+import {
   TrustElevationSource,
   type TrustedApprovalChannel,
 } from './TrustElevationSource.js';
@@ -100,6 +104,7 @@ export type BootstrapResult =
       remediator: Remediator;
       vault: RemediationKeyVault;
       registeredRunbookIds: string[];
+      intentAuditReconciliation: IntentAuditReconciliation;
     }
   | { disabled: true; reason: 'no-secret-backend' | 'config-flag-false' };
 
@@ -170,6 +175,16 @@ export async function bootstrapRemediator(
     // the rest of the integrity envelope.
     tokenVerifier: makeAuditTokenVerifier(vault),
   });
+  const intentAuditReconciliation = await reconcileIntentAudit(
+    intentJournal,
+    auditWriter,
+  );
+  if (intentAuditReconciliation.unmatchedIntentAttemptIds.length > 0) {
+    console.warn(
+      `[RemediatorBootstrap] ${intentAuditReconciliation.unmatchedIntentAttemptIds.length} ` +
+      'durable remediation intent(s) have no matching row in the hydrated audit window',
+    );
+  }
 
   // 3. F-5 TrustElevationSource. Default autonomy profile is 'supervised' —
   //    the minimum that gates upward transitions; matches the spec's stated
@@ -252,6 +267,7 @@ export async function bootstrapRemediator(
     remediator,
     vault,
     registeredRunbookIds,
+    intentAuditReconciliation,
   };
 }
 

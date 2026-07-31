@@ -123,4 +123,27 @@ describe('AuditWriter', () => {
     expect(tail[0]?.attemptId).toBe('a-70');
     expect(tail[49]?.attemptId).toBe('a-119');
   });
+
+  it('hydrates the bounded recent tail when a new writer starts', async () => {
+    const firstWriter = new AuditWriter(tmpDir, {
+      machineId: 'm-test',
+      tokenVerifier: () => true,
+      tailSize: 2,
+    });
+    for (let i = 0; i < 3; i++) {
+      await firstWriter.append(
+        makeEntry({ attemptId: `persisted-${i}`, timestamp: 2_000_000 + i }),
+      );
+    }
+
+    const restartedWriter = new AuditWriter(tmpDir, {
+      machineId: 'm-test',
+      tokenVerifier: () => true,
+      tailSize: 2,
+    });
+    expect(restartedWriter.recentTail().map((entry) => entry.attemptId)).toEqual([
+      'persisted-1',
+      'persisted-2',
+    ]);
+  });
 });
