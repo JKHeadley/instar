@@ -265,7 +265,14 @@ export class CorrectionLedger {
          ON correction_records(route_cluster_id)`,
     );
     // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
-    registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
+    registerSqliteHandle(() => {
+      try {
+        this.db?.close();
+      } catch {
+        // @silent-fallback-ok: shutdown cleanup is idempotent; an already-closed
+        // SQLite handle needs no recovery and must not mask the original exit.
+      }
+    });
   }
 
   /**
@@ -513,6 +520,8 @@ export class CorrectionLedger {
       });
       return txn();
     } catch (err) {
+      // @silent-fallback-ok: onError is the ledger's injected degradation
+      // reporter; the typed storage-error result keeps the cluster fail-closed.
       this.onError('updateCluster', err);
       return { ok: false, conflict: false, reason: 'storage-error' };
     }

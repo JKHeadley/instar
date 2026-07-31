@@ -157,6 +157,24 @@ replication and topic-transfer posture.
 
 ---
 
+## CI follow-up review
+
+The full matrix found two completeness gaps in the original shipping set, not a
+new production decision. The end-to-end acceptance fixture still varied topics
+but omitted occurrence-level sessions; it now proves the required gate with two
+days and two sessions while deliberately staying in one topic. The new
+`updateCluster` storage-error boundary already reports through the ledger's
+injected `onError` callback and returns a typed fail-closed result; an inline
+`@silent-fallback-ok` explanation now makes that non-silent behavior visible to
+the repository scanner. Shutdown cleanup has the same explicit idempotent
+justification. No ratchet baseline changed.
+
+This follow-up does not alter clustering, routing, verification authority,
+persistent schema, multi-machine posture, or rollback cost. It strengthens the
+end-to-end proof and the degradation-review evidence only.
+
+---
+
 ## Conclusion
 
 The review kept grouping at analysis time, retained the measured 0.65 floor as
@@ -199,6 +217,8 @@ reported a clean diff check with no reviewer edits.
 - `tests/unit/CorrectionAnalyzer.test.ts`
 - `tests/unit/CorrectionLedger.test.ts`
 - `tests/unit/CorrectionLoopDriver.test.ts`
+- `tests/e2e/correction-learning-lifecycle.test.ts`
+- `tests/unit/no-silent-fallbacks.test.ts`
 
 ---
 
