@@ -29,6 +29,7 @@ import {
   type AutonomousHeartbeatDeps,
 } from '../../src/monitoring/AutonomousProgressHeartbeat.js';
 import { ProxyCoordinator, type ProxyHolder } from '../../src/monitoring/ProxyCoordinator.js';
+import { AutonomousHeartbeatRunStateStore } from '../../src/monitoring/AutonomousHeartbeatRunStateStore.js';
 import {
   activeAutonomousJobs,
   autonomousRunRemainingForTopic,
@@ -155,6 +156,10 @@ function bootReal(opts: {
     getSharedLastOutputAt: () => opts.sharedLastOutputAt,
     getFocusForTopic: (topicId) => activityIndex.activities(now).find((a) => a.topicId === topicId)?.focus ?? null,
     proxyCoordinator: proxy,
+    runStateStore: new AutonomousHeartbeatRunStateStore(
+      path.join(stateDir, 'state', 'autonomous-heartbeat.json'),
+      () => now,
+    ),
     sendMessage: async (topicId, text) => { sent.push({ topicId, text }); },
     now: () => now,
   };

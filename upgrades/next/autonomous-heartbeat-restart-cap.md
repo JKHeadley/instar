@@ -1,0 +1,34 @@
+# Autonomous heartbeat restart-safe cap
+
+## What Changed
+
+Autonomous progress-heartbeat count and widening backoff are now persisted by
+the stable autonomous run identity. Server restarts no longer reset a live
+run's six-message cap or restart its 25→40→60→90 minute ladder. The heartbeat
+also rereads its configuration at each tick, so threshold, cadence, cap,
+dry-run, and disable edits take effect without restarting the server.
+
+## What to Tell Your User
+
+Long autonomous runs will no longer repeat the same silence-backstop message
+beyond their configured per-run limit when the Instar server restarts. Changes
+to the heartbeat's silence threshold now take effect while the server is live.
+
+## Summary of New Capabilities
+
+- Heartbeat budgets and backoff survive server restarts.
+- State is reserved before send and fails toward silence if durability is
+  unavailable.
+- The status surface reports effective tuning and persistence health.
+- Heartbeat configuration is refreshed at the tick chokepoint.
+
+## Evidence
+
+- Unit tests restart the component over the same durable run state and prove
+  both the cap and cooldown remain enforced.
+- Failure-injection tests prove a persistence failure sends nothing and a
+  failed rollback cannot reopen budget after restart.
+- Store tests cover atomic replacement, restart reload, bounded retention, and
+  corrupt-state fail-closed behavior.
+- Integration and feature-alive tests cover the expanded status contract and
+  production-realistic durable wiring.

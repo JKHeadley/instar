@@ -25,11 +25,15 @@
 import { EventEmitter } from 'node:events';
 import type { ProxyCoordinator } from './ProxyCoordinator.js';
 import { scrubFocus } from './autonomousHeartbeatScrub.js';
+import type {
+  AutonomousHeartbeatRunState,
+  AutonomousHeartbeatRunStateStoreLike,
+} from './AutonomousHeartbeatRunStateStore.js';
 
 // ─── Config & types ─────────────────────────────────────────────────────────
 
 export interface AutonomousHeartbeatConfig {
-  /** Master switch (resolved by the dev-gate at construction; absent → off). */
+  /** Master switch (resolved by the dev-gate; refreshed at each tick). */
   enabled?: boolean;
   /** dryRun: log the intended heartbeat instead of sending. Default true. */
   dryRun?: boolean;
@@ -57,6 +61,8 @@ export interface RunMarkers {
   movedTo: string | null;
   moveSuspended: boolean;
   startedAtMs: number | null;
+  /** Stable autonomous-run identity; null fails closed. */
+  runId: string | null;
 }
 
 /** A single outbound-history entry (predicate #5 silence-clock). */
@@ -101,6 +107,10 @@ export interface AutonomousHeartbeatDeps {
   /** Override timer setters for tests. */
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (handle: ReturnType<typeof setTimeout>) => void;
+  /** Durable per-run throttle ledger. Production always provides this. */
+  runStateStore?: AutonomousHeartbeatRunStateStoreLike;
+  /** Live config read at the tick chokepoint; failures retain the last good config. */
+  getConfig?: () => AutonomousHeartbeatConfig;
 }
 
 /** A ring-buffer record of an emit (or dry-run would-emit / suppression). */
@@ -129,18 +139,10 @@ const DEFAULTS = {
  *  per-run budget). */
 const BACKOFF_LADDER_MINUTES = [25, 40, 60, 90];
 
-/** Per-run in-memory throttle state (keyed by topic + run identity). */
-interface RunState {
-  /** Identity of the run this state belongs to (startedAtMs); reset on a new run. */
-  runStartedAtMs: number | null;
-  /** Last heartbeat emit (or dry-run would-emit) wall-clock for this topic. */
-  lastHeartbeatAt: number;
-  /** Count of heartbeats emitted (or would-be in dryRun) for THIS run. */
-  count: number;
-}
+type RunState = AutonomousHeartbeatRunState;
 
 export class AutonomousProgressHeartbeat extends EventEmitter {
-  private readonly cfg: {
+  private cfg: {
     enabled: boolean;
     dryRun: boolean;
     silenceThresholdMs: number;
@@ -148,7 +150,7 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     maxHeartbeatsPerRun: number;
     recentOutputChangeWindowMs: number;
   };
-  private readonly runState = new Map<number, RunState>();
+  private readonly runState = new Map<string, RunState>();
   private readonly lastEmits: HeartbeatEmit[] = [];
   private static readonly LAST_EMITS_CAP = 50;
 
@@ -156,36 +158,63 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
   private ticking = false;
   private lastTickAt = 0;
   private topicsConsidered = 0;
+  private persistenceHealthy = true;
+  private persistenceErrorAt = 0;
+  private armedTickIntervalMs = 0;
 
   constructor(private readonly deps: AutonomousHeartbeatDeps, raw: AutonomousHeartbeatConfig = {}) {
     super();
+    this.cfg = this.resolveConfig(raw);
+  }
+
+  private resolveConfig(raw: AutonomousHeartbeatConfig): typeof this.cfg {
+    const configuredSilenceMinutes = typeof raw.silenceThresholdMinutes === 'number'
+      && Number.isFinite(raw.silenceThresholdMinutes)
+      ? raw.silenceThresholdMinutes
+      : DEFAULTS.silenceThresholdMinutes;
+    const configuredTickMs = typeof raw.tickIntervalMs === 'number' && Number.isFinite(raw.tickIntervalMs)
+      ? raw.tickIntervalMs
+      : DEFAULTS.tickIntervalMs;
+    const configuredMax = typeof raw.maxHeartbeatsPerRun === 'number' && Number.isFinite(raw.maxHeartbeatsPerRun)
+      ? Math.max(0, Math.floor(raw.maxHeartbeatsPerRun))
+      : DEFAULTS.maxHeartbeatsPerRun;
+    const configuredOutputWindowMs = typeof raw.recentOutputChangeWindowMs === 'number'
+      && Number.isFinite(raw.recentOutputChangeWindowMs)
+      ? Math.max(0, raw.recentOutputChangeWindowMs)
+      : DEFAULTS.recentOutputChangeWindowMs;
     const silenceMin = Math.max(
       DEFAULTS.silenceThresholdFloorMinutes,
-      raw.silenceThresholdMinutes ?? DEFAULTS.silenceThresholdMinutes,
+      configuredSilenceMinutes,
     );
     const tickMs = Math.max(
       DEFAULTS.tickIntervalFloorMs,
-      raw.tickIntervalMs ?? DEFAULTS.tickIntervalMs,
+      configuredTickMs,
     );
-    this.cfg = {
+    return {
       enabled: raw.enabled === true,
       // default true: dryRun unless explicitly false (the graduated-rollout ladder).
       dryRun: raw.dryRun !== false,
       silenceThresholdMs: silenceMin * 60_000,
       tickIntervalMs: tickMs,
-      maxHeartbeatsPerRun: raw.maxHeartbeatsPerRun ?? DEFAULTS.maxHeartbeatsPerRun,
-      recentOutputChangeWindowMs: raw.recentOutputChangeWindowMs ?? DEFAULTS.recentOutputChangeWindowMs,
+      maxHeartbeatsPerRun: configuredMax,
+      recentOutputChangeWindowMs: configuredOutputWindowMs,
     };
   }
 
   start(): void {
     if (!this.cfg.enabled || this.tickHandle) return;
+    this.armTimer();
+  }
+
+  private armTimer(): void {
+    if (this.tickHandle) clearInterval(this.tickHandle);
     this.tickHandle = setInterval(() => {
       this.tick().catch((err) => {
         // Observability never endangers the observed; never throw out of the tick.
         this.emit('tick-error', err);
       });
     }, this.cfg.tickIntervalMs);
+    this.armedTickIntervalMs = this.cfg.tickIntervalMs;
     if (typeof this.tickHandle.unref === 'function') this.tickHandle.unref();
   }
 
@@ -195,6 +224,7 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
       this.tickHandle = null;
     }
     this.runState.clear();
+    this.armedTickIntervalMs = 0;
   }
 
   /** Read-only status for GET /autonomous-heartbeat. */
@@ -202,6 +232,12 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     enabled: boolean;
     dryRun: boolean;
     silenceThresholdMinutes: number;
+    tickIntervalMs: number;
+    maxHeartbeatsPerRun: number;
+    recentOutputChangeWindowMs: number;
+    persistenceConfigured: boolean;
+    persistenceHealthy: boolean;
+    persistenceErrorAt: number;
     lastTickAt: number;
     topicsConsidered: number;
     lastEmits: HeartbeatEmit[];
@@ -210,6 +246,12 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
       enabled: this.cfg.enabled,
       dryRun: this.cfg.dryRun,
       silenceThresholdMinutes: Math.round(this.cfg.silenceThresholdMs / 60_000),
+      tickIntervalMs: this.cfg.tickIntervalMs,
+      maxHeartbeatsPerRun: this.cfg.maxHeartbeatsPerRun,
+      recentOutputChangeWindowMs: this.cfg.recentOutputChangeWindowMs,
+      persistenceConfigured: this.deps.runStateStore != null,
+      persistenceHealthy: this.persistenceHealthy,
+      persistenceErrorAt: this.persistenceErrorAt,
       lastTickAt: this.lastTickAt,
       topicsConsidered: this.topicsConsidered,
       lastEmits: [...this.lastEmits],
@@ -233,17 +275,25 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     this.ticking = true;
     this.lastTickAt = (this.deps.now ?? Date.now)();
     try {
+      this.refreshConfig();
+      if (this.tickHandle && this.armedTickIntervalMs !== this.cfg.tickIntervalMs) this.armTimer();
+      if (!this.cfg.enabled) {
+        this.topicsConsidered = 0;
+        return;
+      }
       const now = (this.deps.now ?? Date.now)();
       const runs = this.deps.listActiveAutonomousRuns();
       this.topicsConsidered = runs.length;
-      // Prune run-state for topics no longer active so the map can't leak.
-      const activeTopicIds = new Set(runs.map((r) => r.topicId));
-      for (const t of [...this.runState.keys()]) {
-        if (!activeTopicIds.has(t)) this.runState.delete(t);
-      }
+      const activeRunIds = new Set<string>();
       for (const run of runs) {
-        await this.evaluateTopic(run, now);
+        const markers = this.deps.getRunMarkers(run.topicId);
+        if (markers?.runId) activeRunIds.add(markers.runId);
+        await this.evaluateTopic(run, now, markers);
       }
+      for (const runId of [...this.runState.keys()]) {
+        if (!activeRunIds.has(runId)) this.runState.delete(runId);
+      }
+      this.retainActiveRuns(activeRunIds, now);
     } finally {
       this.ticking = false;
     }
@@ -252,14 +302,14 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
   /**
    * The per-topic predicate, evaluated strictly cheapest-first, short-circuiting
    * on the first failure. Predicate #1 (run active) is implied by `run` being in
-   * the active set. Every predicate is an in-memory read.
+   * the active set. Predicates are in-memory reads except the bounded durable
+   * run-throttle lookup, which is cached after first access for the tick/process.
    */
-  private async evaluateTopic(run: ActiveAutonomousRun, now: number): Promise<void> {
+  private async evaluateTopic(run: ActiveAutonomousRun, now: number, markers: RunMarkers | null): Promise<void> {
     const topicId = run.topicId;
 
     // #2 Not mid-handoff + #3 destination warmup elapsed (markers fail closed).
-    const markers = this.deps.getRunMarkers(topicId);
-    if (!markers) {
+    if (!markers || !markers.runId) {
       this.recordSuppressed(topicId, now, 'run-markers-unreadable');
       return;
     }
@@ -288,8 +338,9 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     const silenceAnchor = lastOutboundAt ?? markers.startedAtMs;
     const minutesSilent = Math.max(1, Math.round((now - silenceAnchor) / 60_000));
 
-    // #6 Per-topic emit-cooldown elapsed (LOCAL map). A new run resets state.
-    const state = this.ensureRunState(topicId, markers.startedAtMs);
+    // #6 Per-run emit-cooldown elapsed (durable ledger). A new run gets a new key.
+    const state = this.ensureRunState(markers.runId, topicId, markers.startedAtMs, now);
+    if (!state) return;
     const cooldownMs = this.currentBackoffMs(state.count);
     if (state.lastHeartbeatAt > 0 && now - state.lastHeartbeatAt < cooldownMs) {
       this.recordSuppressed(topicId, now, 'cooldown-not-elapsed');
@@ -325,11 +376,17 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
       const scrub = scrubFocus(rawFocus);
       const text = this.buildMessage(scrub.focus);
 
+      const previousState = { ...state };
+      const reservedState: RunState = {
+        ...state,
+        lastHeartbeatAt: now,
+        count: state.count + 1,
+      };
+      if (!this.commitRunState(reservedState, topicId, now)) return;
+
       if (this.cfg.dryRun) {
         // dryRun gates on the SAME cooldown/budget as live (it only swaps the
         // final send for a log). Advance state so the next tick doesn't re-log.
-        state.lastHeartbeatAt = now;
-        state.count += 1;
         this.recordEmit({ topicId, at: now, minutesSilent, focus: scrub.focus, dryRun: true });
         this.emit('would-emit', { topicId, minutesSilent, focus: scrub.focus });
         return;
@@ -341,16 +398,16 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
           isProxy: true,
           tier: 1,
         });
-        state.lastHeartbeatAt = now;
-        state.count += 1;
         this.recordEmit({ topicId, at: now, minutesSilent, focus: scrub.focus, dryRun: false });
         this.emit('emitted', { topicId, minutesSilent, focus: scrub.focus });
       } catch (err) {
         // @silent-fallback-ok: NOT silent — a failed heartbeat send is surfaced via
-        // recordSuppressed('send-failed') + the 'send-error' event. We deliberately do
-        // NOT advance cooldown/count (a missed heartbeat is the safe status quo; the
-        // next tick retries). The lease still releases in finally.
-        this.recordSuppressed(topicId, now, 'send-failed');
+        // recordSuppressed('send-failed') + the 'send-error' event.
+        // Roll the pre-send reservation back so a confirmed failed send does not
+        // consume budget. If rollback persistence fails, KEEP the reservation:
+        // under-counting is the unsafe direction because a restart could spam.
+        const rolledBack = this.commitRunState(previousState, topicId, now, false);
+        this.recordSuppressed(topicId, now, rolledBack ? 'send-failed' : 'send-failed-reservation-retained');
         this.emit('send-error', { topicId, err });
       }
     } finally {
@@ -394,13 +451,80 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     return latest;
   }
 
-  private ensureRunState(topicId: number, runStartedAtMs: number | null): RunState {
-    const existing = this.runState.get(topicId);
-    if (existing && existing.runStartedAtMs === runStartedAtMs) return existing;
-    // New run (or first sighting) → fresh throttle state.
-    const fresh: RunState = { runStartedAtMs, lastHeartbeatAt: 0, count: 0 };
-    this.runState.set(topicId, fresh);
-    return fresh;
+  private refreshConfig(): void {
+    if (!this.deps.getConfig) return;
+    try {
+      this.cfg = this.resolveConfig(this.deps.getConfig());
+    } catch (err) {
+      // @silent-fallback-ok — not silent: emits config-error; retaining the
+      // last validated block is safer than silently restoring spammy defaults.
+      // Keep the last known-good config. A transient read must not silently
+      // restore defaults (especially a lower silence threshold / larger cap).
+      this.emit('config-error', err);
+    }
+  }
+
+  private ensureRunState(runId: string, topicId: number, runStartedAtMs: number, now: number): RunState | null {
+    const existing = this.runState.get(runId);
+    if (existing) return existing;
+    try {
+      const persisted = this.deps.runStateStore?.read(runId) ?? null;
+      if (persisted && (persisted.topicId !== topicId || persisted.runStartedAtMs !== runStartedAtMs)) {
+        throw new Error('autonomous-heartbeat-run-state-identity-mismatch');
+      }
+      const state: RunState = persisted ?? {
+        runId,
+        topicId,
+        runStartedAtMs,
+        lastHeartbeatAt: 0,
+        count: 0,
+      };
+      this.runState.set(runId, state);
+      this.persistenceHealthy = true;
+      return state;
+    } catch (err) {
+      // @silent-fallback-ok — not silent: persistence health/error time are
+      // surfaced in status and persistence-error is emitted; send is suppressed.
+      this.notePersistenceFailure(topicId, now, err, 'run-state-unavailable');
+      return null;
+    }
+  }
+
+  /** Commit-before-send reservation. The in-memory image advances only after
+   * the durable write succeeds, so a restart cannot reopen a consumed slot. */
+  private commitRunState(state: RunState, topicId: number, now: number, recordFailure = true): boolean {
+    try {
+      this.deps.runStateStore?.write(state);
+      this.runState.set(state.runId, state);
+      this.persistenceHealthy = true;
+      return true;
+    } catch (err) {
+      // @silent-fallback-ok — not silent: status + persistence-error expose the
+      // failure and the outbound heartbeat is suppressed before send.
+      this.notePersistenceFailure(topicId, now, err, recordFailure ? 'run-state-persist-failed' : null);
+      return false;
+    }
+  }
+
+  private retainActiveRuns(runIds: ReadonlySet<string>, now: number): void {
+    if (!this.deps.runStateStore) return;
+    try {
+      this.deps.runStateStore.retain(runIds);
+      // A clean later tick proves the ledger is readable again. Do not erase a
+      // failure recorded earlier in THIS same tick (write-failed then retain).
+      if (this.persistenceErrorAt < now) this.persistenceHealthy = true;
+    } catch (err) {
+      // @silent-fallback-ok — not silent: retention failure is surfaced through
+      // the same persistence health/error status and event channel.
+      this.notePersistenceFailure(0, now, err, null);
+    }
+  }
+
+  private notePersistenceFailure(topicId: number, now: number, err: unknown, suppressedReason: string | null): void {
+    this.persistenceHealthy = false;
+    this.persistenceErrorAt = now;
+    if (suppressedReason) this.recordSuppressed(topicId, now, suppressedReason);
+    this.emit('persistence-error', { topicId, err });
   }
 
   /**
