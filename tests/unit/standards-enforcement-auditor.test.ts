@@ -14,11 +14,14 @@ import {
   computeCoverage,
   deriveAssessmentConfidence,
   computeInputHash,
+  buildGuardTreeIndex,
+  findMatchingGuardTree,
   probeGuardTree,
   stableView,
   type CoverageReport,
   containedRefPath,
 } from '../../src/core/StandardsEnforcementAuditor.js';
+import { resolveStandardsRegistry } from '../../src/core/standardsRegistryPath.js';
 
 const REAL_REGISTRY = path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md');
 
@@ -426,7 +429,16 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
     // An UNANALYZABLE guard tree is untrustworthy, not verified — the registry may be
     // perfectly sound while every enforcement figure describes a missing repository.
     const noTree = deriveAssessmentConfidence(81, okRegistry, full, {
-      projectDir: '/tmp/not-instar', analyzable: false, markersFound: [],
+      projectDir: '/tmp/not-instar',
+      configuredProjectDir: '/tmp/not-instar',
+      analyzable: false,
+      markersFound: [],
+      basis: 'configured-tree-unverified',
+      freshnessVerified: false,
+      freshnessReason: 'no matching source evidence',
+      sourceIndexSha256: null,
+      registrySha256: null,
+      packageVersion: null,
     });
     expect(noTree.confidence).toBe('untrustworthy');
     expect(noTree.reason).toMatch(/not an analyzable instar source tree/i);
@@ -539,6 +551,52 @@ describe('StandardsEnforcementAuditor — real-registry canary', () => {
       `These files branch on the integrity basis without going through earnsVerified, so the ` +
         `version-skew and count-mismatch downgrades do not apply to them: ${offenders.join(', ')}`,
     ).toEqual([]);
+  });
+});
+
+describe('StandardsEnforcementAuditor — source freshness resolution', () => {
+  beforeEach(buildFixture);
+
+  it('rejects a landmark-complete stale tree and selects the checkout whose evidence matches', () => {
+    const markdown = fs.readFileSync(registryPath, 'utf-8');
+    const expected = buildGuardTreeIndex(repo, markdown, '9.9.9');
+    const stale = fs.mkdtempSync(path.join(os.tmpdir(), 'std-audit-stale-'));
+    try {
+      fs.cpSync(repo, stale, { recursive: true });
+      fs.rmSync(path.join(stale, 'tests/unit/no-silent-llm-fallback.test.ts'));
+
+      expect(probeGuardTree(stale).analyzable, 'the stale tree must pass the old landmark probe').toBe(true);
+      expect(findMatchingGuardTree([stale, repo], expected, markdown, '9.9.9')).toBe(fs.realpathSync(repo));
+    } finally {
+      fs.rmSync(stale, { recursive: true, force: true });
+    }
+  });
+
+  it('returns no checkout when every candidate is stale instead of blessing landmarks', () => {
+    const markdown = fs.readFileSync(registryPath, 'utf-8');
+    const expected = buildGuardTreeIndex(repo, markdown, '9.9.9');
+    fs.rmSync(path.join(repo, 'tests/unit/no-silent-llm-fallback.test.ts'));
+
+    expect(probeGuardTree(repo).analyzable).toBe(true);
+    expect(findMatchingGuardTree([repo], expected, markdown, '9.9.9')).toBeNull();
+  });
+
+  it('the packed-source basis makes freshness independently checkable in the real report', () => {
+    const resolution = resolveStandardsRegistry();
+    expect(resolution.usable).toBe(true);
+    if (!resolution.usable) return;
+
+    const report = computeCoverage({
+      registryPath: resolution.path,
+      registryMarkdown: resolution.markdown,
+      integrity: resolution.integrity,
+      projectDir: process.cwd(),
+    });
+    expect(report.summary.guards.freshnessVerified).toBe(true);
+    expect(report.summary.guards.sourceIndexSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(['executing-source-tree', 'source-tree-index-match']).toContain(report.summary.guards.basis);
+    expect(report.summary.guards.projectDir).toBe(fs.realpathSync(process.cwd()));
+    expect(report.summary.danglingCount).toBe(0);
   });
 });
 

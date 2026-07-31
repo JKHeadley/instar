@@ -103,8 +103,12 @@ function ensureRegistryAsset(): void {
   const needed = [
     path.join(ROOT, 'src', 'data', 'standards-registry.md'),
     path.join(ROOT, 'src', 'data', 'standards-registry.meta.json'),
+    path.join(ROOT, 'src', 'data', 'standards-guard-index.json'),
+    path.join(ROOT, 'src', 'data', 'standards-guard-index.meta.json'),
     path.join(ROOT, 'dist', 'data', 'standards-registry.md'),
     path.join(ROOT, 'dist', 'data', 'standards-registry.meta.json'),
+    path.join(ROOT, 'dist', 'data', 'standards-guard-index.json'),
+    path.join(ROOT, 'dist', 'data', 'standards-guard-index.meta.json'),
   ];
   if (needed.every((p) => fs.existsSync(p))) return;
   execSync('node scripts/generate-standards-registry-asset.mjs', { cwd: ROOT, stdio: 'inherit' });

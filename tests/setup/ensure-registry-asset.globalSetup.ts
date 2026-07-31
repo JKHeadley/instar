@@ -14,6 +14,7 @@ import {
   parseStandardsRegistryDetailed,
   runRegistryCanary,
 } from '../../src/core/StandardsRegistryParser.js';
+import { buildGuardTreeIndex } from '../../src/core/StandardsEnforcementAuditor.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -27,6 +28,8 @@ export function ensureRegistryAsset(root: string): void {
   const outputs = outputDirs.flatMap(dir => [
     path.join(dir, 'standards-registry.md'),
     path.join(dir, 'standards-registry.meta.json'),
+    path.join(dir, 'standards-guard-index.json'),
+    path.join(dir, 'standards-guard-index.meta.json'),
   ]);
   if (outputs.every(output => fs.existsSync(output))) return;
 
@@ -64,10 +67,20 @@ export function ensureRegistryAsset(root: string): void {
     generatedFrom: sourceRelative,
     packageVersion,
   }, null, 2)}\n`;
+  const registrySha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  const guardIndex = buildGuardTreeIndex(root, bytes.toString('utf-8'), packageVersion);
+  const guardIndexBytes = Buffer.from(`${JSON.stringify(guardIndex, null, 2)}\n`, 'utf-8');
+  const guardIndexMeta = `${JSON.stringify({
+    sha256: crypto.createHash('sha256').update(guardIndexBytes).digest('hex'),
+    registrySha256,
+    packageVersion,
+  }, null, 2)}\n`;
 
   for (const dir of outputDirs) {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'standards-registry.md'), bytes);
     fs.writeFileSync(path.join(dir, 'standards-registry.meta.json'), meta);
+    fs.writeFileSync(path.join(dir, 'standards-guard-index.json'), guardIndexBytes);
+    fs.writeFileSync(path.join(dir, 'standards-guard-index.meta.json'), guardIndexMeta);
   }
 }

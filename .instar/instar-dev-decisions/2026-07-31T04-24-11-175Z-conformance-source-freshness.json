@@ -1,0 +1,34 @@
+{
+  "ts": "2026-07-31T04:24:11.175Z",
+  "slug": "conformance-source-freshness",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 490,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/generate-standards-registry-asset.mjs",
+      "src/core/StandardsEnforcementAuditor.ts"
+    ],
+    "addedLines": 448,
+    "deletedLines": 42
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The guard-tree probe established capability from two landmarks but never established identity or freshness. Agent homes legitimately retained old source copies, so a coherent stale tree passed every internal check. The registry side already carried a same-build integrity basis; this change applies the same structure to audit-relevant source evidence."
+  },
+  "classClosure": {
+    "defectClass": "stale-source-accepted-by-landmarks",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/standards-enforcement-auditor.test.ts",
+      "howCaught": "A landmark-complete stale fixture is rejected unless its complete audit-evidence index exactly matches the same-build packed index; the matching checkout is selected and the no-match boundary returns null."
+    }
+  },
+  "verdict": "pass"
+}

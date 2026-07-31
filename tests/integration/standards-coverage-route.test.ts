@@ -273,6 +273,10 @@ describe('GET /conformance/coverage — the PRODUCTION resolution path (no overr
     expect(res.body.registryCurrent).toBe(true);
     expect(res.body.usable).toBe(true);
     expect(res.body.guardsAnalyzable).toBe(true);
+    expect(res.body.summary.guards.freshnessVerified).toBe(true);
+    expect(res.body.summary.guards.sourceIndexSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(res.body.summary.guards.projectDir).toBe(fs.realpathSync(REPO_ROOT));
+    expect(res.body.summary.guards.configuredProjectDir).toBe(REPO_ROOT);
     // Graded over the WHOLE constitution — the point of the change.
     expect(res.body.summary.total).toBeGreaterThanOrEqual(60);
     // And the fleet key the spec names as its rollout discriminator is actually present.
@@ -346,7 +350,9 @@ describe('GET /conformance/coverage — the PRODUCTION resolution path (no overr
           },
         },
         {
-          name: 'unanalyzable guard tree', projectDir: empty, useFixture: false,
+          // Caller-supplied registry deliberately bypasses the production packed-index
+          // fallback so this row still exercises the genuinely missing-guards state.
+          name: 'unanalyzable guard tree', projectDir: empty, useFixture: true,
           expected: {
             usable: false, registryUsable: true, guardsAnalyzable: false,
             registryCurrent: false, verifiedKind: null,

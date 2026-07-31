@@ -25,6 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { parseStandardsRegistryDetailed, runRegistryCanary } from './StandardsRegistryParser.js';
 import { extractEnforcementRefs, flattenRefs, type EnforcementRef } from './StandardEnforcementExtractor.js';
 import { earnsVerified, readAuthoredConstitution, type RegistryIntegrity } from './standardsRegistryPath.js';
@@ -251,12 +252,51 @@ export interface CoverageReport {
  * a confident zero.
  */
 export interface GuardTreeProvenance {
-  /** The directory refs were resolved against. */
+  /** The directory refs were resolved against, or the packed-index sentinel. */
   projectDir: string;
+  /** The configured directory, retained when a packed index supersedes a stale local tree. */
+  configuredProjectDir: string;
   /** Whether that directory actually contains an analyzable instar source tree. */
   analyzable: boolean;
   /** The markers probed, so a reader can see WHY it was judged (un)analyzable. */
   markersFound: string[];
+  /** The independently checkable basis used to select this guard evidence. */
+  basis:
+    | 'executing-source-tree'
+    | 'source-tree-index-match'
+    | 'packed-source-index-match'
+    | 'configured-tree-unverified'
+    | 'not-probed';
+  /** True only when the tree/index is tied to the code and constitution being read. */
+  freshnessVerified: boolean;
+  /** Plain-English explanation of what established (or failed to establish) freshness. */
+  freshnessReason: string;
+  /** sha256 of the packed source index, when that is the basis. */
+  sourceIndexSha256: string | null;
+  /** Registry sha the packed index was generated against. */
+  registrySha256: string | null;
+  /** Package version the packed index was generated for. */
+  packageVersion: string | null;
+}
+
+export interface GuardTreeIndex {
+  schemaVersion: 1;
+  generatedFrom: 'source-tree';
+  registrySha256: string;
+  packageVersion: string;
+  guards: VerifiedGuard[];
+}
+
+interface GuardTreeIndexMeta {
+  sha256: string;
+  registrySha256: string;
+  packageVersion: string;
+}
+
+interface GuardEvidenceResolution {
+  provenance: GuardTreeProvenance;
+  indexedGuards: Map<string, VerifiedGuard> | null;
+  packedIndex?: GuardTreeIndex;
 }
 
 export interface AuditorOptions {
@@ -530,6 +570,294 @@ function verifyRefs(
   });
 }
 
+function guardKey(guard: Pick<VerifiedGuard, 'kind' | 'ref'>): string {
+  return `${guard.kind}\u0000${guard.ref}`;
+}
+
+/**
+ * Build the deterministic evidence index shipped beside the packed constitution.
+ *
+ * This runs in the real source checkout during `npm run build`, where the source tree
+ * is unambiguous. Runtime installs need not guess which old checkout happens to sit in
+ * `projectDir`; they verify and consume this same-build index instead.
+ */
+export function buildGuardTreeIndex(
+  projectDir: string,
+  registryMarkdown: string,
+  packageVersion: string,
+): GuardTreeIndex {
+  const { articles } = parseStandardsRegistryDetailed(registryMarkdown);
+  const extracted = articles.map((article) => extractEnforcementRefs(article));
+  const refsByKey = new Map<string, EnforcementRef>();
+  const wantedMarkers = new Set<string>();
+  for (const refs of extracted) {
+    for (const ref of flattenRefs(refs)) {
+      refsByKey.set(`${ref.kind}\u0000${ref.ref}`, ref);
+      if (ref.kind === 'marker') wantedMarkers.add(ref.ref);
+    }
+  }
+  const routeTable = loadRouteTable(projectDir);
+  const symbolIndex = buildSymbolIndex(projectDir, wantedMarkers);
+  const guards = verifyRefs(
+    [...refsByKey.values()].sort((a, b) => guardKey(a).localeCompare(guardKey(b))),
+    projectDir,
+    routeTable,
+    symbolIndex,
+  );
+  return {
+    schemaVersion: 1,
+    generatedFrom: 'source-tree',
+    registrySha256: crypto.createHash('sha256').update(registryMarkdown).digest('hex'),
+    packageVersion,
+    guards,
+  };
+}
+
+function executingPackageRoot(): string | null {
+  try {
+    return fileURLToPath(new URL('../../', import.meta.url));
+  } catch {
+    // @silent-fallback-ok: this is one candidate identity only. The packed-index
+    // resolver below remains authoritative for published installs and returns a
+    // surfaced, untrustworthy provenance when it cannot verify its own artifacts.
+    return null;
+  }
+}
+
+function sameDirectory(a: string, b: string): boolean {
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b);
+  } catch {
+    // @silent-fallback-ok: inability to prove path identity is a negative result,
+    // never permission to label a configured tree as current.
+    return false;
+  }
+}
+
+function sameGuardIndex(left: GuardTreeIndex, right: GuardTreeIndex): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * Select a real checkout only when its audit-relevant evidence exactly matches the
+ * same-build packed index. Landmark presence alone is deliberately insufficient.
+ */
+export function findMatchingGuardTree(
+  candidates: string[],
+  expected: GuardTreeIndex,
+  registryMarkdown: string,
+  packageVersion: string,
+): string | null {
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let canonical: string;
+    try {
+      canonical = fs.realpathSync(candidate);
+    } catch {
+      // @silent-fallback-ok: a missing candidate is not a degraded audit result; it
+      // simply cannot prove identity and the next bounded candidate is evaluated.
+      continue;
+    }
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    if (!probeGuardTree(canonical).analyzable) continue;
+    let observed: GuardTreeIndex;
+    try {
+      observed = buildGuardTreeIndex(canonical, registryMarkdown, packageVersion);
+    } catch {
+      // @silent-fallback-ok: one optional candidate that cannot be fully indexed
+      // has not established identity. Continue to the next bounded candidate; the
+      // packed fallback retains analysis and exposes its own basis.
+      continue;
+    }
+    if (sameGuardIndex(observed, expected)) return canonical;
+  }
+  return null;
+}
+
+function guardTreeCandidates(configuredProjectDir: string): string[] {
+  const candidates = [
+    configuredProjectDir,
+    path.join(configuredProjectDir, 'repo'),
+    process.cwd(),
+  ];
+  const packageRoot = executingPackageRoot();
+  if (packageRoot) candidates.push(packageRoot);
+
+  // Agent deployments keep a bounded fleet at `<agents>/<name>` and development
+  // agents keep their checkout at `<agent>/repo`. Search only that one known level:
+  // no home-directory crawl, no arbitrary project discovery.
+  const agentsDir = path.dirname(configuredProjectDir);
+  if (path.basename(agentsDir) === 'agents') {
+    try {
+      for (const entry of fs.readdirSync(agentsDir, { withFileTypes: true }).slice(0, 100)) {
+        if (entry.isDirectory()) candidates.push(path.join(agentsDir, entry.name, 'repo'));
+      }
+    } catch {
+      // @silent-fallback-ok: fleet-layout discovery is an optional bounded candidate
+      // source. Package-local evidence below retains the capability and reports its basis.
+    }
+  }
+  return candidates;
+}
+
+function readPackedGuardIndex(
+  registrySha256: string,
+  runningPackageVersion: string | null,
+  configuredProjectDir: string,
+): GuardEvidenceResolution | null {
+  let indexPath: string;
+  let metaPath: string;
+  try {
+    indexPath = fileURLToPath(new URL('../data/standards-guard-index.json', import.meta.url));
+    metaPath = fileURLToPath(new URL('../data/standards-guard-index.meta.json', import.meta.url));
+  } catch {
+    // @silent-fallback-ok: malformed module URL means this candidate is unavailable;
+    // the caller returns configured-tree-unverified with the failed freshness claim
+    // visible in the report.
+    return null;
+  }
+
+  let bytes: Buffer;
+  let parsed: unknown;
+  let meta: unknown;
+  try {
+    bytes = fs.readFileSync(indexPath);
+    parsed = JSON.parse(bytes.toString('utf-8'));
+    meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+  } catch {
+    // @silent-fallback-ok: a missing/unreadable index is not substituted or trusted.
+    // The caller exposes the absence as an unverified guard-tree basis.
+    return null;
+  }
+  const index = parsed as Partial<GuardTreeIndex>;
+  const stamp = meta as Partial<GuardTreeIndexMeta>;
+  const observedSha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  const structurallyValid =
+    index.schemaVersion === 1
+    && index.generatedFrom === 'source-tree'
+    && typeof index.registrySha256 === 'string'
+    && typeof index.packageVersion === 'string'
+    && Array.isArray(index.guards)
+    && index.guards.every((guard) =>
+      guard !== null
+      && typeof guard === 'object'
+      && typeof (guard as VerifiedGuard).ref === 'string'
+      && ['file', 'route', 'marker'].includes((guard as VerifiedGuard).kind)
+      && typeof (guard as VerifiedGuard).refResolves === 'boolean');
+  const stampMatches =
+    stamp.sha256 === observedSha256
+    && stamp.registrySha256 === registrySha256
+    && stamp.packageVersion === runningPackageVersion
+    && index.registrySha256 === registrySha256
+    && index.packageVersion === runningPackageVersion;
+  if (!structurallyValid || !stampMatches) return null;
+
+  const indexedGuards = new Map<string, VerifiedGuard>();
+  for (const guard of index.guards as VerifiedGuard[]) {
+    indexedGuards.set(guardKey(guard), { ...guard });
+  }
+  return {
+    provenance: {
+      projectDir: '(packed same-build source index)',
+      configuredProjectDir,
+      analyzable: true,
+      markersFound: ['packed guard evidence'],
+      basis: 'packed-source-index-match',
+      freshnessVerified: true,
+      freshnessReason:
+        `the source evidence index sha256 ${observedSha256} matches its build meta, registry ` +
+        `sha256 ${registrySha256}, and running package version ${runningPackageVersion}`,
+      sourceIndexSha256: observedSha256,
+      registrySha256,
+      packageVersion: runningPackageVersion,
+    },
+    indexedGuards,
+    packedIndex: index as GuardTreeIndex,
+  };
+}
+
+function resolveGuardEvidence(
+  opts: AuditorOptions,
+  registryMarkdown: string,
+): GuardEvidenceResolution {
+  const registrySha256 = crypto.createHash('sha256').update(registryMarkdown).digest('hex');
+  const configuredProbe = probeGuardTree(opts.projectDir);
+
+  if (opts.integrity?.basis === 'packed-meta-match') {
+    const packed = readPackedGuardIndex(
+      registrySha256,
+      opts.integrity.runningPackageVersion,
+      opts.projectDir,
+    );
+    if (packed && packed.packedIndex && opts.integrity.runningPackageVersion) {
+      const matched = findMatchingGuardTree(
+        guardTreeCandidates(opts.projectDir),
+        packed.packedIndex,
+        registryMarkdown,
+        opts.integrity.runningPackageVersion,
+      );
+      if (matched) {
+        const probe = probeGuardTree(matched);
+        const packageRoot = executingPackageRoot();
+        const executing = packageRoot !== null && sameDirectory(packageRoot, matched);
+        return {
+          provenance: {
+            ...probe,
+            configuredProjectDir: opts.projectDir,
+            basis: executing ? 'executing-source-tree' : 'source-tree-index-match',
+            freshnessVerified: true,
+            freshnessReason:
+              `the live tree's complete audit-evidence index exactly matches packed source index ` +
+              `${packed.provenance.sourceIndexSha256}; landmark-only candidates were rejected`,
+            sourceIndexSha256: packed.provenance.sourceIndexSha256,
+            registrySha256,
+            packageVersion: opts.integrity.runningPackageVersion,
+          },
+          indexedGuards: null,
+        };
+      }
+    }
+    if (packed) return packed;
+  }
+
+  return {
+    provenance: {
+      ...configuredProbe,
+      configuredProjectDir: opts.projectDir,
+      basis: 'configured-tree-unverified',
+      freshnessVerified: false,
+      freshnessReason:
+        configuredProbe.analyzable
+          ? 'the configured tree has the audit landmarks, but no same-build identity ties it to the packed constitution; a coherent stale tree passes landmark probes by construction'
+          : 'the configured tree lacks the complete source landmarks and no valid same-build source index was available',
+      sourceIndexSha256: null,
+      registrySha256,
+      packageVersion:
+        opts.integrity?.basis === 'packed-meta-match'
+          ? opts.integrity.runningPackageVersion
+          : null,
+    },
+    indexedGuards: null,
+  };
+}
+
+function verifyRefsFromResolution(
+  refs: EnforcementRef[],
+  resolution: GuardEvidenceResolution,
+  projectDir: string,
+  routeTable: Set<string>,
+  symbolIndex: Set<string>,
+): VerifiedGuard[] {
+  if (resolution.indexedGuards === null) {
+    return verifyRefs(refs, projectDir, routeTable, symbolIndex);
+  }
+  return refs.map((ref) => {
+    const indexed = resolution.indexedGuards!.get(`${ref.kind}\u0000${ref.ref}`);
+    return indexed ? { ...indexed } : { ref: ref.ref, kind: ref.kind, refResolves: false };
+  });
+}
+
 /** Classify a standard by its strongest VERIFIED guard. */
 function classifyStandard(guards: VerifiedGuard[]): EnforcementKind {
   let best: Exclude<EnforcementKind, 'documented-only'> | null = null;
@@ -601,7 +929,10 @@ function guardStateSignal(projectDir: string, prior?: CoverageReport | null): st
   return h.digest('hex').slice(0, 16);
 }
 
-export function computeInputHash(opts: AuditorOptions): string {
+function computeInputHashForResolution(
+  opts: AuditorOptions,
+  guardResolution?: GuardEvidenceResolution,
+): string {
   // An UNREADABLE registry must not hash identically to an empty-but-present one:
   // that conflation is the honest-denominators shape at the cache layer, where a
   // missing constitution would share a cache slot with a genuinely blank one.
@@ -671,7 +1002,16 @@ export function computeInputHash(opts: AuditorOptions): string {
   const authoredSignal = authored === null
     ? 'no-authored-source'
     : crypto.createHash('sha256').update(authored).digest('hex').slice(0, 16);
-  return `${regHash}.${auxHash}.${authoredSignal}.${repoStructureSignal(opts.projectDir)}`;
+  const guardBasisSignal = guardResolution
+    ? `${guardResolution.provenance.basis}:${guardResolution.provenance.sourceIndexSha256 ?? 'live'}:` +
+      `${guardResolution.provenance.projectDir}`
+    : 'guard-basis-not-resolved';
+  return `${regHash}.${auxHash}.${authoredSignal}.${repoStructureSignal(opts.projectDir)}.` +
+    crypto.createHash('sha256').update(guardBasisSignal).digest('hex').slice(0, 16);
+}
+
+export function computeInputHash(opts: AuditorOptions): string {
+  return computeInputHashForResolution(opts);
 }
 
 /**
@@ -753,36 +1093,31 @@ export function deriveAssessmentConfidence(
     };
   }
   const verdict = earnsVerified(integrity);
-  if (verdict.verified) {
+  if (!verdict.verified) {
     return {
-      confidence: 'verified',
+      confidence: 'unverified',
       reason:
-        `${total} standards parsed from ${registry.path}, and ${verdict.reason}. ` +
-        // The honest scope limit, stated IN the verdict rather than left to be inferred.
-        //
-        // The REGISTRY half now carries three currency operands. The GUARD half carries
-        // none: refs resolve against whatever src/ sits in projectDir, and on a deployed
-        // agent that is a copy which can be months older than the constitution being
-        // graded (measured: an agent home's routes.ts dated May 28 against a current
-        // registry). So `verified` speaks for the constitution's currency, NOT for the
-        // currency of the tree its guards were looked up in.
-        //
-        // Naming the limit rather than silently widening the word is the same repair this
-        // change already made twice. Establishing guard-tree currency is a separate job
-        // and is recorded as one, not quietly folded in here.
-        `SCOPE NOTE: this verdict covers the CONSTITUTION's currency only. The enforcement ` +
-        `refs were resolved against ${guards?.projectDir ?? 'the configured project dir'}, ` +
-        `whose currency is not established by anything here — on a deployed agent that tree ` +
-        `can be older than the constitution being graded`,
+        `internal checks passed over ${total} standards parsed from ${registry.path} ` +
+        `(${registry.bytes} bytes), but ${verdict.reason} — so nothing establishes this is the CURRENT ` +
+        `constitution rather than a coherent older copy; a stale registry passes every internal check ` +
+        `by construction`,
+    };
+  }
+  if (guards && !guards.freshnessVerified) {
+    return {
+      confidence: 'untrustworthy',
+      reason:
+        `the constitution is package-stamped, but guard-tree freshness was not established: ` +
+        `${guards.freshnessReason}. The coverage counts remain observable for diagnosis, but a stale ` +
+        `tree passes capability landmarks by construction and cannot support a trustworthy ratio`,
     };
   }
   return {
-    confidence: 'unverified',
+    confidence: 'verified',
     reason:
-      `internal checks passed over ${total} standards parsed from ${registry.path} ` +
-      `(${registry.bytes} bytes), but ${verdict.reason} — so nothing establishes this is the CURRENT ` +
-      `constitution rather than a coherent older copy; a stale registry passes every internal check ` +
-      `by construction`,
+      `${total} standards parsed from ${registry.path}, and ${verdict.reason}. ` +
+      `The guard evidence is also current: ${guards?.freshnessReason ?? 'the caller supplied no guard provenance'}. ` +
+      `This is package/build currency, not a runtime execution check and not tamper-resistant`,
   };
 }
 
@@ -824,7 +1159,18 @@ export function probeGuardTree(projectDir: string): GuardTreeProvenance {
   // `analyzable` permanently false the moment anyone adds a third `check()` — which is
   // exactly the failure this probe was just repaired from, encoded so it can recur.
   const analyzable = markersFound.includes('src/server/routes.ts') && markersFound.includes('src/core');
-  return { projectDir, analyzable, markersFound };
+  return {
+    projectDir,
+    configuredProjectDir: projectDir,
+    analyzable,
+    markersFound,
+    basis: 'configured-tree-unverified',
+    freshnessVerified: false,
+    freshnessReason: 'landmark presence proves analyzability, not source-tree identity or freshness',
+    sourceIndexSha256: null,
+    registrySha256: null,
+    packageVersion: null,
+  };
 }
 
 /**
@@ -891,7 +1237,15 @@ export function computeCoverage(
   opts: AuditorOptions,
   prior?: CoverageReport | null,
 ): CoverageReport {
-  const inputHash = computeInputHash(opts);
+  // Read once before source resolution: the guard index is tied to these exact
+  // registry bytes, and candidate checkouts are selected by reproducing that index.
+  const registryMarkdown = opts.registryMarkdown ?? fs.readFileSync(opts.registryPath, 'utf-8');
+  assertResolutionCoherent(opts, registryMarkdown);
+  const guardResolution = resolveGuardEvidence(opts, registryMarkdown);
+  const inputHash = computeInputHashForResolution(opts, guardResolution);
+  const currentGuardSignal = guardResolution.provenance.sourceIndexSha256 !== null
+    ? `source-index:${guardResolution.provenance.sourceIndexSha256}`
+    : guardStateSignal(guardResolution.provenance.projectDir, prior);
   // TWO conditions, not one.
   //
   // `inputHash` covers the registry bytes, the basis, the paths and a coarse repo
@@ -907,7 +1261,7 @@ export function computeCoverage(
   // prior-derived value into the key makes the first computation (no prior) and the
   // second (with prior) disagree by construction, so the short-circuit would never fire
   // — which is how the first attempt at this failed, caught by an existing test.
-  if (prior && prior.inputHash === inputHash && prior.guardSignal === guardStateSignal(opts.projectDir, prior)) {
+  if (prior && prior.inputHash === inputHash && prior.guardSignal === currentGuardSignal) {
     // Inputs unchanged → the deterministic report is byte-identical to the prior;
     // return it (only its timestamp would differ on recompute). The short-circuit.
     return prior;
@@ -915,7 +1269,6 @@ export function computeCoverage(
 
   // Read ONCE and keep what the parse saw: the audit must be able to state the
   // denominator it computed over (honest-denominators instance 4).
-  const registryMarkdown = opts.registryMarkdown ?? fs.readFileSync(opts.registryPath, 'utf-8');
   const { articles, diagnostics } = parseStandardsRegistryDetailed(registryMarkdown);
   const canary = runRegistryCanary(articles, diagnostics);
   const registry: RegistryProvenance = {
@@ -929,20 +1282,30 @@ export function computeCoverage(
     canaryOk: canary.ok,
     canaryFailures: canary.failures,
   };
-  assertResolutionCoherent(opts, registryMarkdown);
-  const guards = probeGuardTree(opts.projectDir);
-  const routeTable = loadRouteTable(opts.projectDir);
+  const guards = guardResolution.provenance;
+  const liveProjectDir = guards.projectDir;
+  const routeTable = guardResolution.indexedGuards === null
+    ? loadRouteTable(liveProjectDir)
+    : new Set<string>();
 
   // Collect every wanted marker across all articles → ONE bounded src walk.
   const extracted = articles.map((a) => ({ a, refs: extractEnforcementRefs(a) }));
   const wantedMarkers = new Set<string>();
   for (const { refs } of extracted) for (const m of refs.markers) wantedMarkers.add(m);
-  const symbolIndex = buildSymbolIndex(opts.projectDir, wantedMarkers);
+  const symbolIndex = guardResolution.indexedGuards === null
+    ? buildSymbolIndex(liveProjectDir, wantedMarkers)
+    : new Set<string>();
 
   const classifiedAt = new Date().toISOString();
   const standards: StandardCoverage[] = extracted.map(({ a, refs }) => {
     const flat = flattenRefs(refs);
-    const guards = verifyRefs(flat, opts.projectDir, routeTable, symbolIndex);
+    const guards = verifyRefsFromResolution(
+      flat,
+      guardResolution,
+      liveProjectDir,
+      routeTable,
+      symbolIndex,
+    );
     const enforcementKind = classifyStandard(guards);
     const danglingRefs = guards.filter((g) => !g.refResolves).map((g) => g.ref).sort();
     return { standard: a.name, family: a.family, enforcementKind, guards, danglingRefs, classifiedAt };
@@ -962,8 +1325,15 @@ export function computeCoverage(
   const danglingCount = standards.reduce((n, s) => n + s.danglingRefs.length, 0);
 
   const { confidence: assessmentConfidence, reason: confidenceReason } =
-    deriveAssessmentConfidence(total, registry, opts.integrity, guards,
-      compareAgainstAuthoredSource(opts.projectDir, registryMarkdown));
+    deriveAssessmentConfidence(
+      total,
+      registry,
+      opts.integrity,
+      guards,
+      guards.basis === 'executing-source-tree' || guards.basis === 'source-tree-index-match'
+        ? compareAgainstAuthoredSource(liveProjectDir, registryMarkdown)
+        : { answerable: false, matches: false },
+    );
 
   const report: CoverageReport = {
     generatedAt: classifiedAt,
@@ -990,7 +1360,9 @@ export function computeCoverage(
     },
   };
   // Computed AFTER the standards exist, because it digests the refs this pass resolved.
-  report.guardSignal = guardStateSignal(opts.projectDir, report);
+  report.guardSignal = guardResolution.provenance.sourceIndexSha256 !== null
+    ? `source-index:${guardResolution.provenance.sourceIndexSha256}`
+    : guardStateSignal(liveProjectDir, report);
   return report;
 }
 
@@ -1045,7 +1417,18 @@ export function unusableCoverageReport(
       registry,
       // No pass ran, so the guard tree was never probed. Reporting `analyzable:
       // false` here would assert a fact about the repo that this path never checked.
-      guards: { projectDir: '(not probed — the registry was unusable)', analyzable: false, markersFound: [] },
+      guards: {
+        projectDir: '(not probed — the registry was unusable)',
+        configuredProjectDir: '(unknown)',
+        analyzable: false,
+        markersFound: [],
+        basis: 'not-probed',
+        freshnessVerified: false,
+        freshnessReason: 'the registry was unusable, so no guard source was selected',
+        sourceIndexSha256: null,
+        registrySha256: registry.sha256,
+        packageVersion: null,
+      },
     },
   };
 }
