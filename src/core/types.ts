@@ -6531,8 +6531,8 @@ export interface MonitoringConfig {
     minDistinctDaysInfraGap?: number;
     /** Distinct calendar days required for an explicit-preference learning (Slice 1b). */
     minDistinctDaysPreference?: number;
-    /** Distinct topics required for the preference path's second prong (Slice 1b). */
-    minDistinctTopicsPreference?: number;
+    /** Distinct context-reset sessions required for the preference path's second prong. */
+    minDistinctSessionsPreference?: number;
     /** Auto-submit infra-gap learnings to /feedback (Slice 1b/3). Default false. */
     autoFeedback?: boolean;
     /** Post a periodic Telegram digest of learned preferences (Slice 2). Default false. */

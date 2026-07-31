@@ -603,7 +603,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       minSupport: 4,
       minDistinctDaysInfraGap: 3,
       minDistinctDaysPreference: 2,
-      minDistinctTopicsPreference: 2,
+      minDistinctSessionsPreference: 2,
       autoFeedback: false,
       telegramDigest: false,
       driftCanary: false,
