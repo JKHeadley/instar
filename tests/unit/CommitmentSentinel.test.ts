@@ -60,6 +60,7 @@ function writeMessages(stateDir: string, messages: Array<{
   text: string;
   fromUser: boolean;
   timestamp?: string;
+  provenance?: 'user' | 'agent' | 'automation';
 }>): void {
   const messagesPath = path.join(stateDir, 'telegram-messages.jsonl');
   const lines = messages.map(m => JSON.stringify({
@@ -68,6 +69,7 @@ function writeMessages(stateDir: string, messages: Array<{
     text: m.text,
     fromUser: m.fromUser,
     timestamp: m.timestamp ?? new Date().toISOString(),
+    ...(m.provenance ? { provenance: m.provenance } : {}),
   }));
   fs.writeFileSync(messagesPath, lines.join('\n') + '\n');
 }
@@ -127,6 +129,37 @@ describe('CommitmentSentinel', () => {
       const detected = await sentinel.scan();
       expect(detected).toBe(0);
       expect(intelligence.evaluate).not.toHaveBeenCalled();
+    });
+
+    it('does not treat an automated outbound row as the agent reply in a commitment pair', async () => {
+      writeMessages(stateDir, [
+        { messageId: 1, topicId: 100, text: 'Can you investigate this?', fromUser: true, provenance: 'user' },
+        { messageId: 2, topicId: 100, text: 'System status: all checks running', fromUser: false, provenance: 'automation' },
+      ]);
+
+      const intelligence = createMockIntelligence('[]');
+      const { sentinel } = makeSentinel(stateDir, intelligence);
+
+      await expect(sentinel.scan()).resolves.toBe(0);
+      expect(intelligence.evaluate).not.toHaveBeenCalled();
+    });
+
+    it('pairs the user request with the later agent reply across intervening automation', async () => {
+      writeMessages(stateDir, [
+        { messageId: 1, topicId: 100, text: 'Please turn off auto-updates', fromUser: true, provenance: 'user' },
+        { messageId: 2, topicId: 100, text: 'System status: recovery running', fromUser: false, provenance: 'automation' },
+        { messageId: 3, topicId: 100, text: 'I will turn off auto-updates now', fromUser: false, provenance: 'agent' },
+      ]);
+
+      const intelligence = createMockIntelligence('[]');
+      const { sentinel } = makeSentinel(stateDir, intelligence);
+      await sentinel.scan();
+
+      expect(intelligence.evaluate).toHaveBeenCalledTimes(1);
+      const prompt = String((intelligence.evaluate as ReturnType<typeof vi.fn>).mock.calls[0][0]);
+      expect(prompt).toContain('Please turn off auto-updates');
+      expect(prompt).toContain('I will turn off auto-updates now');
+      expect(prompt).not.toContain('System status: recovery running');
     });
 
     it('returns 0 for empty message file', async () => {

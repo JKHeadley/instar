@@ -130,8 +130,22 @@ describe('TelegramAdapter messaging', () => {
       expect(entry.topicId).toBe(42);
       expect(entry.text).toBe('Logged message');
       expect(entry.fromUser).toBe(false);
+      expect(entry.provenance).toBe('automation');
       expect(entry.messageId).toBe(1);
       expect(entry.timestamp).toBeTruthy();
+    });
+
+    it('records an explicit conversational reply as agent-authored', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ ok: true, result: { message_id: 2 } }),
+      });
+
+      await adapter.sendToTopic(42, 'A deliberate reply', { provenance: 'agent' });
+
+      const entry = JSON.parse(fs.readFileSync(path.join(tmpDir, 'telegram-messages.jsonl'), 'utf-8').trim());
+      expect(entry.provenance).toBe('agent');
+      expect(entry.fromUser).toBe(false);
     });
 
     it('includes session name in log when topic has registered session', async () => {
@@ -700,6 +714,7 @@ describe('TelegramAdapter messaging', () => {
       expect(entry.topicId).toBe(42);
       expect(entry.text).toBe('Log this message');
       expect(entry.fromUser).toBe(true);
+      expect(entry.provenance).toBe('user');
     });
   });
 });

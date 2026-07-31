@@ -48,6 +48,7 @@ interface TelegramMessage {
   fromUser: boolean;
   timestamp: string;
   sessionName?: string | null;
+  provenance?: 'user' | 'agent' | 'automation';
 }
 
 interface DetectedCommitment {
@@ -273,15 +274,24 @@ export class CommitmentSentinel {
     const pairs: Array<{ user: string; agent: string }> = [];
 
     for (let i = 0; i < messages.length - 1; i++) {
-      if (messages[i].fromUser && !messages[i + 1].fromUser) {
-        // Drop bare approval/continuation exchanges before the LLM sees them —
-        // the dominant false-positive source (#49). A message that asks for
-        // nothing durable cannot seed a commitment.
-        if (isBareContinuation(messages[i].text)) continue;
-        pairs.push({
-          user: messages[i].text,
-          agent: messages[i + 1].text,
-        });
+      const userMessage = messages[i];
+      if (!userMessage.fromUser) continue;
+      // Drop bare approval/continuation exchanges before the LLM sees them —
+      // the dominant false-positive source (#49). A message that asks for
+      // nothing durable cannot seed a commitment.
+      if (isBareContinuation(userMessage.text)) continue;
+
+      // Automation may legitimately appear between a user request and the
+      // conversational reply (health notice, proxy update, watcher status).
+      // Skip structurally automated rows, but stop at the next user message so
+      // a reply is never paired with the wrong request. Legacy outbound rows
+      // have no provenance and retain the old immediate-agent behavior.
+      for (let j = i + 1; j < messages.length; j++) {
+        const candidate = messages[j];
+        if (candidate.fromUser) break;
+        if (candidate.provenance === 'automation') continue;
+        pairs.push({ user: userMessage.text, agent: candidate.text });
+        break;
       }
     }
 

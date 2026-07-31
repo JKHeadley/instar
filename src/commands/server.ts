@@ -12295,7 +12295,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text, metadata: { provenance: 'automation' } }),
         });
         return resp.ok;
       },
@@ -12621,7 +12621,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
-                  body: JSON.stringify({ text }),
+                  body: JSON.stringify({ text, metadata: { provenance: 'automation' } }),
                 });
                 return resp.ok;
               } catch {
@@ -13987,9 +13987,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         const slackMessagesLogPath = path.join(config.stateDir, 'slack-messages.jsonl');
 
         // Shared helper: check a messages log file for SUBSTANTIVE agent
-        // responses after a timestamp. Filters out system/proxy messages via
-        // isSystemOrProxyMessage AND brief acks via isBriefAck — both kinds
-        // of messages are non-cancelling from PresenceProxy's perspective.
+        // responses after a timestamp. New Telegram rows use structural
+        // provenance; legacy Telegram and Slack rows retain the text classifier
+        // until their writers have migrated. Brief acks remain non-cancelling.
         //
         // The brief-ack filter is what closes the gap from PR #128: that PR
         // taught the event path (recordAgentMessage) to ignore acks, but the
@@ -14011,10 +14011,12 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const matchesTopic = msg.topicId === topicId
                   || (topicId < 0 && msg.channelId && slackChannelToSyntheticId(String(msg.channelId)) === topicId);
                 if (matchesTopic && !msg.fromUser && msg.timestamp > sinceIso) {
+                  if (msg.provenance === 'automation' || msg.provenance === 'user') continue;
                   // Non-cancelling agent message kinds: system/proxy
-                  // chrome, and brief acks ("On it"). Both leave tier
-                  // timers running.
-                  const isNonCancelling = isSystemOrProxyMessage(msg.text)
+                  // chrome on legacy rows, and brief acks ("On it"). Both
+                  // leave tier timers running. A structurally agent-authored
+                  // row is never reclassified from its text prefix.
+                  const isNonCancelling = (msg.provenance !== 'agent' && isSystemOrProxyMessage(msg.text))
                     || isBriefAck(msg.text);
                   if (isNonCancelling) continue;
                   return true;

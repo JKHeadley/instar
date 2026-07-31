@@ -72,4 +72,21 @@ describe('CoherenceMonitor output-sanity bounded read', () => {
     expect(sanity).toBeDefined();
     expect(sanity!.passed).toBe(false); // the recent localhost message was reachable
   });
+
+  it('does not attribute a structurally automated row to the conversational agent', () => {
+    const logPath = path.join(stateDir, 'telegram-messages.jsonl');
+    fs.writeFileSync(logPath, JSON.stringify({
+      messageId: 1,
+      topicId: 1,
+      text: 'Automated diagnostic at http://localhost:4040/dashboard',
+      fromUser: false,
+      provenance: 'automation',
+      timestamp: new Date().toISOString(),
+    }) + '\n');
+
+    const report = makeMonitor().runCheck();
+    const sanity = report.checks.find((c) => c.name === 'output-sanity');
+    expect(sanity).toBeDefined();
+    expect(sanity!.passed).toBe(true);
+  });
 });
