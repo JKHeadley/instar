@@ -13,12 +13,13 @@
  *   - <stateDir>/remediation/audit-projection-<machineId>.jsonl  (accepted)
  *   - <stateDir>/remediation/audit-rejected.jsonl                (rejected)
  *
- * In-memory tail (A29): the writer keeps the last 1,000 accepted entries in
- * memory for hot-path reads by the churn detector and projection consumers.
+ * In-memory tail (A29): the writer hydrates and keeps the last 1,000 accepted
+ * entries for hot-path reads by boot reconciliation and projection consumers.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { readJsonlTailLastLines } from '../../utils/jsonl-tail.js';
 
 export type AuditOutcome =
   | 'started'
@@ -71,6 +72,7 @@ export interface AppendResult {
 }
 
 const DEFAULT_TAIL_SIZE = 1000;
+const AUDIT_TAIL_MAX_BYTES = 2 * 1024 * 1024;
 
 export class AuditWriter {
   private readonly projectionPath: string;
@@ -92,6 +94,7 @@ export class AuditWriter {
     this.rejectedPath = path.join(dir, 'audit-rejected.jsonl');
     this.tokenVerifier = options.tokenVerifier;
     this.tailSize = options.tailSize ?? DEFAULT_TAIL_SIZE;
+    this.hydrateTail();
   }
 
   /**
@@ -117,7 +120,7 @@ export class AuditWriter {
     return { accepted: true };
   }
 
-  /** In-memory tail of the last N accepted entries (A29). */
+  /** Hydrated in-memory tail of the last N accepted entries (A29). */
   recentTail(): AuditEntry[] {
     return [...this.tail];
   }
@@ -155,6 +158,32 @@ export class AuditWriter {
     this.tail.push(entry);
     if (this.tail.length > this.tailSize) {
       this.tail.splice(0, this.tail.length - this.tailSize);
+    }
+  }
+
+  /**
+   * Restore the hot read index from the durable projection at process boot.
+   * The tail is bounded by both entry count and bytes so a long-lived audit
+   * log never turns construction into a whole-file synchronous read.
+   */
+  private hydrateTail(): void {
+    const lines = readJsonlTailLastLines(
+      this.projectionPath,
+      this.tailSize,
+      AUDIT_TAIL_MAX_BYTES,
+    );
+    for (const line of lines) {
+      try {
+        const entry = deserializeAuditEntry(line);
+        this.pushTail(entry);
+        const key = `${entry.subsystem}:${entry.attemptId}`;
+        const previous = this.highWatermark.get(key) ?? 0;
+        this.highWatermark.set(key, Math.max(previous, entry.timestamp));
+      } catch {
+        // A malformed durable row is omitted from the hot read index. The
+        // append path remains available, and boot reconciliation will surface
+        // any intent whose matching audit evidence is consequently absent.
+      }
     }
   }
 }

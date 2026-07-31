@@ -23,6 +23,8 @@ import {
 import { Remediator } from '../../src/remediation/Remediator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { nodeAbiMismatchRunbook } from '../../src/remediation/runbooks/node-abi-mismatch.js';
+import { IntentJournal } from '../../src/remediation/IntentJournal.js';
+import { AuditWriter } from '../../src/remediation/audit/AuditWriter.js';
 
 // ── Fixture helpers ──────────────────────────────────────────────────────
 
@@ -183,6 +185,43 @@ describe('RemediatorBootstrap', () => {
       expect(result.vault).toBeDefined();
       expect(result.registeredRunbookIds).toContain('node-abi-mismatch');
       expect(result.registeredRunbookIds).toContain('messaging-delivery-failed');
+    });
+  });
+
+  it('reconciles persisted intents against the hydrated audit tail at boot', async () => {
+    await withEnvPassphrase(async () => {
+      const machineId = 'm-bootstrap-reconcile';
+      const intentJournal = new IntentJournal(tmpDir, { machineId });
+      await intentJournal.declareIntent({
+        attemptId: 'matched-attempt',
+        runbookId: 'node-abi-mismatch',
+        signatureHash: 'sig',
+        blastRadius: 'process',
+        intent: 'dispatch',
+      });
+      const auditWriter = new AuditWriter(tmpDir, {
+        machineId,
+        tokenVerifier: () => true,
+      });
+      await auditWriter.append({
+        entryId: 'entry-1',
+        attemptId: 'matched-attempt',
+        outcome: 'started',
+        runbookId: 'node-abi-mismatch',
+        subsystem: 'memory',
+        timestamp: Date.now(),
+        monotonicTs: process.hrtime.bigint(),
+        auditToken: Buffer.from('fixture'),
+      });
+
+      const result = await callBootstrapWithEnvBackend({ stateDir: tmpDir, machineId });
+      expect(result.disabled).toBe(false);
+      if (result.disabled) return;
+      expect(result.intentAuditReconciliation).toMatchObject({
+        intentsRead: 1,
+        auditEntriesRead: 1,
+        unmatchedIntentAttemptIds: [],
+      });
     });
   });
 

@@ -25,6 +25,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline';
 
 export type IntentBlastRadius = 'process' | 'machine' | 'fleet';
 export type IntentKind = 'dispatch' | 'verify' | 'rollback' | 'quarantine';
@@ -96,9 +97,10 @@ export class IntentJournal {
    */
   async readSince(cursor: number): Promise<IntentEntry[]> {
     if (!fs.existsSync(this.journalPath)) return [];
-    const raw = fs.readFileSync(this.journalPath, 'utf8');
     const out: IntentEntry[] = [];
-    for (const line of raw.split('\n')) {
+    const input = fs.createReadStream(this.journalPath, { encoding: 'utf8' });
+    const lines = readline.createInterface({ input, crlfDelay: Infinity });
+    for await (const line of lines) {
       if (!line) continue;
       let parsed: IntentEntry | undefined;
       try {
