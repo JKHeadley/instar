@@ -85,6 +85,51 @@ describe('standards-coverage ratchet script', () => {
     expect(r.out).toContain('removed.test.ts');
   });
 
+  // ── FALSE-CLAIM DETECTION (2026-07-31) ────────────────────────────────────
+  // A gap that ASSERTS running machinery is a false all-clear, not an honest gap.
+  // Both sides of the boundary are pinned: a prose CLAIM with no guard is caught;
+  // the same claim WITH a resolvable guard is not; and a prescriptive "must" is not
+  // a claim. Earned from Cross-Store Coherence, which asserts "a scheduled coherence
+  // audit walks the list on every machine daily" while no such audit exists.
+
+  it('FLAGS a gap whose prose asserts running machinery but names no guard', () => {
+    fs.appendFileSync(
+      path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'),
+      '\n### Claims An Audit\n**Rule.** r.\n**In practice.** A scheduled coherence audit walks the list on every machine daily.\n',
+    );
+    const r = runCheck({ STANDARDS_FALSE_CLAIM_CEILING: '0', STANDARDS_ENFORCED_RATIO_FLOOR: '0' });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('false claims');
+    expect(r.out).toContain('Claims An Audit');
+  });
+
+  it('does NOT flag the same claim when the standard names a guard that resolves', () => {
+    fs.appendFileSync(
+      path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'),
+      '\n### Claims And Cites\n**Rule.** r.\n**In practice.** A scheduled coherence audit walks the list on every machine daily, enforced by `tests/unit/widget.test.ts`.\n',
+    );
+    const r = runCheck({ STANDARDS_FALSE_CLAIM_CEILING: '0', STANDARDS_ENFORCED_RATIO_FLOOR: '0' });
+    expect(r.code).toBe(0);
+  });
+
+  it('does NOT flag a PRESCRIPTIVE requirement (a rule, not a claim of fact)', () => {
+    fs.appendFileSync(
+      path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'),
+      '\n### Prescribes Only\n**Rule.** Any two such stores must be checked on a cadence by machinery.\n**In practice.** declare the invariant when you add the store.\n',
+    );
+    const r = runCheck({ STANDARDS_FALSE_CLAIM_CEILING: '0', STANDARDS_ENFORCED_RATIO_FLOOR: '0' });
+    expect(r.code).toBe(0);
+  });
+
+  it('does NOT flag an ordinary unguarded standard that claims nothing', () => {
+    fs.appendFileSync(
+      path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'),
+      '\n### Honest Gap\n**Rule.** behave this way.\n**In practice.** use judgment.\n',
+    );
+    const r = runCheck({ STANDARDS_FALSE_CLAIM_CEILING: '0', STANDARDS_ENFORCED_RATIO_FLOOR: '0' });
+    expect(r.code).toBe(0);
+  });
+
   it('writes the output file but it is NOT the read baseline (the floor is the committed constant)', () => {
     runCheck();
     const outPath = path.join(repo, '.instar', 'standards-coverage.json');
