@@ -91,6 +91,9 @@ describe('PromiseBeacon', () => {
       sendMessage: async (topicId, text) => { sent.push({ topicId, text }); },
       generateStatusLine: spy,
       suppressUnchangedHeartbeats: false,
+      // Isolate the B1 rollback surface from the independent topic-aggregation
+      // cadence (covered in PromiseBeacon-aggregation.test.ts).
+      aggregateByTopic: false,
     });
     beacon.start();
 

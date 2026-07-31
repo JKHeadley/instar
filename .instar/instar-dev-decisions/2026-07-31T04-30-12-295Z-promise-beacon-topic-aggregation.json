@@ -1,0 +1,38 @@
+{
+  "ts": "2026-07-31T04:30:12.295Z",
+  "slug": "promise-beacon-topic-aggregation",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 470,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/PromiseBeacon.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 454,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/PromiseBeacon-aggregation.test.ts",
+      "howCaught": "A per-topic durable coalescing queue, one timer per topic, minimum cadence floor, and retry-not-before cadence settle backlog-proportional notifications to at most one user-facing summary per topic window; the burst/restart/boundary tests fail if that convergence bound regresses."
+    },
+    "component": "PromiseBeacon"
+  },
+  "verdict": "pass"
+}

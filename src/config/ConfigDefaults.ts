@@ -1919,6 +1919,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     },
   },
   promiseBeacon: {
+    aggregateByTopic: true, // P17 — one count+list summary per topic cadence, never one message per promise
     suppressUnchangedHeartbeats: true, // B1 — false restores the legacy every-tick templated heartbeat (rollback)
     beaconLivenessIntervalMs: 3_600_000, // B1b — at most one sparse "still watching" line per 60m
     turnFinishedCloseoutChecks: 3, // B2/FD-1 — N idle-frame checks before the one-shot close-out
