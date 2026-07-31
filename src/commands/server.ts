@@ -13800,6 +13800,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       suppressUnchangedHeartbeats?: boolean;
       beaconLivenessIntervalMs?: number;
       turnFinishedCloseoutChecks?: number;
+      aggregateByTopic?: boolean;
     };
     const sharedLlmQueue = new SharedLlmQueueCls({
       maxConcurrent: 3,
@@ -14691,6 +14692,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             suppressUnchangedHeartbeats: promiseBeaconCfg.suppressUnchangedHeartbeats,
             beaconLivenessIntervalMs: promiseBeaconCfg.beaconLivenessIntervalMs,
             turnFinishedCloseoutChecks: promiseBeaconCfg.turnFinishedCloseoutChecks,
+            aggregateByTopic: promiseBeaconCfg.aggregateByTopic,
             // B2 turn-finished detection — "is the session still generating now?"
             looksActivelyWorking: (frame: string, name: string) =>
               _beaconLooksGeneratingNow(frame, sessionManager.frameworkForSession(name)),

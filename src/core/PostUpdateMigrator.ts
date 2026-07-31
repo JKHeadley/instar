@@ -2450,7 +2450,9 @@ export class PostUpdateMigrator {
     }
 
     const migrations = (config._instar_migrations ?? []) as string[];
-    const marker = 'honest-progress-messaging-defaults';
+    // v2 re-runs the existence-checked migration on agents that already carry
+    // the v1 marker, adding aggregateByTopic without overwriting any old knob.
+    const marker = 'honest-progress-messaging-defaults-v2';
     if (migrations.some(m => m.startsWith(marker))) {
       result.skipped.push('honest-progress-messaging-defaults: already migrated');
       return;
@@ -2479,6 +2481,7 @@ export class PostUpdateMigrator {
     setIfAbsent(silence, 'activeWorkMaxFrozenIndicatorMs', 5_400_000, 'monitoring.activeWorkSilenceSentinel.activeWorkMaxFrozenIndicatorMs');
 
     const beacon = ensureObj(config, 'promiseBeacon');
+    setIfAbsent(beacon, 'aggregateByTopic', true, 'promiseBeacon.aggregateByTopic');
     setIfAbsent(beacon, 'suppressUnchangedHeartbeats', true, 'promiseBeacon.suppressUnchangedHeartbeats');
     setIfAbsent(beacon, 'beaconLivenessIntervalMs', 3_600_000, 'promiseBeacon.beaconLivenessIntervalMs');
     setIfAbsent(beacon, 'turnFinishedCloseoutChecks', 3, 'promiseBeacon.turnFinishedCloseoutChecks');
@@ -9357,9 +9360,17 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
     // their defaults, and how to tune/disable via this appended subsection (Agent
     // Awareness Standard). Content-sniff marker keeps it idempotent.
     if (!content.includes('Honest progress messaging (silent-freeze watchdog + promise beacon)')) {
-      content += `\n### Honest progress messaging (silent-freeze watchdog + promise beacon)\n\nTwo background notifiers used to post frequent, falsely-confident noise because they judged "work" by whether the terminal *screen* repainted — a busy long task looks identical to a frozen one. Both are now honest. They are SIGNALS, never gates: they only decide whether to notify you, and every error path fails toward silence.\n- **Silent-freeze watchdog** (ActiveWorkSilenceSentinel): before claiming a session is stuck, it re-captures the LIVE frame and corroborates — if the frame still shows an active-work indicator (spinner / "esc to interrupt"), a sub-agent is live, or it's a clean idle prompt, it stays SILENT. It speaks only when genuinely wedged, and even then hedges ("…hasn't changed in N min and a nudge didn't wake it — it may be stuck, or on a long task I can't see into. Want me to check?"). Threshold raised 15m→30m; a 90m frozen-indicator backstop still surfaces a real mid-tool hang. Tune/disable: \`monitoring.activeWorkSilenceSentinel.enabled\` (off), \`.silenceThresholdMs\` (default 30m), \`.activeWorkMaxFrozenIndicatorMs\` (default 90m).\n- **Promise beacon** (the ⏳ heartbeats): the zero-information "still on it, no new output" filler is suppressed by default — it speaks only on genuine new progress, deadline pressure, a sparse once-per-60m liveness line, or a one-shot turn-finished close-out. Base cadence relaxed 10m→20m. Tune/disable: \`promiseBeacon.suppressUnchangedHeartbeats: false\` (restore the legacy every-tick heartbeat — the rollback lever), \`promiseBeacon.beaconLivenessIntervalMs\` (default 60m), \`promiseBeacon.turnFinishedCloseoutChecks\` (default 3).\n- **Doc correction:** the trio's escalations are NOT gated by \`monitoring.sentinelTelegramEscalation\` (that gate governs a different path); they route through the tone-gated \`/attention\` surface and are controlled by each sentinel's own \`enabled\` flag (both default true). Effectiveness is measurable in \`logs/sentinel-events.jsonl\` and the per-feature LLM-metrics surface (feature keys \`active-work-silence\`, \`promise-beacon\`). Spec: \`docs/specs/HONEST-PROGRESS-MESSAGING-SPEC.md\`.\n`;
+      content += `\n### Honest progress messaging (silent-freeze watchdog + promise beacon)\n\nTwo background notifiers used to post frequent, falsely-confident noise because they judged "work" by whether the terminal *screen* repainted — a busy long task looks identical to a frozen one. Both are now honest. They are SIGNALS, never gates: they only decide whether to notify you, and every error path fails toward silence.\n- **Silent-freeze watchdog** (ActiveWorkSilenceSentinel): before claiming a session is stuck, it re-captures the LIVE frame and corroborates — if the frame still shows an active-work indicator (spinner / "esc to interrupt"), a sub-agent is live, or it's a clean idle prompt, it stays SILENT. It speaks only when genuinely wedged, and even then hedges ("…hasn't changed in N min and a nudge didn't wake it — it may be stuck, or on a long task I can't see into. Want me to check?"). Threshold raised 15m→30m; a 90m frozen-indicator backstop still surfaces a real mid-tool hang. Tune/disable: \`monitoring.activeWorkSilenceSentinel.enabled\` (off), \`.silenceThresholdMs\` (default 30m), \`.activeWorkMaxFrozenIndicatorMs\` (default 90m).\n- **Promise beacon** (the ⏳ heartbeats): multiple open promises in one conversation produce ONE count+list summary per topic cadence, never one message per promise. The topic cadence follows the shortest effective cadence among its open promises; only promises with qualifying news receive a progress line, while the rest are listed as open without a false progress claim. The zero-information "still on it, no new output" filler is suppressed by default. Tune/disable: \`promiseBeacon.aggregateByTopic: false\` (restore legacy per-promise delivery), \`promiseBeacon.suppressUnchangedHeartbeats: false\` (restore every-tick heartbeat), \`promiseBeacon.beaconLivenessIntervalMs\` (default 60m), \`promiseBeacon.turnFinishedCloseoutChecks\` (default 3).\n- **Doc correction:** the trio's escalations are NOT gated by \`monitoring.sentinelTelegramEscalation\` (that gate governs a different path); they route through the tone-gated \`/attention\` surface and are controlled by each sentinel's own \`enabled\` flag (both default true). Effectiveness is measurable in \`logs/sentinel-events.jsonl\` and the per-feature LLM-metrics surface (feature keys \`active-work-silence\`, \`promise-beacon\`). Spec: \`docs/specs/HONEST-PROGRESS-MESSAGING-SPEC.md\`.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Honest progress messaging section');
+    }
+    // Existing agents may already carry the section above from v1. Append one
+    // corrective paragraph keyed on the new rollback knob so they learn the
+    // aggregation behavior without rewriting operator-authored CLAUDE.md text.
+    if (!content.includes('promiseBeacon.aggregateByTopic')) {
+      content += `\n#### Promise-beacon topic aggregation\n\nMultiple open promises in one conversation now produce ONE count+list summary per topic cadence, never one message per promise. The topic cadence follows the shortest effective cadence among the open promises; only promises with qualifying news receive a progress line, while quiet siblings are listed as open without a false progress claim. Roll back to legacy per-promise delivery with \`promiseBeacon.aggregateByTopic: false\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added PromiseBeacon topic-aggregation awareness');
     }
 
     // Live Credential Re-pointing (WS5.2, CMT-1372) — existing agents learn the

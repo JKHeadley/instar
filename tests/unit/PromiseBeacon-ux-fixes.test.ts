@@ -47,6 +47,7 @@ describe('PromiseBeacon — UX fixes', () => {
       isSessionAlive: () => true,
       sendMessage: async (_topicId, text) => { sent.push({ text }); },
       defaultAutoPauseAfterUnchanged: 0, // disable auto-pause for this test
+      aggregateByTopic: false, // this test isolates the legacy line itself
       // This test exercises the legacy templated-heartbeat suffix specifically,
       // so opt out of B1 suppression (which would otherwise withhold the
       // unchanged heartbeat entirely).
@@ -86,6 +87,7 @@ describe('PromiseBeacon — UX fixes', () => {
       isSessionAlive: () => true,
       sendMessage: async (_topicId, text) => { sent.push({ text }); },
       defaultAutoPauseAfterUnchanged: 3,
+      aggregateByTopic: false, // topic-level delayed close-out is covered separately
     });
     beacon.start();
 
@@ -190,6 +192,7 @@ describe('PromiseBeacon — UX fixes', () => {
       isSessionAlive: () => true,
       sendMessage: async (_topicId, text) => { sent.push({ text }); },
       // intentionally no defaultAutoPauseAfterUnchanged — exercise the default.
+      aggregateByTopic: false, // assert the pause threshold, not aggregate timing
     });
     beacon.start();
 

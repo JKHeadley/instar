@@ -44,6 +44,9 @@ describe('PromiseBeacon — atRisk signal → violated authority', () => {
       sendMessage: async (_t, text) => { sent.push(text); },
       generateStatusLine: async () => 'progressing',
       classifyProgress: async () => 'stalled',
+      // This integration isolates signal→terminal authority. Topic aggregate
+      // timing and delayed terminal delivery have dedicated Tier 1 coverage.
+      aggregateByTopic: false,
     });
     beacon.start();
 
