@@ -62,6 +62,7 @@ describe('PromiseBeacon conversation-delivery funnel swap (§6.1 step 2)', () =>
 
   const makeBeacon = () =>
     new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: new CommitmentTracker({ stateDir: dir, liveConfig: new LiveConfig(dir) }),
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -177,6 +178,7 @@ describe('PromiseBeacon conversation-delivery funnel swap (§6.1 step 2)', () =>
 
   it('an UNWIRED beacon (no deliverMessage) falls back to the legacy sendMessage path byte-for-byte', async () => {
     const legacy = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: new CommitmentTracker({ stateDir: dir, liveConfig: new LiveConfig(dir) }),
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),

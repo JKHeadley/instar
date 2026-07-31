@@ -1923,6 +1923,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     },
   },
   promiseBeacon: {
+    // Human-facing PromiseBeacon summaries, close-outs, escalation status, and
+    // Attention dead-letters are opt-in. Internal commitment tracking and
+    // follow-through detection remain active while this is false.
+    userOutputEnabled: false,
     aggregateByTopic: true, // P17 — one count+list summary per topic cadence, never one message per promise
     suppressUnchangedHeartbeats: true, // B1 — false restores the legacy every-tick templated heartbeat (rollback)
     beaconLivenessIntervalMs: 3_600_000, // B1b — at most one sparse "still watching" line per 60m

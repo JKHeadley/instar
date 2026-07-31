@@ -24,6 +24,8 @@ approved-at: "2026-06-13T04:46:00Z"
 **Issue:** JKHeadley/instar#1093
 **Constitutional anchor:** *Close the Loop* (`docs/STANDARDS-REGISTRY.md`) — "Every loop the agent opens — a promise to a user — must be durably registered and re-surfaced on a cadence until it reaches a *deliberate* close." Today a promise whose owning session dies is silently terminalized (`violated: session-lost`); this spec adds the missing rung that re-surfaces it *into action*, not just into a postmortem record. Bound equally by **No Unbounded Loops** (the escalation ladder is a loop → backoff + breaker + cap, structurally) and **Signal vs. Authority** (the beacon SIGNALS; it never seizes new authority to mutate external state — see §3.0).
 
+> **Current user-output boundary (2026-07-31):** The escalation engine remains active internally, including session-loss detection, revival, bounded state transitions, and audit evidence. All PromiseBeacon-originated human-facing output described in this historical design—topic/Slack messages, close-outs, Rung-2 status, Rung-3 Attention, and delivery dead-letters—is now suppressed by default. It exists only behind the explicit deployment opt-in `promiseBeacon.userOutputEnabled: true`; a missing key is silent.
+
 ---
 
 ## 1. The incident this fixes (live, 2026-06-12)

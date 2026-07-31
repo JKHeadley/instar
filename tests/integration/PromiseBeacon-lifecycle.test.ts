@@ -32,6 +32,7 @@ describe('PromiseBeacon lifecycle', () => {
     const tracker = new CommitmentTracker({ stateDir: dir, liveConfig: new LiveConfig(dir) });
     const sent: string[] = [];
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),

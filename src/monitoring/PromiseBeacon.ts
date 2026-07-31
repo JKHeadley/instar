@@ -179,7 +179,7 @@ export interface PromiseBeaconConfig {
    */
   defaultAutoPauseAfterUnchanged?: number;
   /**
-   * HONEST-PROGRESS-MESSAGING B1 — when the tmux snapshot is UNCHANGED, send
+   * Explicit-opt-in output behavior: when the tmux snapshot is UNCHANGED, send
    * nothing (the "still on it, no new output" line carried zero information and
    * was the user's #1 noise complaint). The unchanged-count is still tracked for
    * atRisk/auto-pause accounting; only the message is withheld. The beacon still
@@ -188,26 +188,34 @@ export interface PromiseBeaconConfig {
    * every-tick templated heartbeat (rollback path). */
   suppressUnchangedHeartbeats?: boolean;
   /**
-   * HONEST-PROGRESS-MESSAGING B1b — sparse liveness. When unchanged heartbeats
+   * Explicit-opt-in output behavior: sparse liveness. When unchanged heartbeats
    * are suppressed, a genuinely long task would otherwise go fully dark. At most
    * ONE "still watching, N min in" line is emitted per this interval while a
    * session is still present and its turn is not finished. Default 60m. */
   beaconLivenessIntervalMs?: number;
   /**
-   * HONEST-PROGRESS-MESSAGING B2 / FD-1 — turn-finished close-out. When the
+   * Explicit-opt-in output behavior: turn-finished close-out. When the
    * session's live frame shows a finished/idle turn (no active-work indicator)
    * for this many consecutive checks, the beacon emits ONE close-out prompt and
    * auto-pauses (no clockwork heartbeats into a finished room). Default 3
    * (≈60m at 20m cadence — rules out a momentary prompt-like frame mid-task). */
   turnFinishedCloseoutChecks?: number;
   /**
-   * BOUNDED-NOTIFICATION-SURFACE — aggregate all PromiseBeacon user messages
+   * Explicit-opt-in output behavior: aggregate all PromiseBeacon user messages
    * for a topic behind one topic-level cadence. `false` is the byte-for-byte
    * rollback lever for the former per-commitment delivery path. Default true.
    */
   aggregateByTopic?: boolean;
   /**
-   * HONEST-PROGRESS-MESSAGING B2 — detector for "is this session still actively
+   * Master authority for every PromiseBeacon-originated human-facing surface:
+   * topic replies, Slack-thread replies, close-outs, escalation status, and
+   * Attention dead-letters. Default false. Commitment tracking, overdue/session
+   * detection, revival, and internal audit events continue while this is off.
+   * Re-enabling output is an explicit opt-in (`true`), never an inferred default.
+   */
+  userOutputEnabled?: boolean;
+  /**
+   * Internal detector for "is this session still actively
    * working?" (wired to looksActivelyWorking on the live frame). When absent,
    * turn-finished close-out is inactive (degrades safely). */
   looksActivelyWorking?: (frame: string, sessionName: string) => boolean;
@@ -286,6 +294,7 @@ export type BeaconSendResult =
   | 'failed-permanent'
   | 'suppressed-aoft'
   | 'rerouted-terminal'
+  | 'suppressed-user-output-disabled'
   | 'skipped';
 
 /** Recoverability state → one approved Rung-2 message template (§3.2). */
@@ -796,6 +805,31 @@ export class PromiseBeacon extends EventEmitter {
         await this.transitionViolated(c, 'session-lost');
         return;
       }
+    }
+
+    // PromiseBeacon remains an INTERNAL follow-through engine by default. The
+    // session-loss/escalation checks above still run, but a disabled user-output
+    // surface must not spend LLM budget, capture/format a summary, acquire the
+    // proxy voice, or enqueue a human-facing aggregate. Advance the internal
+    // cadence anchor so this does not collapse into a one-second retry loop.
+    if (!this.userOutputEnabled()) {
+      const checkedAt = new Date(this.now()).toISOString();
+      this.updateHotState(c.id, (h) => { h.lastHeartbeatAt = checkedAt; });
+      try {
+        await this.config.commitmentTracker.mutate(c.id, prev => ({
+          ...prev,
+          lastHeartbeatAt: checkedAt,
+        }));
+      } catch (err) {
+        // A bookkeeping write must not permanently disarm internal follow-through.
+        this.emit('heartbeat.bookkeeping-failed', {
+          id: c.id,
+          error: (err as Error).message,
+        });
+      }
+      this.emit('heartbeat.skipped', { id: c.id, reason: 'user-output-disabled' });
+      this.schedule(this.config.commitmentTracker.get(c.id) ?? c);
+      return;
     }
 
     // ── Proxy coordinator: one proxy-class message per topic ──
@@ -1374,6 +1408,9 @@ export class PromiseBeacon extends EventEmitter {
       try {
         const outcome = await this.emitBeaconMessage(c, text, 'rung2');
         if (outcome === 'skipped') auditEvent = 'rung2-queued';
+        if (outcome === 'suppressed-user-output-disabled') {
+          auditEvent = 'rung2-suppressed-user-output';
+        }
       } catch (err) {
         console.warn(`[PromiseBeacon] rung2 send failed for ${c.id}:`, (err as Error).message);
         this.auditEsc(c, 'rung2-send-failed', { state, error: (err as Error).message });
@@ -1402,7 +1439,7 @@ export class PromiseBeacon extends EventEmitter {
       escalationInFlight: false,
     }));
     const detail = `Promise "${(c.agentResponse || c.userRequest).slice(0, 80)}" could not be revived after ${c.escalationAttempts ?? 0} attempts.`;
-    try { this.config.raiseAttention?.(c.id, detail); } catch { /* non-fatal */ }
+    this.raiseUserAttention(c.id, detail, 'rung3');
     this.stopFor(c.id);
     this.auditEsc(c, 'gave-up', { rung: 3 });
     this.emit('promise.violated', { id: c.id, reason: 'session-lost-unrecovered' });
@@ -1426,6 +1463,11 @@ export class PromiseBeacon extends EventEmitter {
     kind: AggregateMessageKind,
     liveness = false,
   ): Promise<BeaconSendResult> {
+    // Do not create durable aggregate work while the fleet-wide output boundary
+    // is closed. emitUserSend owns the canonical suppression/audit result.
+    if (!this.userOutputEnabled()) {
+      return this.emitUserSend(c, text, kind);
+    }
     if (c.topicId == null || this.config.aggregateByTopic === false) {
       return this.emitUserSend(c, text, kind);
     }
@@ -1603,7 +1645,8 @@ export class PromiseBeacon extends EventEmitter {
       outcome === 'failed-standdown' ||
       outcome === 'failed-permanent' ||
       outcome === 'suppressed-aoft' ||
-      outcome === 'rerouted-terminal'
+      outcome === 'rerouted-terminal' ||
+      outcome === 'suppressed-user-output-disabled'
     ) {
       // These are explicit terminal/alternate dispositions, not silent drops:
       // the delivery funnel persisted stand-down/dead-letter state or rerouted
@@ -1665,6 +1708,7 @@ export class PromiseBeacon extends EventEmitter {
   }
 
   private visibleTopicCommitments(topicId: number): Commitment[] {
+    if (!this.userOutputEnabled()) return [];
     return this.config.commitmentTracker.getActiveByTopicId(topicId).filter(c =>
       c.beaconEnabled &&
       c.status === 'pending' &&
@@ -1865,16 +1909,17 @@ export class PromiseBeacon extends EventEmitter {
   }
 
   /**
-   * C1+C2 owner-gated outbound chokepoint (spec agent-owned-followthrough §4.2).
-   * EVERY beacon user-send routes through here. Beacon sends are `isProxy:true`
-   * and bypass MessagingToneGate, so the owner-gate MUST live here, not at the
-   * gate. Rollout-gated (§4.8): when the feature is off (fleet default) this is a
-   * strict no-op — sends go out exactly as before. When on+dryRun it logs the
+   * Absolute master output boundary, then the C1+C2 owner-gated chokepoint
+   * (spec agent-owned-followthrough §4.2). EVERY beacon user-send routes through
+   * here. Beacon sends are `isProxy:true` and bypass MessagingToneGate, so the
+   * owner-gate MUST live here, not at the gate. The master boundary defaults
+   * closed fleet-wide. Only after explicit opt-in does the AOFT rollout apply:
+   * when the feature is off, sends go out as before; when on+dryRun it logs the
    * intended action but still sends (observe-first). When on+live and the
    * commitment is owner:'agent', status kinds are suppressed (the agent carries
    * the loop — the user is never status-messaged) while a `terminal` kind is
-   * NEVER suppressed: it reroutes to the Attention dead-letter (raiseAttention,
-   * the one always-surfaced channel) so a failure is never swallowed (C2 /
+   * NEVER suppressed: it reroutes to the Attention dead-letter inside that
+   * explicit opt-in mode, so a failure is not swallowed there (C2 /
    * "never nag ≠ swallow a failure"). owner:'user' always sends normally.
    */
   private async emitUserSend(
@@ -1883,6 +1928,19 @@ export class PromiseBeacon extends EventEmitter {
     kind: 'heartbeat' | 'closeOut' | 'rung2' | 'terminal',
     authorityAlreadyAdmitted = false,
   ): Promise<BeaconSendResult> {
+    // Absolute outer gate: no PromiseBeacon-originated message or Attention
+    // item reaches a human unless output was explicitly opted back in. This is
+    // intentionally before the ambiguous-retry allowance and the owner gate:
+    // an upgrade that turns output off must stop even a durable queued summary.
+    if (!this.userOutputEnabled()) {
+      this.emit('user-output.suppressed', {
+        id: c.id,
+        topicId: c.topicId,
+        kind,
+        surface: 'conversation',
+      });
+      return 'suppressed-user-output-disabled';
+    }
     const sendNormally = async (): Promise<BeaconSendResult> => {
       if (c.topicId == null) return 'skipped';
       // Beacon-local B-IDLEAK pass (C1+C2 §4.3): beacon sends are isProxy:true and
@@ -1933,7 +1991,7 @@ export class PromiseBeacon extends EventEmitter {
         return await sendNormally();
       }
       const detail = text.replace(/^⚠️\s*\[?promise-beacon\]?\s*/i, '').trim() || text;
-      try { this.config.raiseAttention?.(c.id, detail); } catch { /* non-fatal */ }
+      this.raiseUserAttention(c.id, detail, 'terminal-reroute');
       this.emit('aoft.terminal-rerouted', { id: c.id, topicId: c.topicId, kind });
       return 'rerouted-terminal';
     }
@@ -2002,12 +2060,11 @@ export class PromiseBeacon extends EventEmitter {
       this.updateHotState(c.id, (h) => {
         if (!h.deliveryDeadLetteredAt) h.deliveryDeadLetteredAt = new Date(this.now()).toISOString();
       });
-      try {
-        this.config.raiseAttention?.(
-          c.id,
-          `Delivery for "${(c.agentResponse || c.userRequest).slice(0, 80)}" is permanently failing (${outcome.detail ?? outcome.reason}) — conversation unreachable; beacon dead-lettered. Reachability auto-clears on the next successful delivery or authenticated inbound.`,
-        );
-      } catch { /* non-fatal */ }
+      this.raiseUserAttention(
+        c.id,
+        `Delivery for "${(c.agentResponse || c.userRequest).slice(0, 80)}" is permanently failing (${outcome.detail ?? outcome.reason}) — conversation unreachable; beacon dead-lettered. Reachability auto-clears on the next successful delivery or authenticated inbound.`,
+        'permanent-delivery-failure',
+      );
       await this.config.commitmentTracker.mutate(c.id, prev => ({
         ...prev,
         beaconSuppressed: true,
@@ -2029,12 +2086,11 @@ export class PromiseBeacon extends EventEmitter {
       }
     });
     if (deadLetterNow) {
-      try {
-        this.config.raiseAttention?.(
-          c.id,
-          `${hot.consecutiveDeliveryFailures} consecutive delivery failures for "${(c.agentResponse || c.userRequest).slice(0, 80)}" (last: ${outcome.reason}${outcome.detail ? ` — ${outcome.detail}` : ''}). The beacon keeps retrying.`,
-        );
-      } catch { /* non-fatal */ }
+      this.raiseUserAttention(
+        c.id,
+        `${hot.consecutiveDeliveryFailures} consecutive delivery failures for "${(c.agentResponse || c.userRequest).slice(0, 80)}" (last: ${outcome.reason}${outcome.detail ? ` — ${outcome.detail}` : ''}). The beacon keeps retrying.`,
+        'transient-delivery-failure',
+      );
       this.emit('delivery.dead-letter', { id: c.id, topicId: c.topicId, permanent: false });
     }
     return 'failed-transient';
@@ -2079,7 +2135,8 @@ export class PromiseBeacon extends EventEmitter {
    * owner:'agent', blockedOn:'external' pending commitments. The WINDOW
    * dead-letter is the hard guarantee: when no dependency-probe has landed within
    * the staleness window — OR the wait is past the absolute ceiling regardless of
-   * probes — it raises ONE deduped operator Attention item (raiseAttention),
+   * probes — it can raise ONE deduped operator Attention item after explicit
+   * user-output opt-in,
    * NEVER auto-closing (CMT-1101 scar). Deduped via externalBlockDeadLetteredAt
    * (a fresh probe re-arms it). Rollout-gated: off → no-op; dryRun → logs the
    * would-be dead-letter but does not raise it. Public for tests.
@@ -2108,12 +2165,18 @@ export class PromiseBeacon extends EventEmitter {
         `I've been waiting on an external dependency for "${(c.agentResponse || c.userRequest).slice(0, 80)}" ` +
         `for ${waited} (${reason === 'absolute-ceiling' ? 'past the max wait' : 'no movement in a while'}) — ` +
         `want me to keep waiting or drop it?`;
-      try { this.config.raiseAttention?.(c.id, detail); } catch { /* non-fatal */ }
-      await this.config.commitmentTracker.mutate(c.id, prev => ({
-        ...prev,
-        externalBlockDeadLetteredAt: new Date(now).toISOString(),
-      }));
-      this.emit('aoft.deadlettered-external', { id: c.id, reason });
+      const surfaced = this.raiseUserAttention(c.id, detail, 'external-block');
+      if (surfaced) {
+        await this.config.commitmentTracker.mutate(c.id, prev => ({
+          ...prev,
+          externalBlockDeadLetteredAt: new Date(now).toISOString(),
+        }));
+        this.emit('aoft.deadlettered-external', { id: c.id, reason });
+      } else {
+        // Preserve eligibility for a future explicit opt-in. Do not stamp the
+        // user-facing dead-letter marker when nothing was shown to a user.
+        this.emit('aoft.external-block-recorded-internal', { id: c.id, reason });
+      }
     }
   }
 
@@ -2158,6 +2221,26 @@ export class PromiseBeacon extends EventEmitter {
     );
     this.stopFor(c.id);
     this.emit('promise.violated', { id: c.id, reason });
+  }
+
+  /** True only after an explicit opt-in. Missing/false is fleet-wide silence. */
+  private userOutputEnabled(): boolean {
+    return this.config.userOutputEnabled === true;
+  }
+
+  /** The sole Attention side of PromiseBeacon's user-output boundary. */
+  private raiseUserAttention(id: string, detail: string, reason: string): boolean {
+    if (!this.userOutputEnabled()) {
+      this.emit('user-output.suppressed', { id, surface: 'attention', reason });
+      return false;
+    }
+    if (!this.config.raiseAttention) return false;
+    try {
+      this.config.raiseAttention(id, detail);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private inQuietHours(): boolean {

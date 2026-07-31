@@ -65,6 +65,7 @@ describe('PromiseBeacon — topic aggregation', () => {
 
   function makeBeacon(output = () => 'live output'): PromiseBeacon {
     return new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -197,6 +198,7 @@ describe('PromiseBeacon — topic aggregation', () => {
       nextUpdateDueAt: '2099-01-01T00:00:00Z',
     });
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -236,6 +238,7 @@ describe('PromiseBeacon — topic aggregation', () => {
       { delivered: true, outcome: 'delivered' },
     ];
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -283,6 +286,7 @@ describe('PromiseBeacon — topic aggregation', () => {
       await tracker.mutate(commitment.id, previous => ({ ...previous, owner: 'user' }));
     }
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),

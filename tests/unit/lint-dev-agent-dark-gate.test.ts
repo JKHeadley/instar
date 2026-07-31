@@ -477,13 +477,12 @@ describe('lint-dev-agent-dark-gate', () => {
       // Its `enabled: true` literal is an explicit fleet-on default, not a dark
       // default, so it adds NO attributed dark-gate row; it shifts the cartographer
       // `enabled: false` rows below it DOWN by +6.
-      // promise-beacon topic aggregation adds one fleet-on boolean default in the
-      // existing promiseBeacon block. It adds NO `enabled: false` dark-gate row,
-      // so only the three cartographer rows below it shift DOWN by +1.
+      // PromiseBeacon's four-line default-silent user-output boundary adds no
+      // `enabled:` row, so only the three cartographer rows below it shift +4.
       // Below the failoverRunner insert → both +10 (missingLogin) and +15 shifts.
-      '1939': 'cartographer.freshnessSweep.enabled',
-      '1984': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '2009': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1943': 'cartographer.freshnessSweep.enabled',
+      '1988': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '2013': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
