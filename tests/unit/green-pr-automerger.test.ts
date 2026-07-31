@@ -149,6 +149,32 @@ describe('GreenPrAutoMerger — acting (post warm-up)', () => {
     expect(r.reason).toBe('no-candidate');
     expect(h.runCalls.length).toBe(0);
   });
+
+  it('surfaces authored PRs when none use the configured namespace', async () => {
+    const h = harness({ prs: [pr({ number: 100, headRefName: 'agent/one' }), pr({ number: 101, headRefName: 'fix/two' })] });
+    prime(h);
+    const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(r.reason).toBe('namespace-mismatch');
+    expect(h.state.namespaceMismatch).toMatchObject({ namespace: 'echo', openPrCount: 2 });
+    expect(h.audits.some((a) => a.event === 'namespace-mismatch')).toBe(true);
+    expect(h.attentionLines.flat().some((line) => /branch-namespace-mismatch/.test(line))).toBe(true);
+  });
+
+  it('clears the live mismatch when a namespaced PR appears', async () => {
+    const h = harness({ prs: [pr({ number: 100, headRefName: 'echo/one', labels: ['hold'] })] });
+    prime(h);
+    h.state.namespaceMismatch = {
+      firstSeenAt: 1,
+      lastSeenAt: 1,
+      namespace: 'echo',
+      openPrCount: 1,
+      sampleBranches: ['agent/old'],
+      fingerprint: 'old',
+    };
+    await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(h.state.namespaceMismatch).toBeUndefined();
+    expect(h.audits.some((a) => a.event === 'namespace-mismatch-recovered')).toBe(true);
+  });
 });
 
 describe('GreenPrAutoMerger — identity contract (R4)', () => {
@@ -495,5 +521,17 @@ describe('GreenPrAutoMerger — boot invariant', () => {
     // armTimeoutMs(60k) + grace(60k) = 120k — well under budget → not inverted.
     const m = new GreenPrAutoMerger(h.deps, { ...cfg, busySkipBreakerThreshold: 2 });
     expect(m.invariantOk).toBe(true);
+  });
+
+  it('makes an empty expected GitHub login a loud configuration refusal', () => {
+    const h = harness();
+    const m = new GreenPrAutoMerger(h.deps, { ...cfg, expectedGhLogin: '' });
+    expect(m.configurationView()).toMatchObject({
+      ok: false,
+      identityConfigured: false,
+      agentNamespace: 'echo',
+    });
+    m.start();
+    expect(h.audits.some((a) => a.event === 'boot-refused-configuration')).toBe(true);
   });
 });

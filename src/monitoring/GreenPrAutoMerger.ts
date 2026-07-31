@@ -169,6 +169,15 @@ export interface GreenPrState {
   identity?: { login: string | null; resolvedAt: number };
   /** Episodes that gave up (surfaced via attention), for the aggregate. */
   attentionLines?: string[];
+  /** Current episode where authored PRs exist but none use this watcher namespace. */
+  namespaceMismatch?: {
+    firstSeenAt: number;
+    lastSeenAt: number;
+    namespace: string;
+    openPrCount: number;
+    sampleBranches: string[];
+    fingerprint: string;
+  };
   /**
    * red-pr-watchdog per-PR "already-raised" memory. Keyed by PR number. Present
    * ⇔ we have surfaced this stuck-red PR; re-raised only when the elapsed-hours
@@ -270,6 +279,8 @@ export class GreenPrAutoMerger extends EventEmitter {
   /** Resolved at boot: does the timeout invariant hold? */
   readonly invariantOk: boolean;
   readonly invariantReason?: string;
+  readonly configurationOk: boolean;
+  readonly configurationIssues: string[];
 
   constructor(
     private readonly deps: GreenPrAutoMergerDeps,
@@ -302,6 +313,10 @@ export class GreenPrAutoMerger extends EventEmitter {
     );
     this.invariantOk = inv.ok;
     this.invariantReason = inv.reason;
+    this.configurationIssues = [];
+    if (!this.cfg.agentNamespace.trim()) this.configurationIssues.push('agentNamespace is empty');
+    if (!this.cfg.expectedGhLogin.trim()) this.configurationIssues.push('expectedGhLogin is empty');
+    this.configurationOk = this.configurationIssues.length === 0;
   }
 
   start(): void {
@@ -309,6 +324,14 @@ export class GreenPrAutoMerger extends EventEmitter {
     if (!this.invariantOk) {
       // Boot refusal must be LOUD (B24) — never start with an inverted invariant.
       this.deps.audit({ kind: 'green-pr-automerge', event: 'boot-refused-invariant', reason: this.invariantReason });
+      return;
+    }
+    if (!this.configurationOk) {
+      this.deps.audit({
+        kind: 'green-pr-automerge',
+        event: 'boot-refused-configuration',
+        issues: this.configurationIssues,
+      });
       return;
     }
     // Warm-up + orphan reap happens on the first acting tick.
@@ -321,6 +344,20 @@ export class GreenPrAutoMerger extends EventEmitter {
   }
 
   snapshot(): GreenPrState { return this.deps.loadState(); }
+
+  configurationView(): {
+    ok: boolean;
+    issues: string[];
+    agentNamespace: string;
+    identityConfigured: boolean;
+  } {
+    return {
+      ok: this.configurationOk,
+      issues: [...this.configurationIssues],
+      agentNamespace: this.cfg.agentNamespace,
+      identityConfigured: this.cfg.expectedGhLogin.length > 0,
+    };
+  }
 
   /**
    * The /hold route's handler (R3): validate the PR is open + in this agent's
@@ -425,6 +462,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     // Build the candidate set (cheap fields) + the Layer-2 snapshot.
     const { eligible, snapshotEntries } = await this.gather(candidates, state);
     state.snapshot = { at: this.deps.now(), entries: snapshotEntries };
+    const namespaceMismatch = await this.observeNamespaceMismatch(candidates, state);
 
     // Red-PR watchdog (red-pr-watchdog): surface my own PRs stuck RED past the
     // threshold. Runs on every acting/warm-up tick that got a fresh PR list —
@@ -453,7 +491,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     const target = selectOldest(eligible);
     if (!target) {
       this.deps.saveState(state);
-      return { acted: false, reason: 'no-candidate' };
+      return { acted: false, reason: namespaceMismatch ? 'namespace-mismatch' : 'no-candidate' };
     }
 
     // Act (Step 4 engine). dryRun observes only.
@@ -527,6 +565,56 @@ export class GreenPrAutoMerger extends EventEmitter {
       snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'mergeable' });
     }
     return { eligible, snapshotEntries };
+  }
+
+  /**
+   * Make an authored-but-out-of-namespace list distinguishable from an idle
+   * repository. One audit/attention line is emitted per distinct mismatch
+   * episode; the live state clears as soon as the configured prefix matches.
+   */
+  private async observeNamespaceMismatch(
+    prs: PrSummary[],
+    state: GreenPrState,
+  ): Promise<boolean> {
+    const outside = prs.filter((pr) => !headInNamespace(pr.headRefName, this.cfg.agentNamespace));
+    const mismatched = prs.length > 0 && outside.length === prs.length;
+    if (!mismatched) {
+      if (state.namespaceMismatch) {
+        this.deps.audit({
+          kind: 'green-pr-automerge',
+          event: 'namespace-mismatch-recovered',
+          namespace: state.namespaceMismatch.namespace,
+        });
+        delete state.namespaceMismatch;
+      }
+      return false;
+    }
+
+    const sampleBranches = outside.map((pr) => pr.headRefName).sort().slice(0, 5);
+    const fingerprint = `${this.cfg.agentNamespace}\u0000${sampleBranches.join('\u0000')}`;
+    const prior = state.namespaceMismatch;
+    state.namespaceMismatch = {
+      firstSeenAt: prior?.firstSeenAt ?? this.deps.now(),
+      lastSeenAt: this.deps.now(),
+      namespace: this.cfg.agentNamespace,
+      openPrCount: prs.length,
+      sampleBranches,
+      fingerprint,
+    };
+    if (prior?.fingerprint !== fingerprint) {
+      this.deps.audit({
+        kind: 'green-pr-automerge',
+        event: 'namespace-mismatch',
+        namespace: this.cfg.agentNamespace,
+        openPrCount: prs.length,
+        sampleBranches,
+      });
+      await this.refreshAggregate(state, [
+        `configuration:branch-namespace-mismatch — saw ${prs.length} authored open PR(s), ` +
+        `but none starts with ${this.cfg.agentNamespace}/ (examples: ${sampleBranches.join(', ')})`,
+      ]);
+    }
+    return true;
   }
 
   // ---- act ----------------------------------------------------------------
@@ -862,8 +950,8 @@ export class GreenPrAutoMerger extends EventEmitter {
    * SET changes. A PR that recovers (no stuck-red checks) or leaves the open list
    * (merged/closed) has its memory cleared (Close the Loop).
    *
-   * "My own" is the branch-namespace filter (a pure proxy for author — listOpenPrs
-   * already passes `--author @me`, and PrSummary carries no author field).
+   * `listOpenPrs` establishes authorship with `--author @me`; the namespace
+   * filter is the separately configurable ownership scope for this watcher.
    */
   private redPrWatchdogPass(prs: PrSummary[], state: GreenPrState): void {
     const wd = this.cfg.redPrWatchdog;

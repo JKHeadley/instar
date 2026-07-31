@@ -1,0 +1,35 @@
+{
+  "ts": "2026-07-31T22:48:26.200Z",
+  "slug": "green-pr-namespace-visibility",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 124,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/types.ts",
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/monitoring/greenPrAutomergeWiring.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 118,
+    "deletedLines": 6
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The watcher conflated project identity with branch ownership and collapsed a populated but entirely out-of-namespace authored PR list into the same result as an empty repository."
+  },
+  "classClosure": {
+    "defectClass": "unknown-classification-fail-open",
+    "closure": "tests/unit/green-pr-automerger.test.ts and tests/integration/green-pr-automerge-routes.test.ts",
+    "reason": "Tests now distinguish idle from namespace mismatch, assert recovery, and expose both configuration and live mismatch state through the production status route.",
+    "component": "GreenPrAutoMerger"
+  },
+  "verdict": "pass"
+}
