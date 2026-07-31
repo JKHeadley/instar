@@ -229,6 +229,8 @@ export function makeAgentWorktreeReaperDeps(opts: {
       // handle failure" is a compile error instead of a silent zero.
       try { porcelain = readGit(['-C', repo, 'worktree', 'list', '--porcelain'], repo); }
       catch (err) {
+        // @silent-fallback-ok — this is a typed failure result, not a fallback:
+        // the caller records the failure event/history and enters on-blind posture.
         return {
           ok: false,
           error: summarizeEnumerationError(

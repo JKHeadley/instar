@@ -32,8 +32,9 @@ Those gaps are part of the approved implementation and are pinned by tests.
 
 This approval remains deliberately narrow. It does not claim unprompted alerting or exported
 metrics (`CMT-1103`), and it does not claim that the synchronous live diagnostic routes are
-availability-safe (`CMT-1123`). Both remain follow-up acceptance criteria, exactly as the
+availability-safe (`CMT-1123`). Both remain separately tracked acceptance criteria, exactly as the
 normative contract states.
+<!-- tracked: CMT-1103, CMT-1123 -->
 
 ## The normative contract, in one screen
 
@@ -76,7 +77,7 @@ enumerate synchronously per request and can block the server's event loop for up
 availability incident. `/guards` reads in-memory state recorded by the background pass and
 carries no such cost.
 
-This constraint is stated **here, in the normative section**, rather than deferred with the
+This constraint is stated **here, in the normative section**, rather than separated from the
 hazard itself: round-8 review observed that the earlier draft told clients to branch on
 `enumerationOk` from the live routes while acknowledging those routes are dangerous to poll —
 promoting an endpoint and warning about it in different sections. The field contract above is
@@ -514,7 +515,7 @@ is the checkout, false for one whose worktrees belong to a separate build checko
 That is a distinct change with a distinct risk profile. **This spec ensures the next
 such mis-wiring is visible rather than silently reassuring**; it does not prevent it.
 
-**That out-of-scope work is registered, not deferred** (No Deferrals / Close the Loop):
+**That out-of-scope work is registered with an owner** (No Deferrals / Close the Loop):
 
 - Handed to `instar-codey` as a build brief over Threadline on 2026-07-29
   (thread `4421c0fe-d155-422b-a6a2-20cd71a21ed9`), including the earning test and the
@@ -528,12 +529,12 @@ independently of this spec or its author.
 
 **The fleet-wide "ask every path-input guard what it reports on invalid input" audit is
 deliberately NOT proposed here as a work item.** Raising an obligation this change does
-not carry would be exactly the untracked follow-up the constitution forbids. The
+not carry would be exactly the unowned obligation the constitution forbids. The
 generalisation is recorded as a *lesson* in the rule section above, where it costs
 nothing and claims nothing; if it is ever worth running as an audit, that is its own
 scoped change with its own registration.
 
-## The `/guards` follow-up — built, and a deliberate divergence from the convergence report
+## The `/guards` addition — built, and a deliberate divergence from the convergence report
 
 The convergence report for this spec carried one unresolved finding: the change ships
 response fields, a named event, a log line and counters, but no *live* state that survives a
@@ -682,10 +683,11 @@ anything. Absent there means *not applicable*; on the reaper route, present-and-
 *applicable and currently unknown*. A client must therefore treat a missing `verdictUnknown`
 as "no claim made", never as "verified fine".
 
-**`enumerationErrorCode` is deferred to `CMT-1103`, and REQUIRED there, not optional.** The
+**`enumerationErrorCode` is separately tracked in `CMT-1103`, and REQUIRED there, not optional.** The
 known trigger is path resolution, and automation cannot distinguish "repo missing" from "git
 unavailable" from "permission denied" through a sanitized human string. No self-heal or
 alerting work may proceed on the string alone.
+<!-- tracked: CMT-1103 -->
 
 ## Surface freshness semantics — where the two reads differ, and why
 
@@ -912,7 +914,7 @@ the mesh layer.
 
 *(none)* — every decision this change required was resolved in-spec. The two items formerly
 parked here (which state a blind guard should occupy, and whether the report's `errored`
-suggestion should be taken literally) are now answered in the `/guards` follow-up section
+suggestion should be taken literally) are now answered in the `/guards` addition section
 above, with the reasoning recorded rather than the conclusion alone.
 
 ## Safeguards
@@ -947,13 +949,13 @@ The cost is real and is named in the limits below: a monitor keying only on stat
 sees nothing. That is the trade — a truthful body over a status code that would lie in a
 different direction.
 
-**The middle options, explicitly rejected or deferred** (round-5 review: the 200-vs-503
+**The middle options, explicitly rejected or separately tracked** (round-5 review: the 200-vs-503
 argument is coherent but reads as a binary, when the useful alternatives sit between them and
 would let a commodity monitor notice without any status code lying):
 
 | Alternative | Disposition |
 |---|---|
-| A `Warning` response header alongside the 200 | **Deferred to `CMT-1103`.** Genuinely the cheapest way for a header-inspecting monitor to catch this, and no lie is involved — the request DID succeed. Not taken here only because it is an alerting affordance with no consumer yet, and adding an unconsumed header invites treating it as coverage. |
+| A `Warning` response header alongside the 200 | **Tracked in `CMT-1103`.** Genuinely the cheapest way for a header-inspecting monitor to catch this, and no lie is involved — the request DID succeed. Not taken here only because it is an alerting affordance with no consumer yet, and adding an unconsumed header invites treating it as coverage. |
 | A problem-detail sidecar (RFC 9457) | **Rejected.** That shape describes a FAILED request. This request succeeded and returned a complete answer, so the semantics are wrong regardless of convenience. |
 | A separate health endpoint / status projection for guards | **Already exists — this is `GET /guards`**, which is precisely the posture surface, and the `on-blind` state is how it reports this condition. The gap is not a missing projection; it is that nothing polls it unprompted. |
 
@@ -1089,7 +1091,7 @@ choosing an escalation path, and under **Self-Heal Before Notify** an operator-f
 raise needs a self-heal step, brakes, and a severity class — a design with its own risk
 surface, not a line appended here.
 
-**That gap is REGISTERED, not deferred** (Close the Loop): commitment **`CMT-1103`**,
+**That gap is REGISTERED with an owner** (Close the Loop): commitment **`CMT-1103`**,
 agent-owned, beacon-enrolled, so it resurfaces on a cadence until it reaches deliberate
 closure rather than living in this document's prose. The convergence review is what
 surfaced it — twice, from the constitutional gate — and registering it is the honest
@@ -1157,8 +1159,8 @@ these two guards, `enabled: true` was never evidence that they worked, and now t
 own output says so.
 
 **The fleet-wide audit: previously declined, now TRACKED as `CMT-1122`.** Earlier drafts
-argued that raising a fleet-wide obligation this change does not carry would be an untracked
-follow-up, and that untracked follow-ups are indistinguishable from abandoned ones. Round-7
+argued that raising a fleet-wide obligation this change does not carry would be an unowned
+future task, and that unowned future tasks are indistinguishable from abandoned ones. Round-7
 review called that what it was: *process compliance dressed as risk management*. The argument
 proves only that an **untracked** obligation is bad — it says nothing against a **tracked**
 one, and the defect class has now recurred at least twice, which is precisely the evidence

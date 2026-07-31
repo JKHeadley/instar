@@ -65,10 +65,16 @@ never more deletions.
 
 ## What you actually need to decide
 
-Whether "a watcher that cannot do its job should say so" is worth a small change to two
-files, given that the alternative has now produced a false all-clear twice.
+Whether "a watcher that cannot do its job should say so" is worth changing the shared
+enumeration result, both watchers, their status routes, and the guard-status projection,
+given that the alternative has now produced a false all-clear twice.
 
 The honest limitation: this does **not** fix the setting that broke it this time. The
 watchers assume a particular repository layout that does not hold for every agent, and
 that is a separate change. This one makes the next such mistake visible instead of
 silently reassuring — it does not prevent it.
+
+Unprompted alerting and machine-readable error codes are separately owned by tracked
+commitments. They are intentionally not implied by this implementation: this change makes
+the live and historical evidence truthful, while those later capabilities must earn their
+own safety and delivery contracts.

@@ -69,3 +69,10 @@ authenticated routes, and both real AgentServer lifecycle suites. The named E2E 
 inject a failed enumeration through production route plumbing and assert the response remains
 HTTP 200 while carrying failure status, bounded reason, and a null count. TypeScript, the full
 lint chain, and the production build are clean. CI must run both named E2E suites before merge.
+
+CI's no-silent-fallback ratchet initially classified the low-level typed failure return as a
+fallback because its lexical scanner matches any catch block returning an object. The catch now
+carries the repository's explicit exemption with the architectural reason: the result is consumed
+as persisted failure evidence and `on-blind` posture, not substituted success. The exact ratchet
+test and 78 focused reaper/Git-adapter tests pass after that audit-only annotation; runtime behavior
+is unchanged.
