@@ -1,0 +1,29 @@
+{
+  "ts": "2026-07-31T16:29:06.000Z",
+  "slug": "declared-identity-directory-boot-check",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "server boot lifecycle surface: src/commands/server.ts adds an early boot diagnostic",
+    "agent identity context surface: src/core/ContextHierarchy.ts validates persisted self-knowledge"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 101,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ContextHierarchy.ts"
+    ],
+    "addedLines": 100,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Identity context is additive and retained an install-time absolute path after the agent moved. No boot check validated that persisted self-description before derived hooks, watchdogs, registries, and recovery paths consumed it. The stale path caused both a disabled revival queue and a failed compaction-recovery injection."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

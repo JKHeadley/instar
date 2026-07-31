@@ -190,7 +190,7 @@ import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CartographerTree } from '../core/CartographerTree.js';
 import { CapabilityMapper } from '../core/CapabilityMapper.js';
 import { ScopeVerifier } from '../core/ScopeVerifier.js';
-import { ContextHierarchy } from '../core/ContextHierarchy.js';
+import { ContextHierarchy, checkDeclaredIdentityDirectory } from '../core/ContextHierarchy.js';
 import { CanonicalState } from '../core/CanonicalState.js';
 import { ExternalOperationGate, AUTONOMY_PROFILES } from '../core/ExternalOperationGate.js';
 import { MessageSentinel } from '../core/MessageSentinel.js';
@@ -3650,6 +3650,18 @@ function setupServerLog(stateDir: string): void {
 export async function startServer(options: StartOptions): Promise<void> {
   const config = loadConfig(options.dir);
   ensureStateDir(config.stateDir);
+
+  // Identity context is additive and survives agent moves. Validate its
+  // persisted directory before any subsystem can derive hooks, locks, or
+  // recovery paths from stale self-knowledge.
+  const declaredDirectoryCheck = checkDeclaredIdentityDirectory(config.stateDir, config.projectDir);
+  if (declaredDirectoryCheck.status === 'invalid') {
+    console.warn(pc.yellow(pc.bold('  ⚠ DECLARED AGENT DIRECTORY IS INVALID')));
+    console.warn(pc.yellow(`  ${declaredDirectoryCheck.identityPath}`));
+    console.warn(pc.yellow(`  Declares: ${declaredDirectoryCheck.declaredDirectory}`));
+    console.warn(pc.yellow(`  Problem: ${declaredDirectoryCheck.reason}`));
+    console.warn(pc.yellow('  Correct the identity directory before relying on generated hooks or recovery state.'));
+  }
 
   // ── Fork-bomb prevention P1 (forkbomb-prevention-simple §D-CAP) ──
   // Inject the operator-configured spawn-cap knobs into the host-wide spawn
