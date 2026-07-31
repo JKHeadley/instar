@@ -1,15 +1,87 @@
 ---
-title: "The gemini cross-model reviewer is detected by OAuth creds alone, so a host authed by API key is reported unavailable — the exact false-unavailable the module says it exists to prevent"
+title: "RETRACTED — the gemini reviewer's OAuth-only detection is correct, because Instar strips every non-OAuth credential before spawning gemini"
 date: 2026-07-31
 author: echo
 machine: Mac Mini
-severity: medium
-status: open
+severity: none
+status: retracted
 kind: finding
+retracted: 2026-07-31
 relates:
   - "src/core/crossModelReviewer.ts"
+  - "src/providers/adapters/gemini-cli/transport/geminiSpawn.ts"
+  - "src/providers/adapters/gemini-cli/config.ts"
   - "skills/spec-converge/SKILL.md"
 ---
+
+> # ⚠️ RETRACTED — the finding below is wrong
+>
+> **There is no defect.** OAuth-only detection is correct and deliberate. The original text is kept
+> intact beneath this notice because the reasoning error is worth more than the claim was.
+
+## Why it is wrong
+
+The finding reasoned entirely about **what the gemini CLI accepts when run by hand**. It never checked
+**how Instar actually spawns gemini** — and Instar removes every one of those credentials first.
+
+`src/providers/adapters/gemini-cli/transport/geminiSpawn.ts` builds the child environment as an
+**allowlist** ("anything not listed is dropped"), then hard-deletes the billing-capable vars:
+
+```ts
+/**
+ * The Google/Gemini billing-capable vars that are UNCONDITIONALLY deleted
+ * from the child env ... Any of these present would silently route Gemini onto
+ * a billed API path instead of the cached-OAuth/subscription path. A false-negative
+ * (silent billing) is asymmetrically costly, so the delete is unconditional and the
+ * geminiKeyLeakageCanary asserts none of these ever reaches the child.
+ */
+export const GEMINI_BILLING_ENV_VARS = [
+  'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS',
+  'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_CLOUD_PROJECT',
+] as const;
+```
+
+`GOOGLE_GENAI_USE_GCA` is not on the allowlist either, so it is dropped as well. Every gemini execution
+path goes through this — `GeminiCliIntelligenceProvider.ts:91`, the setup-wizard driver, and the loop
+production transport all call `buildGeminiChildEnv()`.
+
+`config.ts` states the policy outright: cached OAuth under `~/.gemini` is **"THE ALLOWED PATH"**; the
+API-key/Vertex route **"can route onto a BILLED API account"** and is stripped.
+
+**So on a host authed only by API key, Vertex, or Code Assist, gemini-as-Instar-spawns-it is genuinely
+not authed.** Reporting `gemini-not-authed` is a *true* unavailable. There is no false-unavailable and
+no open door.
+
+## The proposed fix would have been actively harmful
+
+Items 2–3 below ("treat a non-empty `GEMINI_API_KEY` as authed", "treat `GOOGLE_GENAI_USE_VERTEXAI` /
+`GOOGLE_GENAI_USE_GCA` as authed") would have made detection report *available* for a host that cannot
+run, and pushed toward honoring exactly the credentials a dedicated canary test
+(`geminiKeyLeakageCanary`) exists to keep out of the child. The "safe direction" argument in the
+original is inverted: admitting those methods is the unsafe direction.
+
+## The reasoning error, which is the part worth keeping
+
+**I verified the dependency's behaviour and never verified our invocation of it.** The CLI's own error
+text is real, quoted correctly, and irrelevant — the question was never "what can gemini accept?" but
+"what does Instar hand it?", and one `grep buildGeminiChildEnv` would have answered it.
+
+The mechanical slip: I grepped `GEMINI_API_KEY`, found it in `geminiSpawn.ts`, and **inferred
+acceptance from membership in a list.** The file, the line, and the variable were all exactly right;
+the list was a *deletion* list. I never read the ten lines of comment directly above it.
+
+**And the "Honest limits" section below is the sharpest lesson here.** It correctly flags that I never
+executed the API-key path end-to-end — a real limitation, honestly stated, and *not the load-bearing
+one*. The unchecked assumption was that Instar passes the environment through at all, and that never
+appeared as a caveat because it never occurred to me to doubt it. **Naming a limitation is not the same
+as naming the right limitation**; a well-caveated document can be more persuasive than an uncaveated
+one while resting on an assumption neither the author nor the reader ever surfaced.
+
+Issue #1789, filed from this finding, is closed as invalid.
+
+---
+
+*Original text follows, unaltered.*
 
 ## The claim
 
