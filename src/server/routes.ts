@@ -10188,14 +10188,71 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
       } catch { /* skip unreadable source */ }
-      // (3) Corrections — persisted in the SQLite CorrectionLedger, not a JSONL file.
-      // Guarded: correctionLearning ships off on many agents (ledger may be absent).
+      // (3) Corrections — COUNTED WHEN LEARNING IS VERIFIED, NOT WHEN DETECTED.
+      //
+      // A ledger row is an observation, not yet a learned preference. Counting it at
+      // detectedAt repeats the filing-rate inversion fixed above for actions: the live
+      // 37-row corpus scored 37 learning events even though it had produced zero
+      // preferences. `verified` is the correction loop's completed-success state: the
+      // routed preference still exists and the correction did not recur through its
+      // verification window. Its updatedAt is therefore the completion timestamp.
+      //
+      // Analyzer-time paraphrase clusters route as ONE preference while retaining
+      // their exact member records. Count one event per durable routeClusterId, using
+      // the latest member completion time; legacy verified rows without a cluster id
+      // remain one event each. Guarded: correctionLearning ships off on many agents
+      // (ledger may be absent).
+      const correctionAccounting = {
+        considered: 0,
+        counted: 0,
+        coalescedRecords: 0,
+        excluded: {} as Record<string, number>,
+        sourceError: false,
+      };
+      const excludeCorrection = (reason: string): void => {
+        correctionAccounting.excluded[reason] = (correctionAccounting.excluded[reason] ?? 0) + 1;
+      };
       if (ctx.correctionLedger) {
         try {
+          const completedClusters = new Map<string, string>();
           for (const r of ctx.correctionLedger.list({ limit: 1000 })) {
-            push((r as { detectedAt?: string; createdAt?: string }).detectedAt ?? (r as { createdAt?: string }).createdAt, 'correction');
+            correctionAccounting.considered += 1;
+            const rec = r as {
+              id?: string;
+              status?: string;
+              updatedAt?: string;
+              routeClusterId?: string;
+            };
+            const status = typeof rec.status === 'string' ? rec.status : 'unknown';
+            if (status !== 'verified') {
+              excludeCorrection(`not-verified:${status}`);
+              continue;
+            }
+            if (!rec.updatedAt) {
+              // Back-dating to detectedAt would turn the filing into the event again.
+              excludeCorrection('verified-without-timestamp');
+              continue;
+            }
+            const clusterKey = rec.routeClusterId ?? `record:${rec.id ?? correctionAccounting.considered}`;
+            const existing = completedClusters.get(clusterKey);
+            if (existing === undefined) {
+              completedClusters.set(clusterKey, rec.updatedAt);
+              continue;
+            }
+            correctionAccounting.coalescedRecords += 1;
+            if (Date.parse(rec.updatedAt) > Date.parse(existing)) {
+              completedClusters.set(clusterKey, rec.updatedAt);
+            }
           }
-        } catch { /* skip ledger error */ }
+          for (const completedAt of completedClusters.values()) {
+            push(completedAt, 'correction');
+            correctionAccounting.counted += 1;
+          }
+        } catch {
+          // @silent-fallback-ok: the ledger is an optional metric source; keep the
+          // read-only endpoint available but make the missing denominator explicit.
+          correctionAccounting.sourceError = true;
+        }
       }
       // The score never travels without what it was computed over (the
       // honest-denominator rule applied to this metric): `counting` states the rule in
@@ -10203,8 +10260,9 @@ export function createRoutes(ctx: RouteContext): Router {
       // reader can tell "we are not learning" from "almost nothing has finished yet".
       res.json({
         ...computeLearningVelocity(events, new Date().toISOString(), windowDays),
-        counting: 'evolution actions count on completion (completedAt), never on filing (createdAt)',
+        counting: 'evolution actions count on completion (completedAt), never on filing (createdAt); corrections count when verified (updatedAt), never on detection (detectedAt), with one event per routed cluster',
         evolutionActions: actionAccounting,
+        corrections: correctionAccounting,
       });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to compute learning velocity' });
