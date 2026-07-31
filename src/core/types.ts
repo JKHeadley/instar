@@ -2308,6 +2308,8 @@ export interface GuardPostureSummary {
   onConfirmed: number;
   onUnverified: number;
   onStale: number;
+  /** Optional for wire back-compat: absent means the peer cannot report this class. */
+  onBlind?: number;
   onDryRun: number;
   offDeviant: number;
   offDeviantKeys: string[];

@@ -5,6 +5,23 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "worktree-enumeration-failure-history",
+      "description": "Restart-surviving failure count and last-failure time for the two local worktree guards; the current pass outcome intentionally remains process-local.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/worktree-enumeration-failures.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 2,
+        "note": "Exactly one replace-in-place record per worktree guard; no event rows accumulate."
+      }
+    },
+    {
       "category": "goal-realignment-runtime",
       "description": "Phase 1 candidate-priority inbox, checkpointed extraction outbox, counters, and latest dry-run verdict. Unresolved candidates are never silently discarded; resolved rows and applied checkpoints are capped.",
       "scope": "machine-local",

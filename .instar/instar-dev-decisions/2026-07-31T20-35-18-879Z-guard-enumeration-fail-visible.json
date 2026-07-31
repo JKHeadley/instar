@@ -1,0 +1,45 @@
+{
+  "ts": "2026-07-31T20:35:18.879Z",
+  "slug": "guard-enumeration-fail-visible",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported persistence subsystem added",
+    "runtime wiring: src/commands/server.ts registers two guard status providers",
+    "additive HTTP and cross-machine posture contract change"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 604,
+  "scope": {
+    "basis": "committed-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/GuardPostureStore.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/monitoring/AgentWorktreeReaper.ts",
+      "src/monitoring/GuardRegistry.ts",
+      "src/monitoring/OrphanedWorkSentinel.ts",
+      "src/monitoring/WorktreeEnumerationFailureStore.ts",
+      "src/monitoring/agentWorktreeGit.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/monitoring/guardPostureView.ts",
+      "src/monitoring/orphanedWorkGit.ts",
+      "src/monitoring/worktreeEnumeration.ts"
+    ],
+    "addedLines": 558,
+    "deletedLines": 46
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The original Git adapters collapsed enumeration failure into an empty list. Two incident-specific path repairs corrected triggers but left the fail-silent representation shared by both guards."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This increment adds passive evidence to existing bounded scheduled guards and introduces no actuator, cadence, retry, redrive, notification, or self-triggering edge."
+  },
+  "verdict": "pass"
+}

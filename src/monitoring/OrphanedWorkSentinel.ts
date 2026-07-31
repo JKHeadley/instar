@@ -31,6 +31,11 @@
  */
 
 import { EventEmitter } from 'node:events';
+import {
+  summarizeEnumerationError,
+  type WorktreeEnumeration,
+  type WorktreeEnumerationFailureHistoryPort,
+} from './worktreeEnumeration.js';
 
 export interface OrphanedWorkSentinelConfig {
   /** developmentAgent-gated at the wiring site; omitted from the default. */
@@ -95,8 +100,14 @@ export interface OrphanedWorkEvent {
  * fakes; production wiring supplies git/fs-backed implementations.
  */
 export interface OrphanedWorkSentinelDeps {
-  /** Worktrees under the agent's `.worktrees/` (excludes the main checkout). */
-  listWorktrees: () => OrphanedWorktreeInfo[];
+  /**
+   * Worktrees under the agent's `.worktrees/` (excludes the main checkout).
+   *
+   * Three-state result — see `WorktreeEnumeration`. The failure state is not
+   * skippable: a caller cannot reach the list without narrowing on `ok`, so
+   * "could not look" can never be silently reported as "nothing stranded".
+   */
+  listWorktrees: () => WorktreeEnumeration<OrphanedWorktreeInfo>;
   /** True when the worktree has uncommitted or untracked changes (the "work"). */
   hasUncommittedWork: (path: string) => boolean;
   /** A stable short signature of the current dirty state (for episode dedup). */
@@ -115,6 +126,10 @@ export interface OrphanedWorkSentinelDeps {
   record: (event: OrphanedWorkEvent) => void;
   /** Raise ONE deduped attention item for a stranded worktree. */
   raiseAttention: (event: OrphanedWorkEvent) => void;
+  /** Passive trace for an enumeration failure — see the reaper's `warn`. */
+  warn?: (line: string) => void;
+  /** Restart-surviving failure count/time. Current blind state is never restored. */
+  failureHistory?: WorktreeEnumerationFailureHistoryPort;
   now?: () => number;
 }
 
@@ -122,9 +137,16 @@ export class OrphanedWorkSentinel extends EventEmitter {
   private readonly cfg: OrphanedWorkSentinelConfig;
   private readonly deps: OrphanedWorkSentinelDeps;
   private readonly now: () => number;
+  private readonly warn: (line: string) => void;
   private timer?: NodeJS.Timeout;
   private running = false;
   private lastPassAt = 0;
+  /** Metric (Observability): failed SCAN passes in retained history — never incremented by
+   *  snapshot(), which runs per route hit. Mirrors the reaper's contract. */
+  private enumerationFailures = 0;
+  private lastEnumerationFailureAt: number | null = null;
+  private lastEnumerationOk: boolean | null = null;
+  private lastEnumerationError: string | null = null;
   /** Episode dedup: `${path}::${workSig}` already flagged this process-lifetime. */
   private readonly flagged = new Set<string>();
 
@@ -133,6 +155,18 @@ export class OrphanedWorkSentinel extends EventEmitter {
     this.deps = deps;
     this.cfg = { ...DEFAULT_ORPHANED_WORK_SENTINEL_CONFIG, ...(cfg ?? {}) };
     this.now = deps.now ?? (() => Date.now());
+    this.warn = deps.warn ?? ((line) => console.warn(line));
+    try {
+      const history = deps.failureHistory?.load();
+      if (history) {
+        this.enumerationFailures = history.enumerationFailures;
+        this.lastEnumerationFailureAt = history.lastEnumerationFailureAt;
+      }
+    } catch (err) {
+      // @silent-fallback-ok — not silent: current scans remain honest and the
+      // missing historical load is named in the server log.
+      this.warn(`[orphaned-work-sentinel] enumeration failure history load FAILED: ${summarizeEnumerationError(err)}`);
+    }
   }
 
   start(): void {
@@ -174,9 +208,23 @@ export class OrphanedWorkSentinel extends EventEmitter {
     const evaluations: OrphanedWorkEvaluation[] = [];
     const flaggedEvents: OrphanedWorkEvent[] = [];
     try {
-      let worktrees: OrphanedWorktreeInfo[];
-      try { worktrees = this.deps.listWorktrees(); }
-      catch { worktrees = []; }
+      // `ok` narrowing is mandatory; an enumeration failure aborts the pass
+      // rather than scanning an empty list that looks like a clean machine.
+      const enumeration = this.deps.listWorktrees();
+      if (!enumeration.ok) {
+        // Named event, never 'error' — see the reaper: an unlistened 'error' emit
+        // throws, and would escape from the scan timer in the exact failure case
+        // this handles.
+        const failedAt = this.now();
+        this.lastPassAt = failedAt;
+        this.lastEnumerationOk = false;
+        this.lastEnumerationError = enumeration.error;
+        this.recordEnumerationFailure(failedAt);
+        this.emit('enumeration-failed', { error: enumeration.error });
+        this.warn(`[orphaned-work-sentinel] enumeration FAILED — stranded-work count is UNKNOWN, not zero: ${enumeration.error}`);
+        return { ts: failedAt, evaluations, flagged: flaggedEvents };
+      }
+      const worktrees: OrphanedWorktreeInfo[] = enumeration.worktrees;
 
       for (const info of worktrees) {
         const evalResult = this.evaluate(info);
@@ -208,10 +256,44 @@ export class OrphanedWorkSentinel extends EventEmitter {
         flaggedEvents.push(event);
       }
       this.lastPassAt = this.now();
+      this.lastEnumerationOk = true;
+      this.lastEnumerationError = null;
     } finally {
       this.running = false;
     }
     return { ts: this.now(), evaluations, flagged: flaggedEvents };
+  }
+
+  private recordEnumerationFailure(at: number): void {
+    this.enumerationFailures = Math.min(Number.MAX_SAFE_INTEGER, this.enumerationFailures + 1);
+    this.lastEnumerationFailureAt = at;
+    try {
+      const persisted = this.deps.failureHistory?.recordFailure(at);
+      if (persisted) {
+        this.enumerationFailures = persisted.enumerationFailures;
+        this.lastEnumerationFailureAt = persisted.lastEnumerationFailureAt;
+      }
+    } catch (err) {
+      // @silent-fallback-ok — not silent: retain in-memory history and name the
+      // durability failure while the signal-only sentinel keeps scanning.
+      this.warn(`[orphaned-work-sentinel] enumeration failure history persist FAILED: ${summarizeEnumerationError(err)}`);
+    }
+  }
+
+  /** Cheap, in-memory posture read for GuardRegistry (`GET /guards`). */
+  guardStatus(): {
+    enabled: boolean;
+    lastTickAt: number;
+    verdictUnknown?: true;
+    verdictUnknownReason?: string;
+  } {
+    return {
+      enabled: this.cfg.enabled,
+      lastTickAt: this.lastPassAt,
+      ...(this.lastEnumerationOk === false
+        ? { verdictUnknown: true as const, verdictUnknownReason: this.lastEnumerationError ?? 'worktree enumeration failed' }
+        : {}),
+    };
   }
 
   /**
@@ -225,18 +307,43 @@ export class OrphanedWorkSentinel extends EventEmitter {
     lastPassAt: number;
     settleMs: number;
     evaluations: OrphanedWorkEvaluation[];
-    orphanedCount: number;
+    orphanedCount: number | null;
+    enumerationOk: boolean;
+    enumerationError: string | null;
+    enumerationFailures: number;
+    lastEnumerationFailureAt: number | null;
   } {
     let evaluations: OrphanedWorkEvaluation[] = [];
-    try { evaluations = this.deps.listWorktrees().map((info) => this.evaluate(info)); }
-    catch { evaluations = []; }
+    let enumerationOk = true;
+    let enumerationError: string | null = null;
+    // FAIL-VISIBLE, mirroring AgentWorktreeReaper.snapshot(). This sentinel shares
+    // the reaper's enumeration (orphanedWorkGit delegates to base.listWorktrees),
+    // so it inherited the same collapse: an enumeration FAILURE and "no stranded
+    // work" both produced `orphanedCount: 0`. For a backstop whose entire purpose
+    // is noticing work nobody else will, that is the worst possible direction to
+    // fail in — it reports the reassuring answer precisely when it is blind.
+    try {
+      const enumeration = this.deps.listWorktrees();
+      if (enumeration.ok) evaluations = enumeration.worktrees.map((info) => this.evaluate(info));
+      else { enumerationOk = false; enumerationError = enumeration.error; }
+    } catch (err) {
+      enumerationOk = false;
+      // Same bounded, single-line, stack-free contract as the reaper — one shared
+      // helper so the two surfaces cannot drift apart.
+      enumerationError = summarizeEnumerationError(err);
+      evaluations = [];
+    }
     return {
       enabled: this.cfg.enabled,
       preserveWork: this.cfg.preserveWork,
       lastPassAt: this.lastPassAt,
       settleMs: this.cfg.settleMs,
       evaluations,
-      orphanedCount: evaluations.filter((e) => e.verdict === 'orphaned').length,
+      orphanedCount: enumerationOk ? evaluations.filter((e) => e.verdict === 'orphaned').length : null,
+      enumerationOk,
+      enumerationError,
+      enumerationFailures: this.enumerationFailures,
+      lastEnumerationFailureAt: this.lastEnumerationFailureAt,
     };
   }
 }

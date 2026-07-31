@@ -58,13 +58,14 @@ Every LLM-driven gate and sentinel has a cost and a hit-rate. The metrics ledger
 
 ## Session & resource lifecycle
 
-Components: `SessionReaper`, `AgentWorktreeReaper`, `McpProcessReaper`, `StopNotifier`.
+Components: `SessionReaper`, `AgentWorktreeReaper`, `OrphanedWorkSentinel`, `WorktreeEnumerationFailureStore`, `GuardRegistry`, `GuardPostureStore`, `McpProcessReaper`, `StopNotifier`.
 
 These reclaim resources without ever losing an audit trail:
 
 - `SessionReaper` retires idle sessions under CPU- and memory-aware pressure, recording every keep/kill *decision change* to a decision audit. Inspect live pressure and verdicts at `GET /sessions/reaper`, and the decision history at `GET /sessions/reaper/audit`.
 - Every session shutoff — and every *refused* shutoff — is recorded as one line in the reap-log, served read-only at `GET /sessions/reap-log`, so a session can never disappear without a trace. `StopNotifier` sends the user-facing "your session was shut down — <reason>" notice (recovery-bounces and operator kills stay silent).
-- `AgentWorktreeReaper` reclaims CLI-created worktrees that are merged, clean, and not in use — review what's reclaimable first at `GET /worktrees/agent-reaper`.
+- `AgentWorktreeReaper` reclaims CLI-created worktrees that are merged, clean, and not in use, while `OrphanedWorkSentinel` reports abandoned work without mutating it. Their live routes distinguish a successful empty enumeration from a failed enumeration instead of reporting both as zero worktrees.
+- `WorktreeEnumerationFailureStore` retains the latest bounded failure record for each guard across restarts. `GuardRegistry` and `GuardPostureStore` project that evidence through `/guards`: a failed current tick is reported as `on-blind`, with the last known good pass kept separately from the current verdict.
 - `McpProcessReaper` cleans up orphaned MCP helper processes — inspect at `GET /processes/mcp-reaper`.
 
 ## Release readiness

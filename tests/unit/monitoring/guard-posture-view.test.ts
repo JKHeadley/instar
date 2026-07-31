@@ -104,6 +104,36 @@ describe('deriveGuardRow — the normative precedence table', () => {
     expect(row.runtime?.stale).toBe(true);
   });
 
+  it('on-blind: a fresh live guard ran but could not produce a verdict', () => {
+    const row = derive({
+      runtime: { kind: 'ok', status: {
+        enabled: true,
+        lastTickAt: NOW - 1_000,
+        verdictUnknown: true,
+        verdictUnknownReason: 'git worktree list failed',
+      } },
+    });
+    expect(row.effective).toBe('on-blind');
+    expect(row.runtime).toMatchObject({
+      verdictUnknown: true,
+      verdictUnknownReason: 'git worktree list failed',
+    });
+  });
+
+  it('on-dry-run and on-stale outrank blindness while the runtime detail remains visible', () => {
+    const dryRun = derive({ runtime: { kind: 'ok', status: {
+      enabled: true, dryRun: true, lastTickAt: NOW - 1_000, verdictUnknown: true,
+    } } });
+    expect(dryRun.effective).toBe('on-dry-run');
+    expect(dryRun.runtime?.verdictUnknown).toBe(true);
+
+    const stale = derive({ runtime: { kind: 'ok', status: {
+      enabled: true, lastTickAt: 0, verdictUnknown: true,
+    } } });
+    expect(stale.effective).toBe('on-stale');
+    expect(stale.runtime?.verdictUnknown).toBe(true);
+  });
+
   it('on-dry-run from config dryRun when runtime carries no dryRun field', () => {
     const row = derive({
       configDryRun: true,
@@ -441,5 +471,26 @@ describe('buildHeartbeatPostureBlock', () => {
     expect(block.generatedAt).toBe(new Date(NOW).toISOString());
     // Compact: no per-guard rows ride the heartbeat.
     expect((block as Record<string, unknown>).guards).toBeUndefined();
+  });
+
+  it('carries the optional onBlind count for upgraded peers', () => {
+    const registry = new GuardRegistry();
+    registry.register('monitoring.sessionReaper.enabled', () => ({
+      enabled: true,
+      dryRun: false,
+      lastTickAt: NOW - 1_000,
+      verdictUnknown: true,
+      verdictUnknownReason: 'enumeration failed',
+    }));
+    const snapshot = snapshotFixture();
+    const inv = buildGuardInventory({
+      snapshot,
+      bootSnapshot: { ts: 'x', posture: extractGuardPosture(snapshot.resolved) },
+      registry,
+      now: NOW,
+    });
+
+    expect(inv.summary.onBlind).toBe(1);
+    expect(buildHeartbeatPostureBlock(inv, new Date(NOW).toISOString()).onBlind).toBe(1);
   });
 });
