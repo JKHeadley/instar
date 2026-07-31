@@ -2,10 +2,12 @@
 /**
  * generate-standards-registry-asset — ship the constitution with the code that reads it.
  *
- * Reads the authored `docs/STANDARDS-REGISTRY.md` and writes two build artifacts:
+ * Reads the authored registry and the real source checkout, then writes four artifacts:
  *
  *   dist/data/standards-registry.md        — a VERBATIM byte copy
  *   dist/data/standards-registry.meta.json — { sha256, articleCount, generatedFrom }
+ *   dist/data/standards-guard-index.json    — deterministic guard evidence from ROOT
+ *   dist/data/standards-guard-index.meta.json — same-build sha/registry/version stamp
  *
  * Deterministic, no network. Runs AFTER `tsc` in the build chain: after compile
  * (so `dist/` and the shared parser exist) and before packaging. A clean step
@@ -193,13 +195,34 @@ if (typeof packageVersion !== 'string' || packageVersion.length === 0) {
 }
 
 const meta = `${JSON.stringify({ sha256, articleCount, generatedFrom: SOURCE_REL, packageVersion }, null, 2)}\n`;
+let guardIndex;
+try {
+  const auditorUrl = pathToFileURL(path.join(ROOT, 'dist', 'core', 'StandardsEnforcementAuditor.js')).href;
+  const { buildGuardTreeIndex } = await import(auditorUrl);
+  guardIndex = buildGuardTreeIndex(ROOT, bytes.toString('utf-8'), packageVersion);
+} catch (err) {
+  die(
+    `could not build the guard evidence index from the real source tree — ` +
+      `${err instanceof Error ? err.message : String(err)}`,
+  );
+}
+const guardIndexBytes = Buffer.from(`${JSON.stringify(guardIndex, null, 2)}\n`, 'utf-8');
+const guardIndexSha256 = crypto.createHash('sha256').update(guardIndexBytes).digest('hex');
+const guardIndexMeta = `${JSON.stringify({
+  sha256: guardIndexSha256,
+  registrySha256: sha256,
+  packageVersion,
+}, null, 2)}\n`;
 for (const dir of OUT_DIRS) {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'standards-registry.md'), bytes);
   fs.writeFileSync(path.join(dir, 'standards-registry.meta.json'), meta);
+  fs.writeFileSync(path.join(dir, 'standards-guard-index.json'), guardIndexBytes);
+  fs.writeFileSync(path.join(dir, 'standards-guard-index.meta.json'), guardIndexMeta);
 }
 
 console.log(
-  `✓ standards registry asset: ${articleCount} articles, sha256 ${sha256.slice(0, 12)}… → ` +
+  `✓ standards registry asset: ${articleCount} articles, registry ${sha256.slice(0, 12)}…, ` +
+    `guards ${guardIndexSha256.slice(0, 12)}… → ` +
     OUT_DIRS.map((d) => path.relative(ROOT, d)).join(' + '),
 );

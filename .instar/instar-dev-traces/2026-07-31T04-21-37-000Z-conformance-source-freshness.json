@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "slug": "conformance-source-freshness",
+  "sessionId": "conformance-source-freshness",
+  "timestamp": "2026-07-31T04:21:37.000Z",
+  "artifactPath": "upgrades/side-effects/conformance-source-freshness.md",
+  "artifactSha256": "d585b2d5bd8a45ac6016c265dafa1d620ae520a0def562f8688a45065ddc962d",
+  "coveredFiles": [
+    ".gitignore",
+    "scripts/generate-standards-registry-asset.mjs",
+    "src/core/StandardsEnforcementAuditor.ts",
+    "tests/integration/standards-coverage-route.test.ts",
+    "tests/setup/build-dist.globalSetup.ts",
+    "tests/setup/ensure-registry-asset.globalSetup.ts",
+    "tests/unit/standards-enforcement-auditor.test.ts",
+    "tests/unit/standards-registry-asset.test.ts",
+    "docs/eli16/conformance-source-freshness.eli16.md",
+    "upgrades/side-effects/conformance-source-freshness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Tier 1: read-only conformance-source selection and generated build evidence. No mutation of runtime state, config, database, messaging, or route wiring. The HTTP payload is additive inside the existing summary.guards object. Unit tests cover both sides of source identity; the existing route integration test proves production exposure.",
+  "eli16Path": "docs/eli16/conformance-source-freshness.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conformance-source-freshness.md",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The guard-tree probe established capability from two landmarks but never established identity or freshness. Agent homes legitimately retained old source copies, so a coherent stale tree passed every internal check. The registry side already carried a same-build integrity basis; this change applies the same structure to audit-relevant source evidence."
+  },
+  "classClosure": {
+    "defectClass": "stale-source-accepted-by-landmarks",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/standards-enforcement-auditor.test.ts",
+      "howCaught": "A landmark-complete stale fixture is rejected unless its complete audit-evidence index exactly matches the same-build packed index; the matching checkout is selected and the no-match boundary returns null."
+    }
+  },
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
