@@ -16,6 +16,8 @@ frontloaded-decisions: 16
 cheap-to-change-tags: 2
 contested-then-cleared: 2
 approved: true  # operator authenticated preapproval, topic 11960, 2026-07-11 ("you have my preapproval for any decisions needed")
+approved-by: "Justin (operator preapproval, topic 11960)"
+approved-date: "2026-07-11"
 ---
 
 # Audit-Convergence Enforcement
