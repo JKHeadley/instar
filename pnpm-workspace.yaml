@@ -1,0 +1,50 @@
+# Dependency build-script allowlist (pnpm >= 11).
+#
+# pnpm 11 refuses to run a dependency's install/postinstall script unless it is
+# explicitly allowed here, and exits non-zero (ERR_PNPM_IGNORED_BUILDS) while any
+# are unresolved — so a fresh checkout could not `pnpm install` at all until this
+# file existed. CI installs with `npm ci`, which runs every one of these scripts
+# with no gate, so the `true` entries below are PARITY with what already executes
+# today, not an expansion of it.
+#
+# true  = the script produces a working install (native binding compiled, or a
+#         platform binary downloaded). Omitting it breaks the package at runtime.
+# false = an engine check or a printed notice; nothing needed at runtime.
+# `packages` is REQUIRED and MUST list site/. This file makes the repo root a pnpm
+# workspace root, and the Vercel build runs `cd site && pnpm install` (see
+# vercel.json buildCommand). pnpm walks up from site/, finds this file, and treats
+# site/ as OUTSIDE the workspace unless it is declared here.
+#
+# The failure mode is SILENT, which is why it was expensive to find: with the root
+# file present and site/ undeclared, `pnpm install` inside site/ EXITS 0, installs
+# NOTHING into site/node_modules, and writes the lockfile at the repo root. The
+# deployment then dies at `astro build` with a missing-dependency error pointing at
+# Astro rather than at this file.
+#
+# Measured locally 2026-08-01, with site/ carrying one real dependency:
+#   no root workspace file        -> rc=0, dependency present    (this is main today)
+#   root file, no packages key    -> pnpm 9 rc=1 "packages field missing or empty";
+#                                    pnpm 10/11 rc=0
+#   root file, empty packages list-> rc=0, site/node_modules EMPTY   (silent break)
+#   root file, packages lists site-> rc=0, dependency present    (correct)
+#
+# An empty list satisfies the schema and still breaks the build. Declaring site/ is
+# what makes the install actually do its job.
+packages:
+  - "site"
+
+allowBuilds:
+  # Native bindings / downloaded platform binaries — required.
+  better-sqlite3: true    # install: prebuild-install || node-gyp rebuild
+  bufferutil: true        # install: node-gyp-build (ws performance)
+  cloudflared: true       # postinstall: downloads the cloudflared binary
+  cpu-features: true      # install: node-gyp (ssh2 optional dep)
+  esbuild: true           # postinstall: installs the esbuild platform binary
+  onnxruntime-node: true  # postinstall: installs the native ONNX runtime
+  sharp: true             # install: node install/check.js || build
+  ssh2: true              # install: node install.js
+  utf-8-validate: true    # install: node-gyp-build (ws performance)
+  # No runtime artifact — declined deliberately.
+  baileys: false          # preinstall: engine-requirements check only
+  es5-ext: false          # postinstall: prints a notice
+  protobufjs: false       # postinstall: no artifact needed by this project
