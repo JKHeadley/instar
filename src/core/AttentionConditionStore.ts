@@ -46,6 +46,7 @@ export interface AttentionConditionStoreDeps {
   filePath: string;
   now?: () => number;
   logger?: (message: string) => void;
+  maxRecords?: number;
 }
 
 const MAX_RECORDS = 2_000;
@@ -82,6 +83,15 @@ export class AttentionConditionStore {
       return { itemId: current.itemId, episode: current.episode, shouldRaise: false };
     }
 
+    if (!current && !this.makeRoomForNewRecord()) {
+      // Capacity degradation stays restart-idempotent: exact-id Attention
+      // dedupe still prevents a flood, while the loud log makes lost recurrence
+      // counting visible. Never evict an ACTIVE condition to admit a new one.
+      const itemId = `${key}:capacity`;
+      this.d.logger?.(`[AttentionConditionStore] capacity reached; using stable degraded id ${itemId}`);
+      return { itemId, episode: 1, shouldRaise: true };
+    }
+
     const episode = (current?.episode ?? 0) + 1;
     const itemId = `${key}:ep-${episode}`;
     const next: AttentionConditionRecord = {
@@ -97,7 +107,6 @@ export class AttentionConditionStore {
       lastSeenAt: now,
     };
     this.conditions.set(key, next);
-    this.prune();
     this.persist();
     return { itemId, episode, shouldRaise: true };
   }
@@ -149,15 +158,17 @@ export class AttentionConditionStore {
     }
   }
 
-  private prune(): void {
-    if (this.conditions.size <= MAX_RECORDS) return;
+  private makeRoomForNewRecord(): boolean {
+    const limit = Math.max(1, Math.floor(this.d.maxRecords ?? MAX_RECORDS));
+    if (this.conditions.size < limit) return true;
     const inactive = [...this.conditions.values()]
       .filter((record) => !record.active)
       .sort((a, b) => Date.parse(a.lastSeenAt) - Date.parse(b.lastSeenAt));
     for (const record of inactive) {
-      if (this.conditions.size <= MAX_RECORDS) break;
+      if (this.conditions.size < limit) break;
       this.conditions.delete(record.key);
     }
+    return this.conditions.size < limit;
   }
 
   private persist(): void {

@@ -107,7 +107,10 @@ appropriate. Pool-wide coalescing is explicitly not claimed.
 
 The file is bounded to 2,000 records; inactive oldest records are pruned first.
 Active records are never pruned to satisfy the cap, because forgetting an active
-condition recreates the exact restart-duplication defect.
+condition recreates the exact restart-duplication defect. If all 2,000 records
+are active, a new condition uses a deterministic capacity-degraded ID without
+entering the file; exact-ID Attention dedupe still bounds restart repetition,
+and the loss of recurrence counting is logged.
 
 ## 8. Rollback cost
 
@@ -122,7 +125,7 @@ what permits recurrence.
 
 ## Evidence pointers
 
-- Focused unit suite: 53 passing.
+- Focused unit suite: 54 passing.
 - Repository lint suite: passing.
 - TypeScript build: passing.
 

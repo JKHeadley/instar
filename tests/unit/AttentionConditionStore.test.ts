@@ -18,7 +18,7 @@ function harness() {
   dirs.push(dir);
   const filePath = path.join(dir, 'conditions.json');
   const clock = { now: Date.parse('2026-08-01T20:00:00Z') };
-  const create = () => new AttentionConditionStore({ filePath, now: () => clock.now });
+  const create = (maxRecords?: number) => new AttentionConditionStore({ filePath, now: () => clock.now, maxRecords });
   return { filePath, clock, create };
 }
 
@@ -63,5 +63,17 @@ describe('AttentionConditionStore', () => {
     expect(store.clearSubject(identity.producer, identity.subject)).toBe(2);
     expect(store.observe(identity).episode).toBe(2);
     expect(store.observe({ ...identity, subject: 'peer-b' })).toEqual({ ...sibling, shouldRaise: false });
+  });
+
+  it('never evicts an active condition when the durable record cap is full', () => {
+    const h = harness();
+    const store = h.create(1);
+    const first = store.observe(identity);
+    const overflowIdentity = { ...identity, subject: 'peer-b' };
+    const overflow = store.observe(overflowIdentity);
+
+    expect(overflow.itemId).toContain(':capacity');
+    expect(store.observe(identity)).toEqual({ ...first, shouldRaise: false });
+    expect(Object.keys(JSON.parse(fs.readFileSync(h.filePath, 'utf8')).conditions)).toHaveLength(1);
   });
 });
