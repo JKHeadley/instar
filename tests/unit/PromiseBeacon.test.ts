@@ -45,6 +45,7 @@ describe('PromiseBeacon', () => {
     const spy = vi.fn(async () => 'LLM-RESULT');
 
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: queue,
@@ -81,6 +82,7 @@ describe('PromiseBeacon', () => {
     const spy = vi.fn(async () => 'LLM-RESULT');
 
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: queue,
@@ -115,6 +117,7 @@ describe('PromiseBeacon', () => {
     const tracker = baseTracker(dir);
     const sent: Array<{ text: string }> = [];
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -149,6 +152,7 @@ describe('PromiseBeacon', () => {
     frozen.setHours(23, 0, 0, 0);
 
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -184,6 +188,7 @@ describe('PromiseBeacon', () => {
 
     const sent: string[] = [];
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: queue,

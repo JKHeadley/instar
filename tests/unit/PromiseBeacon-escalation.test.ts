@@ -78,6 +78,7 @@ function makeHarness(dir: string, esc: EscalationConfig | undefined, opts: {
                   reviveCalls: 0 };
 
   const beacon = new PromiseBeacon({
+    userOutputEnabled: true,
     stateDir: dir,
     commitmentTracker: tracker,
     llmQueue: new LlmQueue({ maxDailyCents: 100 }),

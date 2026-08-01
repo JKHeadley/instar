@@ -38,6 +38,7 @@ describe('PromiseBeacon — UX fixes', () => {
     const tracker = baseTracker(dir);
     const sent: Array<{ text: string }> = [];
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -78,6 +79,7 @@ describe('PromiseBeacon — UX fixes', () => {
     const tracker = baseTracker(dir);
     const sent: Array<{ text: string }> = [];
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -183,6 +185,7 @@ describe('PromiseBeacon — UX fixes', () => {
     const tracker = baseTracker(dir);
     const sent: Array<{ text: string }> = [];
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -225,6 +228,7 @@ describe('PromiseBeacon — UX fixes', () => {
   it('a resumed beacon re-arms via the resumed event handler', async () => {
     const tracker = baseTracker(dir);
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),

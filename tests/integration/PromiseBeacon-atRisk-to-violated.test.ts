@@ -33,6 +33,7 @@ describe('PromiseBeacon — atRisk signal → violated authority', () => {
     let snapshotNum = 0;
 
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),

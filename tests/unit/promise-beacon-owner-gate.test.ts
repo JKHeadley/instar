@@ -66,6 +66,7 @@ describe('PromiseBeacon owner-gated chokepoint (emitUserSend)', () => {
     attention = [];
     featureState = { enabled: false, dryRun: true };
     beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: new CommitmentTracker({ stateDir: dir, liveConfig: new LiveConfig(dir) }),
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),

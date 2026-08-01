@@ -43,6 +43,7 @@ describe('PromiseBeacon external-block staleness governor (sweepExternalBlocks)'
 
   function build(opts: { windowMs?: number; ceilingMs?: number } = {}) {
     beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),

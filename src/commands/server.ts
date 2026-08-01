@@ -13813,6 +13813,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       beaconLivenessIntervalMs?: number;
       turnFinishedCloseoutChecks?: number;
       aggregateByTopic?: boolean;
+      userOutputEnabled?: boolean;
     };
     const sharedLlmQueue = new SharedLlmQueueCls({
       maxConcurrent: 3,
@@ -14707,6 +14708,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             beaconLivenessIntervalMs: promiseBeaconCfg.beaconLivenessIntervalMs,
             turnFinishedCloseoutChecks: promiseBeaconCfg.turnFinishedCloseoutChecks,
             aggregateByTopic: promiseBeaconCfg.aggregateByTopic,
+            // User-facing PromiseBeacon output is fleet-off unless explicitly
+            // opted back in. Missing config is OFF, including on existing agents
+            // before add-missing migration persists the new default.
+            userOutputEnabled: promiseBeaconCfg.userOutputEnabled === true,
             // B2 turn-finished detection — "is the session still generating now?"
             looksActivelyWorking: (frame: string, name: string) =>
               _beaconLooksGeneratingNow(frame, sessionManager.frameworkForSession(name)),

@@ -49,6 +49,7 @@ describe('Promise-Beacon Escalation lifecycle (e2e)', () => {
 
   function wireBeacon(esc: EscalationConfig, revive: () => Promise<ReviveResult>) {
     const b = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir, commitmentTracker: tracker, llmQueue: new LlmQueue({ maxDailyCents: 100 }),
       proxyCoordinator: new ProxyCoordinator(),
       captureSessionOutput: () => 'x', getSessionForTopic: () => 'dead-sess', isSessionAlive: () => true,

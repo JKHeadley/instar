@@ -1,7 +1,7 @@
 /**
  * Verifies HONEST-PROGRESS-MESSAGING D (Config surface + migration parity):
  *   1. PostUpdateMigrator.migrateHonestProgressMessagingDefaults — the
- *      existence-checked, audited, idempotent backfill that surfaces the six
+ *      existence-checked, audited, idempotent backfill that surfaces the seven
  *      operator-tunable/rollback keys into a DEPLOYED agent's config.json at the
  *      paths the runtime actually reads (`monitoring.activeWorkSilenceSentinel.*`
  *      and TOP-LEVEL `promiseBeacon.*`).
@@ -51,24 +51,26 @@ describe('PostUpdateMigrator — honest-progress-messaging defaults (D)', () => 
     SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-honestProgressMessaging.test.ts' });
   });
 
-  it('ConfigDefaults is the SSOT — carries all six keys at the runtime-read paths', () => {
+  it('ConfigDefaults is the SSOT — carries all seven keys at the runtime-read paths', () => {
     const defaults = getInitDefaults('standalone') as any;
     const silence = defaults.monitoring.activeWorkSilenceSentinel;
     expect(silence.silenceThresholdMs).toBe(1_800_000);
     expect(silence.activeWorkMaxFrozenIndicatorMs).toBe(5_400_000);
     const beacon = defaults.promiseBeacon;
+    expect(beacon.userOutputEnabled).toBe(false);
     expect(beacon.aggregateByTopic).toBe(true);
     expect(beacon.suppressUnchangedHeartbeats).toBe(true);
     expect(beacon.beaconLivenessIntervalMs).toBe(3_600_000);
     expect(beacon.turnFinishedCloseoutChecks).toBe(3);
   });
 
-  it('fresh agent: backfills all six keys at the correct paths + records upgraded + sets marker', () => {
+  it('fresh agent: backfills all seven keys at the correct paths + records upgraded + sets marker', () => {
     writeConfig({ developmentAgent: true });
     const result = runMigration();
     const cfg = readConfig();
     expect(cfg.monitoring.activeWorkSilenceSentinel.silenceThresholdMs).toBe(1_800_000);
     expect(cfg.monitoring.activeWorkSilenceSentinel.activeWorkMaxFrozenIndicatorMs).toBe(5_400_000);
+    expect(cfg.promiseBeacon.userOutputEnabled).toBe(false);
     expect(cfg.promiseBeacon.aggregateByTopic).toBe(true);
     expect(cfg.promiseBeacon.suppressUnchangedHeartbeats).toBe(true);
     expect(cfg.promiseBeacon.beaconLivenessIntervalMs).toBe(3_600_000);
@@ -80,7 +82,12 @@ describe('PostUpdateMigrator — honest-progress-messaging defaults (D)', () => 
   it('preserves operator overrides — incl. the suppressUnchangedHeartbeats:false rollback', () => {
     writeConfig({
       monitoring: { activeWorkSilenceSentinel: { enabled: true, silenceThresholdMs: 900_000 } },
-      promiseBeacon: { aggregateByTopic: false, suppressUnchangedHeartbeats: false, prefix: '⏳' },
+      promiseBeacon: {
+        userOutputEnabled: true,
+        aggregateByTopic: false,
+        suppressUnchangedHeartbeats: false,
+        prefix: '⏳',
+      },
     });
     runMigration();
     const cfg = readConfig();
@@ -88,6 +95,7 @@ describe('PostUpdateMigrator — honest-progress-messaging defaults (D)', () => 
     expect(cfg.monitoring.activeWorkSilenceSentinel.silenceThresholdMs).toBe(900_000);
     expect(cfg.promiseBeacon.suppressUnchangedHeartbeats).toBe(false);
     expect(cfg.promiseBeacon.aggregateByTopic).toBe(false);
+    expect(cfg.promiseBeacon.userOutputEnabled).toBe(true);
     expect(cfg.promiseBeacon.prefix).toBe('⏳');
     // ...missing siblings still backfilled.
     expect(cfg.monitoring.activeWorkSilenceSentinel.activeWorkMaxFrozenIndicatorMs).toBe(5_400_000);
@@ -129,8 +137,9 @@ describe('PostUpdateMigrator — honest-progress-messaging defaults (D)', () => 
     (migrator as unknown as { migrateClaudeMd(r: MigrationResult): void }).migrateClaudeMd(result);
     const after = fs.readFileSync(claudeMdPath, 'utf-8');
     expect(after).toContain('Honest progress messaging (silent-freeze watchdog + promise beacon)');
-    expect(after).toContain('suppressUnchangedHeartbeats');
-    expect(after).toContain('aggregateByTopic');
+    expect(after).toContain('PromiseBeacon is internal by default');
+    expect(after).toContain('promiseBeacon.userOutputEnabled: true');
+    expect(after).not.toContain('The PromiseBeacon fires cadenced heartbeats');
     // Idempotent: running again does not duplicate the section.
     (migrator as unknown as { migrateClaudeMd(r: MigrationResult): void }).migrateClaudeMd({ upgraded: [], skipped: [], errors: [] });
     const after2 = fs.readFileSync(claudeMdPath, 'utf-8');
@@ -138,7 +147,7 @@ describe('PostUpdateMigrator — honest-progress-messaging defaults (D)', () => 
     expect(occurrences).toBe(1);
   });
 
-  it('adds aggregation awareness to an existing v1 honest-progress section', () => {
+  it('adds the default-silent boundary to an existing v1 honest-progress section', () => {
     const claudeMdPath = path.join(projectDir, 'CLAUDE.md');
     fs.writeFileSync(
       claudeMdPath,
@@ -150,7 +159,8 @@ describe('PostUpdateMigrator — honest-progress-messaging defaults (D)', () => 
     (migrator as unknown as { migrateClaudeMd(r: MigrationResult): void })
       .migrateClaudeMd({ upgraded: [], skipped: [], errors: [] });
     const after = fs.readFileSync(claudeMdPath, 'utf-8');
-    expect(after).toContain('Promise-beacon topic aggregation');
-    expect(after).toContain('promiseBeacon.aggregateByTopic');
+    expect(after).toContain('PromiseBeacon user-output boundary (default silent)');
+    expect(after).toContain('promiseBeacon.userOutputEnabled: true');
+    expect(after).toContain('NO user-facing summaries');
   });
 });

@@ -2429,7 +2429,7 @@ export class PostUpdateMigrator {
   // keys into a deployed agent's config.json so they are visible and settable,
   // and logs which keys it backfilled (audit). Existence-checked + idempotent: a
   // key the operator has explicitly set — including the rollback
-  // `suppressUnchangedHeartbeats: false` — is NEVER overwritten. Writes to the
+  // `userOutputEnabled: true` — is NEVER overwritten. Writes to the
   // paths the runtime ACTUALLY reads: `monitoring.activeWorkSilenceSentinel.*`
   // and TOP-LEVEL `promiseBeacon.*` (server.ts reads `config.promiseBeacon`, not
   // `monitoring.promiseBeacon` — the spec prose's path was corrected against the
@@ -2450,9 +2450,10 @@ export class PostUpdateMigrator {
     }
 
     const migrations = (config._instar_migrations ?? []) as string[];
-    // v2 re-runs the existence-checked migration on agents that already carry
-    // the v1 marker, adding aggregateByTopic without overwriting any old knob.
-    const marker = 'honest-progress-messaging-defaults-v2';
+    // v3 re-runs the existence-checked migration on agents that already carry
+    // earlier markers, adding the fleet-wide output boundary without
+    // overwriting an explicit deployment opt-in.
+    const marker = 'honest-progress-messaging-defaults-v3';
     if (migrations.some(m => m.startsWith(marker))) {
       result.skipped.push('honest-progress-messaging-defaults: already migrated');
       return;
@@ -2481,6 +2482,7 @@ export class PostUpdateMigrator {
     setIfAbsent(silence, 'activeWorkMaxFrozenIndicatorMs', 5_400_000, 'monitoring.activeWorkSilenceSentinel.activeWorkMaxFrozenIndicatorMs');
 
     const beacon = ensureObj(config, 'promiseBeacon');
+    setIfAbsent(beacon, 'userOutputEnabled', false, 'promiseBeacon.userOutputEnabled');
     setIfAbsent(beacon, 'aggregateByTopic', true, 'promiseBeacon.aggregateByTopic');
     setIfAbsent(beacon, 'suppressUnchangedHeartbeats', true, 'promiseBeacon.suppressUnchangedHeartbeats');
     setIfAbsent(beacon, 'beaconLivenessIntervalMs', 3_600_000, 'promiseBeacon.beaconLivenessIntervalMs');
@@ -8509,7 +8511,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 - Open a one-time follow-up commitment: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments -H 'Content-Type: application/json' -d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID,"beaconEnabled":true,"nextUpdateDueAt":"<ISO deadline>"}'\`. Creation refuses unless exactly one follow-through choice is explicit: PromiseBeacon enrollment with a valid deadline, or \`followThroughOptOutReason\` explaining why no future follow-through is needed.
 - List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments\` · \`GET /commitments/:id\`
 - Mark delivered when done: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments/:id/deliver\`
-- The PromiseBeacon fires cadenced heartbeats on open commitments so you actually follow through, and the commitment-check job surfaces overdue ones.
+- PromiseBeacon keeps cadence, session-loss detection, revival, and escalation state INTERNAL by default. It sends no summaries, close-outs, escalation statuses, or Attention items unless a deployment explicitly opts in with \`promiseBeacon.userOutputEnabled: true\`; normal agent replies remain the user-facing follow-through path.
 - **When to use** (PROACTIVE — this is the trigger): the moment you promise the user a future action, open a commitment. NEVER improvise the follow-through with a raw \`sleep\`/background timer or by "remembering" — those do not survive a session ending, a restart, or compaction, so the promise is silently dropped. A registered commitment is the ONLY durable path. (Distinct from the Evolution Action Queue / \`/commit-action\`, which tracks self-improvement items, not promises to the user.)
 `;
       const tunnelIdx = content.indexOf('**Cloudflare Tunnel**');
@@ -9368,23 +9370,22 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added Threadline Single-Negotiator section');
     }
 
-    // HONEST-PROGRESS-MESSAGING C (docs alignment) — the silent-freeze watchdog +
-    // promise beacon are now honest (corroborate before claiming a freeze; silent
-    // unless there's something true to say). Existing agents learn what they are,
-    // their defaults, and how to tune/disable via this appended subsection (Agent
-    // Awareness Standard). Content-sniff marker keeps it idempotent.
+    // HONEST-PROGRESS-MESSAGING C (docs alignment). PromiseBeacon is an internal
+    // follow-through engine by default; unlike the freeze watchdog, it has no
+    // human-facing surface unless a deployment explicitly opts in.
     if (!content.includes('Honest progress messaging (silent-freeze watchdog + promise beacon)')) {
-      content += `\n### Honest progress messaging (silent-freeze watchdog + promise beacon)\n\nTwo background notifiers used to post frequent, falsely-confident noise because they judged "work" by whether the terminal *screen* repainted — a busy long task looks identical to a frozen one. Both are now honest. They are SIGNALS, never gates: they only decide whether to notify you, and every error path fails toward silence.\n- **Silent-freeze watchdog** (ActiveWorkSilenceSentinel): before claiming a session is stuck, it re-captures the LIVE frame and corroborates — if the frame still shows an active-work indicator (spinner / "esc to interrupt"), a sub-agent is live, or it's a clean idle prompt, it stays SILENT. It speaks only when genuinely wedged, and even then hedges ("…hasn't changed in N min and a nudge didn't wake it — it may be stuck, or on a long task I can't see into. Want me to check?"). Threshold raised 15m→30m; a 90m frozen-indicator backstop still surfaces a real mid-tool hang. Tune/disable: \`monitoring.activeWorkSilenceSentinel.enabled\` (off), \`.silenceThresholdMs\` (default 30m), \`.activeWorkMaxFrozenIndicatorMs\` (default 90m).\n- **Promise beacon** (the ⏳ heartbeats): multiple open promises in one conversation produce ONE count+list summary per topic cadence, never one message per promise. The topic cadence follows the shortest effective cadence among its open promises; only promises with qualifying news receive a progress line, while the rest are listed as open without a false progress claim. The zero-information "still on it, no new output" filler is suppressed by default. Tune/disable: \`promiseBeacon.aggregateByTopic: false\` (restore legacy per-promise delivery), \`promiseBeacon.suppressUnchangedHeartbeats: false\` (restore every-tick heartbeat), \`promiseBeacon.beaconLivenessIntervalMs\` (default 60m), \`promiseBeacon.turnFinishedCloseoutChecks\` (default 3).\n- **Doc correction:** the trio's escalations are NOT gated by \`monitoring.sentinelTelegramEscalation\` (that gate governs a different path); they route through the tone-gated \`/attention\` surface and are controlled by each sentinel's own \`enabled\` flag (both default true). Effectiveness is measurable in \`logs/sentinel-events.jsonl\` and the per-feature LLM-metrics surface (feature keys \`active-work-silence\`, \`promise-beacon\`). Spec: \`docs/specs/HONEST-PROGRESS-MESSAGING-SPEC.md\`.\n`;
+      content += `\n### Honest progress messaging (silent-freeze watchdog + promise beacon)\n\nProgress monitoring must not manufacture user-facing narration. These systems are signals, never gates, and every error path fails toward silence.\n- **Silent-freeze watchdog** (ActiveWorkSilenceSentinel): before claiming a session is stuck, it re-captures the LIVE frame and corroborates — if the frame still shows an active-work indicator (spinner / "esc to interrupt"), a sub-agent is live, or it's a clean idle prompt, it stays SILENT. It speaks only when genuinely wedged, and even then hedges ("…hasn't changed in N min and a nudge didn't wake it — it may be stuck, or on a long task I can't see into. Want me to check?"). Threshold raised 15m→30m; a 90m frozen-indicator backstop still surfaces a real mid-tool hang. Tune/disable: \`monitoring.activeWorkSilenceSentinel.enabled\` (off), \`.silenceThresholdMs\` (default 30m), \`.activeWorkMaxFrozenIndicatorMs\` (default 90m).\n- **PromiseBeacon is internal by default:** commitment cadence, detection, revival, and escalation bookkeeping continue, but PromiseBeacon produces no topic/Slack messages, close-outs, escalation statuses, or Attention items. User output requires an explicit deployment opt-in with \`promiseBeacon.userOutputEnabled: true\`; do not enable it merely to retain follow-through. Effectiveness remains measurable in \`logs/sentinel-events.jsonl\` and the per-feature LLM-metrics surface (feature keys \`active-work-silence\`, \`promise-beacon\`).\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Honest progress messaging section');
     }
-    // Existing agents may already carry the section above from v1. Append one
-    // corrective paragraph keyed on the new rollback knob so they learn the
-    // aggregation behavior without rewriting operator-authored CLAUDE.md text.
-    if (!content.includes('promiseBeacon.aggregateByTopic')) {
-      content += `\n#### Promise-beacon topic aggregation\n\nMultiple open promises in one conversation now produce ONE count+list summary per topic cadence, never one message per promise. The topic cadence follows the shortest effective cadence among the open promises; only promises with qualifying news receive a progress line, while quiet siblings are listed as open without a false progress claim. Roll back to legacy per-promise delivery with \`promiseBeacon.aggregateByTopic: false\`.\n`;
+    // Existing agents may already carry older guidance that promised summaries.
+    // Append an authoritative correction rather than rewriting operator-authored
+    // content. The unique heading makes the migration idempotent and mirrors to
+    // non-Claude framework shadows through the capability synchronizer.
+    if (!content.includes('PromiseBeacon user-output boundary (default silent)')) {
+      content += `\n#### PromiseBeacon user-output boundary (default silent)\n\nPromiseBeacon is internal follow-through infrastructure by default. Its cadence, session-loss detection, revival, escalation bookkeeping, and audits continue, but it produces NO user-facing summaries, close-outs, escalation statuses, Slack/topic messages, or Attention items. Missing configuration is silent. Re-enabling any PromiseBeacon user output requires an explicit deployment opt-in with \`promiseBeacon.userOutputEnabled: true\`; normal agent replies remain the user-facing follow-through path.\n`;
       patched = true;
-      result.upgraded.push('CLAUDE.md: added PromiseBeacon topic-aggregation awareness');
+      result.upgraded.push('CLAUDE.md: added PromiseBeacon default-silent user-output boundary');
     }
 
     // Live Credential Re-pointing (WS5.2, CMT-1372) — existing agents learn the
@@ -9590,6 +9591,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       '**Private Viewing**',
       '**Secret Drop**',
       '**Commitments & Follow-Through**',
+      // PromiseBeacon's fleet-wide output boundary applies to every framework.
+      // Existing Codex/Gemini shadows must receive the authoritative correction
+      // even when they already inherited the older summary-producing guidance.
+      '#### PromiseBeacon user-output boundary (default silent)',
       '**Cloudflare Tunnel**',
       '**Attention Queue**',
       '**Dashboard**',
