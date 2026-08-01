@@ -163,6 +163,35 @@ describe('ProjectRoundExecution.runRound', () => {
     expect(spawnedCalls).toBe(1);
   });
 
+  it('a historical merged claim without evidence is unverifiable and is never re-run', async () => {
+    await newProject(tracker, 'p-evidence-hole', ['i1'], targetRepo);
+    const child = tracker.get('i1')!;
+    await tracker.update('i1', { pipelineStage: 'merged', ifMatch: child.version });
+    let verifyCalls = 0;
+    const r = await runRound(
+      {
+        tracker,
+        projectId: 'p-evidence-hole',
+        roundIndex: 0,
+        targetRepoPath: targetRepo,
+        spawnCommand: 'bash',
+        spawnArgs: ['-c', 'exit 99'],
+        pollIntervalMs: 50,
+        sigtermGraceMs: 100,
+        verifyMergedItems: async (ids) => {
+          verifyCalls += 1;
+          // Even a positive git reachability result is not enough to launder
+          // the missing PR + CI evidence into a complete round.
+          return allVerified(ids);
+        },
+      },
+      { stateDir },
+    );
+    expect(r.outcome).toBe('unverifiable');
+    expect(r.reason).toMatch(/refusing to respawn/i);
+    expect(verifyCalls).toBe(1);
+  });
+
   it('natural exit + full verification → complete', async () => {
     await newProject(tracker, 'p-nat', ['i1'], targetRepo);
     // Step 1: pre-spawn check returns 0 → child spawns.

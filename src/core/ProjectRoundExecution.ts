@@ -42,6 +42,7 @@ import { ProjectRoundWorktrees } from './ProjectRoundWorktrees.js';
 import { detectClaudePath } from './Config.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
+import { hasCompleteMergedEvidence } from './ProjectRoundDerivation.js';
 
 /** Per-spec defaults. Tests dial both down to keep the suite fast. */
 export const DEFAULT_POLL_INTERVAL_MS = 60_000;
@@ -160,13 +161,14 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
   const maxResumeAttempts = input.maxResumeAttempts ?? DEFAULT_MAX_RESUME_ATTEMPTS;
   /**
    * The items that are GENUINELY uncheckable: absent from `verified` for a
-   * reason the runner could not establish, AND carrying a merge commit that
-   * says work may already have landed.
+   * reason the runner could not establish, AND whose structured state says
+   * work may already have landed (a merge commit, or a `merged` claim whose
+   * evidence is incomplete).
    *
-   * An item with no `mergeCommitOid` is also reported `unverifiable` by the
-   * git verifier, but that is not the same claim — it means nothing has landed
-   * yet, which is ordinary. Splitting on EVIDENCE rather than on the reason
-   * text keeps a reworded message from silently changing control flow.
+   * An ordinary pre-build item with no `mergeCommitOid` is also reported
+   * `unverifiable` by the git verifier, but that means nothing has landed yet.
+   * Splitting on structured state rather than the reason text keeps a reworded
+   * message from silently changing control flow.
    *
    * Defined once and used at BOTH decision points. The first draft of this
    * change inlined it at the pre-spawn check only, and the post-exit check
@@ -174,7 +176,19 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
    * still spawns.
    */
   const uncheckable = (ids: string[], v: MergedVerificationResult): string[] =>
-    ids.filter((id) => v.unverifiable.has(id) && Boolean(input.tracker.get(id)?.mergeCommitOid));
+    ids.filter((id) => {
+      const item = input.tracker.get(id);
+      if (!item) return false;
+      // A real negative is a verdict, not an evidence gap. Git exit 1 proves
+      // the recorded commit is not on canonical main, so rerunning is allowed
+      // even when the stale row predates today's richer evidence fields.
+      if (v.regressed.has(id)) return false;
+      // A plain pre-build item with no merge commit is ordinary unfinished
+      // work. A row that already CLAIMS `merged` without the evidence behind
+      // that claim is different: rerunning it could duplicate completed work.
+      if (item.pipelineStage === 'merged' && !hasCompleteMergedEvidence(item)) return true;
+      return v.unverifiable.has(id) && Boolean(item.mergeCommitOid);
+    });
 
   const mergeBaseBranch = input.mergeBaseBranch ?? resolveCanonicalMainRef(input.targetRepoPath);
   const verifyMergedItems =
@@ -254,12 +268,6 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
 
       // Compute current stop condition: itemIds verified-merged.
       const verdict = await verifyMergedItems(lastItemIds);
-      if (lastItemIds.every((id) => verdict.verified.has(id))) {
-        outcome = 'complete';
-        mergedItemIds = [...lastItemIds];
-        break;
-      }
-
       // "I could not check" is not "not done" — but neither is it a reason to
       // stall a round that has simply not been worked yet.
       //
@@ -267,21 +275,26 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
       //   (a) the item records no mergeCommitOid at all — nothing has landed
       //       yet, which is the ordinary state of a fresh round. Spawning is
       //       exactly right here.
-      //   (b) the item DOES record a merge commit, but git could not answer
-      //       (guard refusal, missing binary, bad ref). Here the work may
-      //       already be done, and spawning would redo it.
+      //   (b) the item records a merge commit but git could not answer, OR the
+      //       item already claims `merged` while its evidence is incomplete.
+      //       Here the work may already be done, and spawning would redo it.
       //
-      // They are told apart by EVIDENCE — whether the item carries a
-      // mergeCommitOid — not by matching the reason text, which would make a
-      // reworded message silently change the control flow.
+      // They are told apart by STRUCTURED RECORD STATE, not by matching the
+      // reason text, which would make a reworded message silently change the
+      // control flow.
       const uncheckableWithEvidence = uncheckable(lastItemIds, verdict);
       if (uncheckableWithEvidence.length > 0) {
         outcome = 'unverifiable';
         unmergedItemIds = lastItemIds.filter((id) => !verdict.verified.has(id));
         reason =
-          `could not verify ${uncheckableWithEvidence.length} item(s) that DO record a merge commit ` +
-          `(${uncheckableWithEvidence.join(', ')}); refusing to respawn work that may already be done, ` +
-          'and recording no round verdict';
+          `could not verify ${uncheckableWithEvidence.length} item(s) whose records say work may ` +
+          `already be merged (${uncheckableWithEvidence.join(', ')}); refusing to respawn work that ` +
+          'may already be done, and recording no round verdict';
+        break;
+      }
+      if (lastItemIds.every((id) => verdict.verified.has(id))) {
+        outcome = 'complete';
+        mergedItemIds = [...lastItemIds];
         break;
       }
 
@@ -339,14 +352,15 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
       if (exit.kind === 'exited' && exit.code === 0) {
         // Step 6: verify per-item artifacts.
         const final = await verifyMergedItems(lastItemIds);
-        mergedItemIds = lastItemIds.filter((id) => final.verified.has(id));
-        unmergedItemIds = lastItemIds.filter((id) => !final.verified.has(id));
-        const finalUncheckable = uncheckable(unmergedItemIds, final);
-        if (unmergedItemIds.length === 0) {
-          outcome = 'complete';
-        } else if (finalUncheckable.length > 0) {
-          // At least one item RECORDS a merge commit the runner could not
-          // check. `partially-complete` asserts "this genuinely did not land",
+        const finalUncheckable = uncheckable(lastItemIds, final);
+        mergedItemIds = lastItemIds.filter(
+          (id) => final.verified.has(id) && !finalUncheckable.includes(id),
+        );
+        unmergedItemIds = lastItemIds.filter((id) => !mergedItemIds.includes(id));
+        if (finalUncheckable.length > 0) {
+          // At least one item records a merge commit the runner could not
+          // check, or claims merged without the full evidence contract.
+          // `partially-complete` asserts "this genuinely did not land",
           // which that item cannot support — so no verdict is recorded.
           //
           // An item with no merge commit at all, by contrast, genuinely did
@@ -354,8 +368,10 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
           // partially-complete below where it belongs.
           outcome = 'unverifiable';
           reason =
-            `child exited 0 but ${finalUncheckable.length} item(s) recording a merge commit ` +
-            `could not be checked (${finalUncheckable.join(', ')}); no round verdict recorded`;
+            `child exited 0 but ${finalUncheckable.length} item(s) lacked complete, ` +
+            `checkable merge evidence (${finalUncheckable.join(', ')}); no round verdict recorded`;
+        } else if (unmergedItemIds.length === 0) {
+          outcome = 'complete';
         } else {
           outcome = 'partially-complete';
         }

@@ -299,19 +299,79 @@ auto_advance: true
     expect(res.status).toBe(503);
   });
 
-  it('GET /projects/:id/next returns 204 when all rounds complete', async () => {
+  it('GET /projects/:id/next returns 204 when member evidence makes all rounds complete', async () => {
     await request(app)
       .post('/projects')
       .set('Authorization', `Bearer ${AUTH_TOKEN}`)
       .send({ planDocPath: goodPlan('all-done-project') });
     const proj = tracker.get('all-done-project');
     if (!proj) throw new Error('fixture project missing');
-    const rounds = (proj.rounds ?? []).map((r) => ({ ...r, status: 'complete' as const }));
-    await tracker.update(proj.id, { rounds, ifMatch: proj.version });
+    for (const itemId of (proj.rounds ?? []).flatMap((round) => round.itemIds)) {
+      const child = tracker.get(itemId)!;
+      await tracker.update(itemId, {
+        pipelineStage: 'merged',
+        prNumber: 1810,
+        mergeCommitOid: 'abcdef1234567890',
+        ciCheckedAt: '2026-07-31T00:00:00.000Z',
+        ifMatch: child.version,
+      });
+    }
     const res = await request(app)
       .get('/projects/all-done-project/next')
       .set('Authorization', `Bearer ${AUTH_TOKEN}`);
     expect(res.status).toBe(204);
+  });
+
+  it('GET /projects/:id/next surfaces historical merged rows for evidence repair instead of re-running them', async () => {
+    await request(app)
+      .post('/projects')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ planDocPath: goodPlan('repair-evidence-project') });
+    const proj = tracker.get('repair-evidence-project')!;
+    const firstRoundIds = proj.rounds![0].itemIds;
+    for (const itemId of firstRoundIds) {
+      const child = tracker.get(itemId)!;
+      await tracker.update(itemId, {
+        pipelineStage: 'merged',
+        ifMatch: child.version,
+      });
+    }
+
+    const res = await request(app)
+      .get('/projects/repair-evidence-project/next')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(res.body.action).toBe('repair-merge-evidence');
+    expect(res.body.action).not.toBe('start-round');
+    expect(Object.keys(res.body.params.evidenceMissingByItem)).toEqual(firstRoundIds);
+    expect(res.body.skillCommand).toBe(
+      `/project advance repair-evidence-project ${firstRoundIds[0]} merged`,
+    );
+  });
+
+  it('GET /projects/:id derives displayed round status from evidence-bearing members', async () => {
+    await request(app)
+      .post('/projects')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ planDocPath: goodPlan('derived-status-project') });
+    const proj = tracker.get('derived-status-project')!;
+    for (const itemId of proj.rounds![0].itemIds) {
+      const child = tracker.get(itemId)!;
+      await tracker.update(itemId, {
+        pipelineStage: 'merged',
+        prNumber: 1810,
+        mergeCommitOid: 'abcdef1234567890',
+        ciCheckedAt: '2026-07-31T00:00:00.000Z',
+        ifMatch: child.version,
+      });
+    }
+    const res = await request(app)
+      .get('/projects/derived-status-project?reconcile=false')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(res.body.project.rounds[0].status).toBe('complete');
+    expect(res.body.project.rounds[0].storedStatus).toBe('pending');
+    expect(tracker.get('derived-status-project')!.rounds![0].status).toBe('pending');
   });
 
   it('GET /projects/:id/next returns 404 for non-project initiative', async () => {
@@ -633,6 +693,27 @@ goal: try escape
     expect(res.status).toBe(409);
     expect(res.body.code).not.toBe('GH_PR_VIEW_UNAVAILABLE');
     expect(res.body.code).toBe('GH_PR_VIEW_FAILED');
+  });
+
+  it('POST /projects/:id/advance re-attests a historical merged row instead of rejecting merged → merged', async () => {
+    const { projectVersion, itemId } = await seedProject('adv-repair-evidence');
+    const child = tracker.get(itemId)!;
+    await tracker.update(itemId, {
+      pipelineStage: 'merged',
+      ifMatch: child.version,
+    });
+    const res = await request(app)
+      .post('/projects/adv-repair-evidence/advance')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .set('If-Match', String(projectVersion))
+      .send({
+        itemId,
+        targetStage: 'merged',
+        artifact: { prNumber: 999999 },
+      });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('GH_PR_VIEW_FAILED');
+    expect(res.body.code).not.toBe('INVALID_TRANSITION');
   });
 
   it('POST /projects/:id/halt — halts the active round (idempotent)', async () => {

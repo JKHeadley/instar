@@ -178,6 +178,10 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { validateStageTransition, type ValidationContext as StageValidationContext } from '../core/StageTransitionValidator.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
 import {
+  deriveProjectRound,
+  hasCompleteMergedEvidence,
+} from '../core/ProjectRoundDerivation.js';
+import {
   ATTENTION_PRIORITIES,
   ATTENTION_STATUSES,
   normalizeAttentionPriority,
@@ -1740,7 +1744,12 @@ function pickFields(
 
 /** Maps a /projects/:id/next action verb to the suggested skill invocation.
  *  Names are the canonical command set from PROJECT-SCOPE-SPEC § Phase 1.7. */
-function skillCommandForAction(action: string, projectId: string, roundIndex: number): string {
+function skillCommandForAction(
+  action: string,
+  projectId: string,
+  roundIndex: number,
+  itemId?: string,
+): string {
   switch (action) {
     case 'await-user-approval':
       return `/project ack ${projectId}`;
@@ -1754,6 +1763,8 @@ function skillCommandForAction(action: string, projectId: string, roundIndex: nu
       return `/spec-converge`;
     case 'run-drift-check':
       return `/project drift ${projectId} ${roundIndex}`;
+    case 'repair-merge-evidence':
+      return `/project advance ${projectId} ${itemId ?? '<itemId>'} merged`;
     case 'start-round':
     default:
       return `/project run-round ${projectId} ${roundIndex}`;
@@ -16464,7 +16475,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     // Lazy merged-state reconciler — spec § Phase 1.4 lines 256-258.
     //
-    // GET /projects/:id is documented as "may mutate": when a 'building' child's
+    // GET /projects/:id is documented as "may mutate": when a 'merged' child's
     // mergeCommitOid is no longer ancestor of origin/main, we transition it to
     // 'regressed' and clear future autoAdvanceAt on its round.
     //
@@ -16487,7 +16498,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return Number.MAX_SAFE_INTEGER;
       };
       const candidates = children
-        .filter((c) => c.pipelineStage === 'building' && typeof c.mergeCommitOid === 'string' && c.mergeCommitOid)
+        .filter((c) => c.pipelineStage === 'merged' && typeof c.mergeCommitOid === 'string' && c.mergeCommitOid)
         .filter((c) => {
           const t = c.ciCheckedAt ? Date.parse(c.ciCheckedAt) : 0;
           return !(Number.isFinite(t) && t > 0 && nowMs - t < debounceMs);
@@ -16583,6 +16594,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
+    // Round status is a derived read model: child records carry the artifacts;
+    // the round's stored status is only a cache. Never render a stale `pending`
+    // after every member has earned completion, or a stale `complete` after its
+    // members stopped supporting that conclusion.
+    const childrenById = new Map(children.map((child) => [child.id, child]));
+    const projectForRead = {
+      ...project,
+      rounds: (project.rounds ?? []).map((round) => {
+        const derived = deriveProjectRound(round, childrenById);
+        return {
+          ...round,
+          status: derived.effectiveStatus,
+          ...(round.status !== derived.effectiveStatus ? { storedStatus: round.status } : {}),
+          evidenceMissingByItem: derived.evidenceMissingByItem,
+          missingMemberIds: derived.missingMemberIds,
+          incompleteItemIds: derived.incompleteItemIds,
+        };
+      }),
+    };
+
     // Optional field selector: `?fields=id,title,pipelineStage`. Used by
     // the dashboard projects selector (Phase 1.10). Always preserves `id`.
     const fieldsParam = typeof req.query.fields === 'string' ? req.query.fields : '';
@@ -16594,18 +16625,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           .filter(Boolean)
       );
       fields.add('id');
-      const pickProj = pickFields(project as unknown as Record<string, unknown>, fields);
+      const pickProj = pickFields(projectForRead as unknown as Record<string, unknown>, fields);
       const pickKids = children.map((c) => pickFields(c as unknown as Record<string, unknown>, fields));
       res.json({ project: pickProj, children: pickKids });
       return;
     }
-    res.json({ project, children });
+    res.json({ project: projectForRead, children });
   });
 
   // GET /projects/:id/next — structured next-action payload.
   //
   // Spec § Phase 1.5 (line 268): returns `{ action, params, estimatedCost?,
-  // skillCommand? }` for the FIRST round whose status is not 'complete'.
+  // skillCommand? }` for the FIRST round whose MEMBERS have not earned a
+  // terminal status. Stored round status is a cache, never the authority.
   // Ordering: roundIndex ASC, then pipelineStage ASC, then itemId ASC.
   //
   // Action verbs the spec enumerates (a non-exhaustive contract):
@@ -16616,6 +16648,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   //   - 'run-spec-converge'    — at least one item is `spec-drafted`
   //   - 'run-drift-check'      — at least one item is `approved`, no fresh
   //                              drift verdict
+  //   - 'repair-merge-evidence'— item claims `merged` but cannot name the
+  //                              validated PR/commit/check timestamp
   //   - 'start-round'          — all preconditions met, ready to fire
   //
   // The endpoint does NOT run the runner's preflight — that's a heavier
@@ -16635,12 +16669,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const rounds = project.rounds ?? [];
-    const idx = rounds.findIndex((r) => (r.status ?? 'pending') !== 'complete');
+    const childrenById = new Map(
+      ctx.initiativeTracker
+        .list()
+        .filter((i) => i.parentProjectId === project.id)
+        .map((c) => [c.id, c])
+    );
+    const derivations = rounds.map((round) => deriveProjectRound(round, childrenById));
+    const idx = derivations.findIndex((derived) => derived.terminalStatus === undefined);
     if (idx === -1) {
       res.status(204).end();
       return;
     }
     const r = rounds[idx];
+    const derived = derivations[idx];
 
     // Determine the action verb from project + round state.
     type ActionVerb =
@@ -16650,18 +16692,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       | 'accept-partial'
       | 'run-spec-converge'
       | 'run-drift-check'
+      | 'repair-merge-evidence'
       | 'start-round';
     let action: ActionVerb = 'start-round';
-    const childrenById = new Map(
-      ctx.initiativeTracker
-        .list()
-        .filter((i) => i.parentProjectId === project.id)
-        .map((c) => [c.id, c])
-    );
     const itemsForRound = (r.itemIds ?? []).map((id) => childrenById.get(id)).filter(Boolean);
 
     if ((project.awaitingReconciliation ?? []).length > 0) {
       action = 'resolve-conflict';
+    } else if (Object.keys(derived.evidenceMissingByItem).length > 0) {
+      action = 'repair-merge-evidence';
     } else if ((r.status ?? 'pending') === 'partially-complete') {
       action = 'accept-partial';
     } else if (idx === 0 && !project.firstLaunchAckAt) {
@@ -16686,10 +16725,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         roundIndex: idx,
         name: r.name,
         itemIds: r.itemIds,
-        status: r.status ?? 'pending',
+        status: derived.effectiveStatus,
+        storedStatus: r.status ?? 'pending',
+        evidenceMissingByItem: derived.evidenceMissingByItem,
+        missingMemberIds: derived.missingMemberIds,
+        incompleteItemIds: derived.incompleteItemIds,
         autoAdvanceAt: r.autoAdvanceAt,
       },
-      skillCommand: skillCommandForAction(action, project.id, idx),
+      skillCommand: skillCommandForAction(
+        action,
+        project.id,
+        idx,
+        Object.keys(derived.evidenceMissingByItem)[0],
+      ),
     });
   });
 
@@ -16872,12 +16920,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       mergeBaseBranch: resolveCanonicalMainRef(project.targetRepoPath),
     };
 
+    const actualStage = child.pipelineStage as PipelineStage | undefined;
     const fromStage =
       typeof body.fromStage === 'string'
         ? (body.fromStage as PipelineStage)
-        : (child.pipelineStage as PipelineStage | undefined);
+        : actualStage;
 
-    const result = await validateStageTransition(fromStage, targetStage, validationCtx);
+    // Historical rows may already claim `merged` while lacking the artifact
+    // fields that newer transitions persist. A same-stage request is an
+    // explicit re-attestation: run the full building→merged authority again
+    // and atomically attach its evidence without pretending the item regressed.
+    const repairingMergedEvidence =
+      actualStage === 'merged'
+      && targetStage === 'merged'
+      && (body.fromStage === undefined || body.fromStage === 'merged')
+      && !hasCompleteMergedEvidence(child);
+    const validationFromStage = repairingMergedEvidence ? 'building' : fromStage;
+
+    const result = await validateStageTransition(validationFromStage, targetStage, validationCtx);
     if (!result.ok) {
       res.status(409).json({ error: 'stage transition rejected', code: result.code, reason: result.reason });
       return;

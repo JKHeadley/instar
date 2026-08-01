@@ -1,0 +1,34 @@
+{
+  "ts": "2026-08-01T00:28:55.888Z",
+  "slug": "project-round-evidence-derivation",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 278,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ProjectRoundDerivation.ts",
+      "src/core/ProjectRoundExecution.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 228,
+    "deletedLines": 50
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1651
+    ],
+    "notes": "PR #1651 fixed evidence persistence for new merge transitions but left two adjacent consumers trusting cached conclusions: /next selected rounds by stored status, and the lazy integrity reader selected building rather than evidence-bearing merged rows. Historical pre-fix rows therefore still looked runnable while lacking proof."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This change narrows an existing round runner's respawn behavior and adds no self-triggered action."
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,29 @@
+{
+  "ts": "2026-08-01T00:47:30.819Z",
+  "slug": "project-round-evidence-derivation",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ProjectRoundExecution.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "The first derivation patch let incomplete historical metadata outrank a definitive git regression and left older merged fixtures below the new three-field evidence floor. The amendment restores verdict precedence and makes the established fixtures express the full contract."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This amendment narrows an existing runner refusal and adds no self-triggered action."
+  },
+  "verdict": "pass"
+}

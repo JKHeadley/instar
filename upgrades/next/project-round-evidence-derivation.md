@@ -1,0 +1,28 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Project rounds now derive terminal status from their member records. A merged
+member counts only when it carries its validated PR number, merge commit, and
+verification time. Historical merged rows without that evidence produce a
+repair action and are never automatically rebuilt.
+The lazy integrity check also once again revalidates merged rows rather than
+selecting a stage that cannot yet carry merge evidence.
+
+## What to Tell Your User
+
+- **Project rounds no longer repeat completed work because of stale summaries:** “The tracker now checks the evidence on each item before deciding a round is complete or should run again.”
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|---|---|
+| See evidence-derived project round status | Read the project normally; displayed round status is derived from its members |
+| Repair a historical merged row without rebuilding it | Use the suggested `repair-merge-evidence` next action and supply the original PR to `/project advance` |
+
+## Evidence
+
+Eighty-nine focused unit and integration tests prove pending caches derive complete,
+unsupported complete caches regress, evidence-empty merged rows request repair,
+same-stage re-attestation reaches the real validator, and direct runner calls
+refuse to redo possibly completed work. The TypeScript build passes.
