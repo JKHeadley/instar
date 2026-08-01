@@ -1,0 +1,40 @@
+{
+  "ts": "2026-08-01T20:58:16.300Z",
+  "slug": "attention-episode-continuity",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported durable lifecycle subsystem"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 259,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AttentionConditionStore.ts",
+      "src/core/RopeRecoveryProber.ts",
+      "src/core/StaleOwnerReleaseEngine.ts"
+    ],
+    "addedLines": 254,
+    "deletedLines": 5
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The stale-owner and rope-recovery producers used process-local timestamps as episode identity. Restarting erased their active maps, so an unchanged condition was misclassified as a recurrence and emitted another Attention row without positive recovery evidence."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/AttentionConditionStore.test.ts",
+      "howCaught": "The restart-continuity ratchet proves the notification loop converges under an indefinitely active condition: reconstructing the durable store must retain the same episode ID and produce no second raise, while explicit clear followed by recurrence must mint exactly the next episode."
+    },
+    "prNumber": 1828,
+    "component": "AttentionConditionStore"
+  },
+  "verdict": "pass"
+}
