@@ -56,6 +56,8 @@ interface HarnessOpts {
   durableHeartbeatMs?: number | null;
   claimLands?: boolean;
   cfg?: Partial<StaleOwnerReleaseConfig>;
+  observeAttentionCondition?: StaleOwnerReleaseDeps['observeAttentionCondition'];
+  clearAttentionConditionsForSubject?: StaleOwnerReleaseDeps['clearAttentionConditionsForSubject'];
 }
 
 /**
@@ -143,6 +145,8 @@ function makeHarness(opts: HarnessOpts = {}) {
     },
     trace: (e) => traces.push(e),
     raiseAttention: (i) => attention.push(i),
+    observeAttentionCondition: opts.observeAttentionCondition,
+    clearAttentionConditionsForSubject: opts.clearAttentionConditionsForSubject,
     now: () => wall,
     monotonicNow: () => mono,
   };
@@ -441,6 +445,36 @@ describe('StaleOwnerReleaseEngine — honesty surfaces (§2.6)', () => {
     const items = h.attention.filter((a) => a.id.startsWith('stale-owner:'));
     expect(items).toHaveLength(1); // ONE deduped per-episode item
     expect(h.engine.status().counters.escalations).toBe(1);
+  });
+
+  it('does not raise a new item when durable state says the ambiguity condition survived a restart', async () => {
+    const h = makeHarness({
+      probeResult: 'error',
+      observeAttentionCondition: () => ({ itemId: 'stale-owner-release:ambiguity:m_owner:owner:ep-1', episode: 1, shouldRaise: false }),
+    });
+    h.engine.tick();
+    h.advance(DEFAULT_STALE_OWNER_RELEASE_CONFIG.deathEvidenceMs + 5_000);
+    await h.tickSettled(2);
+    for (let i = 0; i < 5; i++) {
+      h.advance(DEFAULT_STALE_OWNER_RELEASE_CONFIG.deathEvidenceMs);
+      await h.tickSettled(1);
+    }
+    expect(h.attention).toHaveLength(0);
+    expect(h.engine.status().counters.escalations).toBe(0);
+  });
+
+  it('clears durable stale-owner conditions on positive online evidence', () => {
+    const clears: Array<{ producer: string; subject: string }> = [];
+    const h = makeHarness({
+      machines: [
+        { machineId: SELF, online: true, observerLastSeenMs: 1_000_000 },
+        { machineId: THIRD, online: true, observerLastSeenMs: 1_000_000 },
+        { machineId: OWNER, online: true, observerLastSeenMs: 1_000_000 },
+      ],
+      clearAttentionConditionsForSubject: (producer, subject) => { clears.push({ producer, subject }); },
+    });
+    h.engine.tick();
+    expect(clears).toContainEqual({ producer: 'stale-owner-release', subject: OWNER });
   });
 
   it('probe-loop-bounded-p19: consecutive probe errors open the breaker + ONE give-up item', async () => {

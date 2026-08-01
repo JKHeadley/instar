@@ -136,6 +136,7 @@ import { buildGuardInventory, buildHeartbeatPostureBlock } from '../monitoring/g
 import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/guardAcceptedFallbacks.js';
 import { createGuardPostureProbes } from '../monitoring/probes/GuardPostureProbe.js';
 import { GuardPostureStore } from '../core/GuardPostureStore.js';
+import { AttentionConditionStore } from '../core/AttentionConditionStore.js';
 import { isPeerUrlAllowedForCredentials } from '../server/peerUrlGuard.js';
 import { formatWatchdogUserMessage } from '../monitoring/watchdog-notifications.js';
 import { StallTriageNurse } from '../monitoring/StallTriageNurse.js';
@@ -3655,6 +3656,10 @@ export async function startServer(options: StartOptions): Promise<void> {
   // must remain visible to GET /guards as diverged-pending-restart.
   const bootGuardConfigSnapshot = resolveGuardConfigSnapshot(config.projectDir);
   ensureStateDir(config.stateDir);
+  const attentionConditionStore = new AttentionConditionStore({
+    filePath: path.join(config.stateDir, 'state', 'attention-conditions.json'),
+    logger: (message) => console.warn(pc.yellow(message)),
+  });
 
   // Identity context is additive and survives agent moves. Validate its
   // persisted directory before any subsystem can derive hooks, locks, or
@@ -5699,6 +5704,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   }
                 },
                 logger: (m) => console.log(pc.dim(`  ${m}`)),
+                observeAttentionCondition: (identity) => attentionConditionStore.observe(identity),
+                clearAttentionCondition: (identity) => { attentionConditionStore.clear(identity); },
               },
               {
                 dryRun: probeDryRun,
@@ -20568,6 +20575,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               raiseAttention: (item) => {
                 try { _meshAttentionRaise?.(item); } catch { /* attention raise is best-effort; the trace already recorded the escalation */ }
               },
+              observeAttentionCondition: (identity) => attentionConditionStore.observe(identity),
+              clearAttentionConditionsForSubject: (producer, subject) => { attentionConditionStore.clearSubject(producer, subject); },
               logger: (m) => console.log(pc.dim(`  ${m}`)),
             });
           }

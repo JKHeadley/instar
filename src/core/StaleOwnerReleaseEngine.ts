@@ -49,6 +49,7 @@
 
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
 import type { MergedClaimAnnotation } from './TopicClaimAnnotationStore.js';
+import type { AttentionConditionIdentity, AttentionConditionObservation } from './AttentionConditionStore.js';
 
 /** Config subtree: multiMachine.sessionPool.staleOwnerRelease (§5). */
 export interface StaleOwnerReleaseConfig {
@@ -219,6 +220,10 @@ export interface StaleOwnerReleaseDeps {
   trace: (entry: StaleOwnerTraceEntry) => void;
   /** Raise ONE deduped attention item (episode-keyed; P17-coalesced pool-wide). */
   raiseAttention: (item: StaleOwnerAttentionItem) => void;
+  /** Durable condition lifecycle. Wiring owns ids; this producer owns semantic
+   *  identity and positive-evidence clears. */
+  observeAttentionCondition?: (identity: AttentionConditionIdentity) => AttentionConditionObservation;
+  clearAttentionConditionsForSubject?: (producer: string, subject: string) => void;
   now?: () => number;
   monotonicNow?: () => number;
   logger?: (msg: string) => void;
@@ -370,6 +375,14 @@ export class StaleOwnerReleaseEngine {
       list.push(r);
       topicsByOwner.set(r.ownerMachineId, list);
     }
+    // Reconcile durable condition state even after a process restart erased the
+    // in-memory episode map. An owner with no live topic cannot still have a
+    // stranded-topic condition; this is positive structural clear evidence.
+    for (const machine of machines) {
+      if (machine.machineId !== self && !topicsByOwner.has(machine.machineId)) {
+        this.d.clearAttentionConditionsForSubject?.('stale-owner-release', machine.machineId);
+      }
+    }
 
     const holdsLease = this.d.holdsLease();
     const online = machines.filter((m) => m.online).length;
@@ -382,6 +395,10 @@ export class StaleOwnerReleaseEngine {
 
       // Healthy owner → close-episode bookkeeping and move on.
       if (ownerOnline) {
+        // A fresh authenticated online observation is positive evidence that
+        // any prior stale-owner Attention condition cleared. The engine keeps
+        // its longer calm window for claim-state bookkeeping independently.
+        this.d.clearAttentionConditionsForSubject?.('stale-owner-release', owner);
         const ep = this.episodes.get(owner);
         if (ep) {
           if (ep.healthySinceMono === null) ep.healthySinceMono = nowMono;
@@ -501,7 +518,10 @@ export class StaleOwnerReleaseEngine {
 
     // Prune episodes for owners that no longer own any live topic.
     for (const owner of [...this.episodes.keys()]) {
-      if (!topicsByOwner.has(owner)) this.episodes.delete(owner);
+      if (!topicsByOwner.has(owner)) {
+        this.episodes.delete(owner);
+        this.d.clearAttentionConditionsForSubject?.('stale-owner-release', owner);
+      }
     }
   }
 
@@ -754,11 +774,13 @@ export class StaleOwnerReleaseEngine {
       const ceiling = cfg.ambiguityCeilingMultiple * cfg.deathEvidenceMs;
       if (!ep.escalated && nowMono - ep.ambiguitySinceMono >= ceiling) {
         ep.escalated = true;
+        const condition = this.observeCondition('ambiguity', owner);
+        if (condition?.shouldRaise === false) return;
         this.counters.escalations++;
         this.trace({ type: 'ambiguity-escalated', owner, episodeId: ep.episodeId });
         try {
           this.d.raiseAttention({
-            id: `stale-owner:${ep.episodeId}`,
+            id: condition?.itemId ?? `stale-owner:${ep.episodeId}`,
             title: `Topic(s) look stranded on ${owner} — I can't prove the owner's state`,
             body:
               `Machine ${owner} has been offline past the evidence window but the death evidence stays ambiguous ` +
@@ -776,7 +798,9 @@ export class StaleOwnerReleaseEngine {
 
   private p19GiveUp(owner: string, ep: OwnerEpisode, topic: string | undefined, detail: string): void {
     // Loud give-up, ONE deduped attention item (the resurrection-cap mirror).
-    const key = `stale-owner-giveup:${ep.episodeId}${topic ? `:${topic}` : ''}`;
+    const condition = this.observeCondition('giveup', owner, topic ?? 'owner');
+    if (condition?.shouldRaise === false) return;
+    const key = condition?.itemId ?? `stale-owner-giveup:${ep.episodeId}${topic ? `:${topic}` : ''}`;
     if (this.evidenceClasses[key]) return; // once per episode(+topic)
     this.evidenceClasses[key] = 1;
     this.counters.p19GiveUps++;
@@ -790,6 +814,15 @@ export class StaleOwnerReleaseEngine {
         sourceContext: `stale-owner-release:${owner}`,
       });
     } catch { /* best-effort */ }
+  }
+
+  private observeCondition(conditionType: 'ambiguity' | 'giveup', owner: string, scope = 'owner'): AttentionConditionObservation | undefined {
+    return this.d.observeAttentionCondition?.({
+      producer: 'stale-owner-release',
+      conditionType,
+      subject: owner,
+      scope,
+    });
   }
 
   /** §2.9 status surface (assembled per tick, never stale on early return). */
