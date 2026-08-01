@@ -1,0 +1,27 @@
+{
+  "ts": "2026-08-01T12:24:09.456Z",
+  "slug": "guard-posture-manifest-coverage",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 258,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/GuardPostureTripwire.ts",
+      "src/monitoring/guardPosture.ts",
+      "src/monitoring/guardPostureView.ts"
+    ],
+    "addedLines": 210,
+    "deletedLines": 48
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-07-31T05:16:45.997Z",
+  "slug": "correction-promotion-clustering",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/CorrectionLedger.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This changes evidence grouping and lifecycle bookkeeping inside an existing weekly and maxRoutesPerTick-bounded controller; it adds no self-trigger, cadence, retry loop, notifier, spawn, restart, or other autonomous emit.",
+    "component": "CorrectionLoopDriver"
+  },
+  "verdict": "blocked"
+}

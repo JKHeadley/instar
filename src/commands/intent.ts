@@ -452,6 +452,16 @@ export async function intentDrift(options: IntentDriftOptions): Promise<void> {
   console.log(`    Confidence Level:       ${alignment.components.confidenceLevel}/100`);
   console.log(`    Principle Consistency:  ${alignment.components.principleConsistency}/100`);
   console.log(`    Journal Health:         ${alignment.components.journalHealth}/100`);
+  console.log(
+    `    Measured Cohort:        ${alignment.sampleSize}/${alignment.populationSize} ` +
+    `(${(alignment.sampleCoverage * 100).toFixed(1)}%; ${alignment.excludedSampleSize} excluded)`,
+  );
+  if (alignment.excludedSampleSize > 0) {
+    console.log(
+      `      Missing confidence: ${alignment.exclusions.missingConfidence}; ` +
+      `invalid confidence: ${alignment.exclusions.invalidConfidence}`,
+    );
+  }
   console.log();
 }
 

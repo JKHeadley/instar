@@ -8,6 +8,7 @@ approved-at: "2026-04-17T06:24:43-04:00"
 date: 2026-04-17
 author: Echo
 cluster: cluster-autonomous-execution-robustness
+parent-principle: "Structure beats Willpower"
 review-iterations: 4
 review-convergence: "2026-04-17T18:10:00-04:00"
 review-completed-at: "2026-04-17T18:10:00-04:00"

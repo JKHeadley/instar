@@ -115,6 +115,7 @@ describe('SafeGitExecutor.sourceTreeReadOk', () => {
     expect(SOURCE_TREE_READ_TIER_VERBS.has('log')).toBe(true);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('diff')).toBe(true);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('merge-base')).toBe(true);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('ls-remote')).toBe(true);
     // Must NEVER include verbs that modify the working tree or committed refs:
     expect(SOURCE_TREE_READ_TIER_VERBS.has('commit')).toBe(false);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('push')).toBe(false);
@@ -130,7 +131,7 @@ describe('SafeGitExecutor.sourceTreeReadOk', () => {
     expect(SOURCE_TREE_READ_TIER_VERBS.has('status')).toBe(true);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('cherry')).toBe(true);
     // Bounded — adding to this set requires a spec edit + side-effects review.
-    expect(SOURCE_TREE_READ_TIER_VERBS.size).toBeLessThanOrEqual(11);
+    expect(SOURCE_TREE_READ_TIER_VERBS.size).toBeLessThanOrEqual(12);
   });
 
   it('readSync path honors sourceTreeReadOk — diff on a source tree passes', () => {

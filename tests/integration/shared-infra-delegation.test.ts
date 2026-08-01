@@ -91,6 +91,7 @@ describe('Shared Infrastructure Delegation', () => {
       const lines = fs.readFileSync(logPath, 'utf-8').trim().split('\n');
       expect(lines).toHaveLength(1);
       expect(JSON.parse(lines[0]).text).toBe('one real Telegram message');
+      expect(JSON.parse(lines[0]).provenance).toBe('user');
       expect(firstCallbacks).toHaveLength(1);
       expect(restartCallbacks).toHaveLength(0);
     });

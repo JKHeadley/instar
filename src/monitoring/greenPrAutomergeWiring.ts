@@ -118,6 +118,16 @@ export interface GreenPrWiringOpts {
   githubRuntime?: () => AuthenticatedGitHubCliRuntime;
 }
 
+/** Resolve the watcher-owned branch prefix without conflating it with identity. */
+export function resolveGreenPrAgentNamespace(
+  configured: unknown,
+  projectName: unknown,
+): string {
+  if (typeof configured === 'string' && configured.trim()) return configured.trim();
+  if (typeof projectName === 'string' && projectName.trim()) return projectName.trim();
+  return 'agent';
+}
+
 /** Build the GuardLatchStore for this install. */
 export function buildGuardLatchStore(opts: GreenPrWiringOpts): GuardLatchStore {
   return new GuardLatchStore({

@@ -9,6 +9,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   AgentWorktreeReaper,
+  summarizeEnumerationError,
+  MAX_ENUMERATION_ERROR_CHARS,
   type AgentWorktreeReaperDeps,
   type WorktreeInfo,
 } from '../../src/monitoring/AgentWorktreeReaper.js';
@@ -28,7 +30,7 @@ function wt(over: Partial<WorktreeInfo> = {}): WorktreeInfo {
 /** Deps where every gate is "reapable" by default; tests flip one at a time. */
 function deps(over: Partial<AgentWorktreeReaperDeps> = {}): AgentWorktreeReaperDeps {
   return {
-    listWorktrees: () => [wt()],
+    listWorktrees: () => ({ ok: true as const, worktrees: [wt()] }),
     isClean: () => true,
     isMerged: () => true,
     isInUse: () => false,
@@ -91,7 +93,7 @@ describe('AgentWorktreeReaper.reap — dry-run + blast radius', () => {
     const removeWorktree = vi.fn();
     const many = Array.from({ length: 5 }, (_, i) => wt({ path: `/wt/${i}`, headSha: `s${i}` }));
     const r = new AgentWorktreeReaper(
-      deps({ listWorktrees: () => many, removeWorktree }),
+      deps({ listWorktrees: () => ({ ok: true as const, worktrees: many }), removeWorktree }),
       { enabled: true, dryRun: false, maxReapsPerPass: 2 },
     );
     const res = await r.reap();
@@ -389,7 +391,10 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
 
   it('listWorktrees + isClean + isMerged all work against the source tree (no guard error)', () => {
     const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
-    const list = deps.listWorktrees();
+    const enumeration = deps.listWorktrees();
+    expect(enumeration.ok).toBe(true); // real git against a real repo ⇒ success state
+    if (!enumeration.ok) throw new Error('enumeration failed: ' + enumeration.error);
+    const list = enumeration.worktrees;
     // main checkout excluded by `within`; only the three under .worktrees/
     const byName = Object.fromEntries(list.map((w) => [path.basename(w.path), w]));
     expect(Object.keys(byName).sort()).toEqual(['dirty', 'merged', 'unmerged']);
@@ -412,8 +417,10 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
   it('AgentWorktreeReaper end-to-end with real deps: reaps merged+clean, keeps dirty + unmerged', () => {
     const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
     const reaper = new AgentWorktreeReaper(deps, { enabled: true, dryRun: true });
+    const enumeration = deps.listWorktrees();
+    if (!enumeration.ok) throw new Error('enumeration failed: ' + enumeration.error);
     const verdicts = Object.fromEntries(
-      deps.listWorktrees().map((w) => [path.basename(w.path), reaper.evaluate(w).verdict]),
+      enumeration.worktrees.map((w) => [path.basename(w.path), reaper.evaluate(w).verdict]),
     );
     expect(verdicts.merged).toBe('reap-eligible');
     expect(verdicts.dirty).not.toBe('reap-eligible');
@@ -586,5 +593,219 @@ describe('AgentWorktreeReaper — per-path reclaim-failure breaker (No Unbounded
     const ok = await r.reap();      // succeeds → count cleared
     expect(ok.reaped).toEqual(['/wt/a']);
     expect(removeWorktree).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * Enumeration failure must NEVER read as a clean bill of health.
+ *
+ * This defect class has now occurred TWICE in production with different causes:
+ *   1. SourceTreeGuard blocked every reaper git call → reported 0 reclaimable
+ *      (guarded by the real-git describe block above).
+ *   2. 2026-07-29: `config.projectDir` named a user directory that does not
+ *      exist, so `git -C <repo> worktree list` failed outright → reported
+ *      `reclaimable: 0` against 73 real worktrees, for an unknown duration.
+ *
+ * The first fix addressed the CAUSE (permit the reads). The swallow that turns
+ * ANY enumeration failure into an empty list survived, so the class recurred.
+ * These tests pin the PROPERTY instead: a guard whose input is a path must be
+ * able to say "I could not look", distinctly from "I looked and found nothing".
+ */
+describe('AgentWorktreeReaper — enumeration failure is visible, not a clean zero', () => {
+  it('snapshot reports reclaimable:null and enumerationOk:false on a failed enumeration', () => {
+    const failed = () => ({ ok: false as const, error: "fatal: cannot change to '/nope'" });
+    const snap = new AgentWorktreeReaper(deps({ listWorktrees: failed }), { enabled: true, dryRun: true }).snapshot();
+
+    // The load-bearing assertion: NOT zero. Zero is a measurement; this is an absence.
+    expect(snap.reclaimable).toBeNull();
+    expect(snap.enumerationOk).toBe(false);
+    expect(snap.enumerationError).toContain('cannot change to');
+    expect(snap.worktrees).toEqual([]);
+  });
+
+  it('a healthy enumeration still reports a real number and enumerationOk:true', () => {
+    // The discriminating control: without this, an implementation that always
+    // returned null would pass the test above while reporting nothing useful.
+    const snap = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true }).snapshot();
+    expect(snap.enumerationOk).toBe(true);
+    expect(snap.enumerationError).toBeNull();
+    expect(snap.reclaimable).toBe(1);
+  });
+
+  it('makeAgentWorktreeReaperDeps.listWorktrees returns {ok:false} on git failure, never an empty list', () => {
+    // The root cause: the deps layer collapsed failure into []. The three-state
+    // result makes the failure branch unskippable at the type level.
+    const readGit: ReadGit = () => { throw new Error('fatal: not a git repository'); };
+    const d = makeAgentWorktreeReaperDeps({ instarRepo: '/nope', worktreesDir: '/nope/.worktrees', readGit });
+    const r = d.listWorktrees();
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/worktree enumeration failed/);
+  });
+
+  it('a dep that THROWS in violation of its contract still does not produce a clean zero', () => {
+    // Defensive backstop: the type stops honest callers, this stops a broken one.
+    const boom = () => { throw new Error('unexpected'); };
+    const snap = new AgentWorktreeReaper(deps({ listWorktrees: boom as never }), { enabled: true, dryRun: true }).snapshot();
+    expect(snap.reclaimable).toBeNull();
+    expect(snap.enumerationOk).toBe(false);
+  });
+});
+
+/**
+ * Regression guard for a hazard this change itself created.
+ *
+ * Making `listWorktrees` report failure turned a previously-DEAD `emit('error')`
+ * into a reachable one. Node's EventEmitter special-cases `'error'`: emitting it
+ * with no listener THROWS. Nothing subscribes to these components in production,
+ * and `reap()`/`scan()` have only a `finally` — so the throw would have escaped as
+ * an unhandled rejection from the interval callback, in exactly the enumeration-
+ * failure case this change exists to handle.
+ *
+ * The fix is a named, non-special event. These tests pin the property that matters
+ * to an operator: a broken enumeration must be quiet-and-visible, never fatal.
+ */
+describe('AgentWorktreeReaper — a failed enumeration never crashes an unlistening caller', () => {
+  it('reap() resolves normally with NO listeners attached', async () => {
+    const r = new AgentWorktreeReaper(
+      deps({ listWorktrees: () => ({ ok: false as const, error: 'fatal: cannot change to /nope' }) }),
+      { enabled: true, dryRun: true },
+    );
+    expect(r.listenerCount('error')).toBe(0); // the condition that makes 'error' fatal
+    const res = await r.reap();               // must not throw
+    expect(res.reaped).toEqual([]);
+    expect(res.evaluations).toEqual([]);
+  });
+
+  it('emits a named enumeration-failed event carrying the reason', async () => {
+    const r = new AgentWorktreeReaper(
+      deps({ listWorktrees: () => ({ ok: false as const, error: 'fatal: cannot change to /nope' }) }),
+      { enabled: true, dryRun: true },
+    );
+    const seen: Array<{ error: string }> = [];
+    r.on('enumeration-failed', (e: { error: string }) => seen.push(e));
+    await r.reap();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].error).toMatch(/cannot change to/);
+  });
+});
+
+describe('AgentWorktreeReaper — a failed enumeration leaves a passive trace', () => {
+  it('warns (server log) when enumeration fails, naming UNKNOWN rather than zero', async () => {
+    // Close the Loop: an event nobody subscribes to can rot. The warn default is
+    // console.warn, which lands in the server log — so a blind guard leaves a
+    // trace even when no one is asking it questions (subject to log retention).
+    const lines: string[] = [];
+    const r = new AgentWorktreeReaper(
+      deps({
+        listWorktrees: () => ({ ok: false as const, error: 'fatal: cannot change to /nope' }),
+        warn: (l: string) => lines.push(l),
+      }),
+      { enabled: true, dryRun: true },
+    );
+    await r.reap();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/enumeration FAILED/);
+    expect(lines[0]).toMatch(/UNKNOWN, not zero/);
+  });
+
+  it('does NOT warn on a healthy pass', async () => {
+    const lines: string[] = [];
+    const r = new AgentWorktreeReaper(deps({ warn: (l: string) => lines.push(l) }), { enabled: true, dryRun: true });
+    await r.reap();
+    expect(lines).toEqual([]); // control: the log fires on failure only
+  });
+});
+
+describe('AgentWorktreeReaper — enumeration-failure metric', () => {
+  const failing = () => deps({
+    listWorktrees: () => ({ ok: false as const, error: 'fatal: cannot change to /nope' }),
+    warn: () => {},
+  });
+
+  it('counts failed reap passes and records when the last one was', async () => {
+    const r = new AgentWorktreeReaper(failing(), { enabled: true, dryRun: true });
+    expect(r.snapshot().enumerationFailures).toBe(0);
+    await r.reap();
+    await r.reap();
+    const snap = r.snapshot();
+    expect(snap.enumerationFailures).toBe(2);
+    expect(snap.lastEnumerationFailureAt).toBe(NOW);
+  });
+
+  it('does NOT count snapshot() calls — the metric measures passes, not polling', () => {
+    const r = new AgentWorktreeReaper(failing(), { enabled: true, dryRun: true });
+    r.snapshot(); r.snapshot(); r.snapshot();
+    const snap = r.snapshot();
+    expect(snap.enumerationFailures).toBe(0);  // four reads, zero passes
+    expect(snap.enumerationOk).toBe(false);    // ...but the CURRENT state is still honest
+  });
+
+  it('stays at zero on healthy passes', async () => {
+    const r = new AgentWorktreeReaper(deps(), { enabled: true, dryRun: true });
+    await r.reap();
+    expect(r.snapshot().enumerationFailures).toBe(0);
+  });
+
+  it('publishes a live unknown verdict after a failed pass, advances the tick, and clears on recovery', async () => {
+    let fail = true;
+    let now = NOW;
+    const r = new AgentWorktreeReaper(deps({
+      listWorktrees: () => fail
+        ? { ok: false as const, error: 'fatal: cannot enumerate' }
+        : { ok: true as const, worktrees: [] },
+      now: () => now,
+      warn: () => {},
+    }), { enabled: true, dryRun: false });
+
+    expect(r.guardStatus()).toEqual({ enabled: true, dryRun: false, lastTickAt: 0 });
+    await r.reap();
+    expect(r.guardStatus()).toMatchObject({
+      lastTickAt: NOW,
+      verdictUnknown: true,
+      verdictUnknownReason: 'fatal: cannot enumerate',
+    });
+
+    fail = false;
+    now++;
+    await r.reap();
+    expect(r.guardStatus()).toEqual({ enabled: true, dryRun: false, lastTickAt: NOW + 1 });
+    expect(r.snapshot().enumerationFailures).toBe(1);
+  });
+
+  it('reloads historical failure count/time without restoring a stale live blind verdict', () => {
+    const history = { enumerationFailures: 7, lastEnumerationFailureAt: NOW - 5 };
+    const r = new AgentWorktreeReaper(deps({ failureHistory: {
+      load: () => history,
+      recordFailure: () => history,
+    } }), { enabled: true, dryRun: false });
+
+    expect(r.snapshot()).toMatchObject(history);
+    expect(r.guardStatus()).toEqual({ enabled: true, dryRun: false, lastTickAt: 0 });
+  });
+});
+
+describe('summarizeEnumerationError — bounded, single-line, control-char-free', () => {
+  const ESC = '\u001B';
+
+  it('strips control characters, not just whitespace', () => {
+    // git/path output can carry ANSI escapes; a `\s+` collapse leaves ESC intact,
+    // and the result lands in a server log that a terminal may render.
+    const out = summarizeEnumerationError(new Error(`fatal: bad ${ESC}[31mred${ESC}[0m path`));
+    expect(out).not.toContain(ESC);
+    expect(out).toContain('fatal: bad');
+  });
+
+  it('collapses newlines to a single line', () => {
+    expect(summarizeEnumerationError(new Error('line one\nline two'))).toBe('line one line two');
+  });
+
+  it('clamps to the max length with an ellipsis', () => {
+    const out = summarizeEnumerationError(new Error('x'.repeat(1000)));
+    expect(out.length).toBe(MAX_ENUMERATION_ERROR_CHARS);
+    expect(out.endsWith('\u2026')).toBe(true);
+  });
+
+  it('handles a non-Error throw', () => {
+    expect(summarizeEnumerationError('plain string')).toBe('plain string');
   });
 });

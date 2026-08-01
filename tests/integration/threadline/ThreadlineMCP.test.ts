@@ -536,7 +536,8 @@ describe('ThreadlineMCP Integration', () => {
       });
 
       const data = JSON.parse((result.content as any)[0].text);
-      expect(data.delivered).toBe(true);
+      expect(data.accepted).toBe(true);
+      expect(data.delivered).toBe(false);
       expect(data.reply).toBeUndefined();
     });
 
@@ -578,7 +579,8 @@ describe('ThreadlineMCP Integration', () => {
         arguments: { agentId: 'doomed', threadId, message: 'After deletion' },
       });
       const data2 = JSON.parse((sendResult2.content as any)[0].text);
-      expect(data2.delivered).toBe(true);
+      expect(data2.accepted).toBe(true);
+      expect(data2.delivered).toBe(false);
     });
   });
 

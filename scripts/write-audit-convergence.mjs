@@ -14,6 +14,9 @@
  *      (`fixed:<ref>` | `accepted:<reason>` | `deferred:<ref>`, each non-empty).
  *   4. Each round records its search-angles + surface-delta.
  *   5. `standing-guard` (jailed + git-tracked) XOR `exemption` (closed enum + rationale).
+ *   6. A digest-bound meta-insight names the escaped blind-spot class and the
+ *      created/amended/no-change standards response, with change-local evidence
+ *      whenever the response identity is new or changed.
  *
  * Parsing is line-oriented, single-pass, dependency-free, and FAIL-CLOSED: an
  * unparseable `## Round` section, ledger-like-but-unparseable content, zero
@@ -34,14 +37,31 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scanForSecrets } from './audit-secret-patterns.mjs';
+import { ARTICLE_ID_RE, articleIds, parseRegistryStructure } from './standards-registry-article-core.mjs';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const EXEMPTION_KEYS = ['non-ci-expressible', 'external-system', 'one-time-human-review'];
 const EXEMPTION_RATIONALE_FLOOR = 12; // chars of real rationale beyond the key
-const MANAGED_FRONTMATTER_KEYS = ['audit', 'converged', 'rounds', 'standing-guard', 'exemption'];
+const META_AUTHOR_KEYS = [
+  'blind-spot-class',
+  'standard-response-kind',
+  'standard-response-ref',
+  'standard-response-article-id',
+  'standard-response-article',
+  'standard-response-rationale',
+];
+const META_DERIVED_KEYS = ['standard-response-digest', 'meta-artifact-digest', 'meta-artifact-at'];
+const MANAGED_FRONTMATTER_KEYS = [
+  'audit', 'converged', 'rounds', 'standing-guard', 'exemption',
+  ...META_AUTHOR_KEYS, ...META_DERIVED_KEYS,
+];
+const BLIND_SPOT_CLASS_RE = /^[a-z0-9][a-z0-9-]{2,63}$/;
+const RESPONSE_KINDS = ['created', 'amended', 'no-change'];
+const SHA256_RE = /^[a-f0-9]{64}$/;
 
 // ─── frontmatter ──────────────────────────────────────────────────────────
 
@@ -90,6 +110,122 @@ export function parseFrontmatter(text) {
     fields[key] = val;
   }
   return { fields, frontmatterEnd: end, lines };
+}
+
+function canonicalDigest(parts) {
+  const chunks = ['audit-meta-v2'];
+  for (const part of parts) {
+    const value = String(part ?? '');
+    chunks.push(`${Buffer.byteLength(value, 'utf8')}:${value}`);
+  }
+  return crypto.createHash('sha256').update(chunks.join('|'), 'utf8').digest('hex');
+}
+
+function canonicalIso(value) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value ?? '')) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && new Date(time).toISOString() === value;
+}
+
+function visibleBodyLines(text) {
+  const lines = text.split('\n');
+  const visible = [];
+  let fence = null;
+  let inComment = false;
+  for (const raw of lines) {
+    const trimmed = raw.trimStart();
+    const fm = trimmed.match(/^(`{3,}|~{3,})/);
+    if (fence === null && fm) {
+      fence = { marker: fm[1][0], length: fm[1].length };
+      visible.push(null);
+      continue;
+    }
+    if (fence !== null) {
+      const closing = new RegExp(`^${fence.marker}{${fence.length},}\\s*$`);
+      if (closing.test(trimmed)) fence = null;
+      visible.push(null);
+      continue;
+    }
+    if (/^\s*>/.test(raw)) { visible.push(null); continue; }
+    let out = '';
+    let cursor = 0;
+    while (cursor < raw.length) {
+      if (inComment) {
+        const end = raw.indexOf('-->', cursor);
+        if (end === -1) { cursor = raw.length; break; }
+        inComment = false;
+        cursor = end + 3;
+        continue;
+      }
+      const start = raw.indexOf('<!--', cursor);
+      if (start === -1) { out += raw.slice(cursor); break; }
+      out += raw.slice(cursor, start);
+      inComment = true;
+      cursor = start + 4;
+    }
+    visible.push(out);
+  }
+  return visible;
+}
+
+export function parseMetaInsight(text) {
+  const lines = visibleBodyLines(text);
+  const metaHeads = [];
+  const roundHeads = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === null) continue;
+    if (line === '## Meta-insight') metaHeads.push(i);
+    if (/^##\s+Round\s+1\b/i.test(line)) roundHeads.push(i);
+  }
+  if (metaHeads.length !== 1) throw Object.assign(new Error(`expected exactly one real \`## Meta-insight\` section; found ${metaHeads.length}`), { code: 'meta-insight-shape' });
+  if (roundHeads.length === 0 || metaHeads[0] >= roundHeads[0]) throw Object.assign(new Error('`## Meta-insight` must appear before the first real `## Round 1`'), { code: 'meta-insight-shape' });
+  const end = lines.findIndex((line, i) => i > metaHeads[0] && line !== null && /^##\s+/.test(line));
+  const sectionEnd = end === -1 ? lines.length : end;
+  const arose = [];
+  const missed = [];
+  for (let i = metaHeads[0] + 1; i < sectionEnd; i++) {
+    const line = lines[i];
+    if (line === null || !line.trim()) continue;
+    let m = line.match(/^How it arose:\s*(.+)$/);
+    if (m) { arose.push(m[1].trim()); continue; }
+    m = line.match(/^Why prior controls missed it:\s*(.+)$/);
+    if (m) { missed.push(m[1].trim()); continue; }
+    throw Object.assign(new Error(`Meta-insight contains an unrecognized or continuation line: "${line.slice(0, 80)}"`), { code: 'meta-insight-shape' });
+  }
+  if (arose.length !== 1 || missed.length !== 1) throw Object.assign(new Error('Meta-insight requires exactly one `How it arose:` and one `Why prior controls missed it:` line'), { code: 'meta-insight-shape' });
+  for (const [label, value] of [['How it arose', arose[0]], ['Why prior controls missed it', missed[0]]]) {
+    if (value.length < 40 || value.length > 1000) throw Object.assign(new Error(`${label} must be 40-1000 characters; found ${value.length}`), { code: 'meta-insight-bounds' });
+  }
+  return { howItArose: arose[0], whyPriorControlsMissedIt: missed[0] };
+}
+
+export function computeResponseDigest(fields) {
+  return canonicalDigest([
+    'response-v1', fields['standard-response-kind'], fields['standard-response-ref'],
+    fields['standard-response-article-id'], fields['standard-response-article'],
+  ]);
+}
+
+export function computeMetaDigest(fields, metaInsight, timestamp) {
+  return canonicalDigest([
+    'meta-v1', timestamp, fields['blind-spot-class'], fields['standard-response-kind'],
+    fields['standard-response-ref'], fields['standard-response-article-id'],
+    fields['standard-response-article'], fields['standard-response-rationale'],
+    metaInsight.howItArose, metaInsight.whyPriorControlsMissedIt,
+  ]);
+}
+
+export function responseChangedFromBase(text, baseText) {
+  if (!baseText) return true;
+  try {
+    const current = parseFrontmatter(text).fields;
+    const base = parseFrontmatter(baseText).fields;
+    if (!META_AUTHOR_KEYS.every((key) => typeof base[key] === 'string' && base[key].length > 0)) return true;
+    return computeResponseDigest(current) !== computeResponseDigest(base);
+  } catch {
+    return true;
+  }
 }
 
 // ─── round + ledger parsing (fail-closed) ───────────────────────────────────
@@ -258,6 +394,108 @@ export function validateExemption(exemption) {
   return { ok: true, key, rationale };
 }
 
+function validateStandardsRefPath(ref, root, requiredRef, evidence) {
+  if (requiredRef && ref !== requiredRef) return { ok: false, reason: `standard-response-ref must be ${requiredRef} in this repository` };
+  if (!ref || path.isAbsolute(ref) || ref.split('/').includes('..') || !ref.startsWith('docs/') || !ref.endsWith('.md')) {
+    return { ok: false, reason: 'standard-response-ref must be a repo-relative `docs/**/*.md` path with no `..`' };
+  }
+  const rootResolved = path.resolve(root);
+  const resolved = path.resolve(rootResolved, ref);
+  if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) return { ok: false, reason: 'standard-response-ref resolves outside the repo root' };
+  if (evidence?.candidateText !== undefined) {
+    if (evidence.candidateRegular === false) return { ok: false, reason: 'standard-response-ref candidate is not a regular file' };
+    if (evidence.candidateTracked === false) return { ok: false, reason: 'standard-response-ref candidate is not tracked/staged' };
+    return { ok: true };
+  }
+  if (!fs.existsSync(resolved)) return { ok: false, reason: `standard-response-ref does not exist: ${ref}` };
+  const stat = fs.lstatSync(resolved);
+  if (stat.isSymbolicLink() || !stat.isFile()) return { ok: false, reason: 'standard-response-ref must be a non-symlink regular file' };
+  const rootReal = fs.realpathSync(rootResolved);
+  const real = fs.realpathSync(resolved);
+  if (real !== rootReal && !real.startsWith(rootReal + path.sep)) return { ok: false, reason: 'standard-response-ref resolves outside the repo root' };
+  return { ok: true };
+}
+
+function registryArticleIndex(markdown) {
+  const articles = [];
+  const idOwners = new Map();
+  const titleOwners = new Set();
+  for (const section of parseRegistryStructure(markdown ?? '')) {
+    for (const block of section.blocks) {
+      const hasRule = block.visibleLines.some((line) => line !== null && /^\*\*Rule\.\*\*/.test(line));
+      if (!hasRule) continue;
+      const ids = articleIds(block);
+      if (titleOwners.has(block.name)) return { ok: false, reason: `duplicate standards article title "${block.name}" is ambiguous` };
+      titleOwners.add(block.name);
+      if (ids.length > 1) return { ok: false, reason: `standards article "${block.name}" has duplicate Article ID declarations` };
+      const id = ids[0] ?? null;
+      if (id && !ARTICLE_ID_RE.test(id)) return { ok: false, reason: `Article ID "${id}" must match ${ARTICLE_ID_RE}` };
+      if (id && idOwners.has(id)) return { ok: false, reason: `duplicate Article ID "${id}" in "${idOwners.get(id)}" and "${block.name}"` };
+      if (id) idOwners.set(id, block.name);
+      articles.push({ id, name: block.name, block });
+    }
+  }
+  return { ok: true, articles };
+}
+
+function substantiveArticleText(article) {
+  return article.block.visibleLines
+    .filter((line) => line !== null)
+    .filter((line) => !/^\*\*Article ID\.\*\*/.test(line))
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .trim();
+}
+
+export function validateStandardResponse(fields, opts = {}) {
+  const evidence = opts.standardEvidence ?? {};
+  if (!evidence.responseChanged) return { ok: true, checked: false };
+  const ref = fields['standard-response-ref'];
+  const pathResult = validateStandardsRefPath(ref, opts.root ?? process.cwd(), opts.requiredStandardsRef, evidence);
+  if (!pathResult.ok) return pathResult;
+  const candidateText = evidence.candidateText ?? fs.readFileSync(path.resolve(opts.root ?? process.cwd(), ref), 'utf8');
+  const candidate = registryArticleIndex(candidateText);
+  if (!candidate.ok) return candidate;
+  const base = registryArticleIndex(evidence.baseText ?? '');
+  if (!base.ok) return base;
+
+  const id = fields['standard-response-article-id'];
+  const title = fields['standard-response-article'];
+  const candidateTarget = candidate.articles.find((a) => a.id === id && a.name === title);
+  if (!candidateTarget) return { ok: false, reason: `candidate standards snapshot has no exact article id/title pair: ${id} / ${title}` };
+  const baseById = base.articles.find((a) => a.id === id);
+  const baseLegacy = base.articles.find((a) => a.name === title);
+  const kind = fields['standard-response-kind'];
+  if (evidence.baseTracked === true && evidence.baseRegular === false) {
+    return { ok: false, reason: 'standard-response-ref base snapshot is not a regular file' };
+  }
+  if (kind !== 'created' && evidence.baseTracked === false) {
+    return { ok: false, reason: `${kind} requires standard-response-ref to exist in the base snapshot` };
+  }
+
+  if (kind === 'created') {
+    if (baseById || baseLegacy) return { ok: false, reason: 'created requires both the Article ID and exact legacy path/title article to be absent in the base snapshot' };
+  } else if (kind === 'amended') {
+    if (baseById) {
+      if (substantiveArticleText(baseById) === substantiveArticleText(candidateTarget)) return { ok: false, reason: 'amended requires a substantive article-block delta (title/path/mode/ID-only changes do not count)' };
+    } else if (baseLegacy?.id === null) {
+      if (substantiveArticleText(baseLegacy) === substantiveArticleText(candidateTarget)) return { ok: false, reason: 'ID-less amended bootstrap must add the ID plus a substantive non-ID delta' };
+    } else if (baseLegacy) {
+      return { ok: false, reason: 'amended legacy bootstrap requires the base title article to be ID-less; replacing an existing Article ID is forbidden' };
+    } else {
+      return { ok: false, reason: 'amended requires the target article to exist in the base snapshot' };
+    }
+  } else if (kind === 'no-change') {
+    if (!baseById && baseLegacy && baseLegacy.id !== null) {
+      return { ok: false, reason: 'no-change legacy bootstrap requires the base title article to be ID-less; replacing an existing Article ID is forbidden' };
+    }
+    const prior = baseById ?? baseLegacy;
+    if (!prior) return { ok: false, reason: 'no-change requires the target article to exist in the base snapshot' };
+    if (substantiveArticleText(prior) !== substantiveArticleText(candidateTarget)) return { ok: false, reason: 'no-change forbids a substantive article-block delta (only the legacy ID bootstrap may differ)' };
+  }
+  return { ok: true, checked: true, kind, articleId: id, article: title };
+}
+
 // ─── the core validation ────────────────────────────────────────────────────
 
 /**
@@ -330,7 +568,53 @@ export function validateAuditReport(text, opts = {}) {
     if (!x.ok) return { ok: false, reason: x.reason };
   }
 
-  return { ok: true, rounds };
+  // Sixth condition: blind-spot class + causal meta-insight + standards response.
+  if (!BLIND_SPOT_CLASS_RE.test(f['blind-spot-class'] ?? '')) {
+    return { ok: false, reason: `blind-spot-class must match ${BLIND_SPOT_CLASS_RE}` };
+  }
+  if (!RESPONSE_KINDS.includes(f['standard-response-kind'])) {
+    return { ok: false, reason: `standard-response-kind must be ${RESPONSE_KINDS.join(' | ')}` };
+  }
+  if (!ARTICLE_ID_RE.test(f['standard-response-article-id'] ?? '')) {
+    return { ok: false, reason: `standard-response-article-id must match ${ARTICLE_ID_RE}` };
+  }
+  const title = f['standard-response-article'] ?? '';
+  if (title.length < 4 || title.length > 240) return { ok: false, reason: `standard-response-article must be 4-240 characters; found ${title.length}` };
+  const rationale = f['standard-response-rationale'] ?? '';
+  if (rationale.length < 24 || rationale.length > 500) return { ok: false, reason: `standard-response-rationale must be 24-500 characters; found ${rationale.length}` };
+
+  let metaInsight;
+  try { metaInsight = parseMetaInsight(text); }
+  catch (e) { return { ok: false, reason: e.message, code: e.code }; }
+  const responseDigest = computeResponseDigest(f);
+  const timestamp = f['meta-artifact-at'] ?? '';
+  const metaDigest = canonicalIso(timestamp) ? computeMetaDigest(f, metaInsight, timestamp) : null;
+  const derivedCurrent =
+    f['standard-response-digest'] === responseDigest &&
+    !!metaDigest && f['meta-artifact-digest'] === metaDigest;
+  if (!opts.allowDerivedStale) {
+    if (!SHA256_RE.test(f['standard-response-digest'] ?? '')) return { ok: false, reason: 'standard-response-digest must be a lowercase SHA-256 digest' };
+    if (!canonicalIso(timestamp)) return { ok: false, reason: 'meta-artifact-at must be a canonical ISO timestamp' };
+    if (!SHA256_RE.test(f['meta-artifact-digest'] ?? '')) return { ok: false, reason: 'meta-artifact-digest must be a lowercase SHA-256 digest' };
+    if (f['standard-response-digest'] !== responseDigest) return { ok: false, reason: 'standard-response-digest is stale; re-run the stamp tool' };
+    if (f['meta-artifact-digest'] !== metaDigest) return { ok: false, reason: 'meta-artifact-digest is stale; re-run the stamp tool' };
+  }
+
+  const standards = validateStandardResponse(f, {
+    root,
+    requiredStandardsRef: opts.requiredStandardsRef,
+    standardEvidence: opts.standardEvidence,
+  });
+  if (!standards.ok) return { ok: false, reason: standards.reason };
+
+  return {
+    ok: true,
+    rounds,
+    responseKind: f['standard-response-kind'],
+    responseDigest,
+    metaDigest,
+    meta: { ...metaInsight, responseDigest, metaDigest, derivedCurrent, responseKind: f['standard-response-kind'], standards },
+  };
 }
 
 // ─── stamping (byte-idempotent) ─────────────────────────────────────────────
@@ -342,6 +626,19 @@ export function validateAuditReport(text, opts = {}) {
  * `nowIso` is injected so tests are deterministic and the module has no clock dep.
  */
 export function stampConverged(text, roundsCount, nowIso) {
+  const parsedBefore = parseFrontmatter(text);
+  const fields = parsedBefore.fields;
+  const insight = parseMetaInsight(text);
+  const expectedResponse = computeResponseDigest(fields);
+  const existingMetaAt = fields['meta-artifact-at'] ?? '';
+  const existingMetaDigest = canonicalIso(existingMetaAt)
+    ? computeMetaDigest(fields, insight, existingMetaAt)
+    : null;
+  const derivedCurrent =
+    fields['standard-response-digest'] === expectedResponse &&
+    !!existingMetaDigest && fields['meta-artifact-digest'] === existingMetaDigest;
+  const metaAt = derivedCurrent ? existingMetaAt : nowIso;
+  const metaDigest = computeMetaDigest(fields, insight, metaAt);
   const lines = text.split('\n');
   // operate within the first frontmatter block
   let fmEnd = -1;
@@ -361,6 +658,9 @@ export function stampConverged(text, roundsCount, nowIso) {
   }
   setField('converged', existing || nowIso);
   setField('rounds', String(roundsCount));
+  setField('standard-response-digest', expectedResponse);
+  setField('meta-artifact-at', metaAt);
+  setField('meta-artifact-digest', metaDigest);
   return lines.join('\n');
 }
 
@@ -391,6 +691,30 @@ function stagedSet(root) {
     return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
   } catch {
     return new Set();
+  }
+}
+
+function gitShow(root, spec) {
+  try { return execFileSync('git', ['show', spec], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
+  catch { return null; }
+}
+
+function gitFileMode(root, treeish, rel) {
+  try {
+    const row = execFileSync('git', ['ls-tree', treeish, '--', rel], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return row ? row.split(/\s+/, 1)[0] : null;
+  } catch { return null; }
+}
+
+function atomicWriteFile(filePath, content) {
+  const mode = fs.statSync(filePath).mode;
+  const tmp = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+  try {
+    fs.writeFileSync(tmp, content, { mode });
+    fs.chmodSync(tmp, mode);
+    fs.renameSync(tmp, filePath);
+  } finally {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* best effort cleanup */ }
   }
 }
 
@@ -427,7 +751,33 @@ function main() {
   let result, secrets;
   try {
     secrets = scanForSecrets(text);
-    result = validateAuditReport(text, { root, stagedSet: stagedSet(root), basenameSlug });
+    const auditRel = args.audit ? path.relative(root, path.resolve(args.audit)).split(path.sep).join('/') : null;
+    const baseReportText = auditRel ? gitShow(root, `HEAD:${auditRel}`) : null;
+    const responseChanged = auditRel ? responseChangedFromBase(text, baseReportText) : false;
+    let standardEvidence = { responseChanged };
+    if (responseChanged) {
+      const fields = parseFrontmatter(text).fields;
+      const ref = fields['standard-response-ref'];
+      const candidatePath = ref ? path.resolve(root, ref) : null;
+      const baseMode = ref ? gitFileMode(root, 'HEAD', ref) : null;
+      standardEvidence = {
+        responseChanged: true,
+        candidateText: candidatePath && fs.existsSync(candidatePath) ? fs.readFileSync(candidatePath, 'utf8') : '',
+        baseText: ref ? (gitShow(root, `HEAD:${ref}`) ?? '') : '',
+        candidateRegular: !!candidatePath && fs.existsSync(candidatePath) && fs.lstatSync(candidatePath).isFile() && !fs.lstatSync(candidatePath).isSymbolicLink(),
+        candidateTracked: !!ref && (stagedSet(root).has(ref) || gitShow(root, `HEAD:${ref}`) !== null),
+        baseRegular: baseMode === '100644' || baseMode === '100755',
+        baseTracked: baseMode !== null,
+      };
+    }
+    result = validateAuditReport(text, {
+      root,
+      stagedSet: stagedSet(root),
+      basenameSlug,
+      requiredStandardsRef: 'docs/STANDARDS-REGISTRY.md',
+      standardEvidence,
+      allowDerivedStale: !args.check,
+    });
   } catch (e) {
     // any unexpected throw is fail-CLOSED with the honest escape named
     console.error(`[audit-convergence] internal error: ${e.message}`);
@@ -449,6 +799,11 @@ function main() {
 
   if (args.check) {
     console.log(`[audit-convergence] OK — ${result.rounds.length} rounds, final round clean, dispositions closed.`);
+    if (result.responseKind === 'no-change') {
+      console.log(`[audit-convergence] NO-CHANGE — existing standard retained; enforcement adequacy requires reviewer attention.`);
+    } else {
+      console.log(`[audit-convergence] STANDARD RESPONSE — ${String(result.responseKind).toUpperCase()}.`);
+    }
     // surface the exemption banner if present (adversarial visibility)
     const fm = parseFrontmatter(text).fields;
     if (fm.exemption && fm.exemption.trim()) console.log(`[audit-convergence] EXEMPTION path: ${fm.exemption.trim()}`);
@@ -458,8 +813,23 @@ function main() {
   // stamp mode: write the earned converged timestamp
   const nowIso = new Date().toISOString();
   const stamped = stampConverged(text, result.rounds.length, nowIso);
-  fs.writeFileSync(auditPath, stamped);
+  // Evidence was checked above against the same author-owned response fields;
+  // final-byte validation rechecks every structural field and both derived hashes.
+  const finalStructural = validateAuditReport(stamped, {
+    root, stagedSet: stagedSet(root), basenameSlug,
+    standardEvidence: { responseChanged: false },
+  });
+  if (!finalStructural.ok) {
+    console.error(`[audit-convergence] internal error: stamped candidate failed final validation: ${finalStructural.reason}`);
+    process.exit(2);
+  }
+  atomicWriteFile(auditPath, stamped);
   console.log(`[audit-convergence] stamped ${auditPath}: converged (${result.rounds.length} rounds)`);
+  if (result.responseKind === 'no-change') {
+    console.log('[audit-convergence] NO-CHANGE — existing standard retained; enforcement adequacy requires reviewer attention.');
+  } else {
+    console.log(`[audit-convergence] STANDARD RESPONSE — ${String(result.responseKind).toUpperCase()}.`);
+  }
   process.exit(0);
 }
 

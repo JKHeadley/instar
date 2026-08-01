@@ -505,6 +505,8 @@ describe('Threadline Integration Tests', () => {
       const result = await router.handleInboundMessage(envelope);
 
       expect(result.handled).toBe(true);
+      expect(result.accepted).toBe(true);
+      expect(result.delivered).toBe(true);
       expect(result.spawned).toBe(true);
       expect(result.error).toBeUndefined();
     });
@@ -534,6 +536,9 @@ describe('Threadline Integration Tests', () => {
       const result = await router.handleInboundMessage(envelope);
 
       expect(result.handled).toBe(true);
+      expect(result.accepted).toBe(true);
+      expect(result.delivered).toBe(false);
+      expect(result.queued).toBe(true);
       expect(result.gateDecision).toBe('queue-for-approval');
       expect(result.approvalId).toBeDefined();
       expect(result.spawned).toBeUndefined();
@@ -574,7 +579,9 @@ describe('Threadline Integration Tests', () => {
       const envelope = makeEnvelope({ threadId: crypto.randomUUID(), fromAgent: 'evil-agent' });
       const result = await router.handleInboundMessage(envelope);
 
-      expect(result.handled).toBe(true);
+      expect(result.handled).toBe(false);
+      expect(result.accepted).toBe(false);
+      expect(result.delivered).toBe(false);
       expect(result.gateDecision).toBe('block');
       expect(result.error).toContain('Blocked');
       expect(spawnManager.evaluate).not.toHaveBeenCalled();
@@ -604,6 +611,8 @@ describe('Threadline Integration Tests', () => {
       const result = await router.handleInboundMessage(envelope);
 
       expect(result.handled).toBe(true);
+      expect(result.accepted).toBe(true);
+      expect(result.delivered).toBe(true);
       expect(result.spawned).toBe(true);
       expect(notifier.notifyUser).toHaveBeenCalled();
     });
@@ -761,7 +770,9 @@ describe('Threadline Integration Tests', () => {
       const envelope = makeEnvelope({ threadId: crypto.randomUUID(), fromAgent: 'remote-agent' });
       const result = await router.handleInboundMessage(envelope);
 
-      expect(result.handled).toBe(true);
+      expect(result.handled).toBe(false);
+      expect(result.accepted).toBe(false);
+      expect(result.delivered).toBe(false);
       expect(result.error).toContain('Spawn denied');
       expect(spawnManager.handleDenial).toHaveBeenCalled();
     });

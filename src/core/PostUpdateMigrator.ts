@@ -2429,7 +2429,7 @@ export class PostUpdateMigrator {
   // keys into a deployed agent's config.json so they are visible and settable,
   // and logs which keys it backfilled (audit). Existence-checked + idempotent: a
   // key the operator has explicitly set — including the rollback
-  // `suppressUnchangedHeartbeats: false` — is NEVER overwritten. Writes to the
+  // `userOutputEnabled: true` — is NEVER overwritten. Writes to the
   // paths the runtime ACTUALLY reads: `monitoring.activeWorkSilenceSentinel.*`
   // and TOP-LEVEL `promiseBeacon.*` (server.ts reads `config.promiseBeacon`, not
   // `monitoring.promiseBeacon` — the spec prose's path was corrected against the
@@ -2450,7 +2450,10 @@ export class PostUpdateMigrator {
     }
 
     const migrations = (config._instar_migrations ?? []) as string[];
-    const marker = 'honest-progress-messaging-defaults';
+    // v3 re-runs the existence-checked migration on agents that already carry
+    // earlier markers, adding the fleet-wide output boundary without
+    // overwriting an explicit deployment opt-in.
+    const marker = 'honest-progress-messaging-defaults-v3';
     if (migrations.some(m => m.startsWith(marker))) {
       result.skipped.push('honest-progress-messaging-defaults: already migrated');
       return;
@@ -2479,6 +2482,8 @@ export class PostUpdateMigrator {
     setIfAbsent(silence, 'activeWorkMaxFrozenIndicatorMs', 5_400_000, 'monitoring.activeWorkSilenceSentinel.activeWorkMaxFrozenIndicatorMs');
 
     const beacon = ensureObj(config, 'promiseBeacon');
+    setIfAbsent(beacon, 'userOutputEnabled', false, 'promiseBeacon.userOutputEnabled');
+    setIfAbsent(beacon, 'aggregateByTopic', true, 'promiseBeacon.aggregateByTopic');
     setIfAbsent(beacon, 'suppressUnchangedHeartbeats', true, 'promiseBeacon.suppressUnchangedHeartbeats');
     setIfAbsent(beacon, 'beaconLivenessIntervalMs', 3_600_000, 'promiseBeacon.beaconLivenessIntervalMs');
     setIfAbsent(beacon, 'turnFinishedCloseoutChecks', 3, 'promiseBeacon.turnFinishedCloseoutChecks');
@@ -3978,24 +3983,24 @@ export class PostUpdateMigrator {
    * (audit-convergence-enforcement §4 / Integration-R2 M3). The installed copy
    * came from init.ts's INLINE template, so this migration writes the SAME shared
    * constant (`ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT`) that init.ts now consumes
-   * — single-source, so the two paths cannot drift. Idempotent (skip when the
-   * canonical-report marker is already present) + conservative (skip a customized
-   * copy that no longer looks like the stock skill).
+   * — single-source, so the two paths cannot drift. Idempotent via a dedicated
+   * V2 sentinel + conservative via the exact previously-shipped stock hash.
    */
   private migrateIterativeConvergingAuditSkill(result: MigrationResult): void {
     try {
       const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'iterative-converging-audit', 'SKILL.md');
       if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
       const current = fs.readFileSync(skillFile, 'utf8');
-      const MARKER = 'docs/audits/<slug>.md';
-      if (current.includes(MARKER)) return; // already updated — idempotent
-      // conservative stock fingerprint: the inline skill's stable header + loop
-      if (!current.includes('# /iterative-converging-audit') || !current.includes('## The loop')) {
-        result.skipped.push('skills/iterative-converging-audit/SKILL.md: customized — left untouched (no audit-convergence update)');
+      const MARKER = '<!-- INSTAR:AUDIT-META-ARTIFACT-V2 -->';
+      if (current.includes(MARKER)) return;
+      const PRIOR_STOCK_SHA256 = '46800ab937d0e0df2d22502654f18dc255a8540c48fac86192e952ec6da060e5';
+      const currentSha256 = crypto.createHash('sha256').update(current).digest('hex');
+      if (currentSha256 !== PRIOR_STOCK_SHA256) {
+        result.skipped.push('skills/iterative-converging-audit/SKILL.md: customized — left untouched (no audit meta-artifact V2 update)');
         return;
       }
       fs.writeFileSync(skillFile, ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT);
-      result.upgraded.push('skills/iterative-converging-audit/SKILL.md (canonical docs/audits report + validator-earned convergence stamp)');
+      result.upgraded.push('skills/iterative-converging-audit/SKILL.md (blind-spot/meta-insight + standards-response artifact V2)');
     } catch (err) {
       result.errors.push(`skills/iterative-converging-audit/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -6106,9 +6111,23 @@ setTimeout(() => process.exit(0), 2000);
     // PromiseBeacon "still on it" filler (per the spec's reconciliation). The
     // content-sniff anchor is the section heading; idempotent.
     if (!content.includes('Autonomous-run silence backstop')) {
-      content += `\n## Autonomous-run silence backstop (AutonomousProgressHeartbeat)\n\nA proactive backstop that posts ONE purely-observational liveness line when an autonomous run has gone silent on you for a long stretch while its terminal output is still changing. **This is NOT the commitment-cadence "still on it" heartbeat that the honest-progress work removed** — it fires only on a LONG user-silence gate (≥25m) WITH corroborated recent output change (a liveness signal, NOT a progress claim), and the wording is observational ("I haven't posted here in a while — last observed activity was «…». Message me if you need me."), never an assertive "still working" / "still going" claim. It closes the *busy-but-silent-to-user* gap the other watchers miss: the silent-freeze watchdog stays quiet while output is moving, PresenceProxy needs an inbound message, and PromiseBeacon needs an open commitment — a long heads-down autonomous run with no commitment and no inbound message falls through all three. The real fix is still you sending your own milestones; this only catches a lapse.\n- **It can't spam you (three LOCAL brakes, NOT dedup):** a long user-silence gate that ANY outbound (including your own normal reply) resets; a per-topic emit-cooldown; and a widening per-run backoff (25→40→60→90m) with a hard cap (~6 lines per run). Output advancing proves only LIVENESS, never progress — which is exactly why the wording is liveness-only.\n- **Signal-only:** it only ever ADDS a line — never blocks, delays, or rewrites your real messages. Every predicate fails CLOSED (no emit) on uncertainty (can't read history, the shared snapshot is unavailable, the run is mid-move to another machine). The interpolated \`focus\` is scrubbed for credentials/secrets/paths (drop-to-generic on any match), length-clamped, and HTML-escaped.\n- **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous-heartbeat\` → \`{ enabled, dryRun, silenceThresholdMinutes, lastTickAt, topicsConsidered, lastEmits }\` (503 when dark). Ships dark on the fleet + \`dryRun: true\` on a dev agent. Tune/disable: \`monitoring.autonomousHeartbeat\`. Spec: \`docs/specs/autonomous-progress-heartbeat.md\`.\n`;
+      content += `\n## Autonomous-run silence backstop (AutonomousProgressHeartbeat)\n\nA proactive backstop that posts ONE purely-observational liveness line when an autonomous run has gone silent on you for a long stretch while its terminal output is still changing. **This is NOT the commitment-cadence "still on it" heartbeat that the honest-progress work removed** — it fires only on a LONG user-silence gate (≥25m) WITH corroborated recent output change (a liveness signal, NOT a progress claim), and the wording is observational ("I haven't posted here in a while — last observed activity was «…». Message me if you need me."), never an assertive "still working" / "still going" claim. It closes the *busy-but-silent-to-user* gap the other watchers miss: the silent-freeze watchdog stays quiet while output is moving, PresenceProxy needs an inbound message, and PromiseBeacon needs an open commitment — a long heads-down autonomous run with no commitment and no inbound message falls through all three. The real fix is still you sending your own milestones; this only catches a lapse.\n- **It can't spam you (three brakes, NOT dedup):** a long user-silence gate that ANY outbound (including your own normal reply) resets; a durable per-run emit-cooldown; and a widening backoff (25→40→60→90m) with a hard cap (~6 lines per run). Count + backoff persist by run id across server restarts; unreadable state suppresses instead of resetting the cap. Output advancing proves only LIVENESS, never progress — which is exactly why the wording is liveness-only.\n- **Signal-only:** it only ever ADDS a line — never blocks, delays, or rewrites your real messages. Every predicate fails CLOSED (no emit) on uncertainty (can't read history, the shared snapshot is unavailable, the run is mid-move to another machine). The interpolated \`focus\` is scrubbed for credentials/secrets/paths (drop-to-generic on any match), length-clamped, and HTML-escaped.\n- **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous-heartbeat\` → \`{ enabled, dryRun, silenceThresholdMinutes, tickIntervalMs, maxHeartbeatsPerRun, persistenceHealthy, lastTickAt, topicsConsidered, lastEmits }\` (503 when dark). Ships dark on the fleet + \`dryRun: true\` on a dev agent. Tune/disable: \`monitoring.autonomousHeartbeat\`; edits are read live at the tick chokepoint. Spec: \`docs/specs/autonomous-progress-heartbeat.md\`.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Autonomous-run silence backstop section');
+    }
+    const oldHeartbeatBrake = '- **It can\'t spam you (three LOCAL brakes, NOT dedup):** a long user-silence gate that ANY outbound (including your own normal reply) resets; a per-topic emit-cooldown; and a widening per-run backoff (25→40→60→90m) with a hard cap (~6 lines per run). Output advancing proves only LIVENESS, never progress — which is exactly why the wording is liveness-only.';
+    const durableHeartbeatBrake = '- **It can\'t spam you (three brakes, NOT dedup):** a long user-silence gate that ANY outbound (including your own normal reply) resets; a durable per-run emit-cooldown; and a widening backoff (25→40→60→90m) with a hard cap (~6 lines per run). Count + backoff persist by run id across server restarts; unreadable state suppresses instead of resetting the cap. Output advancing proves only LIVENESS, never progress — which is exactly why the wording is liveness-only.';
+    if (content.includes(oldHeartbeatBrake)) {
+      content = content.replace(oldHeartbeatBrake, durableHeartbeatBrake);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: corrected autonomous-heartbeat restart persistence');
+    }
+    const oldHeartbeatStatus = `- **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous-heartbeat\` → \`{ enabled, dryRun, silenceThresholdMinutes, lastTickAt, topicsConsidered, lastEmits }\` (503 when dark). Ships dark on the fleet + \`dryRun: true\` on a dev agent. Tune/disable: \`monitoring.autonomousHeartbeat\`. Spec: \`docs/specs/autonomous-progress-heartbeat.md\`.`;
+    const liveHeartbeatStatus = `- **Status:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/autonomous-heartbeat\` → \`{ enabled, dryRun, silenceThresholdMinutes, tickIntervalMs, maxHeartbeatsPerRun, persistenceHealthy, lastTickAt, topicsConsidered, lastEmits }\` (503 when dark). Ships dark on the fleet + \`dryRun: true\` on a dev agent. Tune/disable: \`monitoring.autonomousHeartbeat\`; edits are read live at the tick chokepoint. Spec: \`docs/specs/autonomous-progress-heartbeat.md\`.`;
+    if (content.includes(oldHeartbeatStatus)) {
+      content = content.replace(oldHeartbeatStatus, liveHeartbeatStatus);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: corrected autonomous-heartbeat live-config status');
     }
     if (!content.includes('Autonomous Throughput Floor')) {
       content += `\n## Autonomous Throughput Floor\n\nA pull/audit-only view measures project PR movement and manager outbound silence for active autonomous runs. It never notifies, dispatches, remediates, or creates attention. Read \`GET /autonomous/throughput-floor\` when investigating a quiet run; the response shows the durable baseline, dual-flatline observation, and bounded-read breaker. HOLD still requires both an actual approval gate and authoritative saturation of every non-gated lane; this v1 has no lane authority and cannot grant HOLD. A future proactive surface requires a separately converged SelfHealGate.\n`;
@@ -8492,7 +8511,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 - Open a one-time follow-up commitment: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments -H 'Content-Type: application/json' -d '{"userRequest":"<what the user asked>","agentResponse":"<what you said you would do>","type":"one-time-action","topicId":TOPIC_ID,"beaconEnabled":true,"nextUpdateDueAt":"<ISO deadline>"}'\`. Creation refuses unless exactly one follow-through choice is explicit: PromiseBeacon enrollment with a valid deadline, or \`followThroughOptOutReason\` explaining why no future follow-through is needed.
 - List / inspect: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments\` · \`GET /commitments/:id\`
 - Mark delivered when done: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/commitments/:id/deliver\`
-- The PromiseBeacon fires cadenced heartbeats on open commitments so you actually follow through, and the commitment-check job surfaces overdue ones.
+- PromiseBeacon keeps cadence, session-loss detection, revival, and escalation state INTERNAL by default. It sends no summaries, close-outs, escalation statuses, or Attention items unless a deployment explicitly opts in with \`promiseBeacon.userOutputEnabled: true\`; normal agent replies remain the user-facing follow-through path.
 - **When to use** (PROACTIVE — this is the trigger): the moment you promise the user a future action, open a commitment. NEVER improvise the follow-through with a raw \`sleep\`/background timer or by "remembering" — those do not survive a session ending, a restart, or compaction, so the promise is silently dropped. A registered commitment is the ONLY durable path. (Distinct from the Evolution Action Queue / \`/commit-action\`, which tracks self-improvement items, not promises to the user.)
 `;
       const tunnelIdx = content.indexOf('**Cloudflare Tunnel**');
@@ -9351,15 +9370,22 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('CLAUDE.md: added Threadline Single-Negotiator section');
     }
 
-    // HONEST-PROGRESS-MESSAGING C (docs alignment) — the silent-freeze watchdog +
-    // promise beacon are now honest (corroborate before claiming a freeze; silent
-    // unless there's something true to say). Existing agents learn what they are,
-    // their defaults, and how to tune/disable via this appended subsection (Agent
-    // Awareness Standard). Content-sniff marker keeps it idempotent.
+    // HONEST-PROGRESS-MESSAGING C (docs alignment). PromiseBeacon is an internal
+    // follow-through engine by default; unlike the freeze watchdog, it has no
+    // human-facing surface unless a deployment explicitly opts in.
     if (!content.includes('Honest progress messaging (silent-freeze watchdog + promise beacon)')) {
-      content += `\n### Honest progress messaging (silent-freeze watchdog + promise beacon)\n\nTwo background notifiers used to post frequent, falsely-confident noise because they judged "work" by whether the terminal *screen* repainted — a busy long task looks identical to a frozen one. Both are now honest. They are SIGNALS, never gates: they only decide whether to notify you, and every error path fails toward silence.\n- **Silent-freeze watchdog** (ActiveWorkSilenceSentinel): before claiming a session is stuck, it re-captures the LIVE frame and corroborates — if the frame still shows an active-work indicator (spinner / "esc to interrupt"), a sub-agent is live, or it's a clean idle prompt, it stays SILENT. It speaks only when genuinely wedged, and even then hedges ("…hasn't changed in N min and a nudge didn't wake it — it may be stuck, or on a long task I can't see into. Want me to check?"). Threshold raised 15m→30m; a 90m frozen-indicator backstop still surfaces a real mid-tool hang. Tune/disable: \`monitoring.activeWorkSilenceSentinel.enabled\` (off), \`.silenceThresholdMs\` (default 30m), \`.activeWorkMaxFrozenIndicatorMs\` (default 90m).\n- **Promise beacon** (the ⏳ heartbeats): the zero-information "still on it, no new output" filler is suppressed by default — it speaks only on genuine new progress, deadline pressure, a sparse once-per-60m liveness line, or a one-shot turn-finished close-out. Base cadence relaxed 10m→20m. Tune/disable: \`promiseBeacon.suppressUnchangedHeartbeats: false\` (restore the legacy every-tick heartbeat — the rollback lever), \`promiseBeacon.beaconLivenessIntervalMs\` (default 60m), \`promiseBeacon.turnFinishedCloseoutChecks\` (default 3).\n- **Doc correction:** the trio's escalations are NOT gated by \`monitoring.sentinelTelegramEscalation\` (that gate governs a different path); they route through the tone-gated \`/attention\` surface and are controlled by each sentinel's own \`enabled\` flag (both default true). Effectiveness is measurable in \`logs/sentinel-events.jsonl\` and the per-feature LLM-metrics surface (feature keys \`active-work-silence\`, \`promise-beacon\`). Spec: \`docs/specs/HONEST-PROGRESS-MESSAGING-SPEC.md\`.\n`;
+      content += `\n### Honest progress messaging (silent-freeze watchdog + promise beacon)\n\nProgress monitoring must not manufacture user-facing narration. These systems are signals, never gates, and every error path fails toward silence.\n- **Silent-freeze watchdog** (ActiveWorkSilenceSentinel): before claiming a session is stuck, it re-captures the LIVE frame and corroborates — if the frame still shows an active-work indicator (spinner / "esc to interrupt"), a sub-agent is live, or it's a clean idle prompt, it stays SILENT. It speaks only when genuinely wedged, and even then hedges ("…hasn't changed in N min and a nudge didn't wake it — it may be stuck, or on a long task I can't see into. Want me to check?"). Threshold raised 15m→30m; a 90m frozen-indicator backstop still surfaces a real mid-tool hang. Tune/disable: \`monitoring.activeWorkSilenceSentinel.enabled\` (off), \`.silenceThresholdMs\` (default 30m), \`.activeWorkMaxFrozenIndicatorMs\` (default 90m).\n- **PromiseBeacon is internal by default:** commitment cadence, detection, revival, and escalation bookkeeping continue, but PromiseBeacon produces no topic/Slack messages, close-outs, escalation statuses, or Attention items. User output requires an explicit deployment opt-in with \`promiseBeacon.userOutputEnabled: true\`; do not enable it merely to retain follow-through. Effectiveness remains measurable in \`logs/sentinel-events.jsonl\` and the per-feature LLM-metrics surface (feature keys \`active-work-silence\`, \`promise-beacon\`).\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Honest progress messaging section');
+    }
+    // Existing agents may already carry older guidance that promised summaries.
+    // Append an authoritative correction rather than rewriting operator-authored
+    // content. The unique heading makes the migration idempotent and mirrors to
+    // non-Claude framework shadows through the capability synchronizer.
+    if (!content.includes('PromiseBeacon user-output boundary (default silent)')) {
+      content += `\n#### PromiseBeacon user-output boundary (default silent)\n\nPromiseBeacon is internal follow-through infrastructure by default. Its cadence, session-loss detection, revival, escalation bookkeeping, and audits continue, but it produces NO user-facing summaries, close-outs, escalation statuses, Slack/topic messages, or Attention items. Missing configuration is silent. Re-enabling any PromiseBeacon user output requires an explicit deployment opt-in with \`promiseBeacon.userOutputEnabled: true\`; normal agent replies remain the user-facing follow-through path.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added PromiseBeacon default-silent user-output boundary');
     }
 
     // Live Credential Re-pointing (WS5.2, CMT-1372) — existing agents learn the
@@ -9565,6 +9591,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       '**Private Viewing**',
       '**Secret Drop**',
       '**Commitments & Follow-Through**',
+      // PromiseBeacon's fleet-wide output boundary applies to every framework.
+      // Existing Codex/Gemini shadows must receive the authoritative correction
+      // even when they already inherited the older summary-producing guidance.
+      '#### PromiseBeacon user-output boundary (default silent)',
       '**Cloudflare Tunnel**',
       '**Attention Queue**',
       '**Dashboard**',
@@ -11828,8 +11858,8 @@ echo ""
 
 # On compaction, delegate to the dedicated recovery hook
 if [ "\$EVENT" = "compact" ]; then
-  if [ -x "$INSTAR_DIR/hooks/compaction-recovery.sh" ]; then
-    exec bash "$INSTAR_DIR/hooks/compaction-recovery.sh"
+  if [ -x "$INSTAR_DIR/hooks/instar/compaction-recovery.sh" ]; then
+    exec bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh"
   fi
 fi
 
@@ -12261,7 +12291,7 @@ except: pass
     if [ -f "\$DISPATCH_FILE" ]; then
       echo ""
       echo "--- CONTEXT DISPATCH (when X arises, read Y) ---"
-      cat "\$DISPATCH_FILE" | head -20
+      cat "\$DISPATCH_FILE"
       echo "--- END CONTEXT DISPATCH ---"
     fi
   else
@@ -13143,7 +13173,7 @@ except: pass
     if [ -f "\$DISPATCH_FILE" ]; then
       echo ""
       echo "--- CONTEXT DISPATCH (when X arises, read Y) ---"
-      cat "\$DISPATCH_FILE" | head -20
+      cat "\$DISPATCH_FILE"
       echo "--- END CONTEXT DISPATCH ---"
     fi
   else

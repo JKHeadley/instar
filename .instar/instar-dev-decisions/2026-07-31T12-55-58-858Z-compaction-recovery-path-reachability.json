@@ -1,0 +1,31 @@
+{
+  "ts": "2026-07-31T12:55:58.858Z",
+  "slug": "compaction-recovery-path-reachability",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "generated-artifact-path-contract-drift",
+    "closure": "gap",
+    "gapItem": "ACT-245",
+    "prNumber": 1799,
+    "component": "PostUpdateMigrator.getSessionStartHook"
+  },
+  "verdict": "pass"
+}

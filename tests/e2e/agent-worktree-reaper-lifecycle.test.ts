@@ -24,9 +24,12 @@ describe('AgentWorktreeReaper E2E lifecycle', () => {
   let server: AgentServer;
   let app: ReturnType<AgentServer['getApp']>;
   const AUTH_TOKEN = 'test-e2e-agent-worktree-reaper';
+  let enumerationFails = false;
 
   const deps: AgentWorktreeReaperDeps = {
-    listWorktrees: () => [{ path: '/wt/stale', branch: 'echo/merged', headSha: 'abc' }],
+    listWorktrees: () => enumerationFails
+      ? ({ ok: false as const, error: 'e2e worktree enumeration failed' })
+      : ({ ok: true as const, worktrees: [{ path: '/wt/stale', branch: 'echo/merged', headSha: 'abc' }] }),
     isClean: () => true,
     isMerged: () => true,
     isInUse: () => false,
@@ -70,5 +73,18 @@ describe('AgentWorktreeReaper E2E lifecycle', () => {
     expect(res.body.dryRun).toBe(true);
     expect(Array.isArray(res.body.worktrees)).toBe(true);
     expect(res.body.reclaimable).toBe(1);
+  });
+
+  it('keeps a failed live enumeration distinct from a measured zero through the real route', async () => {
+    enumerationFails = true;
+    try {
+      const res = await request(app).get('/worktrees/agent-reaper').set(auth());
+      expect(res.status).toBe(200);
+      expect(res.body.enumerationOk).toBe(false);
+      expect(res.body.enumerationError).toContain('e2e worktree enumeration failed');
+      expect(res.body.reclaimable).toBeNull();
+    } finally {
+      enumerationFails = false;
+    }
   });
 });

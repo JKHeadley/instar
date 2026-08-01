@@ -31,6 +31,17 @@ const ROOT = path.resolve(__dirname, '../..');
 const AUTHORED = path.join(ROOT, 'docs', 'STANDARDS-REGISTRY.md');
 const ASSET = path.join(ROOT, 'dist', 'data', 'standards-registry.md');
 const META = path.join(ROOT, 'dist', 'data', 'standards-registry.meta.json');
+const GUARD_INDEX = path.join(ROOT, 'dist', 'data', 'standards-guard-index.json');
+const GUARD_INDEX_META = path.join(ROOT, 'dist', 'data', 'standards-guard-index.meta.json');
+
+function copyRegistryParserCore(root: string): void {
+  const scripts = path.join(root, 'scripts');
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.copyFileSync(
+    path.join(ROOT, 'scripts', 'standards-registry-article-core.mjs'),
+    path.join(scripts, 'standards-registry-article-core.mjs'),
+  );
+}
 
 /**
  * The asset is a BUILD artifact, and CI's unit job runs `npm ci` + tests with NO
@@ -48,7 +59,12 @@ beforeAll(() => {
     // Full build: the generator imports the SHARED parser from dist/, so a bare
     // generator run cannot bootstrap itself.
     execFileSync('npm', ['run', 'build'], { cwd: ROOT, stdio: 'pipe' });
-  } else if (!fs.existsSync(ASSET) || !fs.existsSync(META)) {
+  } else if (
+    !fs.existsSync(ASSET)
+    || !fs.existsSync(META)
+    || !fs.existsSync(GUARD_INDEX)
+    || !fs.existsSync(GUARD_INDEX_META)
+  ) {
     execFileSync('node', ['scripts/generate-standards-registry-asset.mjs'], { cwd: ROOT, stdio: 'pipe' });
   }
 }, 600_000);
@@ -96,14 +112,22 @@ describe('standards registry ships as a build artifact', () => {
       // other's outputs.
       fs.mkdirSync(path.join(generatorRoot, 'scripts'), { recursive: true });
       fs.mkdirSync(path.join(generatorRoot, 'dist', 'core'), { recursive: true });
+      copyRegistryParserCore(generatorRoot);
       fs.copyFileSync(
         path.join(ROOT, 'scripts', 'generate-standards-registry-asset.mjs'),
         path.join(generatorRoot, 'scripts', 'generate-standards-registry-asset.mjs'),
       );
-      fs.copyFileSync(
-        path.join(ROOT, 'dist', 'core', 'StandardsRegistryParser.js'),
-        path.join(generatorRoot, 'dist', 'core', 'StandardsRegistryParser.js'),
-      );
+      for (const compiled of [
+        'StandardsRegistryParser.js',
+        'StandardEnforcementExtractor.js',
+        'standardsRegistryPath.js',
+        'StandardsEnforcementAuditor.js',
+      ]) {
+        fs.copyFileSync(
+          path.join(ROOT, 'dist', 'core', compiled),
+          path.join(generatorRoot, 'dist', 'core', compiled),
+        );
+      }
       execFileSync('node', ['scripts/generate-standards-registry-asset.mjs'], {
         cwd: generatorRoot,
         stdio: 'pipe',
@@ -112,8 +136,12 @@ describe('standards registry ships as a build artifact', () => {
       for (const rel of [
         'src/data/standards-registry.md',
         'src/data/standards-registry.meta.json',
+        'src/data/standards-guard-index.json',
+        'src/data/standards-guard-index.meta.json',
         'dist/data/standards-registry.md',
         'dist/data/standards-registry.meta.json',
+        'dist/data/standards-guard-index.json',
+        'dist/data/standards-guard-index.meta.json',
       ]) {
         expect(
           fs.readFileSync(path.join(sourceRoot, rel)),
@@ -157,7 +185,12 @@ describe('standards registry ships as a build artifact', () => {
         // guards, so it gets the clearest message, not the worst one.
         const members = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 })
           .split('\n');
-        for (const member of ['package/dist/data/standards-registry.md', 'package/dist/data/standards-registry.meta.json']) {
+        for (const member of [
+          'package/dist/data/standards-registry.md',
+          'package/dist/data/standards-registry.meta.json',
+          'package/dist/data/standards-guard-index.json',
+          'package/dist/data/standards-guard-index.meta.json',
+        ]) {
           expect(
             members.includes(member),
             `${member} is MISSING from a real npm tarball — the packaging regression this ratchet ` +
@@ -172,7 +205,9 @@ describe('standards registry ships as a build artifact', () => {
           'tar',
           ['-xzf', tarball, '-C', tmp,
            'package/dist/data/standards-registry.md',
-           'package/dist/data/standards-registry.meta.json'],
+           'package/dist/data/standards-registry.meta.json',
+           'package/dist/data/standards-guard-index.json',
+           'package/dist/data/standards-guard-index.meta.json'],
           { stdio: 'pipe' },
         );
 
@@ -190,6 +225,12 @@ describe('standards registry ships as a build artifact', () => {
             'no later step cleans dist/.',
         ).toBe(sha256(fs.readFileSync(AUTHORED)));
         expect(packedMeta.sha256).toBe(sha256(packed));
+        const packedGuardIndex = fs.readFileSync(path.join(tmp, 'package/dist/data/standards-guard-index.json'));
+        const packedGuardMeta = JSON.parse(
+          fs.readFileSync(path.join(tmp, 'package/dist/data/standards-guard-index.meta.json'), 'utf-8'),
+        );
+        expect(packedGuardMeta.sha256).toBe(sha256(packedGuardIndex));
+        expect(packedGuardMeta.registrySha256).toBe(sha256(packed));
       } finally {
         SafeFsExecutor.safeRmSync(tmp, {
           recursive: true, force: true,
@@ -213,6 +254,7 @@ describe('resolver validity matrix — invalid never becomes a confident answer'
       const data = path.join(tmp, 'dist', 'data');
       fs.mkdirSync(core, { recursive: true });
       fs.mkdirSync(data, { recursive: true });
+      copyRegistryParserCore(tmp);
       // Copy the compiled resolver + the parser it imports into the fixture.
       for (const f of ['standardsRegistryPath.js', 'StandardsRegistryParser.js']) {
         fs.copyFileSync(path.join(ROOT, 'dist', 'core', f), path.join(core, f));
@@ -281,6 +323,7 @@ describe('resolver validity matrix — invalid never becomes a confident answer'
     try {
       const core = path.join(tmp, 'dist', 'core');
       fs.mkdirSync(core, { recursive: true });
+      copyRegistryParserCore(tmp);
       fs.mkdirSync(path.join(tmp, 'docs'), { recursive: true });
       fs.writeFileSync(path.join(tmp, 'docs', 'STANDARDS-REGISTRY.md'), stale);
       for (const f of ['standardsRegistryPath.js', 'StandardsRegistryParser.js']) {
@@ -762,7 +805,7 @@ describe('a REAL resolution earns verified end-to-end — no hand-built literals
     })).toThrow(/incoherent auditor options/);
   });
 
-  it('REFUSAL: an unanalyzable guard tree is untrustworthy however sound the registry is', () => {
+  it('a missing configured tree resolves to the real checkout by same-build evidence', () => {
     const res = resolveStandardsRegistry();
     if (!res.usable) throw new Error(`resolver unusable: ${res.detail}`);
     const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'no-instar-'));
@@ -770,10 +813,15 @@ describe('a REAL resolution earns verified end-to-end — no hand-built literals
       const report = computeCoverage({
         registryPath: res.path, projectDir: empty, registryMarkdown: res.markdown, integrity: res.integrity,
       });
-      expect(report.summary.guards.analyzable).toBe(false);
-      expect(report.summary.assessmentConfidence).toBe('untrustworthy');
-      expect(report.summary.assessmentTrustworthy).toBe(false);
-      expect(report.summary.confidenceReason).toMatch(/not an analyzable instar source tree/i);
+      expect(report.summary.guards.analyzable).toBe(true);
+      expect(['executing-source-tree', 'source-tree-index-match']).toContain(report.summary.guards.basis);
+      expect(report.summary.guards.freshnessVerified).toBe(true);
+      expect(report.summary.guards.configuredProjectDir).toBe(empty);
+      expect(report.summary.guards.sourceIndexSha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(report.summary.guards.projectDir).toBe(fs.realpathSync(ROOT));
+      expect(report.summary.assessmentConfidence).toBe('verified');
+      expect(report.summary.assessmentTrustworthy).toBe(true);
+      expect(report.summary.danglingCount).toBe(0);
     } finally {
       SafeFsExecutor.safeRmSync(empty, { recursive: true, force: true, operation: 'test.cleanup' });
     }

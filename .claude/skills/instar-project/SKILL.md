@@ -91,7 +91,10 @@ curl -sS -H "Authorization: Bearer $AUTH" \
 - `200 {action, params, skillCommand}` — `action` is one of
   `await-user-approval`, `ack-required`, `resolve-conflict`,
   `accept-partial`, `run-spec-converge`, `run-drift-check`,
-  `start-round`. `skillCommand` is a suggested `/project ...` (or
+  `repair-merge-evidence`, `start-round`. `repair-merge-evidence` means a
+  historical item says `merged` but lacks the PR/commit/check evidence needed
+  to support that conclusion; advance it to `merged` again with the PR artifact
+  to re-attest it without re-running the work. `skillCommand` is a suggested `/project ...` (or
   `/spec-converge`) invocation. `params.roundIndex`, `params.itemIds`,
   `params.status` are the round context.
 - `204` — every round is complete.
@@ -113,6 +116,11 @@ spec file at `docs/specs/`, `spec-converged → approved` requires
 `approved: true` in frontmatter, `approved → building` needs a
 TaskFlow record id, `building → merged` confirms the PR is MERGED
 and its `mergeCommit.oid` is reachable from `origin/main`.
+
+A same-stage `merged → merged` request is allowed only for a historical
+`merged` row whose evidence is incomplete. It runs the full merge validator
+again and atomically attaches the verified evidence; it does not redo the
+feature or fabricate missing fields.
 
 ```bash
 PROJECT_ID=...

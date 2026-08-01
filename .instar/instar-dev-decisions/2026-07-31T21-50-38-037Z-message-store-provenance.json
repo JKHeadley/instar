@@ -1,0 +1,38 @@
+{
+  "ts": "2026-07-31T21:50:38.037Z",
+  "slug": "message-store-provenance",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/TelegramRelay.ts matches relay / delivery path",
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 9,
+  "loc": 119,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/TelegramRelay.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/shared/MessageLogger.ts",
+      "src/messaging/shared/MessageProvenance.ts",
+      "src/messaging/shared/MessagingEventBus.ts",
+      "src/monitoring/CoherenceMonitor.ts",
+      "src/monitoring/CommitmentSentinel.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 95,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This change only labels inputs consumed by existing monitors; it adds no self-triggered action, cadence, retry, notification, steady-state edge, or settling behavior.",
+    "component": "MessageStoreProvenance"
+  },
+  "verdict": "pass"
+}

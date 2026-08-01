@@ -86,6 +86,21 @@ describe('GuardPostureTripwire E2E — WIRED into server.ts (dead-code guard)', 
     expect(block).toContain('createAttentionItem');
   });
 
+  it('captures the resolved substrate immediately after loadConfig and before migration', () => {
+    const loadIndex = serverSrc.indexOf('const config = loadConfig(options.dir)');
+    const captureIndex = serverSrc.indexOf(
+      'const bootGuardConfigSnapshot = resolveGuardConfigSnapshot(config.projectDir)',
+    );
+    const migrationIndex = serverSrc.indexOf('new PostUpdateMigrator(', captureIndex);
+    expect(loadIndex).toBeGreaterThan(-1);
+    expect(captureIndex).toBeGreaterThan(loadIndex);
+    expect(migrationIndex).toBeGreaterThan(captureIndex);
+
+    const block = serverSrc.slice(serverSrc.indexOf('GuardPostureTripwire'));
+    expect(block).toContain('defaultConfig: bootGuardConfigSnapshot.defaults');
+    expect(block).not.toContain('const guardConfigSnapshot = resolveGuardConfigSnapshot');
+  });
+
   it('server.ts surfaces a disabled-guard boot line', () => {
     expect(serverSrc).toContain('Guard-posture tripwire');
   });

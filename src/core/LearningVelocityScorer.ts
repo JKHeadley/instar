@@ -6,8 +6,8 @@
  * the existing model and suppress the weak signals where the future shows up.
  * EXO 3.0 says measure **learning velocity** instead — adaptability,
  * experimentation, capability creation. Instar already emits the raw learning
- * events (registered learnings, Playbook items added, corrections captured,
- * evolution actions); this scorer turns them into a velocity + trend + diversity
+ * events (registered learnings, Playbook items added, verified correction learning,
+ * completed evolution actions); this scorer turns them into a velocity + trend + diversity
  * signal so an org can watch how fast it's *learning*, not just how much it's
  * *producing*.
  *

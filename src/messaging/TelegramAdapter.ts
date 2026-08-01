@@ -18,6 +18,7 @@ import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
 import { SHARED_INFRA_FLAGS } from './shared/FeatureFlags.js';
 import { MessageLogger, type LogEntry as SharedLogEntry } from './shared/MessageLogger.js';
+import type { MessageProvenance } from './shared/MessageProvenance.js';
 import { SessionChannelRegistry } from './shared/SessionChannelRegistry.js';
 import { StallDetector, type StallEvent } from './shared/StallDetector.js';
 import { CommandRouter } from './shared/CommandRouter.js';
@@ -254,6 +255,8 @@ interface LogEntry {
    * with no `forwarded` field is forwarded-UNKNOWN and does not count (fail-safe).
    */
   forwarded?: boolean;
+  /** Structural origin, stamped at the send/receive seam. */
+  provenance: MessageProvenance;
 }
 
 /**
@@ -594,7 +597,7 @@ export class TelegramAdapter implements MessagingAdapter {
   // Message log callback — fires on every message logged (inbound and outbound).
   // Used by TopicMemory to dual-write to SQLite for search and summarization.
   // Includes sender identity fields (Phase 1C/1D — User-Agent Topology Spec).
-  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean }) => void) | null = null;
+  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean; provenance?: MessageProvenance }) => void) | null = null;
 
   /**
    * Scope-accretion ratification observer (spec autonomous-scope-accretion-
@@ -624,7 +627,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * invariant that avoids the 409-poller-conflict incident). Returns the sent
    * message's SendResult, or null if the relay could not deliver.
    */
-  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; kindMetadata?: Record<string, unknown> }) => Promise<SendResult | null>) | null = null;
+  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; kindMetadata?: Record<string, unknown>; provenance?: Exclude<MessageProvenance, 'user'> }) => Promise<SendResult | null>) | null = null;
 
   /**
    * True when a `sendToTopic` will RELAY through the lease holder rather than
@@ -1301,6 +1304,7 @@ export class TelegramAdapter implements MessagingAdapter {
       senderUsername: entry.senderUsername,
       telegramUserId: entry.telegramUserId,
       forwarded: entry.forwarded === true,
+      provenance: 'user',
     });
   }
 
@@ -1319,6 +1323,8 @@ export class TelegramAdapter implements MessagingAdapter {
        *  hop (spec outbound-jargon-filepath-gap §2.5). Direct sends ignore it
        *  — the local route already consumed it. */
       kindMetadata?: Record<string, unknown>;
+      /** Conversational agent reply vs server-generated outbound traffic. */
+      provenance?: Exclude<MessageProvenance, 'user'>;
       /** 'html' = the caller already produced ESCAPED Telegram HTML (e.g. the
        *  attention-hub post) — the send carries `parse_mode: 'HTML'` +
        *  `_formatMode: 'html'` so applyTelegramFormatter's markdown converter
@@ -1354,6 +1360,7 @@ export class TelegramAdapter implements MessagingAdapter {
       const relayed = await this.outboundRelay(topicId, text, {
         silent: options?.silent,
         kindMetadata: options?.kindMetadata,
+        provenance: options?.provenance ?? 'automation',
       });
       if (!relayed) {
         throw new Error('telegram outbound relay failed (tokenless standby, router unreachable)');
@@ -1384,6 +1391,7 @@ export class TelegramAdapter implements MessagingAdapter {
       fromUser: false,
       timestamp: new Date().toISOString(),
       sessionName: this.topicToSession.get(topicId) ?? null,
+      provenance: options?.provenance ?? 'automation',
     });
 
     // Clear stall tracking for this topic (agent responded)
@@ -2747,7 +2755,7 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /** Get recent message log entries for analysis */
-  getMessageLog(limit = 100): Array<{ topicId: number; text: string; fromUser: boolean; timestamp: string }> {
+  getMessageLog(limit = 100): Array<{ topicId: number; text: string; fromUser: boolean; timestamp: string; provenance?: MessageProvenance }> {
     try {
       if (!fs.existsSync(this.messageLogPath)) return [];
       // Bounded TAIL read — never the whole file. This only returns the last
@@ -2763,12 +2771,13 @@ export class TelegramAdapter implements MessagingAdapter {
             text: entry.text || '',
             fromUser: entry.fromUser ?? true,
             timestamp: entry.timestamp || new Date().toISOString(),
+            provenance: entry.provenance,
           };
         } catch {
           // @silent-fallback-ok — JSONL parse, skip corrupted
           return null;
         }
-      }).filter(Boolean) as Array<{ topicId: number; text: string; fromUser: boolean; timestamp: string }>;
+      }).filter(Boolean) as Array<{ topicId: number; text: string; fromUser: boolean; timestamp: string; provenance?: MessageProvenance }>;
     } catch {
       // @silent-fallback-ok — log read, empty array safe
       return [];
@@ -3766,6 +3775,7 @@ export class TelegramAdapter implements MessagingAdapter {
         platformUserId: entry.telegramUserId,
         platform: 'telegram',
         forwarded: entry.forwarded,
+        provenance: entry.provenance,
       });
       if (!persisted) return;
       this.rememberLoggedEntry(entry, dedupeKey);
@@ -3795,6 +3805,7 @@ export class TelegramAdapter implements MessagingAdapter {
           senderName: entry.senderName,
           senderUsername: entry.senderUsername,
           platformUserId: entry.telegramUserId?.toString(),
+          provenance: entry.provenance,
         }).catch(err => console.error(`[telegram] EventBus message:logged error: ${err}`));
       }
       return;
@@ -3843,6 +3854,7 @@ export class TelegramAdapter implements MessagingAdapter {
         senderName: entry.senderName,
         senderUsername: entry.senderUsername,
         platformUserId: entry.telegramUserId?.toString(),
+        provenance: entry.provenance,
       }).catch(err => console.error(`[telegram] EventBus message:logged error: ${err}`));
     }
   }
@@ -4064,6 +4076,48 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     return attention;
+  }
+
+  /**
+   * Create the first Agent-Health item for an entity, or refresh and visibly
+   * reopen the same durable item when the condition returns after recovery.
+   *
+   * `createAttentionItem` intentionally dedupes on id and returns the existing
+   * row unchanged. That is right for retries inside one episode but would hide
+   * a later episode. Giving every episode a new id has the opposite failure:
+   * the Attention store grows forever for one persistent entity. This method
+   * keeps one target-stable row and makes recurrence explicit in the lane.
+   */
+  async createOrReopenAgentHealthAttentionItem(
+    item: Omit<AttentionItem, 'createdAt' | 'updatedAt' | 'status' | 'topicId'>,
+  ): Promise<AttentionItem> {
+    if (item.lane !== 'agent-health') {
+      throw new Error('createOrReopenAgentHealthAttentionItem requires lane=agent-health');
+    }
+
+    const existing = this.attentionItems.get(item.id);
+    if (!existing) return this.createAttentionItem(item);
+
+    Object.assign(existing, item, {
+      status: 'OPEN' as const,
+      updatedAt: new Date().toISOString(),
+    });
+    this.saveAttentionItems();
+
+    const topicId = await this.ensureAgentHealthLaneTopic();
+    if (topicId === null) {
+      throw new Error('Agent Health lane is unavailable');
+    }
+    const line = [
+      `<b>${this.escapeHtml(item.title)}</b>`,
+      this.escapeHtml(String(item.summary ?? '').slice(0, 400)),
+      '<i>This condition returned after recovery; the existing item was reopened.</i>',
+    ].join('\n');
+    await this.sendToTopic(topicId, line, { formatMode: 'html' });
+    existing.coalesced = true;
+    existing.topicId = topicId;
+    this.saveAttentionItems();
+    return existing;
   }
 
   /**
@@ -4804,6 +4858,7 @@ export class TelegramAdapter implements MessagingAdapter {
       senderUsername: msg.from.username,
       telegramUserId: msg.from.id,
       forwarded: isForwarded,
+      provenance: 'user',
     });
 
     // Scope-accretion ratification observer (R45) — the LIVE receive path.
@@ -4986,6 +5041,7 @@ export class TelegramAdapter implements MessagingAdapter {
         senderName: msg.from.first_name,
         senderUsername: msg.from.username,
         telegramUserId: msg.from.id,
+        provenance: 'user',
       });
 
       // Fire callbacks
@@ -5062,6 +5118,7 @@ export class TelegramAdapter implements MessagingAdapter {
         senderName: msg.from.first_name,
         senderUsername: msg.from.username,
         telegramUserId: msg.from.id,
+        provenance: 'user',
       });
 
       // Fire callbacks
@@ -5131,6 +5188,7 @@ export class TelegramAdapter implements MessagingAdapter {
         senderName: msg.from.first_name,
         senderUsername: msg.from.username,
         telegramUserId: msg.from.id,
+        provenance: 'user',
       });
 
       // Fire callbacks

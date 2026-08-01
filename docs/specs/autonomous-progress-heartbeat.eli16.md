@@ -28,6 +28,18 @@ An earlier draft claimed the existing duplicate-blocker would stop floods. That 
 2. A per-conversation cooldown: once it speaks, it can't speak again for a good while.
 3. A widening backoff plus a hard cap (about 6 lines max per run). A silent-but-working 24-hour job gets a handful of honest check-ins, not fifty.
 
+Those last two brakes are now tied to the autonomous run itself, not the
+currently-running server process. The count and last check-in time are saved
+under the run's stable identity before a message is attempted. Restarting the
+server therefore cannot reset the ladder or reopen the six-message cap. If
+that saved state cannot be trusted or written, the safety net stays quiet
+instead of pretending the run has used zero check-ins.
+
+The heartbeat also rereads its settings on every check. Raising the silence
+threshold, lowering the cap, switching back to dry-run, or disabling it takes
+effect on the live server; the old implementation accidentally held the
+startup copy forever.
+
 It also only ever ADDS a line — it never blocks, delays, or rewrites the agent's real messages. If anything is uncertain (can't read history, can't see the screen, the run is mid-move to another machine), it stays silent. And it ships dark: off for the whole fleet, and even on a development agent it starts in "dry run" — it just logs what it *would* have said (using the SAME cooldown, so dry-run isn't a flood either) until we've watched it behave correctly for several days.
 
 ## What the reader has to decide

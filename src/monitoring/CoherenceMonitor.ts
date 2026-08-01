@@ -502,7 +502,9 @@ export class CoherenceMonitor extends EventEmitter {
       for (let i = lines.length - 1; i >= 0 && agentMessages.length < 50; i--) {
         try {
           const entry = JSON.parse(lines[i]);
-          if (!entry.fromUser && entry.text) {
+          // New automation rows are structurally excluded. Legacy rows have no
+          // provenance and retain the pre-migration behavior.
+          if (!entry.fromUser && entry.provenance !== 'automation' && entry.text) {
             agentMessages.push({ text: entry.text, timestamp: entry.timestamp });
           }
         } catch { /* skip malformed lines */ }

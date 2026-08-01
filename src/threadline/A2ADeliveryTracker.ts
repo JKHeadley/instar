@@ -3,12 +3,13 @@
  * agent-to-agent (Threadline / file-relay) messaging.
  *
  * The problem this closes (operator directive, 2026-06-06): every A2A hop was
- * fire-and-forget. A `threadline_send` that returns `delivered:true` only means
- * the TRANSPORT accepted it — it says nothing about whether the peer ever
- * PROCESSED it. And there was no record on the SENDER side of "this message is
+ * fire-and-forget. Older `threadline_send` results collapsed local submission,
+ * transport acceptance, and peer processing into `delivered:true`; current
+ * results separate `accepted` from proven `delivered`. There was also no record
+ * on the SENDER side of "this message is
  * still waiting for the peer to acknowledge it", so a peer going dark was
  * invisible until a human noticed silence (Dawn's check-in sat 10h unread; my
- * hosting kickoff was accepted by the relay but never seen).
+ * hosting kickoff was submitted to the relay but never seen).
  *
  * This is the durable spine of the fix:
  *   - recordSent()      — every outbound A2A message is written here BEFORE/with

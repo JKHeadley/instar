@@ -111,6 +111,24 @@ describe('StandardsRegistryParser', () => {
     expect(canary.failures.join(' ')).toMatch(/of 21 article headings/);
   });
 
+  it('CANARY FAILS when a bold article field has no classified parser role', () => {
+    const md = [
+      '## Building',
+      '### Mystery Standard',
+      '**Rule.** r.',
+      '**A brand-new mystery field.** hidden content',
+    ].join('\n');
+    const { articles, diagnostics } = parseStandardsRegistryDetailed(md);
+    const canary = runRegistryCanary(articles, diagnostics);
+
+    expect(diagnostics.enforcementScope.unrecognizedSections).toEqual([
+      expect.stringContaining('A brand-new mystery field'),
+    ]);
+    expect(canary.ok).toBe(false);
+    expect(canary.failures.join(' ')).toMatch(/unrecognized role/i);
+    expect(canary.failures.join(' ')).toMatch(/A brand-new mystery field/);
+  });
+
   it('CANARY FAILS on a drifted registry (too few articles)', () => {
     const tiny = `## Building\n\n### Only One\n**Rule.** something.\n`;
     const canary = runRegistryCanary(parseStandardsRegistry(tiny));

@@ -228,4 +228,53 @@ describe('Warm-Session A2A — integration (router + pool + spawn manager)', () 
     expect(pool.get('shared-thread')?.peerId).toBe('fp-owner'); // untouched
     expect(pool.get('shared-thread')?.sessionName).toBe('echo-owner');
   });
+
+  it('a queued warm refusal does not evaluate and queue the same inbound again on the cold path', async () => {
+    const pool = new WarmSessionPool({ globalCap: 3, perPeerCap: 1, ttlMs: 600_000 });
+    let evaluateCalls = 0;
+    let denialCalls = 0;
+    const queuedSpawnManager = {
+      evaluate: async () => {
+        evaluateCalls += 1;
+        return {
+          approved: false,
+          queued: true,
+          reason: 'Memory pressure too high for new session',
+          retryAfterMs: 60_000,
+        };
+      },
+      handleDenial: () => {
+        denialCalls += 1;
+      },
+    };
+    const router = new ThreadlineRouter(
+      { getThread: async () => null } as any,
+      queuedSpawnManager as any,
+      resumeMap,
+      {} as any,
+      { localAgent: 'LocalAgent', localMachine: 'local' },
+      null,
+      messageDelivery as any,
+      undefined,
+      undefined,
+      pool,
+      true,
+      'verified',
+      null,
+    );
+
+    const result = await router.handleInboundMessage(
+      makeEnvelope(crypto.randomUUID(), 'fp-dawn'),
+      relayCtx('fp-dawn', true),
+    );
+
+    expect(evaluateCalls).toBe(1);
+    expect(denialCalls).toBe(1);
+    expect(result).toMatchObject({
+      handled: false,
+      accepted: true,
+      delivered: false,
+      queued: true,
+    });
+  });
 });

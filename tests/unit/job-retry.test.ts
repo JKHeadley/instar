@@ -161,6 +161,43 @@ describe('JobScheduler retry on skip', () => {
     expect(mockSM._spawnCount).toBe(0);
   });
 
+  it('bounds a persistently failing script job within one retry episode', async () => {
+    const jobs: JobDefinition[] = [{
+      slug: 'failing-script',
+      name: 'Failing Script',
+      description: 'Fails every direct execution',
+      // Keep a fresh cron window outside this test's ~8-hour fake-time span.
+      schedule: '0 0 1 1 *',
+      priority: 'medium',
+      model: 'haiku',
+      enabled: true,
+      execute: { type: 'script', value: 'exit 1' },
+    }];
+
+    const s = makeScheduler(jobs);
+    s.start();
+
+    // Keep the test deterministic: model a script completion failure at the
+    // runScriptJob seam. The production method reaches this same scheduleRetry
+    // call from its rejected subprocess promise.
+    (s as any).runScriptJob = vi.fn(() => {
+      (s as any).scheduleRetry('failing-script', 'error');
+    });
+
+    await s.triggerJob('failing-script', 'scheduled');
+    expect((s as any).retryState.get('failing-script').retries).toBe(1);
+
+    const delays = [61_000, 301_000, 901_000, 1_801_000, 3_601_000, 7_201_000];
+    for (let index = 0; index < delays.length; index++) {
+      await vi.advanceTimersByTimeAsync(delays[index]);
+      expect((s as any).retryState.get('failing-script').retries).toBe(index + 2 > 6 ? 6 : index + 2);
+    }
+
+    expect((s as any).runScriptJob).toHaveBeenCalledTimes(7); // initial + six retries
+    await vi.advanceTimersByTimeAsync(10_800_000);
+    expect((s as any).runScriptJob).toHaveBeenCalledTimes(7);
+  });
+
   it('clears retry state on stop', async () => {
     const jobs: JobDefinition[] = [{
       slug: 'cleanup-test',

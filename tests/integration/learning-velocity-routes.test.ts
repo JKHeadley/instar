@@ -3,7 +3,7 @@
  * Tier-2: the route over the real HTTP pipeline, reading the REAL learning sources
  * from file-based state — the same paths/shapes the live agent writes:
  *   - registered learnings: state/evolution/learning-registry.json (ts at source.discoveredAt)
- *   - evolution actions:     state/evolution/action-queue.json  (.actions[].createdAt)
+ *   - evolution actions:     state/evolution/action-queue.json  (completedAt)
  *   - corrections:           the SQLite CorrectionLedger (ctx.correctionLedger.list())
  * Fixture timestamps are anchored to the actual "now" so they land inside the window.
  *
@@ -26,7 +26,16 @@ import type { RouteContext } from '../../src/server/routes.js';
 const DAY = 24 * 60 * 60 * 1000;
 const agoIso = (days: number) => new Date(Date.now() - days * DAY).toISOString();
 
-function ctxFor(stateDir: string, corrections: { detectedAt: string }[] = []): RouteContext {
+interface MetricCorrection {
+  id: string;
+  detectedAt: string;
+  status: 'open' | 'acted-on' | 'verified' | 'inconclusive' | 'reopened';
+  updatedAt?: string;
+  routeClusterId?: string;
+  routedVia?: string;
+}
+
+function ctxFor(stateDir: string, corrections: MetricCorrection[] = []): RouteContext {
   return {
     config: { projectName: 'echo', projectDir: path.dirname(stateDir), stateDir, port: 0 } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
@@ -57,7 +66,7 @@ describe('GET /metrics/learning-velocity (integration)', () => {
 
   afterEach(() => { SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/learning-velocity-routes.test.ts' }); });
 
-  function appWith(corrections: { detectedAt: string }[] = []): express.Express {
+  function appWith(corrections: MetricCorrection[] = []): express.Express {
     const app = express();
     app.use(express.json());
     app.use('/', createRoutes(ctxFor(stateDir, corrections)));
@@ -91,8 +100,15 @@ describe('GET /metrics/learning-velocity (integration)', () => {
         { id: 'ACT-3', createdAt: agoIso(5), status: 'pending' },
       ],
     }));
-    // (3) corrections — from the SQLite ledger (mocked), detectedAt
-    const res = await request(appWith([{ detectedAt: agoIso(1) }])).get('/metrics/learning-velocity?windowDays=30');
+    // (3) corrections — a VERIFIED preference, dated when the learning completed.
+    const res = await request(appWith([{
+      id: 'CORR-1',
+      detectedAt: agoIso(12),
+      status: 'verified',
+      updatedAt: agoIso(1),
+      routeClusterId: 'cluster-1',
+      routedVia: 'recordPreference',
+    }])).get('/metrics/learning-velocity?windowDays=30');
 
     expect(res.status).toBe(200);
     expect(res.body.totalEvents).toBe(6); // 3 learnings + 2 COMPLETED actions + 1 correction
@@ -103,6 +119,9 @@ describe('GET /metrics/learning-velocity (integration)', () => {
     expect(res.body.evolutionActions.considered).toBe(3);
     expect(res.body.evolutionActions.counted).toBe(2);
     expect(res.body.evolutionActions.excluded['not-completed:pending']).toBe(1);
+    expect(res.body.corrections.considered).toBe(1);
+    expect(res.body.corrections.counted).toBe(1);
+    expect(res.body.corrections.coalescedRecords).toBe(0);
     expect(res.body.typeDiversity).toBe(3);
     expect(res.body.adaptabilityScore).toBeGreaterThan(0);
     expect(['accelerating', 'steady', 'declining']).toContain(res.body.trend);
@@ -196,5 +215,105 @@ describe('GET /metrics/learning-velocity (integration)', () => {
     // Both were COUNTED as candidates; the window did the excluding, and the
     // accounting reflects that honestly rather than hiding it.
     expect(res.body.evolutionActions.counted).toBe(2);
+  });
+
+  it('REFUSES to score detected corrections as learning before any preference is verified', async () => {
+    // Live-corpus shape from 2026-07-30: 37 ledger rows, zero promotions. The old
+    // metric scored all 37 at detectedAt and returned 88/100 "accelerating".
+    const filed = Array.from({ length: 37 }, (_, index): MetricCorrection => ({
+      id: `CORR-OPEN-${index}`,
+      detectedAt: agoIso(29 - (index % 28)),
+      status: 'open',
+    }));
+    filed.push({
+      id: 'CORR-ACTED-ON',
+      detectedAt: agoIso(4),
+      status: 'acted-on',
+      updatedAt: agoIso(1),
+      routedVia: 'recordPreference',
+    });
+
+    const res = await request(appWith(filed)).get('/metrics/learning-velocity?windowDays=30');
+
+    expect(res.status).toBe(200);
+    expect(res.body.totalEvents).toBe(0);
+    expect(res.body.byType.correction).toBeUndefined();
+    expect(res.body.corrections.considered).toBe(38);
+    expect(res.body.corrections.counted).toBe(0);
+    expect(res.body.corrections.excluded['not-verified:open']).toBe(37);
+    expect(res.body.corrections.excluded['not-verified:acted-on']).toBe(1);
+    expect(res.body.counting).toMatch(/corrections count when verified/i);
+    expect(res.body.counting).toMatch(/never on detection/i);
+  });
+
+  it('counts one verified learning per routed cluster, not one per member record', async () => {
+    const res = await request(appWith([
+      {
+        id: 'CORR-A',
+        detectedAt: agoIso(20),
+        status: 'verified',
+        updatedAt: agoIso(3),
+        routeClusterId: 'cluster-shared',
+        routedVia: 'recordPreference',
+      },
+      {
+        id: 'CORR-B',
+        detectedAt: agoIso(18),
+        status: 'verified',
+        updatedAt: agoIso(2),
+        routeClusterId: 'cluster-shared',
+        routedVia: 'recordPreference',
+      },
+      {
+        id: 'CORR-C',
+        detectedAt: agoIso(16),
+        status: 'verified',
+        updatedAt: agoIso(1),
+        routeClusterId: 'cluster-shared',
+        routedVia: 'recordPreference',
+      },
+      {
+        id: 'CORR-LEGACY',
+        detectedAt: agoIso(14),
+        status: 'verified',
+        updatedAt: agoIso(4),
+        routedVia: 'recordPreference',
+      },
+    ])).get('/metrics/learning-velocity?windowDays=30');
+
+    expect(res.status).toBe(200);
+    expect(res.body.totalEvents).toBe(2);
+    expect(res.body.byType.correction).toBe(2);
+    expect(res.body.corrections.considered).toBe(4);
+    expect(res.body.corrections.counted).toBe(2);
+    expect(res.body.corrections.coalescedRecords).toBe(2);
+  });
+
+  it('excludes a verified correction without a completion timestamp instead of back-dating detection', async () => {
+    const res = await request(appWith([{
+      id: 'CORR-NO-COMPLETION-TIME',
+      detectedAt: agoIso(1),
+      status: 'verified',
+      routedVia: 'recordPreference',
+    }])).get('/metrics/learning-velocity?windowDays=30');
+
+    expect(res.status).toBe(200);
+    expect(res.body.totalEvents).toBe(0);
+    expect(res.body.corrections.counted).toBe(0);
+    expect(res.body.corrections.excluded['verified-without-timestamp']).toBe(1);
+  });
+
+  it('keeps the advisory route available but reports an unreadable correction source', async () => {
+    const app = express();
+    app.use(express.json());
+    const ctx = ctxFor(stateDir) as any;
+    ctx.correctionLedger = { list: () => { throw new Error('ledger unavailable'); } };
+    app.use('/', createRoutes(ctx));
+
+    const res = await request(app).get('/metrics/learning-velocity?windowDays=30');
+
+    expect(res.status).toBe(200);
+    expect(res.body.corrections.sourceError).toBe(true);
+    expect(res.body.corrections.counted).toBe(0);
   });
 });

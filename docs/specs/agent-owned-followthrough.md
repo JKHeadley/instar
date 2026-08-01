@@ -32,6 +32,8 @@ approved-by: "Justin (operator ratification, topic 20905, 2026-06-14) — ratifi
 **Origin:** Justin, topic 20905, 2026-06-13.
 **Scope note:** The autonomy ratchet (C3 — "Blockers Are Autonomy Opportunities") is carved into a separate tracked follow-on spec (`agent-autonomy-ratchet`) — see §11. The 3-round review proved it is a larger, security-sensitive build (a new agent-grantee identity in the PIN-anchored mandate model + hardening the operation gate); bundling it would rush the most security-critical surface. C1+C2 below is the direct, self-contained fix for the parking/graveyard problem and converges on its own. The full convergence history (rounds 1–3 + all C3 findings) is preserved in §10/§11.
 
+> **Current user-output boundary (2026-07-31):** PromiseBeacon now enforces the strictest reading of C2 by default: no PromiseBeacon summary, close-out, escalation status, topic/Slack send, or Attention dead-letter reaches a person. Internal commitment tracking, revival, escalation, and audit continue. Only an explicit deployment opt-in (`promiseBeacon.userOutputEnabled: true`) reopens those historical surfaces.
+
 ---
 
 ## 1. The Operator Mandate (verbatim intent)

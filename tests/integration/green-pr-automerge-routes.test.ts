@@ -99,6 +99,13 @@ describe('green-pr-automerge routes (integration)', () => {
     expect(res.body.gate).toBeTruthy();
     expect(res.body.gate.mergeAllowed).toBe(true);
     expect(res.body.invariantOk).toBe(true);
+    expect(res.body.configuration).toEqual({
+      ok: true,
+      issues: [],
+      agentNamespace: 'echo',
+      identityConfigured: true,
+    });
+    expect(res.body.namespaceMismatch).toBeNull();
   });
 
   it('rollback (Bearer) closes the gate; GET reflects it; PIN-gated enable re-arms', async () => {

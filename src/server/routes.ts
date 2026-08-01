@@ -173,10 +173,14 @@ import { randomUUID as cryptoRandomUUID } from 'node:crypto';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
-import { resolveGhBinary } from '../core/resolveGhBinary.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { validateStageTransition, type ValidationContext as StageValidationContext } from '../core/StageTransitionValidator.js';
+import { StageTransitionWiringError, validateStageTransition } from '../core/StageTransitionValidator.js';
+import { createProductionStageTransitionContext } from '../core/StageTransitionContext.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
+import {
+  deriveProjectRound,
+  hasCompleteMergedEvidence,
+} from '../core/ProjectRoundDerivation.js';
 import {
   ATTENTION_PRIORITIES,
   ATTENTION_STATUSES,
@@ -262,6 +266,7 @@ import { ReflectionMetrics } from '../monitoring/ReflectionMetrics.js';
 import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
 import { readReaperAudit } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
 import type { FeedbackManager } from '../core/FeedbackManager.js';
 import type { DispatchManager } from '../core/DispatchManager.js';
@@ -987,6 +992,9 @@ export interface RouteContext {
   topicLinkageHandler: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler | null;
   handshakeManager: HandshakeManager | null;
   threadlineRelayClient: import('../threadline/client/ThreadlineClient.js').ThreadlineClient | null;
+  /** Relay connection-LOSS reader. Null when no relay client exists in this
+   *  process (relay disabled, or the listener daemon owns it). */
+  getLastRelayEvent?: (() => import('../threadline/relayConnectionObserver.js').RelayConnectionEvent | null) | null;
   listenerManager: import('../threadline/ListenerSessionManager.js').ListenerSessionManager | null;
   /** Durable A2A delivery lifecycle + peer-health (A2A-DURABLE-DELIVERY-SPEC.md).
    *  Recording-only — never gates a send. Null only if SQLite open failed. */
@@ -1045,6 +1053,8 @@ export interface RouteContext {
    *  /advance, /halt, /ack, /accept-partial. Null when initiativeTracker
    *  is also null. */
   projectRoundRunner: import('../core/ProjectRoundRunner.js').ProjectRoundRunner | null;
+  /** Test seam only; production leaves this undefined so the factory resolves live canonical evidence. */
+  stageTransitionContextDependencies?: import('../core/StageTransitionContext.js').ProductionStageTransitionContextDependencies;
   /** Project drift checker (Phase 1b connect-the-dots). Null when no
    *  IntelligenceProvider is configured (then POST /projects/:id/drift-check
    *  returns 503). */
@@ -1736,7 +1746,12 @@ function pickFields(
 
 /** Maps a /projects/:id/next action verb to the suggested skill invocation.
  *  Names are the canonical command set from PROJECT-SCOPE-SPEC § Phase 1.7. */
-function skillCommandForAction(action: string, projectId: string, roundIndex: number): string {
+function skillCommandForAction(
+  action: string,
+  projectId: string,
+  roundIndex: number,
+  itemId?: string,
+): string {
   switch (action) {
     case 'await-user-approval':
       return `/project ack ${projectId}`;
@@ -1750,6 +1765,8 @@ function skillCommandForAction(action: string, projectId: string, roundIndex: nu
       return `/spec-converge`;
     case 'run-drift-check':
       return `/project drift ${projectId} ${roundIndex}`;
+    case 'repair-merge-evidence':
+      return `/project advance ${projectId} ${itemId ?? '<itemId>'} merged`;
     case 'start-round':
     default:
       return `/project run-round ${projectId} ${roundIndex}`;
@@ -10185,14 +10202,71 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
       } catch { /* skip unreadable source */ }
-      // (3) Corrections — persisted in the SQLite CorrectionLedger, not a JSONL file.
-      // Guarded: correctionLearning ships off on many agents (ledger may be absent).
+      // (3) Corrections — COUNTED WHEN LEARNING IS VERIFIED, NOT WHEN DETECTED.
+      //
+      // A ledger row is an observation, not yet a learned preference. Counting it at
+      // detectedAt repeats the filing-rate inversion fixed above for actions: the live
+      // 37-row corpus scored 37 learning events even though it had produced zero
+      // preferences. `verified` is the correction loop's completed-success state: the
+      // routed preference still exists and the correction did not recur through its
+      // verification window. Its updatedAt is therefore the completion timestamp.
+      //
+      // Analyzer-time paraphrase clusters route as ONE preference while retaining
+      // their exact member records. Count one event per durable routeClusterId, using
+      // the latest member completion time; legacy verified rows without a cluster id
+      // remain one event each. Guarded: correctionLearning ships off on many agents
+      // (ledger may be absent).
+      const correctionAccounting = {
+        considered: 0,
+        counted: 0,
+        coalescedRecords: 0,
+        excluded: {} as Record<string, number>,
+        sourceError: false,
+      };
+      const excludeCorrection = (reason: string): void => {
+        correctionAccounting.excluded[reason] = (correctionAccounting.excluded[reason] ?? 0) + 1;
+      };
       if (ctx.correctionLedger) {
         try {
+          const completedClusters = new Map<string, string>();
           for (const r of ctx.correctionLedger.list({ limit: 1000 })) {
-            push((r as { detectedAt?: string; createdAt?: string }).detectedAt ?? (r as { createdAt?: string }).createdAt, 'correction');
+            correctionAccounting.considered += 1;
+            const rec = r as {
+              id?: string;
+              status?: string;
+              updatedAt?: string;
+              routeClusterId?: string;
+            };
+            const status = typeof rec.status === 'string' ? rec.status : 'unknown';
+            if (status !== 'verified') {
+              excludeCorrection(`not-verified:${status}`);
+              continue;
+            }
+            if (!rec.updatedAt) {
+              // Back-dating to detectedAt would turn the filing into the event again.
+              excludeCorrection('verified-without-timestamp');
+              continue;
+            }
+            const clusterKey = rec.routeClusterId ?? `record:${rec.id ?? correctionAccounting.considered}`;
+            const existing = completedClusters.get(clusterKey);
+            if (existing === undefined) {
+              completedClusters.set(clusterKey, rec.updatedAt);
+              continue;
+            }
+            correctionAccounting.coalescedRecords += 1;
+            if (Date.parse(rec.updatedAt) > Date.parse(existing)) {
+              completedClusters.set(clusterKey, rec.updatedAt);
+            }
           }
-        } catch { /* skip ledger error */ }
+          for (const completedAt of completedClusters.values()) {
+            push(completedAt, 'correction');
+            correctionAccounting.counted += 1;
+          }
+        } catch {
+          // @silent-fallback-ok: the ledger is an optional metric source; keep the
+          // read-only endpoint available but make the missing denominator explicit.
+          correctionAccounting.sourceError = true;
+        }
       }
       // The score never travels without what it was computed over (the
       // honest-denominator rule applied to this metric): `counting` states the rule in
@@ -10200,8 +10274,9 @@ export function createRoutes(ctx: RouteContext): Router {
       // reader can tell "we are not learning" from "almost nothing has finished yet".
       res.json({
         ...computeLearningVelocity(events, new Date().toISOString(), windowDays),
-        counting: 'evolution actions count on completion (completedAt), never on filing (createdAt)',
+        counting: 'evolution actions count on completion (completedAt), never on filing (createdAt); corrections count when verified (updatedAt), never on detection (detectedAt), with one event per routed cluster',
         evolutionActions: actionAccounting,
+        corrections: correctionAccounting,
       });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to compute learning velocity' });
@@ -12293,6 +12368,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // red-pr-watchdog: the stuck-red memory + config (answers "why did I get a
     // red-PR alert?"). NON-OPTIONAL — an EMPTY ARRAY when nothing is stuck red.
     const wd = ctx.greenPrAutoMerger.redPrWatchdogView();
+    const configuration = ctx.greenPrAutoMerger.configurationView();
     res.json({
       lastTickAt: state.lastTickAt ?? null,
       lastSuccessfulListAt: state.lastSuccessfulListAt ?? null,
@@ -12304,6 +12380,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       stuckRed: wd.stuckRed,
       redPrWatchdog: wd.config,
       snapshot: state.snapshot,
+      namespaceMismatch: state.namespaceMismatch ?? null,
+      configuration,
       gate: latch,
       invariantOk: ctx.greenPrAutoMerger.invariantOk,
     });
@@ -14388,6 +14466,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ? metadata.toneAdvisoryAck.slice(0, 64)
         : undefined;
     const metadataJobSlug = typeof metadata?.jobSlug === 'string' ? metadata.jobSlug.slice(0, 128) : '';
+    // A relay hop carries the origin machine's structural classification. For
+    // a local call, derive it at this send seam: ordinary replies are agent
+    // prose; health/automated/proxy/system traffic is automation. Never infer
+    // from the message text. `user` is invalid on this outbound-only route.
+    const carriedProvenance = coerceMessageProvenance(metadata?.provenance);
+    const provenance: Exclude<MessageProvenance, 'user'> =
+      carriedProvenance === 'agent' || carriedProvenance === 'automation'
+        ? carriedProvenance
+        : !isProxy && !isSystemTemplate && (messageKind === undefined || messageKind === 'reply')
+          ? 'agent'
+          : 'automation';
 
     // ── Observability breadcrumbs (§2.1 — visibility on the named dodge
     // classes; sovereignty over the send is accepted, nothing is gated). ──
@@ -14501,6 +14590,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // delivered (the false-success-under-load class).
       const sendResult = await ctx.telegram.sendToTopic(topicId, text, {
         skipStallClear: isProxy,
+        provenance,
         // Relay-hop forwarding (§2.5): when this standby relays through the
         // lease holder, the kind metadata must survive the hop so the
         // HOLDER's gate/audit see accurate context. Direct sends ignore it.
@@ -16387,7 +16477,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     // Lazy merged-state reconciler — spec § Phase 1.4 lines 256-258.
     //
-    // GET /projects/:id is documented as "may mutate": when a 'building' child's
+    // GET /projects/:id is documented as "may mutate": when a 'merged' child's
     // mergeCommitOid is no longer ancestor of origin/main, we transition it to
     // 'regressed' and clear future autoAdvanceAt on its round.
     //
@@ -16410,7 +16500,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return Number.MAX_SAFE_INTEGER;
       };
       const candidates = children
-        .filter((c) => c.pipelineStage === 'building' && typeof c.mergeCommitOid === 'string' && c.mergeCommitOid)
+        .filter((c) => c.pipelineStage === 'merged' && typeof c.mergeCommitOid === 'string' && c.mergeCommitOid)
         .filter((c) => {
           const t = c.ciCheckedAt ? Date.parse(c.ciCheckedAt) : 0;
           return !(Number.isFinite(t) && t > 0 && nowMs - t < debounceMs);
@@ -16506,6 +16596,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
+    // Round status is a derived read model: child records carry the artifacts;
+    // the round's stored status is only a cache. Never render a stale `pending`
+    // after every member has earned completion, or a stale `complete` after its
+    // members stopped supporting that conclusion.
+    const childrenById = new Map(children.map((child) => [child.id, child]));
+    const projectForRead = {
+      ...project,
+      rounds: (project.rounds ?? []).map((round) => {
+        const derived = deriveProjectRound(round, childrenById);
+        return {
+          ...round,
+          status: derived.effectiveStatus,
+          ...(round.status !== derived.effectiveStatus ? { storedStatus: round.status } : {}),
+          evidenceMissingByItem: derived.evidenceMissingByItem,
+          missingMemberIds: derived.missingMemberIds,
+          incompleteItemIds: derived.incompleteItemIds,
+        };
+      }),
+    };
+
     // Optional field selector: `?fields=id,title,pipelineStage`. Used by
     // the dashboard projects selector (Phase 1.10). Always preserves `id`.
     const fieldsParam = typeof req.query.fields === 'string' ? req.query.fields : '';
@@ -16517,18 +16627,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           .filter(Boolean)
       );
       fields.add('id');
-      const pickProj = pickFields(project as unknown as Record<string, unknown>, fields);
+      const pickProj = pickFields(projectForRead as unknown as Record<string, unknown>, fields);
       const pickKids = children.map((c) => pickFields(c as unknown as Record<string, unknown>, fields));
       res.json({ project: pickProj, children: pickKids });
       return;
     }
-    res.json({ project, children });
+    res.json({ project: projectForRead, children });
   });
 
   // GET /projects/:id/next — structured next-action payload.
   //
   // Spec § Phase 1.5 (line 268): returns `{ action, params, estimatedCost?,
-  // skillCommand? }` for the FIRST round whose status is not 'complete'.
+  // skillCommand? }` for the FIRST round whose MEMBERS have not earned a
+  // terminal status. Stored round status is a cache, never the authority.
   // Ordering: roundIndex ASC, then pipelineStage ASC, then itemId ASC.
   //
   // Action verbs the spec enumerates (a non-exhaustive contract):
@@ -16539,6 +16650,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   //   - 'run-spec-converge'    — at least one item is `spec-drafted`
   //   - 'run-drift-check'      — at least one item is `approved`, no fresh
   //                              drift verdict
+  //   - 'repair-merge-evidence'— item claims `merged` but cannot name the
+  //                              validated PR/commit/check timestamp
   //   - 'start-round'          — all preconditions met, ready to fire
   //
   // The endpoint does NOT run the runner's preflight — that's a heavier
@@ -16558,12 +16671,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const rounds = project.rounds ?? [];
-    const idx = rounds.findIndex((r) => (r.status ?? 'pending') !== 'complete');
+    const childrenById = new Map(
+      ctx.initiativeTracker
+        .list()
+        .filter((i) => i.parentProjectId === project.id)
+        .map((c) => [c.id, c])
+    );
+    const derivations = rounds.map((round) => deriveProjectRound(round, childrenById));
+    const idx = derivations.findIndex((derived) => derived.terminalStatus === undefined);
     if (idx === -1) {
       res.status(204).end();
       return;
     }
     const r = rounds[idx];
+    const derived = derivations[idx];
 
     // Determine the action verb from project + round state.
     type ActionVerb =
@@ -16573,18 +16694,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       | 'accept-partial'
       | 'run-spec-converge'
       | 'run-drift-check'
+      | 'repair-merge-evidence'
       | 'start-round';
     let action: ActionVerb = 'start-round';
-    const childrenById = new Map(
-      ctx.initiativeTracker
-        .list()
-        .filter((i) => i.parentProjectId === project.id)
-        .map((c) => [c.id, c])
-    );
     const itemsForRound = (r.itemIds ?? []).map((id) => childrenById.get(id)).filter(Boolean);
 
     if ((project.awaitingReconciliation ?? []).length > 0) {
       action = 'resolve-conflict';
+    } else if (Object.keys(derived.evidenceMissingByItem).length > 0) {
+      action = 'repair-merge-evidence';
     } else if ((r.status ?? 'pending') === 'partially-complete') {
       action = 'accept-partial';
     } else if (idx === 0 && !project.firstLaunchAckAt) {
@@ -16609,10 +16727,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         roundIndex: idx,
         name: r.name,
         itemIds: r.itemIds,
-        status: r.status ?? 'pending',
+        status: derived.effectiveStatus,
+        storedStatus: r.status ?? 'pending',
+        evidenceMissingByItem: derived.evidenceMissingByItem,
+        missingMemberIds: derived.missingMemberIds,
+        incompleteItemIds: derived.incompleteItemIds,
         autoAdvanceAt: r.autoAdvanceAt,
       },
-      skillCommand: skillCommandForAction(action, project.id, idx),
+      skillCommand: skillCommandForAction(
+        action,
+        project.id,
+        idx,
+        Object.keys(derived.evidenceMissingByItem)[0],
+      ),
     });
   });
 
@@ -16716,91 +16843,47 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const artifact = body.artifact ?? {};
-    const validationCtx: StageValidationContext = {
-      targetRepoPath: project.targetRepoPath,
-      specPath: typeof artifact.specPath === 'string' ? artifact.specPath : undefined,
-      prNumber: typeof artifact.prNumber === 'number' ? artifact.prNumber : undefined,
-      taskFlowRecordId: typeof artifact.taskFlowRecordId === 'string' ? artifact.taskFlowRecordId : undefined,
-      skippedReason: typeof artifact.skippedReason === 'string' ? artifact.skippedReason : undefined,
-      skippedBy: typeof artifact.skippedBy === 'string' ? artifact.skippedBy : undefined,
-      unskippedAt: typeof artifact.unskippedAt === 'string' ? artifact.unskippedAt : undefined,
-      // #866: `building → merged` requires ghPrView + gitMergeBaseIsAncestor, but
-      // the validator has NO internal default for these (unlike readSpecFrontmatter,
-      // which loadFrontmatter defaults). Without injecting them here EVERY
-      // building→merged transition fails GH_PR_VIEW_UNAVAILABLE — i.e. no project
-      // item can ever reach `merged` through the live API (found 2026-06-06 closing
-      // out multimachine-coherence P0). Both helpers are READ-ONLY git/gh against
-      // the project's target repo.
-      ghPrView: async (prNumber: number) => {
-        // Resolve gh by absolute path: the server is launched by launchd with a
-        // minimal PATH that omits /opt/homebrew/bin, so bare 'gh' died with a raw
-        // `spawnSync gh ENOENT` and NO project item could reach `merged`
-        // (found 2026-07-25). A missing binary is now a NAMED diagnostic rather
-        // than an opaque spawn error — the gate still refuses, but says why.
-        const ghBin = resolveGhBinary();
-        if (!ghBin) {
-          throw new Error(
-            'the GitHub CLI (gh) could not be found. The server may be running with a ' +
-            'minimal PATH; set INSTAR_GH_PATH to its absolute path. The merge cannot be ' +
-            'verified without it, so this transition is refused rather than assumed.',
-          );
-        }
-        const out = execFileSync(
-          ghBin,
-          ['pr', 'view', String(prNumber), '--json', 'state,mergeCommit,statusCheckRollup'],
-          { cwd: project.targetRepoPath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
-        );
-        return JSON.parse(out) as import('../core/StageTransitionValidator.js').GhPrView;
-      },
-      gitMergeBaseIsAncestor: (sha: string, branch: string) => {
-        // `merge-base --is-ancestor` is a READ-ONLY verb — routed through readSync
-        // (the sanctioned read path), not raw execFileSync, per the destructive-tool
-        // funnel. It exits 0 (ancestor) or 1 (not an ancestor).
-        //
-        // `sourceTreeReadOk` is REQUIRED here and its absence was a live defect
-        // (found 2026-07-25 recording PR #1641 as merged). readSync runs the
-        // SourceTreeGuard unless the caller declares a read, and a project's
-        // targetRepoPath IS an instar source tree — so the guard refused this query
-        // every time. `merge-base` is already in SOURCE_TREE_READ_TIER_VERBS, i.e.
-        // the permission for exactly this read exists; it simply was never asked for.
-        //
-        // The far worse half was below: the old `catch { return false }` converted
-        // that REFUSAL into "the merge commit is not on main" — a fabricated factual
-        // claim, and the reason this step's failure was indistinguishable from a real
-        // negative for as long as it existed. A refusal is not an answer. Only git's
-        // documented exit status 1 means "not an ancestor"; every other failure
-        // (guard refusal, missing binary, bad revision → 128, timeout) is UNVERIFIABLE
-        // and is rethrown so the validator can say so instead of guessing.
-        try {
-          SafeGitExecutor.readSync(['merge-base', '--is-ancestor', sha, branch], {
-            cwd: project.targetRepoPath,
-            operation: 'projects.advance.mergeBaseIsAncestor',
-            stdio: ['ignore', 'ignore', 'ignore'],
-            sourceTreeReadOk: true,
-          });
-          return true; // exit 0 = sha IS an ancestor of branch
-        } catch (err) {
-          const status = (err as { status?: unknown }).status;
-          if (status === 1) return false; // the ONLY genuine "not an ancestor"
-          throw new Error(
-            `merge-base --is-ancestor could not be verified (${err instanceof Error ? err.message : String(err)})`,
-          );
-        }
-      },
-      // Resolve the canonical-main ref the merge commit must be reachable from.
-      // The validator defaults to `origin/main`, but on a dev-agent home `origin`
-      // is the agent's FORK while merges land on the upstream remote — so we map
-      // the gh-resolved PR repo (e.g. JKHeadley/instar) to the LOCAL remote whose
-      // URL points at it and use `<remote>/main`. Falls back to `origin/main`.
-      mergeBaseBranch: resolveCanonicalMainRef(project.targetRepoPath),
-    };
-
+    // One assembly point owns EVERY validator dependency. Three live defects
+    // each made an entire stage unreachable because this route hand-built the
+    // context and remembered dependencies one at a time (#866: gh helpers
+    // absent; 2026-07-25: launchd could not resolve bare gh; 2026-08-01: spec
+    // gates read a stale working checkout). The factory makes omissions wiring
+    // errors and gives spec + merge gates the same canonical-main world.
+    const actualStage = child.pipelineStage as PipelineStage | undefined;
     const fromStage =
       typeof body.fromStage === 'string'
         ? (body.fromStage as PipelineStage)
-        : (child.pipelineStage as PipelineStage | undefined);
+        : actualStage;
 
-    const result = await validateStageTransition(fromStage, targetStage, validationCtx);
+    // Historical rows may already claim `merged` while lacking the artifact
+    // fields that newer transitions persist. A same-stage request is an
+    // explicit re-attestation: run the full building→merged authority again
+    // and atomically attach its evidence without pretending the item regressed.
+    const repairingMergedEvidence =
+      actualStage === 'merged'
+      && targetStage === 'merged'
+      && (body.fromStage === undefined || body.fromStage === 'merged')
+      && !hasCompleteMergedEvidence(child);
+    const validationFromStage = repairingMergedEvidence ? 'building' : fromStage;
+
+    let result;
+    try {
+      const validationCtx = createProductionStageTransitionContext({
+        targetRepoPath: project.targetRepoPath,
+        artifact,
+      }, ctx.stageTransitionContextDependencies);
+      result = await validateStageTransition(validationFromStage, targetStage, validationCtx);
+    } catch (err) {
+      if (err instanceof StageTransitionWiringError) {
+        res.status(500).json({
+          error: 'stage validator wiring failure',
+          code: err.code,
+          reason: err.message,
+        });
+        return;
+      }
+      throw err;
+    }
     if (!result.ok) {
       res.status(409).json({ error: 'stage transition rejected', code: result.code, reason: result.reason });
       return;
@@ -24101,7 +24184,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         minSupport: cl?.minSupport ?? 4,
         minDistinctDaysInfraGap: cl?.minDistinctDaysInfraGap ?? 3,
         minDistinctDaysPreference: cl?.minDistinctDaysPreference ?? 2,
-        minDistinctTopicsPreference: cl?.minDistinctTopicsPreference ?? 2,
+        minDistinctSessionsPreference: cl?.minDistinctSessionsPreference ?? 2,
       });
 
       const prefs = new PreferencesManager(ctx.config.stateDir);
@@ -29859,6 +29942,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       await ctx.messageRouter.acknowledge(messageId, sessionId);
       res.json({ ok: true });
     } catch (err) {
+      // @silent-fallback-ok: the acknowledgement fails closed as HTTP 500;
+      // no degraded/default execution continues after this catch.
       res.status(500).json({ error: err instanceof Error ? err.message : 'Ack failed' });
     }
   });
@@ -29868,6 +29953,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'Messaging not available' });
       return;
     }
+    let dedupReservation: {
+      senderAgent: string;
+      threadId: string;
+      content: string;
+    } | null = null;
     try {
       // Verify bearer token — the sender must present our agent's token
       const authHeader = req.headers.authorization;
@@ -29900,13 +29990,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               : '');
         if (dThread && dText && !relayContentDedup.shouldProcess(dSender, dThread, dText)) {
           console.log(`[relay-agent] Deduped retried message from ${dSender} (thread: ${dThread.slice(0, 8)}, id: ${envelope.message?.id ?? 'none'}) — identical content within window`);
-          res.json({ ok: true, deduped: true });
+          res.json({
+            ok: true,
+            deduped: true,
+            accepted: false,
+            delivered: false,
+            deliveryOutcome: 'duplicate suppressed; prior attempt state unknown',
+            threadline: { accepted: false, delivered: false, async: false },
+          });
           return;
+        }
+        if (dThread && dText) {
+          dedupReservation = {
+            senderAgent: dSender,
+            threadId: dThread,
+            content: dText,
+          };
         }
       }
 
       const accepted = await ctx.messageRouter.relay(envelope, 'agent');
       if (accepted) {
+        // MessageRouter has now admitted the envelope to its inbox. Keep the
+        // dedup record and clear only the rollback handle.
+        dedupReservation = null;
         const senderAgent = envelope.message?.from?.agent;
         console.log(`[relay-agent] Accepted message from ${senderAgent ?? 'unknown'} (thread: ${envelope.message?.threadId ?? 'none'}, id: ${envelope.message?.id ?? 'none'})`);
 
@@ -30032,7 +30139,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               });
               if (decision.suppress) {
                 console.log(`[relay-agent] warrants-reply gate suppressed reply (${decision.verdict.signal}) from ${senderAgentName} thread ${gThreadId.slice(0, 8)}`);
-                res.json({ ok: true, threadline: { handled: true, threadId: gThreadId, spawned: false, suppressed: true, signal: decision.verdict.signal } });
+                res.json({
+                  ok: true,
+                  accepted: true,
+                  delivered: true,
+                  threadline: {
+                    handled: true,
+                    accepted: true,
+                    delivered: true,
+                    threadId: gThreadId,
+                    spawned: false,
+                    suppressed: true,
+                    signal: decision.verdict.signal,
+                  },
+                });
                 return;
               }
               // CMT-509 §2: warranted + parentless (no bound topic) → surface to
@@ -30069,7 +30189,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // The actual reply still flows back via the reply-waiter mechanism
         // (resolved above), decoupled from this HTTP response.
         if (ctx.threadlineRouter) {
-          res.json({ ok: true, accepted: true, threadline: { accepted: true, async: true } });
+          res.json({
+            ok: true,
+            accepted: true,
+            delivered: false,
+            threadline: { accepted: true, delivered: false, async: true },
+          });
           // Process asynchronously — the response is already sent.
           // handleInboundMessage is NOT dropped: it runs to completion in the
           // background; its outcome is logged (never surfaced to the closed
@@ -30092,14 +30217,41 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             })
             .catch((err) => {
               console.error('[routes] ThreadlineRouter async handling error:', err);
+              DegradationReporter.getInstance().report({
+                feature: 'routes.relayAgentAsyncHandling',
+                primary: 'Process an accepted agent relay message through ThreadlineRouter',
+                fallback: 'Keep the already-recorded inbox admission for recovery and surface the processing failure',
+                reason: `Async Threadline handling failed: ${err instanceof Error ? err.message : String(err)}`,
+                impact: 'The sender received acceptance, but this attempt did not reach a live agent session.',
+              });
             });
           return;
         }
-        res.json({ ok: true });
+        res.json({
+          ok: true,
+          accepted: true,
+          delivered: false,
+          threadline: { accepted: true, delivered: false, async: false },
+        });
       } else {
+        if (dedupReservation) {
+          relayContentDedup.forget(
+            dedupReservation.senderAgent,
+            dedupReservation.threadId,
+            dedupReservation.content,
+          );
+          dedupReservation = null;
+        }
         res.status(409).json({ error: 'Relay rejected (loop or duplicate)' });
       }
     } catch (err) {
+      if (dedupReservation) {
+        relayContentDedup.forget(
+          dedupReservation.senderAgent,
+          dedupReservation.threadId,
+          dedupReservation.content,
+        );
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : 'Relay failed' });
     }
   });
@@ -30400,7 +30552,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   /**
    * §4.4 commit 3: update runtime-tunable spawn-manager fields atomically.
    * Body: any subset of { cooldownMs, maxDrainsPerTick, maxEnvelopeBytes,
-   * maxGlobalQueued, degradedMaxQueuedPerAgent }.
+   * maxGlobalQueued, degradedMaxQueuedPerAgent, drainRefusalGiveUpThreshold,
+   * drainGiveUpRearmCooldownMs }.
    *
    * Note: changing cooldownMs updates gate logic immediately, but the drain
    * tick interval is fixed at start(). The response indicates whether a
@@ -30415,7 +30568,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
     // Reject unknown fields to avoid silent typos.
-    const allowed = new Set(['cooldownMs', 'maxDrainsPerTick', 'maxEnvelopeBytes', 'maxGlobalQueued', 'degradedMaxQueuedPerAgent']);
+    const allowed = new Set(['cooldownMs', 'maxDrainsPerTick', 'maxEnvelopeBytes', 'maxGlobalQueued', 'degradedMaxQueuedPerAgent', 'drainRefusalGiveUpThreshold', 'drainGiveUpRearmCooldownMs']);
     const unknownKeys = Object.keys(body).filter(k => !allowed.has(k));
     if (unknownKeys.length > 0) {
       res.status(400).json({ error: `Unknown fields: ${unknownKeys.join(', ')}` });
@@ -30666,6 +30819,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           const tm = ctx.unifiedTrust?.trustManager;
           if (!tm) return 0;
           return tm.listProfiles().filter((p) => p.pairingState === 'mutual-verified').length;
+        },
+        // Relay state for /threadline/health. Both inputs are needed: the client's
+        // live connectionState for up/down, and the last LOSS event for whether a
+        // drop is terminal (`displaced` disarms reconnect for the process lifetime
+        // and needs a restart) or self-healing. Returns null when no relay client
+        // exists here — relay disabled, or the listener daemon owns the connection
+        // — which the handler reports as not-configured, never as a fault.
+        relayStatus: () => {
+          const rc = ctx.threadlineRelayClient;
+          if (!rc) return null;
+          return {
+            connectionState: rc.connectionState,
+            lastEvent: ctx.getLastRelayEvent?.() ?? null,
+          };
         },
       },
       // Robustness Phase 1 (D-E / F4): wire the ack funnel so the verified E2E
@@ -31318,6 +31485,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         res.json({
           success: true,
+          accepted: false,
           threadId: effectiveThreadId,
           messageId: '',
           delivered: false,
@@ -31519,19 +31687,38 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                 });
 
                 if (localResp.ok) {
-                  let localRespBody: { ok?: boolean; threadline?: {
-                    handled?: boolean; spawned?: boolean; resumed?: boolean; injected?: boolean;
-                    threadId?: string; sessionName?: string; error?: string; gateDecision?: string;
-                  } } = {};
+                  let localRespBody: {
+                    ok?: boolean;
+                    accepted?: boolean;
+                    delivered?: boolean;
+                    deduped?: boolean;
+                    threadline?: {
+                      accepted?: boolean; delivered?: boolean; async?: boolean;
+                      handled?: boolean; spawned?: boolean; resumed?: boolean; injected?: boolean;
+                      suppressed?: boolean; threadId?: string; sessionName?: string;
+                      error?: string; gateDecision?: string;
+                    };
+                  } = {};
                   try { localRespBody = await localResp.json() as typeof localRespBody; } catch { /* no body */ }
                   const tl = localRespBody.threadline;
-                  const outcome = tl?.injected ? 'injected into live session'
+                  const delivered = localRespBody.delivered
+                    ?? tl?.delivered
+                    ?? Boolean(tl?.injected || tl?.spawned || tl?.resumed || tl?.suppressed);
+                  const accepted = localRespBody.accepted
+                    ?? tl?.accepted
+                    ?? localRespBody.deduped
+                    ?? (delivered || (tl?.handled === true && !tl?.error));
+                  const outcome = localRespBody.deduped ? 'duplicate suppressed; prior attempt state unknown'
+                    : tl?.injected ? 'injected into live session'
                     : tl?.spawned ? 'spawned new session'
                     : tl?.resumed ? 'resumed existing thread'
+                    : tl?.suppressed ? 'processed; no reply warranted'
                     : tl?.gateDecision === 'queue-for-approval' ? 'queued for approval'
                     : tl?.error ? `error: ${tl.error}`
                     : tl?.handled === false ? 'queued (no live session)'
-                    : 'accepted';
+                    : accepted && tl?.async ? 'accepted for async processing'
+                    : accepted ? 'accepted'
+                    : 'refused';
                   console.log(`[relay-send] Local delivery to ${localTarget.name}:${localTarget.port} (thread: ${effectiveThreadId}) — ${outcome}`);
 
                   // Persist our OWN outbound leg into the thread history so
@@ -31602,18 +31789,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                     });
                   } catch (err) {
                     // @silent-fallback-ok: recording-only — A2A delivery tracking must never
-                    // break the send (the message was already delivered above). Logged.
+                    // break the send (the message was already admitted/submitted above). Logged.
                     console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
                   }
                   if (waitForReply) {
                     const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds);
                     res.json({
                       success: true,
+                      accepted,
+                      delivered: reply !== null ? true : delivered,
                       messageId: msgId,
                       threadId: effectiveThreadId,
                       resolvedAgent: localTarget.name,
                       deliveryPath: 'local',
-                      deliveryOutcome: outcome,
+                      deliveryOutcome: reply !== null ? 'reply received' : outcome,
                       threadline: tl,
                       reply,
                       topicLinkageStamped: resolvedOriginTopicId !== undefined,
@@ -31621,6 +31810,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   } else {
                     res.json({
                       success: true,
+                      accepted,
+                      delivered,
                       messageId: msgId,
                       threadId: effectiveThreadId,
                       resolvedAgent: localTarget.name,
@@ -31717,7 +31908,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           if (typeof inReplyTo === 'string') ctx.listenerManager.retainReplyClaimFailure(inReplyTo, replyClaimOwner);
         }
       }
-      // Robustness Phase 2 (D-B): append the relay-delivered outbound leg to the
+      // Robustness Phase 2 (D-B): append the relay-submitted outbound leg to the
       // canonical log through the funnel. The wire createdAt is stamped inside the
       // relay client, so this end's createdAt is best-effort (symmetry on the relay
       // path degrades to unverified, advisory-only); F3 holds unconditionally — the
@@ -31766,27 +31957,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
       } catch (err) {
         // @silent-fallback-ok: recording-only — A2A delivery tracking must never break
-        // the send (the message was already delivered above). Logged.
+        // the send (the message was already submitted above). Logged.
         console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
       }
       if (waitForReply) {
         const reply = await waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds);
         res.json({
           success: true,
+          accepted: reply !== null,
+          delivered: reply !== null,
           messageId: relayMsgId,
           threadId: effectiveRelayThreadId,
           resolvedAgent: resolvedId,
           deliveryPath: 'relay',
+          deliveryOutcome: reply !== null ? 'reply received' : 'submitted to relay; acceptance unconfirmed',
           reply,
           topicLinkageStamped: resolvedOriginTopicId !== undefined,
         });
       } else {
         res.json({
           success: true,
+          accepted: false,
+          delivered: false,
           messageId: relayMsgId,
           threadId: effectiveRelayThreadId,
           resolvedAgent: resolvedId,
           deliveryPath: 'relay',
+          deliveryOutcome: 'submitted to relay; acceptance unconfirmed',
           topicLinkageStamped: resolvedOriginTopicId !== undefined,
         });
       }

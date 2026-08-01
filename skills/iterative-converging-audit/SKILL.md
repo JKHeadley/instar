@@ -8,6 +8,7 @@ metadata:
   homepage: https://instar.sh
   user_invocable: "true"
 ---
+<!-- INSTAR:AUDIT-META-ARTIFACT-V2 -->
 
 # iterative-converging-audit — Audit to Convergence, Not to Exhaustion-of-Patience
 
@@ -61,7 +62,9 @@ Record any NEW findings. If there are new findings → back to Step 2. If a re-s
 
 Only now may you say the audit is complete — and you state it as: "Converged after K rounds; round K surfaced no new findings. Ledger: X total, Y fixed, Z accepted-advisory (each with a reason)." If you stopped for any reason OTHER than a clean re-sweep (ran out of time, budget, patience), say so explicitly — that is an INCOMPLETE audit, not a converged one. Never dress up an exhausted audit as a thorough one.
 
-**In a repo that carries the validator** (the instar source tree, or any repo vendoring `scripts/write-audit-convergence.mjs`), the `converged` claim is EARNED, not asserted: write the canonical report at `docs/audits/<slug>.md` (see The Ledger below) and run `node scripts/write-audit-convergence.mjs --audit docs/audits/<slug>.md`. The validator refuses the stamp unless the ledger genuinely shows ≥2 rounds ending in a zeroed final round, every finding closed, and a standing guard (or a closed-enum exemption). A hand-typed `converged:` is rejected at commit and re-checked in CI. In a repo WITHOUT the validator, still write the canonical report and self-check against the shape — but never fabricate a machine stamp you cannot earn.
+**In a repo that carries the validator** (the instar source tree, or any repo vendoring `scripts/write-audit-convergence.mjs`), the `converged` claim is EARNED, not asserted: write the canonical report at `docs/audits/<slug>.md` (see The Ledger below) and run `node scripts/write-audit-convergence.mjs --audit docs/audits/<slug>.md`. The validator refuses the stamp unless the ledger genuinely shows ≥2 rounds ending in a zeroed final round, every finding closed, a standing guard (or a closed-enum exemption), and the second artifact below. A hand-typed `converged:` is rejected at commit and re-checked in CI. In a repo WITHOUT the validator, still write the canonical report and self-check against the shape — but never fabricate a machine stamp you cannot earn.
+
+Every converged audit owes **two artifacts**: (1) the finding-by-finding fix/classification path in the ledger, and (2) the reusable blind-spot lesson. Before Round 1, add exactly one `## Meta-insight` section with `How it arose:` and `Why prior controls missed it:` causal lines. Frontmatter names a normalized `blind-spot-class` and the standards response: `standard-response-kind` (`created` | `amended` | `no-change`), `standard-response-ref`, stable `standard-response-article-id`, exact `standard-response-article`, and a real `standard-response-rationale`. `no-change` is the honest answer when the constitution already covered the class and the gap was enforcement; it is not permission to omit the lesson. The stamp tool writes the provenance digests/timestamp—never hand-author them.
 
 ### Step 5 — Leave a standing guard (so it stays converged)
 
@@ -71,7 +74,7 @@ A converged audit decays the moment new code lands. Where possible, encode the t
 
 ## The Ledger (the durable artifact) — canonical at `docs/audits/<slug>.md`
 
-The audit ledger IS a canonical report at `docs/audits/<slug>.md` with frontmatter (`audit`, `target-pattern`, `search-surface`, `converged` [stamped by the validator only], `standing-guard` XOR `exemption`) and one `## Round N` section per pass. Each round records the **search angles run**, the **surface delta** since the prior round, a findings table (`location | behavior | bucket | disposition`), and a `New findings this round: <count>` line. Dispositions are closed: `fixed:<commit/PR>`, `accepted:<reason>`, or `deferred:<tracking-ref>`. **Reference each finding by path+line — NEVER paste the offending secret/credential material into the ledger** (the commit gate scans audit reports for credentials and will block). The report is what makes "converged after K rounds" a machine-verifiable claim instead of a feeling; the new-findings-per-round count falling to zero is the convergence signal.
+The audit ledger IS a canonical report at `docs/audits/<slug>.md` with frontmatter (`audit`, `target-pattern`, `search-surface`, `converged` [stamped by the validator only], `standing-guard` XOR `exemption`, blind-spot class, and the complete standards-response tuple above), one `## Meta-insight` section, and one `## Round N` section per pass. Each round records the **search angles run**, the **surface delta** since the prior round, a findings table (`location | behavior | bucket | disposition`), and a `New findings this round: <count>` line. Dispositions are closed: `fixed:<commit/PR>`, `accepted:<reason>`, or `deferred:<tracking-ref>`. **Reference each finding by path+line — NEVER paste the offending secret/credential material into the ledger** (the commit gate scans audit reports for credentials and will block). The report is what makes "converged after K rounds" a machine-verifiable claim instead of a feeling; the new-findings-per-round count falling to zero is the convergence signal.
 
 ---
 

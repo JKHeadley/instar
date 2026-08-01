@@ -31,6 +31,19 @@ describe('StandardEnforcementExtractor', () => {
     expect(refs.markers).toContain('MessagingToneGate');
   });
 
+  it('scans an allowlisted enforcement section retained by the parser', () => {
+    const refs = extractEnforcementRefs(article({
+      enforcementSections: [{
+        heading: 'Enforced by (structure, not willpower)',
+        text: 'Compiler `src/core/frameworkSessionLaunch.ts`; ratchet `tests/unit/framework-agnosticism.test.ts`.',
+      }],
+    }));
+    expect(refs.files).toEqual([
+      'src/core/frameworkSessionLaunch.ts',
+      'tests/unit/framework-agnosticism.test.ts',
+    ]);
+  });
+
   it('returns zero refs for bare prose with no enforcement shape', () => {
     const a = article({ inPractice: 'Deferral feels harmless because it still remembers; the cost lands on a successor.' });
     const refs = extractEnforcementRefs(a);

@@ -185,6 +185,85 @@
       "evidenceCountAtLastAck": 0,
       "proposalId": null,
       "nearestExistingClass": "unknown-classification-fail-open — both concern classifier authority, but this class over-classifies known vocabulary in the wrong context while the neighbor permissively defaults unknown input"
+    },
+    {
+      "id": "generated-artifact-path-contract-drift",
+      "description": "Two agent-authored generated artifacts that must compose name different canonical filesystem locations for the same installed dependency, so each artifact is locally valid while the end-to-end runtime path is unreachable.",
+      "includes": [
+        "an installer writes a generated hook or helper at one path while a generated caller checks or executes a different path",
+        "two templates independently spell a shared generated-artifact location and drift without an integration assertion",
+        "an always-overwrite migration consistently installs both sides of a broken path contract"
+      ],
+      "excludes": [
+        "a runtime file missing because an otherwise-correct installation was interrupted or manually deleted",
+        "a user-customized path that is intentionally resolved through configuration",
+        "an ordinary product-code call to a nonexistent module that is already caught by the compiler or linker"
+      ],
+      "canonicalExamples": [
+        "Issue #1798: PostUpdateMigrator installed compaction-recovery.sh under hooks/instar while the generated session-start hook checked and executed hooks/compaction-recovery.sh"
+      ],
+      "status": "unconfirmed",
+      "severity": "critical",
+      "closureStandard": null,
+      "closureStandardEnforcement": null,
+      "instanceCount": 0,
+      "escalatedAt": null,
+      "evidenceCountAtLastAck": 0,
+      "proposalId": null,
+      "nearestExistingClass": "prompt-parser-contract-drift — both are producer/consumer contract drift in agent-authored text, but this class concerns generated filesystem reachability rather than an LLM prompt's output schema"
+    },
+    {
+      "id": "aggregate-masks-subgroup-regression",
+      "description": "A global aggregate remains within its accepted bound while one independently meaningful subgroup regresses below its own prior state, so a healthy large cohort hides the loss of protection in a smaller cohort.",
+      "includes": [
+        "a coverage ratio that gates only the whole population even though each declared family is independently load-bearing",
+        "a large subgroup compensating numerically for a smaller subgroup losing its only enforced item",
+        "a global floor presented as regression protection while no per-subgroup floor exists"
+      ],
+      "excludes": [
+        "a population with no stable or meaningful subgroup identity",
+        "a dashboard-only aggregate that holds no pass/fail authority",
+        "an aggregate whose contract deliberately allows substitution among fungible members"
+      ],
+      "canonicalExamples": [
+        "Standards coverage items 5/6: an aggregate 70% ratchet could stay green while the singleton Root family fell from 1/1 to 0/1"
+      ],
+      "status": "unconfirmed",
+      "severity": "normal",
+      "closureStandard": null,
+      "closureStandardEnforcement": null,
+      "instanceCount": 0,
+      "escalatedAt": null,
+      "evidenceCountAtLastAck": 0,
+      "proposalId": null,
+      "nearestExistingClass": "unknown-classification-fail-open — both can let an unsafe state pass, but this class hides a known subgroup regression through aggregation rather than permissively classifying unknown input"
+    },
+    {
+      "id": "instrument-semantic-darkness",
+      "description": "An instrument runs and emits output, but its source contract structurally prevents the verdict from changing in response to a relevant world state: distinct states are collapsed into one verdict, or an old blocker makes new valid observations incapable of repairing assessability.",
+      "includes": [
+        "a delivery canary that classifies both an unavailable peer and a measured protocol violation as the same failure verdict",
+        "a composite metric where one legacy invalid row makes every future valid row unable to produce a grade for the whole bounded window",
+        "an instrument that reports a verdict without exposing the measured cohort, exclusions, and coverage needed to know which world states could affect it"
+      ],
+      "excludes": [
+        "a constant output whose source can change when its relevant input changes, such as an empty conflict register that would populate on a real conflict",
+        "a young instrument that has not yet observed varied input but does not structurally collapse distinct states",
+        "an honestly unassessable run with an explicit source-owned reason and a future observation path that can repair it"
+      ],
+      "canonicalExamples": [
+        "2026-08-01: Echo's delivery canary turned an intentionally offline peer into the same hard finding as a reachable peer violating the typed delivery contract",
+        "2026-08-01: alignment scoring stayed N/A over 10 valid rows because any one legacy qualitative confidence poisoned the entire 30-day population"
+      ],
+      "status": "unconfirmed",
+      "severity": "normal",
+      "closureStandard": null,
+      "closureStandardEnforcement": null,
+      "instanceCount": 0,
+      "escalatedAt": null,
+      "evidenceCountAtLastAck": 0,
+      "proposalId": null,
+      "nearestExistingClass": "aggregate-masks-subgroup-regression — both are denominator failures, but that class hides a regressing subgroup inside a healthy aggregate while this class prevents a relevant state or repairable observation from influencing any verdict at all"
     }
   ]
 }

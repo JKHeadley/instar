@@ -1,0 +1,29 @@
+{
+  "ts": "2026-07-31T21:00:57.759Z",
+  "slug": "guard-enumeration-fail-visible",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/agentWorktreeGit.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The original adapters collapsed a failed git worktree read to an empty array. Two later incident-specific repairs fixed path causes but left that shared fail-silent representation intact."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This increment adds passive evidence to already-scheduled bounded guards; it adds no actuator, cadence, retry, redrive, notification, or self-triggering edge."
+  },
+  "verdict": "blocked"
+}

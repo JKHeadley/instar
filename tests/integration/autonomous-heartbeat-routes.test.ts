@@ -71,6 +71,10 @@ describe('GET /autonomous-heartbeat', () => {
     expect(body).toHaveProperty('enabled', true);
     expect(body).toHaveProperty('dryRun', true);
     expect(body).toHaveProperty('silenceThresholdMinutes', 25);
+    expect(body).toHaveProperty('tickIntervalMs', 60_000);
+    expect(body).toHaveProperty('maxHeartbeatsPerRun', 6);
+    expect(body).toHaveProperty('persistenceConfigured', false);
+    expect(body).toHaveProperty('persistenceHealthy', true);
     expect(body).toHaveProperty('lastTickAt');
     expect(body).toHaveProperty('topicsConsidered');
     expect(Array.isArray(body.lastEmits)).toBe(true);

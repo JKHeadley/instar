@@ -1,5 +1,8 @@
 # Context-Death Pitfall Prevention — Plain English
 
+> Constitutional anchor: **Structure beats Willpower** — continuation must be
+> restored by installed machinery, not by hoping a compressed session remembers.
+
 ## What This Is
 
 Sometimes an agent stops in the middle of real work and explains the stop by saying the session is getting long, the context window might run out, or a fresh session would be cleaner. That sounds responsible, but in this system it is usually the wrong move. Instar already has recovery machinery that reloads identity, recent memory, and conversation context when a session compacts or restarts. If the work has a durable plan, committed code, a ledger entry, or another concrete artifact, the agent should continue from that artifact instead of making the user ask again.

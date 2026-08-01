@@ -19,17 +19,23 @@ const read = (rel: string) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 const CANONICAL_MARKER = 'docs/audits/<slug>.md';
 const VALIDATOR_MARKER = 'write-audit-convergence.mjs';
+const META_V2_MARKER = '<!-- INSTAR:AUDIT-META-ARTIFACT-V2 -->';
 
 describe('iterative-converging-audit skill single-source', () => {
   it('the shared constant carries the canonical-report + validator behavior', () => {
     expect(ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT).toContain(CANONICAL_MARKER);
     expect(ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT).toContain(VALIDATOR_MARKER);
+    expect(ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT).toContain(META_V2_MARKER);
+    expect(ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT).toContain('blind-spot-class');
+    expect(ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT).toContain('no-change');
   });
 
   it('the repo SKILL.md carries the same behavior (both delivered together)', () => {
     const skill = read('skills/iterative-converging-audit/SKILL.md');
     expect(skill).toContain(CANONICAL_MARKER);
     expect(skill).toContain(VALIDATOR_MARKER);
+    expect(skill).toContain(META_V2_MARKER);
+    expect(skill).toContain('blind-spot-class');
   });
 
   it('init.ts consumes the shared constant — no divergent inline copy', () => {

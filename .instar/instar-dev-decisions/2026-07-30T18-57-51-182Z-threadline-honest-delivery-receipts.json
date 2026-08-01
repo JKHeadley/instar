@@ -1,0 +1,32 @@
+{
+  "ts": "2026-07-30T18:57:51.182Z",
+  "slug": "threadline-honest-delivery-receipts",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/relayContentDedup.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 297,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/SpawnRequestManager.ts",
+      "src/messaging/relayContentDedup.ts",
+      "src/server/routes.ts",
+      "src/threadline/A2ADeliveryTracker.ts",
+      "src/threadline/ThreadlineEndpoints.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/ThreadlineRouter.ts",
+      "src/threadline/mcp-http-client.ts"
+    ],
+    "addedLines": 248,
+    "deletedLines": 49
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -7,13 +7,13 @@
  * for 30+ minutes, the user has no signal whether the agent is alive,
  * progressing, or has forgotten. PromiseBeacon watches beacon-enabled
  * commitments (Commitment rows with `beaconEnabled: true` and a `topicId`)
- * and emits a short status line on a per-commitment cadence.
+ * and emits one count+list status summary per topic cadence.
  *
  * Key properties:
- *  - setTimeout-based scheduling (not polling); durable across sleep by
- *    persisting `nextDueAt` (spec Round 3 #17).
- *  - Per-commitment hot state at .instar/state/promise-beacon/<id>.json
- *    (gitignored).
+ *  - setTimeout-based commitment checks (not polling), with a durable
+ *    per-topic delivery batch that survives restart.
+ *  - Per-commitment hot state plus per-topic aggregate state at
+ *    .instar/state/promise-beacon/ (gitignored).
  *  - Snapshot-hash gate: unchanged tmux output emits a templated line
  *    without calling the LLM (≈70% of heartbeats on a quiet session).
  *  - Session-epoch check: if the Claude Code session UUID at declaration
@@ -40,6 +40,7 @@ import { sanitizeTmuxOutput, guardProxyOutput } from './PresenceProxy.js';
 import { detectInternalIdLeak } from '../core/internal-id-leak.js';
 import { governor, consumeAdmissionToken } from './selfaction/governor.js';
 import type { DerivedTarget } from './selfaction/types.js';
+import { DegradationReporter } from './DegradationReporter.js';
 
 /* @self-action-controller: promise-beacon-notify */
 /* @self-action-controller: liveness-heartbeat */
@@ -178,7 +179,7 @@ export interface PromiseBeaconConfig {
    */
   defaultAutoPauseAfterUnchanged?: number;
   /**
-   * HONEST-PROGRESS-MESSAGING B1 — when the tmux snapshot is UNCHANGED, send
+   * Explicit-opt-in output behavior: when the tmux snapshot is UNCHANGED, send
    * nothing (the "still on it, no new output" line carried zero information and
    * was the user's #1 noise complaint). The unchanged-count is still tracked for
    * atRisk/auto-pause accounting; only the message is withheld. The beacon still
@@ -187,20 +188,34 @@ export interface PromiseBeaconConfig {
    * every-tick templated heartbeat (rollback path). */
   suppressUnchangedHeartbeats?: boolean;
   /**
-   * HONEST-PROGRESS-MESSAGING B1b — sparse liveness. When unchanged heartbeats
+   * Explicit-opt-in output behavior: sparse liveness. When unchanged heartbeats
    * are suppressed, a genuinely long task would otherwise go fully dark. At most
    * ONE "still watching, N min in" line is emitted per this interval while a
    * session is still present and its turn is not finished. Default 60m. */
   beaconLivenessIntervalMs?: number;
   /**
-   * HONEST-PROGRESS-MESSAGING B2 / FD-1 — turn-finished close-out. When the
+   * Explicit-opt-in output behavior: turn-finished close-out. When the
    * session's live frame shows a finished/idle turn (no active-work indicator)
    * for this many consecutive checks, the beacon emits ONE close-out prompt and
    * auto-pauses (no clockwork heartbeats into a finished room). Default 3
    * (≈60m at 20m cadence — rules out a momentary prompt-like frame mid-task). */
   turnFinishedCloseoutChecks?: number;
   /**
-   * HONEST-PROGRESS-MESSAGING B2 — detector for "is this session still actively
+   * Explicit-opt-in output behavior: aggregate all PromiseBeacon user messages
+   * for a topic behind one topic-level cadence. `false` is the byte-for-byte
+   * rollback lever for the former per-commitment delivery path. Default true.
+   */
+  aggregateByTopic?: boolean;
+  /**
+   * Master authority for every PromiseBeacon-originated human-facing surface:
+   * topic replies, Slack-thread replies, close-outs, escalation status, and
+   * Attention dead-letters. Default false. Commitment tracking, overdue/session
+   * detection, revival, and internal audit events continue while this is off.
+   * Re-enabling output is an explicit opt-in (`true`), never an inferred default.
+   */
+  userOutputEnabled?: boolean;
+  /**
+   * Internal detector for "is this session still actively
    * working?" (wired to looksActivelyWorking on the live frame). When absent,
    * turn-finished close-out is inactive (degrades safely). */
   looksActivelyWorking?: (frame: string, sessionName: string) => boolean;
@@ -279,6 +294,7 @@ export type BeaconSendResult =
   | 'failed-permanent'
   | 'suppressed-aoft'
   | 'rerouted-terminal'
+  | 'suppressed-user-output-disabled'
   | 'skipped';
 
 /** Recoverability state → one approved Rung-2 message template (§3.2). */
@@ -338,6 +354,33 @@ interface HotState {
   /** B2 — consecutive checks where the session's live frame read as turn-finished
    *  (idle, no active-work indicator). Close-out fires at turnFinishedCloseoutChecks. */
   consecutiveTurnFinished?: number;
+}
+
+type AggregateMessageKind = 'heartbeat' | 'closeOut' | 'rung2' | 'terminal';
+
+interface PendingAggregateItem {
+  commitmentId: string;
+  text: string;
+  kind: AggregateMessageKind;
+  liveness: boolean;
+  qualifiedAt: string;
+  cadenceMs: number;
+  occurrences: number;
+}
+
+interface TopicAggregateState {
+  lastSentAt?: string;
+  nextAttemptAt?: string;
+  cadenceMs: number;
+  pending: PendingAggregateItem[];
+  /**
+   * A typed transient/ambiguous delivery must retry byte-identical content
+   * under the same logicalSendId. This prefix is frozen; newer qualifications
+   * append after it and wait for the following topic window.
+   */
+  retryingCount?: number;
+  retryingText?: string;
+  retryingRepresentativeId?: string;
 }
 
 // Rotating templated phrases (spec Round 3 #9).
@@ -475,6 +518,10 @@ export class PromiseBeacon extends EventEmitter {
   private started = false;
   private stateDir: string;
   private timers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  /** One delayed aggregate flush per topic; commitment timers remain independent. */
+  private aggregateTimers: Map<number, ReturnType<typeof setTimeout>> = new Map();
+  /** Serializes enqueue + flush so an in-flight send cannot clear a newer item. */
+  private aggregateOps: Map<number, Promise<void>> = new Map();
   /** C1+C2 §4.4 — the periodic external-block staleness governor sweep timer. */
   private externalBlockSweepTimer?: ReturnType<typeof setInterval>;
   private prefix: string;
@@ -578,6 +625,10 @@ export class PromiseBeacon extends EventEmitter {
     for (const c of keep) {
       this.schedule(c);
     }
+    // A close-out / escalation can be queued after its commitment becomes
+    // terminal or paused, so aggregate recovery cannot rely on active rows.
+    // Re-arm directly from the durable per-topic aggregate files.
+    this.restoreAggregateTimers();
     // React to new beacon-enabled commitments as they're recorded.
     this.config.commitmentTracker.on('recorded', (c: Commitment) => {
       if (c.beaconEnabled && c.status === 'pending' && c.topicId) {
@@ -631,6 +682,8 @@ export class PromiseBeacon extends EventEmitter {
     this.started = false;
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+    for (const t of this.aggregateTimers.values()) clearTimeout(t);
+    this.aggregateTimers.clear();
     if (this.externalBlockSweepTimer) {
       clearInterval(this.externalBlockSweepTimer);
       this.externalBlockSweepTimer = undefined;
@@ -752,6 +805,31 @@ export class PromiseBeacon extends EventEmitter {
         await this.transitionViolated(c, 'session-lost');
         return;
       }
+    }
+
+    // PromiseBeacon remains an INTERNAL follow-through engine by default. The
+    // session-loss/escalation checks above still run, but a disabled user-output
+    // surface must not spend LLM budget, capture/format a summary, acquire the
+    // proxy voice, or enqueue a human-facing aggregate. Advance the internal
+    // cadence anchor so this does not collapse into a one-second retry loop.
+    if (!this.userOutputEnabled()) {
+      const checkedAt = new Date(this.now()).toISOString();
+      this.updateHotState(c.id, (h) => { h.lastHeartbeatAt = checkedAt; });
+      try {
+        await this.config.commitmentTracker.mutate(c.id, prev => ({
+          ...prev,
+          lastHeartbeatAt: checkedAt,
+        }));
+      } catch (err) {
+        // A bookkeeping write must not permanently disarm internal follow-through.
+        this.emit('heartbeat.bookkeeping-failed', {
+          id: c.id,
+          error: (err as Error).message,
+        });
+      }
+      this.emit('heartbeat.skipped', { id: c.id, reason: 'user-output-disabled' });
+      this.schedule(this.config.commitmentTracker.get(c.id) ?? c);
+      return;
     }
 
     // ── Proxy coordinator: one proxy-class message per topic ──
@@ -906,8 +984,8 @@ export class PromiseBeacon extends EventEmitter {
               : consumeAdmissionToken(notifyAdmission.token, 'promise-beacon-notify', { targetKey: notifyTarget.key })
             : null;
         if (notifyAdmission.outcome === 'allow' && notifySink?.proceed) {
-          sendResult = await this.emitUserSend(c, text!, 'heartbeat');
-          if (livenessFired) hot.lastLivenessAt = nowIso;
+          sendResult = await this.emitBeaconMessage(c, text!, 'heartbeat', livenessFired);
+          if (livenessFired && sendResult === 'sent') hot.lastLivenessAt = nowIso;
           if (sendResult === 'sent') hot.heartbeatCount += 1;
         } else {
           sent = false; // enforce-mode fold: coalesced, never a silent drop (audited)
@@ -931,7 +1009,7 @@ export class PromiseBeacon extends EventEmitter {
         h.templatedVariantCursor = hot.templatedVariantCursor;
         h.consecutiveTurnFinished = hot.consecutiveTurnFinished;
         h.heartbeatCount = hot.heartbeatCount;
-        if (livenessFired) h.lastLivenessAt = nowIso;
+        if (livenessFired && sendResult === 'sent') h.lastLivenessAt = nowIso;
       });
 
       await this.config.commitmentTracker.mutate(c.id, prev => ({
@@ -991,7 +1069,7 @@ export class PromiseBeacon extends EventEmitter {
     const suffix = excerpt ? ` — re: ${excerpt}` : '';
     const finalText = `${this.prefix} auto-paused after long quiet${suffix}\nReply "keep watching" on this topic to resume.`;
     try {
-      await this.emitUserSend(c, finalText, 'closeOut');
+      await this.emitBeaconMessage(c, finalText, 'closeOut');
     } catch (err) {
       console.warn(`[PromiseBeacon] auto-pause send failed for ${c.id}:`, (err as Error).message);
     }
@@ -1065,7 +1143,7 @@ export class PromiseBeacon extends EventEmitter {
       `${this.prefix} I said I'd follow up on "${re}" but that work's session has wrapped — ` +
       `want me to pick it back up, or close this out?`;
     try {
-      await this.emitUserSend(c, finalText, 'closeOut');
+      await this.emitBeaconMessage(c, finalText, 'closeOut');
     } catch (err) {
       console.warn(`[PromiseBeacon] turn-finished close-out send failed for ${c.id}:`, (err as Error).message);
     }
@@ -1325,11 +1403,18 @@ export class PromiseBeacon extends EventEmitter {
 
     const excerpt = redactSecrets(promiseExcerpt(c));
     const text = rung2Message(state, excerpt);
+    let auditEvent = 'rung2-sent';
     if (text && c.topicId) {
       try {
-        await this.emitUserSend(c, text, 'rung2');
+        const outcome = await this.emitBeaconMessage(c, text, 'rung2');
+        if (outcome === 'skipped') auditEvent = 'rung2-queued';
+        if (outcome === 'suppressed-user-output-disabled') {
+          auditEvent = 'rung2-suppressed-user-output';
+        }
       } catch (err) {
         console.warn(`[PromiseBeacon] rung2 send failed for ${c.id}:`, (err as Error).message);
+        this.auditEsc(c, 'rung2-send-failed', { state, error: (err as Error).message });
+        return;
       }
     }
     await this.config.commitmentTracker.mutate(c.id, prev => ({
@@ -1339,7 +1424,7 @@ export class PromiseBeacon extends EventEmitter {
       currentRung: '2',
       atRisk: true,
     }));
-    this.auditEsc(c, 'rung2-sent', { state });
+    this.auditEsc(c, auditEvent, { state });
   }
 
   /** Rung 3 — bounded, loud give-up: terminal + ONE deduped Attention item (§3.3). */
@@ -1354,7 +1439,7 @@ export class PromiseBeacon extends EventEmitter {
       escalationInFlight: false,
     }));
     const detail = `Promise "${(c.agentResponse || c.userRequest).slice(0, 80)}" could not be revived after ${c.escalationAttempts ?? 0} attempts.`;
-    try { this.config.raiseAttention?.(c.id, detail); } catch { /* non-fatal */ }
+    this.raiseUserAttention(c.id, detail, 'rung3');
     this.stopFor(c.id);
     this.auditEsc(c, 'gave-up', { rung: 3 });
     this.emit('promise.violated', { id: c.id, reason: 'session-lost-unrecovered' });
@@ -1363,24 +1448,499 @@ export class PromiseBeacon extends EventEmitter {
   /** Record a confirmed double-spawn (§6) — invoked by the per-topic reconciliation. */
   recordDoubleSpawn(): void { this.doubleSpawnCount += 1; }
 
+  // ─── Topic-level notification aggregation ───────────────────────────────
+
   /**
-   * C1+C2 owner-gated outbound chokepoint (spec agent-owned-followthrough §4.2).
-   * EVERY beacon user-send routes through here. Beacon sends are `isProxy:true`
-   * and bypass MessagingToneGate, so the owner-gate MUST live here, not at the
-   * gate. Rollout-gated (§4.8): when the feature is off (fleet default) this is a
-   * strict no-op — sends go out exactly as before. When on+dryRun it logs the
+   * Bounded Notification Surface: the former delivery chokepoint emitted once
+   * per commitment. This wrapper folds all qualifying beacon surfaces for one
+   * topic into a durable topic batch. This includes one-commitment edge cases
+   * (for example a heartbeat followed immediately by a close-out), so the bound
+   * is genuinely topic/cadence-wide rather than backlog-size-dependent.
+   */
+  private async emitBeaconMessage(
+    c: Commitment,
+    text: string,
+    kind: AggregateMessageKind,
+    liveness = false,
+  ): Promise<BeaconSendResult> {
+    // Do not create durable aggregate work while the fleet-wide output boundary
+    // is closed. emitUserSend owns the canonical suppression/audit result.
+    if (!this.userOutputEnabled()) {
+      return this.emitUserSend(c, text, kind);
+    }
+    if (c.topicId == null || this.config.aggregateByTopic === false) {
+      return this.emitUserSend(c, text, kind);
+    }
+    const topicId = c.topicId;
+
+    // Preserve the Agent-Owned Followthrough authority model before batching:
+    // live owner:'agent' status is suppressed, and terminal failure is rerouted
+    // to Attention. It must never become visible merely because a user-owned
+    // sibling happens to be the aggregate's delivery representative.
+    const aoft = this.config.agentOwnedFollowthrough?.() ?? { enabled: false, dryRun: true };
+    if (aoft.enabled && !aoft.dryRun && c.owner === 'agent') {
+      return this.emitUserSend(c, text, kind);
+    }
+
+    return this.withAggregateLock(topicId, async () => {
+      const state = this.loadTopicAggregateState(topicId);
+
+      const itemCadence = this.effectiveCadenceMs(c);
+      const frozenPrefix = state.retryingCount ?? 0;
+      const existing = state.pending.slice(frozenPrefix).find(item =>
+        item.commitmentId === c.id && item.kind === kind,
+      );
+      if (existing) {
+        // Same promise can qualify more than once inside a topic window. Keep
+        // the latest truthful wording and carry the occurrence count so no
+        // qualifying event disappears from the aggregate.
+        existing.text = text;
+        existing.liveness ||= liveness;
+        existing.qualifiedAt = new Date(this.now()).toISOString();
+        existing.cadenceMs = Math.min(existing.cadenceMs, itemCadence);
+        existing.occurrences += 1;
+      } else {
+        state.pending.push({
+          commitmentId: c.id,
+          text,
+          kind,
+          liveness,
+          qualifiedAt: new Date(this.now()).toISOString(),
+          cadenceMs: itemCadence,
+          occurrences: 1,
+        });
+      }
+      state.cadenceMs = this.topicAggregateCadenceMs(topicId, state.pending, c);
+      this.saveTopicAggregateState(topicId, state);
+
+      if (this.aggregateDueAt(state) <= this.now()) {
+        const outcome = await this.flushTopicAggregateLocked(
+          topicId,
+          frozenPrefix === 0 && kind === 'heartbeat' ? c.id : undefined,
+        );
+        // When an ambiguous older batch was frozen, this call flushed that
+        // byte-identical prefix; the newly queued current item remains pending
+        // for the next window and must not be counted as delivered.
+        return frozenPrefix > 0 ? 'skipped' : outcome;
+      }
+      this.armAggregateTimer(topicId, state);
+      this.emit('heartbeat.aggregate-queued', {
+        id: c.id,
+        topicId: c.topicId,
+        kind,
+        pending: state.pending.length,
+      });
+      return 'skipped';
+    });
+  }
+
+  /** Public boundary seam for deterministic cadence tests and operational drain. */
+  async flushTopicAggregate(topicId: number): Promise<BeaconSendResult> {
+    return this.withAggregateLock(topicId, () => this.flushTopicAggregateLocked(topicId));
+  }
+
+  private async flushTopicAggregateLocked(
+    topicId: number,
+    triggeringHeartbeatId?: string,
+  ): Promise<BeaconSendResult> {
+    const state = this.loadTopicAggregateState(topicId);
+    if (state.pending.length === 0) return 'skipped';
+    if (this.aggregateDueAt(state) > this.now()) {
+      this.armAggregateTimer(topicId, state);
+      return 'skipped';
+    }
+
+    // Ownership can change while a durable item waits. On a fresh (not
+    // ambiguous-retry) batch, dispose newly agent-owned items through their
+    // existing owner gate before composing the user-visible aggregate. This
+    // prevents one agent-owned representative from suppressing user-owned
+    // siblings. A frozen retry was already authority-admitted and may have
+    // reached the user, so it must remain byte-identical under the same send ID.
+    let alternateOutcome: BeaconSendResult = 'skipped';
+    if (!state.retryingCount) {
+      const visible: PendingAggregateItem[] = [];
+      for (const item of state.pending) {
+        const commitment = this.config.commitmentTracker.get(item.commitmentId);
+        if (commitment && this.isLiveAgentOwned(commitment)) {
+          alternateOutcome = await this.emitUserSend(commitment, item.text, item.kind);
+        } else {
+          visible.push(item);
+        }
+      }
+      if (visible.length !== state.pending.length) {
+        state.pending = visible;
+        state.cadenceMs = this.topicAggregateCadenceMs(topicId, state.pending);
+        this.saveTopicAggregateState(topicId, state);
+      }
+      if (state.pending.length === 0) {
+        this.clearAggregateTimer(topicId);
+        return alternateOutcome;
+      }
+    }
+
+    const attemptedCount = state.retryingCount && state.retryingCount > 0
+      ? Math.min(state.retryingCount, state.pending.length)
+      : state.pending.length;
+    const batch = state.pending.slice(0, attemptedCount).map(item => ({ ...item }));
+    const retryingRepresentative = state.retryingRepresentativeId
+      ? this.config.commitmentTracker.get(state.retryingRepresentativeId)
+      : undefined;
+    const representative = state.retryingRepresentativeId
+      ? retryingRepresentative?.topicId === topicId ? retryingRepresentative : undefined
+      : batch
+        .map(item => this.config.commitmentTracker.get(item.commitmentId))
+        .find((item): item is Commitment => !!item && item.topicId === topicId);
+    if (!representative) {
+      const reason = state.retryingRepresentativeId
+        ? `The frozen aggregate representative ${state.retryingRepresentativeId} no longer resolves on topic ${topicId}`
+        : `No commitment record remains for ${batch.length} durable aggregate item(s) on topic ${topicId}`;
+      this.reportAggregateDegradation('durable aggregate delivery', 'retain the batch for operator repair', reason);
+      throw new Error(reason);
+    }
+
+    const aggregateText = state.retryingText ?? this.composeTopicAggregate(topicId, batch);
+    let outcome: BeaconSendResult;
+    try {
+      outcome = await this.emitUserSend(
+        representative,
+        aggregateText,
+        representative.id === triggeringHeartbeatId ? 'heartbeat' : batch[0].kind,
+        state.retryingCount != null,
+      );
+    } catch (err) {
+      state.retryingCount = attemptedCount;
+      state.retryingText = aggregateText;
+      state.retryingRepresentativeId = representative.id;
+      state.nextAttemptAt = new Date(this.now() + state.cadenceMs).toISOString();
+      this.saveTopicAggregateState(topicId, state);
+      this.armAggregateTimer(topicId, state);
+      throw err;
+    }
+
+    if (outcome === 'sent' || outcome === 'suppressed-delivered-equivalent') {
+      state.pending = state.pending.slice(attemptedCount);
+      state.lastSentAt = new Date(this.now()).toISOString();
+      delete state.nextAttemptAt;
+      delete state.retryingCount;
+      delete state.retryingText;
+      delete state.retryingRepresentativeId;
+      state.cadenceMs = this.topicAggregateCadenceMs(topicId, state.pending);
+      this.saveTopicAggregateState(topicId, state);
+      if (state.pending.length > 0) this.armAggregateTimer(topicId, state);
+      else this.clearAggregateTimer(topicId);
+      await this.accountFlushedHeartbeats(
+        batch,
+        outcome === 'sent' ? triggeringHeartbeatId : undefined,
+      );
+      this.emit('heartbeat.aggregate-flushed', {
+        topicId,
+        commitmentIds: [...new Set(batch.map(item => item.commitmentId))],
+        qualifyingEvents: batch.reduce((n, item) => n + item.occurrences, 0),
+        delivered: outcome === 'sent',
+      });
+      return outcome;
+    }
+
+    if (
+      outcome === 'failed-standdown' ||
+      outcome === 'failed-permanent' ||
+      outcome === 'suppressed-aoft' ||
+      outcome === 'rerouted-terminal' ||
+      outcome === 'suppressed-user-output-disabled'
+    ) {
+      // These are explicit terminal/alternate dispositions, not silent drops:
+      // the delivery funnel persisted stand-down/dead-letter state or rerouted
+      // the terminal item to Attention. Retire only the attempted prefix:
+      // qualifications appended behind an ambiguous retry get their own typed
+      // disposition on the following topic boundary.
+      state.pending = state.pending.slice(attemptedCount);
+      delete state.nextAttemptAt;
+      delete state.retryingCount;
+      delete state.retryingText;
+      delete state.retryingRepresentativeId;
+      state.cadenceMs = this.topicAggregateCadenceMs(topicId, state.pending);
+      this.saveTopicAggregateState(topicId, state);
+      if (state.pending.length > 0) this.armAggregateTimer(topicId, state);
+      else this.clearAggregateTimer(topicId);
+      return outcome;
+    }
+
+    // A transient refusal or controller fold retains every qualifying item and
+    // retries on the same bounded topic cadence — never a tight loop.
+    state.retryingCount = attemptedCount;
+    state.retryingText = aggregateText;
+    state.retryingRepresentativeId = representative.id;
+    state.nextAttemptAt = new Date(this.now() + state.cadenceMs).toISOString();
+    this.saveTopicAggregateState(topicId, state);
+    this.armAggregateTimer(topicId, state);
+    return outcome;
+  }
+
+  private composeTopicAggregate(topicId: number, batch: PendingAggregateItem[]): string {
+    const open = this.visibleTopicCommitments(topicId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const eventCount = batch.reduce((n, item) => n + item.occurrences, 0);
+    const lines = [
+      `${this.prefix} Promise summary — ${open.length} open; ${eventCount} qualifying update${eventCount === 1 ? '' : 's'} this cadence.`,
+    ];
+    if (open.length > 0) {
+      lines.push(`Open (${open.length}): ${open.map(item => this.compactAggregateText(promiseExcerpt(item), 30)).join('; ')}`);
+    }
+    lines.push(`Updates (${batch.length}):`);
+    for (const item of batch) {
+      const commitment = this.config.commitmentTracker.get(item.commitmentId);
+      const label = this.compactAggregateText(
+        commitment ? promiseExcerpt(commitment) : item.commitmentId,
+        42,
+      );
+      const rawStatus = item.text.startsWith(this.prefix)
+        ? item.text.slice(this.prefix.length).trim()
+        : item.text.trim();
+      const occurrence = item.occurrences > 1 ? ` (${item.occurrences} events)` : '';
+      lines.push(`• ${label}${occurrence}: ${this.compactAggregateText(rawStatus, 150)}`);
+    }
+    return lines.join('\n');
+  }
+
+  private compactAggregateText(text: string, max: number): string {
+    const oneLine = text.replace(/\s+/g, ' ').trim() || 'this task';
+    return oneLine.length <= max ? oneLine : `${oneLine.slice(0, Math.max(1, max - 1)).trimEnd()}…`;
+  }
+
+  private visibleTopicCommitments(topicId: number): Commitment[] {
+    if (!this.userOutputEnabled()) return [];
+    return this.config.commitmentTracker.getActiveByTopicId(topicId).filter(c =>
+      c.beaconEnabled &&
+      c.status === 'pending' &&
+      !c.beaconSuppressed &&
+      !c.beaconPaused &&
+      !this.stoodDown.has(c.id) &&
+      !this.isLiveAgentOwned(c),
+    );
+  }
+
+  private isLiveAgentOwned(c: Commitment): boolean {
+    const aoft = this.config.agentOwnedFollowthrough?.() ?? { enabled: false, dryRun: true };
+    return aoft.enabled && !aoft.dryRun && c.owner === 'agent';
+  }
+
+  /**
+   * Mixed-cadence decision: the topic speaks on the shortest effective cadence
+   * among its visible open promises and durable pending items. This preserves
+   * the most urgent promise's update timing without multiplying messages by the
+   * backlog. Slower promises are listed, but only qualifying ones get status.
+   */
+  private topicAggregateCadenceMs(
+    topicId: number,
+    pending: PendingAggregateItem[],
+    include?: Commitment,
+  ): number {
+    const cadences = this.visibleTopicCommitments(topicId).map(c => this.effectiveCadenceMs(c));
+    if (include) cadences.push(this.effectiveCadenceMs(include));
+    cadences.push(...pending.map(item => item.cadenceMs));
+    return cadences.length > 0
+      ? Math.min(...cadences)
+      : this.clampCadence(20 * 60_000) * this.timerMult;
+  }
+
+  private effectiveCadenceMs(c: Commitment): number {
+    const base = c.cadenceMs ?? 20 * 60_000;
+    return this.clampCadence(c.atRisk ? base * 2 : base) * this.timerMult;
+  }
+
+  private aggregateDueAt(state: TopicAggregateState): number {
+    const sent = state.lastSentAt ? Date.parse(state.lastSentAt) : Number.NaN;
+    const cadenceDue = Number.isFinite(sent) ? sent + state.cadenceMs : this.now();
+    const retry = state.nextAttemptAt ? Date.parse(state.nextAttemptAt) : Number.NaN;
+    return Number.isFinite(retry) ? Math.max(cadenceDue, retry) : cadenceDue;
+  }
+
+  private armAggregateTimer(topicId: number, state: TopicAggregateState): void {
+    this.clearAggregateTimer(topicId);
+    const delay = Math.max(1, this.aggregateDueAt(state) - this.now());
+    const timer = setTimeout(() => {
+      this.aggregateTimers.delete(topicId);
+      this.flushTopicAggregate(topicId).catch(err => {
+        this.reportAggregateDegradation(
+          'scheduled aggregate flush',
+          'retain the durable batch and retry on its bounded cadence',
+          (err as Error).message,
+        );
+      });
+    }, delay);
+    timer.unref?.();
+    this.aggregateTimers.set(topicId, timer);
+  }
+
+  private clearAggregateTimer(topicId: number): void {
+    const timer = this.aggregateTimers.get(topicId);
+    if (timer) clearTimeout(timer);
+    this.aggregateTimers.delete(topicId);
+  }
+
+  private restoreAggregateTimers(): void {
+    if (this.config.aggregateByTopic === false) return;
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.stateDir);
+    } catch (err) {
+      this.reportAggregateDegradation(
+        'restart recovery of pending topic aggregates',
+        'active commitment timers continue, but terminal queued notices await repair',
+        (err as Error).message,
+      );
+      return;
+    }
+    for (const name of names) {
+      const match = /^topic-aggregate-(-?\d+)\.json$/.exec(name);
+      if (!match) continue;
+      const topicId = Number(match[1]);
+      const state = this.loadTopicAggregateState(topicId);
+      if (state.pending.length > 0) this.armAggregateTimer(topicId, state);
+    }
+  }
+
+  private topicAggregatePath(topicId: number): string {
+    return path.join(this.stateDir, `topic-aggregate-${topicId}.json`);
+  }
+
+  private loadTopicAggregateState(topicId: number): TopicAggregateState {
+    const file = this.topicAggregatePath(topicId);
+    if (!fs.existsSync(file)) {
+      return {
+        cadenceMs: this.clampCadence(20 * 60_000) * this.timerMult,
+        pending: [],
+      };
+    }
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as TopicAggregateState;
+      if (!Array.isArray(parsed.pending) || !Number.isFinite(parsed.cadenceMs)) {
+        throw new Error('aggregate state shape is invalid');
+      }
+      return parsed;
+    } catch (err) {
+      this.reportAggregateDegradation(
+        'durable topic aggregate state',
+        'stop this aggregate rather than overwrite and lose qualifying notices',
+        `${file}: ${(err as Error).message}`,
+      );
+      throw err;
+    }
+  }
+
+  private saveTopicAggregateState(topicId: number, state: TopicAggregateState): void {
+    const file = this.topicAggregatePath(topicId);
+    const tmp = `${file}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+      fs.renameSync(tmp, file);
+    } catch (err) {
+      this.reportAggregateDegradation(
+        'durable topic aggregate persistence',
+        'refuse the send so a qualifying notice is never acknowledged before it is durable',
+        `${file}: ${(err as Error).message}`,
+      );
+      throw err;
+    }
+  }
+
+  private async accountFlushedHeartbeats(
+    batch: PendingAggregateItem[],
+    triggeringHeartbeatId?: string,
+  ): Promise<void> {
+    const heartbeatItems = batch.filter(item => item.kind === 'heartbeat');
+    const byCommitment = new Map<string, PendingAggregateItem[]>();
+    for (const item of heartbeatItems) {
+      const list = byCommitment.get(item.commitmentId) ?? [];
+      list.push(item);
+      byCommitment.set(item.commitmentId, list);
+    }
+    for (const [id, items] of byCommitment) {
+      // An immediate fire's existing accounting path handles its own row.
+      if (id === triggeringHeartbeatId) continue;
+      const nowIso = new Date(this.now()).toISOString();
+      try {
+        this.updateHotState(id, hot => {
+          hot.heartbeatCount += 1;
+          hot.lastHeartbeatAt = nowIso;
+          if (items.some(item => item.liveness)) hot.lastLivenessAt = nowIso;
+        });
+        await this.config.commitmentTracker.mutate(id, prev => ({
+          ...prev,
+          lastHeartbeatAt: nowIso,
+          heartbeatCount: (prev.heartbeatCount ?? 0) + 1,
+        }));
+      } catch (err) {
+        // The user already received the aggregate. Report the accounting drift;
+        // never retry the user message and create a duplicate.
+        this.reportAggregateDegradation(
+          'post-delivery aggregate accounting',
+          'keep the delivered aggregate retired and surface the stale counter',
+          `${id}: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  private withAggregateLock<T>(topicId: number, operation: () => Promise<T>): Promise<T> {
+    const previous = this.aggregateOps.get(topicId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => {
+        // @silent-fallback-ok: the preceding operation already reported or
+        // propagated its own failure; this catch only releases the serialization
+        // chain so a durable retry can run instead of wedging the topic forever.
+      })
+      .then(operation);
+    const marker = current.then(() => undefined, () => undefined);
+    this.aggregateOps.set(topicId, marker);
+    return current.finally(() => {
+      if (this.aggregateOps.get(topicId) === marker) this.aggregateOps.delete(topicId);
+    });
+  }
+
+  private reportAggregateDegradation(primary: string, fallback: string, reason: string): void {
+    DegradationReporter.getInstance().report({
+      feature: 'PromiseBeaconTopicAggregation',
+      primary,
+      fallback,
+      reason,
+      impact: 'Promise updates remain durable, but topic summary delivery or accounting is delayed.',
+    });
+  }
+
+  /**
+   * Absolute master output boundary, then the C1+C2 owner-gated chokepoint
+   * (spec agent-owned-followthrough §4.2). EVERY beacon user-send routes through
+   * here. Beacon sends are `isProxy:true` and bypass MessagingToneGate, so the
+   * owner-gate MUST live here, not at the gate. The master boundary defaults
+   * closed fleet-wide. Only after explicit opt-in does the AOFT rollout apply:
+   * when the feature is off, sends go out as before; when on+dryRun it logs the
    * intended action but still sends (observe-first). When on+live and the
    * commitment is owner:'agent', status kinds are suppressed (the agent carries
    * the loop — the user is never status-messaged) while a `terminal` kind is
-   * NEVER suppressed: it reroutes to the Attention dead-letter (raiseAttention,
-   * the one always-surfaced channel) so a failure is never swallowed (C2 /
+   * NEVER suppressed: it reroutes to the Attention dead-letter inside that
+   * explicit opt-in mode, so a failure is not swallowed there (C2 /
    * "never nag ≠ swallow a failure"). owner:'user' always sends normally.
    */
   private async emitUserSend(
     c: Commitment,
     text: string,
     kind: 'heartbeat' | 'closeOut' | 'rung2' | 'terminal',
+    authorityAlreadyAdmitted = false,
   ): Promise<BeaconSendResult> {
+    // Absolute outer gate: no PromiseBeacon-originated message or Attention
+    // item reaches a human unless output was explicitly opted back in. This is
+    // intentionally before the ambiguous-retry allowance and the owner gate:
+    // an upgrade that turns output off must stop even a durable queued summary.
+    if (!this.userOutputEnabled()) {
+      this.emit('user-output.suppressed', {
+        id: c.id,
+        topicId: c.topicId,
+        kind,
+        surface: 'conversation',
+      });
+      return 'suppressed-user-output-disabled';
+    }
     const sendNormally = async (): Promise<BeaconSendResult> => {
       if (c.topicId == null) return 'skipped';
       // Beacon-local B-IDLEAK pass (C1+C2 §4.3): beacon sends are isProxy:true and
@@ -1414,6 +1974,10 @@ export class PromiseBeacon extends EventEmitter {
       });
       return 'sent';
     };
+    // An ambiguous retry may already have reached the user. Its exact bytes and
+    // logical send identity were authority-admitted on the first attempt, so a
+    // later owner change cannot rewrite/suppress only part of that send.
+    if (authorityAlreadyAdmitted) return await sendNormally();
     const state = this.config.agentOwnedFollowthrough?.() ?? { enabled: false, dryRun: true };
     // Feature off, or not an agent-owned commitment → unchanged behavior.
     if (!state.enabled || c.owner !== 'agent') {
@@ -1427,7 +1991,7 @@ export class PromiseBeacon extends EventEmitter {
         return await sendNormally();
       }
       const detail = text.replace(/^⚠️\s*\[?promise-beacon\]?\s*/i, '').trim() || text;
-      try { this.config.raiseAttention?.(c.id, detail); } catch { /* non-fatal */ }
+      this.raiseUserAttention(c.id, detail, 'terminal-reroute');
       this.emit('aoft.terminal-rerouted', { id: c.id, topicId: c.topicId, kind });
       return 'rerouted-terminal';
     }
@@ -1496,12 +2060,11 @@ export class PromiseBeacon extends EventEmitter {
       this.updateHotState(c.id, (h) => {
         if (!h.deliveryDeadLetteredAt) h.deliveryDeadLetteredAt = new Date(this.now()).toISOString();
       });
-      try {
-        this.config.raiseAttention?.(
-          c.id,
-          `Delivery for "${(c.agentResponse || c.userRequest).slice(0, 80)}" is permanently failing (${outcome.detail ?? outcome.reason}) — conversation unreachable; beacon dead-lettered. Reachability auto-clears on the next successful delivery or authenticated inbound.`,
-        );
-      } catch { /* non-fatal */ }
+      this.raiseUserAttention(
+        c.id,
+        `Delivery for "${(c.agentResponse || c.userRequest).slice(0, 80)}" is permanently failing (${outcome.detail ?? outcome.reason}) — conversation unreachable; beacon dead-lettered. Reachability auto-clears on the next successful delivery or authenticated inbound.`,
+        'permanent-delivery-failure',
+      );
       await this.config.commitmentTracker.mutate(c.id, prev => ({
         ...prev,
         beaconSuppressed: true,
@@ -1523,12 +2086,11 @@ export class PromiseBeacon extends EventEmitter {
       }
     });
     if (deadLetterNow) {
-      try {
-        this.config.raiseAttention?.(
-          c.id,
-          `${hot.consecutiveDeliveryFailures} consecutive delivery failures for "${(c.agentResponse || c.userRequest).slice(0, 80)}" (last: ${outcome.reason}${outcome.detail ? ` — ${outcome.detail}` : ''}). The beacon keeps retrying.`,
-        );
-      } catch { /* non-fatal */ }
+      this.raiseUserAttention(
+        c.id,
+        `${hot.consecutiveDeliveryFailures} consecutive delivery failures for "${(c.agentResponse || c.userRequest).slice(0, 80)}" (last: ${outcome.reason}${outcome.detail ? ` — ${outcome.detail}` : ''}). The beacon keeps retrying.`,
+        'transient-delivery-failure',
+      );
       this.emit('delivery.dead-letter', { id: c.id, topicId: c.topicId, permanent: false });
     }
     return 'failed-transient';
@@ -1573,7 +2135,8 @@ export class PromiseBeacon extends EventEmitter {
    * owner:'agent', blockedOn:'external' pending commitments. The WINDOW
    * dead-letter is the hard guarantee: when no dependency-probe has landed within
    * the staleness window — OR the wait is past the absolute ceiling regardless of
-   * probes — it raises ONE deduped operator Attention item (raiseAttention),
+   * probes — it can raise ONE deduped operator Attention item after explicit
+   * user-output opt-in,
    * NEVER auto-closing (CMT-1101 scar). Deduped via externalBlockDeadLetteredAt
    * (a fresh probe re-arms it). Rollout-gated: off → no-op; dryRun → logs the
    * would-be dead-letter but does not raise it. Public for tests.
@@ -1602,12 +2165,18 @@ export class PromiseBeacon extends EventEmitter {
         `I've been waiting on an external dependency for "${(c.agentResponse || c.userRequest).slice(0, 80)}" ` +
         `for ${waited} (${reason === 'absolute-ceiling' ? 'past the max wait' : 'no movement in a while'}) — ` +
         `want me to keep waiting or drop it?`;
-      try { this.config.raiseAttention?.(c.id, detail); } catch { /* non-fatal */ }
-      await this.config.commitmentTracker.mutate(c.id, prev => ({
-        ...prev,
-        externalBlockDeadLetteredAt: new Date(now).toISOString(),
-      }));
-      this.emit('aoft.deadlettered-external', { id: c.id, reason });
+      const surfaced = this.raiseUserAttention(c.id, detail, 'external-block');
+      if (surfaced) {
+        await this.config.commitmentTracker.mutate(c.id, prev => ({
+          ...prev,
+          externalBlockDeadLetteredAt: new Date(now).toISOString(),
+        }));
+        this.emit('aoft.deadlettered-external', { id: c.id, reason });
+      } else {
+        // Preserve eligibility for a future explicit opt-in. Do not stamp the
+        // user-facing dead-letter marker when nothing was shown to a user.
+        this.emit('aoft.external-block-recorded-internal', { id: c.id, reason });
+      }
     }
   }
 
@@ -1645,13 +2214,33 @@ export class PromiseBeacon extends EventEmitter {
     // a topic status message (never swallowed, never C2-violating status); off /
     // owner:'user' it sends to the topic exactly as before (guarded on topicId
     // inside emitUserSend).
-    await this.emitUserSend(
+    await this.emitBeaconMessage(
       c,
       `⚠️ [promise-beacon] commitment "${(c.agentResponse || c.userRequest).slice(0, 80)}" violated: ${reason}`,
       'terminal',
     );
     this.stopFor(c.id);
     this.emit('promise.violated', { id: c.id, reason });
+  }
+
+  /** True only after an explicit opt-in. Missing/false is fleet-wide silence. */
+  private userOutputEnabled(): boolean {
+    return this.config.userOutputEnabled === true;
+  }
+
+  /** The sole Attention side of PromiseBeacon's user-output boundary. */
+  private raiseUserAttention(id: string, detail: string, reason: string): boolean {
+    if (!this.userOutputEnabled()) {
+      this.emit('user-output.suppressed', { id, surface: 'attention', reason });
+      return false;
+    }
+    if (!this.config.raiseAttention) return false;
+    try {
+      this.config.raiseAttention(id, detail);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private inQuietHours(): boolean {

@@ -129,6 +129,13 @@ describe('GET /conformance/coverage (Tier 2 integration)', () => {
     expect(typeof res.body.summary.enforcedRatio).toBe('number');
     expect(Array.isArray(res.body.standards)).toBe(true);
     expect(res.body.count).toBe(3);
+    expect(res.body.summary.registry.enforcementScope).toEqual(expect.objectContaining({
+      recognizedHeadings: expect.arrayContaining(['Applied through', 'Enforced by (structure, not willpower)']),
+      excludedProvenanceHeadings: expect.arrayContaining(['Earned from', 'Traces to the goal']),
+      excludedNarrativeHeadings: expect.arrayContaining(['Three postures, in increasing order of ambition']),
+      capturedSections: 2,
+      unrecognizedSections: [],
+    }));
     const kinds = res.body.standards.map((s: { enforcementKind: string }) => s.enforcementKind);
     expect(kinds).toContain('ratchet');
     expect(kinds).toContain('gate');
@@ -217,6 +224,7 @@ describe('GET /conformance/coverage/health (Tier 2 integration)', () => {
     expect(Array.isArray(res.body.gaps)).toBe(true);
     expect(res.body.gaps).toContain('Gap One');
     expect(res.body.danglingCount).toBe(0);
+    expect(res.body.registry.enforcementScope.recognizedHeadings).toContain('Full specs');
   });
 });
 
@@ -273,6 +281,10 @@ describe('GET /conformance/coverage — the PRODUCTION resolution path (no overr
     expect(res.body.registryCurrent).toBe(true);
     expect(res.body.usable).toBe(true);
     expect(res.body.guardsAnalyzable).toBe(true);
+    expect(res.body.summary.guards.freshnessVerified).toBe(true);
+    expect(res.body.summary.guards.sourceIndexSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(res.body.summary.guards.projectDir).toBe(fs.realpathSync(REPO_ROOT));
+    expect(res.body.summary.guards.configuredProjectDir).toBe(REPO_ROOT);
     // Graded over the WHOLE constitution — the point of the change.
     expect(res.body.summary.total).toBeGreaterThanOrEqual(60);
     // And the fleet key the spec names as its rollout discriminator is actually present.
@@ -346,7 +358,9 @@ describe('GET /conformance/coverage — the PRODUCTION resolution path (no overr
           },
         },
         {
-          name: 'unanalyzable guard tree', projectDir: empty, useFixture: false,
+          // Caller-supplied registry deliberately bypasses the production packed-index
+          // fallback so this row still exercises the genuinely missing-guards state.
+          name: 'unanalyzable guard tree', projectDir: empty, useFixture: true,
           expected: {
             usable: false, registryUsable: true, guardsAnalyzable: false,
             registryCurrent: false, verifiedKind: null,

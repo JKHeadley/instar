@@ -91,7 +91,13 @@ describe('a round whose items are all merged can actually finish', () => {
         phases: [{ id: 'p', name: 'p' }],
         parentProjectId: id,
         pipelineStage: it.mergeCommitOid ? 'merged' : 'outline',
-        ...(it.mergeCommitOid ? { mergeCommitOid: it.mergeCommitOid } : {}),
+        ...(it.mergeCommitOid
+          ? {
+              prNumber: 1814,
+              mergeCommitOid: it.mergeCommitOid,
+              ciCheckedAt: '2026-08-01T00:00:00.000Z',
+            }
+          : {}),
       });
     }
   }
@@ -159,7 +165,13 @@ describe('REFUSAL: "I could not check" is not a verdict, in either direction', (
         id: it.id, title: `Item ${it.id}`, description: 'item',
         phases: [{ id: 'p', name: 'p' }], parentProjectId: id,
         pipelineStage: it.mergeCommitOid ? 'merged' : 'outline',
-        ...(it.mergeCommitOid ? { mergeCommitOid: it.mergeCommitOid } : {}),
+        ...(it.mergeCommitOid
+          ? {
+              prNumber: 1814,
+              mergeCommitOid: it.mergeCommitOid,
+              ciCheckedAt: '2026-08-01T00:00:00.000Z',
+            }
+          : {}),
       });
     }
   }

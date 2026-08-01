@@ -1,0 +1,34 @@
+{
+  "ts": "2026-07-31T07:56:08.448Z",
+  "slug": "spawn-drain-refusal-giveup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 59,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/SpawnRequestManager.ts",
+      "src/messaging/TelegramAdapter.ts"
+    ],
+    "addedLines": 50,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/spawn-request-manager.test.ts",
+      "howCaught": "Sustained denied drains settle at the latch threshold; operator visibility retries at a 30-second bound without reactivating the drain loop; the real adapter regression proves recurrence reopens one target-stable item instead of generating an unbounded item series."
+    }
+  },
+  "verdict": "pass"
+}

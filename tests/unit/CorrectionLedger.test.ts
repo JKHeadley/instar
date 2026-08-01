@@ -7,7 +7,12 @@
  * filter; toApiView strips the raw `learning`; countRecords health metric.
  */
 import { describe, it, expect, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { CorrectionLedger } from '../../src/monitoring/CorrectionLedger.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('CorrectionLedger', () => {
   let ledger: CorrectionLedger | null = null;
@@ -78,17 +83,74 @@ describe('CorrectionLedger', () => {
     });
   });
 
-  describe('distinctCounts (restart-proof days + topics + provenance filter)', () => {
-    it('counts distinct UTC calendar days (not sessions)', () => {
+  describe('distinctCounts (days + sessions + provenance filter)', () => {
+    it('migrates pre-session/pre-cluster tables in place without changing dedupe identity', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'correction-ledger-session-migration-'));
+      const dbPath = path.join(dir, 'ledger.db');
+      try {
+        const before = new CorrectionLedger({ dbPath, machineId: 'test' });
+        const original = before.record({
+          kind: 'user-preference',
+          learning: 'plain',
+          scrubbedSummary: 's',
+          deterministicWeight: 3,
+          sessionId: 'legacy-session',
+          detectedAt: '2026-05-01T10:00:00Z',
+        })!;
+        before.close();
+
+        const raw = new Database(dbPath);
+        raw.exec(`DROP INDEX idx_corr_dedupe_session`);
+        raw.exec(`ALTER TABLE correction_occurrences DROP COLUMN session_id`);
+        raw.exec(`DROP INDEX idx_corr_route_cluster`);
+        raw.exec(`ALTER TABLE correction_records DROP COLUMN route_cluster_id`);
+        raw.close();
+
+        const migrated = new CorrectionLedger({ dbPath, machineId: 'test' });
+        expect(migrated.get(original.id)?.dedupeKey).toBe(original.dedupeKey);
+        expect(migrated.get(original.id)?.routeClusterId).toBeUndefined();
+        expect(migrated.distinctCounts(original.dedupeKey, 3).distinctSessions).toBe(1);
+        migrated.record({
+          kind: 'user-preference',
+          learning: 'plain',
+          scrubbedSummary: 's',
+          deterministicWeight: 3,
+          sessionId: 'new-session',
+          detectedAt: '2026-05-02T10:00:00Z',
+        });
+        expect(migrated.distinctCounts(original.dedupeKey, 3).distinctSessions).toBe(2);
+        migrated.close();
+      } finally {
+        SafeFsExecutor.safeRmSync(dir, {
+          recursive: true,
+          force: true,
+          operation: 'tests/unit/CorrectionLedger.test.ts:migration-cleanup',
+        });
+      }
+    });
+
+    it('counts distinct UTC calendar days and sessions for exact-key repeats', () => {
       const l = fresh();
-      l.record({ kind: 'user-preference', learning: 'plain', scrubbedSummary: 's', deterministicWeight: 3, topicId: 1, detectedAt: '2026-05-01T10:00:00Z' });
-      l.record({ kind: 'user-preference', learning: 'plain', scrubbedSummary: 's', deterministicWeight: 3, topicId: 1, detectedAt: '2026-05-01T23:00:00Z' }); // same day
-      l.record({ kind: 'user-preference', learning: 'plain', scrubbedSummary: 's', deterministicWeight: 3, topicId: 2, detectedAt: '2026-05-02T08:00:00Z' });
+      l.record({ kind: 'user-preference', learning: 'plain', scrubbedSummary: 's', deterministicWeight: 3, topicId: 1, sessionId: 'session-a', detectedAt: '2026-05-01T10:00:00Z' });
+      l.record({ kind: 'user-preference', learning: 'plain', scrubbedSummary: 's', deterministicWeight: 3, topicId: 1, sessionId: 'session-a', detectedAt: '2026-05-01T23:00:00Z' }); // same day/session
+      l.record({ kind: 'user-preference', learning: 'plain', scrubbedSummary: 's', deterministicWeight: 3, topicId: 2, sessionId: 'session-b', detectedAt: '2026-05-02T08:00:00Z' });
       const key = CorrectionLedger.dedupeKey('user-preference', 'plain');
       const c = l.distinctCounts(key);
       expect(c.distinctDays).toBe(2);   // 05-01 and 05-02
       expect(c.distinctTopics).toBe(2); // topics 1 and 2
+      expect(c.distinctSessions).toBe(2);
       expect(c.qualifyingOccurrences).toBe(3);
+    });
+
+    it('aggregates distinct counts across a cluster of dedupe keys', () => {
+      const l = fresh();
+      const a = l.record({ kind: 'user-preference', learning: 'alpha beta gamma delta', scrubbedSummary: 'a', deterministicWeight: 3, sessionId: 'session-a', detectedAt: '2026-05-01T10:00:00Z' })!;
+      const b = l.record({ kind: 'user-preference', learning: 'alpha beta gamma epsilon', scrubbedSummary: 'b', deterministicWeight: 3, sessionId: 'session-b', detectedAt: '2026-05-02T10:00:00Z' })!;
+      expect(l.distinctCounts([a.dedupeKey, b.dedupeKey], 3)).toMatchObject({
+        qualifyingOccurrences: 2,
+        distinctDays: 2,
+        distinctSessions: 2,
+      });
     });
 
     it('the deterministic-weight filter EXCLUDES low-weight (LLM-only) occurrences', () => {
@@ -112,6 +174,7 @@ describe('CorrectionLedger', () => {
       const l = fresh();
       const indexes = l.listOccurrenceIndexes();
       expect(indexes).toContain('idx_corr_dedupe_day');
+      expect(indexes).toContain('idx_corr_dedupe_session');
       // The single-column dedupe index is still present (we add the composite,
       // never remove the original).
       expect(indexes).toContain('idx_corr_dedupe');

@@ -190,7 +190,7 @@ import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CartographerTree } from '../core/CartographerTree.js';
 import { CapabilityMapper } from '../core/CapabilityMapper.js';
 import { ScopeVerifier } from '../core/ScopeVerifier.js';
-import { ContextHierarchy } from '../core/ContextHierarchy.js';
+import { ContextHierarchy, checkDeclaredIdentityDirectory } from '../core/ContextHierarchy.js';
 import { CanonicalState } from '../core/CanonicalState.js';
 import { ExternalOperationGate, AUTONOMY_PROFILES } from '../core/ExternalOperationGate.js';
 import { MessageSentinel } from '../core/MessageSentinel.js';
@@ -3649,7 +3649,24 @@ function setupServerLog(stateDir: string): void {
 
 export async function startServer(options: StartOptions): Promise<void> {
   const config = loadConfig(options.dir);
+  // Capture the guard substrate at the boot-config boundary, BEFORE the
+  // PostUpdateMigrator or any later startup path can rewrite config.json.
+  // The tripwire persists what THIS process booted from; later disk changes
+  // must remain visible to GET /guards as diverged-pending-restart.
+  const bootGuardConfigSnapshot = resolveGuardConfigSnapshot(config.projectDir);
   ensureStateDir(config.stateDir);
+
+  // Identity context is additive and survives agent moves. Validate its
+  // persisted directory before any subsystem can derive hooks, locks, or
+  // recovery paths from stale self-knowledge.
+  const declaredDirectoryCheck = checkDeclaredIdentityDirectory(config.stateDir, config.projectDir);
+  if (declaredDirectoryCheck.status === 'invalid') {
+    console.warn(pc.yellow(pc.bold('  ⚠ DECLARED AGENT DIRECTORY IS INVALID')));
+    console.warn(pc.yellow(`  ${declaredDirectoryCheck.identityPath}`));
+    console.warn(pc.yellow(`  Declares: ${declaredDirectoryCheck.declaredDirectory}`));
+    console.warn(pc.yellow(`  Problem: ${declaredDirectoryCheck.reason}`));
+    console.warn(pc.yellow('  Correct the identity directory before relying on generated hooks or recovery state.'));
+  }
 
   // ── Fork-bomb prevention P1 (forkbomb-prevention-simple §D-CAP) ──
   // Inject the operator-configured spawn-cap knobs into the host-wide spawn
@@ -7600,8 +7617,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // GuardPostureTripwire — a disabled guard is itself an incident.
-    // Runs once per server boot. Compares the resolved guard posture (every
-    // monitoring.* enabled flag + scheduler.enabled) against the persisted
+    // Runs once per server boot. Compares the complete resolved guard posture
+    // (generic config extraction UNION the static guard manifest) against the persisted
     // posture from the previous boot; any enabled→disabled transition gets a
     // loud log line + a logs/guard-posture.jsonl breadcrumb + ONE aggregated
     // HIGH Attention item (the 2026-06-05 meltdown load-shed batch-flipped
@@ -7612,7 +7629,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     try {
       const tripwire = await import('../monitoring/GuardPostureTripwire.js');
       const postureResult = await tripwire.runGuardPostureTripwire({
-        config,
+        // Use the defaults/dev-gate-resolved disk substrate captured immediately
+        // after loadConfig. If that read degraded, the already-loaded config is
+        // still safer than dropping the detector entirely.
+        config: bootGuardConfigSnapshot.readError ? config : bootGuardConfigSnapshot.resolved,
+        defaultConfig: bootGuardConfigSnapshot.defaults,
         stateDir: config.stateDir,
         logsDir: path.join(config.stateDir, '..', 'logs'),
         emitAttention: telegram
@@ -7630,15 +7651,31 @@ export async function startServer(options: StartOptions): Promise<void> {
           : undefined,
       });
       if (postureResult.disabled.length > 0) {
+        const transitioned = postureResult.disabled.length - postureResult.newlyTrackedDisabled.length;
         console.log(pc.yellow(
-          `  Guard-posture tripwire: ${postureResult.disabled.length} guard(s) DISABLED since last boot ` +
+          `  Guard-posture tripwire: ${postureResult.disabled.length}/${postureResult.coverage.watched} ` +
+            `watched guard posture incident(s) ` +
+            `(${transitioned} disabled since last boot, ` +
+            `${postureResult.newlyTrackedDisabled.length} newly watched default-ON guard(s) found OFF) ` +
             `(${postureResult.disabled.join(', ')}) — ` +
             `${postureResult.attentionEmitted ? 'Attention item raised' : 'breadcrumb only (no Telegram)'}`,
         ));
       } else if (postureResult.firstBoot) {
-        console.log(pc.green('  Guard-posture tripwire: baseline recorded'));
+        console.log(pc.green(
+          `  Guard-posture tripwire: baseline recorded (${postureResult.coverage.watched} watched guards)`,
+        ));
+      } else if (postureResult.enabled.length > 0) {
+        const transitioned = postureResult.enabled.length - postureResult.newlyTrackedEnabled.length;
+        console.log(pc.green(
+          `  Guard-posture tripwire: ${postureResult.enabled.length}/${postureResult.coverage.watched} ` +
+            `watched guard enablement event(s) ` +
+            `(${transitioned} enabled since last boot, ` +
+            `${postureResult.newlyTrackedEnabled.length} newly watched default-OFF guard(s) found ON)`,
+        ));
       } else {
-        console.log(pc.green('  Guard-posture tripwire: posture unchanged'));
+        console.log(pc.green(
+          `  Guard-posture tripwire: posture unchanged (${postureResult.coverage.watched} watched guards)`,
+        ));
       }
     } catch (err) {
       console.log(pc.yellow(
@@ -12283,7 +12320,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text, metadata: { provenance: 'automation' } }),
         });
         return resp.ok;
       },
@@ -12609,7 +12646,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
-                  body: JSON.stringify({ text }),
+                  body: JSON.stringify({ text, metadata: { provenance: 'automation' } }),
                 });
                 return resp.ok;
               } catch {
@@ -13800,6 +13837,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       suppressUnchangedHeartbeats?: boolean;
       beaconLivenessIntervalMs?: number;
       turnFinishedCloseoutChecks?: number;
+      aggregateByTopic?: boolean;
+      userOutputEnabled?: boolean;
     };
     const sharedLlmQueue = new SharedLlmQueueCls({
       maxConcurrent: 3,
@@ -13974,9 +14013,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         const slackMessagesLogPath = path.join(config.stateDir, 'slack-messages.jsonl');
 
         // Shared helper: check a messages log file for SUBSTANTIVE agent
-        // responses after a timestamp. Filters out system/proxy messages via
-        // isSystemOrProxyMessage AND brief acks via isBriefAck — both kinds
-        // of messages are non-cancelling from PresenceProxy's perspective.
+        // responses after a timestamp. New Telegram rows use structural
+        // provenance; legacy Telegram and Slack rows retain the text classifier
+        // until their writers have migrated. Brief acks remain non-cancelling.
         //
         // The brief-ack filter is what closes the gap from PR #128: that PR
         // taught the event path (recordAgentMessage) to ignore acks, but the
@@ -13998,10 +14037,12 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const matchesTopic = msg.topicId === topicId
                   || (topicId < 0 && msg.channelId && slackChannelToSyntheticId(String(msg.channelId)) === topicId);
                 if (matchesTopic && !msg.fromUser && msg.timestamp > sinceIso) {
+                  if (msg.provenance === 'automation' || msg.provenance === 'user') continue;
                   // Non-cancelling agent message kinds: system/proxy
-                  // chrome, and brief acks ("On it"). Both leave tier
-                  // timers running.
-                  const isNonCancelling = isSystemOrProxyMessage(msg.text)
+                  // chrome on legacy rows, and brief acks ("On it"). Both
+                  // leave tier timers running. A structurally agent-authored
+                  // row is never reclassified from its text prefix.
+                  const isNonCancelling = (msg.provenance !== 'agent' && isSystemOrProxyMessage(msg.text))
                     || isBriefAck(msg.text);
                   if (isNonCancelling) continue;
                   return true;
@@ -14691,6 +14732,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             suppressUnchangedHeartbeats: promiseBeaconCfg.suppressUnchangedHeartbeats,
             beaconLivenessIntervalMs: promiseBeaconCfg.beaconLivenessIntervalMs,
             turnFinishedCloseoutChecks: promiseBeaconCfg.turnFinishedCloseoutChecks,
+            aggregateByTopic: promiseBeaconCfg.aggregateByTopic,
+            // User-facing PromiseBeacon output is fleet-off unless explicitly
+            // opted back in. Missing config is OFF, including on existing agents
+            // before add-missing migration persists the new default.
+            userOutputEnabled: promiseBeaconCfg.userOutputEnabled === true,
             // B2 turn-finished detection — "is the session still generating now?"
             looksActivelyWorking: (frame: string, name: string) =>
               _beaconLooksGeneratingNow(frame, sessionManager.frameworkForSession(name)),
@@ -14719,6 +14765,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const ahEnabled = resolveDevAgentGate(ahRawCfg.enabled, config);
             if (ahEnabled && telegram) {
               const { AutonomousProgressHeartbeat } = await import('../monitoring/AutonomousProgressHeartbeat.js');
+              const { AutonomousHeartbeatRunStateStore } = await import('../monitoring/AutonomousHeartbeatRunStateStore.js');
               const {
                 activeAutonomousJobs,
                 autonomousRunRemainingForTopic,
@@ -14728,6 +14775,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               // Own ParallelActivityIndex (focus source) — fetched ONCE per tick
               // and indexed by topic inside the deps closure.
               const ahActivityIndex = new AHParallelActivityIndex({ stateDir: config.stateDir });
+              const ahRunStateStore = new AutonomousHeartbeatRunStateStore(
+                path.join(config.stateDir, 'state', 'autonomous-heartbeat.json'),
+              );
               const localTelegram2 = telegram;
               const autonomousHeartbeat = new AutonomousProgressHeartbeat(
                 {
@@ -14776,6 +14826,26 @@ export async function startServer(options: StartOptions): Promise<void> {
                     };
                   })(),
                   proxyCoordinator,
+                  runStateStore: ahRunStateStore,
+                  // The spec's rollback/tuning contract is tick-live. The old
+                  // constructor-only snapshot meant an operator edit to the
+                  // silence threshold was invisible until server restart.
+                  getConfig: () => {
+                    // Read only this non-secret block. Calling loadConfig here
+                    // would re-run binary discovery + secret merge every minute.
+                    const disk = JSON.parse(
+                      fs.readFileSync(path.join(config.stateDir, 'config.json'), 'utf8'),
+                    ) as { monitoring?: { autonomousHeartbeat?: typeof ahRawCfg } };
+                    const live = disk.monitoring?.autonomousHeartbeat ?? {};
+                    return {
+                      enabled: resolveDevAgentGate(live.enabled, config),
+                      dryRun: live.dryRun !== false,
+                      silenceThresholdMinutes: live.silenceThresholdMinutes,
+                      tickIntervalMs: live.tickIntervalMs,
+                      maxHeartbeatsPerRun: live.maxHeartbeatsPerRun,
+                      recentOutputChangeWindowMs: live.recentOutputChangeWindowMs,
+                    };
+                  },
                   sendMessage: async (topicId, text, metadata) => {
                     const url = `http://localhost:${config.port}/telegram/reply/${topicId}`;
                     const response = await fetch(url, {
@@ -16028,14 +16098,59 @@ export async function startServer(options: StartOptions): Promise<void> {
               reason: `Peer "${event.agent}" tripped the infra-failure soft limiter (${event.failureCount} non-attributable failures in 10min)`,
               impact: 'Peer\'s queue depth is capped; older messages are dropped. No blame attribution.',
             });
+          } else if (event.kind === 'spawn-drain-attention-failed') {
+            reporter.report({
+              feature: 'Threadline.SpawnDrainAttention',
+              primary: `Create Attention marker "${event.attentionId}" for peer "${event.agent}"`,
+              fallback: `Keep the drain target latched and retry the Attention write (attempt ${event.attempt})`,
+              reason: `Attention write failed: ${event.error}`,
+              impact: 'Queued work remains held and visible in spawn-manager status; the operator-facing marker is delayed.',
+            });
           }
         } catch (err) {
           console.warn(`[spawn-manager] degradation reporter failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       },
+      onDrainGiveUp: async (event) => {
+        if (!telegram) {
+          throw new Error('Telegram Attention adapter is unavailable');
+        }
+        await telegram.createOrReopenAgentHealthAttentionItem({
+          id: event.attentionId,
+          title: `Spawn drain gave up for ${event.agent}`,
+          summary: `${event.refusalCount} consecutive drain re-attempts were refused; ${event.queuedMessagesHeld} queued message(s) are held.`,
+          description:
+            `The Threadline spawn drain latched queued messages from "${event.agent}" after repeated refusals. ` +
+            `Target: ${event.targetKey}. Refusal signature: ${event.refusalSignature}. ` +
+            `Last refusal: ${event.reason}. Refusal window: ${new Date(event.firstRefusedAt).toISOString()} to ${new Date(event.lastRefusedAt).toISOString()}. ` +
+            `The queued work is held until the refusal condition clears and the re-arm cooldown passes; the spawn guard threshold is unchanged.`,
+          category: 'agent-health',
+          priority: 'HIGH',
+          lane: 'agent-health',
+          healthKey: `spawn-drain-refusal:${event.targetKey}`,
+          sourceContext: `spawn-drain-refusal:${event.targetKey}`,
+        });
+      },
+      isDrainRefusalCleared: (marker) => {
+        // Only memory pressure has an authoritative live clear signal here.
+        // Other refusal classes still receive time hysteresis, then retry
+        // through the unchanged admission gate rather than remaining latched
+        // forever on a condition this layer cannot inspect.
+        if (!/memory pressure/i.test(marker.refusalSignature)) return true;
+        const state = memoryMonitor?.getState();
+        return !state || state.state === 'normal';
+      },
+      onDrainRearm: (event) => {
+        console.log(
+          `[spawn-manager] drain give-up latch re-armed for ${event.agent} ` +
+          `(target=${event.targetKey}, signature="${event.refusalSignature}", quiet=${event.rearmCooldownMs}ms)`,
+        );
+      },
       // §4.4: optional knobs from config.
       cooldownMs: spawnConfig?.cooldownMs,
       maxDrainsPerTick: spawnConfig?.maxDrainsPerTick,
+      drainRefusalGiveUpThreshold: spawnConfig?.drainRefusalGiveUpThreshold,
+      drainGiveUpRearmCooldownMs: spawnConfig?.drainGiveUpRearmCooldownMs,
       maxEnvelopeBytes: spawnConfig?.maxEnvelopeBytes,
       maxGlobalQueued: spawnConfig?.maxGlobalQueued,
       degradedMaxQueuedPerAgent: spawnConfig?.degradedMaxQueuedPerAgent,
@@ -16059,8 +16174,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (!result.approved) {
             console.log(`[spawn-manager] drain re-attempt for ${agent} not approved: ${result.reason}`);
           }
+          return result;
         } catch (err) {
-          console.warn(`[spawn-manager] drain re-attempt for ${agent} threw: ${err instanceof Error ? err.message : String(err)}`);
+          const reason = err instanceof Error ? err.message : String(err);
+          console.warn(`[spawn-manager] drain re-attempt for ${agent} threw: ${reason}`);
+          return { approved: false, reason: `Drain callback threw: ${reason}`, retryAfterMs: 30_000 };
         }
       },
     });
@@ -16533,6 +16651,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     let threadlineHandshake: import('../threadline/HandshakeManager.js').HandshakeManager | undefined;
     let threadlineShutdown: (() => Promise<void>) | undefined;
     let threadlineRelayClient: import('../threadline/client/ThreadlineClient.js').ThreadlineClient | undefined;
+    // Relay connection-LOSS reader, captured so /threadline/health can report WHY
+    // the relay is down. The bootstrap has exposed this since the observer landed,
+    // but nothing captured it — so the health route kept answering a literal 'ok'
+    // through a 6h45m relay outage. Capturing it is the whole wiring gap.
+    let threadlineGetLastRelayEvent:
+      | (() => import('../threadline/relayConnectionObserver.js').RelayConnectionEvent | null)
+      | undefined;
     let unifiedTrust: UnifiedTrustSystem | undefined;
     /** Shared reply waiters for threadline waitForReply support */
     const threadlineReplyWaiters = new Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>();
@@ -16561,6 +16686,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       threadlineHandshake = threadline.handshakeManager;
       threadlineShutdown = threadline.shutdown;
       threadlineRelayClient = threadline.relayClient;
+      threadlineGetLastRelayEvent = threadline.getLastRelayEvent;
 
       // Initialize unified trust system (three-layer model + MoltBridge)
       if (threadline.trustManager) {
@@ -16911,8 +17037,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           let result = await threadlineRouter.handleInboundMessage(envelope, relayContext);
 
-          // Fallback for threadId-less messages
-          if (!result.handled && !msg.threadId) {
+          // Fallback only when a threadless message could not be associated
+          // with any thread. A refusal can be unhandled while still carrying
+          // the router-resolved threadId; retrying that payload would hand the
+          // same refused message to the router twice.
+          if (!result.handled && !result.threadId && !msg.threadId) {
             (envelope.message as { threadId?: string }).threadId = getSyntheticThreadId(senderFingerprint);
             result = await threadlineRouter.handleInboundMessage(envelope, relayContext);
           }
@@ -18695,18 +18824,26 @@ export async function startServer(options: StartOptions): Promise<void> {
     // disabled. Observability at GET /worktrees/agent-reaper.
     const { AgentWorktreeReaper } = await import('../monitoring/AgentWorktreeReaper.js');
     const { makeAgentWorktreeReaperDeps } = await import('../monitoring/agentWorktreeGit.js');
+    const { WorktreeEnumerationFailureStore } = await import('../monitoring/WorktreeEnumerationFailureStore.js');
     const _agentWorktreesDir = path.join(path.dirname(config.stateDir), '.worktrees');
+    const _worktreeEnumerationFailureStore = new WorktreeEnumerationFailureStore(
+      path.join(config.stateDir, 'state', 'worktree-enumeration-failures.json'),
+    );
     const agentWorktreeReaper = new AgentWorktreeReaper(
-      makeAgentWorktreeReaperDeps({
-        instarRepo: config.projectDir,
-        worktreesDir: _agentWorktreesDir,
-        // Multi-commit squash-merge detection via GitHub merged-PR state (default
-        // on; fail-safe to cherry-only). Off only if explicitly disabled in config.
-        githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
-      }),
+      {
+        ...makeAgentWorktreeReaperDeps({
+          instarRepo: config.projectDir,
+          worktreesDir: _agentWorktreesDir,
+          // Multi-commit squash-merge detection via GitHub merged-PR state (default
+          // on; fail-safe to cherry-only). Off only if explicitly disabled in config.
+          githubMergeCheck: config.monitoring?.agentWorktreeReaper?.githubMergeCheck ?? true,
+        }),
+        failureHistory: _worktreeEnumerationFailureStore.forGuard('agent-worktree-reaper'),
+      },
       config.monitoring?.agentWorktreeReaper,
     );
     agentWorktreeReaper.start();
+    guardRegistry.register('monitoring.agentWorktreeReaper.enabled', () => agentWorktreeReaper.guardStatus());
     if (config.monitoring?.agentWorktreeReaper?.enabled) {
       console.log(pc.green(
         config.monitoring.agentWorktreeReaper.dryRun === false
@@ -18917,12 +19054,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { OrphanedWorkSentinel } = await import('../monitoring/OrphanedWorkSentinel.js');
       const { makeOrphanedWorkSentinelDeps } = await import('../monitoring/orphanedWorkGit.js');
       orphanedWorkSentinel = new OrphanedWorkSentinel(
-        makeOrphanedWorkSentinelDeps({
-          instarRepo: config.projectDir,
-          worktreesDir: _agentWorktreesDir,
-          stateDir: path.join(config.stateDir, 'state'),
-          raiseAttention: telegram
-            ? (event) => {
+        {
+          ...makeOrphanedWorkSentinelDeps({
+            instarRepo: config.projectDir,
+            worktreesDir: _agentWorktreesDir,
+            stateDir: path.join(config.stateDir, 'state'),
+            raiseAttention: telegram
+              ? (event) => {
                 const slug = event.path.split('/').filter(Boolean).pop() ?? 'worktree';
                 void telegram.createAttentionItem({
                   id: `orphaned-work:${slug}:${event.workSig}`,
@@ -18938,12 +19076,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                   sourceContext: `orphaned-work:${slug}`,
                 });
               }
-            : () => {},
-          now: () => Date.now(),
-        }),
+              : () => {},
+            now: () => Date.now(),
+          }),
+          failureHistory: _worktreeEnumerationFailureStore.forGuard('orphaned-work-sentinel'),
+        },
         { ...config.monitoring?.orphanedWorkSentinel, enabled: _orphanedWorkEnabled },
       );
       orphanedWorkSentinel.start();
+      guardRegistry.register('monitoring.orphanedWorkSentinel.enabled', () => orphanedWorkSentinel!.guardStatus());
       if (_orphanedWorkEnabled) {
         console.log(pc.green('  OrphanedWorkSentinel enabled (silent-uncommitted-death backstop — signal-only)'));
       }
@@ -19381,7 +19522,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         const wiring = await import('../monitoring/greenPrAutomergeWiring.js');
         if (wiring.isAnalyzableGreenPrRepo(repoPath, safeMergePath)) {
           const gpMachineId = coordinator.identity?.machineId ?? `m_host_${os.hostname()}`;
-          const agentNamespace = config.projectName || 'agent';
+          const agentNamespace = wiring.resolveGreenPrAgentNamespace(
+            gpCfg.agentNamespace,
+            config.projectName,
+          );
           const wiringOpts = {
             repoPath, safeMergePath, stateDir: config.stateDir, machineId: gpMachineId,
             repo: 'JKHeadley/instar', agentNamespace,
@@ -19423,12 +19567,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             // (the class deep-merges its defaults — enabled:true, redThresholdMs:2h).
             redPrWatchdog: (gpCfg as { redPrWatchdog?: { enabled?: boolean; redThresholdMs?: number } }).redPrWatchdog,
           } as never);
-          if (greenPrAutoMerger.invariantOk) {
+          if (greenPrAutoMerger.invariantOk && greenPrAutoMerger.configurationOk) {
             guardLatchStore.markPoolArmed(); // R7: this pool is deliberately armed
             greenPrAutoMerger.start();
             console.log(pc.green('  GreenPrAutoMerger enabled (auto-merges green self-authored PRs — Phase 7 machinery)'));
-          } else {
+          } else if (!greenPrAutoMerger.invariantOk) {
             console.log(pc.red(`  GreenPrAutoMerger NOT started — timeout invariant violated: ${greenPrAutoMerger.invariantReason}`));
+          } else {
+            console.log(pc.red(`  GreenPrAutoMerger NOT started — configuration invalid: ${greenPrAutoMerger.configurationIssues.join(', ')}`));
           }
         } else {
           console.log(pc.dim('  GreenPrAutoMerge enabled in config but no analyzable instar repo + safe-merge found — staying inert'));
@@ -24361,7 +24507,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       })),
     });
 
-    const server = new AgentServer({ config, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle: credentialIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle: credentialIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     server.setWorkQueue(workQueue);
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
       const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');

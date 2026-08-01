@@ -1,0 +1,41 @@
+{
+  "ts": "2026-07-31T23:46:05.000Z",
+  "slug": "promise-beacon-user-output-off",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 208,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/PromiseBeacon.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 152,
+    "deletedLines": 56
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "PromiseBeacon's internal durability role and its human-facing narration shared one lifecycle, so enabling follow-through implicitly enabled repetitive summaries and escalation surfaces across every agent."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/promise-beacon-user-output-off.test.ts",
+      "howCaught": "Under sustained indefinitely-pending pressure, the explicit-opt-in outer gate gives a steady-state bound of zero PromiseBeacon conversation or Attention actions: every cadence settles back to internal bookkeeping only. The test also pins migration, production wiring, LLM silence, and external dead-letter eligibility."
+    },
+    "component": "PromiseBeacon"
+  },
+  "verdict": "pass"
+}

@@ -39,8 +39,10 @@ import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import type { Initiative, InitiativeTracker, RoundStatus } from './InitiativeTracker.js';
 import { ProjectRoundLock } from './ProjectRoundLock.js';
 import { ProjectRoundWorktrees } from './ProjectRoundWorktrees.js';
+import { detectClaudePath } from './Config.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
+import { hasCompleteMergedEvidence } from './ProjectRoundDerivation.js';
 
 /** Per-spec defaults. Tests dial both down to keep the suite fast. */
 export const DEFAULT_POLL_INTERVAL_MS = 60_000;
@@ -159,13 +161,14 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
   const maxResumeAttempts = input.maxResumeAttempts ?? DEFAULT_MAX_RESUME_ATTEMPTS;
   /**
    * The items that are GENUINELY uncheckable: absent from `verified` for a
-   * reason the runner could not establish, AND carrying a merge commit that
-   * says work may already have landed.
+   * reason the runner could not establish, AND whose structured state says
+   * work may already have landed (a merge commit, or a `merged` claim whose
+   * evidence is incomplete).
    *
-   * An item with no `mergeCommitOid` is also reported `unverifiable` by the
-   * git verifier, but that is not the same claim — it means nothing has landed
-   * yet, which is ordinary. Splitting on EVIDENCE rather than on the reason
-   * text keeps a reworded message from silently changing control flow.
+   * An ordinary pre-build item with no `mergeCommitOid` is also reported
+   * `unverifiable` by the git verifier, but that means nothing has landed yet.
+   * Splitting on structured state rather than the reason text keeps a reworded
+   * message from silently changing control flow.
    *
    * Defined once and used at BOTH decision points. The first draft of this
    * change inlined it at the pre-spawn check only, and the post-exit check
@@ -173,7 +176,19 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
    * still spawns.
    */
   const uncheckable = (ids: string[], v: MergedVerificationResult): string[] =>
-    ids.filter((id) => v.unverifiable.has(id) && Boolean(input.tracker.get(id)?.mergeCommitOid));
+    ids.filter((id) => {
+      const item = input.tracker.get(id);
+      if (!item) return false;
+      // A real negative is a verdict, not an evidence gap. Git exit 1 proves
+      // the recorded commit is not on canonical main, so rerunning is allowed
+      // even when the stale row predates today's richer evidence fields.
+      if (v.regressed.has(id)) return false;
+      // A plain pre-build item with no merge commit is ordinary unfinished
+      // work. A row that already CLAIMS `merged` without the evidence behind
+      // that claim is different: rerunning it could duplicate completed work.
+      if (item.pipelineStage === 'merged' && !hasCompleteMergedEvidence(item)) return true;
+      return v.unverifiable.has(id) && Boolean(item.mergeCommitOid);
+    });
 
   const mergeBaseBranch = input.mergeBaseBranch ?? resolveCanonicalMainRef(input.targetRepoPath);
   const verifyMergedItems =
@@ -253,12 +268,6 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
 
       // Compute current stop condition: itemIds verified-merged.
       const verdict = await verifyMergedItems(lastItemIds);
-      if (lastItemIds.every((id) => verdict.verified.has(id))) {
-        outcome = 'complete';
-        mergedItemIds = [...lastItemIds];
-        break;
-      }
-
       // "I could not check" is not "not done" — but neither is it a reason to
       // stall a round that has simply not been worked yet.
       //
@@ -266,21 +275,26 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
       //   (a) the item records no mergeCommitOid at all — nothing has landed
       //       yet, which is the ordinary state of a fresh round. Spawning is
       //       exactly right here.
-      //   (b) the item DOES record a merge commit, but git could not answer
-      //       (guard refusal, missing binary, bad ref). Here the work may
-      //       already be done, and spawning would redo it.
+      //   (b) the item records a merge commit but git could not answer, OR the
+      //       item already claims `merged` while its evidence is incomplete.
+      //       Here the work may already be done, and spawning would redo it.
       //
-      // They are told apart by EVIDENCE — whether the item carries a
-      // mergeCommitOid — not by matching the reason text, which would make a
-      // reworded message silently change the control flow.
+      // They are told apart by STRUCTURED RECORD STATE, not by matching the
+      // reason text, which would make a reworded message silently change the
+      // control flow.
       const uncheckableWithEvidence = uncheckable(lastItemIds, verdict);
       if (uncheckableWithEvidence.length > 0) {
         outcome = 'unverifiable';
         unmergedItemIds = lastItemIds.filter((id) => !verdict.verified.has(id));
         reason =
-          `could not verify ${uncheckableWithEvidence.length} item(s) that DO record a merge commit ` +
-          `(${uncheckableWithEvidence.join(', ')}); refusing to respawn work that may already be done, ` +
-          'and recording no round verdict';
+          `could not verify ${uncheckableWithEvidence.length} item(s) whose records say work may ` +
+          `already be merged (${uncheckableWithEvidence.join(', ')}); refusing to respawn work that ` +
+          'may already be done, and recording no round verdict';
+        break;
+      }
+      if (lastItemIds.every((id) => verdict.verified.has(id))) {
+        outcome = 'complete';
+        mergedItemIds = [...lastItemIds];
         break;
       }
 
@@ -317,18 +331,36 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
         break;
       }
 
+      // The child never started. Record it as a round failure that NAMES the
+      // cause, and do NOT spend a resume attempt: a binary that cannot be
+      // resolved or executed will not resolve on a retry, so relaunching would
+      // burn the attempt budget and report the wrong reason ("attempts
+      // exhausted") for a condition that is not about attempts at all.
+      // "Could not start" and "started and failed" are different facts and the
+      // round record must not render them the same.
+      if (exit.kind === 'spawn-failed') {
+        outcome = 'failed';
+        // Node's spawn errors already name the binary ("spawn claude ENOENT"),
+        // so the message alone is enough to diagnose without plumbing the
+        // resolved path — which would risk leaking an absolute home path.
+        reason = `could not start the autonomous child: ${exit.spawnError ?? 'unknown spawn error'}`;
+        unmergedItemIds = [...lastItemIds];
+        break;
+      }
+
       // Natural exit.
       if (exit.kind === 'exited' && exit.code === 0) {
         // Step 6: verify per-item artifacts.
         const final = await verifyMergedItems(lastItemIds);
-        mergedItemIds = lastItemIds.filter((id) => final.verified.has(id));
-        unmergedItemIds = lastItemIds.filter((id) => !final.verified.has(id));
-        const finalUncheckable = uncheckable(unmergedItemIds, final);
-        if (unmergedItemIds.length === 0) {
-          outcome = 'complete';
-        } else if (finalUncheckable.length > 0) {
-          // At least one item RECORDS a merge commit the runner could not
-          // check. `partially-complete` asserts "this genuinely did not land",
+        const finalUncheckable = uncheckable(lastItemIds, final);
+        mergedItemIds = lastItemIds.filter(
+          (id) => final.verified.has(id) && !finalUncheckable.includes(id),
+        );
+        unmergedItemIds = lastItemIds.filter((id) => !mergedItemIds.includes(id));
+        if (finalUncheckable.length > 0) {
+          // At least one item records a merge commit the runner could not
+          // check, or claims merged without the full evidence contract.
+          // `partially-complete` asserts "this genuinely did not land",
           // which that item cannot support — so no verdict is recorded.
           //
           // An item with no merge commit at all, by contrast, genuinely did
@@ -336,8 +368,10 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
           // partially-complete below where it belongs.
           outcome = 'unverifiable';
           reason =
-            `child exited 0 but ${finalUncheckable.length} item(s) recording a merge commit ` +
-            `could not be checked (${finalUncheckable.join(', ')}); no round verdict recorded`;
+            `child exited 0 but ${finalUncheckable.length} item(s) lacked complete, ` +
+            `checkable merge evidence (${finalUncheckable.join(', ')}); no round verdict recorded`;
+        } else if (unmergedItemIds.length === 0) {
+          outcome = 'complete';
         } else {
           outcome = 'partially-complete';
         }
@@ -436,13 +470,44 @@ async function recordOutcome(
 }
 
 interface ExitResult {
-  kind: 'exited' | 'set-changed' | 'halted';
+  kind: 'exited' | 'set-changed' | 'halted' | 'spawn-failed';
   code?: number | null;
   signal?: NodeJS.Signals | null;
+  /** Sanitized reason, present only when kind === 'spawn-failed'. */
+  spawnError?: string;
 }
 
+/**
+ * Spawn errors captured at the spawn site.
+ *
+ * `child_process.spawn` reports a failure to START (ENOENT, EACCES) by
+ * emitting `'error'` — NOT by emitting `'exit'`. Two consequences, and the
+ * second is the one that bites:
+ *
+ *   1. An unhandled `'error'` becomes a process-level uncaught exception.
+ *      `uncaughtExceptionPolicy` crashes by default on anything it does not
+ *      recognise — correctly, since an unknown exception is not safe to
+ *      swallow. So an unstartable child took the WHOLE agent server down.
+ *   2. Even with the crash averted, `'exit'` never fires, so a waiter that
+ *      listens only for `'exit'` waits forever for an event that cannot come.
+ *
+ * Capturing here — at the spawn site, in the same tick as the spawn — means
+ * the "a spawn failure never crashes the process" property does not depend on
+ * any caller remembering to attach a listener. The waiter separately consumes
+ * the error to turn it into a recorded round failure.
+ */
+const spawnFailures = new WeakMap<ChildProcess, Error>();
+
 function spawnAutonomousChild(input: RunRoundInput, itemIds: string[]): ChildProcess {
-  const cmd = input.spawnCommand ?? 'claude';
+  // Resolve the binary rather than trusting the server's PATH. The server runs
+  // under launchd, whose PATH routinely excludes the nvm/asdf/npm-global bin dir
+  // that actually holds `claude` — so a bare 'claude' resolves in the operator's
+  // terminal and ENOENTs in the server. `detectFrameworkBinary` already scans
+  // exactly those locations (its own comment records the 2026-05-31 session-spawn
+  // crash from this same cause); this callsite simply was not using it.
+  // Falls back to the bare name so a host where detection legitimately finds
+  // nothing behaves as before rather than failing earlier than it used to.
+  const cmd = input.spawnCommand ?? detectClaudePath() ?? 'claude';
   const args = input.spawnArgs ?? ['--skill', 'autonomous'];
   const workdir =
     input.initialWorkdir ??
@@ -465,6 +530,13 @@ function spawnAutonomousChild(input: RunRoundInput, itemIds: string[]): ChildPro
       INSTAR_ROUND_ITEM_IDS: JSON.stringify(itemIds),
       INSTAR_STOP_CONDITION: 'all-items-merged-on-main',
     },
+  });
+  // Attach IMMEDIATELY — see spawnFailures above. Without a listener a failure
+  // to START is an unhandled 'error' event, which is a process-level uncaught
+  // exception, which kills the agent server. This listener exists so that
+  // property holds no matter what the caller does with the returned child.
+  child.on('error', (err: Error) => {
+    spawnFailures.set(child, err);
   });
   return child;
 }
@@ -490,9 +562,34 @@ async function waitForExitOrPollChange(
     });
   });
 
+  // A child that never STARTED emits 'error' and never emits 'exit', so the
+  // loop below would otherwise wait forever for an event that cannot arrive.
+  // Check the spawn-site capture first (the error may already have fired before
+  // this function attached anything), then listen for a later one.
+  // An error that ALREADY fired (captured at the spawn site) is answered before
+  // any waiting at all — read into its own local so the check below is not
+  // narrowed by this one.
+  const alreadyFailed = spawnFailures.get(child);
+  if (alreadyFailed) {
+    return { kind: 'spawn-failed', spawnError: alreadyFailed.message };
+  }
+  // Holder object rather than a bare `let`: the assignment happens inside a
+  // callback, which TypeScript's control-flow analysis cannot see.
+  const failure: { err?: Error } = {};
+  const spawnFailurePromise = new Promise<void>((resolve) => {
+    child.once('error', (err: Error) => {
+      failure.err = err;
+      resolve();
+    });
+  });
+
   while (!exited) {
-    // Wait either pollIntervalMs OR exit, whichever comes first.
-    await Promise.race([exitPromise, sleep(pollIntervalMs)]);
+    // Wait for exit, a spawn failure, OR the poll interval — whichever is first.
+    await Promise.race([exitPromise, spawnFailurePromise, sleep(pollIntervalMs)]);
+    const failedToStart = failure.err;
+    if (failedToStart) {
+      return { kind: 'spawn-failed', spawnError: failedToStart.message };
+    }
     if (exited) break;
 
     // Halt check.

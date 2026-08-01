@@ -1,0 +1,42 @@
+{
+  "ts": "2026-07-31T12:55:13.781Z",
+  "slug": "compaction-recovery-path-reachability",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "novel",
+    "closure": "gap",
+    "gapItem": "ACT-245",
+    "component": "PostUpdateMigrator.getSessionStartHook",
+    "novelClass": {
+      "nearestExistingClass": "prompt-parser-contract-drift — both are producer/consumer contract drift in agent-authored text, but generated-artifact-path-contract-drift concerns filesystem reachability rather than prompt-output schemas",
+      "includes": [
+        "an installer writes a generated hook or helper at one path while a generated caller checks or executes a different path",
+        "two templates independently spell a shared generated-artifact location and drift without an integration assertion"
+      ],
+      "excludes": [
+        "a runtime file missing because an otherwise-correct installation was interrupted or manually deleted",
+        "a user-customized path intentionally resolved through configuration"
+      ],
+      "severity": "critical"
+    }
+  },
+  "verdict": "blocked"
+}

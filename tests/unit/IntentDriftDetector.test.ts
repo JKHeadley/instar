@@ -454,7 +454,7 @@ describe('IntentDriftDetector', () => {
       expect(score.summary).toContain('No decisions logged');
     });
 
-    it('treats a legacy qualitative confidence as poisoned input, not an F', () => {
+    it('excludes a legacy qualitative confidence and reports an unmeasurable population', () => {
       writeJournal(stateDir, [{
         timestamp: daysAgo(1),
         decision: 'Legacy decision',
@@ -465,7 +465,10 @@ describe('IntentDriftDetector', () => {
 
       const score = detector.alignmentScore(30);
 
-      expect(score.sampleSize).toBe(1);
+      expect(score.sampleSize).toBe(0);
+      expect(score.populationSize).toBe(1);
+      expect(score.excludedSampleSize).toBe(1);
+      expect(score.exclusions.invalidConfidence).toBe(1);
       expect(score.assessable).toBe(false);
       expect(score.grade).toBe('N/A');
       expect(score.score).toBe(0);

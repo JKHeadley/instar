@@ -44,6 +44,7 @@ describe('PromiseBeacon — phase 1 follow-ups', () => {
     const generate = vi.fn(async () => 'normal status');
 
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -98,6 +99,7 @@ describe('PromiseBeacon — phase 1 follow-ups', () => {
     }
 
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -127,6 +129,7 @@ describe('PromiseBeacon — phase 1 follow-ups', () => {
   it('atRisk doubles effective cadence via schedule()', async () => {
     const tracker = baseTracker(dir);
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),

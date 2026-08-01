@@ -207,6 +207,9 @@ describe('Drift & Alignment Routes (integration)', () => {
       expect(res.body.assessable).toBe(false);
       expect(res.body.summary).toMatch(/cannot be assessed/i);
       expect(res.body.sampleSize).toBe(0);
+      expect(res.body.populationSize).toBe(0);
+      expect(res.body.excludedSampleSize).toBe(0);
+      expect(res.body.sampleCoverage).toBe(0);
       expect(res.body.components).toBeTruthy();
       expect(res.body.components.conflictFreedom).toBe(0);
       expect(res.body.components.confidenceLevel).toBe(0);
@@ -235,6 +238,9 @@ describe('Drift & Alignment Routes (integration)', () => {
       expect(res.body.score).toBeGreaterThan(0);
       expect(['A', 'B', 'C', 'D', 'F']).toContain(res.body.grade);
       expect(res.body.sampleSize).toBe(20);
+      expect(res.body.populationSize).toBe(20);
+      expect(res.body.excludedSampleSize).toBe(0);
+      expect(res.body.sampleCoverage).toBe(1);
       expect(res.body.periodDays).toBe(30);
       expect(typeof res.body.components.conflictFreedom).toBe('number');
       expect(typeof res.body.components.confidenceLevel).toBe('number');
@@ -243,7 +249,7 @@ describe('Drift & Alignment Routes (integration)', () => {
       expect(typeof res.body.summary).toBe('string');
     });
 
-    it('does not serialize poisoned legacy confidence as null or grade it F', async () => {
+    it('reports an all-legacy population as excluded rather than grading it F', async () => {
       fs.writeFileSync(
         path.join(stateDir, 'decision-journal.jsonl'),
         JSON.stringify({
@@ -259,7 +265,11 @@ describe('Drift & Alignment Routes (integration)', () => {
       const res = await request(app).get('/intent/alignment');
 
       expect(res.status).toBe(200);
-      expect(res.body.sampleSize).toBe(1);
+      expect(res.body.sampleSize).toBe(0);
+      expect(res.body.populationSize).toBe(1);
+      expect(res.body.excludedSampleSize).toBe(1);
+      expect(res.body.exclusions).toEqual({ missingConfidence: 0, invalidConfidence: 1 });
+      expect(res.body.sampleCoverage).toBe(0);
       expect(res.body.score).toBe(0);
       expect(res.body.components.confidenceLevel).toBe(0);
       expect(res.body.grade).toBe('N/A');
@@ -304,6 +314,8 @@ describe('Drift & Alignment Routes (integration)', () => {
       const alignRes = await request(app).get('/intent/alignment');
       expect(alignRes.status).toBe(200);
       expect(alignRes.body.sampleSize).toBe(5);
+      expect(alignRes.body.populationSize).toBe(5);
+      expect(alignRes.body.sampleCoverage).toBe(1);
       expect(alignRes.body.score).toBeGreaterThan(0);
     });
   });

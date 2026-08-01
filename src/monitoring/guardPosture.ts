@@ -19,6 +19,10 @@ import path from 'node:path';
 import { getInitDefaults, type AgentType } from '../config/ConfigDefaults.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { DEV_GATED_FEATURES, getConfigByPath } from '../core/devGatedFeatures.js';
+import {
+  GUARD_MANIFEST,
+  type GuardManifestEntry,
+} from './guardManifest.js';
 
 export type GuardPosture = Record<string, boolean>;
 
@@ -27,6 +31,24 @@ export interface GuardPostureDiff {
   disabled: string[];
   /** Guards that were disabled last boot and are enabled now. */
   enabled: string[];
+  /** Newly enrolled keys whose current value is OFF against an ON default. */
+  newlyTrackedDisabled: string[];
+  /** Newly enrolled keys whose current value is ON against an OFF default. */
+  newlyTrackedEnabled: string[];
+}
+
+/** Auditable denominator for the posture substrate. The arithmetic invariant is
+ *  configDerived + manifestDeclared - overlap === watched. */
+export interface GuardPostureCoverage {
+  watched: number;
+  configDerived: number;
+  manifestDeclared: number;
+  overlap: number;
+}
+
+export interface CompleteGuardPosture {
+  posture: GuardPosture;
+  coverage: GuardPostureCoverage;
 }
 
 /** Posture keys whose false→true transition is COST-INCREASING and must be
@@ -131,19 +153,87 @@ export function extractGuardPosture(config: unknown): GuardPosture {
 }
 
 /**
- * Diff two postures. Only keys present in BOTH snapshots can transition —
- * a key appearing for the first time (new feature) or vanishing (config
- * cleanup) is a shape change, not a guard flip, and raises nothing.
+ * Build the COMPLETE boot/read posture from the same substrate as GET /guards:
+ * generic config extraction UNION the static manifest.
+ *
+ * Manifest value precedence deliberately matches buildGuardInventory's historic
+ * behavior: an extractor-derived value wins, then the manifest configPath, then
+ * the declared default. Consequently a default-ON guard absent from config is
+ * represented as ON; writing an explicit false produces an observable flip.
  */
-export function diffGuardPosture(prev: GuardPosture, cur: GuardPosture): GuardPostureDiff {
+export function buildCompleteGuardPosture(
+  config: unknown,
+  manifest: readonly GuardManifestEntry[] = GUARD_MANIFEST,
+): CompleteGuardPosture {
+  const extracted = extractGuardPosture(config);
+  const configObject = config && typeof config === 'object' && !Array.isArray(config)
+    ? config as Record<string, unknown>
+    : {};
+  const manifestMap = new Map<string, GuardManifestEntry>();
+  for (const entry of manifest) manifestMap.set(entry.key, entry);
+
+  const watchedKeys = [...new Set([...Object.keys(extracted), ...manifestMap.keys()])].sort();
+  const posture: GuardPosture = {};
+  let overlap = 0;
+  for (const key of watchedKeys) {
+    const entry = manifestMap.get(key);
+    if (entry && key in extracted) overlap++;
+
+    let enabled = extracted[key];
+    if (typeof enabled !== 'boolean' && entry?.configPath) {
+      const configured = getConfigByPath(configObject, entry.configPath);
+      if (typeof configured === 'boolean') enabled = configured;
+    }
+    if (typeof enabled !== 'boolean' && entry) enabled = entry.defaultEnabled;
+
+    // Every key came from either the boolean-only extractor or a manifest
+    // entry with a boolean default, so this branch is only a defensive guard.
+    if (typeof enabled === 'boolean') posture[key] = enabled;
+  }
+
+  return {
+    posture,
+    coverage: {
+      watched: Object.keys(posture).length,
+      configDerived: Object.keys(extracted).length,
+      manifestDeclared: manifestMap.size,
+      overlap,
+    },
+  };
+}
+
+/**
+ * Diff two postures. Existing keys compare boot-to-boot. A newly enrolled key
+ * normally remains a shape change; when a resolved default posture is supplied,
+ * however, its current value is compared with that default. This makes a tripwire
+ * inventory expansion fail visible instead of silently blessing a pre-existing
+ * default-ON/config-OFF guard as the new baseline.
+ */
+export function diffGuardPosture(
+  prev: GuardPosture,
+  cur: GuardPosture,
+  defaultPosture?: GuardPosture,
+): GuardPostureDiff {
   const disabled: string[] = [];
   const enabled: string[] = [];
+  const newlyTrackedDisabled: string[] = [];
+  const newlyTrackedEnabled: string[] = [];
   for (const key of Object.keys(cur).sort()) {
-    if (!(key in prev)) continue;
-    if (prev[key] === true && cur[key] === false) disabled.push(key);
-    else if (prev[key] === false && cur[key] === true) enabled.push(key);
+    if (key in prev) {
+      if (prev[key] === true && cur[key] === false) disabled.push(key);
+      else if (prev[key] === false && cur[key] === true) enabled.push(key);
+      continue;
+    }
+    if (!defaultPosture || !(key in defaultPosture)) continue;
+    if (defaultPosture[key] === true && cur[key] === false) {
+      disabled.push(key);
+      newlyTrackedDisabled.push(key);
+    } else if (defaultPosture[key] === false && cur[key] === true) {
+      enabled.push(key);
+      newlyTrackedEnabled.push(key);
+    }
   }
-  return { disabled, enabled };
+  return { disabled, enabled, newlyTrackedDisabled, newlyTrackedEnabled };
 }
 
 // ── Boot snapshot (written by the tripwire at every boot, read by /guards
@@ -152,6 +242,8 @@ export function diffGuardPosture(prev: GuardPosture, cur: GuardPosture): GuardPo
 export interface GuardPostureBootSnapshot {
   ts: string;
   posture: GuardPosture;
+  /** Optional for backward compatibility with pre-denominator snapshots. */
+  coverage?: GuardPostureCoverage;
 }
 
 export function guardPostureSnapshotPath(stateDir: string): string {

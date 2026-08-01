@@ -1,0 +1,33 @@
+{
+  "ts": "2026-07-31T22:48:25.885Z",
+  "slug": "remediation-boot-reconciliation",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 109,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/remediation/IntentAuditReconciler.ts",
+      "src/remediation/IntentJournal.ts",
+      "src/remediation/RemediatorBootstrap.ts",
+      "src/remediation/audit/AuditWriter.ts"
+    ],
+    "addedLines": 104,
+    "deletedLines": 5
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Durable intent and audit writers shipped with read APIs, but production bootstrap never constructed a comparison path and AuditWriter did not restore its hot tail after restart."
+  },
+  "classClosure": {
+    "defectClass": "unknown-classification-fail-open",
+    "closure": "tests/unit/IntentAuditReconciler.test.ts and tests/unit/RemediatorBootstrap.test.ts",
+    "reason": "The tests require both durable readers to participate in the live bootstrap path and distinguish matched evidence from an intent missing audit evidence.",
+    "component": "RemediatorBootstrap"
+  },
+  "verdict": "pass"
+}

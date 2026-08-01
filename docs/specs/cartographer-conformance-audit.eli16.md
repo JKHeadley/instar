@@ -62,3 +62,20 @@ to users too," this same audit becomes a capability a user's own agent inherits:
   file-existence checks are the authority.
 - **Surface, don't fix.** It points at the gaps; it never auto-builds a guard and
   never blocks anything. A gap is information for a human (or the agent) to act on.
+
+## July 2026 update — reading the right sections
+
+The registry uses more than one label for enforcement. Framework-Agnostic says
+“Enforced by (structure, not willpower),” while several articles say “Full spec”
+or “Full specs.” The old parser copied only `In practice` and `Applied through`,
+and only the text carried on those exact label lines. A real ratchet under another
+heading could therefore disappear before the enforcement extractor saw it.
+
+Scanning every bold section would be worse: “Earned from” and “Traces to the goal”
+contain postmortems and historical files, not live guards. The parser now reads
+complete blocks under a short enforcement-heading allowlist, excludes separate
+provenance and explanatory lists, and reports every other heading as unrecognized.
+The real registry has zero unrecognized headings, and CI refuses a new one until its
+role is deliberately classified. On the real
+registry this corrects four false gaps (one ratchet and three spec-only articles),
+moves the named-reference ratio from 0.6951 to 0.7073, and keeps zero dangling refs.

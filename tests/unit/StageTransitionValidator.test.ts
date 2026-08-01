@@ -35,6 +35,23 @@ describe('StageTransitionValidator', () => {
   // CONVERGENCE_REPORT_MISSING check.
   let timestampNoReportSpecRel: string;
 
+  function specContext(overrides: Partial<ValidationContext> = {}): ValidationContext {
+    const repo = overrides.targetRepoPath ?? tmpRepo;
+    return {
+      targetRepoPath: repo,
+      canonicalMainRef: 'refs/heads/main',
+      readRepositoryArtifact: async (_ref, repoRelativePath) => {
+        try {
+          return fs.readFileSync(path.join(repo, repoRelativePath), 'utf-8');
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+          throw err;
+        }
+      },
+      ...overrides,
+    };
+  }
+
   beforeAll(() => {
     tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'stage-validator-'));
     fs.mkdirSync(path.join(tmpRepo, 'docs/specs/reports'), { recursive: true });
@@ -83,35 +100,88 @@ describe('StageTransitionValidator', () => {
   // ── outline → spec-drafted ────────────────────────────────────────
 
   it('outline → spec-drafted: accepts when spec file exists and frontmatter parses', async () => {
-    const r = await validateStageTransition('outline', 'spec-drafted', {
+    const r = await validateStageTransition('outline', 'spec-drafted', specContext({
       targetRepoPath: tmpRepo,
       specPath: goodSpecRel,
-    });
+    }));
     expect(r.ok).toBe(true);
   });
 
   it('outline → spec-drafted: rejects when specPath missing', async () => {
-    const r = await validateStageTransition('outline', 'spec-drafted', {
+    const r = await validateStageTransition('outline', 'spec-drafted', specContext({
       targetRepoPath: tmpRepo,
-    });
+    }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('SPEC_PATH_MISSING');
   });
 
   it('outline → spec-drafted: rejects when spec file does not exist', async () => {
-    const r = await validateStageTransition('outline', 'spec-drafted', {
+    const r = await validateStageTransition('outline', 'spec-drafted', specContext({
       targetRepoPath: tmpRepo,
       specPath: 'docs/specs/nonexistent.md',
-    });
+    }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('SPEC_FILE_MISSING');
   });
 
-  it('outline → spec-drafted: rejects path traversal in specPath', async () => {
+  it('outline → spec-drafted: an unreadable evidence source is not fabricated as a missing spec', async () => {
+    const r = await validateStageTransition('outline', 'spec-drafted', specContext({
+      specPath: goodSpecRel,
+      readRepositoryArtifact: async () => {
+        throw new Error('canonical ref unavailable');
+      },
+    }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('SPEC_EVIDENCE_UNVERIFIABLE');
+      expect(r.code).not.toBe('SPEC_FILE_MISSING');
+      expect(r.reason).toContain('canonical ref unavailable');
+    }
+  });
+
+  it('outline → spec-drafted: canonical identity/freshness failure is unverifiable, never absent', async () => {
     const r = await validateStageTransition('outline', 'spec-drafted', {
       targetRepoPath: tmpRepo,
-      specPath: '../../etc/passwd',
+      specPath: goodSpecRel,
+      resolveCanonicalMainRef: () => {
+        throw new Error('live remote head unavailable');
+      },
+      readRepositoryArtifact: async () => null,
     });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('SPEC_EVIDENCE_UNVERIFIABLE');
+      expect(r.reason).toContain('live remote head unavailable');
+    }
+  });
+
+  it('outline → spec-drafted: a missing reader is a wiring error, not a project refusal', async () => {
+    await expect(validateStageTransition('outline', 'spec-drafted', {
+      targetRepoPath: tmpRepo,
+      canonicalMainRef: 'origin/main',
+      specPath: goodSpecRel,
+    })).rejects.toMatchObject({ code: 'STAGE_VALIDATOR_WIRING_ERROR' });
+  });
+
+  it('outline → spec-drafted: reads the explicitly named canonical ref', async () => {
+    let seenRef = '';
+    const r = await validateStageTransition('outline', 'spec-drafted', specContext({
+      canonicalMainRef: 'upstream/main',
+      specPath: goodSpecRel,
+      readRepositoryArtifact: async (ref, repoRelativePath) => {
+        seenRef = ref;
+        return fs.readFileSync(path.join(tmpRepo, repoRelativePath), 'utf-8');
+      },
+    }));
+    expect(r.ok).toBe(true);
+    expect(seenRef).toBe('upstream/main');
+  });
+
+  it('outline → spec-drafted: rejects path traversal in specPath', async () => {
+    const r = await validateStageTransition('outline', 'spec-drafted', specContext({
+      targetRepoPath: tmpRepo,
+      specPath: '../../etc/passwd',
+    }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('SPEC_PATH_ESCAPE');
   });
@@ -119,10 +189,10 @@ describe('StageTransitionValidator', () => {
   it('outline → spec-drafted: rejects non-markdown extensions', async () => {
     const txtPath = path.join(tmpRepo, 'docs/specs/spec.txt');
     fs.writeFileSync(txtPath, '---\ntitle: not md\n---\n');
-    const r = await validateStageTransition('outline', 'spec-drafted', {
+    const r = await validateStageTransition('outline', 'spec-drafted', specContext({
       targetRepoPath: tmpRepo,
       specPath: 'docs/specs/spec.txt',
-    });
+    }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('SPEC_NOT_MARKDOWN');
   });
@@ -130,28 +200,28 @@ describe('StageTransitionValidator', () => {
   // ── spec-drafted → spec-converged ────────────────────────────────
 
   it('spec-drafted → spec-converged: accepts when review-convergence:true + report exists', async () => {
-    const r = await validateStageTransition('spec-drafted', 'spec-converged', {
+    const r = await validateStageTransition('spec-drafted', 'spec-converged', specContext({
       targetRepoPath: tmpRepo,
       specPath: convergedSpecRel,
-    });
+    }));
     expect(r.ok).toBe(true);
   });
 
   it('spec-drafted → spec-converged: accepts the canonical ISO-TIMESTAMP tag + report (Part A bug-fix)', async () => {
     // Previously REJECTED because `"<ts>" !== true`. The tooling writes the
     // timestamp string, so this is the real-world converged spec.
-    const r = await validateStageTransition('spec-drafted', 'spec-converged', {
+    const r = await validateStageTransition('spec-drafted', 'spec-converged', specContext({
       targetRepoPath: tmpRepo,
       specPath: timestampConvergedSpecRel,
-    });
+    }));
     expect(r.ok).toBe(true);
   });
 
   it('spec-drafted → spec-converged: timestamp tag but MISSING report still fails (report check stays unconditional)', async () => {
-    const r = await validateStageTransition('spec-drafted', 'spec-converged', {
+    const r = await validateStageTransition('spec-drafted', 'spec-converged', specContext({
       targetRepoPath: tmpRepo,
       specPath: timestampNoReportSpecRel,
-    });
+    }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('CONVERGENCE_REPORT_MISSING');
   });
@@ -162,19 +232,19 @@ describe('StageTransitionValidator', () => {
       path.join(tmpRepo, emptyTagSpec),
       `---\ntitle: empty\nslug: empty-convergence-tag\nreview-convergence: ""\n---\n# body\n`
     );
-    const r = await validateStageTransition('spec-drafted', 'spec-converged', {
+    const r = await validateStageTransition('spec-drafted', 'spec-converged', specContext({
       targetRepoPath: tmpRepo,
       specPath: emptyTagSpec,
-    });
+    }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('CONVERGENCE_TAG_MISSING');
   });
 
   it('spec-drafted → spec-converged: rejects when review-convergence missing', async () => {
-    const r = await validateStageTransition('spec-drafted', 'spec-converged', {
+    const r = await validateStageTransition('spec-drafted', 'spec-converged', specContext({
       targetRepoPath: tmpRepo,
       specPath: goodSpecRel,
-    });
+    }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('CONVERGENCE_TAG_MISSING');
   });
@@ -186,10 +256,10 @@ describe('StageTransitionValidator', () => {
       path.join(tmpRepo, badSpec),
       `---\ntitle: bad\nslug: "../../../etc/passwd"\nreview-convergence: true\n---\n# body\n`
     );
-    const r = await validateStageTransition('spec-drafted', 'spec-converged', {
+    const r = await validateStageTransition('spec-drafted', 'spec-converged', specContext({
       targetRepoPath: tmpRepo,
       specPath: badSpec,
-    });
+    }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('SLUG_INVALID');
   });
@@ -201,10 +271,10 @@ describe('StageTransitionValidator', () => {
       path.join(tmpRepo, orphanSpec),
       `---\ntitle: orphan\nslug: orphan-spec\nreview-convergence: true\n---\n# body\n`
     );
-    const r = await validateStageTransition('spec-drafted', 'spec-converged', {
+    const r = await validateStageTransition('spec-drafted', 'spec-converged', specContext({
       targetRepoPath: tmpRepo,
       specPath: orphanSpec,
-    });
+    }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('CONVERGENCE_REPORT_MISSING');
   });
@@ -212,10 +282,10 @@ describe('StageTransitionValidator', () => {
   // ── spec-converged → approved ────────────────────────────────────
 
   it('spec-converged → approved: accepts with all three approved fields', async () => {
-    const r = await validateStageTransition('spec-converged', 'approved', {
+    const r = await validateStageTransition('spec-converged', 'approved', specContext({
       targetRepoPath: tmpRepo,
       specPath: approvedSpecRel,
-    });
+    }));
     expect(r.ok).toBe(true);
   });
 
@@ -225,10 +295,10 @@ describe('StageTransitionValidator', () => {
       path.join(tmpRepo, partialSpec),
       `---\ntitle: partial\nslug: partial-approved\napproved: true\napproved-date: 2026-05-11\n---\n# body\n`
     );
-    const r = await validateStageTransition('spec-converged', 'approved', {
+    const r = await validateStageTransition('spec-converged', 'approved', specContext({
       targetRepoPath: tmpRepo,
       specPath: partialSpec,
-    });
+    }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('APPROVED_BY_MISSING');
   });
@@ -254,6 +324,7 @@ describe('StageTransitionValidator', () => {
   it('building → merged: accepts squash-merged PR via mocked ghPrView', async () => {
     const ctx: ValidationContext = {
       targetRepoPath: tmpRepo,
+      canonicalMainRef: 'origin/main',
       prNumber: 42,
       ghPrView: async () => ({
         state: 'MERGED',
@@ -282,7 +353,7 @@ describe('StageTransitionValidator', () => {
         statusCheckRollup: [{ conclusion: 'SUCCESS' }],
       }),
       gitMergeBaseIsAncestor: () => true,
-      mergeBaseBranch: 'upstream/main',
+      canonicalMainRef: 'upstream/main',
     };
     const before = Date.now();
     const r = await validateStageTransition('building', 'merged', ctx);
@@ -302,6 +373,7 @@ describe('StageTransitionValidator', () => {
   it('building → merged: a REFUSED verdict carries no evidence (nothing was established)', async () => {
     const ctx: ValidationContext = {
       targetRepoPath: tmpRepo,
+      canonicalMainRef: 'origin/main',
       prNumber: 42,
       ghPrView: async () => ({
         state: 'MERGED',
@@ -318,6 +390,7 @@ describe('StageTransitionValidator', () => {
   it('building → merged: rejects when mergeCommit not reachable from origin/main', async () => {
     const ctx: ValidationContext = {
       targetRepoPath: tmpRepo,
+      canonicalMainRef: 'origin/main',
       prNumber: 42,
       ghPrView: async () => ({
         state: 'MERGED',
@@ -341,6 +414,7 @@ describe('StageTransitionValidator', () => {
     // current state is its latest run.
     const base = (rollup: unknown[]): ValidationContext => ({
       targetRepoPath: tmpRepo,
+      canonicalMainRef: 'origin/main',
       prNumber: 1641,
       ghPrView: async () => ({
         state: 'MERGED',
@@ -414,6 +488,7 @@ describe('StageTransitionValidator', () => {
     // "it is not there" must be distinguishable, because they call for opposite actions.
     const ctx: ValidationContext = {
       targetRepoPath: tmpRepo,
+      canonicalMainRef: 'origin/main',
       prNumber: 42,
       ghPrView: async () => ({
         state: 'MERGED',
@@ -435,11 +510,34 @@ describe('StageTransitionValidator', () => {
     }
   });
 
+  it('building → merged: an unresolved live canonical snapshot is unverifiable', async () => {
+    const ctx: ValidationContext = {
+      targetRepoPath: tmpRepo,
+      prNumber: 42,
+      resolveCanonicalMainRef: () => {
+        throw new Error('remote main freshness unknown');
+      },
+      ghPrView: async () => ({
+        state: 'MERGED',
+        mergeCommit: { oid: 'a1b2c3d4e5f60708' },
+        statusCheckRollup: [{ conclusion: 'SUCCESS' }],
+      }),
+      gitMergeBaseIsAncestor: () => true,
+    };
+    const r = await validateStageTransition('building', 'merged', ctx);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('MERGE_BASE_UNVERIFIABLE');
+      expect(r.reason).toContain('remote main freshness unknown');
+    }
+  });
+
   it('building → merged: a GENUINE negative is still MERGE_COMMIT_UNREACHABLE (the boundary is not blurred)', async () => {
     // The other side of the same boundary: making refusals honest must NOT turn a real
     // "not an ancestor" into an unverifiable, or the check would stop refusing anything.
     const ctx: ValidationContext = {
       targetRepoPath: tmpRepo,
+      canonicalMainRef: 'origin/main',
       prNumber: 42,
       ghPrView: async () => ({
         state: 'MERGED',
@@ -453,15 +551,15 @@ describe('StageTransitionValidator', () => {
     if (!r.ok) expect(r.code).toBe('MERGE_COMMIT_UNREACHABLE');
   });
 
-  it('building → merged: uses ctx.mergeBaseBranch when provided (fork-origin agent home) [#866 sibling]', async () => {
+  it('building → merged: uses ctx.canonicalMainRef when provided (fork-origin agent home) [#866 sibling]', async () => {
     // On a dev-agent home, origin = the fork; merges land on upstream. The
-    // route resolves the upstream remote and passes mergeBaseBranch; the
+    // route resolves the upstream remote and passes canonicalMainRef; the
     // helper must be called with THAT ref, not the hardcoded origin/main.
     let seenBranch = '';
     const ctx: ValidationContext = {
       targetRepoPath: tmpRepo,
       prNumber: 42,
-      mergeBaseBranch: 'upstream/main',
+      canonicalMainRef: 'upstream/main',
       ghPrView: async () => ({
         state: 'MERGED',
         mergeCommit: { oid: 'a1b2c3d4e5f60708' },
@@ -481,7 +579,7 @@ describe('StageTransitionValidator', () => {
     const ctx: ValidationContext = {
       targetRepoPath: tmpRepo,
       prNumber: 42,
-      mergeBaseBranch: 'upstream/main',
+      canonicalMainRef: 'upstream/main',
       ghPrView: async () => ({
         state: 'MERGED',
         mergeCommit: { oid: 'aaaaaaa' },
@@ -516,6 +614,7 @@ describe('StageTransitionValidator', () => {
   it('building → merged: rejects when CI rollup has a failure', async () => {
     const ctx: ValidationContext = {
       targetRepoPath: tmpRepo,
+      canonicalMainRef: 'origin/main',
       prNumber: 42,
       ghPrView: async () => ({
         state: 'MERGED',

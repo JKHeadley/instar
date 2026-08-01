@@ -82,8 +82,19 @@ export interface AlignmentScore {
     /** Whether decisions are being logged regularly */
     journalHealth: number;
   };
-  /** Number of decisions analyzed */
+  /** Number of decisions in the common measurable cohort used by every component. */
   sampleSize: number;
+  /** Total decisions found in the requested period, before measurement exclusions. */
+  populationSize: number;
+  /** Decisions excluded from the common cohort. Always populationSize - sampleSize. */
+  excludedSampleSize: number;
+  /** Why decisions were excluded from the common cohort. */
+  exclusions: {
+    missingConfidence: number;
+    invalidConfidence: number;
+  };
+  /** Common-cohort coverage of the period population, from 0 to 1. */
+  sampleCoverage: number;
   /** Period analyzed */
   periodDays: number;
   /**
@@ -170,6 +181,35 @@ export class IntentDriftDetector {
    */
   alignmentScore(periodDays: number = 30): AlignmentScore {
     const entries = this.journal.read({ days: periodDays });
+    const confidenceClasses = entries.map(entry => ({
+      entry,
+      confidence: classifyDecisionConfidence(
+        (entry as { confidence?: unknown }).confidence,
+      ),
+    }));
+    const measurableEntries = confidenceClasses
+      .filter((row): row is {
+        entry: DecisionJournalEntry;
+        confidence: { status: 'valid'; value: number };
+      } => row.confidence.status === 'valid')
+      .map(row => row.entry);
+    const missingConfidence = confidenceClasses.filter(
+      row => row.confidence.status === 'missing',
+    ).length;
+    const invalidConfidence = confidenceClasses.filter(
+      row => row.confidence.status === 'invalid',
+    ).length;
+    const populationSize = entries.length;
+    const sampleSize = measurableEntries.length;
+    const excludedSampleSize = populationSize - sampleSize;
+    const sampleCoverage = populationSize > 0 ? sampleSize / populationSize : 0;
+    const measurement = {
+      sampleSize,
+      populationSize,
+      excludedSampleSize,
+      exclusions: { missingConfidence, invalidConfidence },
+      sampleCoverage,
+    };
 
     if (entries.length === 0) {
       return {
@@ -180,7 +220,7 @@ export class IntentDriftDetector {
           principleConsistency: 0,
           journalHealth: 0,
         },
-        sampleSize: 0,
+        ...measurement,
         periodDays,
         // NOT 'F'. Nothing was assessed, so there is no grade to report.
         grade: 'N/A',
@@ -189,10 +229,33 @@ export class IntentDriftDetector {
       };
     }
 
-    const conflictFreedom = this.computeConflictFreedom(entries);
-    const confidenceLevel = this.computeConfidenceLevel(entries);
-    const principleConsistency = this.computePrincipleConsistency(entries);
-    const journalHealth = this.computeJournalHealth(entries, periodDays);
+    if (measurableEntries.length === 0) {
+      return {
+        score: 0,
+        components: {
+          conflictFreedom: 0,
+          confidenceLevel: 0,
+          principleConsistency: 0,
+          journalHealth: 0,
+        },
+        ...measurement,
+        periodDays,
+        grade: 'N/A',
+        assessable: false,
+        summary:
+          `No decisions have measurable confidence — alignment cannot be assessed ` +
+          `(${missingConfidence} missing confidence, ${invalidConfidence} invalid confidence; ` +
+          `${populationSize} total).`,
+      };
+    }
+
+    // One denominator for the whole composite. A row excluded from confidence
+    // is excluded from every component; otherwise the weighted score would mix
+    // incompatible populations and conceal which decisions it actually grades.
+    const conflictFreedom = this.computeConflictFreedom(measurableEntries);
+    const confidenceLevel = this.computeConfidenceLevel(measurableEntries);
+    const principleConsistency = this.computePrincipleConsistency(measurableEntries);
+    const journalHealth = this.computeJournalHealth(measurableEntries, periodDays);
 
     // Weighted average: conflictFreedom(30%) + confidenceLevel(25%) + principleConsistency(25%) + journalHealth(20%)
     const rawScore =
@@ -204,14 +267,6 @@ export class IntentDriftDetector {
     const score = Math.round(rawScore);
     const grade = this.scoreToGrade(score);
     if (grade === 'N/A') {
-      const invalidConfidenceCount = entries.filter(
-        entry => classifyDecisionConfidence(
-          (entry as { confidence?: unknown }).confidence,
-        ).status === 'invalid',
-      ).length;
-      const reason = invalidConfidenceCount > 0
-        ? `${invalidConfidenceCount} decision(s) have invalid confidence values`
-        : 'A score component is non-finite';
       return {
         // Keep JSON honest. Returning NaN would serialize as null, recreating
         // the incident under a different grade.
@@ -222,15 +277,22 @@ export class IntentDriftDetector {
           principleConsistency: 0,
           journalHealth: 0,
         },
-        sampleSize: entries.length,
+        ...measurement,
         periodDays,
         grade: 'N/A',
         assessable: false,
-        summary: `${reason} — alignment cannot be assessed.`,
+        summary: 'A score component is non-finite — alignment cannot be assessed.',
       };
     }
 
-    const summary = this.buildAlignmentSummary(score, grade, entries.length, periodDays);
+    const summary = this.buildAlignmentSummary(
+      score,
+      grade,
+      sampleSize,
+      populationSize,
+      excludedSampleSize,
+      periodDays,
+    );
 
     return {
       score,
@@ -240,7 +302,7 @@ export class IntentDriftDetector {
         principleConsistency: Math.round(principleConsistency),
         journalHealth: Math.round(journalHealth),
       },
-      sampleSize: entries.length,
+      ...measurement,
       periodDays,
       grade,
       assessable: true,
@@ -553,7 +615,14 @@ export class IntentDriftDetector {
     return 'F';
   }
 
-  private buildAlignmentSummary(score: number, grade: string, sampleSize: number, periodDays: number): string {
+  private buildAlignmentSummary(
+    score: number,
+    grade: string,
+    sampleSize: number,
+    populationSize: number,
+    excludedSampleSize: number,
+    periodDays: number,
+  ): string {
     if (sampleSize === 0) return 'No decisions logged — alignment cannot be assessed.';
 
     const gradeDescriptions: Record<string, string> = {
@@ -564,6 +633,9 @@ export class IntentDriftDetector {
       F: 'Poor alignment — decisions are not tracking intent.',
     };
 
-    return `${gradeDescriptions[grade]} (${sampleSize} decisions over ${periodDays} days)`;
+    const coverage = populationSize > 0
+      ? `; ${sampleSize}/${populationSize} measurable, ${excludedSampleSize} excluded`
+      : '';
+    return `${gradeDescriptions[grade]} (${sampleSize} decisions over ${periodDays} days${coverage})`;
   }
 }

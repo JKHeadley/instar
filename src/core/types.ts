@@ -682,6 +682,8 @@ export interface JobState {
   lastError?: string;
   /** Handoff notes from the last successful run — claims to verify, not facts */
   lastHandoff?: string;
+  /** Source-reported measurement state from the last script run, when present. */
+  lastAssessment?: import('./InstrumentAssessment.js').InstrumentAssessment;
   nextScheduled?: string;
   consecutiveFailures: number;
 }
@@ -2308,6 +2310,8 @@ export interface GuardPostureSummary {
   onConfirmed: number;
   onUnverified: number;
   onStale: number;
+  /** Optional for wire back-compat: absent means the peer cannot report this class. */
+  onBlind?: number;
   onDryRun: number;
   offDeviant: number;
   offDeviantKeys: string[];
@@ -5116,6 +5120,10 @@ export interface ThreadlineSpawnConfig {
   cooldownMs?: number;
   /** Max drains per tick. Default: 8. */
   maxDrainsPerTick?: number;
+  /** Max denied drain attempts per agent before give-up. Default: maxRetries or 3. */
+  drainRefusalGiveUpThreshold?: number;
+  /** Quiet-clear interval before a drain give-up latch can re-arm. Default: 480000 (8m). */
+  drainGiveUpRearmCooldownMs?: number;
   /** Max envelope context size in UTF-8 bytes. Default: 262144 (256 KiB). */
   maxEnvelopeBytes?: number;
   /** Max queued messages across ALL agents. Default: 1000. */
@@ -6531,8 +6539,8 @@ export interface MonitoringConfig {
     minDistinctDaysInfraGap?: number;
     /** Distinct calendar days required for an explicit-preference learning (Slice 1b). */
     minDistinctDaysPreference?: number;
-    /** Distinct topics required for the preference path's second prong (Slice 1b). */
-    minDistinctTopicsPreference?: number;
+    /** Distinct context-reset sessions required for the preference path's second prong. */
+    minDistinctSessionsPreference?: number;
     /** Auto-submit infra-gap learnings to /feedback (Slice 1b/3). Default false. */
     autoFeedback?: boolean;
     /** Post a periodic Telegram digest of learned preferences (Slice 2). Default false. */
@@ -6760,6 +6768,8 @@ export interface MonitoringConfig {
     breakerCooldownMin?: number;
     mergeTimeoutMs?: number;
     mergeKillGraceMs?: number;
+    /** Branch prefix owned by this watcher (for example "agent"). Defaults to projectName for compatibility. */
+    agentNamespace?: string;
     /** The agent's verified gh login (R4 identity contract). Unset → inert. */
     expectedGhLogin?: string;
     identityRecheckTicks?: number;

@@ -108,6 +108,7 @@ describe('intent drift', () => {
     expect(output).toContain('Confidence Level');
     expect(output).toContain('Principle Consistency');
     expect(output).toContain('Journal Health');
+    expect(output).toContain('Measured Cohort');
   });
 
   it('respects --window option', async () => {

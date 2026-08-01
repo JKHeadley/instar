@@ -1,6 +1,8 @@
 ---
 title: "Project Scope — Keep Multi-Spec Plans From Falling Off The Radar"
 slug: "project-scope"
+parent-principle: "Verify the State, Not Its Symbol"
+eli16-overview: PROJECT-SCOPE-SPEC.eli16.md
 author: "echo"
 review-convergence: true
 review-iterations: 5
@@ -239,19 +241,19 @@ A new module `src/core/StageTransitionValidator.ts` defines per-edge preconditio
 
 | From | To | Required artifact |
 |------|----|-------------------|
-| outline | spec-drafted | `specPath` exists; file is valid markdown; YAML frontmatter parses with safe-loader |
-| spec-drafted | spec-converged | spec frontmatter has `review-convergence: true`; convergence report file exists at `docs/specs/reports/<slug>-convergence.md` where `<slug>` matches `^[a-z0-9][a-z0-9-]{0,63}$` |
-| spec-converged | approved | spec frontmatter has `approved: true` AND `approved-by` AND `approved-date` |
+| outline | spec-drafted | `specPath` exists as a regular blob on one immutable snapshot of the live canonical-main head; file is valid markdown; YAML frontmatter parses with safe-loader |
+| spec-drafted | spec-converged | canonical-main spec frontmatter has a non-empty `review-convergence` tag; convergence report is a regular blob at `docs/specs/reports/<slug>-convergence.md` on the same snapshot, where `<slug>` matches `^[a-z0-9][a-z0-9-]{0,63}$` |
+| spec-converged | approved | the same canonical-main snapshot's spec frontmatter has `approved: true` AND `approved-by` AND `approved-date` |
 | approved | building | TaskFlow record id provided; record exists with `status: running` |
-| building | merged | `prNumber` provided; `gh pr view <num> --json state,mergeCommit,statusCheckRollup` reports `state == "MERGED"` AND `mergeCommit.oid` reachable from `origin/main` AND CI rollup green |
+| building | merged | `prNumber` provided; `gh pr view <num> --json state,mergeCommit,statusCheckRollup` reports `state == "MERGED"` AND `mergeCommit.oid` reachable from the same resolved canonical-main ref AND CI rollup green |
 | building | regressed | merged-state check failed; auto-applied by the reconciler |
 | merged | regressed | same; auto-applied; **also rolls back round status if applicable (see Phase 1.5)** |
 | any | skipped | `skippedReason` non-empty AND `skippedBy` populated |
 | skipped | outline | `unskippedAt` recorded; reason logged in notes |
 
-**Slug regex constraint:** spec frontmatter `slug` MUST match `^[a-z0-9][a-z0-9-]{0,63}$` (same regex as project `id`). Convergence report path is constructed via `path.join(repoRoot, 'docs/specs/reports', slug + '-convergence.md')` and `realpath`-checked to remain under `docs/specs/reports/`. Slugs that fail this check reject the transition.
+**Slug regex constraint:** spec frontmatter `slug` MUST match `^[a-z0-9][a-z0-9-]{0,63}$` (same regex as project `id`). Convergence report paths are lexically jailed under `docs/specs/reports/`, then read from the canonical git tree. Symlink, tree, and submodule entries are not valid evidence. Slugs that fail this check reject the transition.
 
-**Target repo:** `mergeCommit.oid` reachability is checked in the project's `targetRepoPath` (see Phase 1.1), NOT the agent's cwd. The reconciler `cd`s into `targetRepoPath` (or uses `git -C`) before running `git merge-base --is-ancestor`. Default for new projects: read `targetRepoPath` from plan-doc frontmatter; missing → reject project creation.
+**Target repo and evidence world:** `targetRepoPath` supplies the local git object store, not the truth of whichever branch is checked out there. The server resolves the live canonical repository (a fork's parent), reads its current `main` head without mutating local refs, and freezes that head to one commit OID per request. Spec files, convergence reports, and `mergeCommit.oid` reachability all use that snapshot. The reconciler uses `targetRepoPath` (never the agent cwd) for read-only git operations. Default for new projects: read `targetRepoPath` from plan-doc frontmatter; missing → reject project creation. Unavailable identity, remote head, or object data is unverifiable evidence, not a claim that an artifact is absent.
 
 `POST /projects/:id/advance` calls the validator and rejects with 409 on artifact-check failure. A new `merged-state reconciler` runs on `GET /projects/:id` (**lazy**, debounced per-child: skip if `ciCheckedAt < 6h ago`, AND capped at ≤3 child-revalidations per GET to bound `gh pr view` shell-out cost; selection order is oldest `ciCheckedAt` first, ties broken by `roundIndex` ASC then `itemId` ASC, so no child can starve) and as a periodic job (every 6 hours, no per-call cap). On miss → transition to `regressed`, roll back round status, clear future `autoAdvanceAt`, surface via `awaitingUser`.
 
@@ -352,7 +354,7 @@ cacheKey = sha256(promptTemplateVersion + modelId + specBodySha + sortedReferenc
 
 **Failure modes:** timeout = 30 seconds, fail-closed (round halts with `manual-review-required`). One retry on timeout. Repeated failure (3 in a row across resumes within the same round) → round status `failed`.
 
-**Cost ceiling (corrected from iter 2):** total drift-check spend per agent ≤ $1/day. Tracked via daily-rotated append-only ledger at `.instar/drift-spend-YYYY-MM-DD.jsonl` (one file per UTC day; old files retained ≤30 days then archived to a monthly tarball). Each row: `{recordId, projectId, estimatedCost, actualCost?, timestamp}`. Each call pre-reserves estimated cost via this read-check-append sequence under an **advisory file lock** on `.instar/local/drift-spend.lock` (POSIX `fcntl` flock; lock file lives under machine-local `.instar/local/` to avoid git-sync deltas on a 0-byte file) — protects against concurrent drift-checks across different projects on the same machine. After the call, an `actualCost` row reconciles. Cap check uses `sum(estimatedCost where actualCost is null) + sum(actualCost where present)` for the current UTC day, O(day-rows-only). Boundary: `spent + estimated > $1.00` → reject (strict greater-than). Per-machine ledger; on multi-machine, total is sum of machines' ledgers in git-sync — documented as "per-agent ceiling, up to N machines × $1/day in worst case" (not a true cross-machine atomic cap; deferred as same-PR-registered child `drift-spend-cross-machine`).
+**Cost ceiling (corrected from iter 2):** total drift-check spend per agent ≤ $1/day. Tracked via daily-rotated append-only ledger at `.instar/drift-spend-YYYY-MM-DD.jsonl` (one file per UTC day; old files retained ≤30 days then archived to a monthly tarball). Each row: `{recordId, projectId, estimatedCost, actualCost?, timestamp}`. Each call pre-reserves estimated cost via this read-check-append sequence under an **advisory file lock** on `.instar/local/drift-spend.lock` (POSIX `fcntl` flock; lock file lives under machine-local `.instar/local/` to avoid git-sync deltas on a 0-byte file) — protects against concurrent drift-checks across different projects on the same machine. After the call, an `actualCost` row reconciles. Cap check uses `sum(estimatedCost where actualCost is null) + sum(actualCost where present)` for the current UTC day, O(day-rows-only). Boundary: `spent + estimated > $1.00` → reject (strict greater-than). Per-machine ledger; on multi-machine, total is sum of machines' ledgers in git-sync — documented as "per-agent ceiling, up to N machines × $1/day in worst case" (not a true cross-machine atomic cap; deferred as same-PR-registered child `drift-spend-cross-machine`). <!-- tracked: drift-spend-cross-machine -->
 
 **Path jail for file reads:** all paths in `specPath`, `sourceDocs`, and the file references inside specs must (a) be relative to `targetRepoPath`, (b) resolve via `path.realpath` to a location inside `targetRepoPath`, (c) not traverse symlinks that escape. YAML frontmatter parsed with `js-yaml` safe-load. Tests cover `../`, absolute paths, symlink escape.
 
@@ -387,7 +389,7 @@ cacheKey = sha256(promptTemplateVersion + modelId + specBodySha + sortedReferenc
 10. **On `partially-complete`:** do NOT auto-advance. Surface as `awaitingUser: 'round N partially complete; accept partial (M-of-K items skipped) or resolve missing items'`. User runs `POST /projects/:id/accept-partial` or `/project advance` per item.
 11. **On `failed` (after 3 resume attempts):** round.status = `failed`, project.status = `awaiting-user`. Auto-advance poller skips. Only `/project resume --force` or `/project abandon` accepted.
 
-**Halt switch:** `POST /projects/:id/halt` writes `haltedAt` to the active round, project.status → `halted`, signals the autonomous process via SIGTERM (5s grace, then SIGKILL). Lock released. Worktrees retained for inspection (cleanup deferred to user `/project resume` or `/project abandon`).
+**Halt switch:** `POST /projects/:id/halt` writes `haltedAt` to the active round, project.status → `halted`, signals the autonomous process via SIGTERM (5s grace, then SIGKILL). Lock released. Worktrees remain available for inspection and are cleaned up by an explicit user `/project resume` or `/project abandon` action.
 
 **Sentinel integration:** the existing MessageSentinel emergency-stop handler also halts any active round-runner-managed autonomous session via the same path.
 
@@ -563,14 +565,14 @@ Initiatives tab filter:
 
 ### Phase 1.14: Out of scope for Phase 1 (tracked as same-PR child initiatives)
 
-Each deferred item below is registered as a CHILD INITIATIVE of the project-scope project itself in the same commit that ships Phase 1, at `pipelineStage: 'outline'`. The `defers:` list in this spec's frontmatter names each slug; the new `scripts/check-defers.sh` pre-commit hook (Phase 1.6) enforces that each slug exists as a registered initiative at HEAD.
+Each deferred item below is registered as a CHILD INITIATIVE of the project-scope project itself in the same commit that ships Phase 1, at `pipelineStage: 'outline'`. <!-- tracked: project-scope --> The `defers:` list in this spec's frontmatter names each slug; the new `scripts/check-defers.sh` pre-commit hook (Phase 1.6) enforces that each slug exists as a registered initiative at HEAD.
 
-| Item | Why deferred |
+| Item | Why deferred | <!-- tracked: project-scope -->
 |------|--------------|
-| Project-level daily digest job (`project-daily-digest`) | Reuses initiative-digest infra; small follow-up |
-| Cross-project drift / scope overlap (`cross-project-drift`) | Needs separate primitive; deferred. Phase 1 logs file-path overlap into a deferred-review queue (no blocking) |
+| Project-level daily digest job (`project-daily-digest`) | Reuses initiative-digest infra; small follow-up <!-- tracked: project-daily-digest --> |
+| Cross-project drift / scope overlap (`cross-project-drift`) | Needs separate primitive; deferred. <!-- tracked: cross-project-drift --> Phase 1 logs file-path overlap into a deferred-review queue (no blocking) <!-- tracked: cross-project-drift --> |
 | Auto-seeding projects from PR labels (`project-pr-label-autoseed`) | Detection logic non-trivial; Phase 2 |
-| True cross-machine atomic drift-spend cap (`drift-spend-cross-machine`) | Phase 1 uses per-machine ledger summed via sync; atomic cap deferred |
+| True cross-machine atomic drift-spend cap (`drift-spend-cross-machine`) | Phase 1 uses per-machine ledger summed via sync; atomic cap deferred <!-- tracked: drift-spend-cross-machine --> |
 
 ## Surface
 
@@ -578,6 +580,7 @@ Each deferred item below is registered as a CHILD INITIATIVE of the project-scop
 |------|--------|
 | `src/core/InitiativeTracker.ts` | Add new optional fields; serialization rule; `kind` immutability; backfill on first load (batched, single-write, idempotent); digest-cache invalidation in write path |
 | `src/core/StageTransitionValidator.ts` | NEW. Per-edge artifact preconditions; uses `gh pr view` for merge state |
+| `src/core/StageTransitionContext.ts` | Single production dependency assembly; canonical-ref repository artifact reads and merge helpers |
 | `src/core/ProjectDriftChecker.ts` | NEW. Signal-only verdict with path jail, file hashing + mtime fast-path, JSON-schema output, cost ledger, citation verification |
 | `src/core/ProjectRoundRunner.ts` | NEW. Single-entry-point round lifecycle with halt switch, lazy worktree allocation, SIGTERM, dynamic stop revalidation, per-step halt checkpoints |
 | `src/core/PlanDocParser.ts` | NEW. Frontmatter schema + roster-table parser; safe YAML; path jail; dry-run mode |
@@ -610,9 +613,9 @@ Each deferred item below is registered as a CHILD INITIATIVE of the project-scop
 - Not a ticket system. No assignees other than the agent. No priority fields outside round groupings.
 - Not modifying TaskFlow. Each per-item build IS a TaskFlow record, but the round itself is not.
 - Not replacing `/build` or `/instar-dev`. The round runner *delegates* to these for per-item builds.
-- Not implementing cross-project drift detection in Phase 1 (deferred as a same-PR tracked child).
-- Not implementing PR-label auto-seeding (deferred as a same-PR tracked child).
-- Not implementing true cross-machine atomic drift-spend cap in Phase 1 (deferred as a same-PR tracked child).
+- Not implementing cross-project drift detection in Phase 1 (deferred as a same-PR tracked child). <!-- tracked: cross-project-drift -->
+- Not implementing PR-label auto-seeding (deferred as a same-PR tracked child). <!-- tracked: project-pr-label-autoseed -->
+- Not implementing true cross-machine atomic drift-spend cap in Phase 1 (deferred as a same-PR tracked child). <!-- tracked: drift-spend-cross-machine -->
 - Not multi-user. Single owner per project; single agent per project.
 
 ## Rollback cost
@@ -707,7 +710,7 @@ Each deferred item below is registered as a CHILD INITIATIVE of the project-scop
 19. Plan-doc with `source_docs: ["/etc/passwd"]` or `slug: "../etc/foo"` → rejected by parser.
 20. Session-start hook reads cache file in ≤50ms; with missing cache, falls back to one-line "state unavailable" message.
 21. Dashboard Projects tab renders correctly; Initiatives tab default-hides project-kind and parented items via server-side filter.
-22. All deferred follow-ups (digest job, cross-project drift, PR-label auto-seeding, cross-machine drift-spend cap) exist as registered child initiatives in the same commit; `scripts/check-defers.sh` pre-commit hook rejects the commit if not.
+22. All deferred follow-ups <!-- tracked: project-scope --> (digest job, cross-project drift, PR-label auto-seeding, cross-machine drift-spend cap) exist as registered child initiatives in the same commit; `scripts/check-defers.sh` pre-commit hook rejects the commit if not.
 23. Round-complete message via Telegram includes whatLanded, concreteNextStep, brakeHandlePhrase; absence → send rejected by tone gate. Pre-flight halt message includes empty-default whatLanded; presence enforced, not non-emptiness.
 24. Stale-PID lock removed without server restart on next preflight.
 25. Skipped item can transition back to `outline` via `/project advance <id> outline` with `unskippedAt`.
@@ -740,7 +743,7 @@ The following are now normative (resolved in convergence):
 - **Drift check model**: cheapest configured intelligence provider; consistent with other gates.
 - **Round runner failure recovery**: in-progress + resume up to 3 attempts; `failed` thereafter; only `--force` resume or `abandon`.
 - **Drift-check input size**: hard 5-file cap; over-budget → `manual-review-required`.
-- **Cross-project drift**: deferred to Phase 2 as a same-PR-registered child; Phase 1 logs file-path overlap into a deferred-review queue (no blocking).
+- **Cross-project drift**: deferred to Phase 2 as a same-PR-registered child; Phase 1 logs file-path overlap into a deferred-review queue (no blocking). <!-- tracked: cross-project-drift -->
 - **Drift check authority**: SIGNAL only; deterministic gate combines drift + artifact + ownership + brake state.
 - **First-launch approval**: required at runner pre-flight (single chokepoint).
 - **Auto-advance window persistence**: persisted ISO timestamp polled by existing tick.

@@ -23,6 +23,43 @@ Telling those two apart, automatically, is the whole trick. Mixing them up would
 - **It waits for a pattern.** One correction isn't a pattern. It needs to see the same lesson a few times before it suggests anything, so we don't overreact to a single off day.
 - **It starts switched off.** Like the failure-watcher before it, it ships dark and only turns on when we choose.
 
+## How repeated wording is recognized now
+
+The first version only recognized a repeat when the cleaned-up words were
+identical. That is too strict for normal language: “give me the plan link and
+walk me through approval” and “show me the plan and explain each approval step”
+can express the same preference while producing different stored records.
+
+The analyzer now compares the cleaned-up word sets when it reviews the ledger.
+It groups only highly similar records, and it never groups a personal preference
+with a tool problem even if their wording overlaps. The stored identity of every
+record stays unchanged, so this does not rewrite history or require a risky data
+migration.
+
+Similarity alone is not permission to promote. A group still needs enough
+support, evidence on more than one day, and evidence from more than one real
+session. The session check replaces the old topic check: Justin does most work
+in one topic, so “different topics” measured navigation habits rather than
+whether a preference survived a fresh conversational context. One intense burst
+in one session still cannot become a standing preference.
+
+The similarity floor is 0.65, and every pair inside a group must clear it. That
+last part matters: if A resembles B and B resembles C, C cannot sneak into A's
+group unless A also resembles C. The live 37-record ledger contains three
+compact same-kind groups of sizes three, two, and three inside a larger
+human-recognized approval-links family. The algorithm intentionally keeps the
+looser variants apart, and it never merges the two records classified as tool
+gaps with personal preferences. The family is also all from one day and one
+session, so the live replay honestly promotes nothing yet. A test proves a
+compact group becomes eligible only after qualifying evidence arrives on a
+different day in a different session.
+
+When a group does qualify, the ledger marks every member together before it
+writes anything externally. If even one row changed in the meantime, nothing is
+written. The rows also keep a shared group id during the check-back period, so a
+repeat of any original wording reopens the whole lesson instead of letting one
+wording look “fixed” while another keeps recurring.
+
 ## Why this is the natural next step
 
 We just built the version of this for *code that breaks* (the failure-watcher). This is the exact same idea pointed at *conversations* instead of code — learn from the moment something went wrong, figure out whether it's a tool problem or a you-and-me problem, and make sure the lesson actually sticks instead of evaporating. The force-push nag you flagged today is literally the first thing it should catch.

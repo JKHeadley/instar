@@ -304,13 +304,33 @@ describe('TelegramAdapter', () => {
       standby.outboundRelay = relay;
       try {
         const res = await standby.sendToTopic(42, 'reply from a moved session');
-        expect(relay).toHaveBeenCalledWith(42, 'reply from a moved session', { silent: undefined });
+        expect(relay).toHaveBeenCalledWith(42, 'reply from a moved session', {
+          silent: undefined,
+          kindMetadata: undefined,
+          provenance: 'automation',
+        });
         expect(res.messageId).toBe(999); // the relayed id, used for local bookkeeping
         expect(fetchSpy).not.toHaveBeenCalled(); // never hits the Telegram API directly
       } finally {
         vi.unstubAllGlobals();
         await standby.stop();
         SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/TelegramAdapter.test.ts:relay1' });
+      }
+    });
+
+    it('preserves explicit agent provenance through a tokenless relay', async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-tg-relay-provenance-'));
+      const standby = new TelegramAdapter({ token: '', chatId: '-100123456', pollIntervalMs: 100 }, tmp);
+      const relay = vi.fn(async (_topicId: number) => ({ messageId: 1000, topicId: _topicId }));
+      standby.outboundRelay = relay;
+      try {
+        await standby.sendToTopic(42, 'deliberate moved-session reply', { provenance: 'agent' });
+        expect(relay).toHaveBeenCalledWith(42, 'deliberate moved-session reply', expect.objectContaining({
+          provenance: 'agent',
+        }));
+      } finally {
+        await standby.stop();
+        SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/TelegramAdapter.test.ts:relay-provenance' });
       }
     });
 

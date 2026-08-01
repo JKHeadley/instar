@@ -34,7 +34,7 @@ function baseContext(): RouteContext {
 function fakeSentinel(orphanPath?: string): OrphanedWorkSentinel {
   const wt: OrphanedWorktreeInfo = { path: orphanPath ?? '/wt/feature', branch: 'echo/feature', headSha: 'deadbeef' };
   const deps: OrphanedWorkSentinelDeps = {
-    listWorktrees: () => (orphanPath ? [wt] : []),
+    listWorktrees: () => ({ ok: true as const, worktrees: orphanPath ? [wt] : [] }),
     hasUncommittedWork: () => true,
     workSignature: () => 'sigZ',
     isInUse: () => false,

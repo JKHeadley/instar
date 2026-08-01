@@ -34,6 +34,11 @@ function runMigrateScripts(m: PostUpdateMigrator): MigrationResult {
   (m as unknown as { migrateScripts(r: MigrationResult): void }).migrateScripts(result);
   return result;
 }
+function runMigrateHooks(m: PostUpdateMigrator): MigrationResult {
+  const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+  (m as unknown as { migrateHooks(r: MigrationResult): void }).migrateHooks(result);
+  return result;
+}
 function runMigrateClaudeMd(m: PostUpdateMigrator): MigrationResult {
   const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
   (m as unknown as { migrateClaudeMd(r: MigrationResult): void }).migrateClaudeMd(result);
@@ -83,7 +88,7 @@ describe('getSessionStartHook — MACHINE LOAD block survives compaction', () =>
     expect(hook).toContain('--- MACHINE LOAD ---');
     expect(hook).toContain('load-assess.sh');
     const blockIdx = hook.indexOf('--- MACHINE LOAD ---');
-    const execIdx = hook.indexOf('exec bash "$INSTAR_DIR/hooks/compaction-recovery.sh"');
+    const execIdx = hook.indexOf('exec bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh"');
     expect(blockIdx).toBeGreaterThan(-1);
     expect(execIdx).toBeGreaterThan(-1);
     // The load-bearing property: the block prints BEFORE the process-replacing exec,
@@ -96,6 +101,38 @@ describe('getSessionStartHook — MACHINE LOAD block survives compaction', () =>
     const hook = (m as unknown as { getSessionStartHook(): string }).getSessionStartHook();
     expect(hook.toLowerCase()).toContain('load average');
     expect(hook.toLowerCase()).toContain('never');
+  });
+});
+
+describe('PostUpdateMigrator — compaction recovery hook reachability', () => {
+  let projectDir: string;
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-compaction-hook-'));
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-loadAssess.test.ts' });
+  });
+
+  it('writes the recovery hook at the exact path checked and executed by session-start', () => {
+    const result = runMigrateHooks(createMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    const sessionStartPath = path.join(projectDir, '.instar', 'hooks', 'instar', 'session-start.sh');
+    const sessionStart = fs.readFileSync(sessionStartPath, 'utf8');
+    const referencedRecoveryPaths = Array.from(
+      sessionStart.matchAll(/"\$INSTAR_DIR\/([^"]*compaction-recovery\.sh)"/g),
+      (match) => match[1],
+    );
+
+    expect(referencedRecoveryPaths).toHaveLength(2);
+    expect(new Set(referencedRecoveryPaths)).toEqual(new Set(['hooks/instar/compaction-recovery.sh']));
+
+    const installedRecoveryPath = path.join(projectDir, '.instar', referencedRecoveryPaths[0]);
+    expect(fs.existsSync(installedRecoveryPath)).toBe(true);
+    expect(fs.statSync(installedRecoveryPath).mode & 0o100).toBe(0o100);
   });
 });
 

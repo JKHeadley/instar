@@ -18,7 +18,7 @@ import {
 import type { AcceptedFallbackRecord, ScopedAcceptedFallbacks } from './guardAcceptedFallbacks.js';
 import { getConfigByPath } from '../core/devGatedFeatures.js';
 import {
-  extractGuardPosture,
+  buildCompleteGuardPosture,
   type GuardPostureBootSnapshot,
   type ResolvedGuardConfigSnapshot,
 } from './guardPosture.js';
@@ -28,6 +28,7 @@ export type GuardEffectiveState =
   | 'on-confirmed'
   | 'on-unverified'
   | 'on-stale'
+  | 'on-blind'
   | 'on-dry-run'
   | 'off'
   | 'diverged-pending-restart'
@@ -58,6 +59,8 @@ export interface GuardRuntimeProjection {
   stale?: boolean;
   jobCount?: number;
   pausedJobCount?: number;
+  verdictUnknown?: boolean;
+  verdictUnknownReason?: string;
 }
 
 export interface GuardRow {
@@ -91,6 +94,7 @@ export interface GuardsSummary {
   onConfirmed: number;
   onUnverified: number;
   onStale: number;
+  onBlind: number;
   onDryRun: number;
   off: number;
   offDeviant: number;
@@ -126,11 +130,13 @@ const ROW_FIELD_ALLOWLIST: ReadonlySet<string> = new Set([
 ]);
 const RUNTIME_FIELD_ALLOWLIST: ReadonlySet<string> = new Set([
   'enabled', 'dryRun', 'lastTickAt', 'tickAgeMs', 'stale', 'jobCount', 'pausedJobCount',
+  'verdictUnknown', 'verdictUnknownReason',
 ]);
 const LOAD_BEARING_UNINSPECTABLE_STATES: ReadonlySet<GuardEffectiveState> = new Set([
   'missing',
   'errored',
   'on-stale',
+  'on-blind',
   'off-runtime-divergent',
 ]);
 export { ROW_FIELD_ALLOWLIST, RUNTIME_FIELD_ALLOWLIST };
@@ -176,7 +182,7 @@ function isWithinSoakWindow(manifest: GuardManifestEntry | undefined, now: numbe
  * The normative precedence table (spec §2.2) — ONE state per guard, first
  * match wins:
  *   errored → missing → off-runtime-divergent → diverged-pending-restart →
- *   off → on-dry-run → on-stale → on-confirmed → on-unverified
+ *   off → on-dry-run → on-stale → on-blind → on-confirmed → on-unverified
  */
 export function deriveGuardRow(input: DeriveInput): GuardRow {
   const { key, manifest, runtime, now } = input;
@@ -221,6 +227,12 @@ export function deriveGuardRow(input: DeriveInput): GuardRow {
     }
     if (typeof s.jobCount === 'number') runtimeProjection.jobCount = s.jobCount;
     if (typeof s.pausedJobCount === 'number') runtimeProjection.pausedJobCount = s.pausedJobCount;
+    if (s.verdictUnknown === true) {
+      runtimeProjection.verdictUnknown = true;
+      if (typeof s.verdictUnknownReason === 'string') {
+        runtimeProjection.verdictUnknownReason = s.verdictUnknownReason;
+      }
+    }
   } else if (runtime.kind === 'error') {
     runtimeReason = 'status-error';
     error = runtime.message;
@@ -291,6 +303,8 @@ export function deriveGuardRow(input: DeriveInput): GuardRow {
     effective = 'on-dry-run'; // watching but toothless; stale stays visible in the runtime block
   } else if (stale) {
     effective = 'on-stale';
+  } else if (runtime.kind === 'ok' && runtime.status.verdictUnknown === true) {
+    effective = 'on-blind';
   } else if (runtime.kind === 'ok' && runtime.status.enabled) {
     effective = 'on-confirmed';
   } else {
@@ -355,30 +369,22 @@ export function buildGuardInventory(opts: {
   acceptedFallbacks?: ScopedAcceptedFallbacks;
 }): GuardInventoryResult {
   const now = opts.now ?? Date.now();
-  const extractedCurrent = extractGuardPosture(opts.snapshot.resolved);
-  const extractedDefaults = extractGuardPosture(opts.snapshot.defaults);
+  // The endpoint and boot tripwire consume this exact same union builder.
+  // Keeping key/value assembly in one funnel prevents the 36-of-90 split where
+  // /guards knew the manifest but the transition detector did not.
+  const currentPosture = buildCompleteGuardPosture(opts.snapshot.resolved).posture;
+  const defaultPosture = buildCompleteGuardPosture(opts.snapshot.defaults).posture;
   const manifestMap = new Map<string, GuardManifestEntry>();
   for (const entry of GUARD_MANIFEST) manifestMap.set(entry.key, entry);
 
-  const keys = [...new Set([...Object.keys(extractedCurrent), ...manifestMap.keys()])].sort();
+  const keys = Object.keys(currentPosture).sort();
 
   const guards: GuardRow[] = [];
   for (const key of keys) {
     const manifest = manifestMap.get(key);
 
-    let configEnabled = asBool(extractedCurrent[key]);
-    let defaultEnabled = asBool(extractedDefaults[key]);
-    if (configEnabled === undefined && manifest?.configPath) {
-      configEnabled = asBool(getConfigByPath(opts.snapshot.resolved, manifest.configPath));
-    }
-    if (defaultEnabled === undefined && manifest?.configPath) {
-      defaultEnabled = asBool(getConfigByPath(opts.snapshot.defaults, manifest.configPath));
-    }
-    if (defaultEnabled === undefined && manifest) defaultEnabled = manifest.defaultEnabled;
-    // The resolved snapshot normally contains every default key (defaults are
-    // merged in), but a degraded/partial snapshot must still yield the
-    // default-resolved state — a guard can never drop out of the inventory.
-    if (configEnabled === undefined) configEnabled = defaultEnabled;
+    const configEnabled = asBool(currentPosture[key]);
+    const defaultEnabled = asBool(defaultPosture[key]);
 
     const configDryRun = manifest?.dryRunConfigPath
       ? asBool(getConfigByPath(opts.snapshot.resolved, manifest.dryRunConfigPath))
@@ -402,7 +408,7 @@ export function buildGuardInventory(opts: {
   }
 
   const summary: GuardsSummary = {
-    onConfirmed: 0, onUnverified: 0, onStale: 0, onDryRun: 0,
+    onConfirmed: 0, onUnverified: 0, onStale: 0, onBlind: 0, onDryRun: 0,
     off: 0, offDeviant: 0, offDarkDefault: 0,
     divergedPendingRestart: 0, errored: 0, missing: 0, offRuntimeDivergent: 0,
     runtimeEnriched: '',
@@ -422,6 +428,7 @@ export function buildGuardInventory(opts: {
       case 'on-confirmed': summary.onConfirmed++; break;
       case 'on-unverified': summary.onUnverified++; break;
       case 'on-stale': summary.onStale++; break;
+      case 'on-blind': summary.onBlind++; break;
       case 'on-dry-run': summary.onDryRun++; break;
       case 'off':
         summary.off++;
@@ -460,6 +467,7 @@ export function buildHeartbeatPostureBlock(
     onConfirmed: s.onConfirmed,
     onUnverified: s.onUnverified,
     onStale: s.onStale,
+    onBlind: s.onBlind,
     onDryRun: s.onDryRun,
     offDeviant: s.offDeviant,
     offDeviantKeys,

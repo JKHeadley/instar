@@ -5,6 +5,23 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "worktree-enumeration-failure-history",
+      "description": "Restart-surviving failure count and last-failure time for the two local worktree guards; the current pass outcome intentionally remains process-local.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/worktree-enumeration-failures.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 2,
+        "note": "Exactly one replace-in-place record per worktree guard; no event rows accumulate."
+      }
+    },
+    {
       "category": "goal-realignment-runtime",
       "description": "Phase 1 candidate-priority inbox, checkpointed extraction outbox, counters, and latest dry-run verdict. Unresolved candidates are never silently discarded; resolved rows and applied checkpoints are capped.",
       "scope": "machine-local",
@@ -254,6 +271,25 @@
         "autonomous-emergency-stop"
       ],
       "grandfathered": false
+    },
+    {
+      "category": "autonomous-heartbeat-throttle",
+      "description": "Machine-local durable per-run AutonomousProgressHeartbeat count and backoff anchor. The stable autonomous run id prevents server restarts on one machine from reopening the cap; cross-machine coordination remains the heartbeat spec's explicitly deferred substrate.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/autonomous-heartbeat.json",
+        "autonomous-heartbeat.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "resolution",
+        "boundedByResolution": true,
+        "maxOpenItems": 1000,
+        "note": "Inactive run records age out after 7 days; the 1000-record and 1 MiB bounds fail closed rather than evicting a possibly-live run budget."
+      }
     },
     {
       "category": "codex-task-continuation",

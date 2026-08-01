@@ -1,0 +1,33 @@
+{
+  "ts": "2026-08-01T04:35:28.819Z",
+  "slug": "audit-convergence-two-artifacts",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 771,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/instar-dev-precommit.js",
+      "scripts/standards-coverage.mjs",
+      "scripts/standards-registry-article-core.d.mts",
+      "scripts/standards-registry-article-core.mjs",
+      "scripts/write-audit-convergence.mjs",
+      "skills/iterative-converging-audit/SKILL.md",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/StandardsRegistryParser.ts",
+      "src/data/builtinSkillContent.ts"
+    ],
+    "addedLines": 628,
+    "deletedLines": 143
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

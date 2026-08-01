@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
+import type { MessageProvenance } from './MessageProvenance.js';
 
 export interface LogEntry {
   messageId: number | string;
@@ -26,6 +27,8 @@ export interface LogEntry {
   platform?: string;
   /** Platform-authenticated forwarding provenance. Undefined means unknown. */
   forwarded?: boolean;
+  /** Structural message origin. Undefined only for legacy/non-migrated writers. */
+  provenance?: MessageProvenance;
 }
 
 /** Legacy Telegram-specific log entry shape for backward compatibility */
@@ -40,6 +43,7 @@ export interface TelegramLogEntry {
   senderUsername?: string;
   telegramUserId?: number;
   forwarded?: boolean;
+  provenance?: MessageProvenance;
 }
 
 export interface MessageLoggerConfig {

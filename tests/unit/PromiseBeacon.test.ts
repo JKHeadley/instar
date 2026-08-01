@@ -45,6 +45,7 @@ describe('PromiseBeacon', () => {
     const spy = vi.fn(async () => 'LLM-RESULT');
 
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: queue,
@@ -81,6 +82,7 @@ describe('PromiseBeacon', () => {
     const spy = vi.fn(async () => 'LLM-RESULT');
 
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: queue,
@@ -91,6 +93,9 @@ describe('PromiseBeacon', () => {
       sendMessage: async (topicId, text) => { sent.push({ topicId, text }); },
       generateStatusLine: spy,
       suppressUnchangedHeartbeats: false,
+      // Isolate the B1 rollback surface from the independent topic-aggregation
+      // cadence (covered in PromiseBeacon-aggregation.test.ts).
+      aggregateByTopic: false,
     });
     beacon.start();
 
@@ -112,6 +117,7 @@ describe('PromiseBeacon', () => {
     const tracker = baseTracker(dir);
     const sent: Array<{ text: string }> = [];
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -146,6 +152,7 @@ describe('PromiseBeacon', () => {
     frozen.setHours(23, 0, 0, 0);
 
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: new LlmQueue({ maxDailyCents: 100 }),
@@ -181,6 +188,7 @@ describe('PromiseBeacon', () => {
 
     const sent: string[] = [];
     const beacon = new PromiseBeacon({
+      userOutputEnabled: true,
       stateDir: dir,
       commitmentTracker: tracker,
       llmQueue: queue,

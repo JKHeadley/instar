@@ -15,6 +15,8 @@
 
 // ── Event type definitions ──────────────────────────────────────────
 
+import type { MessageProvenance } from './MessageProvenance.js';
+
 export interface IncomingMessageEvent {
   channelId: string;
   userId: string;
@@ -34,6 +36,7 @@ export interface MessageLoggedEvent {
   senderName?: string;
   senderUsername?: string;
   platformUserId?: string;
+  provenance?: MessageProvenance;
 }
 
 export interface StallDetectedEvent {

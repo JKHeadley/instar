@@ -603,7 +603,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       minSupport: 4,
       minDistinctDaysInfraGap: 3,
       minDistinctDaysPreference: 2,
-      minDistinctTopicsPreference: 2,
+      minDistinctSessionsPreference: 2,
       autoFeedback: false,
       telegramDigest: false,
       driftCanary: false,
@@ -768,6 +768,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       breakerCooldownMin: 60,
       mergeTimeoutMs: 1_500_000,
       mergeKillGraceMs: 60_000,
+      // Explicit branch prefix owned by the watcher. Empty preserves the
+      // historical projectName fallback; development agents should set this
+      // to the prefix their worktree workflow actually creates.
+      agentNamespace: '',
       expectedGhLogin: '',
       identityRecheckTicks: 6,
       holdReleaseTicks: 2,
@@ -1919,6 +1923,11 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     },
   },
   promiseBeacon: {
+    // Human-facing PromiseBeacon summaries, close-outs, escalation status, and
+    // Attention dead-letters are opt-in. Internal commitment tracking and
+    // follow-through detection remain active while this is false.
+    userOutputEnabled: false,
+    aggregateByTopic: true, // P17 — one count+list summary per topic cadence, never one message per promise
     suppressUnchangedHeartbeats: true, // B1 — false restores the legacy every-tick templated heartbeat (rollback)
     beaconLivenessIntervalMs: 3_600_000, // B1b — at most one sparse "still watching" line per 60m
     turnFinishedCloseoutChecks: 3, // B2/FD-1 — N idle-frame checks before the one-shot close-out

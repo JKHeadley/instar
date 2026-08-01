@@ -96,3 +96,5 @@ src/redteam/packs/*/payloads/L3.md
 # the TS-source (vitest) and compiled (production) layouts. Build output, never committed.
 src/data/standards-registry.md
 src/data/standards-registry.meta.json
+src/data/standards-guard-index.json
+src/data/standards-guard-index.meta.json

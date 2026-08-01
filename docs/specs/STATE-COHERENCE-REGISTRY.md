@@ -112,6 +112,7 @@ spec, holder→standby).
 | Machine identity + signing/encryption keys | `machine/identity.json`, `*.pem` (0600) | Identity IS the machine; never synced by definition |
 | Per-session state | `state/sessions/<id>.json` (54 live) | Sessions live and die on one machine; pool transfers create NEW sessions (CONTINUATION), not file copies |
 | Job RUN state (executions, active-job) | `state/jobs/*`, `active-job.json`, run history ledger | Runs are machine events; definitions are the coherent half (§3#10) |
+| Autonomous heartbeat throttle | `state/autonomous-heartbeat.json` | Restart-proof count/backoff for the run on this machine; cross-machine event coordination is explicitly deferred by the heartbeat spec |
 | Quota state | `quota-state.json` | Per-account-seat per-machine — but **broadcast-view via capacity heartbeats already ships** (quota-aware placement); registry notes the view channel |
 | Resource samples (CPU/RSS) | ResourceLedger SQLite | Physical per-machine telemetry |
 | Lease/coordination state | `lease-local.json`, registry liveness | The lease IS the cross-machine protocol; its state is the protocol's own |

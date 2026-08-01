@@ -5,6 +5,15 @@ search-surface: "buildIntelligenceProvider callsites (~107 files); LlmQueue cons
 converged: "2026-07-12T10:50:02.329Z"
 standing-guard: "tests/unit/llm-bench-coverage-ratchet.test.ts"
 rounds: "3"
+blind-spot-class: "presence-without-end-to-end-accountability"
+standard-response-kind: "no-change"
+standard-response-ref: "docs/STANDARDS-REGISTRY.md"
+standard-response-article-id: "decision-provenance-outcome-review"
+standard-response-article: "Decision Provenance & Outcome Review"
+standard-response-rationale: "The constitution already required provenance, outcome grading, and real-case feedback; the audit exposed missing end-to-end enforcement rather than a missing rule."
+standard-response-digest: "0550ee6efb4f28a7c057ad872d07a29a35a0b80614e9539b2ace02515b8a0e08"
+meta-artifact-at: "2026-08-01T04:00:28.223Z"
+meta-artifact-digest: "fc24ec0d974fbe0926f356a3871be1c5389098e13468e8ba5568764906711b56"
 ---
 
 # LLM-Decision Accountability Audit (topic-11960 operator directive; tracks ACT-562 / ACT-563 / ACT-564)
@@ -16,6 +25,11 @@ the **Decision Provenance & Outcome Review** standard: provenance logged / outco
 bench battery parity-checked against the real production prompt.
 
 <!-- Rounds appended below as the sweep + re-sweeps complete. -->
+
+## Meta-insight
+
+How it arose: Accountability mechanisms were inventoried as isolated components, so their presence looked like coverage even though no end-to-end obligation connected every LLM decision point to provenance, grading, and real-prompt parity.
+Why prior controls missed it: Earlier checks counted component and battery entries independently; they never measured universal decision-point coverage or required the shipped prompt, durable decision context, and later outcome to remain one auditable chain.
 
 ## Round 1
 

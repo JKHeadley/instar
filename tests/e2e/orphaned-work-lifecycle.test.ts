@@ -25,6 +25,7 @@ describe('OrphanedWorkSentinel lifecycle (e2e)', () => {
   let tmpDir: string; let stateDir: string;
   let server: AgentServer;
   let app: ReturnType<AgentServer['getApp']>;
+  let enumerationFails = false;
   const auth = () => ({ Authorization: `Bearer ${AUTH}`, 'X-Instar-AgentId': 'orphaned-work-e2e' });
 
   // A live sentinel over deterministic deps reporting ONE genuinely-orphaned
@@ -33,7 +34,9 @@ describe('OrphanedWorkSentinel lifecycle (e2e)', () => {
   function liveSentinel(): OrphanedWorkSentinel {
     const wt: OrphanedWorktreeInfo = { path: '/agents/echo/.worktrees/stranded', branch: 'echo/stranded', headSha: 'cafe123' };
     const deps: OrphanedWorkSentinelDeps = {
-      listWorktrees: () => [wt],
+      listWorktrees: () => enumerationFails
+        ? ({ ok: false as const, error: 'e2e orphaned enumeration failed' })
+        : ({ ok: true as const, worktrees: [wt] }),
       hasUncommittedWork: () => true,
       workSignature: () => 'sig-e2e',
       isInUse: () => false,
@@ -88,5 +91,18 @@ describe('OrphanedWorkSentinel lifecycle (e2e)', () => {
     expect(res.body.evaluations).toEqual([
       expect.objectContaining({ path: '/agents/echo/.worktrees/stranded', verdict: 'orphaned' }),
     ]);
+  });
+
+  it('keeps a failed live enumeration distinct from a measured zero through the real route', async () => {
+    enumerationFails = true;
+    try {
+      const res = await request(app).get('/orphaned-work').set(auth());
+      expect(res.status).toBe(200);
+      expect(res.body.enumerationOk).toBe(false);
+      expect(res.body.enumerationError).toContain('e2e orphaned enumeration failed');
+      expect(res.body.orphanedCount).toBeNull();
+    } finally {
+      enumerationFails = false;
+    }
   });
 });

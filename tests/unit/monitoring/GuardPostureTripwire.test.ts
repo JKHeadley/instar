@@ -13,11 +13,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  buildCompleteGuardPosture,
   extractGuardPosture,
   diffGuardPosture,
   runGuardPostureTripwire,
   type AttentionItemInput,
 } from '../../../src/monitoring/GuardPostureTripwire.js';
+import { resolveGuardConfigSnapshot } from '../../../src/monitoring/guardPosture.js';
+import { buildGuardInventory } from '../../../src/monitoring/guardPostureView.js';
+import { GuardRegistry } from '../../../src/monitoring/GuardRegistry.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 // The shape of the real incident config (2026-06-05): mixed dict-with-enabled
@@ -68,6 +72,25 @@ describe('extractGuardPosture', () => {
     expect(extractGuardPosture(null)).toEqual({});
     expect(extractGuardPosture('nope')).toEqual({});
     expect(extractGuardPosture({})).toEqual({});
+  });
+});
+
+describe('buildCompleteGuardPosture', () => {
+  it('unions manifest guards outside monitoring into the watched posture', () => {
+    const complete = buildCompleteGuardPosture({
+      monitoring: {},
+      multiMachine: {
+        peerExecution: { enabled: false },
+        meshTransport: { recoveryProbeEnabled: false },
+      },
+    });
+
+    expect(complete.posture['multiMachine.peerExecution.enabled']).toBe(false);
+    expect(complete.posture['multiMachine.meshTransport.recoveryProbeEnabled']).toBe(false);
+    expect(complete.coverage.watched).toBe(Object.keys(complete.posture).length);
+    expect(
+      complete.coverage.configDerived + complete.coverage.manifestDeclared - complete.coverage.overlap,
+    ).toBe(complete.coverage.watched);
   });
 });
 
@@ -137,6 +160,34 @@ describe('runGuardPostureTripwire', () => {
     expect(snapshot().posture['scheduler.enabled']).toBe(true);
   });
 
+  it('persists exactly the same key set that GET /guards inventories', async () => {
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({
+      developmentAgent: true,
+      monitoring: { watchdog: { enabled: true } },
+      multiMachine: {
+        peerExecution: { enabled: false },
+        meshTransport: { recoveryProbeEnabled: false },
+      },
+    }));
+    const resolved = resolveGuardConfigSnapshot(dir);
+    const r = await runGuardPostureTripwire({
+      config: resolved.resolved,
+      defaultConfig: resolved.defaults,
+      stateDir,
+      logsDir,
+      log: () => {},
+    });
+    const inventory = buildGuardInventory({
+      snapshot: resolved,
+      bootSnapshot: null,
+      registry: new GuardRegistry(),
+    });
+
+    expect(Object.keys(snapshot().posture).sort()).toEqual(inventory.guards.map(g => g.key));
+    expect(r.coverage.watched).toBe(inventory.guards.length);
+  });
+
   it('the incident shape: batch flip → ONE aggregated attention item + one breadcrumb row', async () => {
     await runGuardPostureTripwire({ config: CONFIG_BEFORE, stateDir, logsDir, emitAttention: emit, log: () => {} });
     const r = await runGuardPostureTripwire({
@@ -154,6 +205,57 @@ describe('runGuardPostureTripwire', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].kind).toBe('guard-posture-change');
     expect(rows[0].disabled).toContain('monitoring.contextWedgeSentinel.enabled');
+    expect(rows[0].coverage.watched).toBe(r.coverage.watched);
+    expect(emitted[0].title).toContain(`of ${r.coverage.watched}`);
+  });
+
+  it('inventory expansion compares newly watched guards with resolved defaults', async () => {
+    // Simulate a pre-fix 36-key snapshot: neither non-monitoring manifest key
+    // existed, even though both were explicitly OFF in config.
+    fs.mkdirSync(path.join(stateDir, 'state'), { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'state', 'guard-posture.json'),
+      JSON.stringify({ ts: '2026-07-31T00:00:00.000Z', posture: { 'scheduler.enabled': true } }),
+    );
+
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({
+      developmentAgent: true,
+      multiMachine: {
+        peerExecution: { enabled: false },
+        meshTransport: { recoveryProbeEnabled: false },
+      },
+    }));
+    const resolved = resolveGuardConfigSnapshot(dir);
+    const currentPosture = buildCompleteGuardPosture(resolved.resolved).posture;
+    const defaultPosture = buildCompleteGuardPosture(resolved.defaults).posture;
+    expect(currentPosture['multiMachine.peerExecution.enabled']).toBe(false);
+    expect(defaultPosture['multiMachine.peerExecution.enabled']).toBe(true);
+    expect(currentPosture['multiMachine.meshTransport.recoveryProbeEnabled']).toBe(false);
+    expect(defaultPosture['multiMachine.meshTransport.recoveryProbeEnabled']).toBe(true);
+
+    const logLines: string[] = [];
+    const r = await runGuardPostureTripwire({
+      config: resolved.resolved,
+      defaultConfig: resolved.defaults,
+      stateDir,
+      logsDir,
+      emitAttention: emit,
+      log: (line) => { logLines.push(line); },
+    });
+
+    expect(r.disabled).toEqual([
+      'multiMachine.meshTransport.recoveryProbeEnabled',
+      'multiMachine.peerExecution.enabled',
+    ]);
+    expect(r.newlyTrackedDisabled).toEqual(r.disabled);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].title).toBe(`2 of ${r.coverage.watched} watched guard(s) disabled`);
+    expect(emitted[0].summary).toContain('newly watched');
+    expect(logLines.some(line => line.includes('newly watched default-ON guard found OFF'))).toBe(true);
+    expect(logLines.filter(line => line.includes('multiMachine.peerExecution.enabled')).join('\n'))
+      .not.toContain('since last boot');
+    expect(breadcrumbs()[0].previousWatched).toBe(1);
+    expect(snapshot().posture['multiMachine.peerExecution.enabled']).toBe(false);
   });
 
   it('no repeat alarm: the same disabled posture on the NEXT boot raises nothing (transition-based)', async () => {

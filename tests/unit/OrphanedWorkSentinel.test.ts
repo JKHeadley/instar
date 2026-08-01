@@ -34,7 +34,7 @@ interface FakeState {
 
 function makeDeps(s: FakeState): OrphanedWorkSentinelDeps {
   return {
-    listWorktrees: () => s.worktrees,
+    listWorktrees: () => ({ ok: true as const, worktrees: s.worktrees }),
     hasUncommittedWork: (p) => s.dirty.has(p),
     workSignature: (p) => s.sig.get(p) ?? 'sig0',
     isInUse: (p) => s.inUse.has(p),
@@ -194,5 +194,65 @@ describe('OrphanedWorkSentinel.scan — side effects', () => {
     // No side effects from a snapshot.
     expect(s.recorded).toHaveLength(0);
     expect(s.attention).toHaveLength(0);
+  });
+});
+
+/**
+ * Enumeration failure must not read as "no stranded work".
+ *
+ * This sentinel shares the reaper's enumeration (orphanedWorkGit delegates to
+ * base.listWorktrees), so it inherited the same collapse: a git failure and a
+ * genuinely-clean machine both produced `orphanedCount: 0`. For a backstop whose
+ * whole purpose is noticing work that nobody else will, that is the worst
+ * direction to fail in — it returns the reassuring answer exactly when blind.
+ *
+ * Observed 2026-07-29: reported `orphanedCount: 0` while one worktree held 292
+ * uncommitted lines on an always-on safety component, idle 20 hours.
+ */
+describe('OrphanedWorkSentinel — enumeration failure is visible, not "nothing stranded"', () => {
+  it('reports orphanedCount:null + enumerationOk:false on a failed enumeration', () => {
+    const s = freshState();
+    const deps = { ...makeDeps(s), listWorktrees: () => ({ ok: false as const, error: "fatal: cannot change to '/nope'" }) };
+    const snap = new OrphanedWorkSentinel(deps, { enabled: true }).snapshot();
+
+    expect(snap.orphanedCount).toBeNull();   // NOT 0 — that is the whole point
+    expect(snap.enumerationOk).toBe(false);
+    expect(snap.enumerationError).toContain('cannot change to');
+    expect(snap.evaluations).toEqual([]);
+  });
+
+  it('a healthy enumeration still reports a real count and enumerationOk:true', () => {
+    // Discriminating control: an implementation that always returned null would
+    // pass the test above while telling the operator nothing.
+    const s = freshState();
+    const snap = new OrphanedWorkSentinel(makeDeps(s), { enabled: true }).snapshot();
+    expect(snap.enumerationOk).toBe(true);
+    expect(snap.enumerationError).toBeNull();
+    expect(snap.orphanedCount).toBe(0); // genuinely zero: no worktrees, and it says so
+  });
+
+  it('advances the completed tick, publishes unknown, and clears the live verdict after recovery', async () => {
+    const s = freshState();
+    let fail = true;
+    const sentinel = new OrphanedWorkSentinel({
+      ...makeDeps(s),
+      listWorktrees: () => fail
+        ? { ok: false as const, error: 'fatal: sentinel blind' }
+        : { ok: true as const, worktrees: [] },
+      warn: () => {},
+    }, { enabled: true });
+
+    expect(sentinel.guardStatus()).toEqual({ enabled: true, lastTickAt: 0 });
+    await sentinel.scan();
+    expect(sentinel.guardStatus()).toMatchObject({
+      lastTickAt: s.now,
+      verdictUnknown: true,
+      verdictUnknownReason: 'fatal: sentinel blind',
+    });
+    fail = false;
+    s.now++;
+    await sentinel.scan();
+    expect(sentinel.guardStatus()).toEqual({ enabled: true, lastTickAt: s.now });
+    expect(sentinel.snapshot().enumerationFailures).toBe(1);
   });
 });

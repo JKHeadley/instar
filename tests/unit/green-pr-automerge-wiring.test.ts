@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-import { buildGreenPrDeps, buildGuardLatchStore, type GreenPrWiringOpts } from '../../src/monitoring/greenPrAutomergeWiring.js';
+import { buildGreenPrDeps, buildGuardLatchStore, resolveGreenPrAgentNamespace, type GreenPrWiringOpts } from '../../src/monitoring/greenPrAutomergeWiring.js';
 import { DefaultMergeRunner } from '../../src/monitoring/MergeRunner.js';
 
 let dir: string;
@@ -116,6 +116,17 @@ describe('buildGreenPrDeps — config-threading (M2)', () => {
     const runner = deps.runner as DefaultMergeRunner;
     expect(runner.resolvedStrategy).toBe('auto');
     expect(runner.resolvedArmTimeoutMs).toBe(60_000);
+  });
+});
+
+describe('resolveGreenPrAgentNamespace', () => {
+  it('prefers the explicit watcher prefix over project identity', () => {
+    expect(resolveGreenPrAgentNamespace('agent', 'instar-codey')).toBe('agent');
+  });
+
+  it('preserves the project-name fallback for existing installs', () => {
+    expect(resolveGreenPrAgentNamespace('', 'echo')).toBe('echo');
+    expect(resolveGreenPrAgentNamespace(undefined, undefined)).toBe('agent');
   });
 });
 

@@ -16,6 +16,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { makeAgentWorktreeReaperDeps, type ReadGit } from './agentWorktreeGit.js';
+import type { WorktreeEnumeration } from './worktreeEnumeration.js';
 import type {
   OrphanedWorkSentinelDeps,
   OrphanedWorktreeInfo,
@@ -71,7 +72,7 @@ export function makeOrphanedWorkSentinelDeps(opts: {
   const slug = (p: string): string => path.basename(p).replace(/[^a-z0-9-]+/gi, '-');
 
   return {
-    listWorktrees: (): OrphanedWorktreeInfo[] => base.listWorktrees(),
+    listWorktrees: (): WorktreeEnumeration<OrphanedWorktreeInfo> => base.listWorktrees(),
 
     hasUncommittedWork: (p: string): boolean => !base.isClean(p),
 

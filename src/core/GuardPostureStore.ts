@@ -42,6 +42,7 @@ export function postureSemanticsEqual(a: GuardPostureSummary, b: GuardPostureSum
     a.onConfirmed === b.onConfirmed &&
     a.onUnverified === b.onUnverified &&
     a.onStale === b.onStale &&
+    a.onBlind === b.onBlind &&
     a.onDryRun === b.onDryRun &&
     a.offDeviant === b.offDeviant &&
     a.offRuntimeDivergent === b.offRuntimeDivergent &&

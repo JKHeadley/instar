@@ -815,6 +815,10 @@ export class AgentServer {
     topicLinkageHandler?: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler;
     handshakeManager?: import('../threadline/HandshakeManager.js').HandshakeManager;
     threadlineRelayClient?: import('../threadline/client/ThreadlineClient.js').ThreadlineClient;
+    /** Relay connection-LOSS reader from bootstrapThreadline. Lets /threadline/health
+     *  report WHY the relay is down (and whether it can self-heal) instead of a
+     *  literal 'ok'. Undefined when no relay client exists in this process. */
+    getLastRelayEvent?: () => import('../threadline/relayConnectionObserver.js').RelayConnectionEvent | null;
     threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
@@ -872,6 +876,8 @@ export class AgentServer {
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
     /** Project-scope round runner (Phase 1b PR 3). */
     projectRoundRunner?: import('../core/ProjectRoundRunner.js').ProjectRoundRunner;
+    /** Test seam for canonical stage-evidence resolution; production leaves undefined. */
+    stageTransitionContextDependencies?: import('../core/StageTransitionContext.js').ProductionStageTransitionContextDependencies;
     /** Project drift checker (Phase 1b connect-the-dots). Optional —
      *  when omitted, POST /projects/:id/drift-check returns 503. */
     projectDriftChecker?: import('../core/ProjectDriftChecker.js').ProjectDriftChecker;
@@ -3458,6 +3464,7 @@ export class AgentServer {
       topicLinkageHandler: options.topicLinkageHandler ?? null,
       handshakeManager: options.handshakeManager ?? null,
       threadlineRelayClient: options.threadlineRelayClient ?? null,
+      getLastRelayEvent: options.getLastRelayEvent ?? null,
       listenerManager: options.listenerManager ?? null,
       a2aDeliveryTracker: options.a2aDeliveryTracker ?? this.a2aDeliveryTracker,
       responseReviewGate: options.responseReviewGate ?? null,
@@ -3494,6 +3501,7 @@ export class AgentServer {
       stopNotifier: options.stopNotifier ?? null,
       initiativeTracker: options.initiativeTracker ?? null,
       projectRoundRunner: options.projectRoundRunner ?? null,
+      stageTransitionContextDependencies: options.stageTransitionContextDependencies,
       projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,

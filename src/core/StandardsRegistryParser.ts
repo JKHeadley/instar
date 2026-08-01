@@ -17,12 +17,15 @@
  */
 
 import fs from 'node:fs';
+import { articleIds, parseRegistryStructure } from '../../scripts/standards-registry-article-core.mjs';
 
 export interface StandardArticle {
   /** The standards family the article lives under (Root / Substrate / Building / Shipping / Interaction). */
   family: string;
   /** The article heading (e.g. "No Manual Work (user *or* agent)"). */
   name: string;
+  /** Stable audit-provenance identifier, present on articles cited by stamped audits. */
+  articleId?: string;
   /** The `**Rule.**` line — the normative statement. */
   rule: string;
   /** The `**In practice.**` line, when present. */
@@ -34,7 +37,74 @@ export interface StandardArticle {
    * scans `inPractice` + `appliedThrough` for verifiable enforcement references.
    */
   appliedThrough?: string;
+  /**
+   * Complete blocks whose headings are explicitly allowed to name enforcement.
+   * Unlike the legacy `appliedThrough` field, these retain continuation lines
+   * (including bullet lists) and preserve which closed-enum heading admitted the
+   * text. Provenance/narrative blocks never enter this collection.
+   */
+  enforcementSections?: StandardEnforcementSection[];
 }
+
+/** Headings whose content the enforcement auditor is allowed to inspect. */
+export const ENFORCEMENT_SECTION_HEADINGS = [
+  'Applied through',
+  'Enforced by (structure, not willpower)',
+  'Enforcement',
+  'Full spec',
+  'Full specs',
+] as const;
+
+export type EnforcementSectionHeading = typeof ENFORCEMENT_SECTION_HEADINGS[number];
+
+export interface StandardEnforcementSection {
+  heading: EnforcementSectionHeading;
+  text: string;
+}
+
+/**
+ * Sections that may contain paths but are evidence of origin, not live guards.
+ * Keep this closed and explicit: widening enforcement extraction to arbitrary
+ * bold headings would turn postmortems and design provenance into enforcement.
+ */
+export const EXCLUDED_PROVENANCE_SECTION_HEADINGS = [
+  'Derives from',
+  'Earned from',
+  'Ratified by',
+  'Source documents',
+  'Traces to the goal',
+] as const;
+
+/**
+ * Known explanatory article blocks that are neither core fields, provenance, nor
+ * enforcement. Enumerating them keeps the real registry's unrecognized baseline
+ * at zero: a newly-authored bold heading must be deliberately classified.
+ */
+export const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
+  'Applied at the shipping layer',
+  'Balanced by — Responsible Resource',
+  'Benchmarks earn a real job',
+  'Composition with No Silent Degradation',
+  'Constrain the model\'s output with structure, never by matching its prose',
+  'Distinct from Cross-Machine Coherence',
+  'Distinct from Deferral = Deletion',
+  'Distinct from the OnboardingGate',
+  'Neither is whole alone',
+  'Notice and fight the reflex (the load-bearing awareness)',
+  'Per-feature posture (2026-06-12 widening)',
+  'Restart-survival corollary',
+  'The Eternal Sentinel exemption (ratified with the standard)',
+  'The moving threshold (mastery)',
+  'The near-total ban',
+  'Three obligations, in increasing blast radius',
+  'Three postures, in increasing order of ambition',
+] as const;
+
+const CORE_SECTION_HEADINGS = ['Article ID', 'Rule', 'In practice'] as const;
+const ENFORCEMENT_SECTION_HEADING_SET = new Set<string>(ENFORCEMENT_SECTION_HEADINGS);
+const EXCLUDED_PROVENANCE_SECTION_HEADING_SET = new Set<string>(EXCLUDED_PROVENANCE_SECTION_HEADINGS);
+const EXCLUDED_NARRATIVE_SECTION_HEADING_SET = new Set<string>(EXCLUDED_NARRATIVE_SECTION_HEADINGS);
+const CORE_SECTION_HEADING_SET = new Set<string>(CORE_SECTION_HEADINGS);
 
 /**
  * Standards families are detected STRUCTURALLY, not by name: a `##` section is a
@@ -51,10 +121,6 @@ export interface StandardArticle {
  * A name allowlist can only ever be as current as the last person who edited it;
  * the structural rule needs no maintenance.
  */
-/** Any `##` heading opens a new section scope. */
-const ANY_H2_RE = /^##\s+/;
-const H2_NAME_RE = /^##\s+(.+?)\s*$/;
-const ARTICLE_RE = /^###\s+(.+?)\s*$/;
 /**
  * Family display name: the heading text up to the first dash separator, so
  * "The Substrate — the model-level truths …" stays "The Substrate" (the value
@@ -64,11 +130,8 @@ function familyName(heading: string): string {
   return heading.split(/\s+[—–-]\s+/)[0].trim();
 }
 
-/** Extract the text after a `**Label.**` marker on a line (or '' if absent). */
-function fieldAfter(line: string, label: string): string | null {
-  const m = line.match(new RegExp(`^\\*\\*${label}\\.\\*\\*\\s*(.*)$`));
-  return m ? m[1].trim() : null;
-}
+/** A bold article-field heading plus any text carried on the same line. */
+const FIELD_HEADING_RE = /^\*\*(.+?)\.\*\*\s*(.*)$/;
 
 /**
  * What the parse SAW, so a caller can tell "nothing was dropped" apart from
@@ -87,53 +150,80 @@ export interface RegistryParseDiagnostics {
   droppedHeadings: string[];
   /** `##` sections skipped because no `###` under them carried a Rule (Genesis, Two layers, …). */
   nonFamilySections: string[];
+  /** The exact enforcement-section scope used by this parse. */
+  enforcementScope: RegistryEnforcementParseScope;
 }
 
-interface RawSection { heading: string; blocks: { name: string; article: StandardArticle }[] }
+/**
+ * Makes the parser's trust boundary inspectable at the API surface. A reader can
+ * distinguish "the article named no guard" from "the parser did not classify
+ * this section heading" without widening extraction to provenance by accident.
+ */
+export interface RegistryEnforcementParseScope {
+  /** Closed enum whose blocks may contribute enforcement references. */
+  recognizedHeadings: string[];
+  /** Closed enum deliberately excluded even when its prose contains path-shaped refs. */
+  excludedProvenanceHeadings: string[];
+  /** Closed enum of explanatory blocks deliberately excluded from enforcement. */
+  excludedNarrativeHeadings: string[];
+  /** Number of allowlisted blocks captured across parsed standards. */
+  capturedSections: number;
+  /** Article-qualified bold headings outside the core, allowlist, and provenance denylist. */
+  unrecognizedSections: string[];
+}
+
+interface RawArticleBlock {
+  name: string;
+  article: StandardArticle;
+  observedSections: string[];
+}
+
+interface RawSection { heading: string; blocks: RawArticleBlock[] }
 
 /** Split the registry into `##` sections, each holding its `###` blocks. */
 function readSections(markdown: string): RawSection[] {
-  const sections: RawSection[] = [];
-  let section: RawSection | null = null;
-  let cur: StandardArticle | null = null;
-  let curName = '';
-
-  const flush = () => {
-    if (section && cur) section.blocks.push({ name: curName, article: cur });
-    cur = null;
-    curName = '';
-  };
-
-  for (const line of markdown.split('\n')) {
-    if (ANY_H2_RE.test(line)) {
-      flush();
-      const h2 = line.match(H2_NAME_RE);
-      section = { heading: h2 ? h2[1].trim() : '', blocks: [] };
-      sections.push(section);
-      continue;
+  return parseRegistryStructure(markdown).map((rawSection) => {
+    const section: RawSection = { heading: rawSection.heading, blocks: [] };
+    for (const block of rawSection.blocks) {
+      const ids = articleIds(block);
+      const cur: StandardArticle = {
+        family: familyName(rawSection.heading),
+        name: block.name,
+        ...(ids.length === 1 ? { articleId: ids[0] } : {}),
+        rule: '',
+        inPractice: '',
+      };
+      const observedSections: string[] = [];
+      let field: { heading: string; lines: string[] } | null = null;
+      const flushField = () => {
+        if (!field) return;
+        const heading = field.heading;
+        const text = field.lines.join('\n').trim();
+        observedSections.push(heading);
+        if (heading === 'Rule') cur.rule = text;
+        else if (heading === 'In practice') cur.inPractice = text;
+        else if (ENFORCEMENT_SECTION_HEADING_SET.has(heading)) {
+          const typedHeading = heading as EnforcementSectionHeading;
+          (cur.enforcementSections ??= []).push({ heading: typedHeading, text });
+          if (typedHeading === 'Applied through') cur.appliedThrough = text;
+        }
+        field = null;
+      };
+      for (const line of block.visibleLines) {
+        if (line === null) continue;
+        const fieldMatch = line.match(FIELD_HEADING_RE);
+        if (fieldMatch) {
+          flushField();
+          field = { heading: fieldMatch[1].trim(), lines: [fieldMatch[2]] };
+        } else if (field) {
+          field.lines.push(line);
+        }
+      }
+      flushField();
+      section.blocks.push({ name: block.name, article: cur, observedSections });
     }
-    if (!section) continue;
-
-    const artMatch = line.match(ARTICLE_RE);
-    if (artMatch) {
-      flush();
-      curName = artMatch[1].trim();
-      cur = { family: familyName(section.heading), name: curName, rule: '', inPractice: '' };
-      continue;
-    }
-    if (!cur) continue;
-
-    const rule = fieldAfter(line, 'Rule');
-    if (rule !== null) { cur.rule = rule; continue; }
-    const inPractice = fieldAfter(line, 'In practice');
-    if (inPractice !== null) { cur.inPractice = inPractice; continue; }
-    // Additive (spec #3): capture the `**Applied through.**` line if present. Same
-    // `fieldAfter` extraction as Rule/In practice; absent on articles without one.
-    const appliedThrough = fieldAfter(line, 'Applied through');
-    if (appliedThrough !== null) { cur.appliedThrough = appliedThrough; continue; }
-  }
-  flush();
-  return sections;
+    return section;
+  });
 }
 
 /**
@@ -148,6 +238,13 @@ export function parseStandardsRegistryDetailed(
   const articles: StandardArticle[] = [];
   const diagnostics: RegistryParseDiagnostics = {
     families: [], articleHeadings: 0, parsed: 0, droppedHeadings: [], nonFamilySections: [],
+    enforcementScope: {
+      recognizedHeadings: [...ENFORCEMENT_SECTION_HEADINGS],
+      excludedProvenanceHeadings: [...EXCLUDED_PROVENANCE_SECTION_HEADINGS],
+      excludedNarrativeHeadings: [...EXCLUDED_NARRATIVE_SECTION_HEADINGS],
+      capturedSections: 0,
+      unrecognizedSections: [],
+    },
   };
 
   for (const section of sections) {
@@ -160,7 +257,22 @@ export function parseStandardsRegistryDetailed(
     diagnostics.families.push(familyName(section.heading));
     for (const b of section.blocks) {
       diagnostics.articleHeadings += 1;
-      if (b.article.rule) { articles.push(b.article); diagnostics.parsed += 1; }
+      if (b.article.rule) {
+        articles.push(b.article);
+        diagnostics.parsed += 1;
+        diagnostics.enforcementScope.capturedSections += b.article.enforcementSections?.length ?? 0;
+        for (const heading of b.observedSections) {
+          if (
+            CORE_SECTION_HEADING_SET.has(heading) ||
+            ENFORCEMENT_SECTION_HEADING_SET.has(heading) ||
+            EXCLUDED_PROVENANCE_SECTION_HEADING_SET.has(heading) ||
+            EXCLUDED_NARRATIVE_SECTION_HEADING_SET.has(heading)
+          ) continue;
+          diagnostics.enforcementScope.unrecognizedSections.push(
+            `${familyName(section.heading)} › ${b.name} › ${heading}`,
+          );
+        }
+      }
       else diagnostics.droppedHeadings.push(`${familyName(section.heading)} › ${b.name}`);
     }
   }
@@ -232,7 +344,8 @@ export interface RegistryCanaryResult {
  * Run the registry parse canary over a parsed article set.
  *
  * Pass `diagnostics` (from `parseStandardsRegistryDetailed`) to get the real
- * check: every article heading present in a standards family must have parsed.
+ * check: every article heading present in a standards family must have parsed,
+ * and every bold article field must have an explicitly classified role.
  * Without it only the coarse floor + anchor checks run, and the result says so
  * via `completenessAssessed: false` rather than implying a clean bill of health.
  */
@@ -247,6 +360,11 @@ export function runRegistryCanary(
   if (diagnostics && diagnostics.droppedHeadings.length > 0) {
     failures.push(
       `${diagnostics.droppedHeadings.length} of ${diagnostics.articleHeadings} article headings parsed with no **Rule.** line and were dropped: ${diagnostics.droppedHeadings.join('; ')}`,
+    );
+  }
+  if (diagnostics && diagnostics.enforcementScope.unrecognizedSections.length > 0) {
+    failures.push(
+      `${diagnostics.enforcementScope.unrecognizedSections.length} article sections have an unrecognized role and were excluded from enforcement extraction: ${diagnostics.enforcementScope.unrecognizedSections.join('; ')}`,
     );
   }
   for (const anchor of ANCHOR_ARTICLES) {

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-07-30T15:03:58.372Z",
+  "slug": "project-round-spawn-guard",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 89,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ProjectRoundExecution.ts"
+    ],
+    "addedLines": 85,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

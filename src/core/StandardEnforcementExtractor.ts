@@ -110,11 +110,15 @@ function dedupe(xs: string[]): string[] {
 
 /**
  * Extract enforcement references from a single article. Scans both `inPractice` and
- * `appliedThrough` (the two prose lines that name enforcement). Pure + deterministic:
+ * `appliedThrough` / allowlisted `enforcementSections` (the prose blocks that name enforcement). Pure + deterministic:
  * same article in → same refs out, in stable (sorted) order.
  */
 export function extractEnforcementRefs(article: StandardArticle): ExtractedRefs {
-  const text = `${article.inPractice ?? ''}\n${article.appliedThrough ?? ''}`;
+  const text = [
+    article.inPractice ?? '',
+    article.appliedThrough ?? '',
+    ...(article.enforcementSections ?? []).map((section) => section.text),
+  ].join('\n');
 
   const files: string[] = [];
   for (const m of text.matchAll(FILE_RE)) {
