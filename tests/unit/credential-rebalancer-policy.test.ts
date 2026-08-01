@@ -92,7 +92,7 @@ describe('decidePass — eligibility', () => {
       accounts: [acc({ accountId: 'A', fiveHrPct: 90 }), acc({ accountId: 'B', fiveHrPct: 5 })],
     }));
     expect(r.decisions).toEqual([]);
-    expect(r.attention.some((a) => /no eligible.*rescue target/.test(a))).toBe(true);
+    expect(r.attention.some((a) => /no eligible.*rescue target/.test(a.message))).toBe(true);
   });
 });
 
@@ -176,7 +176,11 @@ describe('decidePass — wall-override (critical mark)', () => {
     }));
     expect(r.decisions).toEqual([]);
     expect(r.degraded.some((d) => /budget exhausted/.test(d))).toBe(true);
-    expect(r.attention.some((a) => /budget exhausted/.test(a))).toBe(true);
+    expect(r.attention.some((a) => /budget exhausted/.test(a.message))).toBe(true);
+    expect(r.attention[0]?.condition).toEqual({
+      type: 'wall-override-budget-exhausted',
+      slot: 's1',
+    });
   });
 
   it('emits at most maxForcedSwapsPerPass forced swaps when multiple slots are critical', () => {
@@ -208,7 +212,11 @@ describe('decidePass — wall-override (critical mark)', () => {
       ],
     }));
     expect(r.decisions).toEqual([]);
-    expect(r.attention.some((a) => /no eligible non-walling rescue target/.test(a))).toBe(true);
+    expect(r.attention.some((a) => /no eligible non-walling rescue target/.test(a.message))).toBe(true);
+    expect(r.attention[0]?.condition).toEqual({
+      type: 'critical-no-rescue-target',
+      slot: 's1',
+    });
   });
 });
 
@@ -294,7 +302,7 @@ describe('decidePass — objective 0: dead/quarantined-default eviction', () => 
     expect(r.decisions[0].objective).toBe('default-eviction');
     expect(r.decisions[0].targetSlot).toBe('~/.claude');
     expect(r.decisions[0].sourceSlot).toBe('s2');
-    expect(r.attention.some((a) => /parked|needs re-auth/.test(a))).toBe(true);
+    expect(r.attention.some((a) => /parked|needs re-auth/.test(a.message))).toBe(true);
   });
 
   it('rescues a QUARANTINED default slot too (not just needs-reauth)', () => {
@@ -321,7 +329,7 @@ describe('decidePass — objective 0: dead/quarantined-default eviction', () => 
     }));
     expect(r.decisions).toEqual([]);
     expect(r.degraded.some((d) => /correlated-outage floor/.test(d))).toBe(true);
-    expect(r.attention.some((a) => /last-known-good|NOT certified live/.test(a))).toBe(true);
+    expect(r.attention.some((a) => /last-known-good|NOT certified live/.test(a.message))).toBe(true);
   });
 
   it('dead default but no healthy tenant available → surface, no action', () => {
@@ -334,7 +342,7 @@ describe('decidePass — objective 0: dead/quarantined-default eviction', () => 
       accounts: [acc({ accountId: 'D', status: 'disabled' }), acc({ accountId: 'B', status: 'needs-reauth' })],
     }));
     expect(r.decisions).toEqual([]);
-    expect(r.attention.some((a) => /no healthy verified tenant/.test(a))).toBe(true);
+    expect(r.attention.some((a) => /no healthy verified tenant/.test(a.message))).toBe(true);
   });
 
   it('does nothing special when the default slot is healthy (normal objectives run)', () => {

@@ -30,6 +30,8 @@
  * wiring (the setInterval pass) + the live `GET /credentials/rebalancer` status are B3b.
  */
 
+import { createHash } from 'node:crypto';
+
 import {
   decidePass,
   type RebalancePassInput,
@@ -37,6 +39,7 @@ import {
   type AccountState,
   type SlotState,
   type SwapDecision,
+  type RebalancerAttentionNotice,
 } from './CredentialRebalancerPolicy.js';
 
 export interface RebalancerResolvedConfig {
@@ -72,7 +75,7 @@ export interface CredentialRebalancerDeps {
   /** Optional sinks. */
   emitAudit?: (record: PassAudit) => void;
   emitDegraded?: (message: string) => void;
-  emitAttention?: (message: string) => void;
+  emitAttention?: (notice: RebalancerAttentionNotice) => void;
   now?: () => number;
 }
 
@@ -95,6 +98,22 @@ export interface RebalancerStatus {
   /** Count of pairs/tenants currently under cooldown (for the status surface). */
   cooldownPairs: number;
   cooldownTenants: number;
+}
+
+/**
+ * Derive the legacy Attention row id from structural condition identity. The
+ * slot is hashed only to keep the externally persisted id bounded; it remains
+ * the semantic subject. Episode notices without a condition retain the prior
+ * ledger-version identity until the shared condition/episode API replaces this
+ * narrow bridge.
+ */
+export function credentialRebalancerAttentionId(
+  notice: RebalancerAttentionNotice,
+  ledgerVersion: number,
+): string {
+  if (!notice.condition) return `credential-rebalancer-${ledgerVersion}`;
+  const slotDigest = createHash('sha256').update(notice.condition.slot).digest('hex');
+  return `credential-rebalancer:${notice.condition.type}:${slotDigest}`;
 }
 
 function sortedPair(a: string, b: string): string {
@@ -163,7 +182,7 @@ export class CredentialRebalancer {
 
     const result = decidePass(input);
     for (const m of result.degraded) this.deps.emitDegraded?.(m);
-    for (const m of result.attention) this.deps.emitAttention?.(m);
+    for (const notice of result.attention) this.deps.emitAttention?.(notice);
 
     const dryRun = this.deps.isDryRun();
     const actuated: PassAudit['actuated'] = [];
@@ -198,7 +217,7 @@ export class CredentialRebalancer {
     const audit: PassAudit = {
       at, enabled: true, dryRun,
       decisions: result.decisions, actuated,
-      degraded: result.degraded, attention: result.attention,
+      degraded: result.degraded, attention: result.attention.map((notice) => notice.message),
       noActuationReason: result.noActuationReason,
       breakerOpen: this.breakerOpen,
     };

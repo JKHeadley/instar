@@ -125,13 +125,36 @@ export interface SwapDecision {
   reason: string;
 }
 
+export type RebalancerAttentionCondition =
+  | 'default-oracle-unavailable'
+  | 'default-no-healthy-rescue'
+  | 'wall-override-budget-exhausted'
+  | 'critical-no-rescue-target'
+  | 'no-rescue-target';
+
+/**
+ * An operator-facing notice from the pure policy. Persistent conditions carry
+ * their structural identity next to the decision that discovered them; the
+ * composition root must not recover identity from rendered text or invent it
+ * from a changing ledger version. One-off episode notices deliberately omit
+ * `condition` and retain the legacy per-episode identity until the shared
+ * Attention condition model lands.
+ */
+export interface RebalancerAttentionNotice {
+  message: string;
+  condition?: {
+    type: RebalancerAttentionCondition;
+    slot: string;
+  };
+}
+
 export interface PassResult {
   /** 0..maxForcedSwapsPerPass decisions (normal objectives emit ≤1; wall-override may emit more). */
   decisions: SwapDecision[];
   /** DegradationReporter-bound entries (terminal "stuck" states). */
   degraded: string[];
   /** Attention-queue-bound entries (operator-surfaced terminal states). */
-  attention: string[];
+  attention: RebalancerAttentionNotice[];
   /** Human reason when zero decisions were made (for the audited no-op pass). */
   noActuationReason?: string;
 }
@@ -163,7 +186,7 @@ function targetVerifiedRecent(slot: SlotState, now: number, auditCadenceMs: numb
 export function decidePass(input: RebalancePassInput): PassResult {
   const { now, slots, accounts, cooldowns, config, auditCadenceMs } = input;
   const degraded: string[] = [];
-  const attention: string[] = [];
+  const attention: RebalancerAttentionNotice[] = [];
 
   const accById = new Map(accounts.map((a) => [a.accountId, a]));
 
@@ -214,7 +237,9 @@ export function decidePass(input: RebalancePassInput): PassResult {
               reason: `default slot ${defaultSlot.slot} is ${defaultSlot.quarantined ? 'quarantined' : 'dead (' + (defTenant?.status ?? 'no-tenant') + ')'}; dealing healthy verified ${healthy.tenantAccountId} in to keep manual claude working`,
             }],
             degraded: [],
-            attention: [`default slot ${defaultSlot.slot} was ${defaultSlot.quarantined ? 'quarantined' : 'dead'} — rescued with ${healthy.tenantAccountId}; the displaced credential is parked and needs re-auth/re-probe`],
+            attention: [{
+              message: `default slot ${defaultSlot.slot} was ${defaultSlot.quarantined ? 'quarantined' : 'dead'} — rescued with ${healthy.tenantAccountId}; the displaced credential is parked and needs re-auth/re-probe`,
+            }],
           };
         }
         // Correlated-oracle-outage floor: NO slot is currently oracle-verifiable (an
@@ -226,7 +251,10 @@ export function decidePass(input: RebalancePassInput): PassResult {
           return {
             decisions: [],
             degraded: ['no slot is oracle-verifiable — default-slot eviction suspended (correlated-outage floor)'],
-            attention: [`oracle unavailable for every slot; ${defaultSlot.slot} preserved at its last-known-good${defaultSlot.lastKnownGoodAccountId ? ' (' + defaultSlot.lastKnownGoodAccountId + ')' : ''} — NOT certified live; no eviction until the oracle returns`],
+            attention: [{
+              message: `oracle unavailable for every slot; ${defaultSlot.slot} preserved at its last-known-good${defaultSlot.lastKnownGoodAccountId ? ' (' + defaultSlot.lastKnownGoodAccountId + ')' : ''} — NOT certified live; no eviction until the oracle returns`,
+              condition: { type: 'default-oracle-unavailable', slot: defaultSlot.slot },
+            }],
             noActuationReason: 'correlated oracle outage — default preserved at last-known-good, no eviction',
           };
         }
@@ -234,7 +262,10 @@ export function decidePass(input: RebalancePassInput): PassResult {
         return {
           decisions: [],
           degraded: [],
-          attention: [`default slot ${defaultSlot.slot} is dead/quarantined and no healthy verified tenant is available to rescue it`],
+          attention: [{
+            message: `default slot ${defaultSlot.slot} is dead/quarantined and no healthy verified tenant is available to rescue it`,
+            condition: { type: 'default-no-healthy-rescue', slot: defaultSlot.slot },
+          }],
           noActuationReason: 'default slot dead but no eligible healthy tenant to deal in',
         };
       }
@@ -269,7 +300,10 @@ export function decidePass(input: RebalancePassInput): PassResult {
     if (forcedThisPass >= config.maxForcedSwapsPerPass) break;
     if (overridesLeft <= 0) {
       degraded.push('wall-override budget exhausted — no durable rescue available');
-      attention.push(`wall-override budget exhausted for slot ${w.slot.slot} — a thrashing tenant the rescue can't durably help`);
+      attention.push({
+        message: `wall-override budget exhausted for slot ${w.slot.slot} — a thrashing tenant the rescue can't durably help`,
+        condition: { type: 'wall-override-budget-exhausted', slot: w.slot.slot },
+      });
       break;
     }
     // Fresh-data gate: act on a NEW critical reading only (the tenant's quota must be newer
@@ -279,7 +313,10 @@ export function decidePass(input: RebalancePassInput): PassResult {
 
     const target = rescueTargets.find((t) => !actedSlots.has(t.slot.slot) && t.slot.slot !== w.slot.slot && !actedTenants.has(t.acc.accountId));
     if (!target) {
-      attention.push(`no eligible non-walling rescue target for critical slot ${w.slot.slot}`);
+      attention.push({
+        message: `no eligible non-walling rescue target for critical slot ${w.slot.slot}`,
+        condition: { type: 'critical-no-rescue-target', slot: w.slot.slot },
+      });
       continue;
     }
     decisions.push({
@@ -327,7 +364,10 @@ export function decidePass(input: RebalancePassInput): PassResult {
   for (const w of walling.filter((x) => x.util < config.criticalPct)) {
     const target = rescueTargets.find((t) => t.slot.slot !== w.slot.slot);
     if (!target) {
-      attention.push(`no eligible non-walling rescue target for slot ${w.slot.slot}`);
+      attention.push({
+        message: `no eligible non-walling rescue target for slot ${w.slot.slot}`,
+        condition: { type: 'no-rescue-target', slot: w.slot.slot },
+      });
       break;
     }
     if (!cooldownOk(w.slot.slot, target.slot.slot, w.acc.accountId, target.acc.accountId)) continue;

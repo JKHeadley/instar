@@ -13226,7 +13226,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // loop and actuates via the SAME gated swap executor. isEnabled mirrors the location gate
     // (dev-gate-resolved AND the §2.10 env-token gate), and the executor's own dryRun keeps it a
     // dry-run dogfood on a dev agent (full decision loop + audit, ZERO writes) until dryRun:false.
-    const { CredentialRebalancer } = await import('../core/CredentialRebalancer.js');
+    const { CredentialRebalancer, credentialRebalancerAttentionId } = await import('../core/CredentialRebalancer.js');
     const { mapSlots: credMapSlots, mapAccounts: credMapAccounts, resolveRebalancerConfig: credResolveBalancerConfig, computeBusynessBySlot: credComputeBusyness } =
       await import('../core/CredentialRebalancerSnapshot.js');
     const CRED_DEFAULT_SLOT = '~/.claude';
@@ -13269,10 +13269,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
         } catch { /* @silent-fallback-ok: degradation report is best-effort observability; a throwing reporter must never break the dark/dry-run pass */ }
       },
-      emitAttention: (m) => {
+      emitAttention: (notice) => {
         void credentialAuditEmit.attention({
-          id: `credential-rebalancer-${credentialLocationLedger.version}`,
-          title: 'Credential rebalancer', summary: m, category: 'credential-repointing', priority: 'NORMAL',
+          id: credentialRebalancerAttentionId(notice, credentialLocationLedger.version),
+          title: 'Credential rebalancer', summary: notice.message, category: 'credential-repointing', priority: 'NORMAL',
         });
       },
     });
