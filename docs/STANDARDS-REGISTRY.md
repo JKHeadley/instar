@@ -647,7 +647,7 @@ that reset-safe posture must be explicit and tested rather than assumed.
 **In practice.** No "remember to log it" or "remember to run X" step survives into a design — for anyone. If a behavior depends on someone remembering, it isn't built yet. All user interaction goes through channels; the agent never asks the user to go edit a file.
 **Earned from.** The methodology-drift incident (2026-05-23): the agent had the Playbook tool available the whole session and never used it to capture "Telegram is the test surface." Agent-manual is the same willpower failure as user-manual.
 **Traces to the goal.** A coherent agent carries its own context and reaches for its own tools — the human shouldn't have to be its memory or its operator's manual.
-**Full spec.** `docs/specs/UX-AND-AGENT-AGENCY-STANDARD.md` (also `docs/UX-AND-AGENT-AGENCY-STANDARD.md`).
+**Full spec.** `docs/UX-AND-AGENT-AGENCY-STANDARD.md`.
 
 ### Mobile-Complete Operator Actions
 **Rule.** Every action that needs the operator — an approval, a grant, a credential submission, a decision, any PIN-gated authority — must be completable from a phone, via the dashboard or a link the agent sends. A terminal command, a file edit, or any laptop-only step in an operator loop is a defect, not a workaround.

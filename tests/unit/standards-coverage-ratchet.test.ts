@@ -13,6 +13,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { computeCoverage } from '../../src/core/StandardsEnforcementAuditor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.resolve(__dirname, '../../scripts/standards-coverage.mjs');
@@ -85,6 +86,59 @@ describe('standards-coverage ratchet script', () => {
     expect(r.out).toContain('removed.test.ts');
   });
 
+  it('reads alternate enforcement blocks but excludes provenance headings', () => {
+    write('docs/STANDARDS-REGISTRY.md', [
+      '## Building',
+      '### Alternate Heading',
+      '**Rule.** r.',
+      '**Enforced by (structure, not willpower).** Layers:',
+      '- `tests/unit/widget.test.ts`.',
+      '**Earned from.** `tests/unit/missing-provenance.test.ts`.',
+    ].join('\n'));
+    expect(runCheck({ STANDARDS_ENFORCED_RATIO_FLOOR: '1' }).code).toBe(0);
+
+    write('docs/STANDARDS-REGISTRY.md', [
+      '## Building',
+      '### Provenance Only',
+      '**Rule.** r.',
+      '**Earned from.** `tests/unit/widget.test.ts`.',
+    ].join('\n'));
+    const provenanceOnly = runCheck({ STANDARDS_ENFORCED_RATIO_FLOOR: '1' });
+    expect(provenanceOnly.code).toBe(1);
+    expect(provenanceOnly.out).toContain('enforced ratio');
+  });
+
+  it('FAILS when a bold article section has not been deliberately classified', () => {
+    fs.appendFileSync(
+      path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'),
+      '\n### Unknown Section\n**Rule.** r.\n**Mystery evidence.** `tests/unit/widget.test.ts`.\n',
+    );
+    const r = runCheck({ STANDARDS_ENFORCED_RATIO_FLOOR: '0' });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('unrecognized article sections');
+    expect(r.out).toContain('Mystery evidence');
+  });
+
+  it('the self-contained CI parser stays classification-compatible with the library parser', () => {
+    const realRoot = path.resolve(__dirname, '../..');
+    const cli = JSON.parse(execFileSync('node', [SCRIPT, '--json'], {
+      cwd: realRoot,
+      encoding: 'utf8',
+      env: { ...process.env, STANDARDS_COVERAGE_ROOT: realRoot },
+    }));
+    const library = computeCoverage({
+      registryPath: path.join(realRoot, 'docs', 'STANDARDS-REGISTRY.md'),
+      projectDir: realRoot,
+    });
+
+    expect(cli.total).toBe(library.summary.total);
+    expect(cli.byKind).toEqual(library.summary.byKind);
+    expect(cli.enforcedRatio).toBe(library.summary.enforcedRatio);
+    expect(cli.gaps).toEqual(library.summary.gaps);
+    expect(cli.danglingCount).toBe(library.summary.danglingCount);
+    expect(cli.enforcementScope).toEqual(library.summary.registry.enforcementScope);
+  });
+
   // ── FALSE-CLAIM DETECTION (2026-07-31) ────────────────────────────────────
   // A gap that ASSERTS running machinery is a false all-clear, not an honest gap.
   // Both sides of the boundary are pinned: a prose CLAIM with no guard is caught;
@@ -137,7 +191,9 @@ describe('standards-coverage ratchet script', () => {
     const report = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
     // The output records the floors but they come from the script constant/env, never
     // from a previously-written output file — corrupting the output cannot lower the bar.
+    expect(report.floors.enforcedRatio).toBe(0.7);
     expect(report.floors.danglingCeiling).toBe(0);
+    expect(report.floors.unrecognizedSectionCeiling).toBe(0);
     fs.writeFileSync(outPath, JSON.stringify({ enforcedRatio: -999, danglingCount: 999, floors: { enforcedRatio: -1, danglingCeiling: 999 } }));
     // The next check ignores the poisoned output entirely and still passes on the real state.
     expect(runCheck().code).toBe(0);

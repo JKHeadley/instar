@@ -62,6 +62,14 @@ ratchet beats a gate beats a lint beats a design doc beats nothing). It surfaces
 standard citing a guard that no longer exists). It is "Structure beats Willpower" made
 measurable.
 
+The parser reads complete article blocks through a closed enforcement-heading list,
+not every bold section indiscriminately. Guard headings such as **Applied through**,
+**Enforced by (structure, not willpower)**, and **Full spec(s)** are included;
+provenance such as **Earned from** and **Traces to the goal** is deliberately excluded,
+as are explicitly enumerated explanatory headings. The report's
+`registry.enforcementScope` names those boundaries and lists any unrecognized article
+headings, so an unread section cannot masquerade as an article with no guard.
+
 The core is fully deterministic — local file reads only, zero token cost, zero egress,
 identical output every run. An optional language-model enrichment pass for fuzzy cases
 is a structural stub, off by default; the deterministic coverage is always the
@@ -70,7 +78,7 @@ authority. Read surfaces (owner-gated):
 - `GET /conformance/coverage` — the full per-standard coverage map (filters by
   `family`, `kind`, `status`).
 - `GET /conformance/coverage/health` — counts by enforcement kind, the enforced ratio,
-  the gap list, and the dangling-ref count.
+  the gap list, the dangling-ref count, and the parser's enforcement-heading scope.
 
 A CI ratchet (`scripts/standards-coverage.mjs`) holds an enforced-ratio floor and a
 hard zero ceiling on dangling references.

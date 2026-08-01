@@ -174,9 +174,39 @@ describe('Standards Enforcement-Coverage Audit — feature is alive (Tier 3 E2E)
     expect(report.summary.total).toBe(parsed.articles.length);
     expect(report.summary.registry.articleHeadings).toBe(parsed.diagnostics.articleHeadings);
     expect(report.summary.registry.droppedHeadings).toEqual([]);
+    expect(report.summary.registry.enforcementScope.recognizedHeadings).toContain(
+      'Enforced by (structure, not willpower)',
+    );
+    expect(report.summary.registry.enforcementScope.excludedProvenanceHeadings).toContain('Earned from');
+    expect(report.summary.registry.enforcementScope.excludedNarrativeHeadings).toContain(
+      'Three postures, in increasing order of ambition',
+    );
+    expect(report.summary.registry.enforcementScope.capturedSections).toBeGreaterThan(0);
+    expect(report.summary.registry.enforcementScope.unrecognizedSections).toEqual([]);
     // Every family in the document is assessed — including one no code names.
     expect(report.summary.registry.families).toEqual(parsed.diagnostics.families);
     expect(report.summary.registry.families).toContain('The Fractal');
+  });
+
+  it('PART A: alternate enforcement headings correct the four known false gaps', () => {
+    const report = computeCoverage({ registryPath: REAL_REGISTRY, projectDir: process.cwd() });
+    const byName = (name: string) => report.standards.find((standard) => standard.standard.startsWith(name));
+
+    const framework = byName('Framework-Agnostic');
+    expect(framework?.enforcementKind).toBe('ratchet');
+    expect(framework?.danglingRefs).toEqual([]);
+    expect(framework?.guards).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ref: 'src/core/frameworkSessionLaunch.ts', refResolves: true }),
+      expect.objectContaining({ ref: 'src/core/frameworkInjectionProcesses.ts', refResolves: true }),
+      expect.objectContaining({ ref: 'tests/unit/framework-agnosticism.test.ts', refResolves: true }),
+    ]));
+
+    expect(byName('Testing Integrity')?.enforcementKind).toBe('spec-only');
+    expect(byName('No Manual Work')?.enforcementKind).toBe('spec-only');
+    expect(byName('Signal vs. Authority')?.enforcementKind).toBe('spec-only');
+    for (const name of ['Framework-Agnostic', 'Testing Integrity', 'No Manual Work', 'Signal vs. Authority']) {
+      expect(report.summary.gaps.some((gap) => gap.startsWith(name))).toBe(false);
+    }
   });
 
   it('PART C: a TRUNCATED registry cannot present itself as a trustworthy assessment', async () => {

@@ -129,6 +129,13 @@ describe('GET /conformance/coverage (Tier 2 integration)', () => {
     expect(typeof res.body.summary.enforcedRatio).toBe('number');
     expect(Array.isArray(res.body.standards)).toBe(true);
     expect(res.body.count).toBe(3);
+    expect(res.body.summary.registry.enforcementScope).toEqual(expect.objectContaining({
+      recognizedHeadings: expect.arrayContaining(['Applied through', 'Enforced by (structure, not willpower)']),
+      excludedProvenanceHeadings: expect.arrayContaining(['Earned from', 'Traces to the goal']),
+      excludedNarrativeHeadings: expect.arrayContaining(['Three postures, in increasing order of ambition']),
+      capturedSections: 2,
+      unrecognizedSections: [],
+    }));
     const kinds = res.body.standards.map((s: { enforcementKind: string }) => s.enforcementKind);
     expect(kinds).toContain('ratchet');
     expect(kinds).toContain('gate');
@@ -217,6 +224,7 @@ describe('GET /conformance/coverage/health (Tier 2 integration)', () => {
     expect(Array.isArray(res.body.gaps)).toBe(true);
     expect(res.body.gaps).toContain('Gap One');
     expect(res.body.danglingCount).toBe(0);
+    expect(res.body.registry.enforcementScope.recognizedHeadings).toContain('Full specs');
   });
 });
 
