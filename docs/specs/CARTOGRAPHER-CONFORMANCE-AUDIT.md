@@ -65,7 +65,7 @@ Authority": a coverage gap is a signal to build a guard, never an automatic bloc
 
 | Primitive | Source (verified) | Use |
 |---|---|---|
-| registry parse | `StandardsRegistryParser` (`src/core/StandardsRegistryParser.ts`) | parses `docs/STANDARDS-REGISTRY.md` `### ` articles → `{ family, name, rule, inPractice }[]` deterministically, ~30+ articles. v3 extends parsing to ALSO capture the `**Applied through.**` line (and scan `inPractice` + `appliedThrough` text for enforcement references). |
+| registry parse | `StandardsRegistryParser` (`src/core/StandardsRegistryParser.ts`) | parses `docs/STANDARDS-REGISTRY.md` `### ` articles deterministically. Enforcement prose is captured as complete blocks through a closed heading enum (`Applied through`, `Enforced by (structure, not willpower)`, `Enforcement`, `Full spec`, `Full specs`); provenance headings are explicitly excluded, and every unrecognized bold article heading is reported in parse diagnostics. |
 | repo file existence | `fs` | verify a referenced path (`scripts/lint-*.js`, `tests/**/*.test.ts`, `docs/specs/*.md`, `src/**`) exists. |
 | route existence | `src/server/routes.ts` scan | verify a referenced `GET/POST /…` route is registered (regex over the routes source, the `docs-coverage.mjs` pattern). |
 | gate/symbol existence | repo grep | verify a referenced gate/marker symbol (`B16_UNVERIFIED_WALL`, `MessagingToneGate`, `failureSwap`) is present in source. |
@@ -78,10 +78,13 @@ This spec touches **no merged spec #2 code**. It reuses `StandardsRegistryParser
 
 ### Part A — Reference extraction (deterministic)
 
-Extend `StandardsRegistryParser` to capture, per article, the `**Applied through.**`
-line in addition to `rule`/`inPractice` (an additive field `appliedThrough?: string`;
-the existing canary stays green). A new pure `StandardEnforcementExtractor` then pulls
-**enforcement references** from `inPractice` + `appliedThrough`:
+`StandardsRegistryParser` captures `rule` and `inPractice` as complete blocks rather
+than only the text on their label line. It also preserves enforcement blocks under a
+closed enum of guard-naming headings: `Applied through`, `Enforced by (structure, not
+willpower)`, `Enforcement`, `Full spec`, and `Full specs`. The legacy additive
+`appliedThrough?: string` field remains for compatibility; the complete, heading-tagged
+blocks live in `enforcementSections`. A pure `StandardEnforcementExtractor` pulls
+**enforcement references** from `inPractice` plus those allowlisted blocks:
 
 - **File paths** — `` `scripts/lint-*.js` ``, `` `tests/**/*.test.ts` ``,
   `` `docs/specs/*.md` ``, `` `src/**/*.ts` `` (backtick-fenced or bare path tokens).
@@ -94,6 +97,16 @@ the existing canary stays green). A new pure `StandardEnforcementExtractor` then
 Extraction is conservative: a reference is only counted if it matches a known
 enforcement shape. Unmatched prose contributes no reference (→ the standard reads as
 having no *named* guard, which is itself the signal).
+
+The allowlist is deliberately not “all bold headings.” `Earned from`, `Traces to the
+goal`, `Derives from`, `Ratified by`, and `Source documents` are a closed provenance
+denylist: their paths explain origin and must never be promoted into live guards. Any
+other bold article heading is excluded and named under
+`summary.registry.enforcementScope.unrecognizedSections`. Known explanatory headings
+have their own explicit non-enforcement enum, which keeps the real registry's
+unrecognized baseline at zero. The same object publishes the accepted heading enum,
+both exclusion enums, and the number of captured blocks, so “no guard named” is
+distinguishable from “this section was not classified.”
 
 ### Part B — Verification + classification (deterministic)
 
@@ -139,7 +152,9 @@ never-guarded one.
   - `GET /conformance/coverage/health` — counts by `enforcementKind`, the enforced
     ratio (`ratchet+gate+lint` / total), the gap list (`documented-only`), the
     dangling-ref count, last-computed time, `converged` (always true for the
-    deterministic pass). Mirrors `/cartographer/health`.
+    deterministic pass), plus `registry.enforcementScope` stating which section
+    headings were read, deliberately excluded, or left unrecognized. Mirrors
+    `/cartographer/health`.
 - **Store.** The latest report is written to `state/standards-coverage.json` (a single
   compacted current-state document — bounded by the standards count, ~30 rows; no
   unbounded growth, no rotation needed). Output-only; never the read baseline for the
@@ -154,12 +169,14 @@ never-guarded one.
 ### Part E — CI ratchet (the standing guard, observe-only at the repo level)
 
 A `scripts/standards-coverage.mjs --check` (parity with `docs-coverage.mjs`): a
-hardcoded committed floor on the enforced ratio + a hard zero ceiling on **dangling
-refs** (a standard must never reference a guard that doesn't exist). Fails the build
-on regression — a new standard shipped with no guard, or a guard file removed while
-a standard still cites it. The floor starts at the current measured ratio and
-ratchets up as gaps are closed (the docs-coverage "starts loose" rationale). The
-written `state/standards-coverage.json` is measurement-only, never the floor.
+hardcoded committed floor on the enforced ratio + hard zero ceilings on **dangling
+refs** and **unrecognized article headings**. Fails the build on regression — a new
+standard shipped with no guard, a guard file removed while a standard still cites it,
+or a new bold article field whose role was never classified. Its self-contained parser
+is classification-parity-tested against `StandardsRegistryParser` over the real
+registry. The ratio floor is 0.70 against the measured 0.7073, so one new unguarded
+standard (58/83 = 0.6988) trips it. The written `state/standards-coverage.json` is
+measurement-only, never the floor.
 
 ## Security & data-egress
 
@@ -220,10 +237,14 @@ written `state/standards-coverage.json` is measurement-only, never the floor.
   - **the real registry**: a canary asserts the audit parses the LIVE
     `docs/STANDARDS-REGISTRY.md` and classifies a KNOWN-enforced standard ("No Silent
     Degradation" → its `no-silent-llm-fallback.test.ts` ratchet verifies) and that the
-    enforced ratio is within a sane band (catches a parser break).
+    enforced ratio is within a sane band (catches a parser break). The alternate-heading
+    regression proves Framework-Agnostic reads as a ratchet, the three `Full spec(s)`
+    articles read as spec-only, provenance refs stay excluded, and unknown headings
+    remain visible in the scope diagnostics.
   - **CI ratchet script**: enforced-ratio floor fails on a synthetic regression; a
-    synthetic dangling ref fails the zero-dangling ceiling; the floor is the committed
-    constant; output file is never the floor.
+    synthetic dangling ref and a synthetic unknown heading fail their zero ceilings;
+    the self-contained parser matches the library's real classifications; the floor is
+    the committed constant; output file is never the floor.
 - **Tier 2 (integration/HTTP):** `GET /conformance/coverage` + `/coverage/health` →
   200 with the documented shape + filters when enabled; 503 disabled; 401 no bearer;
   the intent-header gate enforced.

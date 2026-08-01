@@ -1,0 +1,25 @@
+{
+  "ts": "2026-08-01T02:39:07.279Z",
+  "slug": "standards-enforcement-heading-scope",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 411,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/standards-coverage.mjs",
+      "src/core/StandardEnforcementExtractor.ts",
+      "src/core/StandardsEnforcementAuditor.ts",
+      "src/core/StandardsRegistryParser.ts"
+    ],
+    "addedLines": 351,
+    "deletedLines": 60
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

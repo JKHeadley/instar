@@ -26,7 +26,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { parseStandardsRegistryDetailed, runRegistryCanary } from './StandardsRegistryParser.js';
+import {
+  ENFORCEMENT_SECTION_HEADINGS,
+  EXCLUDED_NARRATIVE_SECTION_HEADINGS,
+  EXCLUDED_PROVENANCE_SECTION_HEADINGS,
+  parseStandardsRegistryDetailed,
+  runRegistryCanary,
+  type RegistryEnforcementParseScope,
+} from './StandardsRegistryParser.js';
 import { extractEnforcementRefs, flattenRefs, type EnforcementRef } from './StandardEnforcementExtractor.js';
 import { earnsVerified, readAuthoredConstitution, type RegistryIntegrity } from './standardsRegistryPath.js';
 
@@ -106,6 +113,8 @@ export interface RegistryProvenance {
   /** Registry-parse canary verdict — false means the numbers below are NOT trustworthy. */
   canaryOk: boolean;
   canaryFailures: string[];
+  /** What article sections the enforcement parser admitted, excluded, or could not classify. */
+  enforcementScope: RegistryEnforcementParseScope;
 }
 
 export interface CoverageSummary {
@@ -1281,6 +1290,7 @@ export function computeCoverage(
     families: diagnostics.families,
     canaryOk: canary.ok,
     canaryFailures: canary.failures,
+    enforcementScope: diagnostics.enforcementScope,
   };
   const guards = guardResolution.provenance;
   const liveProjectDir = guards.projectDir;
@@ -1393,6 +1403,13 @@ export function unusableCoverageReport(
     families: [],
     canaryOk: false,
     canaryFailures: [`${resolution.reason}: ${resolution.detail}`],
+    enforcementScope: {
+      recognizedHeadings: [...ENFORCEMENT_SECTION_HEADINGS],
+      excludedProvenanceHeadings: [...EXCLUDED_PROVENANCE_SECTION_HEADINGS],
+      excludedNarrativeHeadings: [...EXCLUDED_NARRATIVE_SECTION_HEADINGS],
+      capturedSections: 0,
+      unrecognizedSections: [],
+    },
   };
   return {
     generatedAt: new Date().toISOString(),

@@ -29,13 +29,15 @@
  *   node scripts/standards-coverage.mjs --json     # JSON to stdout
  *
  * Floors (env override):
- *   STANDARDS_ENFORCED_RATIO_FLOOR  — min enforced ratio 0..1 (default 0 — starts
- *                                     loose, ratcheted up as gaps close)
+ *   STANDARDS_ENFORCED_RATIO_FLOOR  — min enforced ratio 0..1 (default 0.70,
+ *                                     ratcheted up as gaps close)
  *   STANDARDS_DANGLING_CEILING      — max dangling refs (default 0 — zero tolerance)
  *   STANDARDS_FALSE_CLAIM_CEILING   — max standards asserting an unnamed guard
  *                                     (default 1 — the measured 2026-07-31 count;
  *                                     ratchet to 0 once Cross-Store Coherence is
  *                                     resolved)
+ *   STANDARDS_UNRECOGNIZED_SECTION_CEILING — max unclassified article headings
+ *                                     (default 0 — every heading declares a role)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -65,17 +67,13 @@ const numEnv = (env, def) => {
 };
 const FLOORS = {
   // Started at 0 ("starts loose", the docs-coverage rationale) while the gap closed.
-  // Ratcheted to 0.64 on 2026-07-30: the documented-only set shrank 34 -> 24 that day
-  // (ten standards whose guards already existed gained resolvable citations). THIS
-  // script measures 0.6543; note the library (StandardsEnforcementAuditor, which the
-  // /conformance route serves) measures 0.6585 over 82 standards where this parser
-  // counts 81 — a known one-article discrepancy between two implementations of the
-  // same measure, recorded rather than averaged away. The floor is set against THIS
-  // script's number, since this script is what CI runs, with roughly one standard of
-  // headroom so a single unguarded addition surfaces as a real signal rather than
-  // tripping the build on rounding. It cannot fail a build that does not regress.
-  // Ratchet upward again (a visible PR diff) as the documented-only set shrinks.
-  enforcedRatio: numEnv('STANDARDS_ENFORCED_RATIO_FLOOR', 0.64),
+  // Ratcheted to 0.70 on 2026-07-31 after the self-contained parser was brought
+  // into parity with StandardsRegistryParser: 82 standards, 58 with a named
+  // ratchet/gate/lint ref, ratio 0.7073. The old parser silently ignored alternate
+  // enforcement headings and one whole structurally-detected family, reporting a
+  // different denominator from the API. 0.70 keeps headroom for rounding while a
+  // single new unguarded standard (58/83 = 0.6988) trips the ratchet.
+  enforcedRatio: numEnv('STANDARDS_ENFORCED_RATIO_FLOOR', 0.70),
   // Zero tolerance: a standard must NEVER cite a guard that doesn't exist.
   danglingCeiling: numEnv('STANDARDS_DANGLING_CEILING', 0),
   // A gap that ASSERTS running machinery is a false all-clear, not an honest gap.
@@ -86,36 +84,145 @@ const FLOORS = {
   // without naming it fails immediately. RATCHET TO 0 once Cross-Store Coherence
   // either gets its audit built or has the claim amended out of its prose.
   falseClaimCeiling: numEnv('STANDARDS_FALSE_CLAIM_CEILING', 1),
+  // Zero tolerance: a new bold article section must be explicitly classified as
+  // core, enforcement, provenance, or explanatory narrative.
+  unrecognizedSectionCeiling: numEnv('STANDARDS_UNRECOGNIZED_SECTION_CEILING', 0),
 };
 
 // ── Deterministic parse → extract → verify (mirrors the auditor, self-contained) ──
 
-const STANDARDS_FAMILY_RE = /^##\s+(The Root|The Substrate|Building|Shipping|Interaction)\b/;
 const ANY_H2_RE = /^##\s+/;
+const H2_NAME_RE = /^##\s+(.+?)\s*$/;
 const ARTICLE_RE = /^###\s+(.+?)\s*$/;
-function fieldAfter(line, label) {
-  const m = line.match(new RegExp(`^\\*\\*${label}\\.\\*\\*\\s*(.*)$`));
-  return m ? m[1].trim() : null;
-}
+const FIELD_HEADING_RE = /^\*\*(.+?)\.\*\*\s*(.*)$/;
+const ENFORCEMENT_SECTION_HEADINGS = [
+  'Applied through',
+  'Enforced by (structure, not willpower)',
+  'Enforcement',
+  'Full spec',
+  'Full specs',
+];
+const EXCLUDED_PROVENANCE_SECTION_HEADINGS = [
+  'Derives from',
+  'Earned from',
+  'Ratified by',
+  'Source documents',
+  'Traces to the goal',
+];
+const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
+  'Applied at the shipping layer',
+  'Balanced by — Responsible Resource',
+  'Benchmarks earn a real job',
+  'Composition with No Silent Degradation',
+  'Constrain the model\'s output with structure, never by matching its prose',
+  'Distinct from Cross-Machine Coherence',
+  'Distinct from Deferral = Deletion',
+  'Distinct from the OnboardingGate',
+  'Neither is whole alone',
+  'Notice and fight the reflex (the load-bearing awareness)',
+  'Per-feature posture (2026-06-12 widening)',
+  'Restart-survival corollary',
+  'The Eternal Sentinel exemption (ratified with the standard)',
+  'The moving threshold (mastery)',
+  'The near-total ban',
+  'Three obligations, in increasing blast radius',
+  'Three postures, in increasing order of ambition',
+];
+const CORE_SECTION_HEADINGS = ['Rule', 'In practice'];
+const ENFORCEMENT_SECTION_HEADING_SET = new Set(ENFORCEMENT_SECTION_HEADINGS);
+const EXCLUDED_PROVENANCE_SECTION_HEADING_SET = new Set(EXCLUDED_PROVENANCE_SECTION_HEADINGS);
+const EXCLUDED_NARRATIVE_SECTION_HEADING_SET = new Set(EXCLUDED_NARRATIVE_SECTION_HEADINGS);
+const CORE_SECTION_HEADING_SET = new Set(CORE_SECTION_HEADINGS);
+const familyName = (heading) => heading.split(/\s+[—–-]\s+/)[0].trim();
+
 function parseRegistry(markdown) {
-  const lines = markdown.split('\n');
-  const articles = [];
-  let fam = null, cur = null;
-  const flush = () => { if (cur && cur.rule) articles.push(cur); cur = null; };
-  for (const line of lines) {
-    const fm = line.match(STANDARDS_FAMILY_RE);
-    if (fm) { flush(); fam = fm[1]; continue; }
-    if (ANY_H2_RE.test(line) && !fm) { flush(); fam = null; continue; }
-    if (!fam) continue;
-    const am = line.match(ARTICLE_RE);
-    if (am) { flush(); cur = { family: fam, name: am[1].trim(), rule: '', inPractice: '', appliedThrough: '' }; continue; }
+  const sections = [];
+  let section = null;
+  let cur = null;
+  let curName = '';
+  let observedSections = [];
+  let field = null;
+
+  const flushField = () => {
+    if (!cur || !field) return;
+    const heading = field.heading;
+    const text = field.lines.join('\n').trim();
+    observedSections.push(heading);
+    if (heading === 'Rule') cur.rule = text;
+    else if (heading === 'In practice') cur.inPractice = text;
+    else if (ENFORCEMENT_SECTION_HEADING_SET.has(heading)) {
+      cur.enforcementSections.push({ heading, text });
+      if (heading === 'Applied through') cur.appliedThrough = text;
+    }
+    field = null;
+  };
+
+  const flush = () => {
+    flushField();
+    if (section && cur) section.blocks.push({ name: curName, article: cur, observedSections });
+    cur = null;
+    curName = '';
+    observedSections = [];
+  };
+
+  for (const line of markdown.split('\n')) {
+    if (ANY_H2_RE.test(line)) {
+      flush();
+      const h2 = line.match(H2_NAME_RE);
+      section = { heading: h2 ? h2[1].trim() : '', blocks: [] };
+      sections.push(section);
+      continue;
+    }
+    if (!section) continue;
+    const articleMatch = line.match(ARTICLE_RE);
+    if (articleMatch) {
+      flush();
+      curName = articleMatch[1].trim();
+      cur = {
+        family: familyName(section.heading), name: curName,
+        rule: '', inPractice: '', appliedThrough: '', enforcementSections: [],
+      };
+      continue;
+    }
     if (!cur) continue;
-    const r = fieldAfter(line, 'Rule'); if (r !== null) { cur.rule = r; continue; }
-    const ip = fieldAfter(line, 'In practice'); if (ip !== null) { cur.inPractice = ip; continue; }
-    const at = fieldAfter(line, 'Applied through'); if (at !== null) { cur.appliedThrough = at; continue; }
+    const fieldMatch = line.match(FIELD_HEADING_RE);
+    if (fieldMatch) {
+      flushField();
+      field = { heading: fieldMatch[1].trim(), lines: [fieldMatch[2]] };
+      continue;
+    }
+    if (field) field.lines.push(line);
   }
   flush();
-  return articles;
+
+  const articles = [];
+  const enforcementScope = {
+    recognizedHeadings: [...ENFORCEMENT_SECTION_HEADINGS],
+    excludedProvenanceHeadings: [...EXCLUDED_PROVENANCE_SECTION_HEADINGS],
+    excludedNarrativeHeadings: [...EXCLUDED_NARRATIVE_SECTION_HEADINGS],
+    capturedSections: 0,
+    unrecognizedSections: [],
+  };
+  for (const candidate of sections) {
+    if (!candidate.blocks.some((block) => block.article.rule)) continue;
+    for (const block of candidate.blocks) {
+      if (!block.article.rule) continue;
+      articles.push(block.article);
+      enforcementScope.capturedSections += block.article.enforcementSections.length;
+      for (const heading of block.observedSections) {
+        if (
+          CORE_SECTION_HEADING_SET.has(heading) ||
+          ENFORCEMENT_SECTION_HEADING_SET.has(heading) ||
+          EXCLUDED_PROVENANCE_SECTION_HEADING_SET.has(heading) ||
+          EXCLUDED_NARRATIVE_SECTION_HEADING_SET.has(heading)
+        ) continue;
+        enforcementScope.unrecognizedSections.push(
+          `${familyName(candidate.heading)} › ${block.name} › ${heading}`,
+        );
+      }
+    }
+  }
+  return { articles, enforcementScope };
 }
 
 const FILE_RE = /`([a-zA-Z0-9_./-]+\.(?:ts|js|mjs|cjs|md|json|sh))`/g;
@@ -127,7 +234,11 @@ const isEnforcementPath = (p) => ENFORCEMENT_PATH_PREFIXES.some((pre) => p.start
 const dedupe = (xs) => [...new Set(xs)];
 
 function extractRefs(a) {
-  const text = `${a.inPractice ?? ''}\n${a.appliedThrough ?? ''}`;
+  const text = [
+    a.inPractice ?? '',
+    a.appliedThrough ?? '',
+    ...(a.enforcementSections ?? []).map((section) => section.text),
+  ].join('\n');
   const files = [];
   for (const m of text.matchAll(FILE_RE)) { if (isEnforcementPath(m[1])) files.push(m[1]); }
   const routes = [];
@@ -177,7 +288,12 @@ const CLAIM_PATTERNS = [
 const PRESCRIPTIVE_NEAR = /\b(?:must|should|shall|needs? to|ought to|is required to)\b[^.]{0,60}$/i;
 
 function detectEnforcementClaims(a) {
-  const text = `${a.rule ?? ''}\n${a.inPractice ?? ''}\n${a.appliedThrough ?? ''}`;
+  const text = [
+    a.rule ?? '',
+    a.inPractice ?? '',
+    a.appliedThrough ?? '',
+    ...(a.enforcementSections ?? []).map((section) => section.text),
+  ].join('\n');
   const hits = [];
   for (const re of CLAIM_PATTERNS) {
     const m = re.exec(text);
@@ -257,10 +373,17 @@ function compute() {
       total: 0, byKind: { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 },
       enforcedRatio: 1, gaps: [], falseClaimCount: 0, falseClaims: [],
       danglingCount: 0, danglingByStandard: [],
+      enforcementScope: {
+        recognizedHeadings: [...ENFORCEMENT_SECTION_HEADINGS],
+        excludedProvenanceHeadings: [...EXCLUDED_PROVENANCE_SECTION_HEADINGS],
+        excludedNarrativeHeadings: [...EXCLUDED_NARRATIVE_SECTION_HEADINGS],
+        capturedSections: 0,
+        unrecognizedSections: [],
+      },
     };
   }
 
-  const articles = parseRegistry(markdown);
+  const { articles, enforcementScope } = parseRegistry(markdown);
   const routeTable = loadRouteTable();
   const extracted = articles.map((a) => ({ a, refs: extractRefs(a) }));
   const wanted = new Set();
@@ -307,7 +430,7 @@ function compute() {
   return {
     generatedAt: new Date().toISOString(),
     registryFound: true,
-    total, byKind, enforcedRatio, gaps,
+    total, byKind, enforcedRatio, gaps, enforcementScope,
     falseClaimCount: falseClaims.length, falseClaims,
     danglingCount, danglingByStandard,
   };
@@ -334,8 +457,9 @@ function main() {
       `enforced-ratio=${report.enforcedRatio} (ratchet ${report.byKind.ratchet} / gate ${report.byKind.gate} / ` +
       `lint ${report.byKind.lint} / spec-only ${report.byKind['spec-only']} / gap ${report.byKind['documented-only']}) ` +
       `false-claims=${report.falseClaimCount} ` +
-      `dangling=${report.danglingCount}`);
-    console.error(`[standards-coverage] floors: enforced-ratio>=${FLOORS.enforcedRatio} dangling<=${FLOORS.danglingCeiling} false-claims<=${FLOORS.falseClaimCeiling}`);
+      `dangling=${report.danglingCount} ` +
+      `unrecognized-sections=${report.enforcementScope.unrecognizedSections.length}`);
+    console.error(`[standards-coverage] floors: enforced-ratio>=${FLOORS.enforcedRatio} dangling<=${FLOORS.danglingCeiling} false-claims<=${FLOORS.falseClaimCeiling} unrecognized-sections<=${FLOORS.unrecognizedSectionCeiling}`);
     for (const fc of report.falseClaims) {
       console.error(`[standards-coverage] FALSE CLAIM — "${fc.standard}" asserts running machinery (${fc.claims.map((c) => `"${c}"`).join(', ')}) but names no resolvable guard.`);
     }
@@ -356,10 +480,16 @@ function main() {
       failures.push(`false claims ${report.falseClaimCount} > ceiling ${FLOORS.falseClaimCeiling}` +
         ` — ${report.falseClaims.map((f) => `${f.standard}: asserts [${f.claims.join(', ')}] but names no resolvable guard`).join('; ')}`);
     }
+    if (report.enforcementScope.unrecognizedSections.length > FLOORS.unrecognizedSectionCeiling) {
+      failures.push(
+        `unrecognized article sections ${report.enforcementScope.unrecognizedSections.length} > ceiling ${FLOORS.unrecognizedSectionCeiling}` +
+        ` — ${report.enforcementScope.unrecognizedSections.join('; ')}`,
+      );
+    }
     if (failures.length > 0) {
       process.stderr.write('\n❌ standards-coverage check failed:\n');
       for (const f of failures) process.stderr.write(`  - ${f}\n`);
-      process.stderr.write('\nFix: build a guard for an unguarded standard (raise the ratio), repair the dangling reference (the cited guard file was renamed/removed), or resolve a false claim — a standard whose prose asserts running machinery must either NAME the guard that runs it, or stop claiming it.\n');
+      process.stderr.write('\nFix: build a guard for an unguarded standard (raise the ratio), repair a dangling reference, classify each unknown article heading, or resolve a false claim whose prose asserts unnamed machinery.\n');
       process.exit(1);
     }
     if (!QUIET) console.error('✅ standards-coverage check passed.');
