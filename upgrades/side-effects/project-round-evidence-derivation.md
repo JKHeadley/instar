@@ -31,6 +31,9 @@ timestamp no longer permits its round to complete or run. That is intentional:
 the row cannot distinguish completed work from a mistaken label. Legitimate
 fresh items at `outline`, `approved`, or `building` remain runnable because the
 runner distinguishes them from a row that already claims `merged`.
+A definitive git regression also remains runnable: exit status 1 proves the
+recorded commit is absent from canonical main, so the stale metadata gap cannot
+overrule that stronger negative verdict.
 
 ## 2. Under-block
 
@@ -119,6 +122,7 @@ outbound messaging, session lifecycle, dispatch, or a gate/watchdog surface.
 - `tests/unit/ProjectRoundDerivation.test.ts`
 - `tests/integration/projects-api.test.ts`
 - `tests/unit/ProjectRoundExecution.test.ts`
+- `tests/unit/round-completion-verifies-merged.test.ts`
 
 ## Class-Closure Declaration
 

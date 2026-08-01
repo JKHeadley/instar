@@ -22,7 +22,7 @@ selecting a stage that cannot yet carry merge evidence.
 
 ## Evidence
 
-Focused unit and integration coverage proves pending caches derive complete,
+Eighty-nine focused unit and integration tests prove pending caches derive complete,
 unsupported complete caches regress, evidence-empty merged rows request repair,
 same-stage re-attestation reaches the real validator, and direct runner calls
 refuse to redo possibly completed work. The TypeScript build passes.

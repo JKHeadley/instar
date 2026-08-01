@@ -26,6 +26,9 @@ advance endpoint: supplying the PR re-runs the full GitHub, canonical-main, and
 CI validation and attaches the resulting evidence atomically. Nothing is
 guessed and the feature is not rebuilt. The autonomous runner has the same
 defense, so directly invoking it cannot bypass the safer next-action result.
+If git definitively proves a recorded commit is no longer on the main branch,
+that stronger negative verdict still permits repair work to run; missing old
+metadata never hides a real regression.
 
 The intended outcome is simple: cached summaries can no longer create work or
 erase proof. New merge transitions keep their evidence as before, old rows have

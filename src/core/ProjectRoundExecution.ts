@@ -179,6 +179,10 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
     ids.filter((id) => {
       const item = input.tracker.get(id);
       if (!item) return false;
+      // A real negative is a verdict, not an evidence gap. Git exit 1 proves
+      // the recorded commit is not on canonical main, so rerunning is allowed
+      // even when the stale row predates today's richer evidence fields.
+      if (v.regressed.has(id)) return false;
       // A plain pre-build item with no merge commit is ordinary unfinished
       // work. A row that already CLAIMS `merged` without the evidence behind
       // that claim is different: rerunning it could duplicate completed work.
