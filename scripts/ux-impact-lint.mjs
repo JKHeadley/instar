@@ -22,12 +22,12 @@ try {
   const report = { version: 1, base, head, authorInScope, scope, allowlistedPaths: [], exempt: false, internalError: false };
   const writeReport = () => { if (reportPath) writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`); };
   if (!authorInScope) { report.outOfScopeAuthor = true; await writeReport(); console.log('UX lint: out-of-scope author'); process.exit(0); }
-  const allowlisted = names.filter((p) => p === 'src/server/routes.ts' || p === 'src/commands/server.ts' || p.startsWith('src/messaging/') || p.startsWith('src/dashboard/') || p.startsWith('src/templates/'));
+  const allowlisted = names.filter((p) => p === 'src/server/routes.ts' || p === 'src/commands/server.ts' || p === 'src/scaffold/templates.ts' || p.startsWith('src/messaging/') || p.startsWith('src/dashboard/') || p.startsWith('src/templates/'));
   report.allowlistedPaths = allowlisted;
   if (allowlisted.length === 0) { await writeReport(); console.log('UX lint: out of scope'); process.exit(0); }
   const diff = execFileSync('git', ['diff', '--unified=0', `${base}...${head}`, '--', ...allowlisted], { encoding: 'utf8' });
   const added = diff.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++')).join('\n');
-  const refactorOnly = !allowlisted.some((p) => p.startsWith('src/templates/') || p === 'src/server/routes.ts' || p === 'src/commands/server.ts')
+  const refactorOnly = !allowlisted.some((p) => p.startsWith('src/templates/') || p === 'src/server/routes.ts' || p === 'src/commands/server.ts' || p === 'src/scaffold/templates.ts')
     && !/(?:^|\s)[`'\"](?:[^`'\"]+)[`'\"]/.test(added);
   const section = body.match(/^## UX Impact\s*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/im)?.[1]?.trim() || '';
   if (/UX-Impact:\s*refactor-only/i.test(section) && refactorOnly) { report.exempt = true; report.exemption = 'refactor-only'; await writeReport(); console.log('UX lint PASS: deterministic refactor-only exemption'); process.exit(0); }
@@ -38,7 +38,7 @@ try {
   }
   const quoted = [...section.matchAll(/[`'"“]([^`'"”]+)[`'"”]/g)].map((m) => m[1]);
   if (!quoted.some((q) => q.length > 2 && diff.includes(q))) {
-    console.error('::error::UX Impact must quote a concrete string from the diff'); process.exit(1);
+    console.error(`::error::UX Impact must quote a concrete string from the USER-FACING paths this PR touches (${allowlisted.join(', ')}). Quotes from other changed files are not checked.`); process.exit(1);
   }
   await writeReport();
   console.log(`UX lint PASS: ${allowlisted.length} allowlisted path(s)`);

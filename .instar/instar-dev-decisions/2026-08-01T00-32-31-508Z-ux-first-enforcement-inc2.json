@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-01T00:32:31.508Z",
+  "slug": "ux-first-enforcement-inc2",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/ux-impact-lint.mjs"
+    ],
+    "addedLines": 3,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
