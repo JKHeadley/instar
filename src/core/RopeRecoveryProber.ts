@@ -33,6 +33,7 @@
 
 import type { PeerEndpointResolver, RopeHealthSnapshotRow } from './PeerEndpointResolver.js';
 import type { MeshEndpoint } from './types.js';
+import type { AttentionConditionIdentity, AttentionConditionObservation } from './AttentionConditionStore.js';
 
 /** Same base as the resolver's own probe backoff — the failure path widens from here. */
 export const PROBE_BACKOFF_BASE_MS = 5_000;
@@ -91,6 +92,10 @@ export interface RopeRecoveryProberDeps {
     | 'probe-sent' | 'probe-success' | 'probe-failure' | 'rope-recovered'
     | 'exhaustion-trip' | 'slow-alive-floor'
     | 'dry-run-would-probe' | 'dry-run-would-close') => void;
+  /** Durable condition lifecycle. When present, process restarts cannot mint a
+   *  new Attention episode while the same rope condition remains active. */
+  observeAttentionCondition?: (identity: AttentionConditionIdentity) => AttentionConditionObservation;
+  clearAttentionCondition?: (identity: AttentionConditionIdentity) => void;
   now?: () => number;
   logger?: (msg: string) => void;
 }
@@ -208,6 +213,8 @@ export class RopeRecoveryProber {
         st.lastClosedAt = nowMs;
         st.lastClosedProbeFailures = st.episode.probeFailures;
         this.log(`episode close ${row.peer}/${row.kind} (lastKnownGood reclaimed)`);
+        this.d.clearAttentionCondition?.(this.conditionIdentity('slow-alive', row.peer, row.kind));
+        this.d.clearAttentionCondition?.(this.conditionIdentity('exhausted', row.peer, row.kind));
         st.episode = null;
       }
 
@@ -294,8 +301,10 @@ export class RopeRecoveryProber {
         // bar — drop to floor cadence + the same escalate-once posture.
         ep.escalatedSlowAlive = true;
         this.d.recordMetric?.('slow-alive-floor');
+        const condition = this.observeCondition('slow-alive', peer, kind);
+        if (condition?.shouldRaise === false) return;
         this.escalate(
-          `rope-probe-slow-alive:${peer}:${kind}:${ep.openedAt}`,
+          condition?.itemId ?? `rope-probe-slow-alive:${peer}:${kind}:${ep.openedAt}`,
           `Mesh rope ${kind} answers probes but stays demoted`,
           `The ${kind} rope to ${this.peerName(peer)} has answered ${ep.unreclaimedSuccesses} consecutive recovery probes but has not reclaimed preferred status — latency above the reclaim bar. Probing continues at the floor cadence.`,
           'informational', peer, kind,
@@ -316,8 +325,10 @@ export class RopeRecoveryProber {
         this.d.recordMetric?.('exhaustion-trip');
         if (!ep.escalatedExhaust) {
           ep.escalatedExhaust = true; // escalate ONCE per (peer, kind, episode)
+          const condition = this.observeCondition('exhausted', peer, kind);
+          if (condition?.shouldRaise === false) return;
           this.escalate(
-            `rope-probe-exhausted:${peer}:${kind}:${ep.openedAt}`,
+            condition?.itemId ?? `rope-probe-exhausted:${peer}:${kind}:${ep.openedAt}`,
             `Mesh rope ${kind} not recovering`,
             `The ${kind} rope to ${this.peerName(peer)} has failed ${ep.probeFailures} recovery probes; probing continues at the floor rate (${Math.round(this.cfg.floorMs / 60000)} min).`,
             'actionable', peer, kind,
@@ -325,6 +336,14 @@ export class RopeRecoveryProber {
         }
       }
     }
+  }
+
+  private conditionIdentity(conditionType: 'slow-alive' | 'exhausted', peer: string, kind: MeshEndpoint['kind']): AttentionConditionIdentity {
+    return { producer: 'rope-recovery-probe', conditionType, subject: peer, scope: kind };
+  }
+
+  private observeCondition(conditionType: 'slow-alive' | 'exhausted', peer: string, kind: MeshEndpoint['kind']): AttentionConditionObservation | undefined {
+    return this.d.observeAttentionCondition?.(this.conditionIdentity(conditionType, peer, kind));
   }
 
   /** Nickname-first peer naming for escalation bodies (contract: rope KIND +

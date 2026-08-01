@@ -33,7 +33,7 @@ interface Harness {
   run: (durationMs: number, stepMs?: number) => Promise<void>;
 }
 
-function boot(opts: { dryRun?: boolean; floorMs?: number; exhaustAttempts?: number; midIntervalMs?: number; maxUnreclaimedSuccesses?: number; reopenEpisodeWindowMs?: number; nicknameOf?: (m: string) => string | null } = {}): Harness {
+function boot(opts: { dryRun?: boolean; floorMs?: number; exhaustAttempts?: number; midIntervalMs?: number; maxUnreclaimedSuccesses?: number; reopenEpisodeWindowMs?: number; nicknameOf?: (m: string) => string | null; observeAttentionCondition?: import('../../src/core/RopeRecoveryProber.js').RopeRecoveryProberDeps['observeAttentionCondition']; clearAttentionCondition?: import('../../src/core/RopeRecoveryProber.js').RopeRecoveryProberDeps['clearAttentionCondition'] } = {}): Harness {
   const clock = { t: 1_000_000 };
   const resolver = new PeerEndpointResolver({
     config: {
@@ -73,6 +73,8 @@ function boot(opts: { dryRun?: boolean; floorMs?: number; exhaustAttempts?: numb
       nicknameOf: opts.nicknameOf,
       now: () => clock.t,
       logger: (m) => logs.push(m),
+      observeAttentionCondition: opts.observeAttentionCondition,
+      clearAttentionCondition: opts.clearAttentionCondition,
     },
     {
       dryRun: opts.dryRun ?? false,
@@ -242,6 +244,21 @@ describe('RopeRecoveryProber — probe-layer cadence (R-r3-2)', () => {
     inFlightResolve!({ typedSuccess: true, detail: 'ok', latencyMs: 5 });
     await new Promise((r) => setImmediate(r));
     expect(prober.isInFlight(PEER, KIND)).toBe(false);
+  });
+});
+
+describe('RopeRecoveryProber — durable Attention condition identity', () => {
+  it('does not raise a second slow-alive item when durable state says the condition is still active', async () => {
+    const h = boot({
+      dryRun: true,
+      midIntervalMs: 1,
+      maxUnreclaimedSuccesses: 1,
+      observeAttentionCondition: () => ({ itemId: 'rope:slow:peer-1:tailscale:ep-1', episode: 1, shouldRaise: false }),
+    });
+    killRope(h);
+    h.setProbeResult({ typedSuccess: true });
+    await h.tick();
+    expect(h.attention).toHaveLength(0);
   });
 });
 
