@@ -682,6 +682,8 @@ export interface JobState {
   lastError?: string;
   /** Handoff notes from the last successful run — claims to verify, not facts */
   lastHandoff?: string;
+  /** Source-reported measurement state from the last script run, when present. */
+  lastAssessment?: import('./InstrumentAssessment.js').InstrumentAssessment;
   nextScheduled?: string;
   consecutiveFailures: number;
 }

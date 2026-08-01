@@ -1,0 +1,41 @@
+{
+  "ts": "2026-08-01T08:43:59.000Z",
+  "slug": "instrument-semantic-liveness",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "changes scheduler retry lifecycle",
+    "changes an externally consumed alignment metric denominator",
+    "adds a source-reported job-state contract"
+  ],
+  "belowFloor": false,
+  "files": 20,
+  "loc": 910,
+  "causalAutopsy": {
+    "deliveryCanary": "transport unavailability and measured typed-contract violations collapsed into one hard finding",
+    "alignment": "one legacy invalid confidence row made every valid new row unable to repair the 30-day grade",
+    "retry": "each retry trigger cleared its own episode counter before the failing script rescheduled, making the first delay repeat forever"
+  },
+  "classClosure": {
+    "defectClass": "novel",
+    "closure": "gap",
+    "gapItem": "ACT-378",
+    "component": "instrument-observability",
+    "novelClass": {
+      "nearestExistingClass": "aggregate-masks-subgroup-regression — both are denominator failures, but that class hides a subgroup loss inside a healthy aggregate while this class makes a relevant state unable to influence any verdict",
+      "includes": [
+        "unavailability and a measured contract violation collapse to one verdict",
+        "one legacy invalid row prevents all new valid input repairing a bounded metric",
+        "a verdict hides its measured cohort and exclusions"
+      ],
+      "excludes": [
+        "a constant surface that would react to relevant input",
+        "a young instrument that has simply not seen variety",
+        "an explicit unassessable run that future input can repair"
+      ],
+      "severity": "normal"
+    }
+  },
+  "verdict": "pass"
+}

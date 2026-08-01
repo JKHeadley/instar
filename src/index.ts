@@ -53,6 +53,11 @@ export type {
   JobReflectorConfig,
 } from './core/JobReflector.js';
 export { IntentDriftDetector } from './core/IntentDriftDetector.js';
+export {
+  INSTRUMENT_ASSESSMENT_MARKER,
+  parseInstrumentAssessment,
+} from './core/InstrumentAssessment.js';
+export type { InstrumentAssessment } from './core/InstrumentAssessment.js';
 export type { DriftWindow, DriftSignal, DriftAnalysis, AlignmentScore } from './core/IntentDriftDetector.js';
 export { OrgIntentManager } from './core/OrgIntentManager.js';
 export type { OrgConstraint, OrgGoal, ParsedOrgIntent, IntentConflict, IntentValidationResult } from './core/OrgIntentManager.js';

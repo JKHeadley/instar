@@ -141,4 +141,77 @@ describe('JobScheduler — script jobs run directly (no model session)', () => {
     await waitFor(() => fs.existsSync(markerPath));
     expect(fs.readFileSync(markerPath, 'utf-8')).toBe('token=script-token agent=script-agent');
   });
+
+  it('preserves a source-reported assessment without guessing from exit status', async () => {
+    project = createTempProject();
+    const mockSM = createMockSessionManager();
+    const assessment = {
+      status: 'unassessable',
+      verdict: 'none',
+      reason: 'the only peer was unavailable',
+      populationSize: 1,
+      sampleSize: 0,
+      excludedSampleSize: 1,
+      exclusions: { unavailable: 1 },
+      sampleCoverage: 0,
+    };
+    const jobs: JobDefinition[] = [{
+      slug: 'instrument-script',
+      name: 'Instrument Script',
+      description: 'reports its measurement state',
+      schedule: '0 0 * * *',
+      priority: 'low',
+      expectedDurationMinutes: 1,
+      model: 'haiku',
+      enabled: true,
+      execute: {
+        type: 'script',
+        value: `printf '%s\\n' 'INSTAR_INSTRUMENT_ASSESSMENT=${JSON.stringify(assessment)}'`,
+      },
+    }];
+    const jobsFile = path.join(project.stateDir, 'instrument-jobs.json');
+    fs.writeFileSync(jobsFile, JSON.stringify(jobs, null, 2));
+
+    scheduler = new JobScheduler(config(jobsFile), mockSM as any, project.state, project.stateDir);
+    scheduler.start();
+    expect(await scheduler.triggerJob('instrument-script', 'test')).toBe('triggered');
+
+    await waitFor(() => project!.state.getJobState('instrument-script')?.lastResult === 'success');
+    const state = project.state.getJobState('instrument-script');
+    expect(state?.lastResult).toBe('success');
+    expect(state?.lastAssessment).toEqual(assessment);
+    expect(state?.lastAssessment?.status).toBe('unassessable');
+  });
+
+  it('preserves the durable failure streak until a script actually succeeds', async () => {
+    project = createTempProject();
+    const mockSM = createMockSessionManager();
+    const jobs: JobDefinition[] = [{
+      slug: 'persistent-script-failure',
+      name: 'Persistent Script Failure',
+      description: 'fails repeatedly',
+      schedule: '0 0 1 1 *',
+      priority: 'low',
+      expectedDurationMinutes: 1,
+      model: 'haiku',
+      enabled: true,
+      execute: { type: 'script', value: 'exit 1' },
+    }];
+    const jobsFile = path.join(project.stateDir, 'persistent-script-jobs.json');
+    fs.writeFileSync(jobsFile, JSON.stringify(jobs, null, 2));
+
+    scheduler = new JobScheduler(config(jobsFile), mockSM as any, project.state, project.stateDir);
+    scheduler.start();
+
+    expect(await scheduler.triggerJob('persistent-script-failure', 'test')).toBe('triggered');
+    await waitFor(() => project!.state.getJobState('persistent-script-failure')?.lastResult === 'failure');
+    expect(project.state.getJobState('persistent-script-failure')?.consecutiveFailures).toBe(1);
+
+    expect(await scheduler.triggerJob('persistent-script-failure', 'test')).toBe('triggered');
+    await waitFor(() => (
+      project!.state.getJobState('persistent-script-failure')?.lastResult === 'failure' &&
+      project!.state.getJobState('persistent-script-failure')?.consecutiveFailures === 2
+    ));
+    expect(project.state.getJobState('persistent-script-failure')?.consecutiveFailures).toBe(2);
+  });
 });

@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { parseInstrumentAssessment } from '../core/InstrumentAssessment.js';
 
 const execFileAsync = promisify(execFile);
 import path from 'node:path';
@@ -663,7 +664,11 @@ export class JobScheduler {
     // "Run this script: ..." prompt and could hang for hours holding a live
     // session slot, leaving run-history stuck at `pending` (Codey gap-run F005).
     if (job.execute.type === 'script') {
-      this.clearRetryState(slug);
+      // A retry belongs to the current bounded retry episode. Clearing here on
+      // every trigger made each failing script retry look like attempt zero, so
+      // it could repeat the one-minute slot forever. Cron windows clear above;
+      // explicit/non-retry triggers begin a fresh episode here.
+      if (!reason.startsWith('retry:')) this.clearRetryState(slug);
       this.runScriptJob(job, reason);
       return 'triggered';
     }
@@ -1054,12 +1059,16 @@ export class JobScheduler {
       clampedAllowlist: observability.clampedAllowlist,
     });
 
+    const priorConsecutiveFailures = this.state.getJobState(job.slug)?.consecutiveFailures ?? 0;
     this.state.saveJobState({
       slug: job.slug,
       lastRun: new Date().toISOString(),
       lastResult: 'pending',
       lastError: undefined,
-      consecutiveFailures: 0,
+      // Starting another attempt is not recovery. Preserve the durable streak
+      // until the subprocess actually succeeds; resetting here made every
+      // persistent script failure appear to be failure #1 forever.
+      consecutiveFailures: priorConsecutiveFailures,
       nextScheduled: this.getNextRun(job.slug),
     });
 
@@ -1093,34 +1102,45 @@ export class JobScheduler {
       env,
       maxBuffer: 1024 * 1024,
     }).then(({ stdout, stderr }) => {
-      const output = [stdout, stderr].filter(Boolean).join('\n').slice(-1000);
+      // Successful completion (not merely successful trigger) closes the retry
+      // episode for script jobs.
+      this.clearRetryState(job.slug);
+      const rawOutput = [stdout, stderr].filter(Boolean).join('\n');
+      const output = rawOutput.slice(-1000);
+      const lastAssessment = parseInstrumentAssessment(rawOutput) ?? undefined;
       this.runHistory.recordCompletion({ runId, result: 'success', outputSummary: output || undefined });
       this.state.saveJobState({
         slug: job.slug,
         lastRun: new Date().toISOString(),
         lastResult: 'success',
         lastError: undefined,
+        lastAssessment,
         consecutiveFailures: 0,
         nextScheduled: this.getNextRun(job.slug),
       });
       this.releaseClaim(job.slug, 'success');
     }).catch((err: unknown) => {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      const output = [
+      const rawOutput = [
         (err as { stdout?: string })?.stdout,
         (err as { stderr?: string })?.stderr,
-      ].filter(Boolean).join('\n').slice(-1000);
+      ].filter(Boolean).join('\n');
+      const output = rawOutput.slice(-1000);
+      const lastAssessment = parseInstrumentAssessment(rawOutput) ?? undefined;
       const result = errorMsg.includes('timed out') || errorMsg.includes('ETIMEDOUT') ? 'timeout' : 'failure';
       this.runHistory.recordCompletion({ runId, result, error: errorMsg, outputSummary: output || undefined });
       const previous = this.state.getJobState(job.slug);
+      const consecutiveFailures = (previous?.consecutiveFailures ?? 0) + 1;
       this.state.saveJobState({
         slug: job.slug,
         lastRun: new Date().toISOString(),
         lastResult: result,
         lastError: errorMsg,
-        consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+        lastAssessment,
+        consecutiveFailures,
         nextScheduled: this.getNextRun(job.slug),
       });
+      this.alertOnConsecutiveFailures(job, consecutiveFailures, errorMsg);
       this.releaseClaim(job.slug, 'failure');
       this.scheduleRetry(job.slug, 'error');
     });
