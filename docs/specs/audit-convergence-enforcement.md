@@ -20,6 +20,12 @@ approved: true  # operator authenticated preapproval, topic 11960, 2026-07-11 ("
 
 # Audit-Convergence Enforcement
 
+> **2026-08-01 amendment:** A converged report now owes both artifacts: the
+> finding-by-finding fix/classification path described here, and a structured
+> blind-spot/meta-insight plus created/amended/no-change standards response. The
+> additive schema, change-local corroboration matrix, backfill, and migration are
+> specified in `docs/specs/audit-convergence-two-artifacts.md`.
+
 > Operator directive (topic 11960, 2026-07-11): "before you start I'd like to make
 > sure the iterative converging audit process is a standard that is enforced and
 > that is the default route that you use whenever you do an audit."

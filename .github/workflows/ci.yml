@@ -128,6 +128,10 @@ jobs:
       # deterministic disjoint slice of the test files; union is the full suite.
       # fileParallelism stays off within each shard to preserve isolation.
       - run: npm run test:push -- --shard=${{ matrix.shard }}/4
+        env:
+          AUDIT_CHANGE_KIND: ${{ github.event_name == 'pull_request' && 'pull_request' || (github.event_name == 'push' && 'push' || '') }}
+          AUDIT_CHANGE_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before || '') }}
+          AUDIT_CHANGE_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || (github.event_name == 'push' && github.sha || '') }}
       - name: Working-tree integrity check
         run: |
           if [ -n "$(git status --porcelain)" ]; then

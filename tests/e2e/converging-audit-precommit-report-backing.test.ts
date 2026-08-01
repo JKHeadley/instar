@@ -43,6 +43,7 @@ const COPY_FILES = [
   // scripts (Step 1.5 audit gate) — copy them so the fixture hook resolves imports.
   'scripts/write-audit-convergence.mjs',
   'scripts/audit-secret-patterns.mjs',
+  'scripts/standards-registry-article-core.mjs',
   'docs/STANDARDS-REGISTRY.md',
 ];
 

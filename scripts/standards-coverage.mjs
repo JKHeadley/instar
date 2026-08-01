@@ -43,6 +43,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { articleIds, parseRegistryStructure } from './standards-registry-article-core.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const args = new Set(process.argv.slice(2));
@@ -91,9 +92,6 @@ const FLOORS = {
 
 // ── Deterministic parse → extract → verify (mirrors the auditor, self-contained) ──
 
-const ANY_H2_RE = /^##\s+/;
-const H2_NAME_RE = /^##\s+(.+?)\s*$/;
-const ARTICLE_RE = /^###\s+(.+?)\s*$/;
 const FIELD_HEADING_RE = /^\*\*(.+?)\.\*\*\s*(.*)$/;
 const ENFORCEMENT_SECTION_HEADINGS = [
   'Applied through',
@@ -128,7 +126,7 @@ const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   'Three obligations, in increasing blast radius',
   'Three postures, in increasing order of ambition',
 ];
-const CORE_SECTION_HEADINGS = ['Rule', 'In practice'];
+const CORE_SECTION_HEADINGS = ['Article ID', 'Rule', 'In practice'];
 const ENFORCEMENT_SECTION_HEADING_SET = new Set(ENFORCEMENT_SECTION_HEADINGS);
 const EXCLUDED_PROVENANCE_SECTION_HEADING_SET = new Set(EXCLUDED_PROVENANCE_SECTION_HEADINGS);
 const EXCLUDED_NARRATIVE_SECTION_HEADING_SET = new Set(EXCLUDED_NARRATIVE_SECTION_HEADINGS);
@@ -136,64 +134,42 @@ const CORE_SECTION_HEADING_SET = new Set(CORE_SECTION_HEADINGS);
 const familyName = (heading) => heading.split(/\s+[—–-]\s+/)[0].trim();
 
 function parseRegistry(markdown) {
-  const sections = [];
-  let section = null;
-  let cur = null;
-  let curName = '';
-  let observedSections = [];
-  let field = null;
-
-  const flushField = () => {
-    if (!cur || !field) return;
-    const heading = field.heading;
-    const text = field.lines.join('\n').trim();
-    observedSections.push(heading);
-    if (heading === 'Rule') cur.rule = text;
-    else if (heading === 'In practice') cur.inPractice = text;
-    else if (ENFORCEMENT_SECTION_HEADING_SET.has(heading)) {
-      cur.enforcementSections.push({ heading, text });
-      if (heading === 'Applied through') cur.appliedThrough = text;
-    }
-    field = null;
-  };
-
-  const flush = () => {
-    flushField();
-    if (section && cur) section.blocks.push({ name: curName, article: cur, observedSections });
-    cur = null;
-    curName = '';
-    observedSections = [];
-  };
-
-  for (const line of markdown.split('\n')) {
-    if (ANY_H2_RE.test(line)) {
-      flush();
-      const h2 = line.match(H2_NAME_RE);
-      section = { heading: h2 ? h2[1].trim() : '', blocks: [] };
-      sections.push(section);
-      continue;
-    }
-    if (!section) continue;
-    const articleMatch = line.match(ARTICLE_RE);
-    if (articleMatch) {
-      flush();
-      curName = articleMatch[1].trim();
-      cur = {
-        family: familyName(section.heading), name: curName,
+  const sections = parseRegistryStructure(markdown).map((rawSection) => ({
+    heading: rawSection.heading,
+    blocks: rawSection.blocks.map((block) => {
+      const ids = articleIds(block);
+      const article = {
+        family: familyName(rawSection.heading), name: block.name,
+        ...(ids.length === 1 ? { articleId: ids[0] } : {}),
         rule: '', inPractice: '', appliedThrough: '', enforcementSections: [],
       };
-      continue;
-    }
-    if (!cur) continue;
-    const fieldMatch = line.match(FIELD_HEADING_RE);
-    if (fieldMatch) {
+      const observedSections = [];
+      let field = null;
+      const flushField = () => {
+        if (!field) return;
+        const heading = field.heading;
+        const text = field.lines.join('\n').trim();
+        observedSections.push(heading);
+        if (heading === 'Rule') article.rule = text;
+        else if (heading === 'In practice') article.inPractice = text;
+        else if (ENFORCEMENT_SECTION_HEADING_SET.has(heading)) {
+          article.enforcementSections.push({ heading, text });
+          if (heading === 'Applied through') article.appliedThrough = text;
+        }
+        field = null;
+      };
+      for (const line of block.visibleLines) {
+        if (line === null) continue;
+        const fieldMatch = line.match(FIELD_HEADING_RE);
+        if (fieldMatch) {
+          flushField();
+          field = { heading: fieldMatch[1].trim(), lines: [fieldMatch[2]] };
+        } else if (field) field.lines.push(line);
+      }
       flushField();
-      field = { heading: fieldMatch[1].trim(), lines: [fieldMatch[2]] };
-      continue;
-    }
-    if (field) field.lines.push(line);
-  }
-  flush();
+      return { name: block.name, article, observedSections };
+    }),
+  }));
 
   const articles = [];
   const enforcementScope = {

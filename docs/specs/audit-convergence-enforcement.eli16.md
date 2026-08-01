@@ -1,5 +1,10 @@
 # Making "thorough audit" a provable claim instead of a feeling — plain English
 
+> **2026-08-01 amendment:** Finishing the rows is no longer the whole artifact.
+> A converged audit must also preserve what blind-spot class let the problem
+> happen, why earlier controls missed it, and which exact standard was created,
+> amended, or already sufficient. See `audit-convergence-two-artifacts.eli16.md`.
+
 ## The problem
 
 We already have a rule on the books: an audit isn't done after one pass — you audit, fix what you found, then audit AGAIN, and you only get to say "done" when a full re-check finds nothing new. It exists because it's been proven the hard way: a sweep that found "about 20" problem sites turned out to have 44 when the fixes were re-checked. One pass always misses things, and the fixes themselves move things around.
