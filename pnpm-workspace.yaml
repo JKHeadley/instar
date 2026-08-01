@@ -10,6 +10,18 @@
 # true  = the script produces a working install (native binding compiled, or a
 #         platform binary downloaded). Omitting it breaks the package at runtime.
 # false = an engine check or a printed notice; nothing needed at runtime.
+# `packages: []` is REQUIRED, not decorative. This file makes the repo root a pnpm
+# workspace root, and pnpm 9 rejects a workspace root whose `packages` field is
+# missing or empty-by-absence with `ERROR packages field missing or empty`. The
+# Vercel build runs `cd site && pnpm install` (vercel.json buildCommand), so pnpm
+# walks up, finds this file, and fails the deployment before Astro ever builds.
+# Verified locally 2026-08-01: with this file and NO `packages` key, `pnpm install`
+# inside a subdirectory exits 1 on pnpm 9 and 0 on pnpm 10/11; with `packages: []`
+# it exits 0 on all three. pnpm-lock.yaml here is lockfileVersion 9.0.
+# An EMPTY list is deliberate: it satisfies the schema without making site/ a
+# workspace member, which would change how its dependencies resolve.
+packages: []
+
 allowBuilds:
   # Native bindings / downloaded platform binaries — required.
   better-sqlite3: true    # install: prebuild-install || node-gyp rebuild
