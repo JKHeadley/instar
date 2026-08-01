@@ -140,9 +140,8 @@ export const READONLY_GIT_VERBS: ReadonlySet<string> = new Set([
  * standpoint they are read-tier. Permitted on the instar source tree ONLY
  * when the caller opts in via `SafeGitOptions.sourceTreeReadOk: true`.
  *
- * Currently: `fetch` only. (`ls-remote` is pure-read and already in
- * READONLY_GIT_VERBS — it goes through readSync which never trips the
- * source-tree guard.)
+ * `ls-remote` is pure-read but still passes through readSync's defense-in-depth
+ * source-tree check, so it is named here as an explicit opt-in read-tier verb.
  */
 export const SOURCE_TREE_READ_TIER_VERBS: ReadonlySet<string> = new Set([
   // data-pull verbs (execSync path)
@@ -157,6 +156,7 @@ export const SOURCE_TREE_READ_TIER_VERBS: ReadonlySet<string> = new Set([
   'diff',
   'cat-file',
   'merge-base',
+  'ls-remote',
   'remote', // shape-checked to list/get-url only; needed by resolveCanonicalRemote
   // read-tier verbs the AgentWorktreeReaper needs against the source tree to
   // decide whether a worktree is reclaimable. Both are pure reads (no mutation

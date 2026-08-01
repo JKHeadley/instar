@@ -70,6 +70,28 @@ describe('/projects routes (integration)', () => {
     } as InstarConfig;
   }
 
+  function publishTargetRepoState(message: string): void {
+    SafeGitExecutor.run(['add', '-A'], {
+      cwd: targetRepo,
+      operation: 'tests/integration/projects-api.test.ts:publish-target-add',
+    });
+    SafeGitExecutor.run(['commit', '-q', '-m', message], {
+      cwd: targetRepo,
+      operation: 'tests/integration/projects-api.test.ts:publish-target-commit',
+    });
+    const head = SafeGitExecutor.readSync(['rev-parse', 'HEAD'], {
+      cwd: targetRepo,
+      operation: 'tests/integration/projects-api.test.ts:publish-target-head',
+    }).trim();
+    // resolveCanonicalMainRef conservatively falls back to origin/main in this
+    // local-only fixture. Keep that remote-tracking ref as the authoritative
+    // world while individual tests freely make the working checkout disagree.
+    SafeGitExecutor.run(['update-ref', 'refs/remotes/origin/main', head], {
+      cwd: targetRepo,
+      operation: 'tests/integration/projects-api.test.ts:publish-target-ref',
+    });
+  }
+
   function writePlan(name: string, body: string): string {
     const p = path.join(plansDir, name);
     fs.writeFileSync(p, body);
@@ -117,6 +139,9 @@ auto_advance: true
     // target repo to be a real git repository for ProjectRoundRunner
     // preflight step 8 to pass.
     SafeGitExecutor.run(['init', '-q'], { cwd: targetRepo, operation: 'tests/integration/projects-api.test.ts:beforeAll-git-init' });
+    SafeGitExecutor.run(['config', 'user.name', 'Projects API Test'], { cwd: targetRepo, operation: 'tests/integration/projects-api.test.ts:beforeAll-git-name' });
+    SafeGitExecutor.run(['config', 'user.email', 'projects-api@test.invalid'], { cwd: targetRepo, operation: 'tests/integration/projects-api.test.ts:beforeAll-git-email' });
+    publishTargetRepoState('initial canonical spec');
     plansDir = fs.mkdtempSync(path.join(os.tmpdir(), 'projects-api-plans-'));
 
     tracker = new InitiativeTracker(project.stateDir);
@@ -146,6 +171,9 @@ auto_advance: true
       state: project.state,
       initiativeTracker: tracker,
       projectRoundRunner,
+      stageTransitionContextDependencies: {
+        resolveCanonicalMainSnapshot: () => 'refs/remotes/origin/main',
+      },
       machineHeartbeat,
     });
     app = server.getApp();
@@ -535,8 +563,11 @@ goal: try escape
 
   it('POST /projects/:id/advance — outline → spec-drafted with a real spec file', async () => {
     const { projectVersion, itemId } = await seedProject('adv-1');
-    // Materialize the spec file the validator will look for.
+    // Publish the spec, then deliberately remove it ONLY from the checkout.
+    // The gate must read canonical main, not the stale/unrelated branch state.
     fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '# spec');
+    publishTargetRepoState('publish adv-1 spec');
+    SafeFsExecutor.safeUnlinkSync(path.join(targetRepo, 'docs/specs/a.md'), { operation: 'tests/integration/projects-api.test.ts:adv-1-stale-checkout' });
     const res = await request(app)
       .post('/projects/adv-1/advance')
       .set('Authorization', `Bearer ${AUTH_TOKEN}`)
@@ -549,6 +580,7 @@ goal: try escape
     expect(res.status).toBe(200);
     expect(res.body.item.pipelineStage).toBe('spec-drafted');
     expect(tracker.get(itemId)?.pipelineStage).toBe('spec-drafted');
+    fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '# spec');
   });
 
   it('POST /projects/:id/advance — spec-drafted → spec-converged accepts the canonical TIMESTAMP tag + report (Part A bug-fix through the real route)', async () => {
@@ -562,6 +594,7 @@ goal: try escape
     );
     fs.mkdirSync(path.join(targetRepo, 'docs/specs/reports'), { recursive: true });
     fs.writeFileSync(path.join(targetRepo, 'docs/specs/reports/a-convergence.md'), '# convergence report\n');
+    publishTargetRepoState('publish converged spec and report');
 
     // Step 1: outline → spec-drafted.
     const drafted = await request(app)
@@ -582,8 +615,10 @@ goal: try escape
     expect(converged.body.item.pipelineStage).toBe('spec-converged');
     expect(tracker.get(itemId)?.pipelineStage).toBe('spec-converged');
 
-    // Restore the empty spec for subsequent tests.
+    // Restore canonical main for subsequent tests.
     fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '');
+    SafeFsExecutor.safeRmSync(path.join(targetRepo, 'docs/specs/reports/a-convergence.md'), { force: true, operation: 'tests/integration/projects-api.test.ts:restore-convergence-report' });
+    publishTargetRepoState('restore empty canonical spec');
   });
 
   it('POST /projects/:id/advance — spec-drafted → spec-converged with timestamp tag but MISSING report returns 409 (report check stays unconditional)', async () => {
@@ -596,6 +631,7 @@ goal: try escape
     // not → CONVERGENCE_REPORT_MISSING (not ESCAPE, which is the dir-absent case).
     fs.mkdirSync(path.join(targetRepo, 'docs/specs/reports'), { recursive: true });
     SafeFsExecutor.safeRmSync(path.join(targetRepo, 'docs/specs/reports/a-convergence.md'), { force: true, operation: 'tests/integration/projects-api.test.ts:advance-converge-noreport' });
+    publishTargetRepoState('publish converged spec without report');
 
     const drafted = await request(app)
       .post('/projects/adv-converge-noreport/advance')
@@ -613,8 +649,9 @@ goal: try escape
     expect(converged.status).toBe(409);
     expect(converged.body.code).toBe('CONVERGENCE_REPORT_MISSING');
 
-    // Restore the empty spec for subsequent tests.
+    // Restore canonical main for subsequent tests.
     fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '');
+    publishTargetRepoState('restore empty canonical spec again');
   });
 
   it('POST /projects/:id/advance — missing If-Match returns 428', async () => {
@@ -638,10 +675,10 @@ goal: try escape
 
   it('POST /projects/:id/advance — artifact-fail (missing specPath file) returns 409', async () => {
     const { projectVersion, itemId } = await seedProject('adv-4');
-    // Spec path the plan lists doesn't exist on disk → validator rejects.
+    // Spec path is absent from canonical main → validator rejects, regardless
+    // of what a checkout happens to contain.
     SafeFsExecutor.safeUnlinkSync(path.join(targetRepo, 'docs/specs/a.md'), { operation: 'tests/integration/projects-api.test.ts:advance-no-spec' });
-    fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), ''); // re-create empty for other tests
-    SafeFsExecutor.safeUnlinkSync(path.join(targetRepo, 'docs/specs/a.md'), { operation: 'tests/integration/projects-api.test.ts:advance-no-spec-2' });
+    publishTargetRepoState('remove canonical spec');
     const res = await request(app)
       .post('/projects/adv-4/advance')
       .set('Authorization', `Bearer ${AUTH_TOKEN}`)
@@ -653,8 +690,9 @@ goal: try escape
       });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('SPEC_FILE_MISSING');
-    // Restore the spec file for subsequent tests.
+    // Restore canonical main for subsequent tests.
     fs.writeFileSync(path.join(targetRepo, 'docs/specs/a.md'), '');
+    publishTargetRepoState('restore canonical spec after missing test');
   });
 
   it('POST /projects/:id/advance — unknown child returns 404', async () => {
@@ -667,12 +705,10 @@ goal: try escape
     expect(res.status).toBe(404);
   });
 
-  it('POST /projects/:id/advance — building → merged WIRES ghPrView (never GH_PR_VIEW_UNAVAILABLE) [#866]', async () => {
-    // Wiring-integrity (#866): the validator has no internal default for
-    // ghPrView, so building→merged was structurally impossible on every
-    // install (always GH_PR_VIEW_UNAVAILABLE) until the route injects it.
-    // After the fix the helper is provided, so ANY failure of the now-wired
-    // helper surfaces as GH_PR_VIEW_FAILED — never UNAVAILABLE — regardless of
+  it('POST /projects/:id/advance — building → merged has a complete production context [#866]', async () => {
+    // Wiring-integrity (#866): ghPrView used to be omitted, making this edge
+    // structurally impossible. The production factory must now supply it, so
+    // any operational failure is GH_PR_VIEW_FAILED — never a wiring error — regardless of
     // whether `gh` is installed/authed in CI (a missing gh binary or a fake PR
     // both throw inside the injected helper, which the validator maps to
     // GH_PR_VIEW_FAILED). The ONLY way to get UNAVAILABLE is the helper being
@@ -692,6 +728,7 @@ goal: try escape
     // helper-missing reason — the helper is now wired.
     expect(res.status).toBe(409);
     expect(res.body.code).not.toBe('GH_PR_VIEW_UNAVAILABLE');
+    expect(res.body.code).not.toBe('STAGE_VALIDATOR_WIRING_ERROR');
     expect(res.body.code).toBe('GH_PR_VIEW_FAILED');
   });
 

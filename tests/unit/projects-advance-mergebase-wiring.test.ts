@@ -32,6 +32,7 @@ import { describe, it, expect } from 'vitest';
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const ROUTES = path.join(REPO_ROOT, 'src/server/routes.ts');
+const CONTEXT = path.join(REPO_ROOT, 'src/core/StageTransitionContext.ts');
 const VALIDATOR = path.join(REPO_ROOT, 'src/core/StageTransitionValidator.ts');
 
 /** Extract each `SafeGitExecutor.readSync(...)` call's inner text, paren-balanced. */
@@ -57,8 +58,24 @@ function readSyncCalls(file: string): string[] {
 }
 
 describe('projects /advance merge-base check: source-tree wiring + honest refusal', () => {
+  it('the route delegates all validator dependency assembly to the production factory', () => {
+    const src = fs.readFileSync(ROUTES, 'utf-8');
+    expect(src).toContain('createProductionStageTransitionContext({');
+    expect(src).not.toContain('const validationCtx: StageValidationContext = {');
+    expect(src).toMatch(/try \{\s+const validationCtx = createProductionStageTransitionContext\(\{/);
+    expect(src).not.toMatch(/createProductionStageTransitionContext\(\{[\s\S]{0,300}canonicalMainRef:/);
+  });
+
+  it('the factory owns live canonical identity/freshness resolution without bare gh or origin/main fallback', () => {
+    const src = fs.readFileSync(CONTEXT, 'utf-8');
+    expect(src).toContain('resolveGhBinary()');
+    expect(src).toContain("['ls-remote', '--exit-code', remote, 'refs/heads/main']");
+    expect(src).not.toContain("execFileSync('gh'");
+    expect(src).not.toContain("return 'origin/main'");
+  });
+
   it('the mergeBaseIsAncestor readSync declares sourceTreeReadOk: true', () => {
-    const calls = readSyncCalls(ROUTES).filter(c =>
+    const calls = readSyncCalls(CONTEXT).filter(c =>
       /operation\s*:\s*['"]projects\.advance\.mergeBaseIsAncestor['"]/.test(c),
     );
     expect(calls.length, 'expected the projects.advance.mergeBaseIsAncestor readSync to exist').toBe(1);
@@ -71,7 +88,7 @@ describe('projects /advance merge-base check: source-tree wiring + honest refusa
   it('the helper distinguishes git exit status 1 from every other failure', () => {
     // The load-bearing half. Fixing only the permission would make THIS case work
     // while leaving the mistranslation in place for the next one.
-    const src = fs.readFileSync(ROUTES, 'utf-8');
+    const src = fs.readFileSync(CONTEXT, 'utf-8');
     // Bound the helper body exactly — a generous character window around the
     // callsite swept in neighbouring functions and made this assertion meaningless
     // (it matched an unrelated `catch { return false }` next door). Brace-balance

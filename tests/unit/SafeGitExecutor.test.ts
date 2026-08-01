@@ -9,6 +9,7 @@ import {
   SafeGitExecutorError,
   DESTRUCTIVE_GIT_VERBS,
   READONLY_GIT_VERBS,
+  SOURCE_TREE_READ_TIER_VERBS,
   _internal,
 } from '../../src/core/SafeGitExecutor.js';
 import { SourceTreeGuardError } from '../../src/core/SourceTreeGuard.js';
@@ -448,6 +449,10 @@ describe('verb classification sets', () => {
     expect(overlap.sort()).toEqual(
       ['branch', 'config', 'format-patch', 'remote', 'stash', 'worktree'].sort(),
     );
+  });
+
+  it('permits an explicitly opted-in ls-remote read against an instar source tree', () => {
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('ls-remote')).toBe(true);
   });
 });
 

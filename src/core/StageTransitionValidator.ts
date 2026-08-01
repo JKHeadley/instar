@@ -11,11 +11,11 @@
  *   reachability). No LLM-mediated judgment lives here. The drift checker
  *   (Phase 1.4) emits a *signal* but does NOT call into this validator.
  *
- * Path safety:
- *   All filesystem references (specPath, convergence-report path) are
- *   realpath-resolved and must stay under `targetRepoPath` (or under
- *   `docs/specs/reports/` for the convergence report). Symlinks that
- *   escape are rejected.
+ * Evidence world:
+ *   Spec and convergence-report evidence is read from one explicit canonical
+ *   git ref, never from whichever branch happens to be checked out at
+ *   `targetRepoPath`. The working tree supplies the repository/object store;
+ *   it is not evidence about what canonical main contains.
  *
  * Reconciler-only transitions (`*-> regressed`) require
  * `ctx.bypassMode === 'reconciler'` to succeed; user-initiated requests
@@ -78,17 +78,31 @@ export interface ValidationContext {
   unskippedAt?: string;
   /** Special-cased reconciler bypass for `*-> regressed` edges. */
   bypassMode?: 'reconciler';
+  /** The one canonical ref used by BOTH spec and merge evidence. */
+  canonicalMainRef?: string;
+  /** Resolve and memoize one immutable canonical-main snapshot for this request. */
+  resolveCanonicalMainRef?: () => string;
+  /**
+   * Read a regular repository file from `canonicalMainRef`.
+   *
+   * `null` means the path is authoritatively absent from that ref. Throwing
+   * means the evidence source could not be checked and MUST NOT be translated
+   * into a domain claim that the file is absent.
+   */
+  readRepositoryArtifact?: (ref: string, repoRelativePath: string) => Promise<string | null>;
   // Helpers (overridable for tests):
-  readSpecFrontmatter?: (absPath: string) => Promise<unknown>;
   ghPrView?: (prNumber: number) => Promise<GhPrView>;
   gitMergeBaseIsAncestor?: (sha: string, branch: string) => boolean;
-  /**
-   * The canonical-main ref the merge commit must be reachable from. Defaults to
-   * `origin/main`. On a fork-origin checkout (dev-agent home: origin = the
-   * fork, merges on the upstream remote) the route resolves the upstream
-   * remote and passes `<remote>/main` here. (#866 sibling fix.)
-   */
-  mergeBaseBranch?: string;
+}
+
+/** A caller omitted infrastructure, rather than a project failing a gate. */
+export class StageTransitionWiringError extends Error {
+  readonly code = 'STAGE_VALIDATOR_WIRING_ERROR';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'StageTransitionWiringError';
+  }
 }
 
 export interface GhPrView {
@@ -188,15 +202,19 @@ export async function validateStageTransition(
     if (!ctx.specPath || !ctx.specPath.trim()) {
       return { ok: false, reason: 'specPath required', code: 'SPEC_PATH_MISSING' };
     }
-    const jailed = jailPath(ctx.targetRepoPath, ctx.specPath);
+    const jailed = jailRepositoryPath(ctx.targetRepoPath, ctx.specPath);
     if (!jailed.ok) return { ok: false, reason: jailed.reason, code: 'SPEC_PATH_ESCAPE' };
-    if (!fs.existsSync(jailed.absPath)) {
+    const spec = await readRepositoryEvidence(ctx, jailed.repoRelativePath, 'spec');
+    if (!spec.ok) {
+      return { ok: false, reason: spec.error, code: 'SPEC_EVIDENCE_UNVERIFIABLE' };
+    }
+    if (spec.text === null) {
       return { ok: false, reason: `spec file does not exist: ${ctx.specPath}`, code: 'SPEC_FILE_MISSING' };
     }
-    if (!jailed.absPath.toLowerCase().endsWith('.md')) {
+    if (!jailed.repoRelativePath.toLowerCase().endsWith('.md')) {
       return { ok: false, reason: 'spec must be a markdown (.md) file', code: 'SPEC_NOT_MARKDOWN' };
     }
-    const fm = await loadFrontmatter(jailed.absPath, ctx.readSpecFrontmatter);
+    const fm = loadFrontmatter(spec.text);
     if (!fm.ok) return { ok: false, reason: fm.error, code: 'SPEC_FRONTMATTER_INVALID' };
     return { ok: true };
   }
@@ -206,9 +224,16 @@ export async function validateStageTransition(
     if (!ctx.specPath) {
       return { ok: false, reason: 'specPath required for convergence', code: 'SPEC_PATH_MISSING' };
     }
-    const jailed = jailPath(ctx.targetRepoPath, ctx.specPath);
+    const jailed = jailRepositoryPath(ctx.targetRepoPath, ctx.specPath);
     if (!jailed.ok) return { ok: false, reason: jailed.reason, code: 'SPEC_PATH_ESCAPE' };
-    const fm = await loadFrontmatter(jailed.absPath, ctx.readSpecFrontmatter);
+    const spec = await readRepositoryEvidence(ctx, jailed.repoRelativePath, 'spec');
+    if (!spec.ok) {
+      return { ok: false, reason: spec.error, code: 'SPEC_EVIDENCE_UNVERIFIABLE' };
+    }
+    if (spec.text === null) {
+      return { ok: false, reason: `spec file does not exist: ${ctx.specPath}`, code: 'SPEC_FILE_MISSING' };
+    }
+    const fm = loadFrontmatter(spec.text);
     if (!fm.ok) return { ok: false, reason: fm.error, code: 'SPEC_FRONTMATTER_INVALID' };
     const data = fm.data;
     if (!isConvergenceTagPresent(data['review-convergence'])) {
@@ -228,11 +253,15 @@ export async function validateStageTransition(
       };
     }
     const reportRel = path.join('docs/specs/reports', `${slug}-convergence.md`);
-    const reportJailed = jailPathUnderSubdir(ctx.targetRepoPath, 'docs/specs/reports', reportRel);
+    const reportJailed = jailRepositoryPathUnderSubdir(ctx.targetRepoPath, 'docs/specs/reports', reportRel);
     if (!reportJailed.ok) {
       return { ok: false, reason: reportJailed.reason, code: 'CONVERGENCE_REPORT_ESCAPE' };
     }
-    if (!fs.existsSync(reportJailed.absPath)) {
+    const report = await readRepositoryEvidence(ctx, reportJailed.repoRelativePath, 'convergence report');
+    if (!report.ok) {
+      return { ok: false, reason: report.error, code: 'CONVERGENCE_REPORT_UNVERIFIABLE' };
+    }
+    if (report.text === null) {
       return {
         ok: false,
         reason: `convergence report missing: ${reportRel}`,
@@ -247,9 +276,16 @@ export async function validateStageTransition(
     if (!ctx.specPath) {
       return { ok: false, reason: 'specPath required for approval', code: 'SPEC_PATH_MISSING' };
     }
-    const jailed = jailPath(ctx.targetRepoPath, ctx.specPath);
+    const jailed = jailRepositoryPath(ctx.targetRepoPath, ctx.specPath);
     if (!jailed.ok) return { ok: false, reason: jailed.reason, code: 'SPEC_PATH_ESCAPE' };
-    const fm = await loadFrontmatter(jailed.absPath, ctx.readSpecFrontmatter);
+    const spec = await readRepositoryEvidence(ctx, jailed.repoRelativePath, 'spec');
+    if (!spec.ok) {
+      return { ok: false, reason: spec.error, code: 'SPEC_EVIDENCE_UNVERIFIABLE' };
+    }
+    if (spec.text === null) {
+      return { ok: false, reason: `spec file does not exist: ${ctx.specPath}`, code: 'SPEC_FILE_MISSING' };
+    }
+    const fm = loadFrontmatter(spec.text);
     if (!fm.ok) return { ok: false, reason: fm.error, code: 'SPEC_FRONTMATTER_INVALID' };
     const data = fm.data;
     if (data.approved !== true) {
@@ -285,9 +321,7 @@ export async function validateStageTransition(
     if (typeof ctx.prNumber !== 'number' || !Number.isInteger(ctx.prNumber) || ctx.prNumber <= 0) {
       return { ok: false, reason: 'prNumber required for building → merged', code: 'PR_NUMBER_MISSING' };
     }
-    if (!ctx.ghPrView) {
-      return { ok: false, reason: 'ghPrView helper not provided', code: 'GH_PR_VIEW_UNAVAILABLE' };
-    }
+    if (!ctx.ghPrView) throw new StageTransitionWiringError('ghPrView dependency was not assembled');
     let view: GhPrView;
     try {
       view = await ctx.ghPrView(ctx.prNumber);
@@ -309,20 +343,22 @@ export async function validateStageTransition(
       return { ok: false, reason: 'mergeCommit.oid is not a sha', code: 'MERGE_COMMIT_INVALID' };
     }
     if (!ctx.gitMergeBaseIsAncestor) {
+      throw new StageTransitionWiringError('gitMergeBaseIsAncestor dependency was not assembled');
+    }
+    // Use the SAME immutable canonical-main snapshot as the spec/report gates.
+    // A fork remote, stale remote-tracking ref, missing gh binary, or unavailable
+    // network is unverifiable — never silently collapsed to origin/main.
+    let mergeBaseBranch: string;
+    try {
+      mergeBaseBranch = resolveContextCanonicalMainRef(ctx);
+    } catch (err) {
+      if (err instanceof StageTransitionWiringError) throw err;
       return {
         ok: false,
-        reason: 'gitMergeBaseIsAncestor helper not provided',
-        code: 'MERGE_BASE_HELPER_UNAVAILABLE',
+        reason: `could not resolve canonical main: ${err instanceof Error ? err.message : String(err)}`,
+        code: 'MERGE_BASE_UNVERIFIABLE',
       };
     }
-    // The canonical-main ref defaults to `origin/main`, but on a dev-agent
-    // home `origin` is the agent's FORK (instar-echo) while merges land on the
-    // upstream remote (JKHeadley/instar) — so origin/main never contains the
-    // merge commit and every advance failed MERGE_COMMIT_UNREACHABLE. The
-    // route now resolves the remote whose URL matches the gh-resolved PR repo
-    // and passes it as `mergeBaseBranch`; this default preserves prior behavior
-    // for canonical-origin installs.
-    const mergeBaseBranch = ctx.mergeBaseBranch ?? 'origin/main';
     // "I could not check" is NOT "it is not there" (found 2026-07-25: the route's
     // helper swallowed a SourceTreeGuard REFUSAL and returned false, so a merge that
     // was demonstrably on main reported as unreachable — a refusal rendered as a
@@ -377,6 +413,11 @@ export async function validateStageTransition(
 interface JailResult {
   ok: true;
   absPath: string;
+}
+
+interface RepositoryJailResult {
+  ok: true;
+  repoRelativePath: string;
 }
 
 interface JailFail {
@@ -434,6 +475,50 @@ function jailPathUnderSubdir(root: string, subdir: string, rel: string): JailRes
   return outer;
 }
 
+/**
+ * Lexically confine a path to the repository for git-tree reads.
+ *
+ * This deliberately does not inspect working-tree descendants: doing so would
+ * let a stale checkout decide whether a path on the canonical ref is safe or
+ * present. Git-tree reads never follow filesystem symlinks, and the production
+ * reader separately rejects symlink/tree/submodule entries at the ref.
+ */
+export function jailRepositoryPath(root: string, requested: string): RepositoryJailResult | JailFail {
+  if (!root || !path.isAbsolute(root)) {
+    return { ok: false, reason: `targetRepoPath must be absolute, got "${root}"` };
+  }
+  if (requested.includes('\0')) return { ok: false, reason: 'repository path contains NUL' };
+  try {
+    fs.realpathSync(root);
+  } catch {
+    return { ok: false, reason: `targetRepoPath does not exist: ${root}` };
+  }
+
+  const lexicalRoot = path.resolve(root);
+  const absolute = path.isAbsolute(requested)
+    ? path.resolve(requested)
+    : path.resolve(lexicalRoot, requested);
+  const relative = path.relative(lexicalRoot, absolute);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    return { ok: false, reason: `path "${requested}" escapes targetRepoPath` };
+  }
+  return { ok: true, repoRelativePath: relative.split(path.sep).join('/') };
+}
+
+function jailRepositoryPathUnderSubdir(
+  root: string,
+  subdir: string,
+  requested: string,
+): RepositoryJailResult | JailFail {
+  const outer = jailRepositoryPath(root, requested);
+  if (!outer.ok) return outer;
+  const normalizedSubdir = path.posix.normalize(subdir.split(path.sep).join('/')).replace(/\/$/, '');
+  if (!outer.repoRelativePath.startsWith(`${normalizedSubdir}/`)) {
+    return { ok: false, reason: `path "${requested}" is not under ${subdir}` };
+  }
+  return outer;
+}
+
 function realpathToNearestExisting(p: string): string {
   let cur = p;
   // Walk up until a path exists, realpath it, then re-join the tail.
@@ -451,27 +536,56 @@ function realpathToNearestExisting(p: string): string {
   return p;
 }
 
-async function loadFrontmatter(
-  absPath: string,
-  injected?: (absPath: string) => Promise<unknown>
-): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
-  try {
-    let raw: unknown;
-    if (injected) {
-      raw = await injected(absPath);
-    } else {
-      const text = fs.readFileSync(absPath, 'utf-8');
-      const fm = extractFrontmatter(text);
-      if (fm.error) return { ok: false, error: fm.error };
-      raw = fm.frontmatter ?? {};
-    }
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      return { ok: false, error: 'frontmatter is not a mapping' };
-    }
-    return { ok: true, data: raw as Record<string, unknown> };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+async function readRepositoryEvidence(
+  ctx: ValidationContext,
+  repoRelativePath: string,
+  label: string,
+): Promise<{ ok: true; text: string | null } | { ok: false; error: string }> {
+  if (!ctx.readRepositoryArtifact) {
+    throw new StageTransitionWiringError('readRepositoryArtifact dependency was not assembled');
   }
+  let canonicalMainRef: string;
+  try {
+    canonicalMainRef = resolveContextCanonicalMainRef(ctx);
+  } catch (err) {
+    if (err instanceof StageTransitionWiringError) throw err;
+    return {
+      ok: false,
+      error: `could not resolve canonical main: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  try {
+    return { ok: true, text: await ctx.readRepositoryArtifact(canonicalMainRef, repoRelativePath) };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `could not read ${label} "${repoRelativePath}" from ${canonicalMainRef}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+function resolveContextCanonicalMainRef(ctx: ValidationContext): string {
+  if (ctx.canonicalMainRef?.trim()) return ctx.canonicalMainRef;
+  if (!ctx.resolveCanonicalMainRef) {
+    throw new StageTransitionWiringError('canonicalMainRef dependency was not assembled');
+  }
+  const resolved = ctx.resolveCanonicalMainRef();
+  if (!resolved?.trim()) {
+    throw new Error('canonical-main resolver returned an empty ref');
+  }
+  return resolved;
+}
+
+function loadFrontmatter(
+  text: string,
+): { ok: true; data: Record<string, unknown> } | { ok: false; error: string } {
+  const fm = extractFrontmatter(text);
+  if (fm.error) return { ok: false, error: fm.error };
+  const raw = fm.frontmatter ?? {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'frontmatter is not a mapping' };
+  }
+  return { ok: true, data: raw as Record<string, unknown> };
 }
 
 type RollupEntry = GhPrView['statusCheckRollup'][number];
