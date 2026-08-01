@@ -876,6 +876,8 @@ export class AgentServer {
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
     /** Project-scope round runner (Phase 1b PR 3). */
     projectRoundRunner?: import('../core/ProjectRoundRunner.js').ProjectRoundRunner;
+    /** Test seam for canonical stage-evidence resolution; production leaves undefined. */
+    stageTransitionContextDependencies?: import('../core/StageTransitionContext.js').ProductionStageTransitionContextDependencies;
     /** Project drift checker (Phase 1b connect-the-dots). Optional —
      *  when omitted, POST /projects/:id/drift-check returns 503. */
     projectDriftChecker?: import('../core/ProjectDriftChecker.js').ProjectDriftChecker;
@@ -3499,6 +3501,7 @@ export class AgentServer {
       stopNotifier: options.stopNotifier ?? null,
       initiativeTracker: options.initiativeTracker ?? null,
       projectRoundRunner: options.projectRoundRunner ?? null,
+      stageTransitionContextDependencies: options.stageTransitionContextDependencies,
       projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,

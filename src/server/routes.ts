@@ -173,9 +173,9 @@ import { randomUUID as cryptoRandomUUID } from 'node:crypto';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
-import { resolveGhBinary } from '../core/resolveGhBinary.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { validateStageTransition, type ValidationContext as StageValidationContext } from '../core/StageTransitionValidator.js';
+import { StageTransitionWiringError, validateStageTransition } from '../core/StageTransitionValidator.js';
+import { createProductionStageTransitionContext } from '../core/StageTransitionContext.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
 import {
   deriveProjectRound,
@@ -1053,6 +1053,8 @@ export interface RouteContext {
    *  /advance, /halt, /ack, /accept-partial. Null when initiativeTracker
    *  is also null. */
   projectRoundRunner: import('../core/ProjectRoundRunner.js').ProjectRoundRunner | null;
+  /** Test seam only; production leaves this undefined so the factory resolves live canonical evidence. */
+  stageTransitionContextDependencies?: import('../core/StageTransitionContext.js').ProductionStageTransitionContextDependencies;
   /** Project drift checker (Phase 1b connect-the-dots). Null when no
    *  IntelligenceProvider is configured (then POST /projects/:id/drift-check
    *  returns 503). */
@@ -16841,85 +16843,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const artifact = body.artifact ?? {};
-    const validationCtx: StageValidationContext = {
-      targetRepoPath: project.targetRepoPath,
-      specPath: typeof artifact.specPath === 'string' ? artifact.specPath : undefined,
-      prNumber: typeof artifact.prNumber === 'number' ? artifact.prNumber : undefined,
-      taskFlowRecordId: typeof artifact.taskFlowRecordId === 'string' ? artifact.taskFlowRecordId : undefined,
-      skippedReason: typeof artifact.skippedReason === 'string' ? artifact.skippedReason : undefined,
-      skippedBy: typeof artifact.skippedBy === 'string' ? artifact.skippedBy : undefined,
-      unskippedAt: typeof artifact.unskippedAt === 'string' ? artifact.unskippedAt : undefined,
-      // #866: `building → merged` requires ghPrView + gitMergeBaseIsAncestor, but
-      // the validator has NO internal default for these (unlike readSpecFrontmatter,
-      // which loadFrontmatter defaults). Without injecting them here EVERY
-      // building→merged transition fails GH_PR_VIEW_UNAVAILABLE — i.e. no project
-      // item can ever reach `merged` through the live API (found 2026-06-06 closing
-      // out multimachine-coherence P0). Both helpers are READ-ONLY git/gh against
-      // the project's target repo.
-      ghPrView: async (prNumber: number) => {
-        // Resolve gh by absolute path: the server is launched by launchd with a
-        // minimal PATH that omits /opt/homebrew/bin, so bare 'gh' died with a raw
-        // `spawnSync gh ENOENT` and NO project item could reach `merged`
-        // (found 2026-07-25). A missing binary is now a NAMED diagnostic rather
-        // than an opaque spawn error — the gate still refuses, but says why.
-        const ghBin = resolveGhBinary();
-        if (!ghBin) {
-          throw new Error(
-            'the GitHub CLI (gh) could not be found. The server may be running with a ' +
-            'minimal PATH; set INSTAR_GH_PATH to its absolute path. The merge cannot be ' +
-            'verified without it, so this transition is refused rather than assumed.',
-          );
-        }
-        const out = execFileSync(
-          ghBin,
-          ['pr', 'view', String(prNumber), '--json', 'state,mergeCommit,statusCheckRollup'],
-          { cwd: project.targetRepoPath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
-        );
-        return JSON.parse(out) as import('../core/StageTransitionValidator.js').GhPrView;
-      },
-      gitMergeBaseIsAncestor: (sha: string, branch: string) => {
-        // `merge-base --is-ancestor` is a READ-ONLY verb — routed through readSync
-        // (the sanctioned read path), not raw execFileSync, per the destructive-tool
-        // funnel. It exits 0 (ancestor) or 1 (not an ancestor).
-        //
-        // `sourceTreeReadOk` is REQUIRED here and its absence was a live defect
-        // (found 2026-07-25 recording PR #1641 as merged). readSync runs the
-        // SourceTreeGuard unless the caller declares a read, and a project's
-        // targetRepoPath IS an instar source tree — so the guard refused this query
-        // every time. `merge-base` is already in SOURCE_TREE_READ_TIER_VERBS, i.e.
-        // the permission for exactly this read exists; it simply was never asked for.
-        //
-        // The far worse half was below: the old `catch { return false }` converted
-        // that REFUSAL into "the merge commit is not on main" — a fabricated factual
-        // claim, and the reason this step's failure was indistinguishable from a real
-        // negative for as long as it existed. A refusal is not an answer. Only git's
-        // documented exit status 1 means "not an ancestor"; every other failure
-        // (guard refusal, missing binary, bad revision → 128, timeout) is UNVERIFIABLE
-        // and is rethrown so the validator can say so instead of guessing.
-        try {
-          SafeGitExecutor.readSync(['merge-base', '--is-ancestor', sha, branch], {
-            cwd: project.targetRepoPath,
-            operation: 'projects.advance.mergeBaseIsAncestor',
-            stdio: ['ignore', 'ignore', 'ignore'],
-            sourceTreeReadOk: true,
-          });
-          return true; // exit 0 = sha IS an ancestor of branch
-        } catch (err) {
-          const status = (err as { status?: unknown }).status;
-          if (status === 1) return false; // the ONLY genuine "not an ancestor"
-          throw new Error(
-            `merge-base --is-ancestor could not be verified (${err instanceof Error ? err.message : String(err)})`,
-          );
-        }
-      },
-      // Resolve the canonical-main ref the merge commit must be reachable from.
-      // The validator defaults to `origin/main`, but on a dev-agent home `origin`
-      // is the agent's FORK while merges land on the upstream remote — so we map
-      // the gh-resolved PR repo (e.g. JKHeadley/instar) to the LOCAL remote whose
-      // URL points at it and use `<remote>/main`. Falls back to `origin/main`.
-      mergeBaseBranch: resolveCanonicalMainRef(project.targetRepoPath),
-    };
-
+    // One assembly point owns EVERY validator dependency. Three live defects
+    // each made an entire stage unreachable because this route hand-built the
+    // context and remembered dependencies one at a time (#866: gh helpers
+    // absent; 2026-07-25: launchd could not resolve bare gh; 2026-08-01: spec
+    // gates read a stale working checkout). The factory makes omissions wiring
+    // errors and gives spec + merge gates the same canonical-main world.
     const actualStage = child.pipelineStage as PipelineStage | undefined;
     const fromStage =
       typeof body.fromStage === 'string'
@@ -16937,7 +16866,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       && !hasCompleteMergedEvidence(child);
     const validationFromStage = repairingMergedEvidence ? 'building' : fromStage;
 
-    const result = await validateStageTransition(validationFromStage, targetStage, validationCtx);
+    let result;
+    try {
+      const validationCtx = createProductionStageTransitionContext({
+        targetRepoPath: project.targetRepoPath,
+        artifact,
+      }, ctx.stageTransitionContextDependencies);
+      result = await validateStageTransition(validationFromStage, targetStage, validationCtx);
+    } catch (err) {
+      if (err instanceof StageTransitionWiringError) {
+        res.status(500).json({
+          error: 'stage validator wiring failure',
+          code: err.code,
+          reason: err.message,
+        });
+        return;
+      }
+      throw err;
+    }
     if (!result.ok) {
       res.status(409).json({ error: 'stage transition rejected', code: result.code, reason: result.reason });
       return;
