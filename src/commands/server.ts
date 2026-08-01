@@ -3649,6 +3649,11 @@ function setupServerLog(stateDir: string): void {
 
 export async function startServer(options: StartOptions): Promise<void> {
   const config = loadConfig(options.dir);
+  // Capture the guard substrate at the boot-config boundary, BEFORE the
+  // PostUpdateMigrator or any later startup path can rewrite config.json.
+  // The tripwire persists what THIS process booted from; later disk changes
+  // must remain visible to GET /guards as diverged-pending-restart.
+  const bootGuardConfigSnapshot = resolveGuardConfigSnapshot(config.projectDir);
   ensureStateDir(config.stateDir);
 
   // Identity context is additive and survives agent moves. Validate its
@@ -7612,8 +7617,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
 
     // GuardPostureTripwire — a disabled guard is itself an incident.
-    // Runs once per server boot. Compares the resolved guard posture (every
-    // monitoring.* enabled flag + scheduler.enabled) against the persisted
+    // Runs once per server boot. Compares the complete resolved guard posture
+    // (generic config extraction UNION the static guard manifest) against the persisted
     // posture from the previous boot; any enabled→disabled transition gets a
     // loud log line + a logs/guard-posture.jsonl breadcrumb + ONE aggregated
     // HIGH Attention item (the 2026-06-05 meltdown load-shed batch-flipped
@@ -7624,7 +7629,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     try {
       const tripwire = await import('../monitoring/GuardPostureTripwire.js');
       const postureResult = await tripwire.runGuardPostureTripwire({
-        config,
+        // Use the defaults/dev-gate-resolved disk substrate captured immediately
+        // after loadConfig. If that read degraded, the already-loaded config is
+        // still safer than dropping the detector entirely.
+        config: bootGuardConfigSnapshot.readError ? config : bootGuardConfigSnapshot.resolved,
+        defaultConfig: bootGuardConfigSnapshot.defaults,
         stateDir: config.stateDir,
         logsDir: path.join(config.stateDir, '..', 'logs'),
         emitAttention: telegram
@@ -7642,15 +7651,31 @@ export async function startServer(options: StartOptions): Promise<void> {
           : undefined,
       });
       if (postureResult.disabled.length > 0) {
+        const transitioned = postureResult.disabled.length - postureResult.newlyTrackedDisabled.length;
         console.log(pc.yellow(
-          `  Guard-posture tripwire: ${postureResult.disabled.length} guard(s) DISABLED since last boot ` +
+          `  Guard-posture tripwire: ${postureResult.disabled.length}/${postureResult.coverage.watched} ` +
+            `watched guard posture incident(s) ` +
+            `(${transitioned} disabled since last boot, ` +
+            `${postureResult.newlyTrackedDisabled.length} newly watched default-ON guard(s) found OFF) ` +
             `(${postureResult.disabled.join(', ')}) — ` +
             `${postureResult.attentionEmitted ? 'Attention item raised' : 'breadcrumb only (no Telegram)'}`,
         ));
       } else if (postureResult.firstBoot) {
-        console.log(pc.green('  Guard-posture tripwire: baseline recorded'));
+        console.log(pc.green(
+          `  Guard-posture tripwire: baseline recorded (${postureResult.coverage.watched} watched guards)`,
+        ));
+      } else if (postureResult.enabled.length > 0) {
+        const transitioned = postureResult.enabled.length - postureResult.newlyTrackedEnabled.length;
+        console.log(pc.green(
+          `  Guard-posture tripwire: ${postureResult.enabled.length}/${postureResult.coverage.watched} ` +
+            `watched guard enablement event(s) ` +
+            `(${transitioned} enabled since last boot, ` +
+            `${postureResult.newlyTrackedEnabled.length} newly watched default-OFF guard(s) found ON)`,
+        ));
       } else {
-        console.log(pc.green('  Guard-posture tripwire: posture unchanged'));
+        console.log(pc.green(
+          `  Guard-posture tripwire: posture unchanged (${postureResult.coverage.watched} watched guards)`,
+        ));
       }
     } catch (err) {
       console.log(pc.yellow(

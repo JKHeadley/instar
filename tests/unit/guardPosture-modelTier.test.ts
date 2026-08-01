@@ -43,7 +43,7 @@ describe('extractGuardPosture — models.tierEscalation', () => {
 
 describe('runGuardPostureTripwire — escalation flips', () => {
   let dir: string;
-  const emitted: Array<{ id: string; title: string; priority: string }> = [];
+  const emitted: Array<{ id: string; title: string; summary: string; priority: string }> = [];
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-gpt-mte-'));
@@ -62,7 +62,7 @@ describe('runGuardPostureTripwire — escalation flips', () => {
     stateDir: dir,
     logsDir: path.join(dir, 'logs'),
     log: () => {},
-    emitAttention: async (item: { id: string; title: string; priority: string }) => {
+    emitAttention: async (item: { id: string; title: string; summary: string; priority: string }) => {
       emitted.push(item);
     },
   });
@@ -81,6 +81,23 @@ describe('runGuardPostureTripwire — escalation flips', () => {
     const r = await runGuardPostureTripwire(opts({ models: { tierEscalation: { enabled: true, dryRun: false } } }));
     expect(r.disabled).toContain('models.tierEscalation.dryRun');
     expect(emitted.some(e => e.id.includes('guard-posture-disabled'))).toBe(true);
+  });
+
+  it('newly enrolled cost enablement is described as default deviation, not a prior-boot flip', async () => {
+    fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'state', 'guard-posture.json'),
+      JSON.stringify({ ts: '2026-07-31T00:00:00.000Z', posture: { 'scheduler.enabled': true } }),
+    );
+    const r = await runGuardPostureTripwire({
+      ...opts({ models: { tierEscalation: { enabled: true, dryRun: true } } }),
+      defaultConfig: { models: { tierEscalation: { enabled: false, dryRun: true } } },
+    });
+
+    expect(r.newlyTrackedEnabled).toContain('models.tierEscalation.enabled');
+    const costItem = emitted.find(e => e.id.includes('guard-posture-cost-enable'));
+    expect(costItem?.summary).toContain('newly watched');
+    expect(costItem?.summary).not.toContain('previous server boot');
   });
 
   it('no flip ⇒ nothing emitted', async () => {

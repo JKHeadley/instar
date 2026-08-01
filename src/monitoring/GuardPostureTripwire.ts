@@ -34,11 +34,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  buildCompleteGuardPosture,
   COST_INCREASING_ENABLE_KEYS,
   diffGuardPosture,
   extractGuardPosture,
   guardPostureSnapshotPath,
   type GuardPosture,
+  type GuardPostureBootSnapshot,
+  type GuardPostureCoverage,
   type GuardPostureDiff,
 } from './guardPosture.js';
 
@@ -46,8 +49,8 @@ import {
 // (GUARD-POSTURE-ENDPOINT-SPEC §2.1 single-funnel rule: one definition of
 // "what is a guard", consumed by both this tripwire and GET /guards).
 // Re-exported here so existing importers keep working unchanged.
-export { COST_INCREASING_ENABLE_KEYS, diffGuardPosture, extractGuardPosture };
-export type { GuardPosture, GuardPostureDiff };
+export { buildCompleteGuardPosture, COST_INCREASING_ENABLE_KEYS, diffGuardPosture, extractGuardPosture };
+export type { GuardPosture, GuardPostureCoverage, GuardPostureDiff };
 
 export interface AttentionItemInput {
   id: string;
@@ -62,6 +65,9 @@ export interface AttentionItemInput {
 export interface GuardPostureTripwireOpts {
   /** The RESOLVED config object the server is booting with. */
   config: unknown;
+  /** Resolved defaults for the same agent. Used when a guard is newly enrolled
+   *  so a pre-existing default-ON/config-OFF posture is not silently baselined. */
+  defaultConfig?: unknown;
   /** Agent state dir (`<projectDir>/.instar`) — snapshot lives at `state/guard-posture.json`. */
   stateDir: string;
   /** Logs dir (`<projectDir>/logs`) — breadcrumb lives at `guard-posture.jsonl`. */
@@ -78,15 +84,15 @@ export interface GuardPostureTripwireResult {
   firstBoot: boolean;
   disabled: string[];
   enabled: string[];
+  newlyTrackedDisabled: string[];
+  newlyTrackedEnabled: string[];
+  coverage: GuardPostureCoverage;
   attentionEmitted: boolean;
   /** Non-fatal error message when the tripwire degraded (never throws). */
   error?: string;
 }
 
-interface Snapshot {
-  ts: string;
-  posture: GuardPosture;
-}
+type Snapshot = GuardPostureBootSnapshot;
 
 const snapshotPath = guardPostureSnapshotPath;
 
@@ -104,11 +110,17 @@ export async function runGuardPostureTripwire(
     firstBoot: false,
     disabled: [],
     enabled: [],
+    newlyTrackedDisabled: [],
+    newlyTrackedEnabled: [],
+    coverage: { watched: 0, configDerived: 0, manifestDeclared: 0, overlap: 0 },
     attentionEmitted: false,
   };
 
   try {
-    const posture = extractGuardPosture(opts.config);
+    const complete = buildCompleteGuardPosture(opts.config);
+    const posture = complete.posture;
+    result.coverage = complete.coverage;
+    const defaultPosture = buildCompleteGuardPosture(opts.defaultConfig).posture;
     const snapPath = snapshotPath(opts.stateDir);
 
     let prev: Snapshot | null = null;
@@ -127,19 +139,32 @@ export async function runGuardPostureTripwire(
     // Persist the new snapshot FIRST so even an emit failure below leaves the
     // baseline current (no repeat alarms for the same transition next boot).
     fs.mkdirSync(path.dirname(snapPath), { recursive: true });
+    const snapshot: Snapshot = { ts: now.toISOString(), posture, coverage: complete.coverage };
     /* state-registry: guard-posture-snapshot */
-    fs.writeFileSync(snapPath, JSON.stringify({ ts: now.toISOString(), posture } satisfies Snapshot, null, 2));
+    fs.writeFileSync(snapPath, JSON.stringify(snapshot, null, 2));
 
     if (!prev) {
       result.firstBoot = true;
-      log(`[guard-posture] baseline recorded (${Object.keys(posture).length} guards)`);
+      log(
+        `[guard-posture] baseline recorded (watching ${complete.coverage.watched} guards: ` +
+        `${complete.coverage.configDerived} config-derived + ${complete.coverage.manifestDeclared} manifest ` +
+        `- ${complete.coverage.overlap} overlap)`,
+      );
       return result;
     }
 
-    const diff = diffGuardPosture(prev.posture, posture);
+    const diff = diffGuardPosture(prev.posture, posture, defaultPosture);
     result.disabled = diff.disabled;
     result.enabled = diff.enabled;
+    result.newlyTrackedDisabled = diff.newlyTrackedDisabled;
+    result.newlyTrackedEnabled = diff.newlyTrackedEnabled;
     if (diff.disabled.length === 0 && diff.enabled.length === 0) return result;
+
+    log(
+      `[guard-posture] posture incidents detected across ${complete.coverage.watched} watched guards ` +
+      `(disabled=${diff.disabled.length}/${complete.coverage.watched}, ` +
+      `enabled=${diff.enabled.length}/${complete.coverage.watched})`,
+    );
 
     // Breadcrumb — one aggregated row per boot that saw transitions.
     try {
@@ -151,25 +176,45 @@ export async function runGuardPostureTripwire(
           kind: 'guard-posture-change',
           disabled: diff.disabled,
           enabled: diff.enabled,
+          newlyTrackedDisabled: diff.newlyTrackedDisabled,
+          newlyTrackedEnabled: diff.newlyTrackedEnabled,
           prevTs: prev.ts,
+          previousWatched: prev.coverage?.watched ?? Object.keys(prev.posture).length,
+          coverage: complete.coverage,
         }) + '\n',
       );
     } catch (err) {
       result.error = `breadcrumb append failed: ${err instanceof Error ? err.message : String(err)}`;
     }
 
-    for (const key of diff.enabled) log(`[guard-posture] guard re-enabled since last boot: ${key}`);
-    for (const key of diff.disabled) log(`[guard-posture] ⚠ GUARD DISABLED since last boot: ${key}`);
+    const newlyEnabled = new Set(diff.newlyTrackedEnabled);
+    const newlyDisabled = new Set(diff.newlyTrackedDisabled);
+    for (const key of diff.enabled) {
+      log(newlyEnabled.has(key)
+        ? `[guard-posture] newly watched default-OFF guard found ON: ${key}`
+        : `[guard-posture] guard re-enabled since last boot: ${key}`);
+    }
+    for (const key of diff.disabled) {
+      log(newlyDisabled.has(key)
+        ? `[guard-posture] ⚠ newly watched default-ON guard found OFF: ${key}`
+        : `[guard-posture] ⚠ GUARD DISABLED since last boot: ${key}`);
+    }
 
     if (diff.disabled.length > 0 && opts.emitAttention) {
       const list = diff.disabled.join(', ');
+      const existingDisabled = diff.disabled.filter(k => !diff.newlyTrackedDisabled.includes(k));
+      const transitionText = existingDisabled.length > 0
+        ? `${existingDisabled.join(', ')} were ON at the previous server boot and are OFF now. `
+        : '';
+      const enrollmentText = diff.newlyTrackedDisabled.length > 0
+        ? `${diff.newlyTrackedDisabled.join(', ')} are newly watched and are OFF against their resolved ON default. `
+        : '';
       try {
         await opts.emitAttention({
           id: `guard-posture-disabled:${now.toISOString().slice(0, 10)}:${diff.disabled.join(',')}`,
-          title: `${diff.disabled.length} monitoring guard(s) disabled since last boot`,
+          title: `${diff.disabled.length} of ${complete.coverage.watched} watched guard(s) disabled`,
           summary:
-            `These guards were ON at the previous server boot and are OFF now: ${list}. ` +
-            `Nothing in instar code flips these flags — this was a config edit. ` +
+            `Disabled guards: ${list}. ${transitionText}${enrollmentText}` +
             `If it was deliberate (e.g. load-shedding), acknowledge this item; otherwise re-enable them in .instar/config.json. ` +
             `History: logs/guard-posture.jsonl.`,
           category: 'monitoring',
@@ -189,12 +234,20 @@ export async function runGuardPostureTripwire(
     const costIncreasing = diff.enabled.filter(k => COST_INCREASING_ENABLE_KEYS.has(k));
     if (costIncreasing.length > 0 && opts.emitAttention) {
       const list = costIncreasing.join(', ');
+      const newlyTrackedCost = costIncreasing.filter(k => newlyEnabled.has(k));
+      const transitionedCost = costIncreasing.filter(k => !newlyEnabled.has(k));
+      const transitionedCostText = transitionedCost.length > 0
+        ? `${transitionedCost.join(', ')} were OFF at the previous server boot and are ON now. `
+        : '';
+      const newlyTrackedCostText = newlyTrackedCost.length > 0
+        ? `${newlyTrackedCost.join(', ')} are newly watched and are ON against their resolved OFF default. `
+        : '';
       try {
         await opts.emitAttention({
           id: `guard-posture-cost-enable:${now.toISOString().slice(0, 10)}:${costIncreasing.join(',')}`,
-          title: `Cost-increasing feature enabled since last boot`,
+          title: `${costIncreasing.length} of ${complete.coverage.watched} watched cost-increasing feature(s) enabled`,
           summary:
-            `These cost-increasing flags were OFF at the previous server boot and are ON now: ${list}. ` +
+            `Enabled cost-increasing flags: ${list}. ${transitionedCostText}${newlyTrackedCostText}` +
             `Model-tier escalation routes eligible work to the ultra model (~2x cost). ` +
             `If this was deliberate, acknowledge this item; otherwise flip it back in .instar/config.json. ` +
             `History: logs/guard-posture.jsonl.`,
