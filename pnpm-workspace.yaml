@@ -10,17 +10,28 @@
 # true  = the script produces a working install (native binding compiled, or a
 #         platform binary downloaded). Omitting it breaks the package at runtime.
 # false = an engine check or a printed notice; nothing needed at runtime.
-# `packages: []` is REQUIRED, not decorative. This file makes the repo root a pnpm
-# workspace root, and pnpm 9 rejects a workspace root whose `packages` field is
-# missing or empty-by-absence with `ERROR packages field missing or empty`. The
-# Vercel build runs `cd site && pnpm install` (vercel.json buildCommand), so pnpm
-# walks up, finds this file, and fails the deployment before Astro ever builds.
-# Verified locally 2026-08-01: with this file and NO `packages` key, `pnpm install`
-# inside a subdirectory exits 1 on pnpm 9 and 0 on pnpm 10/11; with `packages: []`
-# it exits 0 on all three. pnpm-lock.yaml here is lockfileVersion 9.0.
-# An EMPTY list is deliberate: it satisfies the schema without making site/ a
-# workspace member, which would change how its dependencies resolve.
-packages: []
+# `packages` is REQUIRED and MUST list site/. This file makes the repo root a pnpm
+# workspace root, and the Vercel build runs `cd site && pnpm install` (see
+# vercel.json buildCommand). pnpm walks up from site/, finds this file, and treats
+# site/ as OUTSIDE the workspace unless it is declared here.
+#
+# The failure mode is SILENT, which is why it was expensive to find: with the root
+# file present and site/ undeclared, `pnpm install` inside site/ EXITS 0, installs
+# NOTHING into site/node_modules, and writes the lockfile at the repo root. The
+# deployment then dies at `astro build` with a missing-dependency error pointing at
+# Astro rather than at this file.
+#
+# Measured locally 2026-08-01, with site/ carrying one real dependency:
+#   no root workspace file        -> rc=0, dependency present    (this is main today)
+#   root file, no packages key    -> pnpm 9 rc=1 "packages field missing or empty";
+#                                    pnpm 10/11 rc=0
+#   root file, empty packages list-> rc=0, site/node_modules EMPTY   (silent break)
+#   root file, packages lists site-> rc=0, dependency present    (correct)
+#
+# An empty list satisfies the schema and still breaks the build. Declaring site/ is
+# what makes the install actually do its job.
+packages:
+  - "site"
 
 allowBuilds:
   # Native bindings / downloaded platform binaries — required.
