@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { CredentialRebalancer, type CredentialRebalancerDeps, type RebalancerResolvedConfig } from '../../src/core/CredentialRebalancer.js';
+import { CredentialRebalancer, credentialRebalancerAttentionId, type CredentialRebalancerDeps, type RebalancerResolvedConfig } from '../../src/core/CredentialRebalancer.js';
 import type { SlotState, AccountState } from '../../src/core/CredentialRebalancerPolicy.js';
 
 const RESOLVED: RebalancerResolvedConfig = {
@@ -131,5 +131,55 @@ describe('CredentialRebalancer — status surface', () => {
     expect(st.enabled).toBe(true);
     expect(st.lastPass).not.toBeNull();
     expect(st.breaker.threshold).toBe(3);
+  });
+});
+
+describe('CredentialRebalancer — persistent attention identity', () => {
+  it('emits the same structural condition on repeated passes', async () => {
+    const clock = { t: 10_000_000 };
+    const notices: Parameters<NonNullable<CredentialRebalancerDeps['emitAttention']>>[0][] = [];
+    const r = new CredentialRebalancer(makeDeps({
+      clock,
+      listAccounts: () => [
+        acc({ accountId: 'A', fiveHrPct: 97, measuredAt: clock.t }),
+        acc({ accountId: 'B', fiveHrPct: 96, measuredAt: clock.t }),
+      ],
+      emitAttention: (notice) => notices.push(notice),
+    }));
+
+    await r.tick();
+    clock.t += 60_000;
+    await r.tick();
+
+    expect(notices).toHaveLength(4);
+    expect(credentialRebalancerAttentionId(notices[0], 10))
+      .toBe(credentialRebalancerAttentionId(notices[2], 11));
+    expect(credentialRebalancerAttentionId(notices[1], 10))
+      .toBe(credentialRebalancerAttentionId(notices[3], 11));
+  });
+
+  it('keeps one id for the same condition and slot across ledger versions', () => {
+    const notice = {
+      message: 'no eligible non-walling rescue target for critical slot ~/.claude-dawn',
+      condition: { type: 'critical-no-rescue-target' as const, slot: '~/.claude-dawn' },
+    };
+    expect(credentialRebalancerAttentionId(notice, 10))
+      .toBe(credentialRebalancerAttentionId(notice, 11));
+  });
+
+  it('keeps different slots and condition types distinct', () => {
+    const base = {
+      message: 'no eligible rescue target',
+      condition: { type: 'critical-no-rescue-target' as const, slot: '~/.claude-dawn' },
+    };
+    const otherSlot = { ...base, condition: { ...base.condition, slot: '~/.claude-dusk' } };
+    const nonCritical = {
+      ...base,
+      condition: { type: 'no-rescue-target' as const, slot: base.condition.slot },
+    };
+    expect(credentialRebalancerAttentionId(base, 10))
+      .not.toBe(credentialRebalancerAttentionId(otherSlot, 10));
+    expect(credentialRebalancerAttentionId(base, 10))
+      .not.toBe(credentialRebalancerAttentionId(nonCritical, 10));
   });
 });
