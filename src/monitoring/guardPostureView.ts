@@ -18,7 +18,7 @@ import {
 import type { AcceptedFallbackRecord, ScopedAcceptedFallbacks } from './guardAcceptedFallbacks.js';
 import { getConfigByPath } from '../core/devGatedFeatures.js';
 import {
-  extractGuardPosture,
+  buildCompleteGuardPosture,
   type GuardPostureBootSnapshot,
   type ResolvedGuardConfigSnapshot,
 } from './guardPosture.js';
@@ -369,30 +369,22 @@ export function buildGuardInventory(opts: {
   acceptedFallbacks?: ScopedAcceptedFallbacks;
 }): GuardInventoryResult {
   const now = opts.now ?? Date.now();
-  const extractedCurrent = extractGuardPosture(opts.snapshot.resolved);
-  const extractedDefaults = extractGuardPosture(opts.snapshot.defaults);
+  // The endpoint and boot tripwire consume this exact same union builder.
+  // Keeping key/value assembly in one funnel prevents the 36-of-90 split where
+  // /guards knew the manifest but the transition detector did not.
+  const currentPosture = buildCompleteGuardPosture(opts.snapshot.resolved).posture;
+  const defaultPosture = buildCompleteGuardPosture(opts.snapshot.defaults).posture;
   const manifestMap = new Map<string, GuardManifestEntry>();
   for (const entry of GUARD_MANIFEST) manifestMap.set(entry.key, entry);
 
-  const keys = [...new Set([...Object.keys(extractedCurrent), ...manifestMap.keys()])].sort();
+  const keys = Object.keys(currentPosture).sort();
 
   const guards: GuardRow[] = [];
   for (const key of keys) {
     const manifest = manifestMap.get(key);
 
-    let configEnabled = asBool(extractedCurrent[key]);
-    let defaultEnabled = asBool(extractedDefaults[key]);
-    if (configEnabled === undefined && manifest?.configPath) {
-      configEnabled = asBool(getConfigByPath(opts.snapshot.resolved, manifest.configPath));
-    }
-    if (defaultEnabled === undefined && manifest?.configPath) {
-      defaultEnabled = asBool(getConfigByPath(opts.snapshot.defaults, manifest.configPath));
-    }
-    if (defaultEnabled === undefined && manifest) defaultEnabled = manifest.defaultEnabled;
-    // The resolved snapshot normally contains every default key (defaults are
-    // merged in), but a degraded/partial snapshot must still yield the
-    // default-resolved state — a guard can never drop out of the inventory.
-    if (configEnabled === undefined) configEnabled = defaultEnabled;
+    const configEnabled = asBool(currentPosture[key]);
+    const defaultEnabled = asBool(defaultPosture[key]);
 
     const configDryRun = manifest?.dryRunConfigPath
       ? asBool(getConfigByPath(opts.snapshot.resolved, manifest.dryRunConfigPath))
