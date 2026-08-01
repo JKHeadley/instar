@@ -35,7 +35,7 @@ import { recognizeConvergence } from './lib/convergence-recognition.mjs';
 import { isOperatorSurfaceFile, artifactAddressesOperatorSurfaceQuality, isAuthorizationSurfaceFile, artifactAddressesAgentProposesApproves, operatorSurfaceRequiresRawInput } from './lib/operator-surface.mjs';
 import { selfActionDeclarationVerdict } from './lib/self-action-detect.mjs';
 import { isKnownInlineCodeEnumReference } from './lib/markdown-code-identifier.mjs';
-import { validateAuditReport, parseFrontmatter } from './write-audit-convergence.mjs';
+import { validateAuditReport, parseFrontmatter, responseChangedFromBase } from './write-audit-convergence.mjs';
 import { scanForSecrets } from './audit-secret-patterns.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
@@ -143,6 +143,23 @@ function stagedBlob(file) {
     return null; // deleted/renamed away — nothing to validate
   }
 }
+function headBlob(file) {
+  try {
+    return execFileSync('git', ['show', `HEAD:${file}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch { return null; }
+}
+function stagedRegularFile(file) {
+  try {
+    const row = execFileSync('git', ['ls-files', '--stage', '--', file], { cwd: ROOT, encoding: 'utf8' }).trim();
+    return /^(100644|100755)\s/.test(row);
+  } catch { return false; }
+}
+function headFileMode(file) {
+  try {
+    const row = execFileSync('git', ['ls-tree', 'HEAD', '--', file], { cwd: ROOT, encoding: 'utf8' }).trim();
+    return row ? row.split(/\s+/, 1)[0] : null;
+  } catch { return null; }
+}
 function frontmatterHas(content, key) {
   try { return !!parseFrontmatter(content).fields[key]; } catch { return false; }
 }
@@ -179,10 +196,25 @@ for (const f of auditReports) {
     let result;
     try {
       const stagedNames = new Set(staged);
+      const baseReport = headBlob(f);
+      const responseChanged = responseChangedFromBase(content, baseReport);
+      const fields = parseFrontmatter(content).fields;
+      const standardsRef = fields['standard-response-ref'];
+      const baseMode = standardsRef ? headFileMode(standardsRef) : null;
       result = validateAuditReport(content, {
         root: ROOT,
         stagedSet: stagedNames,
         basenameSlug: path.basename(f, '.md'),
+        requiredStandardsRef: 'docs/STANDARDS-REGISTRY.md',
+        standardEvidence: responseChanged ? {
+          responseChanged: true,
+          candidateText: standardsRef ? stagedBlob(standardsRef) ?? '' : '',
+          baseText: standardsRef ? headBlob(standardsRef) ?? '' : '',
+          candidateRegular: !!standardsRef && stagedRegularFile(standardsRef),
+          candidateTracked: !!standardsRef && stagedBlob(standardsRef) !== null,
+          baseRegular: baseMode === '100644' || baseMode === '100755',
+          baseTracked: baseMode !== null,
+        } : { responseChanged: false },
       });
     } catch (err) {
       // fail-CLOSED — never let a validator crash pass a stamp.

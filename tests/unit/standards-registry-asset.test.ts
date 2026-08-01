@@ -34,6 +34,15 @@ const META = path.join(ROOT, 'dist', 'data', 'standards-registry.meta.json');
 const GUARD_INDEX = path.join(ROOT, 'dist', 'data', 'standards-guard-index.json');
 const GUARD_INDEX_META = path.join(ROOT, 'dist', 'data', 'standards-guard-index.meta.json');
 
+function copyRegistryParserCore(root: string): void {
+  const scripts = path.join(root, 'scripts');
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.copyFileSync(
+    path.join(ROOT, 'scripts', 'standards-registry-article-core.mjs'),
+    path.join(scripts, 'standards-registry-article-core.mjs'),
+  );
+}
+
 /**
  * The asset is a BUILD artifact, and CI's unit job runs `npm ci` + tests with NO
  * build step. So `dist/` may not exist here at all — in which case `npm pack`
@@ -103,6 +112,7 @@ describe('standards registry ships as a build artifact', () => {
       // other's outputs.
       fs.mkdirSync(path.join(generatorRoot, 'scripts'), { recursive: true });
       fs.mkdirSync(path.join(generatorRoot, 'dist', 'core'), { recursive: true });
+      copyRegistryParserCore(generatorRoot);
       fs.copyFileSync(
         path.join(ROOT, 'scripts', 'generate-standards-registry-asset.mjs'),
         path.join(generatorRoot, 'scripts', 'generate-standards-registry-asset.mjs'),
@@ -244,6 +254,7 @@ describe('resolver validity matrix — invalid never becomes a confident answer'
       const data = path.join(tmp, 'dist', 'data');
       fs.mkdirSync(core, { recursive: true });
       fs.mkdirSync(data, { recursive: true });
+      copyRegistryParserCore(tmp);
       // Copy the compiled resolver + the parser it imports into the fixture.
       for (const f of ['standardsRegistryPath.js', 'StandardsRegistryParser.js']) {
         fs.copyFileSync(path.join(ROOT, 'dist', 'core', f), path.join(core, f));
@@ -312,6 +323,7 @@ describe('resolver validity matrix — invalid never becomes a confident answer'
     try {
       const core = path.join(tmp, 'dist', 'core');
       fs.mkdirSync(core, { recursive: true });
+      copyRegistryParserCore(tmp);
       fs.mkdirSync(path.join(tmp, 'docs'), { recursive: true });
       fs.writeFileSync(path.join(tmp, 'docs', 'STANDARDS-REGISTRY.md'), stale);
       for (const f of ['standardsRegistryPath.js', 'StandardsRegistryParser.js']) {

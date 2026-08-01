@@ -3983,24 +3983,24 @@ export class PostUpdateMigrator {
    * (audit-convergence-enforcement §4 / Integration-R2 M3). The installed copy
    * came from init.ts's INLINE template, so this migration writes the SAME shared
    * constant (`ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT`) that init.ts now consumes
-   * — single-source, so the two paths cannot drift. Idempotent (skip when the
-   * canonical-report marker is already present) + conservative (skip a customized
-   * copy that no longer looks like the stock skill).
+   * — single-source, so the two paths cannot drift. Idempotent via a dedicated
+   * V2 sentinel + conservative via the exact previously-shipped stock hash.
    */
   private migrateIterativeConvergingAuditSkill(result: MigrationResult): void {
     try {
       const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'iterative-converging-audit', 'SKILL.md');
       if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
       const current = fs.readFileSync(skillFile, 'utf8');
-      const MARKER = 'docs/audits/<slug>.md';
-      if (current.includes(MARKER)) return; // already updated — idempotent
-      // conservative stock fingerprint: the inline skill's stable header + loop
-      if (!current.includes('# /iterative-converging-audit') || !current.includes('## The loop')) {
-        result.skipped.push('skills/iterative-converging-audit/SKILL.md: customized — left untouched (no audit-convergence update)');
+      const MARKER = '<!-- INSTAR:AUDIT-META-ARTIFACT-V2 -->';
+      if (current.includes(MARKER)) return;
+      const PRIOR_STOCK_SHA256 = '46800ab937d0e0df2d22502654f18dc255a8540c48fac86192e952ec6da060e5';
+      const currentSha256 = crypto.createHash('sha256').update(current).digest('hex');
+      if (currentSha256 !== PRIOR_STOCK_SHA256) {
+        result.skipped.push('skills/iterative-converging-audit/SKILL.md: customized — left untouched (no audit meta-artifact V2 update)');
         return;
       }
       fs.writeFileSync(skillFile, ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT);
-      result.upgraded.push('skills/iterative-converging-audit/SKILL.md (canonical docs/audits report + validator-earned convergence stamp)');
+      result.upgraded.push('skills/iterative-converging-audit/SKILL.md (blind-spot/meta-insight + standards-response artifact V2)');
     } catch (err) {
       result.errors.push(`skills/iterative-converging-audit/SKILL.md migration: ${err instanceof Error ? err.message : String(err)}`);
     }

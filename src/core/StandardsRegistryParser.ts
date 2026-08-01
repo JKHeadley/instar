@@ -17,12 +17,15 @@
  */
 
 import fs from 'node:fs';
+import { articleIds, parseRegistryStructure } from '../../scripts/standards-registry-article-core.mjs';
 
 export interface StandardArticle {
   /** The standards family the article lives under (Root / Substrate / Building / Shipping / Interaction). */
   family: string;
   /** The article heading (e.g. "No Manual Work (user *or* agent)"). */
   name: string;
+  /** Stable audit-provenance identifier, present on articles cited by stamped audits. */
+  articleId?: string;
   /** The `**Rule.**` line — the normative statement. */
   rule: string;
   /** The `**In practice.**` line, when present. */
@@ -97,7 +100,7 @@ export const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   'Three postures, in increasing order of ambition',
 ] as const;
 
-const CORE_SECTION_HEADINGS = ['Rule', 'In practice'] as const;
+const CORE_SECTION_HEADINGS = ['Article ID', 'Rule', 'In practice'] as const;
 const ENFORCEMENT_SECTION_HEADING_SET = new Set<string>(ENFORCEMENT_SECTION_HEADINGS);
 const EXCLUDED_PROVENANCE_SECTION_HEADING_SET = new Set<string>(EXCLUDED_PROVENANCE_SECTION_HEADINGS);
 const EXCLUDED_NARRATIVE_SECTION_HEADING_SET = new Set<string>(EXCLUDED_NARRATIVE_SECTION_HEADINGS);
@@ -118,10 +121,6 @@ const CORE_SECTION_HEADING_SET = new Set<string>(CORE_SECTION_HEADINGS);
  * A name allowlist can only ever be as current as the last person who edited it;
  * the structural rule needs no maintenance.
  */
-/** Any `##` heading opens a new section scope. */
-const ANY_H2_RE = /^##\s+/;
-const H2_NAME_RE = /^##\s+(.+?)\s*$/;
-const ARTICLE_RE = /^###\s+(.+?)\s*$/;
 /**
  * Family display name: the heading text up to the first dash separator, so
  * "The Substrate — the model-level truths …" stays "The Substrate" (the value
@@ -183,69 +182,48 @@ interface RawSection { heading: string; blocks: RawArticleBlock[] }
 
 /** Split the registry into `##` sections, each holding its `###` blocks. */
 function readSections(markdown: string): RawSection[] {
-  const sections: RawSection[] = [];
-  let section: RawSection | null = null;
-  let cur: StandardArticle | null = null;
-  let curName = '';
-  let observedSections: string[] = [];
-  let field: { heading: string; lines: string[] } | null = null;
-
-  const flushField = () => {
-    if (!cur || !field) return;
-    const heading = field.heading;
-    const text = field.lines.join('\n').trim();
-    observedSections.push(heading);
-
-    if (heading === 'Rule') cur.rule = text;
-    else if (heading === 'In practice') cur.inPractice = text;
-    else if (ENFORCEMENT_SECTION_HEADING_SET.has(heading)) {
-      const typedHeading = heading as EnforcementSectionHeading;
-      (cur.enforcementSections ??= []).push({ heading: typedHeading, text });
-      // Backward-compatible field retained for existing consumers.
-      if (typedHeading === 'Applied through') cur.appliedThrough = text;
-    }
-    field = null;
-  };
-
-  const flush = () => {
-    flushField();
-    if (section && cur) section.blocks.push({ name: curName, article: cur, observedSections });
-    cur = null;
-    curName = '';
-    observedSections = [];
-  };
-
-  for (const line of markdown.split('\n')) {
-    if (ANY_H2_RE.test(line)) {
-      flush();
-      const h2 = line.match(H2_NAME_RE);
-      section = { heading: h2 ? h2[1].trim() : '', blocks: [] };
-      sections.push(section);
-      continue;
-    }
-    if (!section) continue;
-
-    const artMatch = line.match(ARTICLE_RE);
-    if (artMatch) {
-      flush();
-      curName = artMatch[1].trim();
-      cur = { family: familyName(section.heading), name: curName, rule: '', inPractice: '' };
-      continue;
-    }
-    if (!cur) continue;
-
-    const fieldMatch = line.match(FIELD_HEADING_RE);
-    if (fieldMatch) {
+  return parseRegistryStructure(markdown).map((rawSection) => {
+    const section: RawSection = { heading: rawSection.heading, blocks: [] };
+    for (const block of rawSection.blocks) {
+      const ids = articleIds(block);
+      const cur: StandardArticle = {
+        family: familyName(rawSection.heading),
+        name: block.name,
+        ...(ids.length === 1 ? { articleId: ids[0] } : {}),
+        rule: '',
+        inPractice: '',
+      };
+      const observedSections: string[] = [];
+      let field: { heading: string; lines: string[] } | null = null;
+      const flushField = () => {
+        if (!field) return;
+        const heading = field.heading;
+        const text = field.lines.join('\n').trim();
+        observedSections.push(heading);
+        if (heading === 'Rule') cur.rule = text;
+        else if (heading === 'In practice') cur.inPractice = text;
+        else if (ENFORCEMENT_SECTION_HEADING_SET.has(heading)) {
+          const typedHeading = heading as EnforcementSectionHeading;
+          (cur.enforcementSections ??= []).push({ heading: typedHeading, text });
+          if (typedHeading === 'Applied through') cur.appliedThrough = text;
+        }
+        field = null;
+      };
+      for (const line of block.visibleLines) {
+        if (line === null) continue;
+        const fieldMatch = line.match(FIELD_HEADING_RE);
+        if (fieldMatch) {
+          flushField();
+          field = { heading: fieldMatch[1].trim(), lines: [fieldMatch[2]] };
+        } else if (field) {
+          field.lines.push(line);
+        }
+      }
       flushField();
-      field = { heading: fieldMatch[1].trim(), lines: [fieldMatch[2]] };
-      continue;
+      section.blocks.push({ name: block.name, article: cur, observedSections });
     }
-    // A field is a BLOCK, not only its label line. This is load-bearing for
-    // headings such as `**Enforced by ...**` whose actual refs live in bullets.
-    if (field) field.lines.push(line);
-  }
-  flush();
-  return sections;
+    return section;
+  });
 }
 
 /**

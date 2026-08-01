@@ -96,6 +96,7 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
     // scripts — copy them so the sandbox hook resolves its imports.
     fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'write-audit-convergence.mjs'), path.join(sandbox, 'scripts', 'write-audit-convergence.mjs'));
     fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'audit-secret-patterns.mjs'), path.join(sandbox, 'scripts', 'audit-secret-patterns.mjs'));
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'standards-registry-article-core.mjs'), path.join(sandbox, 'scripts', 'standards-registry-article-core.mjs'));
   });
 
   afterEach(() => {
@@ -358,6 +359,7 @@ describe('instar-dev pre-commit — causalAutopsy (advisory slice)', () => {
     // scripts — copy them so the sandbox hook resolves its imports.
     fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'write-audit-convergence.mjs'), path.join(sandbox, 'scripts', 'write-audit-convergence.mjs'));
     fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'audit-secret-patterns.mjs'), path.join(sandbox, 'scripts', 'audit-secret-patterns.mjs'));
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'standards-registry-article-core.mjs'), path.join(sandbox, 'scripts', 'standards-registry-article-core.mjs'));
   });
 
   afterEach(() => {
