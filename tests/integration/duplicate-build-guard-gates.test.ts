@@ -80,7 +80,7 @@ describe('precommit presence backstop (§3.4)', () => {
     );
     // Copy the REAL hook + its lib deps.
     fs.cpSync(path.join(REPO_ROOT, 'scripts', 'lib'), path.join(sandbox, 'scripts', 'lib'), { recursive: true });
-    for (const f of ['instar-dev-precommit.js', 'write-audit-convergence.mjs', 'audit-secret-patterns.mjs']) {
+    for (const f of ['instar-dev-precommit.js', 'write-audit-convergence.mjs', 'audit-secret-patterns.mjs', 'standards-registry-article-core.mjs']) {
       fs.copyFileSync(path.join(REPO_ROOT, 'scripts', f), path.join(sandbox, 'scripts', f));
     }
   });
