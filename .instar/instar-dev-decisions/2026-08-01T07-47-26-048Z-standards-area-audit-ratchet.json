@@ -1,0 +1,44 @@
+{
+  "ts": "2026-08-01T07:47:26.048Z",
+  "slug": "standards-area-audit-ratchet",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 816,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/standards-coverage.mjs",
+      "scripts/standards-registry-article-core.d.mts",
+      "scripts/standards-registry-article-core.mjs",
+      "src/core/StandardsEnforcementAuditor.ts"
+    ],
+    "addedLines": 800,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "novel",
+    "closure": "gap",
+    "gapItem": "ACT-360",
+    "component": "standards-coverage",
+    "novelClass": {
+      "nearestExistingClass": "unknown-classification-fail-open — both can let an unsafe state pass, but this class hides a known subgroup regression through aggregation rather than permissively classifying unknown input",
+      "includes": [
+        "a coverage ratio that gates only the whole population even though each declared family is independently load-bearing",
+        "a large subgroup compensating numerically for a smaller subgroup losing its only enforced item",
+        "a global floor presented as regression protection while no per-subgroup floor exists"
+      ],
+      "excludes": [
+        "a population with no stable or meaningful subgroup identity",
+        "a dashboard-only aggregate that holds no pass/fail authority",
+        "an aggregate whose contract deliberately allows substitution among fungible members"
+      ],
+      "severity": "normal"
+    }
+  },
+  "verdict": "pass"
+}

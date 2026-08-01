@@ -211,6 +211,32 @@
       "evidenceCountAtLastAck": 0,
       "proposalId": null,
       "nearestExistingClass": "prompt-parser-contract-drift — both are producer/consumer contract drift in agent-authored text, but this class concerns generated filesystem reachability rather than an LLM prompt's output schema"
+    },
+    {
+      "id": "aggregate-masks-subgroup-regression",
+      "description": "A global aggregate remains within its accepted bound while one independently meaningful subgroup regresses below its own prior state, so a healthy large cohort hides the loss of protection in a smaller cohort.",
+      "includes": [
+        "a coverage ratio that gates only the whole population even though each declared family is independently load-bearing",
+        "a large subgroup compensating numerically for a smaller subgroup losing its only enforced item",
+        "a global floor presented as regression protection while no per-subgroup floor exists"
+      ],
+      "excludes": [
+        "a population with no stable or meaningful subgroup identity",
+        "a dashboard-only aggregate that holds no pass/fail authority",
+        "an aggregate whose contract deliberately allows substitution among fungible members"
+      ],
+      "canonicalExamples": [
+        "Standards coverage items 5/6: an aggregate 70% ratchet could stay green while the singleton Root family fell from 1/1 to 0/1"
+      ],
+      "status": "unconfirmed",
+      "severity": "normal",
+      "closureStandard": null,
+      "closureStandardEnforcement": null,
+      "instanceCount": 0,
+      "escalatedAt": null,
+      "evidenceCountAtLastAck": 0,
+      "proposalId": null,
+      "nearestExistingClass": "unknown-classification-fail-open — both can let an unsafe state pass, but this class hides a known subgroup regression through aggregation rather than permissively classifying unknown input"
     }
   ]
 }

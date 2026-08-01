@@ -15,7 +15,10 @@ function visibleRegistryLines(markdown) {
   let inComment = false;
 
   for (const raw of rawLines) {
-    const trimmed = raw.trimStart();
+    // Preserve `rawLines` byte-for-byte for span evidence while giving every
+    // structural consumer an LF-equivalent visible line on CRLF checkouts.
+    const decodedLine = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    const trimmed = decodedLine.trimStart();
     const fenceMatch = trimmed.match(/^(`{3,}|~{3,})/);
     if (fence === null && fenceMatch) {
       fence = { marker: fenceMatch[1][0], length: fenceMatch[1].length };
@@ -28,12 +31,12 @@ function visibleRegistryLines(markdown) {
       visible.push(null);
       continue;
     }
-    if (/^\s*>/.test(raw)) {
+    if (/^\s*>/.test(decodedLine)) {
       visible.push(null);
       continue;
     }
 
-    let line = raw;
+    let line = decodedLine;
     let out = '';
     let cursor = 0;
     while (cursor < line.length) {
@@ -68,6 +71,11 @@ export function parseRegistryStructure(markdown) {
     block.visibleLines = visible.slice(block.startLine + 1, endLine);
     block = null;
   };
+  const closeSection = (endLine) => {
+    if (!section) return;
+    section.endLine = endLine;
+    section.raw = rawLines.slice(section.startLine, endLine).join('\n');
+  };
 
   for (let i = 0; i < visible.length; i++) {
     const line = visible[i];
@@ -75,7 +83,14 @@ export function parseRegistryStructure(markdown) {
     const h2 = line.match(H2_RE);
     if (h2) {
       closeBlock(i);
-      section = { heading: h2[1].trim(), blocks: [] };
+      closeSection(i);
+      section = {
+        heading: h2[1].trim(),
+        startLine: i,
+        endLine: visible.length,
+        raw: '',
+        blocks: [],
+      };
       sections.push(section);
       continue;
     }
@@ -93,6 +108,7 @@ export function parseRegistryStructure(markdown) {
     }
   }
   closeBlock(visible.length);
+  closeSection(visible.length);
   return sections;
 }
 

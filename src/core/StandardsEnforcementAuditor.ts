@@ -120,6 +120,14 @@ export interface RegistryProvenance {
 export interface CoverageSummary {
   total: number;
   byKind: Record<EnforcementKind, number>;
+  /** Per-family measurement parity with the source-checkout CI ratchet. */
+  areas: Record<string, {
+    total: number;
+    enforced: number;
+    byKind: Record<EnforcementKind, number>;
+    refResolutionRatio: number;
+    gaps: string[];
+  }>;
   /**
    * (ratchet + gate + lint) / total — the fraction of standards that CITE a guard whose name resolves
    * (see `enforcementBasis` — resolution is not execution). **`null` when `total` is 0**: with nothing to divide by
@@ -1333,6 +1341,35 @@ export function computeCoverage(
   const enforcedRatio = total === 0 ? null : Number((enforced / total).toFixed(4));
   const gaps = standards.filter((s) => s.enforcementKind === 'documented-only').map((s) => s.standard);
   const danglingCount = standards.reduce((n, s) => n + s.danglingRefs.length, 0);
+  const areaTallies = new Map<string, {
+    total: number;
+    enforced: number;
+    byKind: Record<EnforcementKind, number>;
+    refResolutionRatio: number;
+    gaps: string[];
+  }>();
+  for (const standard of standards) {
+    if (!areaTallies.has(standard.family)) {
+      areaTallies.set(standard.family, {
+        total: 0,
+        enforced: 0,
+        byKind: { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 },
+        refResolutionRatio: 0,
+        gaps: [],
+      });
+    }
+    const area = areaTallies.get(standard.family)!;
+    area.total += 1;
+    area.byKind[standard.enforcementKind] += 1;
+    if (standard.enforcementKind === 'ratchet' || standard.enforcementKind === 'gate' || standard.enforcementKind === 'lint') {
+      area.enforced += 1;
+    }
+    if (standard.enforcementKind === 'documented-only') area.gaps.push(standard.standard);
+  }
+  for (const area of areaTallies.values()) {
+    area.refResolutionRatio = Number((area.enforced / area.total).toFixed(4));
+  }
+  const areas = Object.fromEntries([...areaTallies.entries()].sort(([a], [b]) => a.localeCompare(b)));
 
   const { confidence: assessmentConfidence, reason: confidenceReason } =
     deriveAssessmentConfidence(
@@ -1353,6 +1390,7 @@ export function computeCoverage(
     summary: {
       total,
       byKind,
+      areas,
       enforcedRatio,
       refResolutionRatio: enforcedRatio,
       gaps,
@@ -1420,6 +1458,7 @@ export function unusableCoverageReport(
     summary: {
       total: 0,
       byKind: { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 },
+      areas: {},
       enforcedRatio: null,
       refResolutionRatio: null,
       gaps: [],

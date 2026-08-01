@@ -71,13 +71,32 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      # Pure node stdlib — no install/build needed (cartographer-conformance-audit
-      # spec #3 Tier-3 ratchet). For each constitutional standard in
+      - run: npm ci --ignore-scripts
+      # The shared YAML parser gives the Root self-wiring check semantic workflow
+      # validation rather than a quote/comment-bypassable text approximation.
+      # No build is needed (cartographer-conformance-audit spec #3 Tier-3 ratchet).
+      # For each constitutional standard in
       # docs/STANDARDS-REGISTRY.md, verify the structural guard its prose names
-      # exists on disk. Floor on the enforced ratio ships loose (ratio>=0, ratcheted
-      # up as gaps close) + a hard ZERO ceiling on dangling refs (a standard must
+      # exists on disk. Aggregate and per-family ratio floors ratchet as gaps close;
+      # content-bound per-family audit records fail when a changed area has not been
+      # re-audited. A hard ZERO ceiling remains on dangling refs (a standard must
       # never cite a guard that doesn't exist — a broken guarantee).
+      - name: Resolve protected-base area ledger
+        id: area-audit-base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}
+        run: |
+          git cat-file -e "$BASE_SHA^{commit}"
+          if git cat-file -e "$BASE_SHA:docs/standards-registry-area-audits.json"; then
+            git show "$BASE_SHA:docs/standards-registry-area-audits.json" > "$RUNNER_TEMP/standards-area-audits-base.json"
+            echo "required=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "required=0" >> "$GITHUB_OUTPUT"
+          fi
       - run: node scripts/standards-coverage.mjs --check
+        env:
+          STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json
+          STANDARDS_AREA_AUDIT_BASE_REQUIRED: ${{ steps.area-audit-base.outputs.required }}
       - name: Migration consumer lockstep
         run: node scripts/lint-migration-consumer-completeness.js --diff-base "${{ github.event.pull_request.base.sha || github.event.before }}"
       - name: Upload coverage report
@@ -87,6 +106,8 @@ jobs:
           name: standards-coverage
           path: |
             .instar/standards-coverage.json
+          include-hidden-files: true
+          if-no-files-found: error
 
   lint:
     name: Type Check
