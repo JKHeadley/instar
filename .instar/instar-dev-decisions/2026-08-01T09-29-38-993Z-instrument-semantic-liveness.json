@@ -1,0 +1,36 @@
+{
+  "ts": "2026-08-01T09:29:38.993Z",
+  "slug": "instrument-semantic-liveness",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 253,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/intent.ts",
+      "src/core/InstrumentAssessment.ts",
+      "src/core/IntentDriftDetector.ts",
+      "src/core/types.ts",
+      "src/index.ts",
+      "src/scheduler/JobScheduler.ts"
+    ],
+    "addedLines": 227,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The script retry edge carries one episode counter through all six declared delays; the sixth retry exhausts the episode and leaves no timer, proving a steady-state bound and settling brake under sustained failure."
+    },
+    "component": "JobScheduler"
+  },
+  "verdict": "pass"
+}

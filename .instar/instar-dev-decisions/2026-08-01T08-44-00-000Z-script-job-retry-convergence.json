@@ -1,0 +1,30 @@
+{
+  "ts": "2026-08-01T08:44:00.000Z",
+  "slug": "script-job-retry-convergence",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "changes scheduler retry lifecycle",
+    "fixes a live unbounded self-action episode"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 142,
+  "causalAutopsy": {
+    "trigger": "a script subprocess exits nonzero",
+    "feedbackEdge": "the retry trigger cleared retryState before the same failure rescheduled itself",
+    "unboundedShape": "every retry re-entered attempt one and scheduled another one-minute retry"
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "component": "script-job-retry",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/job-retry.test.ts",
+      "howCaught": "The persistent-failure regression holds one cron episode under sustained pressure, proves the counter advances through all six widening delays, and proves steady-state settlement with no seventh self-action until a new cron window."
+    }
+  },
+  "verdict": "pass"
+}

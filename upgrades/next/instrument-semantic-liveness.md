@@ -1,0 +1,43 @@
+# Instruments now report what they actually measured
+
+<!-- bump: patch -->
+
+## What Changed
+
+Recurring script instruments can now publish a validated assessed/unassessable
+report with their measured sample, full population, exclusions, and coverage.
+The scheduler preserves this report without guessing from repeated output or
+process exit status. Persistently failing scripts now exhaust six widening
+retries and settle until the next scheduled window.
+
+Alignment scoring now uses one common measurable cohort for every component.
+Legacy missing or qualitative confidence rows remain visible as exclusions but
+no longer prevent valid new decisions from producing a grade.
+
+## What to Tell Your User
+
+Monitoring can now distinguish “the check ran,” “the world was measurable,” and
+“the measured contract passed.” An offline peer no longer masquerades as a
+delivery-protocol failure, and old malformed journal rows no longer keep the
+alignment grade dark for a month. Coverage remains explicit, so partial evidence
+cannot look complete.
+
+## Summary of New Capabilities
+
+- Source-reported assessed/unassessable script-job state with validated counts.
+- Alignment sample/population/exclusion coverage on the API and CLI.
+- One common denominator across every alignment component.
+- Bounded script retries that stop after the declared six-step episode.
+- No generic constant-output detector and no false-positive N threshold.
+
+## Evidence
+
+- `tests/unit/InstrumentAssessment.test.ts`
+- `tests/unit/JobScheduler-script-job.test.ts`
+- `tests/unit/job-retry.test.ts`
+- `tests/unit/alignment-score-not-assessed.test.ts`
+- Live Echo alignment changed from N/A to an assessed C using 10 measurable
+  rows out of 40, with all 30 exclusions published.
+- Live Echo delivery probing classified an HTTP 530 gateway response as
+  unavailable, reported 50% coverage, emitted no contract finding, and exited
+  successfully.

@@ -128,7 +128,7 @@ describe('alignmentScore — absence must not render as a bad grade', () => {
     expect(s.assessable).toBe(true);
   });
 
-  it('REGRESSION: a populated journal with string confidence is not graded F', () => {
+  it('REGRESSION: a population with no measurable confidence is not graded F', () => {
     fs.writeFileSync(
       path.join(dir, 'decision-journal.jsonl'),
       JSON.stringify({
@@ -142,7 +142,11 @@ describe('alignmentScore — absence must not render as a bad grade', () => {
 
     const s = detector.alignmentScore();
 
-    expect(s.sampleSize).toBe(1);
+    expect(s.sampleSize).toBe(0);
+    expect(s.populationSize).toBe(1);
+    expect(s.excludedSampleSize).toBe(1);
+    expect(s.exclusions).toEqual({ missingConfidence: 0, invalidConfidence: 1 });
+    expect(s.sampleCoverage).toBe(0);
     expect(s.assessable).toBe(false);
     expect(s.grade).toBe('N/A');
     expect(s.grade).not.toBe('F');
@@ -152,6 +156,54 @@ describe('alignmentScore — absence must not render as a bad grade', () => {
     expect(Number.isFinite(s.components.confidenceLevel)).toBe(true);
     expect(s.summary).toMatch(/invalid confidence/i);
     expect(JSON.stringify(s)).not.toContain('null');
+  });
+
+  it('REGRESSION: legacy bad rows cannot keep valid new input dark', () => {
+    const rows = [
+      {
+        timestamp: new Date().toISOString(),
+        sessionId: SESSION,
+        decision: 'legacy invalid row',
+        principle: 'speed',
+        confidence: 'high',
+        conflict: true,
+      },
+      {
+        timestamp: new Date().toISOString(),
+        sessionId: SESSION,
+        decision: 'legacy missing row',
+        principle: 'speed',
+        conflict: true,
+      },
+      {
+        timestamp: new Date().toISOString(),
+        sessionId: SESSION,
+        decision: 'measurable row',
+        principle: 'Structure > Willpower',
+        confidence: 0.9,
+        conflict: false,
+      },
+    ];
+    fs.writeFileSync(
+      path.join(dir, 'decision-journal.jsonl'),
+      rows.map(row => JSON.stringify(row)).join('\n') + '\n',
+    );
+
+    const s = detector.alignmentScore();
+
+    expect(s.assessable).toBe(true);
+    expect(s.grade).not.toBe('N/A');
+    expect(s.sampleSize).toBe(1);
+    expect(s.populationSize).toBe(3);
+    expect(s.excludedSampleSize).toBe(2);
+    expect(s.exclusions).toEqual({ missingConfidence: 1, invalidConfidence: 1 });
+    expect(s.sampleCoverage).toBeCloseTo(1 / 3);
+    // The common cohort applies to every component: excluded conflicts and
+    // principles cannot leak back into a differently-denominated component.
+    expect(s.components.conflictFreedom).toBe(100);
+    expect(s.components.confidenceLevel).toBe(90);
+    expect(s.components.principleConsistency).toBe(100);
+    expect(s.summary).toMatch(/1\/3 measurable, 2 excluded/);
   });
 
   it('legacy numeric strings retain their unambiguous numeric meaning', () => {
@@ -169,6 +221,10 @@ describe('alignmentScore — absence must not render as a bad grade', () => {
     const s = detector.alignmentScore();
 
     expect(s.assessable).toBe(true);
+    expect(s.sampleSize).toBe(1);
+    expect(s.populationSize).toBe(1);
+    expect(s.excludedSampleSize).toBe(0);
+    expect(s.sampleCoverage).toBe(1);
     expect(s.components.confidenceLevel).toBe(80);
     expect(s.grade).not.toBe('N/A');
   });
