@@ -221,6 +221,15 @@ describe('the advance route records the evidence it validated', () => {
 describe('the lazy merged-state reconciler does not invent a verdict', () => {
   const src = () => stripComments(fs.readFileSync(ROUTES, 'utf-8'));
 
+  it('selects evidence-bearing merged rows, not pre-merge building rows', () => {
+    const s = src();
+    const callIdx = s.indexOf('verifyMergedItemsViaGit(');
+    expect(callIdx, 'the reconciler callsite must exist').toBeGreaterThan(0);
+    const selection = s.slice(Math.max(0, callIdx - 2600), callIdx);
+    expect(selection).toMatch(/pipelineStage\s*===\s*['"]merged['"]/);
+    expect(selection).not.toMatch(/pipelineStage\s*===\s*['"]building['"]/);
+  });
+
   it('demotes to regressed ONLY on membership of the regressed set', () => {
     const s = src();
     const idx = s.indexOf('verifyMergedItemsViaGit(');
