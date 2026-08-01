@@ -18017,14 +18017,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const snap = engine.snapshot();
     res.json({
       enabled: true,
+      dryRun: snap.dryRun,
       paused: snap.paused,
       tenure: snap.tenure,
+      tenureStartedAt: snap.tenureStartedAt,
       counts: snap.counts,
       counters: snap.counters,
+      // Meta counters are never reset on holder change. Naming the scope keeps
+      // tenure adjacency from implying a per-tenure window.
+      countersScope: 'store-lifetime',
       held: snap.heldSeqs,
+      shadowCustody: snap.shadowCustody,
       // §1 storage posture as a live field (round-8 external): this build
       // detects nothing beyond "local filesystem present", reported honestly.
       custodyDurability: 'unknown',
+      // The status above is a placeholder, not a measurement which happened
+      // to return unknown. Keep that distinction machine-readable.
+      custodyDurabilityDetectionAvailable: false,
       oldestQueuedAgeMs: snap.counts.oldestQueuedAt ? Math.max(0, Date.now() - Date.parse(snap.counts.oldestQueuedAt)) : null,
     });
   });

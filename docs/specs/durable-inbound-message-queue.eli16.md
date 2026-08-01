@@ -78,7 +78,15 @@ check that refuses to run the queue half-configured, ever.
 ## What changes for you
 
 Nothing, until we turn it on — it ships dark, then goes through dry-run on the dev
-agents first, like everything else. Once live: fewer "machine moved for no reason"
+agents first, like everything else. Dry-run now rehearses more than the router's
+decision: it writes the candidate message through the real on-disk queue machinery
+into a separate practice database, reads it back, records whether that worked, and
+then securely removes it. The practice database can never send a message or claim
+that delivery is safe; it exists only to prove the storage step before we trust the
+live queue. The status page also says plainly that the deeper disk-durability detector
+has not been built yet, so an "unknown" result cannot be mistaken for a measurement.
+
+Once live: fewer "machine moved for no reason"
 moments, no more hot-replay loops during conversation moves, and a guarantee that a
 message I've accepted is a message that gets handled — or you get told. The main
 tradeoff is honest: on a genuinely flaky machine, replies can arrive up to ~90 seconds

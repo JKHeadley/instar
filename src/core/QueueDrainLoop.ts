@@ -89,6 +89,9 @@ export interface LossItem {
 
 export interface QueueDrainLoopDeps {
   store: PendingInboundStore;
+  /** Non-authoritative store used only while qcfg.dryRun is true. It shares
+   * the production schema/durability settings but is never drained. */
+  shadowStore?: PendingInboundStore;
   qcfg: InboundQueueConfig;
   hcfg: HoldForStabilityConfig;
   selfMachineId: string;
@@ -160,11 +163,15 @@ export class QueueDrainLoop {
   private tickCount = 0;
   /** Current tenure id — refreshed by observeLeaseClaim at lease acquisition. */
   private tenure: string | null = null;
+  private tenureStartedAt: string | null = null;
+  private shadowAttempt = 0;
 
   constructor(deps: QueueDrainLoopDeps) {
     this.d = deps;
     this.rebuildCaches();
     this.tenure = deps.store.currentTenure(deps.selfMachineId);
+    this.tenureStartedAt = deps.store.currentTenureStartedAt();
+    this.recoverDryRunShadowCustody();
   }
 
   // ── Boot-rebuilt caches ─────────────────────────────────────────────
@@ -191,7 +198,12 @@ export class QueueDrainLoop {
   /** Call at every lease ACQUISITION (not renewal) with the ref-tip holder
    *  observed at claim time. */
   onLeaseAcquired(tipHolderAtClaim: string | null): void {
-    this.tenure = this.d.store.observeLeaseClaim(this.d.selfMachineId, tipHolderAtClaim);
+    this.tenure = this.d.store.observeLeaseClaim(
+      this.d.selfMachineId,
+      tipHolderAtClaim,
+      new Date(this.d.now()).toISOString(),
+    );
+    this.tenureStartedAt = this.d.store.currentTenureStartedAt();
   }
 
   currentTenure(): string | null {
@@ -221,6 +233,7 @@ export class QueueDrainLoop {
       try {
         this.d.store.incrementCounter('wouldEnqueue');
         if (this.d.holdVerdict(msg.sessionKey) === 'hold') this.d.store.incrementCounter('wouldHold');
+        this.exerciseDryRunShadowCustody(msg, reason);
       } catch {
         try { this.d.store.incrementCounter('dryRunErrors'); } catch { /* counted best-effort */ }
       }
@@ -298,6 +311,122 @@ export class QueueDrainLoop {
       this.d.log(`[inbound-queue] post-enqueue bookkeeping failed (outcome unchanged): ${sanitizeError(err)}`);
     }
     return out;
+  }
+
+  /**
+   * Exercise the real custody transaction in a non-authoritative store, then
+   * read the committed row back before scrubbing it. The live queue remains
+   * empty and the caller still falls through exactly as dry-run requires.
+   */
+  private exerciseDryRunShadowCustody(
+    msg: {
+      sessionKey: string;
+      messageId: string;
+      payload: string;
+      senderEnvelope?: SenderEnvelope | null;
+      topicMetadata?: unknown;
+    },
+    reason: string,
+  ): void {
+    const shadow = this.d.shadowStore;
+    const nowMs = this.d.now();
+    const nowIso = new Date(nowMs).toISOString();
+    if (!shadow) {
+      this.d.store.recordDryRunShadowCustodyResult('error', nowIso);
+      this.d.store.incrementCounter('dryRunErrors');
+      return;
+    }
+
+    let seq: number | null = null;
+    try {
+      const shadowMessageId = `${msg.messageId}:dry-run-shadow:${this.d.bootSessionId}:${++this.shadowAttempt}`;
+      const out = shadow.enqueue(
+        {
+          sessionKey: msg.sessionKey,
+          messageId: shadowMessageId,
+          payload: msg.payload,
+          senderEnvelope: msg.senderEnvelope ?? null,
+          topicMetadata: msg.topicMetadata,
+          reason: `dry-run-shadow:${reason}`,
+          tenure: this.tenure,
+          nowIso,
+          monoMs: this.d.mono(),
+          bootSessionId: this.d.bootSessionId,
+          frozenAtEnqueue: false,
+        },
+        {
+          maxPerSession: this.d.qcfg.maxPerSession,
+          maxTotal: this.d.qcfg.maxTotal,
+          hardMaxTotal: this.d.qcfg.hardMaxTotal,
+          maxPayloadBytes: this.d.qcfg.maxPayloadBytes,
+        },
+      );
+      if (out.result === 'refused') {
+        this.d.store.incrementCounter('wouldRefuse');
+        this.d.store.recordDryRunShadowCustodyResult('refused', nowIso);
+        return;
+      }
+      if (out.result !== 'queued') {
+        throw new Error(`unexpected shadow enqueue result: ${out.result}`);
+      }
+      seq = out.seq;
+      const row = shadow.getRow(seq);
+      const persisted = row
+        && row.state === 'queued'
+        && row.session_key === msg.sessionKey
+        && row.message_id === shadowMessageId
+        && row.payload === msg.payload
+        && row.payload_bytes === Buffer.byteLength(msg.payload, 'utf-8');
+      if (!persisted) throw new Error('shadow custody row did not read back exactly');
+
+      // Record proof BEFORE cleanup. A crash in the gap leaves the shadow row
+      // for constructor recovery, rather than erasing the only evidence.
+      this.d.store.recordDryRunShadowCustodyResult('verified', nowIso);
+      if (!shadow.transition(seq, 'queued', 'delivered', { nowIso, terminalReason: 'dry-run-shadow-verified' })) {
+        throw new Error('shadow custody cleanup transition lost its row');
+      }
+      shadow.pruneShadowTerminal(new Date(nowMs + 1).toISOString());
+    } catch (err) {
+      this.d.store.recordDryRunShadowCustodyResult('error', nowIso);
+      this.d.store.incrementCounter('dryRunErrors');
+      this.d.log(`[inbound-queue] dry-run shadow custody failed: ${sanitizeError(err)}`);
+      if (seq !== null) {
+        try {
+          const row = shadow.getRow(seq);
+          if (row && (row.state === 'queued' || row.state === 'claimed')) {
+            shadow.transition(seq, row.state, 'expired', { nowIso, terminalReason: 'dry-run-shadow-error' });
+          }
+          shadow.pruneShadowTerminal(new Date(nowMs + 1).toISOString());
+        } catch { /* @silent-fallback-ok — the isolated shadow row is recovered and scrubbed on the next boot */ }
+      }
+    }
+  }
+
+  /** A crash between shadow commit and cleanup is itself strong persistence
+   * evidence. Count it, scrub content, and never dispatch the shadow row. */
+  private recoverDryRunShadowCustody(): void {
+    if (!this.d.qcfg.dryRun || !this.d.shadowStore) return;
+    const shadow = this.d.shadowStore;
+    const nowMs = this.d.now();
+    const nowIso = new Date(nowMs).toISOString();
+    try {
+      for (const row of shadow.listNonTerminal()) {
+        const survived = row.payload !== null && Buffer.byteLength(row.payload, 'utf-8') === row.payload_bytes;
+        this.d.store.recordDryRunShadowCustodyResult(survived ? 'recovered-after-restart' : 'error', nowIso);
+        if (!survived) this.d.store.incrementCounter('dryRunErrors');
+        shadow.transition(row.enqueue_seq, row.state, 'expired', {
+          nowIso,
+          terminalReason: survived ? 'dry-run-shadow-recovered' : 'dry-run-shadow-recovery-invalid',
+        });
+      }
+      shadow.pruneShadowTerminal(new Date(nowMs + 1).toISOString());
+    } catch (err) {
+      try {
+        this.d.store.recordDryRunShadowCustodyResult('error', nowIso);
+        this.d.store.incrementCounter('dryRunErrors');
+      } catch { /* @silent-fallback-ok — the primary evidence store is also unavailable; dry-run remains fail-open */ }
+      this.d.log(`[inbound-queue] dry-run shadow recovery failed: ${sanitizeError(err)}`);
+    }
   }
 
   private pruneRefusalCache(nowMs: number): void {
@@ -918,7 +1047,10 @@ export class QueueDrainLoop {
     counters: Record<string, number>;
     heldSeqs: number;
     paused: boolean;
+    dryRun: boolean;
     tenure: string | null;
+    tenureStartedAt: string | null;
+    shadowCustody: ReturnType<PendingInboundStore['dryRunShadowCustodyEvidence']> & { available: boolean };
   } {
     const counterKeys = [
       'wouldEnqueue', 'wouldHold', 'wouldRefuse', 'dryRunErrors',
@@ -926,6 +1058,8 @@ export class QueueDrainLoop {
       'holdBypassedByAttemptsCap', 'holdsStarted', 'holdsRecoveredInPlace',
       'holdsReleasedToFailover:budget-exhausted', 'holdsReleasedToFailover:flap-forced',
       'holdsReleasedToFailover:maxHeldTotal-refused', 'budgetOverrunHolds',
+      'shadowCustodyVerified', 'shadowCustodyRefused', 'shadowCustodyError',
+      'shadowCustodyRecoveredAfterRestart',
     ];
     const counters: Record<string, number> = {};
     for (const k of counterKeys) counters[k] = this.d.store.getCounter(k);
@@ -934,7 +1068,13 @@ export class QueueDrainLoop {
       counters,
       heldSeqs: this.heldSeqs.size,
       paused: this.d.store.isPaused(),
+      dryRun: this.d.qcfg.dryRun,
       tenure: this.tenure,
+      tenureStartedAt: this.tenureStartedAt,
+      shadowCustody: {
+        available: this.d.qcfg.dryRun && this.d.shadowStore !== undefined,
+        ...this.d.store.dryRunShadowCustodyEvidence(),
+      },
     };
   }
 }

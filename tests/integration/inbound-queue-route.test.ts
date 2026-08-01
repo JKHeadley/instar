@@ -33,9 +33,12 @@ describe('Durable Inbound Message Queue — GET /pool/queue', () => {
   let dir: string;
   let server: Server;
   let store: PendingInboundStore | null = null;
+  let shadowStore: PendingInboundStore | null = null;
 
   afterEach(async () => {
     await server.close();
+    shadowStore?.close();
+    shadowStore = null;
     store?.close();
     store = null;
     SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/inbound-queue-route.test.ts' });
@@ -107,7 +110,9 @@ describe('Durable Inbound Message Queue — GET /pool/queue', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.enabled).toBe(true);
+    expect(body.dryRun).toBe(false);
     expect(body.tenure).toBe('m_a#1');
+    expect(Date.parse(body.tenureStartedAt)).not.toBeNaN();
     expect(body.paused).toBe(false);
     // Both drained to delivered (clean): delivered24h counts them; the
     // unconfirmed class is empty and EXCLUDED from delivered24h by contract.
@@ -115,7 +120,10 @@ describe('Durable Inbound Message Queue — GET /pool/queue', () => {
     expect(body.counts.deliveredUnconfirmed24h).toBe(0);
     expect(body.counts.queued).toBe(0);
     expect(body.counters.possiblyNotInjected).toBe(0);
+    expect(body.countersScope).toBe('store-lifetime');
     expect(body.custodyDurability).toBe('unknown');
+    expect(body.custodyDurabilityDetectionAvailable).toBe(false);
+    expect(body.shadowCustody.available).toBe(false);
   });
 
   it('delivered24h EXCLUDES possibly-not-injected rows (success never overstates)', async () => {
@@ -139,5 +147,48 @@ describe('Durable Inbound Message Queue — GET /pool/queue', () => {
     const body = await res.json();
     expect(body.counts.delivered24h).toBe(1); // m3 only
     expect(body.counts.deliveredUnconfirmed24h).toBe(1); // m4
+  });
+
+  it('dry-run surfaces shadow custody evidence while the authoritative queue stays empty', async () => {
+    store = PendingInboundStore.open('echo', dir);
+    shadowStore = PendingInboundStore.openShadow('echo', dir);
+    const engine = new QueueDrainLoop({
+      store,
+      shadowStore,
+      qcfg: { ...DEFAULT_INBOUND_QUEUE_CONFIG, enabled: true, dryRun: true },
+      hcfg: { ...DEFAULT_HOLD_FOR_STABILITY_CONFIG, enabled: false },
+      selfMachineId: 'm_a',
+      holdsLease: () => true,
+      isStopped: () => false,
+      dispatchInbound: async () => ({ kind: 'failed', error: 'must-not-dispatch' }),
+      forceReplace: async () => false,
+      holdVerdict: () => 'deliver',
+      clearPisRecord: () => {},
+      reportLoss: () => {},
+      reportPossiblyNotInjected: () => {},
+      log: () => {},
+      reportDegradation: () => {},
+      now: () => Date.parse('2026-07-31T20:00:00.000Z'),
+      mono: () => 1,
+      bootSessionId: 'boot-dry',
+    });
+    engine.onLeaseAcquired(null);
+    expect(engine.enqueueLive({ sessionKey: '505', messageId: 'm5', payload: 'shadow me' }, 'blocked').result).toBe('refused');
+    await start(engine);
+
+    const res = await fetch(`${server.url}/pool/queue`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.dryRun).toBe(true);
+    expect(body.counts.queued).toBe(0);
+    expect(body.shadowCustody).toMatchObject({
+      available: true,
+      verified: 1,
+      refused: 0,
+      errors: 0,
+      lastVerifiedAt: '2026-07-31T20:00:00.000Z',
+    });
+    expect(body.counters.shadowCustodyVerified).toBe(1);
+    expect(body.countersScope).toBe('store-lifetime');
   });
 });

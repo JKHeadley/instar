@@ -36,10 +36,20 @@ dry-run) it reports:
 - **Durable counters** — including the dry-run promotion evidence
   (`wouldEnqueue`, `wouldHold`, `wouldRefuse`), `possiblyNotInjected`,
   `holdBypassedByAttemptsCap`, `orderingViolations`, and `mirrorDrift`.
+- **Shadow custody** — in dry-run, the message is committed through the same
+  FULL-sync SQLite schema in a separate store, read back, and scrubbed without
+  entering the dispatchable queue. The evidence block reports verified writes,
+  policy refusals, errors, crash-recovered writes, and first/last timestamps.
 - **Hold/flap state** — which machines are currently held against, and any
   machine flapping often enough that holds are disabled for it.
 - **Tenure** — the queue's custody generation (advances on real
-  holder changes, never on routine lease renewals).
+  holder changes, never on routine lease renewals) and `tenureStartedAt`. A
+  legacy tenure whose original start predates this field reports `null` rather
+  than inventing a boot-time value. `countersScope: "store-lifetime"` makes clear
+  that the adjacent counters do not reset when tenure changes.
+- **Durability posture** — `custodyDurability: "unknown"` is accompanied by
+  `custodyDurabilityDetectionAvailable: false` until an actual storage detector
+  exists. The value is explicitly a placeholder, not a measurement result.
 
 ## Loss is never silent
 

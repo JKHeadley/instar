@@ -1,0 +1,36 @@
+{
+  "ts": "2026-08-01T01:37:54.254Z",
+  "slug": "inbound-queue-shadow-custody",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 280,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PendingInboundStore.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/QueueDrainLoop.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 274,
+    "deletedLines": 6
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1079
+    ],
+    "notes": "The original durable inbound queue deliberately made dry-run counter-only and shipped custodyDurability as a constant unknown with the candour confined to a source comment. That left storage custody unexercised and measurement provenance absent at the consumer boundary. This change retains dry-run fall-through while adding isolated store evidence and explicit provenance."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

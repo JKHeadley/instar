@@ -22665,7 +22665,8 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           // ── Durable Inbound Message Queue: engine construction (gated) ──
           // Gate: pool active (this block) + mesh identity (this block) +
-          // inboundQueue.enabled + !dryRun + the six config-seam invariants.
+          // inboundQueue.enabled + the six config-seam invariants. Dry-run
+          // constructs the engine and an isolated shadow custody store.
           // A violated invariant keeps the queue OFF for the boot — one loud
           // config-error per violated inequality + one attention item, never a
           // half-configured queue (spec §Config).
@@ -22720,6 +22721,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const pisMod2 = await import('../core/PendingInjectStore.js');
                 const queuePis = new pisMod2.PendingInjectStore(path.join(config.stateDir, 'state'));
                 const store = _sweptInboundStore ?? pisStoreMod.PendingInboundStore.open(config.projectName ?? 'agent', config.stateDir);
+                let shadowStore: import('../core/PendingInboundStore.js').PendingInboundStore | undefined;
+                if (qcfg.dryRun) {
+                  try {
+                    shadowStore = pisStoreMod.PendingInboundStore.openShadow(config.projectName ?? 'agent', config.stateDir);
+                  } catch (err) {
+                    // Keep dry-run fail-open, but its API will say the shadow
+                    // exercise is unavailable and each attempted probe counts
+                    // an error. A shadow-store failure never affects dispatch.
+                    console.error(`[inbound-queue] dry-run shadow store unavailable: ${err instanceof Error ? err.message : String(err)}`);
+                  }
+                }
                 const bootSessionId = `${meshSelfId}:${Date.now()}`;
                 // §4.2 hold verdict — effective state honesty: always-'failover'
                 // when the policy is off or the queue is dry-run (unreachable
@@ -22739,6 +22751,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const stoppedTopics = new Set<string>();
                 _inboundQueue = new qdlMod.QueueDrainLoop({
                   store,
+                  shadowStore,
                   qcfg,
                   hcfg,
                   selfMachineId: meshSelfId,
