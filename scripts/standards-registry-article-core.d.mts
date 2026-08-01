@@ -8,6 +8,9 @@ export interface RegistryArticleBlock {
 
 export interface RegistrySectionBlock {
   heading: string;
+  startLine: number;
+  endLine: number;
+  raw: string;
   blocks: RegistryArticleBlock[];
 }
 

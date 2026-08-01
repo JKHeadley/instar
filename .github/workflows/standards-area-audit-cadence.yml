@@ -1,0 +1,100 @@
+name: Standards Area Audit Cadence
+
+on:
+  schedule:
+    # Weekly mechanical re-audit of every family. Elapsed age is reported, never
+    # used as a blocking proxy for semantic review quality.
+    - cron: '17 14 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: standards-area-audit-cadence
+  cancel-in-progress: false
+
+jobs:
+  standards-area-audit:
+    name: Re-audit every standards family
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci --ignore-scripts
+      - run: node scripts/standards-coverage.mjs --check
+      - name: Publish cadence summary
+        if: always()
+        run: |
+          node -e 'const fs=require("fs");const r=JSON.parse(fs.readFileSync(".instar/standards-coverage.json","utf8"));const due=r.cadence?.dueAreas??[];fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,`## Standards area audit cadence\n\n${due.length?`Review due for ${due.length} area(s) (nonblocking); see the marker-owned issue for escaped names.`:"No area review is due."}\n`);'
+      - name: Maintain nonblocking review-due issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('.instar/standards-coverage.json', 'utf8'));
+            const due = report.cadence?.dueAreas ?? [];
+            const title = '[Standards] Fundamental-area audit review due';
+            const marker = '<!-- standards-area-audit-cadence:v1 -->';
+            const safeArea = area => String(area)
+              .replace(/@/g, '@\u200b')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/[\\`*_{}[\]()#+\-.!|]/g, '\\$&')
+              .replace(/[\r\n]+/g, ' ')
+              .slice(0, 200);
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              per_page: 100,
+            });
+            const existing = issues.find(issue =>
+              !issue.pull_request &&
+              issue.user?.login === 'github-actions[bot]' &&
+              issue.title === title &&
+              issue.body?.startsWith(`${marker}\n`)
+            );
+            if (due.length > 0) {
+              const body = [
+                marker,
+                'The weekly nonblocking cadence found fundamental areas whose semantic review is due:',
+                '',
+                ...due.map(area => `- ${safeArea(area)}`),
+                '',
+                `This is a resurfacing signal, not a correctness veto. CI continues to block only stale content evidence and ratio-floor regressions.`,
+                `Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ].join('\n');
+              if (existing) {
+                await github.rest.issues.update({
+                  ...context.repo,
+                  issue_number: existing.number,
+                  state: 'open',
+                  body,
+                });
+              } else {
+                await github.rest.issues.create({ ...context.repo, title, body });
+              }
+            } else if (existing) {
+              await github.rest.issues.update({
+                ...context.repo,
+                issue_number: existing.number,
+                state: 'closed',
+                state_reason: 'completed',
+              });
+            }
+      - name: Upload per-family coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standards-area-coverage
+          path: .instar/standards-coverage.json
+          include-hidden-files: true
+          if-no-files-found: error
