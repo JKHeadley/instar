@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-01T18:11:48.841Z",
+  "slug": "safeyaml-inline-comments",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 39,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SafeYaml.ts"
+    ],
+    "addedLines": 37,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -120,7 +120,7 @@ export function parseSafeYaml(input: string): FrontmatterResult | FrontmatterErr
       if (seqLines.length > 0 && seqLines.length === childLines.filter((l) => l.trim()).length) {
         const arr: string[] = [];
         for (const sl of seqLines) {
-          const item = sl.replace(/^\s*-\s+/, '').trim();
+          const item = stripInlineComment(sl.replace(/^\s*-\s+/, '').trim()).trim();
           const v = parseScalar(item);
           if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {
             return { ok: false, error: `unsupported sequence item at "${key}"` };
@@ -152,10 +152,45 @@ export function parseSafeYaml(input: string): FrontmatterResult | FrontmatterErr
   return { ok: true, data };
 }
 
+/**
+ * Strip a YAML inline comment from a scalar value.
+ *
+ * YAML starts a comment at a `#` that is at the start of the value or preceded
+ * by whitespace, and never inside a quoted scalar. Before this existed, the
+ * parser kept the whole rest of the line, so
+ *
+ *   approved: true  # operator preapproval, topic 11960
+ *
+ * parsed as the STRING `"true  # operator preapproval, topic 11960"`, and every
+ * gate testing `data.approved === true` silently concluded the spec was NOT
+ * approved. The comment that RECORDED the approval was what voided it.
+ *
+ * Deliberately conservative — a `#` not preceded by whitespace is part of the
+ * value (`url: http://host/p#frag`), and a `#` inside quotes is content.
+ */
+function stripInlineComment(raw: string): string {
+  let inStr: string | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inStr) {
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inStr = ch;
+      continue;
+    }
+    if (ch === '#' && (i === 0 || /\s/.test(raw[i - 1]))) {
+      return raw.slice(0, i).replace(/\s+$/, '');
+    }
+  }
+  return raw;
+}
+
 function parseInlineValue(
   raw: string
 ): { ok: true; value: unknown } | { ok: false; error: string } {
-  const trimmed = raw.trim();
+  const trimmed = stripInlineComment(raw.trim()).trim();
   if (trimmed.startsWith('!')) {
     return { ok: false, error: 'YAML tags are not permitted' };
   }
