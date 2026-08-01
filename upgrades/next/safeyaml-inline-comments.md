@@ -1,6 +1,5 @@
 # Upgrade Guide — vNEXT
 
-<!-- internal-only -->
 <!-- bump: patch -->
 
 ## What Changed
@@ -20,6 +19,25 @@ The stripping is deliberately conservative, following the YAML rule rather than 
 Ordering note: the strip runs *before* the tag / anchor / flow-sequence checks in `parseInlineValue`, so `tags: [a, b]  # note` no longer fails the `endsWith(']')` test and fall through to being read as a plain string. It cannot shadow the security rejections, because a value that *starts* with `!`, `&` or `*` is unaffected by comment-stripping.
 
 Measured on `main` (53c2140b): 559 specs carry frontmatter, 522 carry an `approved:` line, and **9 of those carry an inline comment on it** — 1.7%. Those nine are not a random sample; they are the specs whose approvals were documented most carefully, which is what makes the failure mode worth closing at the parser rather than by hand-editing nine files.
+
+
+## What to Tell Your User
+
+Nothing changes in how you work with me, and there is nothing for you to do.
+
+If you have ever approved a design document by marking it approved and writing a short note on the same line saying who approved it and when, that note quietly cancelled the approval. The part of me that checks for approvals read the whole line as text instead of reading the yes-or-no answer, so it decided the document was never approved. The document said approved on screen and the checker disagreed, which made it look like nothing was wrong anywhere.
+
+Nine documents were sitting in that state. They were not a random nine out of the five hundred that carry an approval mark. They were the ones where somebody took the trouble to record who approved it and when, which is the careful thing to do and was exactly what broke them.
+
+That is now fixed, so those approvals count again and any future one written the same way will work. A note written next to a setting no longer swallows the setting.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| An approval marked with an explanatory note on the same line now counts as a real approval | Nothing to do — write the note however reads best, it no longer cancels the setting |
+| Notes written beside any setting in a document header are ignored rather than swallowing the value | Nothing to do — applies to every setting, not only approvals |
+
 
 ## Evidence
 
