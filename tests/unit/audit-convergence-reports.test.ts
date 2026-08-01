@@ -104,7 +104,7 @@ describe('audit-convergence CI ratchet', () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-change-context-'));
     const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
     try {
-      git('init', '-q');
+      git('init', '-q', '-b', 'main');
       git('config', 'user.email', 'audit@example.test');
       git('config', 'user.name', 'audit-test');
       fs.mkdirSync(path.join(repo, 'docs'), { recursive: true });
@@ -203,7 +203,7 @@ New findings this round: 0
     };
 
     try {
-      git('init', '-q');
+      git('init', '-q', '-b', 'main');
       git('config', 'user.email', 'audit@example.test');
       git('config', 'user.name', 'audit-test');
       fs.mkdirSync(path.join(repo, 'docs', 'audits'), { recursive: true });
