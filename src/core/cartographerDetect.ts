@@ -117,6 +117,12 @@ export interface DetectFreshness {
 export interface DetectResult {
   refused: boolean;
   refusalReason?: DetectRefusalReason;
+  /**
+   * The freshly-scaffolded filesystem hierarchy was counted, but the project
+   * root had no readable Git HEAD. Only snapshotOnly population may set this;
+   * the authoring sweep still refuses because it requires Git OIDs.
+   */
+  structuralOnly?: boolean;
   /** Ordered, BOUNDED (≤ maxCandidates) author candidates (deepest/anti-starvation first). */
   candidates: string[];
   /** Count of dirs whose `staleSincePass` was incremented + persisted this pass. */
@@ -138,6 +144,7 @@ export interface DetectResult {
 /** The detect-health enum carried on the snapshot + both read routes. */
 export type LastDetectStatus =
   | 'ok'
+  | 'structural-only'
   | 'timeout'
   | 'worker-start-failed'
   | 'index-too-large'
@@ -430,6 +437,76 @@ export async function runDetect(
   try {
     current = await readCurrentOids(input.projectDir, input.gitMaxBuffer, undefined, hooks);
   } catch {
+    if (input.snapshotOnly) {
+      // Agent homes are legitimate filesystem roots even when they are not
+      // themselves Git repositories (they may contain several worktrees). The
+      // boot scaffold immediately above rebuilt this index from current fs
+      // truth, so a missing HEAD must not erase its real structural count. We
+      // can state authored-vs-never-authored exactly from the index, but cannot
+      // claim any authored summary fresh or stale without Git OIDs; keep those
+      // counts at zero and freshness null. The cost-bearing author sweep never
+      // takes this branch and continues to refuse on the same Git failure.
+      const entries = Object.entries(index.nodes);
+      const staleSample: { path: string; status: StalenessStatus }[] = [];
+      const sampleCap = Math.max(0, input.snapshotSampleMax);
+      let authoredCount = 0;
+      let neverAuthored = 0;
+      let neverWithin = 0;
+      let neverPast = 0;
+      let authorFailed = 0;
+
+      for (const [p, entry] of entries) {
+        if (entry.authorFailed === true) authorFailed += 1;
+        if (entry.codeHash != null) {
+          authoredCount += 1;
+          continue;
+        }
+        neverAuthored += 1;
+        const firstSeen = entry.firstSeenAt ? Date.parse(entry.firstSeenAt) : input.nowMs;
+        if (Number.isFinite(firstSeen) && input.nowMs - firstSeen > input.graceMs) neverPast += 1;
+        else neverWithin += 1;
+        if (staleSample.length < sampleCap && !isSecretBearingPath(p)) {
+          staleSample.push({ path: p, status: 'never-authored' });
+        }
+      }
+
+      if (instr) {
+        instr.candidateHeapPeak = 0;
+        instr.starvedHeapPeak = 0;
+        instr.nodeFileReads = 0;
+      }
+      return {
+        refused: false,
+        structuralOnly: true,
+        candidates: [],
+        deferredApplied: 0,
+        counts: {
+          nodeCount: entries.length,
+          authoredCount,
+          neverAuthored,
+          stale: 0,
+          pathGone: 0,
+          generatedAt: index.generatedAt ?? null,
+          headSha: null,
+        },
+        freshness: {
+          nodeCount: entries.length,
+          authorableCount: entries.length,
+          freshCount: 0,
+          staleCount: 0,
+          neverAuthoredCount: neverAuthored,
+          neverAuthoredWithinGrace: neverWithin,
+          neverAuthoredPastGrace: neverPast,
+          authorFailedCount: authorFailed,
+          freshRatio: null,
+          generatedAt: index.generatedAt ?? null,
+        },
+        revalidationSample: [],
+        staleSample,
+        staleTotal: neverAuthored,
+        durationMs: Date.now() - startedAt,
+      };
+    }
     // A git read failure must be a NAMED refusal — never "every node path-gone"
     // (that would silently mark the whole tree stale and author churn).
     return refuse('detect-git-error');
@@ -604,7 +681,7 @@ export function readSnapshot(snapshotPath: string): CartographerSnapshot | null 
 }
 
 export function detectStatus(r: DetectResult): LastDetectStatus {
-  if (!r.refused) return 'ok';
+  if (!r.refused) return r.structuralOnly ? 'structural-only' : 'ok';
   switch (r.refusalReason) {
     case 'detect-timeout': return 'timeout';
     case 'detect-worker-start-failure': return 'worker-start-failed';
@@ -641,7 +718,7 @@ export function persistDetectSnapshot(snapshotPath: string, r: DetectResult, now
       staleSample: r.staleSample,
       staleTotal: r.staleTotal,
       staleSampleTruncated: r.staleSample.length < r.staleTotal,
-      lastDetectStatus: 'ok',
+      lastDetectStatus: status,
       lastDetectAt: nowIso,
       durationMs: r.durationMs,
     };

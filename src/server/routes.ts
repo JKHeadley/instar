@@ -7127,7 +7127,10 @@ export function createRoutes(ctx: RouteContext): Router {
     const currentHead = ctx.cartographer ? ctx.cartographer.currentHeadShort() : null;
     const headMoved = snap.headSha != null && currentHead != null && snap.headSha !== currentHead;
     const ageMs = snap.generatedAt ? Math.max(0, Date.now() - Date.parse(snap.generatedAt)) : null;
-    const failing = snap.lastDetectStatus !== 'ok';
+    // `structural-only` is a usable, current filesystem snapshot from a root
+    // without Git metadata. It deliberately reports freshness null and a null
+    // headSha, but its hierarchy/counts are not a failed detect.
+    const failing = snap.lastDetectStatus !== 'ok' && snap.lastDetectStatus !== 'structural-only';
     return {
       snapshot: failing ? 'detect-failing' : 'present',
       snapshotStale: headMoved || failing,

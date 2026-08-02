@@ -161,6 +161,37 @@ describe('cartographerDetect.runDetect — snapshot sample + freshness', () => {
     expect(fs.readFileSync(indexPath, 'utf8')).toBe(before);
   });
 
+  it('snapshotOnly preserves structural truth at a filesystem root without Git metadata', async () => {
+    writeIndex({
+      '': { kind: 'dir', hasChildren: true },
+      'src': { kind: 'dir', hasChildren: true },
+      'src/a.ts': { kind: 'file' },
+      'src/authored.ts': { kind: 'file', codeHash: 'prior-oid', summaryUpdatedAt: '2026-01-01T00:00:00.000Z' },
+    });
+    const before = fs.readFileSync(indexPath, 'utf8');
+    const nonGit = fs.mkdtempSync(path.join(os.tmpdir(), 'carto-nogit-snapshot-'));
+    try {
+      const r = await runDetect(input({ projectDir: nonGit, snapshotOnly: true, graceMs: 60_000 }));
+
+      expect(r.refused).toBe(false);
+      expect(r.structuralOnly).toBe(true);
+      expect(r.counts.nodeCount).toBe(4);
+      expect(r.counts.authoredCount).toBe(1);
+      expect(r.counts.neverAuthored).toBe(3);
+      expect(r.freshness.nodeCount).toBe(4);
+      expect(r.freshness.neverAuthoredCount).toBe(3);
+      expect(r.freshness.freshCount).toBe(0);
+      expect(r.freshness.staleCount).toBe(0);
+      expect(r.freshness.freshRatio).toBeNull();
+      expect(r.staleTotal).toBe(3);
+      expect(r.candidates).toEqual([]);
+      expect(r.deferredApplied).toBe(0);
+      expect(fs.readFileSync(indexPath, 'utf8')).toBe(before);
+    } finally {
+      fs.rmSync(nonGit, { recursive: true, force: true });
+    }
+  });
+
   it('stale sample is bounded by snapshotSampleMax and excludes secret-bearing paths', async () => {
     const nodes: Record<string, { kind: 'file' }> = { 'src/.env': { kind: 'file' }, 'src/secrets.ts': { kind: 'file' } };
     for (let i = 0; i < 20; i++) nodes[`src/f${i}.ts`] = { kind: 'file' };

@@ -1,0 +1,33 @@
+{
+  "ts": "2026-08-02T05:02:35.449Z",
+  "slug": "cartographer-non-git-structural-snapshot",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 88,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/cartographerDetect.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 84,
+    "deletedLines": 4
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      1831
+    ],
+    "notes": "Live verification exposed that the original boot population collapsed its freshly scaffolded filesystem counts when the agent-home root had no Git HEAD."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
