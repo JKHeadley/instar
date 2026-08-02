@@ -110,6 +110,11 @@ The earliest valid user-grounded topic goal by conversation order becomes
 never rewrite it. If concurrent extraction makes a later turn finish first, an
 earlier valid completion may correct only the anchor monotonically backward;
 the stale projection itself cannot overwrite the newer topic/arc/work views.
+This permanence is deliberate: an explicit later correction belongs in the
+evolving topic layer and evidence refs rather than rewriting the historical
+record of where the topic began. A future correction mechanism would need to
+append a visible correction record while retaining origin, not mutate the
+anchor in place.
 
 The anchor lives in the additive `awareness` block, not in `refs`. It therefore
 has no confidence tier and never enters the kind-based goal decay path or the

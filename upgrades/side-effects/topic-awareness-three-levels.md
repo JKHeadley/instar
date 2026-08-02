@@ -267,6 +267,11 @@ signal/authority analysis.
   repository lint, and build all pass. The lint command reports only its
   pre-existing report-only controller/parser inventory notices; the local
   build reports only the expected missing release-signing key warning.
+- CI follow-through: the first run exposed `TopicAwareness` as undocumented in
+  the structural docs inventory, lowering class coverage below its ratcheted
+  floor. The public North Star explanation and subsystem inventory now both
+  name and explain the class; the same coverage gate passes locally without
+  weakening its floor.
 
 ---
 
