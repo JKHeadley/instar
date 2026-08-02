@@ -86,6 +86,7 @@ This adds no static heuristic at a competing-signals judgment point. Root identi
 - **Feedback loops:** none. The assessment reads filesystem/Git facts and writes no authority state.
 - **Existing infrastructure:** Git reads use `SafeGitExecutor`'s closed source-tree read-tier allowance, so the authority can inspect an Instar checkout without weakening destructive source-tree protection. Fetch remotes are read with the allowlisted `git remote -v` rather than general Git-config access. Topic bindings are modeled as provenance inputs rather than duplicated in a new configuration store; omitted namespaces preserve the existing Cartographer storage location byte-for-byte.
 - **Decision observability:** every authority outcome passes through one structured recorder chokepoint. Missing/broken recording fails the call instead of returning an unobservable trust decision; the live durable sink is deliberately deferred to the 11B-2 consumer seam because this PR has no runtime construction.
+- **Git-read degradation:** the Git helper's null return is explicitly exempted from the silent-fallback scanner because null is not an unreported substitute here: it becomes structured authority evidence and every resulting structural-only/refused decision must be recorded. The scanner exemption changes no behavior.
 - **MAINTAIN clause:** an unreadable or unborn HEAD produces structural-only eligibility rather than refusal. Its repository-based namespace stays stable when the first HEAD becomes readable, preserving the every-boot hierarchy maintenance path that 11B-2 will exercise live.
 
 ---
@@ -123,7 +124,7 @@ This PR emits no user-facing notices, creates no replicated durable records, and
 
 ## Conclusion
 
-The review supports shipping 11B-1 as an inert substrate after independent review closes. It caused six hardenings before commit: agent-home remains ineligible for paid authoring even when Git-valid; an unreadable HEAD explicitly preserves structural-only maintenance; the tree accepts only authority-shaped state namespaces rather than an arbitrary directory label; Instar-source verification uses the Git funnel's closed read-tier allowance instead of being silently downgraded by the source-tree guard; non-default remote ports and unknown-forge path case remain identity-bearing; and every deterministic trust outcome requires structured decision recording. The known limitations are explicit: identity is not semantic correctness, older same-remote revisions require reporting/ground-truth controls, and monorepo subroots are intentionally not inferred.
+The review supports shipping 11B-1 as an inert substrate after independent review closes. It caused seven hardenings before merge: agent-home remains ineligible for paid authoring even when Git-valid; an unreadable HEAD explicitly preserves structural-only maintenance; the tree accepts only authority-shaped state namespaces rather than an arbitrary directory label; Instar-source verification uses the Git funnel's closed read-tier allowance instead of being silently downgraded by the source-tree guard; non-default remote ports and unknown-forge path case remain identity-bearing; every deterministic trust outcome requires structured decision recording; and the Git-read degradation is explicitly classified for the repository's no-silent-fallback ratchet instead of increasing its baseline. The known limitations are explicit: identity is not semantic correctness, older same-remote revisions require reporting/ground-truth controls, and monorepo subroots are intentionally not inferred.
 
 ---
 
@@ -137,6 +138,7 @@ The review supports shipping 11B-1 as an inert substrate after independent revie
 ## Evidence pointers
 
 - Focused authority and legacy storage tests: 34/34 passing.
+- No-silent-fallback ratchet plus the focused authority/storage set: 39/39 passing after CI exposed the missing classification annotation.
 - Broader Cartographer unit suite: 121/121 passing after the final reviewer-fix delta.
 - Full repository lint: passing.
 - TypeScript build: passing.

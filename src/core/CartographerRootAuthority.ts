@@ -332,7 +332,7 @@ function readGit(cwd: string, args: readonly string[]): string | null {
     }).trim();
     return value || null;
   } catch {
-    return null;
+    return null; /* @silent-fallback-ok — unreadable Git evidence becomes a required structured authority decision */
   }
 }
 
