@@ -438,7 +438,9 @@ describe('lint-dev-agent-dark-gate', () => {
       '976': 'mentee.enabled',
       // evolutionActions.autoExpiry adds a 10-line fleet-on/dry-run-first block;
       // no dark row is added, and every later attribution shifts by +10.
-      '1046': 'prGate.classClosure.enabled',
+      // undatedResurfacer adds a further 15-line dev-gated block that omits
+      // `enabled`, so it also shifts later rows without adding a dark default.
+      '1061': 'prGate.classClosure.enabled',
       // +21 lines below: spec #3's multiMachine.seamlessOrchestrator dev-gated
       // sub-block (docs/specs/llm-seamlessness-orchestrator.md) was inserted at the
       // TOP of the multiMachine block; it OMITS `enabled` (rides resolveDevAgentGate),
@@ -447,17 +449,17 @@ describe('lint-dev-agent-dark-gate', () => {
       // multiMachine. It has no `enabled: false` literal and therefore shifts
       // every subsequent attribution without changing the audited path set.
       // ACT-897 peerExecution adds an 8-line dev-gated dry-run block.
-      '1150': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '1154': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '1161': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '1171': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      '1408': 'multiMachine.sessionPool.enabled',
+      '1165': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '1169': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '1176': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '1186': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1423': 'multiMachine.sessionPool.enabled',
       // #1367's moveIntent dev-gated sub-block was inserted under sessionPool
       // (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS `enabled` (rides
       // resolveDevAgentGate), adds no map row, and shifts the subsequent lines.
-      '1459': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1469': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1498': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1474': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1484': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1513': 'multiMachine.sessionPool.holdForStability.enabled',
       // replicated-journal-compaction adds a 5-line compaction default block
       // above stateSync. It uses `run:false` (not an `enabled` gate), so the
       // attributed path set is unchanged and the four rows below shift by +5.
@@ -471,7 +473,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // +32 lines, no `enabled:` literals) shift the cartographer rows below.
       // +15 below the #1561 baseline: this row is BELOW the failoverRunner insert,
       // so it carries both the +10 (missingLogin) and +15 (failoverRunner) shifts.
-      '1759': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1774': 'multiMachine.stateSync.threadlinePairing.enabled',
       // commitment-auto-expiry (2026-07-10): a 6-line `commitments.autoExpiry`
       // default sub-block was inserted above `promiseBeacon`/`cartographer`.
       // Its `enabled: true` literal is an explicit fleet-on default, not a dark
@@ -480,9 +482,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // PromiseBeacon's four-line default-silent user-output boundary adds no
       // `enabled:` row, so only the three cartographer rows below it shift +4.
       // Below the failoverRunner insert → both +10 (missingLogin) and +15 shifts.
-      '1943': 'cartographer.freshnessSweep.enabled',
-      '1988': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '2013': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1958': 'cartographer.freshnessSweep.enabled',
+      '2003': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '2028': 'cartographer.subtreeNav.llmRerank.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

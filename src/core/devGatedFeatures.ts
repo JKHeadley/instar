@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'undatedActionResurfacer',
+    configPath: 'evolutionActions.undatedResurfacer.enabled',
+    description: 'Bounded resurfacing for pending high/critical evolution actions that have no due date.',
+    justification: 'Ships dryRun:true: the development agent exercises the real action-store selection, durable ledger, pool-agreed-state-owner + serving-lease gate, and metrics while emitting no Attention item. A handoff away from the ledger owner pauses rather than resetting cooldown state; missing or divergent latest authenticated owner adverts from any registered peer refuse visibly. Live mode is structurally capped at one idempotent item per four-hour run with a 14-day per-row cooldown and three-raise terminal disposition rung; no LLM, spend, action mutation, or unbounded retry.',
+  },
+  {
     name: 'feedbackFactoryProcessing',
     configPath: 'feedbackFactory.processing.enabled',
     description: 'Canonical feedback clustering pass over the operated store.',

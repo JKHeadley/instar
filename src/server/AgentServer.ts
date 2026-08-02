@@ -82,6 +82,7 @@ import type { TelegraphService } from '../publishing/TelegraphService.js';
 import type { PrivateViewer } from '../publishing/PrivateViewer.js';
 import type { TunnelManager } from '../tunnel/TunnelManager.js';
 import type { EvolutionManager } from '../core/EvolutionManager.js';
+import { UndatedActionResurfacer, resolveUndatedActionStateAuthority } from '../monitoring/UndatedActionResurfacer.js';
 import type { SessionWatchdog } from '../monitoring/SessionWatchdog.js';
 import type { StallTriageNurse } from '../monitoring/StallTriageNurse.js';
 import type { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
@@ -318,6 +319,7 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
+  private undatedActionResurfacer: UndatedActionResurfacer | null = null;
   private blockerLifecycleService: BlockerLifecycleService | null = null;
   /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8) — null when the ledger failed. */
   private benchmarkDivergenceAnalyzer: BenchmarkDivergenceAnalyzer | null = null;
@@ -1691,6 +1693,67 @@ export class AgentServer {
       } catch (err) {
         console.warn('[instar] feature-metrics-ledger init failed (non-fatal):', err);
         this.featureMetricsLedger = null;
+      }
+    }
+
+    // Close-the-Loop action reach: the dated overdue checker cannot see pending
+    // high/critical actions without dueBy. Construct the complementary bounded
+    // resurfacer against the REAL EvolutionManager + Attention queue after the
+    // metrics ledger, so even the immediate dry-run pass is observable. The
+    // development agent is the soak surface; fleet agents stay dark.
+    const undatedCfg = options.config.evolutionActions?.undatedResurfacer;
+    if (
+      options.evolution &&
+      options.telegram &&
+      options.config.stateDir &&
+      resolveDevAgentGate(undatedCfg?.enabled, options.config)
+    ) {
+      try {
+        this.undatedActionResurfacer = new UndatedActionResurfacer(
+          {
+            enabled: true,
+            dryRun: undatedCfg?.dryRun !== false,
+            runIntervalMs: undatedCfg?.runIntervalMs,
+            cooldownMs: undatedCfg?.cooldownMs,
+            maxHighAgeMs: undatedCfg?.maxHighAgeMs,
+            maxRaises: undatedCfg?.maxRaises,
+            dispositionThreshold: undatedCfg?.dispositionThreshold,
+            maxLedgerBytes: undatedCfg?.maxLedgerBytes,
+          },
+          {
+            stateDir: options.config.stateDir,
+            listActions: () => options.evolution!.listActions(),
+            emitAttention: (item) => options.telegram!.createAttentionItem(item),
+            holdsLease: () => options.coordinator?.enabled ? options.coordinator.holdsLease() : true,
+            stateAuthority: () => {
+              if (!options.coordinator?.enabled) {
+                return {
+                  mode: 'single-machine' as const,
+                  selfMachineId: options.meshSelfId ?? 'single-machine',
+                  ownerMachineId: options.meshSelfId ?? 'single-machine',
+                  ownsState: true,
+                  agreement: 'single-machine' as const,
+                };
+              }
+              const selfMachineId = options.meshSelfId ?? 'unknown';
+              const pool = options.machinePoolRegistry?.getCapacities() ?? [];
+              return resolveUndatedActionStateAuthority(
+                selfMachineId,
+                undatedCfg?.stateOwnerMachineId,
+                pool.map((machine) => ({
+                  machineId: machine.machineId,
+                  online: machine.online,
+                  proposedOwnerMachineId: machine.seamlessnessFlags?.undatedActionStateOwnerMachineId,
+                })),
+              );
+            },
+            recordMetric: (outcome, verdictId) => this.featureMetricsLedger?.recordEvent('undated-action-resurfacer', outcome, verdictId),
+          },
+        );
+        this.undatedActionResurfacer.start();
+      } catch (err) {
+        console.warn('[instar] undated-action-resurfacer init failed (non-fatal):', err);
+        this.undatedActionResurfacer = null;
       }
     }
 
@@ -3393,6 +3456,7 @@ export class AgentServer {
       viewer: options.viewer ?? null,
       tunnel: options.tunnel ?? null,
       evolution: options.evolution ?? null,
+      undatedActionResurfacer: this.undatedActionResurfacer,
       watchdog: options.watchdog ?? null,
       triageNurse: options.triageNurse ?? null,
       topicMemory: options.topicMemory ?? null,
@@ -5483,6 +5547,8 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    try { this.undatedActionResurfacer?.stop(); } catch { /* best-effort */ }
+    this.undatedActionResurfacer = null;
     if (this.claimObservationHousekeeperTimer) {
       clearInterval(this.claimObservationHousekeeperTimer);
       this.claimObservationHousekeeperTimer = null;

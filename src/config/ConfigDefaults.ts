@@ -989,6 +989,21 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       sweepIntervalMs: 21600000,
       dryRun: true,
     },
+    // Reaches the high/critical actions the dated overdue checker cannot see.
+    // `enabled` is intentionally omitted: resolveDevAgentGate makes the
+    // development agent the soak surface while the fleet stays dark. Emission
+    // remains dry-run-first until an explicit promotion. On a multi-machine
+    // agent, an explicit owner proposal must agree across every registered pool
+    // member's latest authenticated heartbeat; absence or disagreement blocks.
+    undatedResurfacer: {
+      dryRun: true,
+      runIntervalMs: 14_400_000,
+      cooldownMs: 1_209_600_000,
+      maxHighAgeMs: 2_592_000_000,
+      maxRaises: 3,
+      dispositionThreshold: 10,
+      maxLedgerBytes: 4_194_304,
+    },
   },
   // Spec-review standards-conformance gate (rung-3 normative slice). Default-on:
   // the gate reads docs/STANDARDS-REGISTRY.md and signals possible standard
