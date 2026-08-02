@@ -52,6 +52,14 @@ production model-invocation sites:
 - an earlier package counted 76 `evaluate` expressions, then proved its count was
   incomplete and non-reproducible. That number is not a baseline.
 
+Accordingly, `39 / 64` is a conversion share inside the declared catalog, not a
+floor or ceiling on executable-origin coverage. Removing non-invocation aliases
+could raise the executable ratio; splitting hidden multi-call rows or discovering
+undeclared origins could lower it; both numerator and denominator may move. Until
+the compiler inventory lands, the only defensible claim is: "39 of 64 declared
+catalog rows are wired, up from 11; coverage of actual production decision origins
+is unknown."
+
 The deterministic grading pass has five points and a configured global ceiling of
 200 rows per hourly pass. It currently gives each point a fixed 40-row slice. An
 empty or backed-off point strands its slice while a hot point cannot reuse it. Its
@@ -66,9 +74,10 @@ When this delta is implemented:
 1. The TypeScript compiler derives every production model-call expression from the
    same program the build type-checks.
 2. Every derived expression is classified as exactly one decision origin or one
-   infrastructure forwarder. Unknown or ambiguous classification fails CI.
-3. The decision-origin set and invocation census are a bijection. Neither can
-   contain an element missing from the other.
+   compiler-proved infrastructure forwarder. A registry label is not proof;
+   unknown or ambiguous classification exits CI nonzero.
+3. The decision-origin set and invocation census are a bijection. Either direction
+   of disagreement is a build failure, not a backlog-item success path.
 4. Every new or changed decision origin uses one imported, stable `DP_*` identity
    that no other origin uses. Only the audited current sites may enter a closed,
    shrink-only `repair-required` posture; multi-call compositions leave that debt
@@ -133,19 +142,49 @@ emitted as `unknown` and fails the check. Type errors cannot make a call disappe
 
 The complete compiler inventory contains two disjoint roles:
 
-- `decision-origin`: the source location where one semantic model judgment begins;
-- `infrastructure-forwarder`: router, breaker, queue, or concrete-provider plumbing
-  that forwards an already-identified judgment without creating another one.
+- `decision-origin`: the first in-scope call edge that submits a domain judgment
+  into the provider graph and binds that judgment to one imported `DP_*` identity
+  (or to one exact pinned bootstrap-repair key); and
+- `infrastructure-forwarder`: a downstream call edge in the same logical
+  evaluation that delegates an attempt through router, breaker, queue, retry/swap,
+  or concrete-provider plumbing without choosing a new domain prompt, decision
+  identity, or verdict consumer.
 
 Only decision origins form the coverage denominator. Forwarders remain in the
 generated manifest and are checked, but do not create a second census row or a
 second expected settlement for the same judgment.
 
-Forwarder status comes from a closed registry keyed by stable
-`source-module#enclosing-symbol`, with a reason and owning interface. Line numbers
-are forbidden. A registry entry is valid only if the checker proves the enclosing
-type is a provider implementation or options-preserving funnel. A stale entry or an
-entry that supplies or overwrites decision identity fails CI.
+Classification is a proof over the call chain, not a manual label. An origin must
+be outside registered provider plumbing, must bind its identity at that callsite,
+and must have no proved upstream in-scope evaluation whose judgment it is merely
+continuing. A forwarder must satisfy all of these obligations:
+
+1. its enclosing symbol is a typed provider implementation or a registered helper
+   reachable from that provider graph;
+2. its prompt and operational options derive from the enclosing provider entry or
+   the router-held decision context through a closed, deterministic transform;
+3. it imports, selects, defaults, or overwrites no `DP_*` identity and creates no
+   second provenance settlement;
+4. it delegates only the same logical evaluation. Retry and provider-swap attempts
+   are forwarders only while one router-held decision context owns the eventual
+   settlement; fan-out that combines independent model judgments is not forwarding;
+   and
+5. any stripping of the provenance carrier occurs only at a registered terminal
+   provider boundary after the router has retained the sole decision context.
+
+Forwarder candidates come from a closed registry keyed by stable
+`source-module#enclosing-symbol`, with a reason, owning interface, allowed argument
+transform, and settlement owner. Line numbers are forbidden. The registry only
+names candidates; the compiler/data-flow checker must discharge every obligation
+above. A stale declaration, unproved transform, new prompt source, identity mint or
+overwrite, independent result aggregation, or path with no retained settlement
+owner is `unknown` and fails CI. It never becomes a forwarder because a person put
+it in the registry.
+
+Across every proved call chain, exactly one static callsite is the decision origin
+and every downstream in-scope callsite is a forwarder. A `wired` chain also has
+exactly one router settlement owner. A direct-provider transition may lack that
+owner only while it remains explicitly `pending`; it cannot be called wired.
 
 A generic helper may not hide multiple semantic judgments behind one forwarder.
 Callers must either invoke the router directly or call a registered typed decision
@@ -271,6 +310,15 @@ Let `I` be generated `decision-origin` rows and `C` be
 8. no non-invocation catalog row has an invocation key or absorbs runtime activity;
 9. every forwarder remains identity-preserving and outside the denominator; and
 10. the checked-in manifest digest equals the digest generated in CI.
+
+Any inequality is an authoritative build failure. The checker exits nonzero and
+prints stable sorted `I - C` and `C - I` rows with their callsite keys and source
+owners. It does not convert a discovered-but-undeclared origin into an item and
+continue green. An implementation may additionally open or refresh a durable item
+as a secondary operational signal, but that item is not a disposition, cannot
+satisfy the ratchet, and cannot permit merge. The first bootstrap PR must reconcile
+the generated manifest and census in the same change; unresolved semantic identity
+uses only the closed `repair-required` posture, never set inequality.
 
 The prior component-category and attribution guards remain defense in depth. They
 may find component-taxonomy or token-accounting defects, but neither is allowed to
@@ -477,12 +525,17 @@ throughput for today's five grading points.
 
 - Golden fixtures detect every typed origin and forwarder and reject every unknown,
   dynamic, duplicate, hidden-helper, stale-forwarder, and wrong-module case.
+- Call-chain fixtures prove that registry membership alone cannot create a
+  forwarder; identity mint/overwrite, a new prompt source, independent result
+  aggregation, an unregistered argument transform, or a second settlement owner
+  all fail. Registered single-decision retry/swap paths remain one origin.
 - Whole-tree generation is deterministic across two clean checkouts and exact-diffs
   the checked-in manifest.
 - Changing an inventory input changes the method digest and fails until the audit's
   digest and convergence evidence are refreshed in the same PR.
-- Removing a census row while retaining its source call fails with `I - C`; adding a
-  row without a source call fails with `C - I`.
+- Removing a census row while retaining its source call fails the build with
+  `I - C`; adding a row without a source call fails with `C - I`. Creating or
+  linking an item never turns either failure green.
 - Reusing one decision point at two origins and aggregating a multi-call composition
   both fail outside the closed bootstrap repair set; adding or substituting a
   `repair-required` key also fails.

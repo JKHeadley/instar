@@ -11,6 +11,12 @@ row can name a feature that no longer calls a model. A helper can hide a call fr
 text search. If the list and the program disagree, a percentage calculated from the
 list can look complete while real calls remain invisible.
 
+That means 39 out of 64 is not yet a floor on real coverage. Removing aliases could
+make the true share higher; discovering hidden calls or splitting one row into
+several decisions could make it lower. The honest statement today is only: 39 of
+64 declared catalog rows are wired, up from 11. The share of actual production
+decision origins is unknown until the compiler-derived set exists.
+
 This spec gives the list enforcement teeth.
 
 First, a TypeScript compiler tool walks the same production program that the build
@@ -25,8 +31,15 @@ Every model-call expression must then be one of two things:
   along a judgment that was already identified.
 
 The second category prevents double-counting. A single decision may travel through
-the router and a provider, but it is still one judgment. Forwarders remain visible
-and checked; they just do not pretend to be extra decisions.
+the router and a provider, but it is still one judgment. Calling something a
+forwarder in a list is not enough. The checker must prove that it receives the same
+judgment's prompt and operational options from the provider chain through a closed,
+allowed transform, does not choose or replace the decision ID, does not create a
+second result to combine, and leaves one router context responsible for settlement.
+Provider retry or swap attempts may share that one context. Independent judgments
+may not. If any part of that proof is missing, the build fails instead of guessing.
+Forwarders remain visible and checked; they just do not pretend to be extra
+decisions.
 
 Each decision origin must use one stable imported decision ID. Two model calls in
 one larger workflow get two IDs plus one shared composition ID. A generic helper is
@@ -47,6 +60,11 @@ The executable callsite set and the invocation census must match both ways:
 
 - every real decision-origin callsite must have one census row; and
 - every invocation census row must have one real callsite.
+
+A mismatch fails the build and prints both sides of the difference. Opening a work
+item may help somebody follow up, but it cannot turn the check green or allow the
+change to merge. During the first migration, unresolved identity work can use only
+the exact closed `repair-required` list; a missing census row cannot.
 
 This is stronger than checking only that new calls appear in the list. It also
 catches stale rows, duplicate identities, hidden multi-call rows, and entries that
