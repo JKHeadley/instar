@@ -63,7 +63,7 @@ feature**, not a safeguard bolted to it.
 
 | element | rule |
 |---|---|
-| eligible | `status: pending`, no `dueBy`, priority `high` or `critical`, **including rows carrying an explicit `followThroughOptOutReason`** |
+| eligible | `status: pending`, no `dueBy`, priority `high` or `critical`, **including rows carrying an explicit `followThroughOptOutReason`**. The durable store predates the lowercase TypeScript union, so comparisons are case-insensitive and legacy `urgent` is the critical/top-priority alias. |
 | selection | **weighted lanes, not strict tiers**: 3 of every 4 runs draw the oldest eligible `critical`; the 4th draws the oldest eligible `high`. A lane with nothing eligible yields to the other. **Plus a max-age override**: any `high` older than 30 days enters the critical lane. Ties by action id. Excludes anything inside its cooldown. |
 | volume | **ONE per run. Never a digest, never a batch.** |
 | cooldown | an action re-surfaced is ineligible for 14 days, recorded durably |
@@ -75,6 +75,20 @@ feature**, not a safeguard bolted to it.
 One-per-run makes a flood **arithmetically impossible** — that part is unconditional, and it is the
 property the bound exists for. A bound that depends on a threshold being tuned correctly fails the
 first time the backlog grows; a bound of one does not.
+
+**Pre-live sizing observation, 2026-08-01.** The currently unresolved eligible cohort has a
+creation-age density of about 21.4 rows/day over its newest seven days (28.4/day over fourteen and
+20.3/day over thirty), while the default cadence emits at most six raises/day and can move at most two
+unchanged rows/day into the three-raise terminal after the pipeline fills. The seven-day density is
+roughly 10.7× that terminal capacity, confirming that this mechanism is reach, not drainage. This is
+not a historical intake measure: rows already completed, cancelled, dated, or reprioritized are
+absent from the snapshot. Live rollout must measure actual arrivals and exits before choosing between
+intake reduction, faster disposition, or a separately bounded backlog-remediation path.
+
+The 30-day high-priority promotion is also a future guard, not a currently active lane: the same
+measurement found zero pending actions older than 30 days. The store is not young—520 rows exceed
+that age—but 515 are cancelled and 5 completed. This does not justify deleting the override; it means
+the dry-run must report whether the lane remains inert rather than crediting it with current reach.
 
 **The creation-time opt-out is not a resurfacing opt-out.** A recorded
 `followThroughOptOutReason` explains why the author deliberately chose not to assign a due date. It
@@ -347,6 +361,12 @@ the future path if uninterrupted multi-machine cadence becomes worth the additio
 | 7 | Rollout | Ships **dark**, then dry-run (logs the row it WOULD raise), then live. The dry-run stage is the real test: it proves the selection is sane against a 581-row backlog before anything is raised. |
 | 8 | Explicit follow-through opt-out | Does **not** affect eligibility. It records why no due date was chosen; it never grants invisibility from the undated-action path. |
 
+### 5.1 Implementation surfaces
+
+The authenticated health read is `GET /evolution/actions/undated-resurfacer`. The authenticated,
+cadence-bounded manual trigger is `POST /evolution/actions/undated-resurfacer/pass`. Both use the same
+production controller and durable cadence; the pass operation is not a bypass around the run floor.
+
 ## 6. Open questions
 
 *(none)*
@@ -367,6 +387,10 @@ the future path if uninterrupted multi-machine cadence becomes worth the additio
   **Disposing of the existing 581 requires a bounded one-off review**, which is separate work with a
   separate flood profile. Shipping this and declaring Close the Loop solved would be exactly the
   overclaim this project keeps catching.
+- **Measuring arrivals and exits** — the pre-live open-cohort density is around 20–28 rows/day across
+  the sampled age windows, far above the bounded terminal rate, but it is not historical intake.
+  Rollout must measure creation and resolution events before deciding whether creation defaults,
+  faster disposition, or bounded triage is the honest lever.
 
 ## 8. What "done" means
 

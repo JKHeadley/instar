@@ -13,8 +13,9 @@ bounded accumulation, signal-vs-authority, and self-action convergence
 Adds the action half of Close-the-Loop reach through a dedicated monitor, server
 wiring, two authenticated evolution-action routes, a state-coherence registry
 entry, and layered tests. The existing overdue checker keeps owning dated
-actions. This component owns only pending, undated, high/critical actions and
-surfaces at most one Attention item per durable four-hour cadence. It never
+actions. This component owns only pending, undated, high/critical actions
+(including case-normalized historical spellings and legacy top-tier `urgent`)
+and surfaces at most one Attention item per durable four-hour cadence. It never
 mutates an action.
 
 ## Decision-point inventory
@@ -45,6 +46,18 @@ reach until the ledger is reviewed rather than discarding actionable history.
 One item per four hours cannot drain the measured stock quickly, and the spec
 states that explicitly. This is continuous reach, not backlog remediation.
 Eventual surfacing depends on bounded eligible growth and a running scheduler.
+
+The pre-live snapshot measured about 21.4 rows/day of creation-age density in the
+newest seven days of the currently unresolved eligible cohort, against a
+steady-state ceiling of two rows/day reaching the three-raise terminal, a 10.7×
+ratio. This is not historical intake because resolved, dated, and reprioritized
+rows are absent. It is recorded as open-pressure evidence, not reclassified as a
+defect; live arrival and exit rates are required before choosing the next lever.
+
+The 30-day high-to-critical override currently promotes no row: zero pending
+actions are older than 30 days, while the 520 older stored rows are 515 cancelled
+and 5 completed. The implementation keeps the future starvation brake and makes
+no claim that it contributes to present-day throughput.
 
 The pool-agreed stable-owner ledger trades availability for coherent cooldown
 state. When the serving lease moves away from that owner, resurfacing pauses even though another
@@ -102,6 +115,9 @@ safety floors. None chooses whether the underlying action should be performed.
 - Dated actions remain exclusively owned by the overdue checker.
 - Explicit creation-time follow-through opt-out remains eligible; it explains the
   missing date and does not grant permanent invisibility.
+- The runtime boundary case-normalizes stored priority values and maps legacy
+  `urgent` to the critical lane and URGENT Attention severity. Regression tests
+  cover the exact live-store spellings that exposed the mismatch.
 - Attention receives stable ids for ordinary raises, replay, aggregate disposition,
   and capacity refusal. Ordinary ids include a durable series generation so retry
   dedupes while a meaningful-edit reset cannot be suppressed by an earlier item.
@@ -119,10 +135,12 @@ safety floors. None chooses whether the underlying action should be performed.
 
 ## 6. External surfaces
 
-Two authenticated evolution-action service operations are added: a readable
-health/status operation and a one-pass trigger. The only user-visible live effect
-is an Attention item; default development rollout is dry-run and fleet rollout is
-dark. No action content is sent to a new service, and no new topic is created.
+Two authenticated evolution-action service operations are added: the readable
+health/status operation `GET /evolution/actions/undated-resurfacer` and the
+one-pass trigger `POST /evolution/actions/undated-resurfacer/pass`. The only
+user-visible live effect is an Attention item; default development rollout is
+dry-run and fleet rollout is dark. No action content is sent to a new service,
+and no new topic is created.
 
 No operator-facing form, dashboard renderer, approval flow, or raw-input action
 is added. The bounded pass is an authenticated agent-service operation and can be
@@ -175,9 +193,11 @@ state was replaced by a pool-agreed stable owner plus serving lease, reset serie
 received distinct Attention identities, every emitted claim retained its own
 outcome schedule, aggregate failure now consumes its retry budget instead of
 renewing forever, and capacity makes health non-operational rather than merely
-setting a side flag. The independent re-review concurs that all six concerns are
-closed. The change is suitable for draft review while rollout remains dry-run-first
-and fleet-dark.
+setting a side flag. A later live-data review also found the typed/runtime
+priority mismatch; case normalization and `urgent` compatibility now close it,
+while the measured cadence gap and inactive age lane are recorded without
+silently changing policy. The change is suitable for draft review while rollout
+remains dry-run-first and fleet-dark.
 
 ## Second-pass review
 
@@ -201,6 +221,14 @@ rollout gate rather than a draft-PR claim.
 prior blockers are closed in code, tests, and claims. Its focused run passed 34
 tests across the unit, real-Attention integration, authenticated peer-presence
 integration, and production lifecycle tiers.
+
+A follow-up review of the live-data delta initially withheld concurrence for two
+reasons: the creation-age density of the currently unresolved cohort had been
+overstated as historical intake, and representation-only priority changes were
+normalized in code without a regression pinning series continuity. The claims
+now name the snapshot and its survivor bias, rollout reserves actual arrival/exit
+measurement, and the regression proves `urgent` → `CRITICAL` continues at
+`s1:2`. **Follow-up reviewer status: CONCUR.**
 
 ## Evidence
 

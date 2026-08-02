@@ -73,6 +73,8 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | GET | `/evolution/actions` | List action items |
 | POST | `/evolution/actions` | Create an action item |
 | GET | `/evolution/actions/overdue` | List overdue actions |
+| GET | `/evolution/actions/undated-resurfacer` | Read the bounded undated-action resurfacer's health and durable cadence state |
+| POST | `/evolution/actions/undated-resurfacer/pass` | Trigger one authenticated pass without bypassing its durable cadence floor |
 | PATCH | `/evolution/actions/:id` | Update action status |
 
 ## Memory & Search

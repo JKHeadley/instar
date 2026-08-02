@@ -1,0 +1,33 @@
+{
+  "ts": "2026-08-02T04:04:00.179Z",
+  "slug": "undated-action-resurfacer",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 57,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/UndatedActionResurfacer.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 40,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Under an indefinitely non-empty backlog, reconstruction must preserve the durable four-hour global rate floor and each unchanged target must stop after three raises; the production controller also fails closed on pool-owner disagreement and stops at a fixed byte ceiling."
+    },
+    "prNumber": 1832,
+    "component": "UndatedActionResurfacer"
+  },
+  "verdict": "pass"
+}

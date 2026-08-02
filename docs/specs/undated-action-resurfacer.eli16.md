@@ -48,6 +48,12 @@ failing.
 The four-hour cadence is stored, not just held by a process timer. Restarting the agent or repeatedly
 requesting another pass cannot squeeze extra items into the window.
 
+A live sizing snapshot found that the newest part of the currently unresolved group is about ten
+times denser than the rate at which unchanged rows can reach the three-reminder terminal. That does
+not prove how quickly new rows arrive, because rows already resolved are absent. It does show why this
+feature is a safe reach mechanism rather than a drain; rollout must measure both arrivals and exits
+before choosing the next lever.
+
 ## What it deliberately cannot do
 
 It never marks anything done, never cancels anything, never changes a priority, and never decides an
@@ -73,7 +79,12 @@ pretend otherwise.
 
 **It only covers high and critical items to start.** Medium and low undated items are a bigger group,
 and adding them later is straightforward — but the measured damage is in the important ones, so that
-is where it starts.
+is where it starts. Old stores use several spellings for those levels, so `HIGH`, `high`,
+`CRITICAL`, `critical`, and the older top-priority word `urgent` are treated consistently.
+
+**The 30-day high-priority shortcut is not helping today.** No currently pending row has survived
+that long; the older rows in the store are already cancelled or completed. The shortcut remains as a
+guard for a different future population, while dry-run metrics must show whether it ever activates.
 
 **Multiple machines do not trade this history back and forth.** One stable machine owns the ledger,
 and it may run the cadence only while it also holds the serving lease. Every registered machine's

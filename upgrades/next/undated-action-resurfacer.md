@@ -23,7 +23,8 @@ still depends on the scheduler running and arrivals staying below the service ra
 ## Summary of New Capabilities
 
 - Deterministically selects one oldest eligible action through balanced critical
-  and high-priority lanes, including actions with an explicit no-date reason.
+  and high-priority lanes, including actions with an explicit no-date reason and
+  legacy durable-store spellings such as uppercase `HIGH` and top-tier `urgent`.
 - Persists cooldown, delivery, outcome, retry, and terminal-disposition evidence
   across restarts.
 - Exposes a health read and a bounded manual pass through the existing evolution
@@ -46,3 +47,8 @@ still depends on the scheduler running and arrivals staying below the service ra
   deliberately left to the dark → dry-run → live rollout gate.
 - The self-action convergence ratchet models the durable four-hour rate floor
   across repeated reconstruction.
+- A pre-live snapshot records that the currently unresolved cohort's seven-day
+  creation-age density is roughly 10.7 times the steady-state terminal capacity
+  and that the 30-day high-priority promotion currently has no pending inputs.
+  The density is not historical intake; the feature remains flood-bounded reach,
+  not backlog drainage.

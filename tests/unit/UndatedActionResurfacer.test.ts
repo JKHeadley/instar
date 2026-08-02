@@ -64,6 +64,22 @@ describe('selectUndatedAction', () => {
     expect(selectUndatedAction([row], new Map(), 1, now).selected?.id).toBe('ACT-001');
   });
 
+  it('normalizes legacy urgent and uppercase high priorities at the durable-store boundary', () => {
+    const urgent = { ...action('ACT-948', 'critical', '2026-07-20T00:00:00.000Z'), priority: 'urgent' } as unknown as ActionItem;
+    const uppercaseHigh = { ...action('ACT-956', 'high', '2026-07-21T00:00:00.000Z'), priority: 'HIGH' } as unknown as ActionItem;
+    const normal = { ...action('ACT-957', 'medium', '2026-07-19T00:00:00.000Z'), priority: 'NORMAL' } as unknown as ActionItem;
+    const rows = [uppercaseHigh, normal, urgent];
+
+    expect(selectUndatedAction(rows, new Map(), 1, now)).toMatchObject({
+      eligible: 2,
+      selected: { id: 'ACT-948' },
+    });
+    expect(selectUndatedAction(rows, new Map(), 4, now)).toMatchObject({
+      eligible: 2,
+      selected: { id: 'ACT-956' },
+    });
+  });
+
   it('excludes dated, non-pending, low/medium, terminal, pending-claim, and cooldown rows', () => {
     const recent = new Map<string, UndatedActionProjection>([['ACT-001', projection('ACT-001', '2026-07-31T00:00:00.000Z')]]);
     const rows = [
@@ -79,6 +95,40 @@ describe('selectUndatedAction', () => {
 });
 
 describe('UndatedActionResurfacer durable lifecycle', () => {
+  it('maps a legacy urgent row to an URGENT Attention item', async () => {
+    const row = { ...action('ACT-948', 'critical', '2026-06-01T00:00:00.000Z'), priority: 'urgent' } as unknown as ActionItem;
+    const emitted: Array<{ id: string; priority: string }> = [];
+    const r = new UndatedActionResurfacer(
+      { enabled: true, dryRun: false },
+      {
+        stateDir: temp(), listActions: () => [row], holdsLease: () => true,
+        emitAttention: async ({ id, priority }) => { emitted.push({ id, priority }); },
+      },
+    );
+
+    expect((await r.run()).reason).toBe('emitted');
+    expect(emitted).toEqual([{ id: 'resurface:ACT-948:s1:1', priority: 'URGENT' }]);
+  });
+
+  it('keeps one raise series when only a legacy priority spelling changes', async () => {
+    let now = Date.parse('2026-08-01T00:00:00.000Z');
+    const row = { ...action('ACT-948', 'critical', '2026-06-01T00:00:00.000Z'), priority: 'urgent' } as unknown as ActionItem;
+    const ids: string[] = [];
+    const r = new UndatedActionResurfacer(
+      { enabled: true, dryRun: false, cooldownMs: 60_000, runIntervalMs: 60_000 },
+      {
+        stateDir: temp(), listActions: () => [row], holdsLease: () => true, now: () => now,
+        emitAttention: async ({ id }) => { ids.push(id); },
+      },
+    );
+
+    expect((await r.run()).reason).toBe('emitted');
+    (row as unknown as { priority: string }).priority = 'CRITICAL';
+    now += 61_000;
+    expect((await r.run()).reason).toBe('emitted');
+    expect(ids).toEqual(['resurface:ACT-948:s1:1', 'resurface:ACT-948:s1:2']);
+  });
+
   it('binds multi-machine state to one pool-agreed stable owner across a serving-lease handoff', async () => {
     let now = Date.parse('2026-08-01T00:00:00.000Z');
     let aHoldsLease = true;

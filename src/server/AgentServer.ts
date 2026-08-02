@@ -1751,7 +1751,7 @@ export class AgentServer {
           },
         );
         this.undatedActionResurfacer.start();
-      } catch (err) {
+      } catch (err) { // @silent-fallback-ok: warning + null make the authenticated status route return an honest unavailable posture.
         console.warn('[instar] undated-action-resurfacer init failed (non-fatal):', err);
         this.undatedActionResurfacer = null;
       }
@@ -5547,7 +5547,7 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
-    try { this.undatedActionResurfacer?.stop(); } catch { /* best-effort */ }
+    try { this.undatedActionResurfacer?.stop(); } catch { /* @silent-fallback-ok: shutdown continues after a timer-cleanup fault */ }
     this.undatedActionResurfacer = null;
     if (this.claimObservationHousekeeperTimer) {
       clearInterval(this.claimObservationHousekeeperTimer);

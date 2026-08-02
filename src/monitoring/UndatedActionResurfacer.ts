@@ -8,8 +8,8 @@
  *
  * Durable state is an append-only event stream owned by one pool-agreed stable
  * machine. That owner may act only while it also holds the serving lease. A
- * `pending-emit` claim
- * is written under an inter-process lock before Attention delivery; overlapping
+ * `pending-emit` claim is written under an inter-process lock before Attention
+ * delivery; overlapping
  * invocations therefore see the claim and select nothing. Delivery uses a stable
  * idempotency key, then appends `emitted`. A crash on either side is replayed,
  * bounded to three attempts, without silently losing the row.
@@ -231,7 +231,10 @@ function actionContentSha(action: ActionItem): string {
 function observe(action: ActionItem): ObservedAction {
   return {
     status: action.status,
-    priority: action.priority,
+    // Runtime stores predate ActionItem's lowercase union. Preserve semantic
+    // identity across legacy `urgent`/uppercase spellings instead of resetting
+    // a raise series when only the representation changes.
+    priority: eligiblePriority(action.priority) ?? action.priority,
     dueBy: action.dueBy ?? null,
     createdAt: action.createdAt,
     contentSha256: actionContentSha(action),
@@ -240,6 +243,20 @@ function observe(action: ActionItem): ObservedAction {
 
 function sameObserved(a: ObservedAction | null, b: ObservedAction): boolean {
   return !!a && a.status === b.status && a.priority === b.priority && a.dueBy === b.dueBy && a.createdAt === b.createdAt && a.contentSha256 === b.contentSha256;
+}
+
+/**
+ * ActionItem's canonical type is lowercase critical/high, but durable stores
+ * predate that contract and contain uppercase values plus the legacy top-tier
+ * spelling `urgent`. Normalize at the runtime boundary so typed callers and
+ * historical JSON rows share one eligibility rule.
+ */
+function eligiblePriority(priority: unknown): 'critical' | 'high' | null {
+  if (typeof priority !== 'string') return null;
+  const normalized = priority.trim().toLowerCase();
+  if (normalized === 'urgent' || normalized === 'critical') return 'critical';
+  if (normalized === 'high') return 'high';
+  return null;
 }
 
 function emptyProjection(actionId: string): UndatedActionProjection {
@@ -367,7 +384,7 @@ export function selectUndatedAction(
   let skippedCooldown = 0;
   const eligible: ActionItem[] = [];
   for (const action of actions) {
-    if (action.status !== 'pending' || action.dueBy || !['high', 'critical'].includes(action.priority)) continue;
+    if (action.status !== 'pending' || action.dueBy || !eligiblePriority(action.priority)) continue;
     const p = projections.get(action.id);
     if (p?.pendingClaim || p?.failedClaim || p?.disposition === 'needs-disposition') continue;
     const anchor = p?.lastEngagedAt ? Date.parse(p.lastEngagedAt) : 0;
@@ -375,9 +392,9 @@ export function selectUndatedAction(
     eligible.push(action);
   }
   const lane = runIndex % 4 === 0 ? 'high' : 'critical';
-  const isAgedHigh = (a: ActionItem) => a.priority === 'high' && nowMs - Date.parse(a.createdAt) >= maxHighAgeMs;
-  const critical = eligible.filter((a) => a.priority === 'critical' || isAgedHigh(a));
-  const high = eligible.filter((a) => a.priority === 'high' && !isAgedHigh(a));
+  const isAgedHigh = (a: ActionItem) => eligiblePriority(a.priority) === 'high' && nowMs - Date.parse(a.createdAt) >= maxHighAgeMs;
+  const critical = eligible.filter((a) => eligiblePriority(a.priority) === 'critical' || isAgedHigh(a));
+  const high = eligible.filter((a) => eligiblePriority(a.priority) === 'high' && !isAgedHigh(a));
   const pool = lane === 'critical' ? (critical.length ? critical : high) : (high.length ? high : critical);
   pool.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id.localeCompare(b.id));
   return { selected: pool[0] ?? null, eligible: eligible.length, skippedCooldown };
@@ -418,8 +435,14 @@ export class UndatedActionResurfacer {
 
   start(): void {
     if (!this.config.enabled || this.timer) return;
+    // @silent-fallback-ok: run() records lastRunError + error metrics before it
+    // rejects; this boundary only prevents a background promise rejection.
     void this.run().catch(() => undefined);
-    this.timer = setInterval(() => { void this.run().catch(() => undefined); }, this.intervalMs);
+    this.timer = setInterval(() => {
+      // @silent-fallback-ok: same observable run-error boundary as startup;
+      // the next bounded interval retries without crashing the server.
+      void this.run().catch(() => undefined);
+    }, this.intervalMs);
     this.timer.unref?.();
   }
 
@@ -436,7 +459,7 @@ export class UndatedActionResurfacer {
         ownerMachineId: 'single-machine',
         ownsState: true,
       };
-    } catch {
+    } catch { // @silent-fallback-ok: authority-read uncertainty fails closed and is exposed as state-owner-unconfigured.
       return {
         mode: 'unconfigured',
         selfMachineId: 'unknown',
@@ -447,7 +470,7 @@ export class UndatedActionResurfacer {
   }
 
   private leaseHeld(): boolean {
-    try { return this.deps.holdsLease(); } catch { return false; }
+    try { return this.deps.holdsLease(); } catch { return false; /* @silent-fallback-ok: lease-read uncertainty fails closed and status reports not-held. */ }
   }
 
   private authorityBlock(): 'state-owner-unconfigured' | 'not-state-owner' | 'not-lease-holder' | null {
@@ -479,7 +502,7 @@ export class UndatedActionResurfacer {
       }
       this.lastLedgerError = null;
       return events;
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok: ledger-read failure is recorded, rethrown, and exposed by the run boundary.
       this.lastLedgerError = err instanceof Error ? err.message : String(err);
       throw err;
     }
@@ -514,7 +537,7 @@ export class UndatedActionResurfacer {
       summary: `${action.id} has remained ${action.priority} and undated for ${ageDays} day${ageDays === 1 ? '' : 's'}: ${action.title}`,
       description: `Priority: ${action.priority}\nAge: ${ageDays} days\nAction: ${action.title}\n\nThis is informational. Work it, cancel it with a reason, give it a due date, or split it if it is too large to move.`,
       category: 'evolution-action-resurfacing',
-      priority: action.priority === 'critical' ? 'URGENT' : 'HIGH',
+      priority: eligiblePriority(action.priority) === 'critical' ? 'URGENT' : 'HIGH',
       sourceContext: 'undated-action-resurfacer',
     };
   }
@@ -577,7 +600,7 @@ export class UndatedActionResurfacer {
         this.append({ type: 'retired', at: iso(nowMs), actionId: claim.actionId, reason: 'dated' });
         continue;
       }
-      if (!['high', 'critical'].includes(action.priority)) {
+      if (!eligiblePriority(action.priority)) {
         this.append({ type: 'claim-abandoned', at: iso(nowMs), claimId: claim.claimId, actionId: claim.actionId, reason: 'priority-changed' });
         this.append({ type: 'reset', at: iso(nowMs), actionId: claim.actionId, series: p.series + 1, observed: observe(action) });
         continue;
@@ -607,7 +630,7 @@ export class UndatedActionResurfacer {
     const alert = this.dispositionAlert(claim.count, claim.idempotencyKey);
     try {
       await this.deps.emitAttention(alert);
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok: the transport failure is durably attempted, metered, and returned as emit-failed.
       await this.withLedgerLock(() => {
         this.append({
           type: 'disposition-alert-attempt-failed', at: iso(this.now()), claimId: claim.claimId,
@@ -625,7 +648,7 @@ export class UndatedActionResurfacer {
       }));
       this.deps.recordMetric?.('fired', 'needs-disposition');
       return this.complete({ ran: true, reason: replayed ? 'replayed' : 'disposition-alert', eligible: 0, skippedCooldown: 0, selectedActionId: null });
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok: the failed confirmation is exposed in status, metrics, and the returned result.
       this.lastLedgerError = err instanceof Error ? err.message : String(err);
       this.deps.recordMetric?.('error', 'needs-disposition');
       return this.complete({ ran: true, reason: 'ledger-confirm-failed', eligible: 0, skippedCooldown: 0, selectedActionId: null });
