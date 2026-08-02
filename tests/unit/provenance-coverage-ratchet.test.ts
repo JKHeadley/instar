@@ -56,6 +56,9 @@ import {
   DP_OPEN_CONVERSATION_BRIEF,
   DP_TOPIC_SUMMARIZE,
   DP_DASHBOARD_INSIGHT,
+  DP_PROMPT_INJECTION_DETECT,
+  DP_WARRANTS_REPLY_GATE,
+  DP_WATCHDOG_STUCK_JUDGE,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -107,7 +110,6 @@ const PENDING_BASELINE = [
   'pipe-session-spawn::PipeSessionSpawner::backlog:decision-quality-enrolment',
   'pre-compaction-flush::PreCompactionFlush::backlog:decision-quality-enrolment',
   'presence-stall-judge::PresenceProxy::backlog:decision-quality-enrolment',
-  'prompt-injection-detect::PromptGate::backlog:decision-quality-enrolment',
   'relationship-extract::RelationshipManager::backlog:decision-quality-enrolment',
   'resume-sanity-check::ResumeQueueDrainer::backlog:decision-quality-enrolment',
   'resume-uuid-validate::ResumeValidator::backlog:decision-quality-enrolment',
@@ -122,8 +124,6 @@ const PENDING_BASELINE = [
   'tree-synthesize::TreeSynthesis::backlog:decision-quality-enrolment',
   'tree-triage::TreeTriage::backlog:decision-quality-enrolment',
   'usher-topic-route::Usher::backlog:decision-quality-enrolment',
-  'warrants-reply-gate::WarrantsReplyGate::backlog:decision-quality-enrolment',
-  'watchdog-stuck-judge::SessionWatchdog::backlog:decision-quality-enrolment',
 ].sort();
 
 const EXEMPT_BASELINE = [
@@ -539,6 +539,42 @@ describe('dashboard-insight — bounded awareness-authoring enrollment', () => {
     const entry = getCensusEntry(DP_DASHBOARD_INSIGHT);
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('DashboardInsightEngine');
+    expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('prompt-injection-detect — bounded terminal-prompt enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_PROMPT_INJECTION_DETECT);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('PromptGate');
+    expect(entry?.volumeClass).toBe('budget:500');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('warrants-reply-gate — bounded A2A reply enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_WARRANTS_REPLY_GATE);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('WarrantsReplyGate');
+    expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('watchdog-stuck-judge — bounded command-health enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_WATCHDOG_STUCK_JUDGE);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('SessionWatchdog');
     expect(entry?.volumeClass).toBe('budget:250');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');

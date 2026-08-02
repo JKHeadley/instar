@@ -8,10 +8,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   InputDetector,
+  PROMPT_GATE_LLM_DETECT_PROMPT_ID,
   stripAnsi,
   type DetectedPrompt,
   type InputDetectorConfig,
 } from '../../src/monitoring/PromptGate.js';
+import { DP_PROMPT_INJECTION_DETECT } from '../../src/data/provenanceCoverage.js';
 
 const DEFAULT_CONFIG: InputDetectorConfig = {
   detectionWindowLines: 50,
@@ -832,6 +834,34 @@ describe('InputDetector.noPromptCache', () => {
       await new Promise(r => setImmediate(r));
     }
   }
+
+  it('enrolls only the LLM path with identity-only terminal provenance', async () => {
+    let capturedPrompt = '';
+    let capturedOptions: any;
+    const detector = makeDetector({
+      intelligence: {
+        evaluate: async (prompt: string, options?: any) => {
+          capturedPrompt = prompt;
+          capturedOptions = options;
+          return 'NO_PROMPT';
+        },
+      } as any,
+    });
+
+    await fireLlmDetect(detector, 's-provenance', 'cobalt-lantern private terminal output\n❯ \n');
+
+    expect(capturedPrompt).toContain('cobalt-lantern');
+    expect(capturedOptions.provenance).toMatchObject({
+      decisionPoint: DP_PROMPT_INJECTION_DETECT,
+      optionsPresented: ['no-prompt', 'plan', 'permission', 'question', 'confirmation', 'selection'],
+      promptId: PROMPT_GATE_LLM_DETECT_PROMPT_ID,
+    });
+    const storedContext = JSON.stringify(capturedOptions.provenance.context);
+    expect(storedContext).not.toContain('cobalt-lantern');
+    expect(capturedOptions.provenance.context.promptIdentitySha256).toMatch(
+      /^sha256:(?:[a-f0-9]{16}:){3}[a-f0-9]{16}$/,
+    );
+  });
 
   // Idle session: same NO_PROMPT context shown over and over should produce
   // exactly one LLM call total — first one classifies, all later ones hit cache.

@@ -15,12 +15,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   WarrantsReplyGate,
+  WARRANTS_REPLY_PROMPT_ID,
   normalizeForNovelty,
   tokenSet,
   tokenSetSimilarity,
 } from '../../src/threadline/WarrantsReplyGate.js';
 import type { Conversation } from '../../src/threadline/ConversationStore.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import { DP_WARRANTS_REPLY_GATE } from '../../src/data/provenanceCoverage.js';
 
 function conv(partial: Partial<Conversation>): Conversation {
   const now = new Date().toISOString();
@@ -201,6 +203,34 @@ describe('WarrantsReplyGate — turn budget', () => {
 });
 
 describe('WarrantsReplyGate — authority layer', () => {
+  it('enrolls only ambiguous messages with identity-only provenance', async () => {
+    let capturedPrompt = '';
+    let capturedOptions: any;
+    const gate = new WarrantsReplyGate({
+      intelligence: {
+        evaluate: async (prompt: string, options?: any) => {
+          capturedPrompt = prompt;
+          capturedOptions = options;
+          return 'NO_REPLY';
+        },
+      },
+    });
+    const text = 'the build status looks fine to me overall';
+
+    await gate.evaluate({
+      threadId: 't', text, humanInLoop: false,
+      conversation: conv({ turnCount: 2, lastInboundHash: text }),
+    });
+
+    expect(capturedPrompt).toContain(text);
+    expect(capturedOptions.provenance).toMatchObject({
+      decisionPoint: DP_WARRANTS_REPLY_GATE,
+      optionsPresented: ['reply', 'no-reply'],
+      promptId: WARRANTS_REPLY_PROMPT_ID,
+    });
+    expect(JSON.stringify(capturedOptions.provenance.context)).not.toContain(text);
+  });
+
   it('classifier REPLY verdict on ambiguous non-novel content replies', async () => {
     const gate = new WarrantsReplyGate({ intelligence: stubIntel('REPLY') });
     const v = await gate.evaluate({

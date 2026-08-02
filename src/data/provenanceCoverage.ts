@@ -294,6 +294,15 @@ export const DP_TOPIC_SUMMARIZE = 'topic-summarize';
 /** Bounded dashboard page facts → awareness-only insight strip. */
 export const DP_DASHBOARD_INSIGHT = 'dashboard-insight';
 
+/** Ambiguous bounded terminal output → blocking-prompt kind or no prompt. */
+export const DP_PROMPT_INJECTION_DETECT = 'prompt-injection-detect';
+
+/** Ambiguous A2A message → reply or suppress. */
+export const DP_WARRANTS_REPLY_GATE = 'warrants-reply-gate';
+
+/** Long-running command evidence → stuck or legitimate. */
+export const DP_WATCHDOG_STUCK_JUDGE = 'watchdog-stuck-judge';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -503,12 +512,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Temporal-coherence verdict over conversation content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'watchdog-stuck-judge',
+    decisionPoint: DP_WATCHDOG_STUCK_JUDGE,
     component: 'SessionWatchdog',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The existing override counter observes legitimate verdicts, but no independent completion or operator ' +
+      'label is correlated to each stuck/legitimate decision. Identity-only provenance banks real command ' +
+      'evidence without treating elapsed time or the parser as ground truth.',
     reason:
-      'Stuck-session judgment over live session output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Stuck-command judgment over bounded command and terminal evidence; identity-only context stores exact prompt and constituent digests, never terminal text.',
   },
   {
     decisionPoint: 'resume-sanity-check',
@@ -543,12 +558,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
 
   // — Gates —
   {
-    decisionPoint: 'prompt-injection-detect',
+    decisionPoint: DP_PROMPT_INJECTION_DETECT,
     component: 'PromptGate',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'JSON/type validation and the no-prompt cache establish parser and spend behavior, not whether terminal ' +
+      'output truly contained a blocking system prompt. Identity-only provenance enables later comparison with ' +
+      'actual prompt responses without storing terminal bodies.',
     reason:
-      'Prompt-injection detection over inbound content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Blocking-prompt detection over bounded terminal output; exact prompt and terminal-context identities are stored without terminal text.',
   },
   {
     decisionPoint: 'external-operation-gate',
@@ -559,12 +580,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Operation mutability/reversibility classification incl. in-content approval claims; enrollment queued in the ACT-1193 retrofit backlog.',
   },
   {
-    decisionPoint: 'warrants-reply-gate',
+    decisionPoint: DP_WARRANTS_REPLY_GATE,
     component: 'WarrantsReplyGate',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Deterministic decisive-signal paths bypass this model call, while ambiguous reply/no-reply verdicts lack ' +
+      'an independent per-turn usefulness label. Identity-only provenance records the authority cases for later ' +
+      'conversation-outcome grading without retaining peer message bodies.',
     reason:
-      'Should-I-reply verdict over an inbound message; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Ambiguous A2A reply/no-reply judgment over a bounded peer-message slice; context stores identities and bounds, never message text.',
   },
   {
     decisionPoint: DP_UNJUSTIFIED_STOP_GATE,

@@ -10,6 +10,25 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { DP_PROMPT_INJECTION_DETECT } from '../data/provenanceCoverage.js';
+
+export const PROMPT_GATE_LLM_DETECT_PROMPT_ID = 'prompt-injection-detect-v1';
+
+/** Identity-only envelope for the exact bounded terminal context shown to the detector. */
+export function buildPromptGateDecisionContext(input: {
+  promptText: string;
+  terminalContext: string;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    terminalContextIdentitySha256: buildStructuredSha256Identity(input.terminalContext),
+    terminalContextChars: input.terminalContext.length,
+    terminalContextLines: input.terminalContext.split('\n').length,
+  });
+}
 import { createHash, randomBytes } from 'node:crypto';
 import { trimTrailingBlankRows } from '../core/paneText.js';
 
@@ -658,6 +677,12 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
         maxTokens: 500,
         temperature: 0,
         attribution: { component: 'PromptGate' }, // attribution for /metrics/features
+        provenance: {
+          decisionPoint: DP_PROMPT_INJECTION_DETECT,
+          context: buildPromptGateDecisionContext({ promptText: prompt, terminalContext: context }),
+          optionsPresented: ['no-prompt', 'plan', 'permission', 'question', 'confirmation', 'selection'],
+          promptId: PROMPT_GATE_LLM_DETECT_PROMPT_ID,
+        },
       });
 
       const trimmed = response.trim();
