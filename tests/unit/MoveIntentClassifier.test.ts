@@ -16,10 +16,12 @@ import {
   parseMoveIntentResponse,
   resolveEnumTarget,
   buildMoveIntentPrompt,
+  MOVE_INTENT_PROMPT_ID,
   toNicknameCommand,
   type RelocationIntentInput,
 } from '../../src/core/MoveIntentClassifier.js';
-import type { IntelligenceProvider } from '../../src/core/types.js';
+import type { IntelligenceOptions, IntelligenceProvider } from '../../src/core/types.js';
+import { DP_MOVE_INTENT_CLASSIFY } from '../../src/data/provenanceCoverage.js';
 
 const NICKS = ['mini', 'laptop', 'mac mini'];
 
@@ -106,8 +108,34 @@ describe('MoveIntentClassifier — prompt contract (structured output, untrusted
 
 describe('MoveIntentClassifier — decision + fail-open contract', () => {
   it('a high-confidence command with a resolved target → isCommand:true', async () => {
-    const r = await classifyRelocationIntent(base({}));
+    let options: IntelligenceOptions | undefined;
+    const message = 'move this to the mini';
+    const prior = 'Earlier secret-bearing context that must never enter provenance';
+    const intelligence: IntelligenceProvider = {
+      evaluate: async (_prompt, received) => {
+        options = received;
+        return verdict({ isCommand: true, intent: 'transfer', targetNickname: 'mini', confidence: 0.95 });
+      },
+    };
+    const r = await classifyRelocationIntent(base({
+      text: message,
+      conversationContext: [{ fromUser: true, text: prior }],
+      intelligence,
+    }));
     expect(r).toMatchObject({ isCommand: true, intent: 'transfer', targetNickname: 'mini', source: 'llm' });
+    expect(options?.provenance?.decisionPoint).toBe(DP_MOVE_INTENT_CLASSIFY);
+    expect(options?.provenance?.optionsPresented).toEqual(['not-command', 'transfer', 'pin']);
+    expect(options?.provenance?.promptId).toBe(MOVE_INTENT_PROMPT_ID);
+    expect(options?.provenance?.context).toMatchObject({
+      messageChars: message.length,
+      contextTurnCount: 1,
+      knownNicknameCount: NICKS.length,
+      minConfidence: 0.85,
+    });
+    const serializedContext = JSON.stringify(options?.provenance?.context ?? {});
+    expect(serializedContext).not.toContain(message);
+    expect(serializedContext).not.toContain(prior);
+    expect(serializedContext).not.toContain('mac mini');
   });
 
   it('maps a pin verdict to intent:pin', async () => {

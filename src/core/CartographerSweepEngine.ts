@@ -48,8 +48,41 @@ import {
   childDigestHash,
   delimitUntrusted,
 } from './cartographerSummary.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from './JudgmentProvenanceLog.js';
+import type { DecisionProvenanceBlock } from './decisionQualityTypes.js';
+import { DP_CARTOGRAPHER_SUMMARY_AUTHOR } from '../data/provenanceCoverage.js';
 
 export const CARTOGRAPHER_SWEEP_COMPONENT = 'CartographerSweep';
+export const CARTOGRAPHER_LEAF_SUMMARY_PROMPT_ID = 'cartographer-leaf-summary-v1';
+export const CARTOGRAPHER_DIRECTORY_SUMMARY_PROMPT_ID = 'cartographer-directory-summary-v1';
+
+/**
+ * Identity-only decision context for Cartographer summary authoring. The source
+ * body and child-summary text are intentionally not accepted by this builder:
+ * provenance identifies the exact model-visible input and its shape without
+ * becoming a second code or summary archive.
+ */
+export function buildCartographerSummaryDecisionContext(input: {
+  nodePath: string;
+  nodeKind: 'file' | 'dir';
+  inputIdentitySha256: string;
+  visibleSourceBytes?: number;
+  inputTruncated?: boolean;
+  coveredSymbolCount: number;
+  childCount?: number;
+  childSummaryCount?: number;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    nodePath: input.nodePath || '(repo root)',
+    nodeKind: input.nodeKind,
+    inputIdentitySha256: input.inputIdentitySha256,
+    visibleSourceBytes: input.visibleSourceBytes,
+    inputTruncated: input.inputTruncated,
+    coveredSymbolCount: input.coveredSymbolCount,
+    childCount: input.childCount,
+    childSummaryCount: input.childSummaryCount,
+  });
+}
 
 /**
  * Slice 3 (fix instar#1069): resolve the sweep's effective routing framework +
@@ -115,7 +148,11 @@ export interface SweepRouterLike {
   for(component: string): { component: string; category: string; framework: string; available: boolean };
   evaluate(
     prompt: string,
-    opts: { attribution: { component: string; category: string }; model?: string },
+    opts: {
+      attribution: { component: string; category: string };
+      model?: string;
+      provenance?: DecisionProvenanceBlock;
+    },
   ): Promise<string>;
 }
 
@@ -580,7 +617,19 @@ export class CartographerSweepEngine {
       }
       const coveredSymbols = extractCodeSymbols(read.content);
       const prompt = this.buildLeafPrompt(node.path, read.content, read.truncated);
-      const summary = await this.callAuthor(prompt);
+      const summary = await this.callAuthor(prompt, {
+        decisionPoint: DP_CARTOGRAPHER_SUMMARY_AUTHOR,
+        context: buildCartographerSummaryDecisionContext({
+          nodePath: node.path,
+          nodeKind: 'file',
+          inputIdentitySha256: buildStructuredSha256Identity(read.content),
+          visibleSourceBytes: Buffer.byteLength(read.content, 'utf8'),
+          inputTruncated: read.truncated,
+          coveredSymbolCount: coveredSymbols.size,
+        }),
+        optionsPresented: ['write-summary'],
+        promptId: CARTOGRAPHER_LEAF_SUMMARY_PROMPT_ID,
+      });
       this.requirePaidAuthority();
       return this.persistAuthored(node, summary, coveredSymbols, framework, deltas, {
         modelTier: 'light', truncated: read.truncated,
@@ -606,7 +655,19 @@ export class CartographerSweepEngine {
     const coveredText = childSummaries.join('\n') + '\n' + children.map((c) => basename(c.path)).join(' ');
     const coveredSymbols = extractCodeSymbols(coveredText);
     const prompt = this.buildDirPrompt(node.path, childSummaries, children.map((c) => basename(c.path)));
-    const summary = await this.callAuthor(prompt);
+    const summary = await this.callAuthor(prompt, {
+      decisionPoint: DP_CARTOGRAPHER_SUMMARY_AUTHOR,
+      context: buildCartographerSummaryDecisionContext({
+        nodePath: node.path,
+        nodeKind: 'dir',
+        inputIdentitySha256: buildStructuredSha256Identity(childSummaries.join('\n')),
+        coveredSymbolCount: coveredSymbols.size,
+        childCount: children.length,
+        childSummaryCount: childSummaries.length,
+      }),
+      optionsPresented: ['write-summary'],
+      promptId: CARTOGRAPHER_DIRECTORY_SUMMARY_PROMPT_ID,
+    });
     this.requirePaidAuthority();
     return this.persistAuthored(node, summary, coveredSymbols, framework, deltas, {
       modelTier: 'light', childDigestHash: digest,
@@ -654,13 +715,14 @@ export class CartographerSweepEngine {
     return { kind: 'authored' };
   }
 
-  private async callAuthor(prompt: string): Promise<string> {
+  private async callAuthor(prompt: string, provenance: DecisionProvenanceBlock): Promise<string> {
     return this.d.llmQueue.enqueue(
       'background',
       () =>
         this.d.router.evaluate(prompt, {
           attribution: { component: CARTOGRAPHER_SWEEP_COMPONENT, category: 'job' },
           model: 'fast', // framework-agnostic light tier — NEVER a vendor model name
+          provenance,
         }),
       this.d.config.estCentsPerAuthor,
     );

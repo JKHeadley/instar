@@ -20,11 +20,13 @@ import {
   parseHubIntentResponse,
   resolveEnumTopic,
   buildHubIntentPrompt,
+  HUB_INTENT_PROMPT_ID,
   toHubCommand,
   type HubIntentInput,
   type HubTopicCandidate,
 } from '../../src/threadline/HubIntentClassifier.js';
-import type { IntelligenceProvider } from '../../src/core/types.js';
+import type { IntelligenceOptions, IntelligenceProvider } from '../../src/core/types.js';
+import { DP_HUB_INTENT_CLASSIFY } from '../../src/data/provenanceCoverage.js';
 
 const TOPICS: HubTopicCandidate[] = [
   { topicId: 101, topicName: 'roadmap' },
@@ -119,8 +121,35 @@ describe('HubIntentClassifier — prompt contract (structured output, untrusted 
 
 describe('HubIntentClassifier — decision + fail-open contract', () => {
   it('a high-confidence open command → isCommand:true, intent:open', async () => {
-    const r = await classifyHubIntent(base({}));
+    let options: IntelligenceOptions | undefined;
+    const message = 'open this';
+    const prior = 'Private prior hub context that must not enter provenance';
+    const intelligence: IntelligenceProvider = {
+      evaluate: async (_prompt, received) => {
+        options = received;
+        return verdict({ intent: 'open', confidence: 0.95 });
+      },
+    };
+    const r = await classifyHubIntent(base({
+      text: message,
+      conversationContext: [{ fromUser: true, text: prior }],
+      intelligence,
+    }));
     expect(r).toMatchObject({ isCommand: true, intent: 'open', targetTopicId: null, source: 'llm' });
+    expect(options?.provenance?.decisionPoint).toBe(DP_HUB_INTENT_CLASSIFY);
+    expect(options?.provenance?.optionsPresented).toEqual(['not-command', 'open', 'tie']);
+    expect(options?.provenance?.promptId).toBe(HUB_INTENT_PROMPT_ID);
+    expect(options?.provenance?.context).toMatchObject({
+      messageChars: message.length,
+      contextTurnCount: 1,
+      bindableTopicCount: TOPICS.length,
+      maxBindableTopics: 40,
+      minConfidence: 0.85,
+    });
+    const serializedContext = JSON.stringify(options?.provenance?.context ?? {});
+    expect(serializedContext).not.toContain(message);
+    expect(serializedContext).not.toContain(prior);
+    expect(serializedContext).not.toContain('GrowthBook rollout');
   });
 
   it('a high-confidence tie with a resolved enum target → isCommand:true, intent:tie', async () => {

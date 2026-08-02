@@ -10,7 +10,9 @@ import {
   buildForensicPrompt,
   parseForensicFindings,
   analyzeForensics,
+  MENTOR_STAGE_B_PROMPT_ID,
 } from '../../src/scheduler/MentorStageBForensics.js';
+import { DP_MENTOR_STAGE_B_CLASSIFY } from '../../src/data/provenanceCoverage.js';
 
 describe('buildForensicPrompt', () => {
   it('names the framework, the three buckets, and demands JSON-only output', () => {
@@ -111,6 +113,29 @@ describe('analyzeForensics', () => {
     expect(f).toHaveLength(1);
     expect(f[0].bucket).toBe('framework-limitation');
     expect(f[0].severity).toBe('high');
+  });
+
+  it('enrolls forensic signals without storing signal or framework text', async () => {
+    const evaluate = vi.fn(async () => '[]');
+    await analyzeForensics({
+      framework: 'cobalt-lantern-private-framework',
+      signals: 'cobalt-lantern private server-log signal',
+      evaluate,
+    });
+
+    const [prompt, provenance] = evaluate.mock.calls[0];
+    expect(prompt).toContain('cobalt-lantern');
+    expect(provenance).toMatchObject({
+      decisionPoint: DP_MENTOR_STAGE_B_CLASSIFY,
+      optionsPresented: [
+        'no-findings',
+        'framework-limitation',
+        'instar-integration-gap',
+        'generic-agent-mistake',
+      ],
+      promptId: MENTOR_STAGE_B_PROMPT_ID,
+    });
+    expect(JSON.stringify(provenance.context)).not.toContain('cobalt-lantern');
   });
 
   it('returns [] (no crash) when the LLM call throws', async () => {

@@ -6,10 +6,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   generateConversationBrief,
+  OPEN_CONVERSATION_BRIEF_PROMPT_ID,
   type BriefDeps,
   type BriefConversation,
   __testing,
 } from '../../../src/threadline/openConversationBrief.js';
+import { DP_OPEN_CONVERSATION_BRIEF } from '../../../src/data/provenanceCoverage.js';
 
 const NOW = Date.parse('2026-05-27T20:00:00Z');
 
@@ -45,6 +47,39 @@ function makeDeps(over: Partial<BriefDeps> = {}): BriefDeps {
 }
 
 describe('generateConversationBrief — Tier A (LLM)', () => {
+  it('enrolls only the LLM tier with identity-only conversation provenance', async () => {
+    let capturedPrompt = '';
+    let capturedOptions: any;
+    const messages = makeMessages(3);
+    messages[2].text = 'cobalt-lantern private peer detail';
+    const deps = makeDeps({
+      observability: { getThread: () => ({ messages }) },
+      intelligence: {
+        evaluate: async (prompt: string, options?: any) => {
+          capturedPrompt = prompt;
+          capturedOptions = options;
+          return 'PURPOSE: Private peer handoff\n\nA safe orientation summary.';
+        },
+      },
+    });
+
+    await generateConversationBrief('t1', makeConv(), deps);
+
+    expect(capturedPrompt).toContain('cobalt-lantern');
+    expect(capturedOptions.provenance).toMatchObject({
+      decisionPoint: DP_OPEN_CONVERSATION_BRIEF,
+      optionsPresented: ['write-brief'],
+      promptId: OPEN_CONVERSATION_BRIEF_PROMPT_ID,
+    });
+    const storedContext = JSON.stringify(capturedOptions.provenance.context);
+    expect(storedContext).not.toContain('cobalt-lantern');
+    expect(capturedOptions.provenance.context).toMatchObject({
+      visibleMessageCount: 3,
+      inboundMessageCount: 2,
+      outboundMessageCount: 1,
+    });
+  });
+
   it('happy path: PURPOSE → name, body → summary, source=llm', async () => {
     const b = await generateConversationBrief('t1', makeConv(), makeDeps());
     expect(b.topicName).toBe('OAuth refresh failure triage');

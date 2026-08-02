@@ -41,6 +41,10 @@
 
 import type { IntelligenceProvider } from './types.js';
 import type { NicknameCommand } from './NicknameCommand.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from './JudgmentProvenanceLog.js';
+import { DP_MOVE_INTENT_CLASSIFY } from '../data/provenanceCoverage.js';
+
+export const MOVE_INTENT_PROMPT_ID = 'move-intent-v1';
 
 /** One recent conversation turn, oldest→newest, fed to the LLM for reference. */
 export interface ConversationTurn {
@@ -171,6 +175,30 @@ function buildContextBlock(
       return `${who}: ${body}`;
     })
     .join('\n');
+}
+
+/** Identity-only envelope for the exact message/context window and target enum shown to the model. */
+export function buildMoveIntentDecisionContext(input: {
+  text: string;
+  context: ConversationTurn[];
+  knownNicknames: string[];
+  maxTurns: number;
+  maxChars: number;
+  minConfidence: number;
+}): Record<string, unknown> {
+  const visibleContext = buildContextBlock(input.context, input.maxTurns, input.maxChars);
+  return buildBoundedContext({
+    messageIdentitySha256: buildStructuredSha256Identity(input.text),
+    messageChars: input.text.length,
+    messageBytes: Buffer.byteLength(input.text, 'utf8'),
+    contextWindowIdentitySha256: buildStructuredSha256Identity(visibleContext),
+    contextWindowChars: visibleContext.length,
+    contextTurnCount: Math.min(input.context.length, input.maxTurns),
+    maxContextCharsPerTurn: input.maxChars,
+    knownNicknameCount: input.knownNicknames.length,
+    knownNicknameSetIdentitySha256: buildStructuredSha256Identity(JSON.stringify(input.knownNicknames)),
+    minConfidence: input.minConfidence,
+  });
 }
 
 /**
@@ -318,6 +346,19 @@ export async function classifyRelocationIntent(
         maxTokens: 200,
         timeoutMs,
         attribution: { component: 'MoveIntentClassifier' },
+        provenance: {
+          decisionPoint: DP_MOVE_INTENT_CLASSIFY,
+          context: buildMoveIntentDecisionContext({
+            text: input.text,
+            context,
+            knownNicknames: nicks,
+            maxTurns,
+            maxChars,
+            minConfidence,
+          }),
+          optionsPresented: ['not-command', 'transfer', 'pin'],
+          promptId: MOVE_INTENT_PROMPT_ID,
+        },
       }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('move-intent classify timeout')), timeoutMs),

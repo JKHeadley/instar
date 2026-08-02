@@ -15,7 +15,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { LLMConflictResolver } from '../../src/core/LLMConflictResolver.js';
+import {
+  LLMConflictResolver,
+  LLM_CONFLICT_TIER1_PROMPT_ID,
+  LLM_CONFLICT_TIER2_PROMPT_ID,
+} from '../../src/core/LLMConflictResolver.js';
 import type {
   ConflictFile,
   EscalationContext,
@@ -24,6 +28,7 @@ import type {
 } from '../../src/core/LLMConflictResolver.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { DP_LLM_CONFLICT_RESOLVE } from '../../src/data/provenanceCoverage.js';
 
 // ── Test Helpers ──────────────────────────────────────────────────────
 
@@ -290,6 +295,41 @@ describe('LLMConflictResolver', () => {
   // ── Prompt Construction ─────────────────────────────────────────
 
   describe('prompt construction', () => {
+    it('enrolls tier-specific prompts without storing conflict bodies', async () => {
+      const intelligence = makeMockIntelligence([
+        '',
+        '',
+        `=== RESOLVED: src/private.ts ===\nresolved\n=== END ===`,
+      ]);
+      const resolver = makeResolver(intelligence, tmpDir);
+
+      await resolver.resolve(makeConflict({
+        relativePath: 'src/private.ts',
+        oursContent: 'const ours = "cobalt-lantern";',
+        theirsContent: 'const theirs = "cobalt-lantern";',
+        conflictedContent: '<<<<<<< HEAD\ncobalt-lantern\n=======\ncobalt-lantern\n>>>>>>> peer',
+      }));
+
+      expect(intelligence.calls[0].options?.provenance).toMatchObject({
+        decisionPoint: DP_LLM_CONFLICT_RESOLVE,
+        optionsPresented: ['resolve-conflict'],
+        promptId: LLM_CONFLICT_TIER1_PROMPT_ID,
+      });
+      expect(intelligence.calls[2].options?.provenance).toMatchObject({
+        decisionPoint: DP_LLM_CONFLICT_RESOLVE,
+        optionsPresented: ['resolve-conflict', 'needs-human'],
+        promptId: LLM_CONFLICT_TIER2_PROMPT_ID,
+      });
+      for (const call of intelligence.calls) {
+        const storedContext = JSON.stringify(call.options?.provenance?.context);
+        expect(call.prompt).toContain('cobalt-lantern');
+        expect(storedContext).not.toContain('cobalt-lantern');
+        expect(call.options?.provenance?.context?.promptIdentitySha256).toMatch(
+          /^sha256:(?:[a-f0-9]{16}:){3}[a-f0-9]{16}$/,
+        );
+      }
+    });
+
     it('Tier 1 prompt includes file content and injection defense', async () => {
       const intelligence = makeMockIntelligence([
         `=== RESOLVED: src/utils.ts ===\nresolved\n=== END ===`,

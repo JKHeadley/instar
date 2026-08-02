@@ -20,10 +20,12 @@ import {
   createUsherCheckFn,
   usherCheckTurn,
   createUsherLoop,
+  USHER_TOPIC_ROUTE_PROMPT_ID,
   type FadedCandidate,
   type UsherCheckFn,
 } from '../../src/core/Usher.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import { DP_USHER_TOPIC_ROUTE } from '../../src/data/provenanceCoverage.js';
 
 let tempDir: string;
 let store: TopicIntentStore;
@@ -56,6 +58,31 @@ describe('prompt + parse', () => {
 });
 
 describe('createUsherCheckFn', () => {
+  it('enrolls turn/candidate evidence without storing their bodies', async () => {
+    let capturedPrompt = '';
+    let capturedOptions: any;
+    const prov: IntelligenceProvider = {
+      async evaluate(prompt: string, options?: any) {
+        capturedPrompt = prompt;
+        capturedOptions = options;
+        return '[]';
+      },
+    };
+    const privateCandidates: FadedCandidate[] = [
+      { refId: 'ref-private', text: 'cobalt-lantern private faded context', kind: 'decision' },
+    ];
+
+    await createUsherCheckFn(prov)('cobalt-lantern private turn', privateCandidates);
+
+    expect(capturedPrompt).toContain('cobalt-lantern');
+    expect(capturedOptions.provenance).toMatchObject({
+      decisionPoint: DP_USHER_TOPIC_ROUTE,
+      optionsPresented: ['no-reactivation', 'reactivate'],
+      promptId: USHER_TOPIC_ROUTE_PROMPT_ID,
+    });
+    expect(JSON.stringify(capturedOptions.provenance.context)).not.toContain('cobalt-lantern');
+  });
+
   it('degrades to [] with no provider (and fires onDegrade)', async () => {
     const seen: string[] = [];
     const out = await createUsherCheckFn(undefined, r => seen.push(r))('turn', CANDS);

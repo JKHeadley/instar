@@ -249,6 +249,90 @@ export const DP_UNJUSTIFIED_STOP_GATE = 'unjustified-stop-gate';
 /** Topic-intent extraction from a conversational turn (src/core/TopicIntentExtractor.ts). */
 export const DP_TOPIC_INTENT_EXTRACT = 'topic-intent-extract';
 
+/** Committed source/directory node → bounded Cartographer code-map summary. */
+export const DP_CARTOGRAPHER_SUMMARY_AUTHOR = 'cartographer-summary-author';
+
+/** Project spec + referenced committed files → drift signal. */
+export const DP_PROJECT_DRIFT_CHECK = 'project-drift-check';
+
+/** Untagged inbound message + topic history → coherence warning signal. */
+export const DP_INPUT_GUARD = 'input-guard';
+
+/** Ambiguous inbound user message → interrupt category. */
+export const DP_MESSAGE_SENTINEL_CLASSIFY = 'message-sentinel-classify';
+
+/** Inbound message + bounded conversation → machine relocation intent. */
+export const DP_MOVE_INTENT_CLASSIFY = 'move-intent-classify';
+
+/** Hub message + bounded conversation/topic enum → bind intent. */
+export const DP_HUB_INTENT_CLASSIFY = 'hub-intent-classify';
+
+/** Inbound message + bounded conversation/profile enums → topic profile intent. */
+export const DP_PROFILE_INTENT_CLASSIFY = 'profile-intent-classify';
+
+/** Ambiguous interactive terminal prompt → approve or relay. */
+export const DP_INPUT_CLASSIFY = 'input-classify';
+
+/** Bounded active-session terminal slice → structured routing summary. */
+export const DP_SESSION_SUMMARY_EXTRACT = 'session-summary-extract';
+
+/** Slack fallback stall/promise evidence → send or suppress alert. */
+export const DP_SLACK_STALL_CONFIRM = 'slack-stall-confirm';
+
+/** Telegram fallback stall/promise evidence → send or suppress alert. */
+export const DP_TELEGRAM_STALL_CONFIRM = 'telegram-stall-confirm';
+
+/** Divergent multi-machine file state → resolved content or human escalation. */
+export const DP_LLM_CONFLICT_RESOLVE = 'llm-conflict-resolve';
+
+/** Bounded A2A conversation history → topic name and orientation brief. */
+export const DP_OPEN_CONVERSATION_BRIEF = 'open-conversation-brief';
+
+/** Bounded topic conversation window → rolling purpose and summary. */
+export const DP_TOPIC_SUMMARIZE = 'topic-summarize';
+
+/** Bounded dashboard page facts → awareness-only insight strip. */
+export const DP_DASHBOARD_INSIGHT = 'dashboard-insight';
+
+/** Ambiguous bounded terminal output → blocking-prompt kind or no prompt. */
+export const DP_PROMPT_INJECTION_DETECT = 'prompt-injection-detect';
+
+/** Ambiguous A2A message → reply or suppress. */
+export const DP_WARRANTS_REPLY_GATE = 'warrants-reply-gate';
+
+/** Long-running command evidence → stuck or legitimate. */
+export const DP_WATCHDOG_STUCK_JUDGE = 'watchdog-stuck-judge';
+
+/** User/agent exchange set → detected durable commitment kinds. */
+export const DP_COMMITMENT_DETECT = 'commitment-detect';
+
+/** Bounded topic history + session transcript → resume UUID match. */
+export const DP_RESUME_UUID_VALIDATE = 'resume-uuid-validate';
+
+/** Draft reply + tracked refs → acts-on/contradicts arc classification. */
+export const DP_TOPIC_INTENT_ARC_CHECK = 'topic-intent-arc-check';
+
+/** Inbound user turn + faded refs → context reactivation signal. */
+export const DP_USHER_TOPIC_ROUTE = 'usher-topic-route';
+
+/** Bounded pre-compaction transcript tail → durable-fact candidates. */
+export const DP_PRE_COMPACTION_FLUSH = 'pre-compaction-flush';
+
+/** Bounded self-knowledge fragments → first-person synthesis. */
+export const DP_TREE_SYNTHESIZE = 'tree-synthesize';
+
+/** Session stall evidence → recovery diagnosis and first treatment. */
+export const DP_STALL_TRIAGE_DIAGNOSIS = 'stall-triage-diagnosis';
+
+/** Sanitized conversation context + eligible features → surfacing recommendation. */
+export const DP_DISCOVERY_EVALUATE = 'discovery-evaluate';
+
+/** Durable mid-work queue evidence → observe-only restart sanity verdict. */
+export const DP_RESUME_SANITY_CHECK = 'resume-sanity-check';
+
+/** Bounded mentor signals → zero or more forensic issue classifications. */
+export const DP_MENTOR_STAGE_B_CLASSIFY = 'mentor-stage-b-classify';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -376,12 +460,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
 
   // — Sentinels —
   {
-    decisionPoint: 'input-guard',
+    decisionPoint: DP_INPUT_GUARD,
     component: 'InputGuard',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The warn-only review has no correlation-preserving downstream label for whether an untagged message ' +
+      'was genuinely coherent or suspicious. Identity-only rows are collected now so later authenticated ' +
+      'review or recurrence evidence can grade real cases without archiving inbound text.',
     reason:
-      'Input-coherence verdict over an inbound prompt; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Input-coherence verdict over an inbound prompt and recent topic context; provenance stores only bounded identities and shape.',
   },
   {
     decisionPoint: 'session-activity-digest',
@@ -392,20 +482,32 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Activity digest authored over session tmux output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'stall-triage-diagnosis',
+    decisionPoint: DP_STALL_TRIAGE_DIAGNOSIS,
     component: 'StallTriageNurse',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The later recovery check is not correlation-bound to the model settlement, and escalation can recover ' +
+      'after an incorrect initial action. Treating eventual recovery as direct grading would therefore ' +
+      'misattribute outcomes; identity-only provenance is collected until that join exists.',
     reason:
-      'Stall-triage diagnosis over session output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Stall-triage diagnosis over terminal and message evidence; context stores exact identities and bounded shape, never session or message bodies.',
   },
   {
-    decisionPoint: 'commitment-detect',
+    decisionPoint: DP_COMMITMENT_DETECT,
     component: 'CommitmentSentinel',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Schema filtering and duplicate checks establish record shape, not whether a detected commitment matches ' +
+      'the operator-agent agreement. Identity-only provenance enables later comparison with delivery, withdrawal, ' +
+      'or operator correction without retaining conversation bodies.',
     reason:
-      'Commitment detection over conversation text; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Commitment detection over bounded user-agent exchange pairs; exact prompt and exchange identities are stored without conversation text.',
   },
   {
     decisionPoint: 'presence-stall-judge',
@@ -416,20 +518,32 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Tier-3 stall judgment over session output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'message-sentinel-classify',
+    decisionPoint: DP_MESSAGE_SENTINEL_CLASSIFY,
     component: 'MessageSentinel',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The sentinel can enact pause, redirect, or emergency-stop behavior, but those actions do not currently ' +
+      'carry the router correlation needed to distinguish a correct interruption from a false positive. ' +
+      'Identity-only rows are collected now for later authenticated review and outcome joining.',
     reason:
-      'Pause/emergency/normal intent classification over an inbound user message (latency-critical); enrollment queued in the ACT-1193 retrofit backlog.',
+      'Latency-critical pause, emergency, redirect, or normal classification over an inbound user message; provenance retains message identity and shape only.',
   },
   {
-    decisionPoint: 'project-drift-check',
+    decisionPoint: DP_PROJECT_DRIFT_CHECK,
     component: 'ProjectDriftChecker',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The checker verifies citation shape and reports a bounded signal, but no registered outcome rule yet ' +
+      'establishes whether the historical semantic drift verdict was correct. Recording identity-only cases ' +
+      'now supports later independent or operator-reviewed grading without retaining source bodies.',
     reason:
-      'Is-work-on-project coherence verdict over session work + files; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Project-spec premise drift judgment over bounded repository files; provenance retains only project, path, digest, and input-shape identity.',
   },
   {
     decisionPoint: 'temporal-coherence-check',
@@ -440,46 +554,76 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Temporal-coherence verdict over conversation content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'watchdog-stuck-judge',
+    decisionPoint: DP_WATCHDOG_STUCK_JUDGE,
     component: 'SessionWatchdog',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The existing override counter observes legitimate verdicts, but no independent completion or operator ' +
+      'label is correlated to each stuck/legitimate decision. Identity-only provenance banks real command ' +
+      'evidence without treating elapsed time or the parser as ground truth.',
     reason:
-      'Stuck-session judgment over live session output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Stuck-command judgment over bounded command and terminal evidence; identity-only context stores exact prompt and constituent digests, never terminal text.',
   },
   {
-    decisionPoint: 'resume-sanity-check',
+    decisionPoint: DP_RESUME_SANITY_CHECK,
     component: 'ResumeQueueDrainer',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The Tier-1 verdict is deliberately observe-only and cannot affect the deterministic resume gates; no ' +
+      'independent later label says whether its concern was correct. Identity-only provenance records real ' +
+      'sanity judgments without retaining queue reason text.',
     reason:
-      'Resume-sanity verdict before a queued mid-work revival; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Resume-sanity verdict before a queued mid-work revival; context stores exact prompt, reason, and evidence-set identities without queue text.',
   },
   {
-    decisionPoint: 'topic-intent-arc-check',
+    decisionPoint: DP_TOPIC_INTENT_ARC_CHECK,
     component: 'TopicIntentArcCheck',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The signal-only priority logic establishes how a parsed engagement becomes a warning, but it does not ' +
+      'independently label whether the model correctly linked a draft to a tracked ref. Identity-only provenance ' +
+      'banks those cases for later operator or redraft-outcome review.',
     reason:
-      'Arc-check classification of a topic intent over conversation; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Arc-check classification over a draft and tracked topic refs; exact prompt, draft, and ref-set identities are stored without their bodies.',
   },
   {
-    decisionPoint: 'slack-stall-confirm',
+    decisionPoint: DP_SLACK_STALL_CONFIRM,
     component: 'SlackAdapter',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The response parser proves only that the model said yes or no; it does not independently establish ' +
+      'whether sending or suppressing the alert was correct. Identity-only provenance permits later comparison ' +
+      'with session recovery and operator feedback without inventing a label today.',
     reason:
-      'Stall-confirm alert-suppression judgment over session output (Slack arm); enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Slack fallback alert confirmation over session state and agent-authored context; identity-only context stores digests and scalar facts, never message text.',
   },
 
   // — Gates —
   {
-    decisionPoint: 'prompt-injection-detect',
+    decisionPoint: DP_PROMPT_INJECTION_DETECT,
     component: 'PromptGate',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'JSON/type validation and the no-prompt cache establish parser and spend behavior, not whether terminal ' +
+      'output truly contained a blocking system prompt. Identity-only provenance enables later comparison with ' +
+      'actual prompt responses without storing terminal bodies.',
     reason:
-      'Prompt-injection detection over inbound content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Blocking-prompt detection over bounded terminal output; exact prompt and terminal-context identities are stored without terminal text.',
   },
   {
     decisionPoint: 'external-operation-gate',
@@ -490,12 +634,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Operation mutability/reversibility classification incl. in-content approval claims; enrollment queued in the ACT-1193 retrofit backlog.',
   },
   {
-    decisionPoint: 'warrants-reply-gate',
+    decisionPoint: DP_WARRANTS_REPLY_GATE,
     component: 'WarrantsReplyGate',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Deterministic decisive-signal paths bypass this model call, while ambiguous reply/no-reply verdicts lack ' +
+      'an independent per-turn usefulness label. Identity-only provenance records the authority cases for later ' +
+      'conversation-outcome grading without retaining peer message bodies.',
     reason:
-      'Should-I-reply verdict over an inbound message; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Ambiguous A2A reply/no-reply judgment over a bounded peer-message slice; context stores identities and bounds, never message text.',
   },
   {
     decisionPoint: DP_UNJUSTIFIED_STOP_GATE,
@@ -538,28 +688,46 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Outbound coherence review — THE measured high-volume point (3,641 of 4,098 llm calls/24h on the dev agent, spec §5.6); MUST declare sampled:<rate> or budget:<rows/day> at enrollment, never full.',
   },
   {
-    decisionPoint: 'move-intent-classify',
+    decisionPoint: DP_MOVE_INTENT_CLASSIFY,
     component: 'MoveIntentClassifier',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'A transfer or pin may succeed even when the classifier misunderstood the user, while pass-through has no ' +
+      'independent correctness label. Until downstream command disposition and authenticated review carry this ' +
+      'correlation, identity-only cases are recorded for later grading.',
     reason:
-      'Move/pin command-vs-discussion intent over an inbound message + context; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Move or pin command-versus-discussion intent over an inbound message and bounded conversation context; provenance stores identity and shape only.',
   },
   {
-    decisionPoint: 'hub-intent-classify',
+    decisionPoint: DP_HUB_INTENT_CLASSIFY,
     component: 'HubIntentClassifier',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'A successful bind does not prove the message was correctly interpreted, and a pass-through produces no ' +
+      'independent label. Until the consumed-message path preserves quality correlation and authenticated review, ' +
+      'identity-only rows are collected for later grading.',
     reason:
-      'Hub open/tie bind-intent over an inbound hub message; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Hub open or tie intent over an inbound message, bounded conversation, and bindable-topic enum; provenance stores identity and shape only.',
   },
   {
-    decisionPoint: 'profile-intent-classify',
+    decisionPoint: DP_PROFILE_INTENT_CLASSIFY,
     component: 'ProfileIntentClassifier',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'A profile write applying successfully proves enum validity, not that the user intended the change, while ' +
+      'pass-through has no independent label. Identity-only cases are collected until profile-write disposition ' +
+      'and authenticated correction evidence carry this correlation.',
     reason:
-      'Topic-profile change intent (framework/model/thinking) over an inbound message; enrollment queued in the ACT-1193 retrofit backlog.',
+      'Topic framework, model, or thinking-mode intent over an inbound message, bounded context, and allowed enums; provenance stores identity and shape only.',
   },
   {
     decisionPoint: 'llm-sanitize',
@@ -620,12 +788,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Knowledge-tree fragment triage over stored content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'topic-summarize',
+    decisionPoint: DP_TOPIC_SUMMARIZE,
     component: 'TopicSummarizer',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'PURPOSE parsing and minimum-length checks establish output shape, not whether the rolling summary ' +
+      'faithfully preserves decisions, state, and pending work. Identity-only provenance banks real topic ' +
+      'windows for later operator-reviewed or continuation-quality labels.',
     reason:
-      'Topic summary authoring over conversation content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Topic summary authoring over a bounded conversation window; exact prompt and constituent identities are stored without conversation or prior-summary bodies.',
   },
   {
     decisionPoint: 'contextual-evaluate',
@@ -652,20 +826,32 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Artifact-vs-standard conformance review over file content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'discovery-evaluate',
+    decisionPoint: DP_DISCOVERY_EVALUATE,
     component: 'DiscoveryEvaluator',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Output validation proves only that a recommendation names an eligible feature and allowed pressure level; ' +
+      'it does not establish relevance or user benefit. Later discovery-state transitions are not yet ' +
+      'correlation-bound to each settlement, so provenance is collected without claiming a grade.',
     reason:
-      'Serendipity-discovery evaluation over subagent output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Feature surfacing evaluation over sanitized context and eligible feature descriptions; provenance stores identities and counts, never descriptive text.',
   },
   {
-    decisionPoint: 'dashboard-insight',
+    decisionPoint: DP_DASHBOARD_INSIGHT,
     component: 'DashboardInsightEngine',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Strict JSON parsing and the deterministic floor establish safe degradation, but the floor is not ' +
+      'independent ground truth for which fact mattered most. Identity-only provenance enables later operator ' +
+      'or page-outcome review without retaining page-data bodies.',
     reason:
-      'Awareness-only page-data insight authoring (degrades to a deterministic floor); enrollment queued in the ACT-1193 retrofit backlog.',
+      'Awareness-only page-data insight authoring; exact bounded-prompt identity and scalar shape are stored without page facts, metrics, or anomalies.',
   },
 
   // — Jobs —
@@ -678,12 +864,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Session authoring from (possibly user-authored) task descriptions; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'cartographer-summary-author',
+    decisionPoint: DP_CARTOGRAPHER_SUMMARY_AUTHOR,
     component: 'CartographerSweep',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The deterministic symbol-presence and output-shape checks measure whether a summary was safe to persist, ' +
+      'but they do not establish semantic correctness. Provenance is collected now so later independent or ' +
+      'operator-reviewed labels can grade real committed-source summaries without a cold start.',
     reason:
-      'Doc-tree summary authoring over untrusted code; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Doc-tree summary authoring over untrusted committed code; identity-only context records node and input shape, never source or child-summary bodies.',
   },
   {
     decisionPoint: 'standards-coverage-enrich',
@@ -696,44 +888,74 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
 
   // — Previously-uncategorized callsites (LLM Routing Registry audit set) —
   {
-    decisionPoint: 'input-classify',
+    decisionPoint: DP_INPUT_CLASSIFY,
     component: 'InputClassifier',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The deterministic parser establishes whether the model emitted APPROVE or RELAY, but no independent ' +
+      'safety label or downstream operator disposition is correlated yet. Identity-only provenance banks real ' +
+      'ambiguous prompts for later grading without treating parser acceptance as correctness.',
     reason:
-      'Auto-approve vs relay classification of inbound input; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Auto-approve vs relay classification of ambiguous inbound terminal prompts; identity-only context stores prompt and constituent digests, never prompt text.',
   },
   {
-    decisionPoint: 'session-summary-extract',
+    decisionPoint: DP_SESSION_SUMMARY_EXTRACT,
     component: 'SessionSummarySentinel',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'JSON shape validation and routing use do not independently establish that the authored task, phase, ' +
+      'files, topics, and blockers are semantically faithful. Provenance is collected now so later misroute or ' +
+      'operator-reviewed labels can grade real summaries without a cold start.',
     reason:
-      'Task/phase/files extraction over tmux output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Task/phase/files extraction over bounded tmux output; identity-only context stores exact visible-slice digests and bounds, never terminal text.',
   },
   {
-    decisionPoint: 'telegram-stall-confirm',
+    decisionPoint: DP_TELEGRAM_STALL_CONFIRM,
     component: 'TelegramAdapter',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The response parser proves only that the model said yes or no; it does not independently establish ' +
+      'whether sending or suppressing the alert was correct. Identity-only provenance permits later comparison ' +
+      'with session recovery and operator feedback without inventing a label today.',
     reason:
-      'Stall-confirm alert-suppression judgment over session output (Telegram arm); enrollment queued in the ACT-1193 retrofit backlog.',
+      'Telegram fallback alert confirmation over session state and agent-authored context; identity-only context stores digests and scalar facts, never message text.',
   },
   {
-    decisionPoint: 'resume-uuid-validate',
+    decisionPoint: DP_RESUME_UUID_VALIDATE,
     component: 'ResumeValidator',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The fail-safe path prevents cross-topic resume on uncertainty, but no independent later label establishes ' +
+      'whether each match or mismatch verdict was semantically correct. Identity-only provenance banks those ' +
+      'cases without storing topic or session transcript bodies.',
     reason:
-      'Resume-UUID-vs-topic match verdict over session/resume state; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Resume-UUID-vs-topic match verdict over bounded topic and transcript slices; context stores exact identities and bounds, never message bodies.',
   },
   {
-    decisionPoint: 'usher-topic-route',
+    decisionPoint: DP_USHER_TOPIC_ROUTE,
     component: 'Usher',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The signal store tracks later acted-on events, but those events are not yet correlation-bound to each ' +
+      'model settlement or registered as a grading rule. Identity-only provenance preserves real reactivation ' +
+      'judgments so that correlation can be added without a cold start.',
     reason:
-      'Per-turn topic routing over an inbound user turn; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Per-turn faded-context reactivation over a bounded user turn and candidate set; context stores identities and bounds, never message or ref text.',
   },
   {
     decisionPoint: DP_TOPIC_INTENT_EXTRACT,
@@ -764,36 +986,60 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Topic-intent extraction from a conversational turn — the highest-volume unenrolled point after the stop gate.',
   },
   {
-    decisionPoint: 'pre-compaction-flush',
+    decisionPoint: DP_PRE_COMPACTION_FLUSH,
     component: 'PreCompactionFlush',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Successful parsing and persistence prove only that the response was structurally usable; they do not ' +
+      'independently establish that a proposed fact was durable, correct, or absent from recoverable sources. ' +
+      'Identity-only provenance banks real cases without retaining transcript bodies.',
     reason:
-      'Durable-fact extraction over a transcript before compaction; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Opt-in durable-fact extraction over a bounded transcript tail; context stores exact input identities and bounds, never transcript text.',
   },
   {
-    decisionPoint: 'tree-synthesize',
+    decisionPoint: DP_TREE_SYNTHESIZE,
     component: 'TreeSynthesis',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'A non-empty response and token estimate establish availability, not whether the narrative faithfully ' +
+      'answers the query without omission or extrapolation. Identity-only provenance preserves real synthesis ' +
+      'cases for later independent or operator-reviewed grading.',
     reason:
-      'Knowledge-fragment synthesis into an answer; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Knowledge-fragment synthesis into an answer; context records exact query, agent, fragment-set, and prompt identities without storing their text.',
   },
   {
-    decisionPoint: 'llm-conflict-resolve',
+    decisionPoint: DP_LLM_CONFLICT_RESOLVE,
     component: 'LLMConflictResolver',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The marker parser and existing escalation log show whether a response was syntactically accepted, but ' +
+      'no independent post-merge correctness signal is correlated to the decision row yet. Tier-specific ' +
+      'identity-only provenance preserves real cases without equating parser acceptance with correctness.',
     reason:
-      'Divergent multi-machine state resolution over untrusted peer data; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Divergent multi-machine state resolution over untrusted peer data; exact tier-prompt identity and bounds are stored without file or peer content.',
   },
   {
-    decisionPoint: 'open-conversation-brief',
+    decisionPoint: DP_OPEN_CONVERSATION_BRIEF,
     component: 'openConversationBrief',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Name/summary shape and credential scrubbing establish safe persistence, not semantic faithfulness to the ' +
+      'conversation. Identity-only provenance is collected so later operator edits or routing outcomes can grade ' +
+      'real briefs without retaining peer conversation bodies.',
     reason:
-      'A2A conversation-brief authoring over peer content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'A2A conversation-brief authoring over a bounded peer-message window; context stores only exact prompt identity, bounds, and direction counts.',
   },
   {
     decisionPoint: 'a2a-checkin-summarize',
@@ -812,12 +1058,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Recurring-correction distillation into a durable preference; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'mentor-stage-b-classify',
+    decisionPoint: DP_MENTOR_STAGE_B_CLASSIFY,
     component: 'mentor-stage-b',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Parser acceptance and ledger deduplication establish safe structure, not whether a forensic finding ' +
+      'correctly attributes the observed behavior. Later issue dispositions are not correlation-bound to each ' +
+      'settlement, so provenance is collected without treating persistence as truth.',
     reason:
-      'Mentor-signal classification over mentee output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Mentor-signal classification over bounded mentee output; context stores exact signal and prompt identities without log or session text.',
   },
 
   // ── Argued exemptions (closed taxonomy; pinned shrink-only) ──────────────

@@ -26,12 +26,35 @@
  */
 
 import type { IntelligenceProvider } from './types.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from './JudgmentProvenanceLog.js';
+import { DP_TOPIC_INTENT_ARC_CHECK } from '../data/provenanceCoverage.js';
 import {
   TopicIntentStore,
   isTaskContextKind,
   type EstablishedRef,
   type ProjectionResult,
 } from './TopicIntent.js';
+
+export const TOPIC_INTENT_ARC_CHECK_PROMPT_ID = 'topic-intent-arc-check-v1';
+
+/** Identity-only envelope for the exact draft/ref prompt shown to the classifier. */
+export function buildTopicIntentArcDecisionContext(input: {
+  promptText: string;
+  draftText: string;
+  refs: Array<EstablishedRef & { projection: ProjectionResult }>;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    draftIdentitySha256: buildStructuredSha256Identity(input.draftText),
+    draftChars: input.draftText.length,
+    refCount: input.refs.length,
+    refSetIdentitySha256: buildStructuredSha256Identity(JSON.stringify(
+      input.refs.map((ref) => [ref.refId, ref.text, ref.projection.tier]),
+    )),
+  });
+}
 
 export interface ArcCheckInput {
   topicId: number;
@@ -257,13 +280,20 @@ export function createArcCheckClassifyFn(
       return { actsOn: [], contradicts: [] };
     }
     const { systemPrompt, userPrompt } = buildArcCheckPrompt(draftText, refs);
+    const prompt = `${systemPrompt}\n\n${userPrompt}`;
     let raw: string;
     try {
-      raw = await intelligence.evaluate(`${systemPrompt}\n\n${userPrompt}`, {
+      raw = await intelligence.evaluate(prompt, {
         model: 'fast',
         temperature: 0,
         maxTokens: 400,
         attribution: { component: 'TopicIntentArcCheck' },
+        provenance: {
+          decisionPoint: DP_TOPIC_INTENT_ARC_CHECK,
+          context: buildTopicIntentArcDecisionContext({ promptText: prompt, draftText, refs }),
+          optionsPresented: ['no-engagement', 'acts-on', 'contradicts'],
+          promptId: TOPIC_INTENT_ARC_CHECK_PROMPT_ID,
+        },
       });
     } catch {
       try { onDegrade?.('error'); } catch { /* metering best-effort */ }

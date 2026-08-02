@@ -1,0 +1,54 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The existing decision-quality meter now observes 28 additional model-backed
+judgments that were already declared in its census and already used the shared
+intelligence router. Coverage moves from 11 wired / 47 pending / 6 exempt to 39
+wired / 19 pending / 6 exempt without increasing the census row count.
+
+Each enrollment uses a stable typed identity, code-authored options, an explicit
+daily volume budget, and an identity-only context envelope. No message,
+transcript, prompt slice, query, source fragment, or terminal output is copied
+into the new provenance context. The model calls, deterministic floors,
+fallbacks, and enacted behavior are unchanged.
+
+The remaining 19 rows stay visibly pending: nine require census identity or
+composition repair, and ten need a live router/owner or an honest exemption.
+This release does not claim complete decision coverage or outcome grading for
+the new measurement-only points.
+
+## What to Tell Your User
+
+- “Instar can now measure a much larger set of its existing model judgments
+  without changing what those judgments are allowed to do.”
+- “The added records contain bounded identities and shape only, not your message
+  or transcript content.”
+- “No setup or action is required; this improves the evidence available for
+  later decision-quality review.”
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Decision-quality observation for 28 additional existing judgments | Automatic wherever the existing provenance seam is enabled |
+| Stable per-judgment prompt and option identity | Read through the existing decision-quality and provenance surfaces |
+| Bounded privacy-safe context for the new points | Automatic; all new rows use identity-only builders and non-full daily budgets |
+
+## Compatibility Notes
+
+No API, schema, database, configuration, migration, external-service, or
+multi-machine coordination change. Existing fallback and deterministic behavior
+is preserved. Reverting an enrollment removes only its observation metadata and
+returns its census row to pending.
+
+## Evidence
+
+All 28 enrollments pass together in 850 checks across 29 files. TypeScript
+no-emit checking and the LLM-attribution, no-direct-LLM-HTTP, and
+no-whole-file synchronous-read guards pass. The census ratchet proves the row
+count remains 81 while wired coverage increases from 11 to 39, and an
+independent review of PR #1841 approved the exact source head against
+pre-written wiring and denominator-integrity bars.

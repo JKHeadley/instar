@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { StallTriageNurse } from '../../src/monitoring/StallTriageNurse.js';
+import {
+  StallTriageNurse,
+  STALL_TRIAGE_DIAGNOSIS_PROMPT_ID,
+} from '../../src/monitoring/StallTriageNurse.js';
 import type {
   TriageDeps,
   StallTriageConfig,
@@ -8,6 +11,7 @@ import type {
   TriageContext,
   TriageDiagnosis,
 } from '../../src/monitoring/StallTriageNurse.types.js';
+import { DP_STALL_TRIAGE_DIAGNOSIS } from '../../src/data/provenanceCoverage.js';
 
 // ─── Test Helpers ──────────────────────────────────────────
 
@@ -347,6 +351,31 @@ describe('StallTriageNurse', () => {
   // ─── 4. Diagnose via IntelligenceProvider ──────────────────
 
   describe('diagnose via IntelligenceProvider', () => {
+    it('enrolls stall evidence without storing terminal or message text', async () => {
+      (deps.captureSessionOutput as ReturnType<typeof vi.fn>)
+        .mockReturnValue('cobalt-lantern private terminal evidence');
+      (deps.getTopicHistory as ReturnType<typeof vi.fn>).mockReturnValue([{
+        text: 'cobalt-lantern private prior message',
+        fromUser: true,
+        timestamp: '2026-08-02T00:00:00.000Z',
+      }]);
+      const nurse = new StallTriageNurse(deps, {
+        config: { ...TEST_CONFIG, useIntelligenceProvider: true },
+        intelligence: mockIntelligence as any,
+      });
+
+      await nurse.triage(1, 'cobalt-lantern-private-session', 'cobalt-lantern private pending', Date.now());
+
+      const [prompt, options] = mockIntelligence.evaluate.mock.calls[0];
+      expect(prompt).toContain('cobalt-lantern');
+      expect(options.provenance).toMatchObject({
+        decisionPoint: DP_STALL_TRIAGE_DIAGNOSIS,
+        optionsPresented: ['status-update', 'nudge', 'interrupt', 'unstick', 'restart'],
+        promptId: STALL_TRIAGE_DIAGNOSIS_PROMPT_ID,
+      });
+      expect(JSON.stringify(options.provenance.context)).not.toContain('cobalt-lantern');
+    });
+
     it('uses IntelligenceProvider when configured', async () => {
       const nurse = new StallTriageNurse(deps, {
         config: { ...TEST_CONFIG, useIntelligenceProvider: true },

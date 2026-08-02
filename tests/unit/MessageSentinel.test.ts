@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { MessageSentinel } from '../../src/core/MessageSentinel.js';
+import { MessageSentinel, MESSAGE_SENTINEL_PROMPT_ID } from '../../src/core/MessageSentinel.js';
 import type { MessageSentinelConfig, SentinelCategory } from '../../src/core/MessageSentinel.js';
+import type { IntelligenceOptions } from '../../src/core/types.js';
+import { DP_MESSAGE_SENTINEL_CLASSIFY } from '../../src/data/provenanceCoverage.js';
 
 describe('MessageSentinel', () => {
   let sentinel: MessageSentinel;
@@ -271,10 +273,12 @@ describe('MessageSentinel', () => {
   describe('LLM classification', () => {
     it('uses LLM for ambiguous messages', async () => {
       let promptReceived = '';
+      let optionsReceived: IntelligenceOptions | undefined;
       sentinel = new MessageSentinel({
         intelligence: {
-          evaluate: async (prompt) => {
+          evaluate: async (prompt, options) => {
             promptReceived = prompt;
+            optionsReceived = options;
             return 'redirect';
           },
         },
@@ -285,6 +289,23 @@ describe('MessageSentinel', () => {
       expect(result.method).toBe('llm');
       expect(result.action.type).toBe('priority-inject');
       expect(promptReceived).toContain('actually, change the approach');
+      expect(optionsReceived?.provenance?.decisionPoint).toBe(DP_MESSAGE_SENTINEL_CLASSIFY);
+      expect(optionsReceived?.provenance?.optionsPresented).toEqual([
+        'emergency-stop',
+        'pause',
+        'redirect',
+        'normal',
+      ]);
+      expect(optionsReceived?.provenance?.promptId).toBe(MESSAGE_SENTINEL_PROMPT_ID);
+      expect(optionsReceived?.provenance?.context).toMatchObject({
+        messageChars: 'actually, change the approach to use archives instead'.length,
+        trimmedChars: 'actually, change the approach to use archives instead'.length,
+        wordCount: 8,
+        containsNewline: false,
+      });
+      expect(JSON.stringify(optionsReceived?.provenance?.context ?? {})).not.toContain(
+        'actually, change the approach',
+      );
     });
 
     it('LLM failure defaults to pass-through', async () => {

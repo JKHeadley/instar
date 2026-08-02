@@ -16,6 +16,10 @@
 
 import type { IntelligenceProvider } from '../core/types.js';
 import type { TopicMemory, TopicMessage } from './TopicMemory.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { DP_TOPIC_SUMMARIZE } from '../data/provenanceCoverage.js';
+
+export const TOPIC_SUMMARIZER_PROMPT_ID = 'topic-summarize-v1';
 
 export interface TopicSummarizerConfig {
   /** Minimum new messages before triggering a summary update */
@@ -41,6 +45,32 @@ const DEFAULT_CONFIG: TopicSummarizerConfig = {
   maxMessagesPerPrompt: 200,
   maxSummaryTokens: 1024,
 };
+
+/** Identity-only envelope for the exact bounded conversation prompt shown to the summarizer. */
+export function buildTopicSummaryDecisionContext(input: {
+  promptText: string;
+  messages: TopicMessage[];
+  existingSummary: string | null;
+  topicName: string | null;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    messageCount: input.messages.length,
+    userMessageCount: input.messages.filter((message) => message.fromUser).length,
+    agentMessageCount: input.messages.filter((message) => !message.fromUser).length,
+    existingSummaryAvailable: input.existingSummary !== null,
+    existingSummaryIdentitySha256: input.existingSummary === null
+      ? null
+      : buildStructuredSha256Identity(input.existingSummary),
+    existingSummaryChars: input.existingSummary?.length ?? 0,
+    topicNameIdentitySha256: input.topicName === null
+      ? null
+      : buildStructuredSha256Identity(input.topicName),
+    topicNameChars: input.topicName?.length ?? 0,
+  });
+}
 
 /**
  * Build the prompt for generating a topic summary.
@@ -158,12 +188,25 @@ export class TopicSummarizer {
       existingSummary?.summary ?? null,
       meta?.topicName ?? null,
     );
+    const existingSummaryText = existingSummary?.summary ?? null;
+    const topicName = meta?.topicName ?? null;
 
     // Generate summary via LLM (Haiku for cost efficiency)
     const summary = await this.intelligence.evaluate(prompt, {
       model: 'fast',
       maxTokens: this.config.maxSummaryTokens,
       attribution: { component: 'TopicSummarizer' }, // attribution for /metrics/features
+      provenance: {
+        decisionPoint: DP_TOPIC_SUMMARIZE,
+        context: buildTopicSummaryDecisionContext({
+          promptText: prompt,
+          messages: messagesToProcess,
+          existingSummary: existingSummaryText,
+          topicName,
+        }),
+        optionsPresented: ['write-summary'],
+        promptId: TOPIC_SUMMARIZER_PROMPT_ID,
+      },
     });
 
     if (!summary || summary.trim().length < 10) {

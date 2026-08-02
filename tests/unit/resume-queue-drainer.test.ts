@@ -13,6 +13,9 @@ import path from 'node:path';
 import { ResumeQueue, type ResumeCandidateInput } from '../../src/monitoring/ResumeQueue.js';
 import {
   ResumeQueueDrainer,
+  buildResumeSanityPrompt,
+  buildResumeSanityEvaluationOptions,
+  RESUME_SANITY_CHECK_PROMPT_ID,
   type ResumeQueueDrainerDeps,
 } from '../../src/monitoring/ResumeQueueDrainer.js';
 import {
@@ -20,6 +23,7 @@ import {
   COMMITMENT_ACTIVE_RUN_REASON,
   isAutoResumableEmergencyPauseReason,
 } from '../../src/core/WorkEvidence.js';
+import { DP_RESUME_SANITY_CHECK } from '../../src/data/provenanceCoverage.js';
 
 let tmpDir: string;
 
@@ -126,6 +130,25 @@ function harness(over?: {
 async function warmCalm(h: Harness, ticks = 3): Promise<void> {
   for (let i = 0; i < ticks; i++) await h.drainer.tick();
 }
+
+describe('ResumeQueueDrainer — Tier-1 provenance', () => {
+  it('enrolls queue evidence without storing the reason or evidence text', () => {
+    const entry = candidate({
+      reason: 'cobalt-lantern private completion contradiction',
+      workEvidence: ['cobalt-lantern-private-signal'],
+    }) as any;
+    const prompt = buildResumeSanityPrompt(entry);
+    const options = buildResumeSanityEvaluationOptions({ promptText: prompt, entry });
+
+    expect(prompt).toContain('cobalt-lantern');
+    expect(options.provenance).toMatchObject({
+      decisionPoint: DP_RESUME_SANITY_CHECK,
+      optionsPresented: ['sensible', 'not-sensible'],
+      promptId: RESUME_SANITY_CHECK_PROMPT_ID,
+    });
+    expect(JSON.stringify(options.provenance?.context)).not.toContain('cobalt-lantern');
+  });
+});
 
 describe('ResumeQueueDrainer — calm gates (R2.4)', () => {
   it('does not resume until requiredCalmTicks consecutive normal ticks', async () => {

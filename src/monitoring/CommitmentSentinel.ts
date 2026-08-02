@@ -18,6 +18,26 @@ import type { IntelligenceProvider } from '../core/types.js';
 import type { CommitmentTracker, CommitmentType } from './CommitmentTracker.js';
 import { DegradationReporter } from './DegradationReporter.js';
 import { readJsonlTailLines } from '../utils/jsonl-tail.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { DP_COMMITMENT_DETECT } from '../data/provenanceCoverage.js';
+
+export const COMMITMENT_SENTINEL_PROMPT_ID = 'commitment-detect-v1';
+
+/** Identity-only envelope for the exact exchange set shown to the detector. */
+export function buildCommitmentDecisionContext(input: {
+  promptText: string;
+  conversationText: string;
+  pairCount: number;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    conversationIdentitySha256: buildStructuredSha256Identity(input.conversationText),
+    conversationChars: input.conversationText.length,
+    pairCount: input.pairCount,
+  });
+}
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -343,6 +363,16 @@ IMPORTANT: Only return genuine commitments where the user asked for something du
         maxTokens: 500,
         temperature: 0,
         attribution: { component: 'CommitmentSentinel' }, // attribution for /metrics/features
+        provenance: {
+          decisionPoint: DP_COMMITMENT_DETECT,
+          context: buildCommitmentDecisionContext({
+            promptText: prompt,
+            conversationText,
+            pairCount: pairs.length,
+          }),
+          optionsPresented: ['no-commitment', 'config-change', 'behavioral', 'one-time-action'],
+          promptId: COMMITMENT_SENTINEL_PROMPT_ID,
+        },
         // Observable Intelligence: the sentinel ACTS (fired) when it detects at
         // least one genuine commitment; an empty array is a no-op. Mirrors the
         // parse below so /metrics/features reports a real fireRate.

@@ -18,9 +18,49 @@ import {
   type IssueSeverity,
   type ForensicFinding,
 } from '../monitoring/FrameworkIssueLedger.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import type { DecisionProvenanceBlock } from '../core/decisionQualityTypes.js';
+import { DP_MENTOR_STAGE_B_CLASSIFY } from '../data/provenanceCoverage.js';
 
 const MAX_FINDINGS_PER_RUN = 10; // bound a single tick's output
 const MAX_TITLE = 200;
+
+export const MENTOR_STAGE_B_PROMPT_ID = 'mentor-stage-b-forensics-v1';
+
+/** Identity-only envelope for the bounded mentor forensic signals. */
+export function buildMentorStageBDecisionContext(input: {
+  promptText: string;
+  framework: string;
+  signals: string;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    frameworkIdentitySha256: buildStructuredSha256Identity(input.framework),
+    signalsIdentitySha256: buildStructuredSha256Identity(input.signals.slice(0, 12000)),
+    signalsChars: Math.min(input.signals.length, 12000),
+    signalsTruncated: input.signals.length > 12000,
+  });
+}
+
+function buildMentorStageBProvenance(input: {
+  promptText: string;
+  framework: string;
+  signals: string;
+}): DecisionProvenanceBlock {
+  return {
+    decisionPoint: DP_MENTOR_STAGE_B_CLASSIFY,
+    context: buildMentorStageBDecisionContext(input),
+    optionsPresented: [
+      'no-findings',
+      'framework-limitation',
+      'instar-integration-gap',
+      'generic-agent-mistake',
+    ],
+    promptId: MENTOR_STAGE_B_PROMPT_ID,
+  };
+}
 
 /** A normalized slug for a dedupKey from a model-supplied stable id (keeps it as-is, kebabed). */
 function slug(s: string): string {
@@ -126,7 +166,7 @@ export interface AnalyzeForensicsInput {
   /** Assembled forensic signals (log tail + session digest). Empty ⇒ no findings. */
   signals: string;
   /** The LLM call (injected — IntelligenceProvider.evaluate in production). */
-  evaluate: (prompt: string) => Promise<string>;
+  evaluate: (prompt: string, provenance: DecisionProvenanceBlock) => Promise<string>;
 }
 
 /**
@@ -138,7 +178,13 @@ export async function analyzeForensics(input: AnalyzeForensicsInput): Promise<Fo
   if (!input.signals || !input.signals.trim()) return [];
   let raw: string;
   try {
-    raw = await input.evaluate(buildForensicPrompt(input.framework, input.signals));
+    const prompt = buildForensicPrompt(input.framework, input.signals);
+    // @llm-fallback-ok: signal-only forensics; provider failure is a no-op tick and grants no authority.
+    raw = await input.evaluate(prompt, buildMentorStageBProvenance({
+      promptText: prompt,
+      framework: input.framework,
+      signals: input.signals,
+    }));
   } catch {
     return []; // a failed forensic LLM call is a no-op tick, not a crash
   }

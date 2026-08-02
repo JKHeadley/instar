@@ -25,7 +25,8 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
-import type { MessagingAdapter, Message, OutgoingMessage } from '../../core/types.js';
+import type { IntelligenceProvider, MessagingAdapter, Message, OutgoingMessage } from '../../core/types.js';
+import { DP_SLACK_STALL_CONFIRM } from '../../data/provenanceCoverage.js';
 import { SlackApiClient, SlackApiError } from './SlackApiClient.js';
 import { SocketModeClient, type SocketModeHandlers } from './SocketModeClient.js';
 import { ChannelManager } from './ChannelManager.js';
@@ -38,6 +39,9 @@ import { applySlackFormatter, type SlackFormatMode } from './SlackMrkdwnFormatte
 import type { SlackApiResponse } from './SlackApiClient.js';
 import type { SlackPermissionObserver } from '../../permissions/SlackPermissionObserver.js';
 import type { AmbientContributionGate } from '../../permissions/AmbientContributionGate.js';
+import { buildStallAlertDecisionContext } from '../shared/StallAlertDecisionContext.js';
+
+export const SLACK_STALL_CONFIRM_PROMPT_ID = 'slack-stall-confirm-v1';
 
 const RING_BUFFER_CAPACITY = 50;
 const SLACK_MAX_TEXT_LENGTH = 4000;
@@ -199,7 +203,7 @@ export class SlackAdapter implements MessagingAdapter {
   /** Called to classify why a session died */
   onClassifySessionDeath: ((sessionName: string) => Promise<{ cause: string; detail: string } | null>) | null = null;
   /** Intelligence provider for LLM-gated stall confirmation */
-  intelligence: { evaluate: (prompt: string, opts: { maxTokens: number; temperature: number; attribution?: { component: string } }) => Promise<string> } | null = null;
+  intelligence: IntelligenceProvider | null = null;
 
   constructor(config: Record<string, unknown>, stateDir: string) {
     this.config = config as unknown as SlackConfig;
@@ -965,6 +969,12 @@ export class SlackAdapter implements MessagingAdapter {
         maxTokens: 5,
         temperature: 0,
         attribution: { component: 'SlackAdapter' },
+        provenance: {
+          decisionPoint: DP_SLACK_STALL_CONFIRM,
+          context: buildStallAlertDecisionContext({ promptText: prompt, ...context }),
+          optionsPresented: ['yes', 'no'],
+          promptId: SLACK_STALL_CONFIRM_PROMPT_ID,
+        },
       });
       if (response.trim().toLowerCase() === 'no') {
         console.log(`[slack] LLM suppressed ${context.type} alert for "${context.sessionName}" (${context.minutesElapsed}m)`);

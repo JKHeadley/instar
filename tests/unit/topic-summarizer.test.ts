@@ -16,9 +16,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
-import { TopicSummarizer, buildSummaryPrompt } from '../../src/memory/TopicSummarizer.js';
+import {
+  TopicSummarizer,
+  TOPIC_SUMMARIZER_PROMPT_ID,
+  buildSummaryPrompt,
+} from '../../src/memory/TopicSummarizer.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { DP_TOPIC_SUMMARIZE } from '../../src/data/provenanceCoverage.js';
 
 // Mock intelligence provider that captures prompts
 function createMockIntelligence(response: string = 'Mock summary of the conversation.'): IntelligenceProvider & { _calls: Array<{ prompt: string; options?: IntelligenceOptions }> } {
@@ -101,6 +106,35 @@ describe('TopicSummarizer', () => {
   });
 
   describe('summarize', () => {
+    it('enrolls the LLM path with identity-only conversation provenance', async () => {
+      insertMessages(100, 2);
+      topicMemory.insertMessage({
+        messageId: 3,
+        topicId: 100,
+        text: 'cobalt-lantern private topic detail',
+        fromUser: true,
+        timestamp: new Date(2026, 0, 1, 12, 3).toISOString(),
+        sessionName: null,
+      });
+      const intelligence = createMockIntelligence('A sufficiently long summary response.');
+      const summarizer = new TopicSummarizer(intelligence, topicMemory, { messageThreshold: 1 });
+
+      await summarizer.summarize(100);
+
+      const call = intelligence._calls[0];
+      expect(call.prompt).toContain('cobalt-lantern');
+      expect(call.options?.provenance).toMatchObject({
+        decisionPoint: DP_TOPIC_SUMMARIZE,
+        optionsPresented: ['write-summary'],
+        promptId: TOPIC_SUMMARIZER_PROMPT_ID,
+      });
+      const storedContext = JSON.stringify(call.options?.provenance?.context);
+      expect(storedContext).not.toContain('cobalt-lantern');
+      expect(call.options?.provenance?.context?.promptIdentitySha256).toMatch(
+        /^sha256:(?:[a-f0-9]{16}:){3}[a-f0-9]{16}$/,
+      );
+    });
+
     it('generates a summary when threshold is exceeded', async () => {
       insertMessages(100, 25);
       const intelligence = createMockIntelligence('Summary of 25 messages.');

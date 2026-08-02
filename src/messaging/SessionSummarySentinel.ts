@@ -14,6 +14,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Session, IntelligenceProvider } from '../core/types.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { DP_SESSION_SUMMARY_EXTRACT } from '../data/provenanceCoverage.js';
 import type { DurableOutputScrubber } from '../monitoring/DurableOutputScrubber.js';
 
 // ── Types ───────────────────────────────────────────────────────
@@ -109,6 +111,28 @@ AUTHORITY: Compose the summary ONLY from the OBSERVED activity in the terminal o
 Terminal output:
 `;
 
+export const SESSION_SUMMARY_PROMPT_ID = 'session-summary-extract-v1';
+
+/** Identity-only envelope for the exact bounded terminal slice shown to the model. */
+export function buildSessionSummaryDecisionContext(input: {
+  promptText: string;
+  visibleOutput: string;
+  captureLineLimit: number;
+  outputWasTruncated: boolean;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    visibleOutputIdentitySha256: buildStructuredSha256Identity(input.visibleOutput),
+    visibleOutputChars: input.visibleOutput.length,
+    visibleOutputBytes: Buffer.byteLength(input.visibleOutput, 'utf8'),
+    visibleOutputLines: input.visibleOutput.split('\n').length,
+    captureLineLimit: input.captureLineLimit,
+    outputWasTruncated: input.outputWasTruncated,
+  });
+}
+
 // ── Implementation ──────────────────────────────────────────────
 
 export class SessionSummarySentinel {
@@ -199,13 +223,30 @@ export class SessionSummarySentinel {
   ): Promise<SessionSummary | null> {
     const useLlm = this.config.intelligence && !this.isInFallbackMode();
     const lines = this.config.captureLines ?? DEFAULT_CAPTURE_LINES;
-    const trimmedOutput = output.split('\n').slice(-lines).join('\n');
+    const outputLines = output.split('\n');
+    const trimmedOutput = outputLines.slice(-lines).join('\n');
 
     if (useLlm) {
       try {
+        const prompt = SUMMARY_PROMPT + trimmedOutput;
         const response = await this.config.intelligence!.evaluate(
-          SUMMARY_PROMPT + trimmedOutput,
-          { model: 'fast', maxTokens: 1000, attribution: { component: 'SessionSummarySentinel' } }, // attribution for /metrics/features
+          prompt,
+          {
+            model: 'fast',
+            maxTokens: 1000,
+            attribution: { component: 'SessionSummarySentinel' }, // attribution for /metrics/features
+            provenance: {
+              decisionPoint: DP_SESSION_SUMMARY_EXTRACT,
+              context: buildSessionSummaryDecisionContext({
+                promptText: prompt,
+                visibleOutput: trimmedOutput,
+                captureLineLimit: lines,
+                outputWasTruncated: outputLines.length > lines,
+              }),
+              optionsPresented: ['extract-summary'],
+              promptId: SESSION_SUMMARY_PROMPT_ID,
+            },
+          },
         );
 
         const parsed = this.parseLlmResponse(response);

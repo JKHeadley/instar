@@ -19,9 +19,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PreCompactionFlush, DEFAULT_PRE_COMPACTION_FLUSH_CONFIG } from '../../src/core/PreCompactionFlush.js';
+import {
+  PreCompactionFlush,
+  DEFAULT_PRE_COMPACTION_FLUSH_CONFIG,
+  PRE_COMPACTION_FLUSH_PROMPT_ID,
+} from '../../src/core/PreCompactionFlush.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import { DP_PRE_COMPACTION_FLUSH } from '../../src/data/provenanceCoverage.js';
 
 function makeTempProjectDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'precompact-flush-test-'));
@@ -139,6 +144,35 @@ describe('PreCompactionFlush', () => {
   });
 
   describe('happy path', () => {
+    it('enrolls the transcript judgment without storing transcript text', async () => {
+      const privateText = 'cobalt-lantern private transcript detail';
+      writeFakeTranscript(claudeProjectsRoot, projectDir, 'sess-private', privateText);
+      let capturedPrompt = '';
+      let capturedOptions: any;
+      const intelligence: IntelligenceProvider = {
+        evaluate: async (prompt: string, options?: any) => {
+          capturedPrompt = prompt;
+          capturedOptions = options;
+          return 'NONE';
+        },
+      };
+      const flush = new PreCompactionFlush(
+        { intelligence, projectDir, claudeProjectsRoot, now: fixedNow },
+        { ...DEFAULT_PRE_COMPACTION_FLUSH_CONFIG, enabled: true },
+      );
+
+      await flush.handle({ session_id: 'sess-private', trigger: 'automatic' });
+
+      expect(capturedPrompt).toContain(privateText);
+      expect(capturedOptions.provenance).toMatchObject({
+        decisionPoint: DP_PRE_COMPACTION_FLUSH,
+        optionsPresented: ['no-durable-facts', 'write-durable-facts'],
+        promptId: PRE_COMPACTION_FLUSH_PROMPT_ID,
+      });
+      expect(JSON.stringify(capturedOptions.provenance.context)).not.toContain('cobalt-lantern');
+      expect(JSON.stringify(capturedOptions.provenance.context)).not.toContain('sess-private');
+    });
+
     it('writes per-fact files and an audit entry on a successful flush', async () => {
       writeFakeTranscript(claudeProjectsRoot, projectDir, 'sess-1', 'recent conversation about routing patterns');
       const response = JSON.stringify([

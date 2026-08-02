@@ -60,6 +60,34 @@ import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { InstarConfig, IntelligenceProvider } from '../core/types.js';
 import { createRequire } from 'node:module';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { DP_WATCHDOG_STUCK_JUDGE } from '../data/provenanceCoverage.js';
+
+export const WATCHDOG_STUCK_JUDGE_PROMPT_ID = 'watchdog-stuck-judge-v1';
+
+/** Identity-only envelope for the bounded command and terminal evidence shown to the judge. */
+export function buildWatchdogStuckDecisionContext(input: {
+  promptText: string;
+  commandSlice: string;
+  commandWasTruncated: boolean;
+  outputSample: string;
+  elapsedMinutes: number;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    commandIdentitySha256: buildStructuredSha256Identity(input.commandSlice),
+    commandChars: input.commandSlice.length,
+    commandWasTruncated: input.commandWasTruncated,
+    outputAvailable: input.outputSample.length > 0,
+    outputIdentitySha256: input.outputSample.length > 0
+      ? buildStructuredSha256Identity(input.outputSample)
+      : null,
+    outputChars: input.outputSample.length,
+    elapsedMinutes: input.elapsedMinutes,
+  });
+}
 
 // ESM module: a bare CJS `require` is undefined and throws at runtime. Bind a
 // real require via createRequire so the lazy load below is genuinely ESM-legal
@@ -676,10 +704,11 @@ export class SessionWatchdog extends EventEmitter {
     const elapsedMin = Math.round(elapsedMs / 60000);
     // Keep the output sample small — enough for context, not enough to blow the token budget.
     const outputSample = recentOutput ? recentOutput.slice(-1500) : '';
+    const commandSlice = command.slice(0, 200);
     const promptLines = [
       'You are evaluating whether a running process is stuck or legitimately long-running.',
       '',
-      `Command: ${command.slice(0, 200)}`,
+      `Command: ${commandSlice}`,
       `Running for: ${elapsedMin} minutes`,
     ];
     if (outputSample) {
@@ -719,6 +748,18 @@ export class SessionWatchdog extends EventEmitter {
         maxTokens: 5,
         temperature: 0,
         attribution: { component: 'SessionWatchdog' }, // attribution for /metrics/features
+        provenance: {
+          decisionPoint: DP_WATCHDOG_STUCK_JUDGE,
+          context: buildWatchdogStuckDecisionContext({
+            promptText: prompt,
+            commandSlice,
+            commandWasTruncated: command.length > commandSlice.length,
+            outputSample,
+            elapsedMinutes: elapsedMin,
+          }),
+          optionsPresented: ['stuck', 'legitimate'],
+          promptId: WATCHDOG_STUCK_JUDGE_PROMPT_ID,
+        },
       });
       const answer = response.trim().toLowerCase();
       if (answer === 'legitimate') {

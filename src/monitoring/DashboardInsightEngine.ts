@@ -38,6 +38,10 @@
  */
 
 import type { IntelligenceProvider } from '../core/types.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { DP_DASHBOARD_INSIGHT } from '../data/provenanceCoverage.js';
+
+export const DASHBOARD_INSIGHT_PROMPT_ID = 'dashboard-insight-v1';
 
 /** How a value moved vs the prior period (legible-number rule, spec §5.5). */
 export type InsightTrend = 'up' | 'down' | 'flat';
@@ -150,6 +154,26 @@ export interface DashboardInsightEngineOptions {
   logger?: (line: string) => void;
   /** Injectable clock (tests). */
   now?: () => number;
+}
+
+/** Identity-only envelope for one exact bounded page-data prompt. */
+export function buildDashboardInsightDecisionContext(input: {
+  promptText: string;
+  page: InsightPage;
+  snapshot: PageDataSnapshot;
+  maxLines: number;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    pageTitleIdentitySha256: buildStructuredSha256Identity(input.page.title),
+    pageTitleChars: input.page.title.length,
+    visibleFactCount: Math.min(input.snapshot.facts.length, 12),
+    visibleMetricCount: Math.min(input.snapshot.metrics.length, 12),
+    visibleAnomalyCount: Math.min(input.snapshot.anomalies?.length ?? 0, 12),
+    maxInsightLines: input.maxLines,
+  });
 }
 
 /** Max chars a single sanitized page value / fact contributes to the prompt. */
@@ -370,6 +394,17 @@ export class DashboardInsightEngine {
           nature: 'A',
           gating: false,
           injectionExposed: true,
+        },
+        provenance: {
+          decisionPoint: DP_DASHBOARD_INSIGHT,
+          context: buildDashboardInsightDecisionContext({
+            promptText: prompt,
+            page,
+            snapshot: snap,
+            maxLines: this.maxLines,
+          }),
+          optionsPresented: ['write-insight'],
+          promptId: DASHBOARD_INSIGHT_PROMPT_ID,
         },
       });
     } catch (err) {

@@ -30,6 +30,23 @@
 
 import type { IntelligenceProvider } from './types.js';
 import { isCapacityUnavailable } from './SpawnCapIntelligenceProvider.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from './JudgmentProvenanceLog.js';
+import { DP_MESSAGE_SENTINEL_CLASSIFY } from '../data/provenanceCoverage.js';
+
+export const MESSAGE_SENTINEL_PROMPT_ID = 'message-sentinel-interrupt-v1';
+
+/** Identity-only envelope for the exact ambiguous message handed to the LLM path. */
+export function buildMessageSentinelDecisionContext(message: string): Record<string, unknown> {
+  const trimmed = message.trim();
+  return buildBoundedContext({
+    messageIdentitySha256: buildStructuredSha256Identity(message),
+    messageChars: message.length,
+    messageBytes: Buffer.byteLength(message, 'utf8'),
+    trimmedChars: trimmed.length,
+    wordCount: trimmed ? trimmed.split(/\s+/).length : 0,
+    containsNewline: message.includes('\n'),
+  });
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -705,6 +722,12 @@ export class MessageSentinel {
         maxTokens: 10,
         temperature: 0,
         attribution: { component: 'MessageSentinel', gating: true }, // attribution for /metrics/features
+        provenance: {
+          decisionPoint: DP_MESSAGE_SENTINEL_CLASSIFY,
+          context: buildMessageSentinelDecisionContext(message),
+          optionsPresented: ['emergency-stop', 'pause', 'redirect', 'normal'],
+          promptId: MESSAGE_SENTINEL_PROMPT_ID,
+        },
         // Observable Intelligence: the sentinel ACTS (fired) on any non-normal
         // category (emergency-stop / pause / redirect); 'normal' is a no-op. Lets
         // /metrics/features report a real fireRate instead of every call as noop.

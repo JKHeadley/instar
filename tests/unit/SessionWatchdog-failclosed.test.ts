@@ -17,7 +17,11 @@
  * Both sides of every boundary are pinned below.
  */
 import { describe, it, expect } from 'vitest';
-import { SessionWatchdog } from '../../src/monitoring/SessionWatchdog.js';
+import {
+  SessionWatchdog,
+  WATCHDOG_STUCK_JUDGE_PROMPT_ID,
+} from '../../src/monitoring/SessionWatchdog.js';
+import { DP_WATCHDOG_STUCK_JUDGE } from '../../src/data/provenanceCoverage.js';
 
 function config(hardCeilingSec?: number) {
   return {
@@ -81,6 +85,34 @@ describe('SessionWatchdog — stuck-command fail-closed', () => {
   });
 
   describe('LLM judge AVAILABLE — verdict is honored unchanged', () => {
+    it('enrolls command/output evidence without storing their bodies', async () => {
+      const wd = makeWatchdog();
+      let capturedPrompt = '';
+      let capturedOptions: any;
+      wd.intelligence = {
+        evaluate: async (prompt: string, options?: any) => {
+          capturedPrompt = prompt;
+          capturedOptions = options;
+          return 'legitimate';
+        },
+      };
+
+      await isCommandStuck(
+        wd,
+        'node cobalt-lantern-private-task.js',
+        4 * MIN,
+        'cobalt-lantern private terminal output',
+      );
+
+      expect(capturedPrompt).toContain('cobalt-lantern');
+      expect(capturedOptions.provenance).toMatchObject({
+        decisionPoint: DP_WATCHDOG_STUCK_JUDGE,
+        optionsPresented: ['stuck', 'legitimate'],
+        promptId: WATCHDOG_STUCK_JUDGE_PROMPT_ID,
+      });
+      expect(JSON.stringify(capturedOptions.provenance.context)).not.toContain('cobalt-lantern');
+    });
+
     it('returns false when the LLM says "legitimate"', async () => {
       const wd = makeWatchdog();
       wd.intelligence = { evaluate: async () => 'legitimate' };
