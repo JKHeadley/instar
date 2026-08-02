@@ -272,6 +272,12 @@ signal/authority analysis.
   floor. The public North Star explanation and subsystem inventory now both
   name and explain the class; the same coverage gate passes locally without
   weakening its floor.
+- The same run exposed a rolling-upgrade parser regression in the unchanged
+  live-capture lifecycle test. A legacy array begins with `[` but contains `{`,
+  and the new parser tried the inner object first, converting a valid signal
+  into an empty structured result. A 500 ms control still failed, ruling out
+  added latency. The parser now chooses the first JSON container, with a direct
+  legacy-array regression test and the original 50 ms lifecycle test restored.
 
 ---
 

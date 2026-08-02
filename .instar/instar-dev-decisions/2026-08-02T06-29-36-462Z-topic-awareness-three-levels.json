@@ -1,0 +1,31 @@
+{
+  "ts": "2026-08-02T06:29:36.462Z",
+  "slug": "topic-awareness-three-levels",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/TopicIntentExtractor.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "prompt-parser-contract-drift",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "test",
+      "citation": "tests/unit/TopicIntent-extractor.test.ts#preserves-a-legacy-array-containing-proposal-objects-during-rolling-upgrades",
+      "howCaught": "The parser now selects the first JSON container, and the regression test fails if a legacy array's inner proposal object is mistaken for the v2 top-level object."
+    },
+    "component": "TopicIntentExtractor rolling-upgrade parser"
+  },
+  "verdict": "pass"
+}

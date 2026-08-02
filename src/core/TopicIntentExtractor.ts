@@ -335,7 +335,16 @@ export function parseExtractorAnalysis(raw: string): SignalProposal[] | Extracto
   const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
   if (fenceMatch) cleaned = fenceMatch[1];
 
+  // A legacy response is an array OF objects, so looking for `{` first would
+  // parse its first proposal as if it were the new top-level analysis object
+  // and silently discard the signal. Prefer the array parser when `[` is the
+  // first JSON container in the response; structured v2 output starts with `{`
+  // and can still contain its own signals array safely.
+  const arrayStart = cleaned.indexOf('[');
   const objectStart = cleaned.indexOf('{');
+  if (arrayStart !== -1 && (objectStart === -1 || arrayStart < objectStart)) {
+    return parseExtractorResponse(cleaned);
+  }
   const objectEnd = cleaned.lastIndexOf('}');
   if (objectStart !== -1 && objectEnd > objectStart) {
     try {

@@ -385,6 +385,15 @@ describe('parseExtractorResponse — robust JSON extraction', () => {
 });
 
 describe('parseExtractorAnalysis — three awareness levels', () => {
+  it('preserves a legacy array containing proposal objects during rolling upgrades', () => {
+    const parsed = parseExtractorAnalysis(
+      '[{"kind":"new-ref","refId":null,"propositionText":"keep the signal","refKind":"decision"}]',
+    );
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+    expect((parsed as SignalProposal[])[0].propositionText).toBe('keep the signal');
+  });
+
   it('parses the structured object and rejects a partial awareness block', () => {
     const raw = JSON.stringify({
       signals: [{ kind: 'reref', refId: 'r1' }],
