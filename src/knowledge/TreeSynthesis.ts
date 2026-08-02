@@ -9,10 +9,45 @@
  */
 
 import type { IntelligenceProvider } from '../core/types.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { DP_TREE_SYNTHESIZE } from '../data/provenanceCoverage.js';
 import type { SelfKnowledgeFragment } from './types.js';
 
 const MAX_SYNTHESIS_INPUT_CHARS = 8_000; // ~2K tokens
 const DEFAULT_MAX_SYNTHESIS_OUTPUT_TOKENS = 800;
+
+export const TREE_SYNTHESIS_PROMPT_ID = 'tree-synthesis-v1';
+
+/** Identity-only envelope for the exact knowledge-fragment synthesis input. */
+export function buildTreeSynthesisDecisionContext(input: {
+  promptText: string;
+  query: string;
+  fragments: SelfKnowledgeFragment[];
+  agentName: string;
+  inputTruncated: boolean;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    queryIdentitySha256: buildStructuredSha256Identity(input.query),
+    agentIdentitySha256: buildStructuredSha256Identity(input.agentName),
+    fragmentSetIdentitySha256: buildStructuredSha256Identity(JSON.stringify(
+      input.fragments.map((fragment) => [
+        fragment.layerId,
+        fragment.nodeId,
+        fragment.relevance,
+        fragment.content,
+        fragment.cached,
+        fragment.sensitivity,
+      ]),
+    )),
+    fragmentCount: input.fragments.length,
+    internalFragmentCount: input.fragments.filter((fragment) => fragment.sensitivity === 'internal').length,
+    cachedFragmentCount: input.fragments.filter((fragment) => fragment.cached).length,
+    inputTruncated: input.inputTruncated,
+  });
+}
 
 export class TreeSynthesis {
   private intelligence: IntelligenceProvider | null;
@@ -41,9 +76,10 @@ export class TreeSynthesis {
     });
 
     let input = fragmentTexts.join('\n\n---\n\n');
+    const inputTruncated = input.length > MAX_SYNTHESIS_INPUT_CHARS;
 
     // Truncate input if too large
-    if (input.length > MAX_SYNTHESIS_INPUT_CHARS) {
+    if (inputTruncated) {
       input = input.slice(0, MAX_SYNTHESIS_INPUT_CHARS) + '\n[input truncated]';
     }
 
@@ -65,6 +101,18 @@ Write as if the agent is describing itself. Use "I" voice.`;
         maxTokens: DEFAULT_MAX_SYNTHESIS_OUTPUT_TOKENS,
         temperature: 0.3,
         attribution: { component: 'TreeSynthesis' }, // attribution for /metrics/features
+        provenance: {
+          decisionPoint: DP_TREE_SYNTHESIZE,
+          context: buildTreeSynthesisDecisionContext({
+            promptText: prompt,
+            query,
+            fragments,
+            agentName,
+            inputTruncated,
+          }),
+          optionsPresented: ['write-synthesis'],
+          promptId: TREE_SYNTHESIS_PROMPT_ID,
+        },
       });
 
       // Rough token estimate for tracking

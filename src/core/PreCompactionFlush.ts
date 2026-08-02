@@ -43,6 +43,31 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import type { IntelligenceProvider } from './types.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from './JudgmentProvenanceLog.js';
+import { DP_PRE_COMPACTION_FLUSH } from '../data/provenanceCoverage.js';
+
+export const PRE_COMPACTION_FLUSH_PROMPT_ID = 'pre-compaction-flush-v1';
+
+/** Identity-only envelope for the transcript-tail fact-extraction judgment. */
+export function buildPreCompactionFlushDecisionContext(input: {
+  promptText: string;
+  transcriptTail: string;
+  sessionId: string;
+  trigger?: string;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    transcriptTailIdentitySha256: buildStructuredSha256Identity(input.transcriptTail),
+    transcriptTailChars: input.transcriptTail.length,
+    transcriptTailBytes: Buffer.byteLength(input.transcriptTail, 'utf8'),
+    sessionIdentitySha256: buildStructuredSha256Identity(input.sessionId),
+    triggerIdentitySha256: input.trigger
+      ? buildStructuredSha256Identity(input.trigger)
+      : undefined,
+  });
+}
 
 export interface PreCompactionFlushConfig {
   /** Master switch. Default false. */
@@ -159,9 +184,25 @@ export class PreCompactionFlush {
 
     let llmResponse: string;
     try {
+      const prompt = this.buildPrompt(transcriptTail);
       llmResponse = await this.deps.intelligence.evaluate(
-        this.buildPrompt(transcriptTail),
-        { maxTokens: 800, temperature: 0, attribution: { component: 'PreCompactionFlush' } }, // attribution for /metrics/features
+        prompt,
+        {
+          maxTokens: 800,
+          temperature: 0,
+          attribution: { component: 'PreCompactionFlush' }, // attribution for /metrics/features
+          provenance: {
+            decisionPoint: DP_PRE_COMPACTION_FLUSH,
+            context: buildPreCompactionFlushDecisionContext({
+              promptText: prompt,
+              transcriptTail,
+              sessionId,
+              trigger,
+            }),
+            optionsPresented: ['no-durable-facts', 'write-durable-facts'],
+            promptId: PRE_COMPACTION_FLUSH_PROMPT_ID,
+          },
+        },
       );
     } catch (err) {
       return audit('provider-error', { reason: String(err).slice(0, 200) });

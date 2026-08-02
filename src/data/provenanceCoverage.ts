@@ -315,6 +315,12 @@ export const DP_TOPIC_INTENT_ARC_CHECK = 'topic-intent-arc-check';
 /** Inbound user turn + faded refs → context reactivation signal. */
 export const DP_USHER_TOPIC_ROUTE = 'usher-topic-route';
 
+/** Bounded pre-compaction transcript tail → durable-fact candidates. */
+export const DP_PRE_COMPACTION_FLUSH = 'pre-compaction-flush';
+
+/** Bounded self-knowledge fragments → first-person synthesis. */
+export const DP_TREE_SYNTHESIZE = 'tree-synthesize';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -950,20 +956,32 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Topic-intent extraction from a conversational turn — the highest-volume unenrolled point after the stop gate.',
   },
   {
-    decisionPoint: 'pre-compaction-flush',
+    decisionPoint: DP_PRE_COMPACTION_FLUSH,
     component: 'PreCompactionFlush',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Successful parsing and persistence prove only that the response was structurally usable; they do not ' +
+      'independently establish that a proposed fact was durable, correct, or absent from recoverable sources. ' +
+      'Identity-only provenance banks real cases without retaining transcript bodies.',
     reason:
-      'Durable-fact extraction over a transcript before compaction; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Opt-in durable-fact extraction over a bounded transcript tail; context stores exact input identities and bounds, never transcript text.',
   },
   {
-    decisionPoint: 'tree-synthesize',
+    decisionPoint: DP_TREE_SYNTHESIZE,
     component: 'TreeSynthesis',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'A non-empty response and token estimate establish availability, not whether the narrative faithfully ' +
+      'answers the query without omission or extrapolation. Identity-only provenance preserves real synthesis ' +
+      'cases for later independent or operator-reviewed grading.',
     reason:
-      'Knowledge-fragment synthesis into an answer; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Knowledge-fragment synthesis into an answer; context records exact query, agent, fragment-set, and prompt identities without storing their text.',
   },
   {
     decisionPoint: DP_LLM_CONFLICT_RESOLVE,

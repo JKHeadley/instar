@@ -63,6 +63,8 @@ import {
   DP_RESUME_UUID_VALIDATE,
   DP_TOPIC_INTENT_ARC_CHECK,
   DP_USHER_TOPIC_ROUTE,
+  DP_PRE_COMPACTION_FLUSH,
+  DP_TREE_SYNTHESIZE,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -111,7 +113,6 @@ const PENDING_BASELINE = [
   'mentor-stage-b-classify::mentor-stage-b::backlog:decision-quality-enrolment',
   'override-detect::OverrideDetector::backlog:decision-quality-enrolment',
   'pipe-session-spawn::PipeSessionSpawner::backlog:decision-quality-enrolment',
-  'pre-compaction-flush::PreCompactionFlush::backlog:decision-quality-enrolment',
   'presence-stall-judge::PresenceProxy::backlog:decision-quality-enrolment',
   'relationship-extract::RelationshipManager::backlog:decision-quality-enrolment',
   'resume-sanity-check::ResumeQueueDrainer::backlog:decision-quality-enrolment',
@@ -122,7 +123,6 @@ const PENDING_BASELINE = [
   'standards-coverage-enrich::StandardsCoverageEnrichment::backlog:decision-quality-enrolment',
   'task-classify::TaskClassifier::backlog:decision-quality-enrolment',
   'temporal-coherence-check::TemporalCoherenceChecker::backlog:decision-quality-enrolment',
-  'tree-synthesize::TreeSynthesis::backlog:decision-quality-enrolment',
   'tree-triage::TreeTriage::backlog:decision-quality-enrolment',
 ].sort();
 
@@ -623,6 +623,30 @@ describe('usher-topic-route — bounded faded-context enrollment', () => {
     const entry = getCensusEntry(DP_USHER_TOPIC_ROUTE);
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('Usher');
+    expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('pre-compaction-flush — bounded durable-fact enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_PRE_COMPACTION_FLUSH);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('PreCompactionFlush');
+    expect(entry?.volumeClass).toBe('budget:100');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('tree-synthesize — bounded knowledge-synthesis enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_TREE_SYNTHESIZE);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('TreeSynthesis');
     expect(entry?.volumeClass).toBe('budget:250');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');
