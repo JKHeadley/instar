@@ -4802,7 +4802,12 @@ export class AgentServer {
           return analyzeForensics({
             framework,
             signals,
-            evaluate: (prompt) => intelligence.evaluate(prompt, { model: 'capable', maxTokens: 1500, attribution: { component: 'mentor-stage-b' } }),
+            evaluate: (prompt, provenance) => intelligence.evaluate(prompt, {
+              model: 'capable',
+              maxTokens: 1500,
+              attribution: { component: 'mentor-stage-b' },
+              provenance,
+            }),
           });
         },
         // Safe-window: the mentee is "busy" iff there is an OUTSTANDING mentor

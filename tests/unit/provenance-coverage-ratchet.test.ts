@@ -67,6 +67,8 @@ import {
   DP_TREE_SYNTHESIZE,
   DP_STALL_TRIAGE_DIAGNOSIS,
   DP_DISCOVERY_EVALUATE,
+  DP_RESUME_SANITY_CHECK,
+  DP_MENTOR_STAGE_B_CLASSIFY,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -111,12 +113,10 @@ const PENDING_BASELINE = [
   'external-operation-gate::ExternalOperationGate::backlog:decision-quality-enrolment',
   'job-reflect::JobReflector::backlog:decision-quality-enrolment',
   'llm-sanitize::LLMSanitizer::backlog:decision-quality-enrolment',
-  'mentor-stage-b-classify::mentor-stage-b::backlog:decision-quality-enrolment',
   'override-detect::OverrideDetector::backlog:decision-quality-enrolment',
   'pipe-session-spawn::PipeSessionSpawner::backlog:decision-quality-enrolment',
   'presence-stall-judge::PresenceProxy::backlog:decision-quality-enrolment',
   'relationship-extract::RelationshipManager::backlog:decision-quality-enrolment',
-  'resume-sanity-check::ResumeQueueDrainer::backlog:decision-quality-enrolment',
   'self-knowledge-extract::SelfKnowledgeTree::backlog:decision-quality-enrolment',
   'session-activity-digest::SessionActivitySentinel::backlog:decision-quality-enrolment',
   'standards-conformance-review::StandardsConformanceReviewer::backlog:decision-quality-enrolment',
@@ -671,6 +671,30 @@ describe('discovery-evaluate — bounded feature-surfacing enrollment', () => {
     const entry = getCensusEntry(DP_DISCOVERY_EVALUATE);
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('DiscoveryEvaluator');
+    expect(entry?.volumeClass).toBe('budget:100');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('resume-sanity-check — bounded observe-only enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_RESUME_SANITY_CHECK);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('ResumeQueueDrainer');
+    expect(entry?.volumeClass).toBe('budget:100');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('mentor-stage-b-classify — bounded forensic enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_MENTOR_STAGE_B_CLASSIFY);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('mentor-stage-b');
     expect(entry?.volumeClass).toBe('budget:100');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');

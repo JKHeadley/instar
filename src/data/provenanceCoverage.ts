@@ -327,6 +327,12 @@ export const DP_STALL_TRIAGE_DIAGNOSIS = 'stall-triage-diagnosis';
 /** Sanitized conversation context + eligible features → surfacing recommendation. */
 export const DP_DISCOVERY_EVALUATE = 'discovery-evaluate';
 
+/** Durable mid-work queue evidence → observe-only restart sanity verdict. */
+export const DP_RESUME_SANITY_CHECK = 'resume-sanity-check';
+
+/** Bounded mentor signals → zero or more forensic issue classifications. */
+export const DP_MENTOR_STAGE_B_CLASSIFY = 'mentor-stage-b-classify';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -562,12 +568,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Stuck-command judgment over bounded command and terminal evidence; identity-only context stores exact prompt and constituent digests, never terminal text.',
   },
   {
-    decisionPoint: 'resume-sanity-check',
+    decisionPoint: DP_RESUME_SANITY_CHECK,
     component: 'ResumeQueueDrainer',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The Tier-1 verdict is deliberately observe-only and cannot affect the deterministic resume gates; no ' +
+      'independent later label says whether its concern was correct. Identity-only provenance records real ' +
+      'sanity judgments without retaining queue reason text.',
     reason:
-      'Resume-sanity verdict before a queued mid-work revival; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Resume-sanity verdict before a queued mid-work revival; context stores exact prompt, reason, and evidence-set identities without queue text.',
   },
   {
     decisionPoint: DP_TOPIC_INTENT_ARC_CHECK,
@@ -1046,12 +1058,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Recurring-correction distillation into a durable preference; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'mentor-stage-b-classify',
+    decisionPoint: DP_MENTOR_STAGE_B_CLASSIFY,
     component: 'mentor-stage-b',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Parser acceptance and ledger deduplication establish safe structure, not whether a forensic finding ' +
+      'correctly attributes the observed behavior. Later issue dispositions are not correlation-bound to each ' +
+      'settlement, so provenance is collected without treating persistence as truth.',
     reason:
-      'Mentor-signal classification over mentee output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Mentor-signal classification over bounded mentee output; context stores exact signal and prompt identities without log or session text.',
   },
 
   // ── Argued exemptions (closed taxonomy; pinned shrink-only) ──────────────
