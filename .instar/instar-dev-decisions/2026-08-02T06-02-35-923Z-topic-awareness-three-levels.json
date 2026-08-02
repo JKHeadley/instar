@@ -1,0 +1,38 @@
+{
+  "ts": "2026-08-02T06:02:35.923Z",
+  "slug": "topic-awareness-three-levels",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 1018,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/TopicAwareness.ts",
+      "src/core/TopicIntent.ts",
+      "src/core/TopicIntentBriefing.ts",
+      "src/core/TopicIntentCapture.ts",
+      "src/core/TopicIntentExtractor.ts",
+      "src/server/topicIntentRoutes.ts",
+      "src/templates/hooks/compaction-recovery.sh",
+      "src/templates/hooks/telegram-topic-context.sh"
+    ],
+    "addedLines": 988,
+    "deletedLines": 30
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "generated-artifact-path-contract-drift",
+    "closure": "gap",
+    "gapItem": "ACT-245",
+    "component": "Topic awareness briefing hook generation"
+  },
+  "verdict": "pass"
+}

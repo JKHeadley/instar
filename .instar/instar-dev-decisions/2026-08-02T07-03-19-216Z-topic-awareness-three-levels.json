@@ -1,0 +1,32 @@
+{
+  "ts": "2026-08-02T07:03:19.216Z",
+  "slug": "topic-awareness-three-levels",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/TopicIntentExtractor.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "prompt-parser-contract-drift",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/no-silent-llm-fallback.test.ts#REVIEWED_ADVISORY-has-no-stale-entries",
+      "howCaught": "The LLM fallback convergence ratchet fails when an unrelated file-level marker makes the advisory ledger stale; the provider catch now carries its own local marker beside the onDegrade metric, while the parser and live lifecycle regressions continue to guard malformed-v2 and legacy-array behavior."
+    },
+    "prNumber": 1834,
+    "component": "TopicIntentExtractor degradation boundary"
+  },
+  "verdict": "pass"
+}

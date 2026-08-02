@@ -72,6 +72,13 @@ Two design choices carry the whole thing:
 
 The North Star isn't greenfield — it generalizes a loop Instar already prototyped. The in-progress **Topic-Intent Layer** is almost exactly this capture→rank→decay→inject→gate loop, scoped narrowly to conversational facts: an LLM auto-captures every substantive turn (no manual step), ranks each item with a user-authority clamp, decays them on a grace-period-plus-half-life model, injects a settled-vs-tentative briefing at session start, and gates pre-send drafts.
 
+`TopicAwareness` adds the temporal map beside that evidence pipeline. It keeps
+the whole-topic origin and evolution, latest conversational arc, and immediate
+work visible together—each with a goal, trend, and themes—without turning those
+summaries into authority. The opening landmark does not decay with ordinary
+facts, while stale projections identify themselves instead of posing as current
+context.
+
 The genuine gaps are three: **generality** (capture *what I'm doing*, not just conversational facts), **unification** (a dozen single-purpose watchers should feed one ranked working set), and a **continuous mid-task injection surface** (today injection happens at session-start or pre-send, never in the middle of a task when a faded-but-now-relevant context should return).
 
 ## Why this is the right north star

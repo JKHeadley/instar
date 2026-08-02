@@ -83,17 +83,18 @@ else
 fi
 
 # Layer 2: prepend the topic intent briefing if anything has accumulated.
+# Its first visible awareness line is "THREE AWARENESS LEVELS (orientation, not authority".
 # Returns empty body when nothing tracked yet — we silently skip injection.
 # Degrades open: any failure here (server down, route 503'd, network blip)
 # leaves recent-history-only output unchanged.
 TOPIC_BRIEFING=""
 if [ -n "$AUTH_TOKEN" ]; then
-  TOPIC_BRIEFING=$(curl -s --max-time 2 \
+  TOPIC_BRIEFING=$(curl -sf --max-time 2 \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -H "X-Instar-AgentId: ${AGENT_ID}" \
     "http://localhost:${PORT}/topic-intent/${TOPIC_ID}/briefing" 2>/dev/null)
 else
-  TOPIC_BRIEFING=$(curl -s --max-time 2 \
+  TOPIC_BRIEFING=$(curl -sf --max-time 2 \
     "http://localhost:${PORT}/topic-intent/${TOPIC_ID}/briefing" 2>/dev/null)
 fi
 

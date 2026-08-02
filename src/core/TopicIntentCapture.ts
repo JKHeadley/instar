@@ -240,6 +240,13 @@ export async function captureTurn(
     topicId = typeof entry.topicId === 'number' ? entry.topicId : undefined;
     if (topicId === undefined) return { status: 'no-topic' };
 
+    // Count every user turn before any capture gate. Awareness freshness must
+    // age honestly when a turn is trivial, shed, rate-limited, or extraction
+    // fails; otherwise a stale projection can look current indefinitely.
+    const turn = entry.fromUser
+      ? deps.store.bumpTurn(topicId)
+      : (deps.store.read(topicId).turn ?? 0);
+
     // Pre-filter — deterministic, fail-open.
     if (!isSubstantiveTurn(entry.text, entry.fromUser)) {
       deps.store.bumpCaptureCounters(topicId, { turns_seen: 1, prefilter_skipped: 1 });
@@ -268,9 +275,7 @@ export async function captureTurn(
 
     // Build broader context: the topic's established refs + rolling summary.
     const at = toIso(entry.timestamp, now);
-    const turn = entry.fromUser
-      ? deps.store.bumpTurn(topicId)
-      : (deps.store.read(topicId).turn ?? 0);
+    const topicFile = deps.store.read(topicId);
     const existingRefs = deps.store
       .getRefsAtOrAbove(topicId, 'observation')
       .map(toEstablishedRef);
@@ -291,6 +296,7 @@ export async function captureTurn(
       },
       existingRefs,
       rollingSummary,
+      existingAwareness: topicFile.awareness,
     };
 
     const result = await deps.extractor.ingest(input);
@@ -301,6 +307,7 @@ export async function captureTurn(
         extractions_attempted: 1,
         extractions_emitted: result.emitted.length > 0 ? 1 : 0,
         refs_created: result.createdRefs.length,
+        awareness_invalid: result.awarenessInvalid ? 1 : 0,
       },
       at,
       result.createdRefs.map(r => r.kind),

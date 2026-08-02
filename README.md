@@ -135,6 +135,7 @@ We didn't just claim it works. We ran controlled experiments — same model, sam
 | **Slack** | Two-way messaging via Slack adapter. Channel and DM routing, eight HTTP routes, dedicated CLI | [→](https://instar.sh/features/slack/) |
 | **Lifeline** | Persistent supervisor. Detects crashes, auto-recovers, queues messages, version-skew handling (v1.1.3+) | [→](https://instar.sh/features/lifeline/) |
 | **Conversational Memory** | Per-topic SQLite with FTS5, rolling summaries, context re-injection | [→](https://instar.sh/features/memory/) |
+| **Three-level Topic Awareness** | Keeps the whole-topic anchor and evolution, latest conversational arc, and current work visible together — each with goal, trend, and themes; stale projections say so | [→](docs/specs/topic-awareness-three-levels.eli16.md) |
 | **Evolution System** | Proposals, learnings, gap tracking, commitment follow-through | [→](https://instar.sh/features/evolution/) |
 | **Relationships** | Cross-platform identity resolution, significance scoring, context injection | [→](https://instar.sh/features/relationships/) |
 | **Safety Gates** | LLM-supervised gate for external operations. Adaptive trust per service | [→](https://instar.sh/features/safety-gates/) |

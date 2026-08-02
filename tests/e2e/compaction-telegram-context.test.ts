@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -41,6 +41,79 @@ describe('Compaction & Telegram context recovery E2E', () => {
   afterAll(() => {
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/compaction-telegram-context.test.ts:42' });
   });
+
+  function writeFakeCurl(): string {
+    const binDir = path.join(tmpDir, 'fake-bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    const curlPath = path.join(binDir, 'curl');
+    fs.writeFileSync(curlPath, [
+      '#!/bin/bash',
+      'ARGS="$*"',
+      'if [[ "$ARGS" == *"/health"* ]]; then printf "200"; exit 0; fi',
+      'REQUIRED_AUTH=0',
+      'REQUIRED_AGENT=0',
+      'for ARG in "$@"; do',
+      '  [ "$ARG" = "Authorization: Bearer test-token" ] && REQUIRED_AUTH=1',
+      '  [ "$ARG" = "X-Instar-AgentId: test-agent" ] && REQUIRED_AGENT=1',
+      'done',
+      'if [[ "$ARGS" == *"/topic-intent/"* || "$ARGS" == *"/telegram/topics/"* || "$ARGS" == *"/topic/context/"* ]]; then',
+      '  if [ "$REQUIRED_AUTH" != "1" ] || [ "$REQUIRED_AGENT" != "1" ]; then',
+      '    printf "{\\"error\\":\\"unauthorized\\"}"; exit 22',
+      '  fi',
+      'fi',
+      'if [[ "$ARGS" == *"/topic-intent/"*"/briefing"* ]]; then',
+      '  if [ "${FAKE_BRIEFING_MODE:-success}" = "error" ]; then',
+      '    FAIL_FLAG=0',
+      '    for ARG in "$@"; do case "$ARG" in -*f*) FAIL_FLAG=1 ;; esac; done',
+      '    if [ "$FAIL_FLAG" = "1" ]; then exit 22; fi',
+      '    printf "BRIEFING_HTTP_ERROR"; exit 22',
+      '  fi',
+      '  printf "AWARENESS_OK"; exit 0',
+      'fi',
+      'if [[ "$ARGS" == *"/telegram/topics/"*"/messages"* ]]; then',
+      '  printf "%s" \"{\\\"messages\\\":[{\\\"text\\\":\\\"RAW_HISTORY_OK\\\",\\\"fromUser\\\":true,\\\"timestamp\\\":\\\"2026-08-01T00:00:00.000Z\\\"}]}\"; exit 0',
+      'fi',
+      'if [[ "$ARGS" == *"/topic/context/"* ]]; then',
+      '  printf "%s" \"{\\\"totalMessages\\\":1,\\\"topicName\\\":\\\"Test\\\",\\\"summary\\\":\\\"\\\",\\\"recentMessages\\\":[{\\\"text\\\":\\\"RAW_HISTORY_OK\\\",\\\"fromUser\\\":true,\\\"timestamp\\\":\\\"2026-08-01T00:00:00.000Z\\\"}]}\"; exit 0',
+      'fi',
+      'exit 0',
+      '',
+    ].join('\n'));
+    fs.chmodSync(curlPath, 0o755);
+    return binDir;
+  }
+
+  function runHook(content: string, mode: 'success' | 'error', input = ''): string {
+    const hookPath = path.join(tmpDir, `runtime-${Math.random().toString(36).slice(2)}.sh`);
+    fs.writeFileSync(hookPath, content);
+    fs.chmodSync(hookPath, 0o755);
+    const binDir = writeFakeCurl();
+    return execFileSync('bash', [hookPath], {
+      cwd: tmpDir,
+      input,
+      encoding: 'utf8',
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        CLAUDE_PROJECT_DIR: tmpDir,
+        INSTAR_AUTH_TOKEN: 'test-token',
+        INSTAR_AGENT_ID: 'test-agent',
+        INSTAR_TELEGRAM_TOPIC: '776',
+        FAKE_BRIEFING_MODE: mode,
+      },
+    });
+  }
+
+  function migrator(): PostUpdateMigrator {
+    return new PostUpdateMigrator({
+      projectDir: tmpDir,
+      stateDir,
+      port: 19999,
+      authToken: 'test-token',
+      agentName: 'test-agent',
+    });
+  }
 
   describe('Unanswered detection algorithm (Python parity)', () => {
     // Execute the ACTUAL Python detection logic used in the hooks
@@ -139,6 +212,7 @@ print(json.dumps([m['text'] for m in pending_user]))
       const content = fs.readFileSync(hookPath, 'utf-8');
       expect(content).toContain('pending_user');
       expect(content).toContain('UNANSWERED MESSAGE');
+      expect(content).toContain('/topic-intent/${TOPIC_FOR_CONTEXT}/briefing');
       expect(content).toContain('MUST address these messages substantively');
     });
 
@@ -146,9 +220,37 @@ print(json.dumps([m['text'] for m in pending_user]))
       const hookPath = path.join(__dirname, '../../src/templates/hooks/telegram-topic-context.sh');
       const content = fs.readFileSync(hookPath, 'utf-8');
       expect(content).toContain('[telegram:');
+      expect(content).toContain('/topic-intent/${TOPIC_ID}/briefing');
       expect(content).toContain('UserPromptSubmit');
       expect(content).toContain('pending_user');
       expect(content).toContain('UNANSWERED MESSAGE');
+    });
+  });
+
+  describe('Awareness briefing hook execution', () => {
+    const promptInput = JSON.stringify({ prompt: '[telegram:776] Continue the work' });
+
+    it.each([
+      ['canonical prompt', () => fs.readFileSync(path.join(__dirname, '../../src/templates/hooks/telegram-topic-context.sh'), 'utf8'), promptInput],
+      ['generated prompt', () => migrator().getHookContent('telegram-topic-context'), promptInput],
+      ['canonical compaction', () => fs.readFileSync(path.join(__dirname, '../../src/templates/hooks/compaction-recovery.sh'), 'utf8'), ''],
+      ['generated compaction', () => migrator().getHookContent('compaction-recovery'), ''],
+    ])('%s injects awareness and preserves raw topic history', (_name, getContent, input) => {
+      const output = runHook(getContent(), 'success', input);
+      expect(output).toContain('AWARENESS_OK');
+      expect(output).toContain('RAW_HISTORY_OK');
+    });
+
+    it.each([
+      ['canonical prompt', () => fs.readFileSync(path.join(__dirname, '../../src/templates/hooks/telegram-topic-context.sh'), 'utf8'), promptInput],
+      ['generated prompt', () => migrator().getHookContent('telegram-topic-context'), promptInput],
+      ['canonical compaction', () => fs.readFileSync(path.join(__dirname, '../../src/templates/hooks/compaction-recovery.sh'), 'utf8'), ''],
+      ['generated compaction', () => migrator().getHookContent('compaction-recovery'), ''],
+    ])('%s suppresses HTTP error bodies and degrades open to raw history', (_name, getContent, input) => {
+      const output = runHook(getContent(), 'error', input);
+      expect(output).not.toContain('BRIEFING_HTTP_ERROR');
+      expect(output).not.toContain('AWARENESS_OK');
+      expect(output).toContain('RAW_HISTORY_OK');
     });
   });
 
@@ -169,6 +271,7 @@ print(json.dumps([m['text'] for m in pending_user]))
       const content = migrator.getHookContent('compaction-recovery');
       expect(content).toContain('pending_user');
       expect(content).toContain('UNANSWERED MESSAGE');
+      expect(content).toContain('/topic-intent/${TOPIC_ID}/briefing');
       expect(content).toContain('MUST address these messages substantively');
     });
 
@@ -181,6 +284,7 @@ print(json.dumps([m['text'] for m in pending_user]))
       const content = migrator.getHookContent('telegram-topic-context');
       expect(content).toContain('pending_user');
       expect(content).toContain('UNANSWERED MESSAGE');
+      expect(content).toContain('/topic-intent/${TOPIC_ID}/briefing');
       expect(content).toContain('[telegram:');
     });
 
@@ -190,6 +294,7 @@ print(json.dumps([m['text'] for m in pending_user]))
       expect(fs.existsSync(hookPath)).toBe(true);
       const content = fs.readFileSync(hookPath, 'utf-8');
       expect(content).toContain('pending_user');
+      expect(content).toContain('/topic-intent/${TOPIC_ID}/briefing');
     });
   });
 

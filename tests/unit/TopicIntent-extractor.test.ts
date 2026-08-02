@@ -13,6 +13,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { TopicIntentStore } from '../../src/core/TopicIntent.js';
 import {
   TopicIntentExtractor,
+  parseExtractorAnalysis,
   parseExtractorResponse,
   buildExtractorPrompt,
   type ExtractFn,
@@ -156,6 +157,197 @@ describe('TopicIntentExtractor — ingest', () => {
     expect(result.emitted).toHaveLength(0);
     expect(result.skipped).toBe(0);
   });
+
+  it('persists all three awareness levels without changing ref confidence tiers', async () => {
+    const ext = new TopicIntentExtractor(store, async () => ({
+      signals: [{ kind: 'new-ref', refId: null, propositionText: 'Keep the initial course visible', refKind: 'goal' }],
+      awareness: {
+        topic: { goal: 'Keep the initial course visible while the topic evolves', trend: 'Broadening from one task to durable continuity', themes: ['continuity', 'evolution'] },
+        recentArc: { goal: 'Add three temporal scopes', trend: 'Moving from design into implementation', themes: ['topic', 'arc', 'work'] },
+        currentWork: { goal: 'Persist the first projection', trend: 'Writing the guarded update path', themes: ['validation', 'storage'] },
+        arcTransition: { kind: 'continue' },
+      },
+    }));
+
+    const result = await ext.ingest(makeInput({
+      topicId: 507,
+      message: { id: 'msg-awareness', text: 'Keep the initial course visible while this evolves', fromUser: true, turn: 1, at: '2026-01-02T00:00:00.000Z' },
+    }));
+
+    expect(result.awarenessUpdated).toBe(true);
+    expect(result.awarenessInvalid).toBe(false);
+    expect(store.read(507).awareness?.anchor.goal).toContain('initial course');
+    expect(store.read(507).awareness?.currentWork.themes).toEqual(['validation', 'storage']);
+    const created = Object.values(store.read(507).refs)[0];
+    expect(created.arcId).toBe('arc-507');
+    expect(store.getProjection(507, created.refId, Date.parse(created.createdAt))?.tier).toBe('tentative');
+  });
+
+  it('classifies a valid agent-only anchor attempt as refused, not invalid', async () => {
+    const ext = new TopicIntentExtractor(store, async () => ({
+      signals: [],
+      awareness: {
+        topic: { goal: 'Agent-inferred origin', trend: 'Starting', themes: ['origin'] },
+        recentArc: { goal: 'Agent arc', trend: 'Starting', themes: ['arc'] },
+        currentWork: { goal: 'Agent work', trend: 'Starting', themes: ['work'] },
+      },
+    }));
+    const result = await ext.ingest(makeInput({
+      topicId: 509,
+      message: {
+        id: 'agent-first', text: 'I infer the topic goal', fromUser: false, turn: 0,
+        at: '2026-01-01T00:00:00.000Z',
+      },
+    }));
+
+    expect(result.awarenessUpdated).toBe(false);
+    expect(result.awarenessInvalid).toBe(false);
+    expect(result.awarenessAgentAnchorRefused).toBe(true);
+    expect(store.read(509).awareness).toBeUndefined();
+    expect(store.read(509).telemetry.capture?.awareness_agent_anchor_refused).toBe(1);
+  });
+
+  it('ignores an out-of-order projection and keeps its ref on the captured arc snapshot', async () => {
+    const baseAwareness = {
+      topic: { goal: 'Track the topic', trend: 'Starting', themes: ['continuity'] },
+      recentArc: { goal: 'First arc', trend: 'Starting', themes: ['arc one'] },
+      currentWork: { goal: 'First work', trend: 'Starting', themes: ['work'] },
+      arcTransition: { kind: 'continue' as const },
+    };
+    store.updateAwareness(508, baseAwareness, {
+      messageId: 'm1', messageText: 'Track the topic', fromUser: true,
+      at: '2026-01-01T00:01:00.000Z', turn: 1,
+    });
+    store.updateAwareness(508, {
+      ...baseAwareness,
+      recentArc: { goal: 'Second arc', trend: 'Switching', themes: ['arc two'] },
+      arcTransition: { kind: 'new', evidenceQuote: 'Now switch to the second arc' },
+    }, {
+      messageId: 'm2', messageText: 'Now switch to the second arc', fromUser: true,
+      at: '2026-01-01T00:02:00.000Z', turn: 2,
+    });
+    expect(store.arcIdFor(508)).toBe('arc-508-2');
+
+    const ext = new TopicIntentExtractor(store, async () => ({
+      signals: [{ kind: 'new-ref', refId: null, propositionText: 'older arc fact', refKind: 'fact' }],
+      awareness: baseAwareness,
+    }));
+    const result = await ext.ingest(makeInput({
+      topicId: 508,
+      arcId: 'arc-508',
+      message: {
+        id: 'late-m1', text: 'Older work completed late', fromUser: true, turn: 1,
+        at: '2026-01-01T00:01:30.000Z',
+      },
+      existingAwareness: store.read(508).awareness,
+    }));
+
+    expect(result.awarenessUpdated).toBe(false);
+    expect(result.awarenessStaleIgnored).toBe(true);
+    expect(result.awarenessAnchorCorrected).toBe(false);
+    expect(result.awarenessInvalid).toBe(false);
+    expect(store.read(508).refs[result.createdRefs[0].refId].arcId).toBe('arc-508');
+    expect(store.arcIdFor(508)).toBe('arc-508-2');
+    expect(store.read(508).telemetry.capture?.awareness_stale_ignored).toBe(1);
+  });
+
+  it('refolds a delayed explicit boundary and re-homes newer refs by creation turn', async () => {
+    const baseAwareness = {
+      topic: { goal: 'Track the topic', trend: 'Starting', themes: ['continuity'] },
+      recentArc: { goal: 'First arc', trend: 'Starting', themes: ['arc one'] },
+      currentWork: { goal: 'First work', trend: 'Starting', themes: ['work'] },
+      arcTransition: { kind: 'continue' as const },
+    };
+    store.updateAwareness(510, baseAwareness, {
+      messageId: 'm1', messageText: 'Track the topic', fromUser: true,
+      at: '2026-01-01T00:01:00.000Z', turn: 1,
+    });
+
+    const laterExtractor = new TopicIntentExtractor(store, async () => ({
+      signals: [{ kind: 'new-ref', refId: null, propositionText: 'turn three fact', refKind: 'fact' }],
+      awareness: {
+        ...baseAwareness,
+        recentArc: { goal: 'Documentation after the shift', trend: 'Continuing', themes: ['docs'] },
+      },
+    }));
+    const later = await laterExtractor.ingest(makeInput({
+      topicId: 510,
+      arcId: 'arc-510',
+      message: {
+        id: 'm3', text: 'Continue documenting', fromUser: true, turn: 3,
+        at: '2026-01-01T00:03:00.000Z',
+      },
+      existingAwareness: store.read(510).awareness,
+    }));
+    expect(store.read(510).refs[later.createdRefs[0].refId].arcId).toBe('arc-510');
+
+    const boundaryExtractor = new TopicIntentExtractor(store, async () => ({
+      signals: [{ kind: 'new-ref', refId: null, propositionText: 'turn two boundary fact', refKind: 'fact' }],
+      awareness: {
+        ...baseAwareness,
+        recentArc: { goal: 'Move into documentation', trend: 'Switching', themes: ['docs'] },
+        arcTransition: { kind: 'new' as const, evidenceQuote: 'Now move to documentation' },
+      },
+    }));
+    const boundary = await boundaryExtractor.ingest(makeInput({
+      topicId: 510,
+      arcId: 'arc-510',
+      message: {
+        id: 'm2', text: 'Now move to documentation', fromUser: true, turn: 2,
+        at: '2026-01-01T00:02:00.000Z',
+      },
+      existingAwareness: store.read(510).awareness,
+    }));
+
+    const file = store.read(510);
+    expect(boundary.awarenessStaleIgnored).toBe(true);
+    expect(boundary.arcTransitioned).toBe(true);
+    expect(file.awareness?.currentArcId).toBe('arc-510-2');
+    expect(file.refs[later.createdRefs[0].refId].arcId).toBe('arc-510-2');
+    expect(file.refs[boundary.createdRefs[0].refId].arcId).toBe('arc-510-2');
+    expect(file.telemetry.capture?.awareness_arc_transitions).toBe(1);
+  });
+
+  it('keeps a ref on its stable historical arc after that arc ages out of the reorder window', () => {
+    const base = {
+      topic: { goal: 'Long topic', trend: 'Starting', themes: ['history'] },
+      recentArc: { goal: 'Initial arc', trend: 'Starting', themes: ['arc'] },
+      currentWork: { goal: 'Initial work', trend: 'Starting', themes: ['work'] },
+      arcTransition: { kind: 'continue' as const },
+    };
+    store.updateAwareness(511, base, {
+      messageId: 'm1', messageText: 'Long topic', fromUser: true,
+      at: '2026-01-01T00:01:00.000Z', turn: 1,
+    });
+    store.updateAwareness(511, {
+      ...base,
+      recentArc: { goal: 'Phase 2', trend: 'Switching', themes: ['phase'] },
+      arcTransition: { kind: 'new', evidenceQuote: 'Now switch to phase 2' },
+    }, {
+      messageId: 'm2', messageText: 'Now switch to phase 2', fromUser: true,
+      at: '2026-01-01T00:02:00.000Z', turn: 2,
+    });
+    store.appendEvidence(511, 'historical-ref', {
+      eventId: 'historical-event', refId: 'historical-ref', kind: 'extract-user',
+      sourceMessageId: 'm2', userAuthored: true,
+      at: '2026-01-01T00:02:00.000Z', delta: 0.4,
+    }, { text: 'Phase two decision', kind: 'decision', arcId: 'arc-511-2', sourceTurn: 2 });
+
+    for (let turn = 3; turn <= 70; turn++) {
+      store.updateAwareness(511, {
+        ...base,
+        recentArc: { goal: `Phase ${turn}`, trend: 'Switching', themes: ['phase'] },
+        arcTransition: { kind: 'new', evidenceQuote: `Now switch to phase ${turn}` },
+      }, {
+        messageId: `m${turn}`, messageText: `Now switch to phase ${turn}`, fromUser: true,
+        at: new Date(Date.UTC(2026, 0, 1, 0, turn)).toISOString(), turn,
+      });
+    }
+
+    const file = store.read(511);
+    expect(file.awareness?.archivedArcCount).toBeGreaterThan(0);
+    expect(file.refs['historical-ref'].arcId).toBe('arc-511-2');
+  });
 });
 
 describe('parseExtractorResponse — robust JSON extraction', () => {
@@ -192,6 +384,36 @@ describe('parseExtractorResponse — robust JSON extraction', () => {
   });
 });
 
+describe('parseExtractorAnalysis — three awareness levels', () => {
+  it('preserves a legacy array containing proposal objects during rolling upgrades', () => {
+    const parsed = parseExtractorAnalysis(
+      '[{"kind":"new-ref","refId":null,"propositionText":"keep the signal","refKind":"decision"}]',
+    );
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+    expect((parsed as SignalProposal[])[0].propositionText).toBe('keep the signal');
+  });
+
+  it('parses the structured object and rejects a partial awareness block', () => {
+    const raw = JSON.stringify({
+      signals: [{ kind: 'reref', refId: 'r1' }],
+      awareness: {
+        topic: { goal: 'g', trend: 't', themes: ['a'] },
+        recentArc: { goal: 'g2', trend: 't2', themes: ['b'] },
+        currentWork: { goal: 'g3', trend: 't3', themes: ['c'] },
+        arcTransition: { kind: 'continue' },
+      },
+    });
+    const parsed = parseExtractorAnalysis(raw);
+    expect(Array.isArray(parsed)).toBe(false);
+    expect((parsed as any).signals).toHaveLength(1);
+    expect((parsed as any).awareness.currentWork.goal).toBe('g3');
+
+    const partial = parseExtractorAnalysis(JSON.stringify({ signals: [], awareness: { topic: {} } }));
+    expect((partial as any).awareness).toBeUndefined();
+  });
+});
+
 describe('buildExtractorPrompt', () => {
   it('includes the message text and existing refs', () => {
     const input = makeInput({
@@ -208,6 +430,8 @@ describe('buildExtractorPrompt', () => {
     expect(userPrompt).toContain('we should use Path B');
     expect(userPrompt).toContain('ref-A');
     expect(userPrompt).toContain('use Path A OAuth');
-    expect(systemPrompt).toContain('JSON array');
+    expect(systemPrompt).toContain('signals');
+    expect(systemPrompt).toContain('THREE TEMPORAL AWARENESS LEVELS');
+    expect(systemPrompt).toContain('goal, trend, and 1-5 themes');
   });
 });

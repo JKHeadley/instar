@@ -19,6 +19,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import {
+  applyAwarenessUpdate,
+  type AwarenessDraft,
+  type AwarenessUpdateInput,
+  type AwarenessUpdateResult,
+  type TopicAwarenessState,
+} from './TopicAwareness.js';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -63,6 +70,8 @@ export interface EvidenceEvent {
 export interface EstablishedRef {
   refId: string;
   arcId: string;
+  /** Creation turn, used to repair arc placement after out-of-order boundaries. */
+  sourceTurn?: number;
   topicId: number;
   kind: RefKind;
   text: string;                 // the proposition
@@ -104,6 +113,8 @@ export interface TopicIntentFile {
     queue: PendingConfirmation[];
   };
   telemetry: TelemetryCounters;
+  /** Three temporal awareness levels; orthogonal to ref confidence tiers. */
+  awareness?: TopicAwarenessState;
   schemaVersion: 1;
 }
 
@@ -142,11 +153,18 @@ export interface CaptureCounters {
   degraded_shed: number;               // turns skipped under QuotaTracker load-shedding
   rate_limited: number;                // turns skipped by the per-topic rate ceiling
   // ── surface + use side (did it reach the agent / change anything?) ──
-  briefing_served: number;             // session-start briefing fetched for this topic
+  briefing_served: number;             // agent-context briefing fetched for this topic
   briefing_refs_settled: number;       // cumulative authoritative refs carried by briefings
   briefing_refs_tentative: number;     // cumulative tentative refs carried by briefings
   arccheck_fired: number;              // ArcCheck ran on a pre-send draft
   arccheck_signalled: number;          // ArcCheck emitted a confirm-signal (changed next move)
+  awareness_updates: number;           // valid three-level projections persisted
+  awareness_invalid: number;           // extractor returned absent/invalid awareness
+  awareness_agent_anchor_refused: number; // valid agent output could not create origin
+  awareness_arc_transitions: number;   // guarded semantic arc switches accepted
+  awareness_stale_ignored: number;      // out-of-order completions refused
+  awareness_anchor_corrections: number; // origin moved to an earlier completed turn
+  awareness_briefing_served: number;   // briefings that carried the three levels
   last_capture_at: string | null;      // ISO8601 of the most recent extraction attempt
   // rung 1: per-RefKind created breakdown (fact/decision/method/audience/goal) so
   // we can see whether task-frame capture is actually working and tune its decay.
@@ -483,7 +501,11 @@ export class TopicIntentStore {
         if (!parsed.telemetry) parsed.telemetry = emptyTelemetry();
         if (parsed.schemaVersion === undefined) parsed.schemaVersion = 1;
         if (parsed.turn === undefined) parsed.turn = 0;
-        if (!parsed.telemetry.capture) parsed.telemetry.capture = defaultCaptureCounters();
+        parsed.telemetry.capture = {
+          ...defaultCaptureCounters(),
+          ...(parsed.telemetry.capture ?? {}),
+          refkind_created: parsed.telemetry.capture?.refkind_created ?? {},
+        };
         return parsed;
       }
     } catch (err) {
@@ -570,6 +592,7 @@ export class TopicIntentStore {
       ref = {
         refId,
         arcId: refInit?.arcId ?? `arc-${topicId}`,
+        sourceTurn: refInit?.sourceTurn,
         topicId,
         kind: refInit?.kind ?? 'fact',
         text: refInit?.text ?? '',
@@ -605,9 +628,86 @@ export class TopicIntentStore {
     return file;
   }
 
-  /** The (single, v1) arc id for a topic. */
+  /** Current semantic arc id; falls back to the legacy single-arc id. */
   arcIdFor(topicId: number): string {
-    return `arc-${topicId}`;
+    return this.load(topicId).awareness?.currentArcId ?? `arc-${topicId}`;
+  }
+
+  /**
+   * Persist a validated three-level awareness update under the same per-topic
+   * lock as evidence. The projection is orientation only: this never changes
+   * ref evidence, confidence, or authority tiers.
+   */
+  updateAwareness(
+    topicId: number,
+    draft: AwarenessDraft,
+    input: Omit<AwarenessUpdateInput, 'topicId'>,
+  ): AwarenessUpdateResult | null {
+    return this.withTopicLock(topicId, () => {
+      const file = this.load(topicId);
+      if (!file.telemetry.capture) file.telemetry.capture = defaultCaptureCounters();
+      const result = applyAwarenessUpdate(file.awareness, draft, { ...input, topicId });
+      if (!result) {
+        if (!input.fromUser) {
+          file.telemetry.capture.awareness_agent_anchor_refused =
+            (file.telemetry.capture.awareness_agent_anchor_refused ?? 0) + 1;
+          this.save(file);
+        }
+        return null;
+      }
+      if (!result.applied) {
+        if (result.stateReconciled) {
+          file.awareness = result.state;
+          this.reassignRefsToAwarenessArcs(file);
+        }
+        if (result.anchorCorrected) {
+          file.telemetry.capture.awareness_anchor_corrections =
+            (file.telemetry.capture.awareness_anchor_corrections ?? 0) + 1;
+        }
+        if (result.transitioned) {
+          file.telemetry.capture.awareness_arc_transitions =
+            (file.telemetry.capture.awareness_arc_transitions ?? 0) + 1;
+        }
+        file.telemetry.capture.awareness_stale_ignored =
+          (file.telemetry.capture.awareness_stale_ignored ?? 0) + 1;
+        this.save(file);
+        return result;
+      }
+      file.awareness = result.state;
+      this.reassignRefsToAwarenessArcs(file);
+      file.telemetry.capture.awareness_updates = (file.telemetry.capture.awareness_updates ?? 0) + 1;
+      if (result.transitioned) {
+        file.telemetry.capture.awareness_arc_transitions =
+          (file.telemetry.capture.awareness_arc_transitions ?? 0) + 1;
+      }
+      this.save(file);
+      return result;
+    });
+  }
+
+  /**
+   * A late earlier boundary can arrive after newer refs were created. Re-home
+   * only refs carrying the new creation-turn metadata; pre-feature refs retain
+   * their legacy arc identity.
+   */
+  private reassignRefsToAwarenessArcs(file: TopicIntentFile): void {
+    const awareness = file.awareness;
+    if (!awareness) return;
+    const arcs = [...awareness.arcs].sort((a, b) => a.startedTurn - b.startedTurn);
+    const reorderFloor = awareness.recentArcEvents.length > 0
+      ? Math.min(...awareness.recentArcEvents.map((event) => event.turn))
+      : Number.POSITIVE_INFINITY;
+    for (const ref of Object.values(file.refs)) {
+      if (typeof ref.sourceTurn !== 'number') continue;
+      // Once an arc has aged out of the bounded reorder window its refs keep
+      // their stable historical arc id; the retained initial+tail projection
+      // intentionally no longer has enough middle boundaries to recompute it.
+      if (ref.sourceTurn < reorderFloor) continue;
+      const effective = [...arcs]
+        .filter((arc) => arc.startedTurn <= ref.sourceTurn!)
+        .sort((a, b) => b.startedTurn - a.startedTurn)[0];
+      if (effective) ref.arcId = effective.arcId;
+    }
   }
 
   /** Atomically increment and return the per-topic user-turn counter. */
@@ -719,6 +819,13 @@ export function defaultCaptureCounters(): CaptureCounters {
     briefing_refs_tentative: 0,
     arccheck_fired: 0,
     arccheck_signalled: 0,
+    awareness_updates: 0,
+    awareness_invalid: 0,
+    awareness_agent_anchor_refused: 0,
+    awareness_arc_transitions: 0,
+    awareness_stale_ignored: 0,
+    awareness_anchor_corrections: 0,
+    awareness_briefing_served: 0,
     last_capture_at: null,
     refkind_created: {},
   };

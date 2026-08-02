@@ -177,6 +177,7 @@ describe('captureTurn', () => {
     expect(calls()).toBe(0);
     expect(store.read(TOPIC).telemetry.capture!.prefilter_skipped).toBe(1);
     expect(store.read(TOPIC).telemetry.capture!.turns_seen).toBe(1);
+    expect(store.read(TOPIC).turn).toBe(1);
   });
 
   it('substantive turn → ingest invoked, ref created, funnel counters move', async () => {
@@ -229,6 +230,32 @@ describe('captureTurn', () => {
     const deps = baseDeps(extractor, { topicMemory: { getTopicSummary: () => ({ summary: 'we are building the capture loop' }) } });
     await captureTurn(deps, entry());
     expect(sawSummary).toBe('we are building the capture loop');
+  });
+
+  it('converges concurrent pre-anchor captures on the earliest valid user turn', async () => {
+    const fn: ExtractFn = async (input) => {
+      if (input.message.id === 'first') await new Promise(resolve => setTimeout(resolve, 25));
+      return {
+        signals: [],
+        awareness: {
+          topic: { goal: input.message.text, trend: 'Evolving in arrival order', themes: ['ordering'] },
+          recentArc: { goal: input.message.text, trend: 'Evolving in arrival order', themes: ['arc'] },
+          currentWork: { goal: input.message.text, trend: 'Evolving in arrival order', themes: ['work'] },
+          arcTransition: { kind: 'continue' },
+        },
+      };
+    };
+    const loop = createCaptureLoop(baseDeps(new TopicIntentExtractor(store, fn)));
+
+    const first = loop(entry({ messageId: 'first', text: 'First user goal' }));
+    const second = loop(entry({ messageId: 'second', text: 'Second evolving view' }));
+    await Promise.all([first, second]);
+
+    const awareness = store.read(TOPIC).awareness!;
+    expect(awareness.anchor.goal).toBe('First user goal');
+    expect(awareness.topic.goal).toBe('Second evolving view');
+    expect(awareness.turnAtUpdate).toBe(2);
+    expect(store.read(TOPIC).telemetry.capture?.awareness_anchor_corrections).toBe(1);
   });
 });
 

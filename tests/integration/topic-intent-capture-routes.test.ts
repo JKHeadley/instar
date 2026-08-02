@@ -79,6 +79,41 @@ describe('GET /topic-intent/:id/capture-metrics', () => {
     expect(res.body.funnel.last_capture_at).toBeTruthy();
     expect(res.body.refsLive).toBe(1);
   });
+
+  it('reports projection updates, arc transitions, freshness, and briefing delivery', async () => {
+    const TOPIC = 5005;
+    const awareness = {
+      topic: { goal: 'Track the topic', trend: 'Building continuity', themes: ['awareness'] },
+      recentArc: { goal: 'Build the route', trend: 'Moving into integration proof', themes: ['metrics'] },
+      currentWork: { goal: 'Exercise the endpoint', trend: 'Recording the read seam', themes: ['briefing'] },
+      arcTransition: { kind: 'continue' as const },
+    };
+    const extractor = new TopicIntentExtractor(store, async () => ({ signals: [], awareness }));
+    await captureTurn({ extractor, store, topicMemory: null }, {
+      messageId: 'aware-1', topicId: TOPIC,
+      text: 'Track the topic with three awareness levels', fromUser: true,
+    });
+
+    const app = mountApp(store);
+    const before = await request(app).get(`/topic-intent/${TOPIC}/capture-metrics`);
+    expect(before.body.funnel.awareness).toMatchObject({
+      updates: 1,
+      invalid: 0,
+      agent_anchor_refused: 0,
+      arc_transitions: 0,
+      stale_ignored: 0,
+      anchor_corrections: 0,
+      briefing_served: 0,
+      current_arc: `arc-${TOPIC}`,
+      archived_arcs: 0,
+      lag_turns: 0,
+    });
+
+    const briefing = await request(app).get(`/topic-intent/${TOPIC}/briefing`);
+    expect(briefing.text).toContain('THREE AWARENESS LEVELS');
+    const after = await request(app).get(`/topic-intent/${TOPIC}/capture-metrics`);
+    expect(after.body.funnel.awareness.briefing_served).toBe(1);
+  });
 });
 
 describe('GET /topic-intent/:id/briefing increments briefing_served', () => {

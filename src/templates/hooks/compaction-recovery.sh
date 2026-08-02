@@ -374,6 +374,25 @@ except Exception:
             "http://localhost:${PORT}/telegram/topics/${TOPIC_FOR_CONTEXT}/messages?limit=15" 2>/dev/null)
         fi
 
+        # Restore the temporal awareness projection alongside raw recent
+        # history. Compaction can happen without another UserPromptSubmit, so
+        # the inbound-message hook is not sufficient for this recovery seam.
+        # Its first visible awareness line is "THREE AWARENESS LEVELS (orientation, not authority".
+        TOPIC_BRIEFING=""
+        if [ -n "$AUTH_TOKEN" ]; then
+          TOPIC_BRIEFING=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
+            "http://localhost:${PORT}/topic-intent/${TOPIC_FOR_CONTEXT}/briefing" 2>/dev/null)
+        else
+          TOPIC_BRIEFING=$(curl -sf --max-time 2 \
+            "http://localhost:${PORT}/topic-intent/${TOPIC_FOR_CONTEXT}/briefing" 2>/dev/null)
+        fi
+
+        if [ -n "$TOPIC_BRIEFING" ]; then
+          echo "$TOPIC_BRIEFING"
+          echo ""
+        fi
+
         # Format messages and detect unanswered user messages
         echo "$RECENT_MSGS" | python3 -c "
 import sys, json
