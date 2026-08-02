@@ -8,6 +8,25 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { LsTreeNulParser, readCurrentOids } from '../../src/core/cartographerDetect.js';
+import { isInstarSourceTree } from '../../src/core/SourceTreeGuard.js';
+
+function safeGitReadCalls(source: string): string[] {
+  const calls: string[] = [];
+  const pattern = /SafeGitExecutor\.(?:readSync|readStream)\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(source)) !== null) {
+    const start = match.index;
+    let depth = 1;
+    let cursor = pattern.lastIndex;
+    while (cursor < source.length && depth > 0) {
+      if (source[cursor] === '(') depth += 1;
+      if (source[cursor] === ')') depth -= 1;
+      cursor += 1;
+    }
+    calls.push(source.slice(start, cursor));
+  }
+  return calls;
+}
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, {
@@ -43,6 +62,24 @@ function fakeChild(chunks: Buffer[], close: { code: number | null; signal: NodeJ
 }
 
 describe('streaming git ls-tree', () => {
+  it('opts every protected-source Git read into the narrow read-only tier', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'src', 'core', 'cartographerDetect.ts'),
+      'utf8',
+    );
+    const calls = safeGitReadCalls(source);
+    expect(calls).toHaveLength(3);
+    for (const call of calls) {
+      expect(call).toMatch(/\bsourceTreeReadOk\s*:\s*true\b/);
+    }
+  });
+
+  it('reads the protected Instar checkout through read-only Git operations', async () => {
+    expect(isInstarSourceTree(process.cwd())).toBe(true);
+    const result = await readCurrentOids(process.cwd(), 1);
+    expect(result.get('src/core/cartographerDetect.ts')).toMatch(/^[a-f0-9]{40}$/);
+  });
+
   it('parses a NUL exactly at a chunk edge and a UTF-8 record spanning 3+ chunks', () => {
     const records: string[] = [];
     const parser = new LsTreeNulParser((record) => records.push(record));
