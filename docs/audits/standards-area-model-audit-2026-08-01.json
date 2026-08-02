@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "scope": "area-model-adequacy",
+  "reviewedAt": "2026-08-02T02:17:22.219Z",
+  "reviewers": [
+    "instar-codey"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 7
+  },
+  "reviewedActions": [
+    "keep",
+    "add",
+    "split",
+    "merge",
+    "retire"
+  ],
+  "convergenceReport": "docs/audits/standards-area-model-adequacy.md",
+  "convergenceSha256": "b1b4d61ac2ff197cad8d8228209c129e16c86feff63a80790f79ecc370e6043d",
+  "currentAreas": {
+    "Building": {
+      "disposition": "keep",
+      "rationale": "Engineering, verification, observability, and maintainability remain coherent around making capabilities dependable before release."
+    },
+    "Interaction": {
+      "disposition": "keep",
+      "rationale": "User communication, consent, delegation, publishing, and relationships remain coherent around effects that cross the system boundary."
+    },
+    "Shipping": {
+      "disposition": "keep",
+      "rationale": "Evidence, rollout, live completeness, and truthful delivery remain a distinct lifecycle boundary after implementation."
+    },
+    "The Fractal": {
+      "disposition": "keep",
+      "rationale": "The self-hosting framework identity answers what the framework is and remains distinct from implementation discipline."
+    },
+    "The Root": {
+      "disposition": "keep",
+      "rationale": "The single generative principle remains distinct from both the framework identity and its implementing standards."
+    },
+    "The Substrate": {
+      "disposition": "keep",
+      "rationale": "Context, attention, memory, authority, uncertainty, and emergence remain entangled model-level constraints rather than clean standalone domains."
+    }
+  },
+  "additions": []
+}

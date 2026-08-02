@@ -1,0 +1,31 @@
+{
+  "ts": "2026-08-02T02:29:32.021Z",
+  "slug": "standards-area-model-adequacy",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 329,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/standards-coverage.mjs"
+    ],
+    "addedLines": 327,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/standards-coverage-ratchet.test.ts",
+      "howCaught": "Removing the area-model record fails the live check, and presenting family-content evidence to the model-record path is rejected, so content proof cannot masquerade as proof that the area model was reconsidered."
+    },
+    "component": "standards-coverage"
+  },
+  "verdict": "pass"
+}

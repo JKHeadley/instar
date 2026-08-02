@@ -34,6 +34,7 @@
  *   node scripts/standards-coverage.mjs --record-area-audit=all --audit-ref=docs/audits/review.json
  *   node scripts/standards-coverage.mjs --record-area-audit="The Root" --audit-ref=docs/audits/review.json
  *   node scripts/standards-coverage.mjs --record-area-audit=all --admit-new-areas --audit-ref=docs/audits/review.json
+ *   node scripts/standards-coverage.mjs --record-area-model-audit --audit-ref=docs/audits/model-review.json
  *   node scripts/standards-coverage.mjs --allow-partial-registry # explicit non-CI partial checkout
  *
  * Floors (env override):
@@ -53,6 +54,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { articleIds, parseRegistryStructure } from './standards-registry-article-core.mjs';
+import { parseFrontmatter, validateAuditReport } from './write-audit-convergence.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const args = new Set(process.argv.slice(2));
@@ -63,6 +65,7 @@ const RECORD_AREA_ARG = [...args].find((arg) => arg.startsWith('--record-area-au
 const RECORD_AREA = RECORD_AREA_ARG?.slice('--record-area-audit='.length) ?? null;
 const AUDIT_REF_ARG = [...args].find((arg) => arg.startsWith('--audit-ref='));
 const AUDIT_REF = AUDIT_REF_ARG?.slice('--audit-ref='.length) ?? null;
+const RECORD_AREA_MODEL = args.has('--record-area-model-audit');
 const ALLOW_PARTIAL_REGISTRY = args.has('--allow-partial-registry');
 const ADMIT_NEW_AREAS = args.has('--admit-new-areas');
 
@@ -75,6 +78,7 @@ function resolveRoot() {
 const ROOT = resolveRoot();
 const REGISTRY_PATH = path.join(ROOT, 'docs', 'STANDARDS-REGISTRY.md');
 const AREA_AUDITS_PATH = path.join(ROOT, 'docs', 'standards-registry-area-audits.json');
+const AREA_MODEL_AUDIT_PATH = path.join(ROOT, 'docs', 'standards-registry-area-model-audit.json');
 const CI_WORKFLOW_PATH = path.join(ROOT, '.github', 'workflows', 'ci.yml');
 const OUT_PATH = path.join(ROOT, '.instar', 'standards-coverage.json');
 
@@ -336,6 +340,11 @@ function classifyFileGuard(ref) {
 
 const AREA_AUDIT_SCHEMA_VERSION = 2;
 const AUDIT_EVIDENCE_SCHEMA_VERSION = 1;
+const AREA_MODEL_AUDIT_SCHEMA_VERSION = 1;
+const AREA_MODEL_EVIDENCE_SCHEMA_VERSION = 1;
+const AREA_MODEL_SCOPE = 'area-model-adequacy';
+const AREA_MODEL_ACTIONS = ['keep', 'add', 'split', 'merge', 'retire'];
+const CURRENT_AREA_DISPOSITIONS = new Set(['keep', 'split', 'merge', 'retire']);
 const AREA_AUDIT_KEYS = [
   'lastAuditedAt', 'auditRef', 'auditSha256', 'areaSha256', 'refResolutionFloor',
 ];
@@ -406,6 +415,10 @@ function canonicalText(value) {
 
 function textSha256(value) {
   return crypto.createHash('sha256').update(canonicalText(value)).digest('hex');
+}
+
+function areaSetSha256(areaNames) {
+  return textSha256(`standards-area-model-v1\n${[...areaNames].sort().join('\n')}\n`);
 }
 
 function validateRootSelfWiring() {
@@ -616,6 +629,222 @@ function readAuditEvidence(ref) {
     evidence,
     errors,
   };
+}
+
+function canonicalAreaModelEvidence(value) {
+  const currentAreas = nullObject();
+  const sourceAreas = isPlainObject(value?.currentAreas) ? value.currentAreas : nullObject();
+  for (const area of Object.keys(sourceAreas).sort()) {
+    currentAreas[area] = {
+      disposition: sourceAreas[area]?.disposition,
+      rationale: sourceAreas[area]?.rationale,
+    };
+  }
+  const additions = Array.isArray(value?.additions)
+    ? [...value.additions]
+      .map((entry) => ({ name: entry?.name, rationale: entry?.rationale }))
+      .sort((left, right) => String(left.name).localeCompare(String(right.name)))
+    : value?.additions;
+  return {
+    schemaVersion: value?.schemaVersion,
+    scope: value?.scope,
+    reviewedAt: value?.reviewedAt,
+    reviewers: value?.reviewers,
+    findingDisposition: value?.findingDisposition,
+    reviewedActions: value?.reviewedActions,
+    convergenceReport: value?.convergenceReport,
+    convergenceSha256: value?.convergenceSha256,
+    currentAreas,
+    additions,
+  };
+}
+
+function serializeAreaModelEvidence(value) {
+  return JSON.stringify(canonicalAreaModelEvidence(value), null, 2) + '\n';
+}
+
+function readAreaModelEvidence(ref, expectedAreas) {
+  const resolved = resolveJailedRegularFile(ref, 'docs/audits', '.json');
+  const refError = typeof resolved === 'string' ? auditRefError(ref) : null;
+  if (refError) return { bytes: null, sha256: null, evidence: null, errors: [refError] };
+  let bytes;
+  try { bytes = fs.readFileSync(resolved.fullPath, 'utf-8'); } catch {
+    return { bytes: null, sha256: null, evidence: null, errors: ['cannot be read'] };
+  }
+  let evidence;
+  try { evidence = JSON.parse(bytes); } catch {
+    return { bytes, sha256: null, evidence: null, errors: ['is not valid JSON'] };
+  }
+  const errors = [];
+  if (canonicalText(bytes) !== serializeAreaModelEvidence(evidence)) errors.push('is not in canonical form');
+  const topKeys = isPlainObject(evidence) ? Object.keys(evidence).sort() : [];
+  const expectedTopKeys = [
+    'additions', 'convergenceReport', 'convergenceSha256', 'currentAreas',
+    'findingDisposition', 'reviewedActions', 'reviewedAt', 'reviewers',
+    'schemaVersion', 'scope',
+  ];
+  if (!isPlainObject(evidence) || evidence.schemaVersion !== AREA_MODEL_EVIDENCE_SCHEMA_VERSION) {
+    errors.push(`must use schemaVersion ${AREA_MODEL_EVIDENCE_SCHEMA_VERSION}`);
+  }
+  if (JSON.stringify(topKeys) !== JSON.stringify(expectedTopKeys)) {
+    errors.push(`must contain exactly ${expectedTopKeys.join(', ')}`);
+  }
+  if (evidence?.scope !== AREA_MODEL_SCOPE) errors.push(`scope must be ${AREA_MODEL_SCOPE}`);
+  if (!canonicalTimestamp(evidence?.reviewedAt)) errors.push('has invalid reviewedAt');
+  if (!Array.isArray(evidence?.reviewers) || evidence.reviewers.length === 0 ||
+    evidence.reviewers.some((reviewer) => typeof reviewer !== 'string' ||
+      !/^[a-z0-9][a-z0-9:._/-]{1,119}$/i.test(reviewer)) ||
+    new Set(evidence.reviewers).size !== evidence.reviewers.length) {
+    errors.push('must name one or more unique reviewers');
+  }
+  const findingDisposition = evidence?.findingDisposition;
+  if (!isPlainObject(findingDisposition) ||
+    JSON.stringify(Object.keys(findingDisposition).sort()) !== JSON.stringify(['noUnresolvedDesign', 'resolvedFindings']) ||
+    findingDisposition.noUnresolvedDesign !== true ||
+    !Number.isSafeInteger(findingDisposition.resolvedFindings) || findingDisposition.resolvedFindings < 0) {
+    errors.push('must declare findingDisposition { noUnresolvedDesign: true, resolvedFindings: nonnegative integer }');
+  }
+  if (!Array.isArray(evidence?.reviewedActions) ||
+    JSON.stringify(evidence.reviewedActions) !== JSON.stringify(AREA_MODEL_ACTIONS)) {
+    errors.push(`reviewedActions must be exactly ${AREA_MODEL_ACTIONS.join(', ')}`);
+  }
+
+  const expected = [...expectedAreas].sort();
+  const actual = isPlainObject(evidence?.currentAreas) ? Object.keys(evidence.currentAreas).sort() : [];
+  if (!isPlainObject(evidence?.currentAreas)) errors.push('must contain a currentAreas object');
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    errors.push(`currentAreas must exactly cover the parsed family set (expected: ${expected.join(', ') || 'none'})`);
+  }
+  for (const area of actual) {
+    const entry = evidence.currentAreas[area];
+    if (!isPlainObject(entry) ||
+      JSON.stringify(Object.keys(entry).sort()) !== JSON.stringify(['disposition', 'rationale']) ||
+      !CURRENT_AREA_DISPOSITIONS.has(entry.disposition) ||
+      typeof entry.rationale !== 'string' || entry.rationale.trim().length < 24 || entry.rationale.length > 1000) {
+      errors.push(`currentAreas entry for ${area} must carry a keep/split/merge/retire disposition and a 24-1000 character rationale`);
+    }
+  }
+  if (!Array.isArray(evidence?.additions)) {
+    errors.push('additions must be an array (empty is the explicit no-add disposition)');
+  } else {
+    const seen = new Set();
+    for (const addition of evidence.additions) {
+      if (!isPlainObject(addition) ||
+        JSON.stringify(Object.keys(addition).sort()) !== JSON.stringify(['name', 'rationale']) ||
+        typeof addition.name !== 'string' || addition.name.trim() !== addition.name ||
+        addition.name.length < 2 || addition.name.length > 120 || seen.has(addition.name) ||
+        expected.includes(addition.name) ||
+        typeof addition.rationale !== 'string' || addition.rationale.trim().length < 24 || addition.rationale.length > 1000) {
+        errors.push('each additions entry must name one unique non-current area with a 24-1000 character rationale');
+        break;
+      }
+      seen.add(addition.name);
+    }
+  }
+
+  const reportRef = evidence?.convergenceReport;
+  const resolvedReport = resolveJailedRegularFile(reportRef, 'docs/audits', '.md');
+  let reportBytes = null;
+  if (typeof resolvedReport === 'string') {
+    errors.push('must name an existing regular convergenceReport under docs/audits/');
+  } else {
+    try { reportBytes = fs.readFileSync(resolvedReport.fullPath, 'utf-8'); } catch {
+      errors.push('convergenceReport cannot be read');
+    }
+  }
+  if (typeof evidence?.convergenceSha256 !== 'string' || !SHA256_RE.test(evidence.convergenceSha256)) {
+    errors.push('has invalid convergenceSha256');
+  } else if (reportBytes !== null && textSha256(reportBytes) !== evidence.convergenceSha256) {
+    errors.push('convergenceReport bytes changed');
+  }
+  if (reportBytes !== null) {
+    const reportText = canonicalText(reportBytes);
+    let convergence;
+    try {
+      convergence = validateAuditReport(reportText, {
+        root: ROOT,
+        basenameSlug: path.basename(reportRef, '.md'),
+        requiredStandardsRef: 'docs/STANDARDS-REGISTRY.md',
+        standardEvidence: { responseChanged: false },
+      });
+    } catch (error) {
+      convergence = { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+    if (!convergence.ok) {
+      errors.push(`convergenceReport has not earned convergence: ${convergence.reason}`);
+    } else {
+      const resolvedFindings = convergence.rounds.reduce((sum, round) => sum + round.rows.length, 0);
+      if (findingDisposition?.resolvedFindings !== resolvedFindings) {
+        errors.push(`findingDisposition resolvedFindings must equal the convergenceReport ledger count (${resolvedFindings})`);
+      }
+      try {
+        const convergedAt = parseFrontmatter(reportText).fields.converged;
+        if (convergedAt !== evidence.reviewedAt) {
+          errors.push('reviewedAt must equal the convergenceReport earned timestamp');
+        }
+      } catch {
+        errors.push('convergenceReport frontmatter cannot be read');
+      }
+    }
+  }
+  return { bytes, sha256: textSha256(bytes), evidence, errors };
+}
+
+function canonicalAreaModelAuditRecord(value) {
+  return {
+    schemaVersion: value?.schemaVersion,
+    lastAuditedAt: value?.lastAuditedAt,
+    auditRef: value?.auditRef,
+    auditSha256: value?.auditSha256,
+    areaSetSha256: value?.areaSetSha256,
+  };
+}
+
+function serializeAreaModelAuditRecord(value) {
+  return JSON.stringify(canonicalAreaModelAuditRecord(value), null, 2) + '\n';
+}
+
+function loadAreaModelAudit(expectedAreas) {
+  let raw;
+  try { raw = fs.readFileSync(AREA_MODEL_AUDIT_PATH, 'utf-8'); } catch {
+    return { record: null, errors: ['area model adequacy audit record is missing'] };
+  }
+  let record;
+  try { record = JSON.parse(raw); } catch {
+    return { record: null, errors: ['area model adequacy audit record is not valid JSON'] };
+  }
+  const errors = [];
+  const keys = isPlainObject(record) ? Object.keys(record).sort() : [];
+  const expectedKeys = ['areaSetSha256', 'auditRef', 'auditSha256', 'lastAuditedAt', 'schemaVersion'];
+  if (!isPlainObject(record) || record.schemaVersion !== AREA_MODEL_AUDIT_SCHEMA_VERSION ||
+    JSON.stringify(keys) !== JSON.stringify(expectedKeys)) {
+    errors.push(`area model adequacy audit record must use schemaVersion ${AREA_MODEL_AUDIT_SCHEMA_VERSION} and exact keys`);
+  }
+  if (!canonicalTimestamp(record?.lastAuditedAt)) {
+    errors.push('area model adequacy audit record has invalid lastAuditedAt');
+  } else if (Date.parse(record.lastAuditedAt) > Date.now() + 5 * 60_000) {
+    errors.push('area model adequacy audit record has a future lastAuditedAt');
+  }
+  const evidence = readAreaModelEvidence(record?.auditRef, expectedAreas);
+  for (const error of evidence.errors) errors.push(`area model adequacy auditRef ${error}`);
+  if (typeof record?.auditSha256 !== 'string' || !SHA256_RE.test(record.auditSha256)) {
+    errors.push('area model adequacy audit record has invalid auditSha256');
+  } else if (evidence.sha256 && record.auditSha256 !== evidence.sha256) {
+    errors.push('area model adequacy audit artifact changed');
+  }
+  const currentAreaSetSha256 = areaSetSha256(expectedAreas);
+  if (typeof record?.areaSetSha256 !== 'string' || !SHA256_RE.test(record.areaSetSha256)) {
+    errors.push('area model adequacy audit record has invalid areaSetSha256');
+  } else if (record.areaSetSha256 !== currentAreaSetSha256) {
+    errors.push('area model adequacy audit is stale for the current family set');
+  }
+  if (evidence.evidence?.reviewedAt !== record?.lastAuditedAt) {
+    errors.push('area model adequacy audit reviewedAt does not match lastAuditedAt');
+  }
+  if (isPlainObject(record) && canonicalText(raw) !== serializeAreaModelAuditRecord(record)) {
+    errors.push('area model adequacy audit record is not in canonical form');
+  }
+  return { record, evidence, currentAreaSetSha256, errors };
 }
 
 function loadAreaAuditLedger(expectedAreas) {
@@ -852,6 +1081,18 @@ function compute() {
         totalAreas: 0,
         errors: ALLOW_PARTIAL_REGISTRY ? [] : ['standards registry missing (use --allow-partial-registry only for a deliberate partial checkout)'],
       },
+      areaModelAudit: {
+        status: 'not-assessed',
+        path: path.relative(ROOT, AREA_MODEL_AUDIT_PATH),
+        schemaVersion: AREA_MODEL_AUDIT_SCHEMA_VERSION,
+        currentAreaSetSha256: null,
+        auditedAreaSetSha256: null,
+        auditCurrent: false,
+        lastAuditedAt: null,
+        auditRef: null,
+        errors: [],
+      },
+      cadence: { reviewAfterDays: 90, dueAreas: [], areaModelReviewDue: false, blocking: false },
       enforcementScope: {
         recognizedHeadings: [...ENFORCEMENT_SECTION_HEADINGS],
         excludedProvenanceHeadings: [...EXCLUDED_PROVENANCE_SECTION_HEADINGS],
@@ -922,6 +1163,7 @@ function compute() {
   const enforcedRatio = total === 0 ? 1 : Number((enforced / total).toFixed(4));
   const areaNames = [...areaTallies.keys()].sort();
   const loadedAreaAudits = loadAreaAuditLedger(areaNames);
+  const loadedAreaModelAudit = loadAreaModelAudit(areaNames);
   const baseComparison = compareLedgerToBase(loadedAreaAudits.ledger);
   const rootSelfWiring = ALLOW_PARTIAL_REGISTRY
     ? { status: 'not-assessed', errors: [] }
@@ -975,6 +1217,13 @@ function compute() {
       return !Number.isFinite(audited) || nowMs - audited >= reviewAfterDays * 86_400_000;
     })
     .map(([area]) => area);
+  const modelLastAuditedMs = Date.parse(loadedAreaModelAudit.record?.lastAuditedAt ?? '');
+  const areaModelReviewDue = !Number.isFinite(modelLastAuditedMs) ||
+    nowMs - modelLastAuditedMs >= reviewAfterDays * 86_400_000;
+  const modelRecord = loadedAreaModelAudit.record;
+  const currentAreaSetSha256 = loadedAreaModelAudit.currentAreaSetSha256 ?? areaSetSha256(areaNames);
+  const modelAuditCurrent = loadedAreaModelAudit.errors.length === 0 &&
+    modelRecord?.areaSetSha256 === currentAreaSetSha256;
   return {
     generatedAt: new Date().toISOString(),
     registryFound: true,
@@ -989,7 +1238,18 @@ function compute() {
       protectedBaseStatus: baseComparison.status,
       errors: areaAuditErrors,
     },
-    cadence: { reviewAfterDays, dueAreas, blocking: false },
+    areaModelAudit: {
+      status: loadedAreaModelAudit.errors.length === 0 ? 'current' : 'invalid',
+      path: path.relative(ROOT, AREA_MODEL_AUDIT_PATH),
+      schemaVersion: AREA_MODEL_AUDIT_SCHEMA_VERSION,
+      currentAreaSetSha256,
+      auditedAreaSetSha256: typeof modelRecord?.areaSetSha256 === 'string' ? modelRecord.areaSetSha256 : null,
+      auditCurrent: modelAuditCurrent,
+      lastAuditedAt: typeof modelRecord?.lastAuditedAt === 'string' ? modelRecord.lastAuditedAt : null,
+      auditRef: typeof modelRecord?.auditRef === 'string' ? modelRecord.auditRef : null,
+      errors: loadedAreaModelAudit.errors,
+    },
+    cadence: { reviewAfterDays, dueAreas, areaModelReviewDue, blocking: false },
     falseClaimCount: falseClaims.length, falseClaims,
     danglingCount, danglingByStandard,
   };
@@ -1102,6 +1362,58 @@ function recordAreaAudit(report, selection, auditRef) {
   fs.renameSync(tmp, AREA_AUDITS_PATH);
 }
 
+function readAreaModelAuditForRecord() {
+  if (!fs.existsSync(AREA_MODEL_AUDIT_PATH)) return null;
+  let raw;
+  let record;
+  try {
+    raw = fs.readFileSync(AREA_MODEL_AUDIT_PATH, 'utf-8');
+    record = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`refusing to overwrite an unreadable area model audit record: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const keys = isPlainObject(record) ? Object.keys(record).sort() : [];
+  const expectedKeys = ['areaSetSha256', 'auditRef', 'auditSha256', 'lastAuditedAt', 'schemaVersion'];
+  if (!isPlainObject(record) || record.schemaVersion !== AREA_MODEL_AUDIT_SCHEMA_VERSION ||
+    JSON.stringify(keys) !== JSON.stringify(expectedKeys) ||
+    !canonicalTimestamp(record.lastAuditedAt) ||
+    typeof record.auditRef !== 'string' ||
+    typeof record.auditSha256 !== 'string' || !SHA256_RE.test(record.auditSha256) ||
+    typeof record.areaSetSha256 !== 'string' || !SHA256_RE.test(record.areaSetSha256) ||
+    canonicalText(raw) !== serializeAreaModelAuditRecord(record)) {
+    throw new Error('refusing to overwrite an invalid area model audit record');
+  }
+  return record;
+}
+
+function recordAreaModelAudit(report, auditRef) {
+  if (!report.registryFound) throw new Error('cannot record an area model audit because the standards registry is absent');
+  const currentAreas = Object.keys(report.areas).sort();
+  const evidence = readAreaModelEvidence(auditRef, currentAreas);
+  if (evidence.errors.length > 0) {
+    throw new Error(`--audit-ref areaModelReview ${evidence.errors.join('; ')}`);
+  }
+  const prior = readAreaModelAuditForRecord();
+  const lastAuditedAt = evidence.evidence.reviewedAt;
+  if (Date.parse(lastAuditedAt) > Date.now() + 5 * 60_000) {
+    throw new Error('area model lastAuditedAt may not be more than five minutes in the future');
+  }
+  if (prior && Date.parse(lastAuditedAt) < Date.parse(prior.lastAuditedAt)) {
+    throw new Error('area model lastAuditedAt may not move backward');
+  }
+  const next = {
+    schemaVersion: AREA_MODEL_AUDIT_SCHEMA_VERSION,
+    lastAuditedAt,
+    auditRef,
+    auditSha256: evidence.sha256,
+    areaSetSha256: areaSetSha256(currentAreas),
+  };
+  const tmp = `${AREA_MODEL_AUDIT_PATH}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  fs.mkdirSync(path.dirname(AREA_MODEL_AUDIT_PATH), { recursive: true });
+  fs.writeFileSync(tmp, serializeAreaModelAuditRecord(next), { flag: 'wx' });
+  fs.renameSync(tmp, AREA_MODEL_AUDIT_PATH);
+}
+
 function main() {
   let report = compute();
   if (RECORD_AREA_ARG !== undefined) {
@@ -1110,6 +1422,15 @@ function main() {
       report = compute();
     } catch (error) {
       process.stderr.write(`❌ standards-coverage record failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
+    }
+  }
+  if (RECORD_AREA_MODEL) {
+    try {
+      recordAreaModelAudit(report, AUDIT_REF);
+      report = compute();
+    } catch (error) {
+      process.stderr.write(`❌ standards-coverage area-model record failed: ${error instanceof Error ? error.message : String(error)}\n`);
       process.exit(1);
     }
   }
@@ -1152,6 +1473,9 @@ function main() {
     for (const error of report.areaAudit.errors) {
       console.error(`[standards-coverage] AREA AUDIT — ${error}`);
     }
+    for (const error of report.areaModelAudit.errors) {
+      console.error(`[standards-coverage] AREA MODEL AUDIT — ${error}`);
+    }
     for (const fc of report.falseClaims) {
       console.error(`[standards-coverage] FALSE CLAIM — "${fc.standard}" asserts running machinery (${fc.claims.map((c) => `"${c}"`).join(', ')}) but names no resolvable guard.`);
     }
@@ -1164,6 +1488,7 @@ function main() {
       failures.push(`enforced ratio ${aggregateEnforced}/${report.total} (${report.enforcedRatio}) < floor ${FLOORS.enforcedRatio}`);
     }
     for (const error of report.areaAudit.errors) failures.push(error);
+    for (const error of report.areaModelAudit.errors) failures.push(error);
     for (const [area, measurement] of Object.entries(report.areas)) {
       if (ratioBelowFloor(measurement.enforced, measurement.total, measurement.refResolutionFloor)) {
         failures.push(
@@ -1191,7 +1516,7 @@ function main() {
     if (failures.length > 0) {
       process.stderr.write('\n❌ standards-coverage check failed:\n');
       for (const f of failures) process.stderr.write(`  - ${f}\n`);
-      process.stderr.write('\nFix: build a guard for an unguarded standard, record the changed family audit without lowering its floor, repair a dangling reference, classify each unknown article heading, or resolve a false claim whose prose asserts unnamed machinery.\n');
+      process.stderr.write('\nFix: build a guard for an unguarded standard, record the changed family audit without lowering its floor, record a converged area-model adequacy review, repair a dangling reference, classify each unknown article heading, or resolve a false claim whose prose asserts unnamed machinery.\n');
       process.exit(1);
     }
     if (!QUIET) console.error('✅ standards-coverage check passed.');
