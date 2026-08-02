@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { computeCoverage } from '../../src/core/StandardsEnforcementAuditor.js';
 import { parseRegistryStructure } from '../../scripts/standards-registry-article-core.mjs';
+import { stampConverged, validateAuditReport } from '../../scripts/write-audit-convergence.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.resolve(__dirname, '../../scripts/standards-coverage.mjs');
@@ -62,11 +63,89 @@ function writeAuditEvidence(
   }, null, 2)}\n`);
 }
 
+function writeAreaModelEvidence(
+  ref = 'docs/audits/family-model-review.json',
+  reviewedAt = '2000-01-01T00:00:00.000Z',
+): void {
+  const report = JSON.parse(runScript(['--json'])) as {
+    areas: Record<string, { currentAreaSha256: string }>;
+  };
+  const slug = `family-model-review-${auditCounter}`;
+  const reportRef = `docs/audits/${slug}.md`;
+  const draft = [
+    '---',
+    `audit: "${slug}"`,
+    'target-pattern: "Whether the current Standards Registry family set remains an adequate decomposition of fundamental areas."',
+    'search-surface: "Every current family, every standard heading, and the add/split/merge/retire alternative space."',
+    'exemption: "one-time-human-review — Fixture-only semantic review with production structure exercised by the unit test."',
+    'blind-spot-class: "list-integrity-without-adequacy-review"',
+    'standard-response-kind: "no-change"',
+    'standard-response-ref: "docs/STANDARDS-REGISTRY.md"',
+    'standard-response-article-id: "iterative-audit-to-convergence"',
+    'standard-response-article: "Iterative Audit to Convergence"',
+    'standard-response-rationale: "The constitution already requires convergence; this fixture exercises the missing evidence-binding structure."',
+    '---',
+    '',
+    '# Fixture area-model adequacy audit',
+    '',
+    '## Meta-insight',
+    '',
+    'How it arose: Per-family content review was mistaken for review of whether the family list itself remains adequate.',
+    'Why prior controls missed it: Exact set integrity can prove that a list stayed unchanged without asking whether its decomposition is still right.',
+    '',
+    '## Round 1',
+    '',
+    'Search angles: by family cohesion, cross-family overlap, and missing-area candidates.',
+    'Surface delta: initial fixture review of the complete current family set.',
+    '',
+    '| location | behavior | bucket | disposition |',
+    '|---|---|---|---|',
+    '| docs/STANDARDS-REGISTRY.md:1 | Current fixture family set received an explicit adequacy disposition. | keep | accepted:fixture family remains distinct and complete for this structural test |',
+    '',
+    'New findings this round: 1',
+    '',
+    '## Round 2',
+    '',
+    'Search angles: repeat the complete family-set review from the alternative-action direction.',
+    'Surface delta: no new family, split, merge, or retirement candidate emerged.',
+    '',
+    'New findings this round: 0',
+    '',
+  ].join('\n');
+  const validation = validateAuditReport(draft, {
+    root: repo,
+    basenameSlug: slug,
+    standardEvidence: { responseChanged: false },
+    allowDerivedStale: true,
+  });
+  if (!validation.ok) throw new Error(`invalid model-audit fixture: ${validation.reason}`);
+  const stamped = stampConverged(draft, validation.rounds.length, reviewedAt);
+  write(reportRef, stamped);
+  write(ref, `${JSON.stringify({
+    schemaVersion: 1,
+    scope: 'area-model-adequacy',
+    reviewedAt,
+    reviewers: ['fixture-reviewer'],
+    findingDisposition: { noUnresolvedDesign: true, resolvedFindings: 1 },
+    reviewedActions: ['keep', 'add', 'split', 'merge', 'retire'],
+    convergenceReport: reportRef,
+    convergenceSha256: crypto.createHash('sha256').update(stamped).digest('hex'),
+    currentAreas: Object.fromEntries(Object.keys(report.areas).sort().map((area) => [area, {
+      disposition: 'keep',
+      rationale: `${area} remains a distinct, coherent fixture family after the complete alternative-action review.`,
+    }])),
+    additions: [],
+  }, null, 2)}\n`);
+}
+
 function refreshAreaAudits(floor?: number): void {
   auditCounter += 1;
   const auditRef = `docs/audits/family-review-${auditCounter}.json`;
   writeAuditEvidence(auditRef);
   runScript(['--record-area-audit=all', '--admit-new-areas', `--audit-ref=${auditRef}`, '--quiet']);
+  const modelAuditRef = `docs/audits/family-model-review-${auditCounter}.json`;
+  writeAreaModelEvidence(modelAuditRef);
+  runScript(['--record-area-model-audit', `--audit-ref=${modelAuditRef}`, '--quiet']);
   if (floor === undefined) return;
   const auditPath = path.join(repo, 'docs', 'standards-registry-area-audits.json');
   const ledger = JSON.parse(fs.readFileSync(auditPath, 'utf-8')) as {
@@ -392,6 +471,21 @@ describe('standards-coverage ratchet script', () => {
     expect(runCheck().code).toBe(0);
   });
 
+  it('FAILS when the family set has no converged area-model adequacy audit', () => {
+    fs.rmSync(path.join(repo, 'docs', 'standards-registry-area-model-audit.json'));
+
+    const result = runCheck();
+    expect(result.code).toBe(1);
+    expect(result.out).toContain('area model adequacy audit record is missing');
+  });
+
+  it('does not accept a family-content review as an area-model adequacy review', () => {
+    writeAuditEvidence('docs/audits/content-only-review.json');
+    expect(() => runScript([
+      '--record-area-model-audit', '--audit-ref=docs/audits/content-only-review.json', '--quiet',
+    ])).toThrow(/areaModelReview/);
+  });
+
   it('binds each audit record to immutable family evidence', () => {
     fs.appendFileSync(path.join(repo, 'docs/audits/family-review-1.json'), '\n');
     expect(runCheck().out).toContain('audit artifact changed');
@@ -554,7 +648,10 @@ describe('standards-coverage ratchet script', () => {
     expect(crlf.areas.Building.currentAreaSha256).toBe(lf.areas.Building.currentAreaSha256);
     for (const rel of [
       'docs/standards-registry-area-audits.json',
+      'docs/standards-registry-area-model-audit.json',
       'docs/audits/family-review-1.json',
+      'docs/audits/family-model-review-1.json',
+      'docs/audits/family-model-review-1.md',
       'docs/specs/reports/family-review.md',
     ]) {
       const full = path.join(repo, rel);
@@ -707,6 +804,7 @@ describe('standards-coverage ratchet script', () => {
       total: number;
       enforcedRatio: number;
       areaAudit: { status: string; currentCount: number; totalAreas: number; errors: string[] };
+      areaModelAudit: { status: string; currentAreaSetSha256: string; auditCurrent: boolean };
       areas: Record<string, {
         total: number;
         enforced: number;
@@ -725,6 +823,10 @@ describe('standards-coverage ratchet script', () => {
     expect(report.areaAudit).toEqual(expect.objectContaining({
       status: 'current', currentCount: 6, totalAreas: 6, errors: [],
     }));
+    expect(report.areaModelAudit).toEqual(expect.objectContaining({
+      status: 'current', auditCurrent: true,
+    }));
+    expect(report.areaModelAudit.currentAreaSetSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(report.areas['The Root']).toEqual(expect.objectContaining({
       total: 1,
       enforced: 1,
@@ -744,6 +846,7 @@ describe('standards-coverage ratchet script', () => {
     expect(workflow).toContain("issue.user?.login === 'github-actions[bot]'");
     expect(workflow).toContain('issue.body?.startsWith(`${marker}\\n`)');
     expect(workflow).not.toContain('issue.body?.includes(marker)');
+    expect(workflow).toContain('keep / add / split / merge / retire');
   });
 
   // ── FALSE-CLAIM DETECTION (2026-07-31) ────────────────────────────────────

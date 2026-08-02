@@ -1,0 +1,21 @@
+<!-- bump: patch -->
+<!-- internal-only -->
+
+## What Changed
+
+The Standards Registry audit now treats the fundamental-area list as a living
+model. A separate convergence-bound record requires explicit keep, add, split,
+merge, and retire consideration, while the weekly cadence resurfaces model
+adequacy independently from per-family content age. The deterministic checker
+validates evidence and exact family-set integrity but does not make semantic
+taxonomy decisions.
+
+## Evidence
+
+- A fail-before proof showed the prior checker accepted a missing model review
+  and could not distinguish family-content evidence from area-model evidence.
+- The focused standards-coverage suite passes all 33 cases, including missing
+  evidence, wrong evidence kind, exact family-set binding, and live-repository
+  coverage.
+- The initial whole-corpus review earned convergence after two rounds with all
+  six current families kept and no additions, splits, merges, or retirements.
