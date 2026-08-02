@@ -66,10 +66,28 @@ function writeAuditEvidence(
 function writeAreaModelEvidence(
   ref = 'docs/audits/family-model-review.json',
   reviewedAt = '2000-01-01T00:00:00.000Z',
+  options: {
+    dispositions?: Record<string, 'keep' | 'split' | 'merge' | 'retire'>;
+    additions?: Array<{ name: string; rationale: string }>;
+  } = {},
 ): void {
   const report = JSON.parse(runScript(['--json'])) as {
     areas: Record<string, { currentAreaSha256: string }>;
   };
+  const areaNames = Object.keys(report.areas).sort();
+  const dispositions = options.dispositions ?? {};
+  const additions = options.additions ?? [];
+  const dispositionFor = (area: string): 'keep' | 'split' | 'merge' | 'retire' =>
+    Object.hasOwn(dispositions, area) ? dispositions[area] : 'keep';
+  const ledgerRows = [
+    ...areaNames.map((area) => {
+      const disposition = dispositionFor(area);
+      return `| docs/STANDARDS-REGISTRY.md:1 | ${area} received an explicit ${disposition} disposition in the fixture adequacy review. | ${disposition} | accepted:${area} fixture disposition is structurally valid |`;
+    }),
+    ...additions.map((addition) =>
+      `| docs/STANDARDS-REGISTRY.md:1 | ${addition.name} was considered as an explicit addition to the fixture area model. | add | accepted:${addition.rationale} |`,
+    ),
+  ];
   const slug = `family-model-review-${auditCounter}`;
   const reportRef = `docs/audits/${slug}.md`;
   const draft = [
@@ -100,9 +118,9 @@ function writeAreaModelEvidence(
     '',
     '| location | behavior | bucket | disposition |',
     '|---|---|---|---|',
-    '| docs/STANDARDS-REGISTRY.md:1 | Current fixture family set received an explicit adequacy disposition. | keep | accepted:fixture family remains distinct and complete for this structural test |',
+    ...ledgerRows,
     '',
-    'New findings this round: 1',
+    `New findings this round: ${ledgerRows.length}`,
     '',
     '## Round 2',
     '',
@@ -126,15 +144,15 @@ function writeAreaModelEvidence(
     scope: 'area-model-adequacy',
     reviewedAt,
     reviewers: ['fixture-reviewer'],
-    findingDisposition: { noUnresolvedDesign: true, resolvedFindings: 1 },
+    findingDisposition: { noUnresolvedDesign: true, resolvedFindings: ledgerRows.length },
     reviewedActions: ['keep', 'add', 'split', 'merge', 'retire'],
     convergenceReport: reportRef,
     convergenceSha256: crypto.createHash('sha256').update(stamped).digest('hex'),
-    currentAreas: Object.fromEntries(Object.keys(report.areas).sort().map((area) => [area, {
-      disposition: 'keep',
-      rationale: `${area} remains a distinct, coherent fixture family after the complete alternative-action review.`,
+    currentAreas: Object.fromEntries(areaNames.map((area) => [area, {
+      disposition: dispositionFor(area),
+      rationale: `${area} received an explicit ${dispositionFor(area)} disposition after the complete fixture alternative-action review.`,
     }])),
-    additions: [],
+    additions,
   }, null, 2)}\n`);
 }
 
@@ -484,6 +502,35 @@ describe('standards-coverage ratchet script', () => {
     expect(() => runScript([
       '--record-area-model-audit', '--audit-ref=docs/audits/content-only-review.json', '--quiet',
     ])).toThrow(/areaModelReview/);
+  });
+
+  it('accepts an explicit retire disposition for a current family', () => {
+    auditCounter += 1;
+    const auditRef = 'docs/audits/retire-model-review.json';
+    writeAreaModelEvidence(auditRef, '2000-01-01T00:00:00.000Z', {
+      dispositions: { Building: 'retire' },
+    });
+
+    expect(() => runScript([
+      '--record-area-model-audit', `--audit-ref=${auditRef}`, '--quiet',
+    ])).not.toThrow();
+    expect(runCheck().code).toBe(0);
+  });
+
+  it('accepts an explicit non-empty addition disposition', () => {
+    auditCounter += 1;
+    const auditRef = 'docs/audits/add-model-review.json';
+    writeAreaModelEvidence(auditRef, '2000-01-01T00:00:00.000Z', {
+      additions: [{
+        name: 'Stewardship',
+        rationale: 'The fixture review found a distinct candidate area that merits explicit admission.',
+      }],
+    });
+
+    expect(() => runScript([
+      '--record-area-model-audit', `--audit-ref=${auditRef}`, '--quiet',
+    ])).not.toThrow();
+    expect(runCheck().code).toBe(0);
   });
 
   it('binds each audit record to immutable family evidence', () => {
