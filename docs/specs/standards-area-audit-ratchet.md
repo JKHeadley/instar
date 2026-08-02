@@ -6,6 +6,8 @@ parent-principle: "Structure beats Willpower"
 eli16-overview: "standards-area-audit-ratchet.eli16.md"
 lessons-engaged: "Structure beats Willpower; Iterative Audit to Convergence; Verify the State, Not Its Symbol; Honest Denominators; Probe the Concept, Not the Name"
 approved: true
+approved-by: "echo (standing operator mandate, Justin, topic 29723)"
+approved-date: "2026-08-01"
 review-convergence: "2026-08-01T07:31:10.091Z"
 review-iterations: 6
 review-completed-at: "2026-08-01T07:31:10.091Z"
